@@ -57,6 +57,13 @@ _SPAWNERS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 # Interpreter names, lowercased and stripped of a .exe suffix, that mean PowerShell.
 _PWSH_EXECUTABLES = frozenset({"pwsh", "powershell", "powershell_ise"})
 
+# Switches only PowerShell takes. An argv that passes one is a PowerShell launch whatever
+# its argv0 is called: tests/python/test_windows_setup_download_progress.py hands the
+# interpreter to a helper as a parameter (`[shell, "-NoLogo", "-NonInteractive", ...]`),
+# which no module-level binding resolves, and it lost three startups to SIGSEGV in one
+# Repo tests (CPU, studio) run.
+_PWSH_ONLY_SWITCHES = frozenset({"-noninteractive", "-executionpolicy", "-noprofile"})
+
 # Files allowed to spawn PowerShell without the shared runner, each with the reason the
 # startup-cache race does not reach them. Keyed on the path relative to the REPO ROOT,
 # because two test trees are scanned and a bare filename would not say which. Keep the
@@ -144,7 +151,7 @@ class _PwshCallFinder(ast.NodeVisitor):
     def _mentions_pwsh(self, node: ast.expr) -> bool:
         for child in ast.walk(node):
             if isinstance(child, ast.Constant) and isinstance(child.value, str):
-                if _is_pwsh_executable(child.value):
+                if _is_pwsh_executable(child.value) or child.value.lower() in _PWSH_ONLY_SWITCHES:
                     return True
             elif isinstance(child, ast.Name) and child.id in self.pwsh_names:
                 return True
@@ -329,6 +336,8 @@ class TestEveryPwshCallUsesTheSharedRunner:
             'import subprocess\nsubprocess.check_output(args = ["pwsh", "-c", "x"])\n': 2,
             # An env is given, but not the runner's one.
             'import subprocess\nsubprocess.run(["pwsh", "-c", "x"], env = os.environ.copy())\n': 2,
+            # The interpreter arrives as a parameter, named only by the switches it is given.
+            'import subprocess\ndef start(shell):\n    subprocess.Popen([shell, "-NoLogo", "-NonInteractive", "-File", "x.ps1"])\n': 3,
         }
         for source, lineno in cases.items():
             path = tmp_path / "test_probe.py"
@@ -343,6 +352,7 @@ class TestEveryPwshCallUsesTheSharedRunner:
             'from unsloth_pwsh_runner import run_pwsh\nrun_pwsh(["pwsh", "-c", "x"])\n',
             'import subprocess\nsubprocess.run(["bash", "-c", "echo hi"])\n',
             'import subprocess\nsubprocess.run([sys.executable, "-c", "print(1)"])\n',
+            'import subprocess\ndef start(shell):\n    subprocess.Popen([shell, "-NoLogo", "-NonInteractive"], env = pwsh_env(env))\n',
             # "pwsh" as prose, not as an argv0.
             'import subprocess\nsubprocess.run(["bash", "-c", "which pwsh"])\n',
             # The pwsh_env route, inline and through a hoisted name.

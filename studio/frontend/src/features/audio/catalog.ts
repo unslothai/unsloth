@@ -147,16 +147,24 @@ export function audioModelsForTask(task: AudioTask): ModelOption[] {
   return AUDIO_MODEL_OPTIONS.filter(matches);
 }
 
+const CAPABILITY_LABEL: Record<
+  AudioTask | "music" | "clone" | "edit" | "convert" | "separate",
+  string
+> = {
+  music: "Music generation",
+  separate: "Source separation",
+  clone: "Voice cloning",
+  edit: "Speech editing",
+  convert: "Voice conversion",
+  tts: "Text-to-speech",
+  stt: "Speech-to-text",
+};
+
 export function audioCapabilityLine(
-  task: AudioTask | "music",
+  task: AudioTask | "music" | "clone" | "edit" | "convert" | "separate",
   detail?: string | null,
 ): string {
-  const base =
-    task === "music"
-      ? "Music generation"
-      : task === "tts"
-        ? "Text-to-speech"
-        : "Speech-to-text";
+  const base = CAPABILITY_LABEL[task];
   // GGUF audio models report one runtime-wide type; the internal name means nothing to a user.
   const shown = detail && AUDIO_CPP_AUDIO_TYPES.has(detail) ? "GGUF" : detail;
   return shown ? `${base} · ${shown}` : base;

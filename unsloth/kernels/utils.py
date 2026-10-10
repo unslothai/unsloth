@@ -30,7 +30,6 @@ from ..device_type import (
 from ..bnb_availability import native_kernels_ready
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
-import functools
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
 import torch
@@ -65,7 +64,6 @@ elif DEVICE_TYPE == "npu":
 
 
 # tl.math.tanh is now libdevice.tanh.
-import triton
 import triton.language as tl
 
 if Version(triton.__version__) >= Version("3.0.0"):
@@ -119,6 +117,27 @@ def is_rdna():
         "gfx1200",
         "gfx1201",
     )
+
+
+try:
+    from math import sumprod as _sumprod
+except ImportError:  # Python < 3.12
+
+    def _sumprod(a, b):
+        return sum(x * y for x, y in zip(a, b))
+
+
+def long_indexing(*tensors, block = 0):
+    # numel() is not enough for strided views (transposed Q / K): their offsets reach past it.
+    for t in tensors:
+        if t.is_contiguous():
+            extent = t.numel()
+        else:
+            stride = t.stride()
+            extent = _sumprod(t.shape, stride) - sum(stride) + 1
+        if extent + block > 2**31:
+            return True
+    return False
 
 
 def calculate_settings(
@@ -350,6 +369,32 @@ def _has_multiple_active_adapters(proj):
     return not isinstance(adapters, str) and len(adapters) > 1
 
 
+def _has_active_dora_adapter(proj):
+    # DoRA rescales the output by lora_magnitude_vector, which the fast LoRA path never applies.
+    magnitude = getattr(proj, "lora_magnitude_vector", None)
+    if not magnitude or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(adapter in magnitude for adapter in adapters)
+
+
+def _has_active_lora_bias(proj):
+    # PEFT lora_bias=True gives lora_B a bias, which the fast LoRA paths never add.
+    lora_B = getattr(proj, "lora_B", None)
+    if not lora_B or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(adapter in lora_B and lora_B[adapter].bias is not None for adapter in adapters)
+
+
 def has_mxfp4_base(*projs):
     """A packed MXFP4 base that cannot hand its bytes to the fused LoRA kernels (they would then hold a 16-bit
     weight until backward): use PEFT. Bases with ``mxfp4_quant_state`` pass ``weight_packed`` + that state instead."""
@@ -371,6 +416,15 @@ def _packed_base(base_layer):
     if getattr(base_layer, "weight_fake_quantizer", None) is not None:
         return None
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
+
+
+def _has_packed_qweight(proj):
+    # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
+    base_layer = proj._modules.get("base_layer", proj)
+    return (
+        not isinstance(getattr(base_layer, "weight", None), torch_Tensor)
+        and _packed_base(base_layer) is None
+    )
 
 
 def _is_packed_state(quant_state):
@@ -487,17 +541,6 @@ def get_lora_parameters_bias(proj):
         proj.scaling[adapter],
         base_layer.bias,
     )
-
-
-def _maybe_fake_quantize_activations(X: torch.Tensor, proj: torch.nn.Module) -> torch.Tensor:
-    """Fake-quantize input activations if QAT is enabled, else return as-is.
-    Weights are fake-quantized separately in `get_lora_parameters`.
-    """
-    base_layer = getattr(proj, "base_layer", proj)
-    activation_fake_quantizer = getattr(base_layer, "activation_fake_quantizer", None)
-    if activation_fake_quantizer is not None:
-        X = activation_fake_quantizer(X)
-    return X
 
 
 def _unpack_quant_state(quant_state):
@@ -1389,7 +1432,12 @@ def fast_linear_forward(
     temp_lora = None,
     out = None,
 ):
-    if _has_multiple_active_adapters(proj):
+    if (
+        _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+        or _has_packed_qweight(proj)
+    ):
         result = proj(X)
         return result if out is None else out.copy_(result)
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)

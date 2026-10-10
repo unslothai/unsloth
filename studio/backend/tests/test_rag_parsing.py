@@ -54,6 +54,108 @@ def test_pdf_extracts_markdown_table(tmp_path, monkeypatch):
     assert "#" in text or "|" in text  # Markdown markup (heading or table pipes)
 
 
+def test_pdf_markdown_keeps_text_drawn_over_a_picture(tmp_path, monkeypatch):
+    pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 300), False)
+    pix.set_rect(pix.irect, (40, 70, 120))
+    page.insert_image(pymupdf.Rect(0, 0, 170, page.rect.height), pixmap = pix)
+    for i, line in enumerate(["jane.doe@example.com", "Kubernetes", "Spanish"]):
+        page.insert_text((15, 80 + i * 22), line, fontsize = 11, color = (1, 1, 1))
+    page.insert_text((190, 60), "Experience", fontsize = 16)
+    for i in range(30):
+        page.insert_text((190, 90 + i * 22), f"Led project {i} for customers.", fontsize = 10)
+    pdf = tmp_path / "resume.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "# Experience" in text
+    assert "Led project 29" in text
+    for sidebar in ("jane.doe@example.com", "Kubernetes", "Spanish"):
+        assert sidebar in text
+
+
+def test_pdf_markdown_does_not_render_scanned_pages(tmp_path, monkeypatch):
+    # pymupdf4llm's background-colour probe renders page corners; under a full-page scan that
+    # decodes the whole image while holding the GIL, which starved the event loop until the
+    # desktop watchdog killed the backend (#13094). Text pages keep the probe.
+    pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    doc = pymupdf.open()
+    scan = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 1000, 1300), False)
+    pix.set_rect(pix.irect, (250, 250, 240))
+    scan.insert_image(scan.rect, pixmap = pix, keep_proportion = False)
+    scan.insert_text((60, 120), "Chapter one covers shelter.", fontsize = 10)
+    text_page = doc.new_page()
+    text_page.insert_text((60, 80), "Survival Training", fontsize = 16)
+    text_page.insert_text((60, 120), "Chapter two covers water.", fontsize = 10)
+    pdf = tmp_path / "scan.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    rendered = []
+    real_get_pixmap = pymupdf.Page.get_pixmap
+
+    def recording_get_pixmap(self, *args, **kwargs):
+        rendered.append(self.number)
+        return real_get_pixmap(self, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_pixmap", recording_get_pixmap)
+    pages = parsers.parse(str(pdf))
+    assert [p.page_number for p in pages] == [1, 2]
+    assert "Chapter one covers shelter." in pages[0].text
+    assert "Chapter two covers water." in pages[1].text
+    assert "# Survival Training" in pages[1].text
+    assert 0 not in rendered
+    assert 1 in rendered
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_scan_corner_check_follows_page_rotation(rotation):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2000, 500), False)
+    pix.set_rect(pix.irect, (250, 250, 240))
+    # A strip along the unrotated bottom edge covers two corners at every rotation.
+    page.insert_image(pymupdf.Rect(0, 700, 595, 842), pixmap = pix, keep_proportion = False)
+    inset = doc.new_page()
+    inset.insert_image(pymupdf.Rect(100, 100, 400, 600), pixmap = pix, keep_proportion = False)
+    for number in range(2):
+        doc[number].set_rotation(rotation)
+    assert parsers._image_covers_a_corner(doc, 0)
+    assert not parsers._image_covers_a_corner(doc, 1)
+
+
+def test_scan_corner_check_ignores_small_corner_logos():
+    # A logo is cheap to decode, so its page keeps pymupdf4llm's background probe.
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    logo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 200), False)
+    logo.set_rect(logo.irect, (200, 30, 30))
+    page.insert_image(pymupdf.Rect(0, 0, 60, 60), pixmap = logo)
+    assert not parsers._image_covers_a_corner(doc, 0)
+
+
 def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     # The toggle (RAG_PDF_MARKDOWN=0) falls back to flat PyMuPDF text: content is still
     # there, but with no Markdown markup.
@@ -114,7 +216,12 @@ def test_pdf_markdown_receives_page_limit(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc(), range(2)) == ["page", "page"]
-    assert captured == {"page_chunks": True, "show_progress": False, "pages": [0, 1]}
+    assert captured == {
+        "page_chunks": True,
+        "show_progress": False,
+        "ignore_images": True,
+        "pages": [0, 1],
+    }
 
 
 def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
@@ -135,7 +242,7 @@ def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc()) == ["plain markdown"]
-    assert captured == {"page_chunks": True, "show_progress": False}
+    assert captured == {"page_chunks": True, "show_progress": False, "ignore_images": True}
 
 
 def test_pdf_markdown_falls_back_when_lib_missing(tmp_path, monkeypatch):

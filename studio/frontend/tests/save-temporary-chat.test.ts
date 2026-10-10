@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Saving a temporary chat to history. runtime-provider.tsx cannot load under stubs, so the
-// ordering helper is run on its own and the rest is pinned on source.
+// runtime-provider.tsx cannot load under stubs, so test its ordering helper directly and pin the rest on source.
 
 import assert from "node:assert/strict";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { orderParentsFirst } from "../src/features/chat/utils/message-order.ts";
 
 const provider = readSrc("features/chat/runtime-provider.tsx");
 const storage = readSrc("features/chat/utils/chat-history-storage.ts");
@@ -16,9 +16,11 @@ const button = readSrc("features/chat/components/temporary-chat-save.tsx");
 const page = readSrc("features/chat/chat-page.tsx");
 
 type Item = { parentId: string | null; message: { id: string } };
+// parentsFirst delegates to dependency-free orderParentsFirst so the isolated scope can use it directly.
 const parentsFirst = new Function(
+  "orderParentsFirst",
   `${stripTypeScriptTypes(provider.slice(provider.indexOf("function parentsFirst("), provider.indexOf("/** Save a temporary chat to history")))}\nreturn parentsFirst;`,
-)() as (items: Item[]) => Item[];
+)(orderParentsFirst) as (items: Item[]) => Item[];
 
 const item = (id: string, parentId: string | null = null): Item => ({ parentId, message: { id } });
 const ids = (items: Item[]) => items.map((i) => i.message.id);
@@ -30,7 +32,7 @@ function persistBody(): string {
 }
 
 test("every message is saved after its parent, on every branch", () => {
-  // Two replies to u1 (a regenerate), and a child listed before its parent.
+  // the input covers a regenerated reply and a child listed before its parent.
   const ordered = ids(
     parentsFirst([item("a2", "u2"), item("u1"), item("a1", "u1"), item("u2", "a1"), item("b1", "u1")]),
   );
@@ -75,7 +77,7 @@ test("the saved chat keeps the model it started on, not the one loaded at save t
 
 test("saving waits for queued prompts, whose temporary tag would still discard them", () => {
   assert.match(button, /Object\.values\(s\.byThreadId\)\.some\(\(entry\) => entry\.temporary\)/);
-  assert.match(button, /: target\.queued\s*\? "Wait for queued prompts to finish"/);
+  assert.match(button, /const canSave =\s*target\.hasMessages && !target\.running && !target\.queued && !saving;/);
 });
 
 test("the save covers the whole branch tree, not only the visible path", () => {
@@ -83,9 +85,10 @@ test("the save covers the whole branch tree, not only the visible path", () => {
   assert.match(persistBody(), /parentId: parentId \?\? null,/);
 });
 
-test("the button shows only in a temporary single chat and waits for a finished reply", () => {
-  assert.match(page, /view\.mode === "single" && incognito \? \(\s*<SaveTemporaryChatButton/);
-  assert.match(button, /\? "Nothing to save yet"\s*: target\.running\s*\? "Wait for the response to finish"/);
+test("the save menu shows only in a temporary single chat with messages, and saves a finished reply", () => {
+  assert.match(page, /view\.mode === "single" && incognito \? \(\s*<SaveTemporaryChatMenu/);
+  assert.match(button, /\{target\.hasMessages \? \(\s*<DropdownMenu>/);
+  assert.match(button, /\{canSave \? \(\s*<DropdownMenuItem/);
 });
 
 test("Don't show again is remembered only once a save succeeds", () => {

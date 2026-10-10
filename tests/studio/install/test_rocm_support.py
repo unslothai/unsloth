@@ -108,6 +108,11 @@ def _gpu_record_helpers(source: str) -> str:
             "_amd_smi_gpu_records",
             "_gfx_arch_slots",
             "_amd_smi_hip_order",
+            "_amd_prefer_discrete_gfx",
+            "_amd_gfx_is_shadowing_integrated",
+            "_amd_gfx_has_wheel_route",
+            "_amd_arch_index_family_for_gfx",
+            "_amd_generic_tag_carries_gfx",
         )
     )
 
@@ -1009,6 +1014,21 @@ class TestEnsureRocmTorch:
         pip_install_try mock so callers can assert on the reinstall."""
         probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+rocm7.1|7.1|\n")
         pip_try = MagicMock(return_value = True)
+        from importlib.metadata import PackageNotFoundError
+        from types import SimpleNamespace
+
+        packages = {d.metadata["Name"].lower().replace("_", "-"): d for d in dists}
+        for package in ("torch", "torchvision"):
+            packages[package] = SimpleNamespace(
+                metadata = {"Name": package},
+                requires = [f'amd-{package}-device-{gfx}==2.11.0; extra == "device-{gfx}"'],
+            )
+
+        def distribution(name):
+            if name not in packages:
+                raise PackageNotFoundError(name)
+            return packages[name]
+
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
             with (
@@ -1028,6 +1048,7 @@ class TestEnsureRocmTorch:
                 patch.object(stack_mod, "pip_install_try", pip_try),
                 patch("subprocess.run", return_value = probe),
                 patch("importlib.metadata.distributions", return_value = list(dists)),
+                patch("importlib.metadata.distribution", side_effect = distribution),
             ):
                 _ensure_rocm_torch()
         return pip_try
@@ -1071,6 +1092,8 @@ class TestEnsureRocmTorch:
         for n in names:
             d = MagicMock()
             d.metadata = {"Name": n}
+            d.version = "2.11.0"
+            d.requires = []
             out.append(d)
         return out
 
@@ -2387,6 +2410,28 @@ class TestGfx1102Rocm64Floor:
         )
         assert self._run_install_sh_routing(preamble) == expected
 
+    @pytest.mark.parametrize(
+        ("arches", "mask", "expected"),
+        (
+            # An unmasked iGPU listed first used to pick the wheels and strand the dGPU.
+            (("gfx1036", "gfx1201"), "", _RDNA4_LEAF),
+            (("gfx1103", "gfx1201"), "", _RDNA4_LEAF),
+            (("gfx1201", "gfx1036"), "", _RDNA4_LEAF),
+            # A mask names the device, so the iGPU it selects keeps the route.
+            (("gfx1036", "gfx1201"), "HIP_VISIBLE_DEVICES=0", "rocm6.1"),
+            (("gfx1036", "gfx1201"), "CUDA_VISIBLE_DEVICES=0", "rocm6.1"),
+            (("gfx1036",), "", "rocm6.1"),
+        ),
+    )
+    def test_install_sh_prefers_the_discrete_gpu_over_a_leading_igpu(self, arches, mask, expected):
+        preamble = (
+            "rocminfo() { printf '"
+            + "".join(f"Name: {a}\\n" for a in arches)
+            + "'; }\n"
+            + "".join(f"export {assignment}\n" for assignment in mask.split())
+        )
+        assert self._run_install_sh_routing(preamble) == expected
+
     @staticmethod
     def _rocminfo_stub(*arches: str) -> str:
         """A rocminfo stub whose agents repeat their gfx token across Name and ISA."""
@@ -2603,6 +2648,8 @@ class TestGfx1102Rocm64Floor:
             with open(venv_py, "w", encoding = "utf-8") as fh:
                 fh.write(
                     "#!/bin/sh\n"
+                    # install.sh probes the venv with `-I -c CODE`; the stub only reads CODE.
+                    'if [ "$1" = "-I" ]; then shift; fi\n'
                     f'exec \'{sys.executable.replace(os.sep, "/")}\' -c "\n'
                     "import sys, types\n"
                     "t = types.ModuleType('torch')\n"
@@ -4510,9 +4557,11 @@ class TestHardwareAmdBranching:
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert "_smi_query(" in func_body
-        assert '"get_visible_gpu_utilization"' in func_body
+        assert "_smi_visible_utilization(" in func_body
         assert "_reconcile_rocm_unified_memory" in func_body
+        helper_start = source.find("def _smi_visible_utilization")
+        helper = source[helper_start : source.find("\ndef ", helper_start + 1)]
+        assert re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', helper)
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -4525,10 +4574,10 @@ class TestHardwareAmdBranching:
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_visible_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        # The dispatcher call may wrap; allow whitespace before the func name arg.
-        import re as _re
-
-        assert _re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', func_body)
+        assert "_smi_visible_utilization(" in func_body
+        helper_start = source.find("def _smi_visible_utilization")
+        helper = source[helper_start : source.find("\ndef ", helper_start + 1)]
+        assert re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', helper)
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -7577,8 +7626,6 @@ class TestHipSdkInstalledButDeviceInaccessible:
 # TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 forward their resolved gfx
 # arch to install_llama_prebuilt.py so the per-gfx prebuilt is picked.
 
-_SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
-
 
 class TestNormalizeForwardedGfx:
     """A forwarded gfx string is reduced to a single clean gfx token."""
@@ -7928,7 +7975,6 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
 # TEST: WSL ROCDXG fixes -- drop-in persistence + system-HIP-before-bundle
 
 
-_INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
 _LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 

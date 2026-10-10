@@ -9,7 +9,12 @@ import {
   resolveTensorParallel,
   stripManagedOffloadFlags,
 } from "./llama-extra-args-normalize";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
+import {
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
 
@@ -23,8 +28,10 @@ type ResidentRuntime = Pick<
   | "requested_context_length"
   | "cache_type_kv"
   | "mlx_kv_quant_requested"
+  | "mlx_int8_prefill_requested"
   | "speculative_type"
   | "spec_draft_n_max"
+  | "spec_draft_model"
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
@@ -40,13 +47,13 @@ type ResidentRuntime = Pick<
   | "disable_vision"
   | "chat_template_override"
   | "requested_llama_extra_args"
-  | "requested_llama_cpp_config"
   | "gpu_memory_mode"
   | "gpu_layers"
   | "n_cpu_moe"
   | "requested_gpu_ids"
   | "gpu_ids"
   | "is_gguf"
+  | "is_mlx"
   | "is_diffusion"
   | "diffusion_requested_ngl"
   | "diffusion_split_supported"
@@ -105,8 +112,7 @@ export type StandingConfigDefaults = {
    *  `_resolve_parallel_slots` stores the server-wide default as `requested_parallel_slots`, so
    *  an unset ask is never null on the status side and comparing directly reloaded every pick. */
   parallelSlots: number | null;
-  /** `splitRatio` as the store holds it now, which is what the load sends. Never a config field:
-   *  `applyPerModelConfigToRuntime` clears it, so any remembered config asks for the default. */
+  /** Current store ratio, used only when a staged config does not state its own. */
   splitRatio: number[] | null;
   /** `normalizeSpeculativeType`, passed rather than imported: it lives on the chat runtime store,
    *  which reaches React, and this module is a leaf so the node suite can drive it. A copy here
@@ -182,12 +188,17 @@ export function residentSpeculativeNeedsRepair(
     | "spec_dflash_retry_pending"
     | "spec_dspark_sidecar_absent"
     | "spec_drafter_kind"
+    | "is_mlx"
   >,
   resolvedSpeculativeType: string | null,
   /** Whether the load carries a `gguf_path`, which the route sets from the identifier alone:
    *  `source.gguf_path if model_identifier.lower().endswith(".gguf") else None`. */
   sendsGgufPath = false,
 ): boolean {
+  // Every arm below is llama.cpp's; an identical MLX load dedupes.
+  if (status.is_mlx === true) {
+    return false;
+  }
   const mode = resolvedSpeculativeType ?? "auto";
   // Two arms that record no fallback reason, so the reason check below cannot see them. The probe
   // arm is not gated on a mode; the DFlash one is, as the backend gates it.
@@ -271,16 +282,36 @@ const SETTING_CHECKS: SettingCheck[] = [
       (c.mlxKvQuant ?? null) === normalizeMlxKvQuant(s.mlx_kv_quant_requested),
   },
   {
-    // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
-    // it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s, standing) =>
-      (standing.normalizeSpeculative(c.speculativeType) ??
-        standing.speculativeType) ===
-      (standing.normalizeSpeculative(s.speculative_type) ??
-        standing.speculativeType),
+    agrees: (c, s) =>
+      Boolean(c.mlxInt8Prefill) === (s.mlx_int8_prefill_requested === true),
   },
   {
+    // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
+    // it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s, standing) => {
+      const unset = resolveSpeculativeType(
+        null,
+        standing.speculativeType ?? "auto",
+        s.is_mlx === true,
+      );
+      const mode = (value: string | null | undefined) => {
+        const resolved = standing.normalizeSpeculative(value) ?? unset;
+        return s.is_mlx === true ? mlxSpeculativeMode(resolved) : resolved;
+      };
+      return mode(c.speculativeType) === mode(s.speculative_type);
+    },
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.specDraftModel ?? null) === (s.spec_draft_model ?? null),
+  },
+  {
+    mlxComparable: true,
     // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
     // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
     // as the status carries a count only when a depth-consuming load recorded an override.
@@ -458,29 +489,20 @@ const SETTING_CHECKS: SettingCheck[] = [
     },
   },
   {
-    // The split is placement the config cannot carry: the applier clears splitRatio, so a remembered
-    // config asks for the default distribution while a resident manual load may run a custom one.
-    //
-    // Judged on the mode the RESIDENT server ran, not the one this pick would send. Since
-    // unslothai/unsloth#10884 an auto tensor-parallel load reports a split of its own, chosen by
-    // the planner, and the store never holds one in auto -- applyInferenceStatusToStore nulls it
-    // unless the mode is manual. Comparing the two sides there compares a field the applier
-    // cleared against a server legitimately running the planner's ratio, and declines to adopt a
-    // resident model that is exactly what was asked for. A manual load's custom ratio is still a
-    // real disagreement, and a server too old to report its mode is still compared, so nothing
-    // that used to reload stops reloading.
-    //
-    // Only when the store is holding NO ratio, though. applyInferenceStatusToStore keeps
-    // prevState.splitRatio whenever a gpu-memory edit is pending, so a ratio set under Manual
-    // survives the switch to Auto, and the load path sends store.splitRatio in either mode. Since
-    // this PR the backend honours that ratio in auto too, so adopting on the mode alone would drop
-    // a placement change the user had made and the server would have applied.
+    // A remembered split is dropped with its GPU pick; auto loads may report a planner split unasked.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
-    agrees: (_c, s, standing) =>
-      (s.gpu_memory_mode === "auto" && standing.splitRatio == null) ||
-      sameList(standing.splitRatio, s.tensor_split),
+    agrees: (c, s, standing) => {
+      const split = c.tensorSplit !== undefined
+        ? reconcileTensorSplit(
+            c.tensorSplit,
+            c.selectedGpuIds,
+            standing.reconcileGpuIds(c.selectedGpuIds ?? null, c.selectedGpuIndexKind),
+          )
+        : standing.splitRatio;
+      return (s.gpu_memory_mode === "auto" && split == null) || sameList(split, s.tensor_split);
+    },
   },
   {
     // A managed override the backend would reject outright. Folding it into "no override" here would
@@ -610,10 +632,6 @@ export function residentRuntimeMatchesConfig(
     ) {
       return false;
     }
-  }
-  if (config.llamaCppConfig?.mode === "custom" || status.requested_llama_cpp_config?.mode === "custom") {
-    // Only the server can tell whether a custom config is unchanged (binary, resources).
-    return false;
   }
   const placementPreserved =
     // A virtualised Metal device pins every GGUF request to the CPU before either comparator runs, so

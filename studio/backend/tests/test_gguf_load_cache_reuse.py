@@ -730,6 +730,134 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / "mmproj-F16.gguf")
 
+    def test_companion_reuses_a_projector_at_the_hf_repo_root(self, hf_cache):
+        """A repo that publishes none falls back to a hand-added one (#9286)."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        with patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_a_published_projector_still_wins_over_the_repo_root(self, hf_cache):
+        """The fallback runs last, so a repo that ships one resolves as it did before."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = "/remote/image.gguf"):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == "/remote/image.gguf"
+
+    def test_a_dropped_fetch_of_a_published_projector_does_not_fall_back(self, hf_cache):
+        """The repo lists one, so None is a dropped fetch: no fallback."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
+
+        def _drop(*_args, **_kwargs):
+            raise OSError("connection reset")
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN, "mmproj-F16.gguf"]),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _drop),
+        ):
+            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
+
+    def test_a_stale_cached_name_does_not_pass_for_a_published_projector(self, hf_cache):
+        """Only an older snapshot names a projector; the live listing has none."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        _build_cache(hf_cache, REPO, {"mmproj-F16.gguf": 2}, snapshot_sha = "b" * 40)
+        projector = snap.parent.parent / "mmproj-kquant.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _gone(*_args, **_kwargs):
+            raise OSError("404 for a file this revision no longer publishes")
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _gone),
+        ):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_an_empty_resolved_projector_does_not_shadow_the_repo_root(self, hf_cache):
+        """A zero-byte resolved copy is not returned."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        empty = snap.parent.parent / "stale-mmproj.gguf"
+        empty.write_bytes(b"")
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = str(empty)):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_an_empty_published_projector_still_reaches_the_repo_root(self, hf_cache):
+        """A zero-byte listed copy falls back: the next Apply would not heal it."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        empty = snap.parent.parent / "published-mmproj.gguf"
+        empty.write_bytes(b"")
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _resolve_empty(
+            *_a,
+            outcome = None,
+            **_k,
+        ):
+            if outcome is not None:
+                outcome["listed_live"] = True
+                outcome["listed"] = True
+            return str(empty)
+
+        with patch.object(backend, "_download_companion_gguf", _resolve_empty):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_an_unanswered_listing_still_reaches_the_repo_root(self, hf_cache):
+        """An unanswered (offline) listing still falls back."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _unreachable(*_args, **_kwargs):
+            raise OSError("name resolution failed")
+
+        with patch("huggingface_hub.list_repo_files", _unreachable):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with patch(
+            "utils.models.model_config.detect_mmproj_file",
+            side_effect = AssertionError("cancelled lookup scanned the cache"),
+        ):
+            out = backend._download_mmproj(
+                hf_repo = REPO,
+                near_path = str(snap / MAIN),
+                cancel_event = cancel_event,
+            )
+
+        assert out is None
+
     def test_companion_finds_snapshot_through_hf_symlink(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {})
@@ -1063,7 +1191,11 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_eligibility",
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
+            "mlx_int8_prefill",
+            "mlx_int8_prefill_requested",
+            "mlx_int8_prefill_reason",
             "mlx_context_budget",
+            "spec_draft_model",
             "chat_template_override_reason",
             # Constant True: llama.cpp allocates the window it reports.
             "context_length_enforced",
@@ -1076,6 +1208,17 @@ class TestLoadHubDownloadExclusion:
             # Constant None: llama-server never serves an audio GGUF.
             "audio_family",
             "audio_options",
+            # None for the response validator to derive from is_audio and audio_type.
+            "audio_workflows",
+            "audio_reference_text",
+            "audio_required_inputs",
+            # Constant None: nor converts one.
+            "audio_options_by_workflow",
+            "audio_workflow_tasks",
+            "audio_server_task",
+            "audio_convert",
+            "audio_convert_route",
+            "audio_music",
         }
         unresolved = sorted(
             name

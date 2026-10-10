@@ -51,6 +51,7 @@ import {
 } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   CHAT_SETTINGS_WIDTH_MIN,
@@ -63,7 +64,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
-import { Edit03Icon, LayoutAlignRightIcon } from "@hugeicons/core-free-icons";
+import { Edit03Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -127,6 +128,7 @@ import {
 } from "./types/runtime";
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
+import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -625,9 +627,7 @@ export function ChatSettingsPanel({
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
-      toast.error(
-        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
-      );
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }, [applyLlamaUpdate, speculativeDrafterLabel]);
   const loadedEffectiveContext = customContextLength ?? loadedContextLength;
@@ -643,13 +643,19 @@ export function ChatSettingsPanel({
       // ngram-mod runs no drafter, so only the binary stand-down reaches it. Without
       // this the panel shows ngram selected, no speculation running, and no reason.
       speculativeType === "ngram");
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
+  const mlxSpecFallback =
+    !isExternalModel && loadedIsMlx && specFallbackReason != null
+      ? mlxSpecFallbackMessage(specFallbackReason, specDrafterKind)
+      : null;
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
     maxContextLength != null &&
     loadedEffectiveContext != null &&
     loadedEffectiveContext > maxContextLength;
-  const showLoadedDiagnostics = showSpecFallback || showContextVramWarning;
+  const showLoadedDiagnostics =
+    showSpecFallback || mlxSpecFallback != null || showContextVramWarning;
   const hasModelContent = showLoadedDiagnostics;
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,
@@ -1094,7 +1100,12 @@ export function ChatSettingsPanel({
 
   useEffect(() => () => promptObserverRef.current?.disconnect(), []);
 
-  const settingsScrollRef = useRef<HTMLDivElement>(null);
+  // Settings dissolve at whichever edge they run past, as on Images and Video.
+  const {
+    attach: attachSettingsScroll,
+    onScroll: onSettingsScroll,
+    className: settingsFadeClass,
+  } = useScrollFades();
 
   const settingsContent = (
     <>
@@ -1113,14 +1124,15 @@ export function ChatSettingsPanel({
             </span>
             <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
+                {/* Centred in the control row, as the header's open button is, so the toggle doesn't jump. */}
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="mt-[calc((var(--studio-chat-control-height,33px)-30px*var(--ui-space-scale,1))/2)] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
-                    icon={LayoutAlignRightIcon}
+                    icon={PanelRightIcon}
                     strokeWidth={1.75}
                     className="size-icon"
                   />
@@ -1139,8 +1151,12 @@ export function ChatSettingsPanel({
       </div>
 
       <div
-        ref={settingsScrollRef}
-        className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
+        ref={attachSettingsScroll}
+        onScroll={onSettingsScroll}
+        className={cn(
+          "run-settings-scroll panel-scroll-fade relative min-h-0 flex-1 overflow-y-auto",
+          settingsFadeClass,
+        )}
       >
       <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
         {(hasModelContent || modelConfig) && (
@@ -1154,10 +1170,10 @@ export function ChatSettingsPanel({
                       reason: specFallbackReason,
                       drafter: speculativeDrafterLabel,
                       isLocalGguf,
-                      updateAvailable: Boolean(llamaUpdateStatus?.update_available),
+                      updateAvailable: Boolean(llamaUpdateStatus?.llama.update_available),
                     })}
                   </p>
-                  {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                  {mtpUpdatable && llamaUpdateStatus?.llama.update_available && (
                     <Button
                       size="sm"
                       className="corner-squircle mt-2 h-7 text-ui-12"
@@ -1168,6 +1184,11 @@ export function ChatSettingsPanel({
                       {llamaUpdating ? "Updating..." : "Update llama.cpp"}
                     </Button>
                   )}
+                </div>
+              )}
+              {mlxSpecFallback && (
+                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
+                  <p>{mlxSpecFallback}</p>
                 </div>
               )}
               {showContextVramWarning && (
@@ -1681,6 +1702,7 @@ export function ChatSettingsPanel({
             <div className="flex flex-col gap-5">
               <AutoHealToolCallsToggle />
               <NudgeToolCallsToggle />
+              <DeduplicateToolCallsToggle />
               <ConfirmToolCallsToggle />
               <BypassPermissionsToggle />
               <MaxToolCallsSlider />
@@ -2019,8 +2041,38 @@ function NudgeToolCallsToggle() {
   );
 }
 
+function DeduplicateToolCallsToggle() {
+  const deduplicateToolCalls = useChatRuntimeStore(
+    (s) => s.deduplicateToolCalls,
+  );
+  const setDeduplicateToolCalls = useChatRuntimeStore(
+    (s) => s.setDeduplicateToolCalls,
+  );
+
+  return (
+    <div className="flex min-h-8 items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Deduplicate Tool Calls
+        </span>
+        <InfoHint>
+          Skips a tool call identical to one that already succeeded in this
+          response and tells the model it was a duplicate. Turn off to let a
+          repeated call run again.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={deduplicateToolCalls}
+        onCheckedChange={setDeduplicateToolCalls}
+      />
+    </div>
+  );
+}
+
 function ConfirmToolCallsToggle() {
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
@@ -2034,7 +2086,8 @@ function ConfirmToolCallsToggle() {
             When on, every local Unsloth tool call pauses for your approval
             before it runs (the "Ask for approval" level). When off, tool calls
             run without prompts inside the sandbox (the "Run automatically"
-            level).
+            level); on a computer without a working OS sandbox, risky Python
+            and Terminal calls still ask.
             Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
@@ -2047,7 +2100,14 @@ function ConfirmToolCallsToggle() {
       <Switch
         className="panel-switch shrink-0"
         checked={permissionMode === "ask"}
-        onCheckedChange={setConfirmToolCalls}
+        onCheckedChange={(checked) => {
+          if (checked) {
+            setConfirmToolCalls(true);
+          } else {
+            // Same as picking "Run automatically".
+            setPermissionMode("off");
+          }
+        }}
         disabled={permissionMode === "full"}
       />
     </div>
@@ -2071,7 +2131,7 @@ function BypassPermissionsToggle() {
       {/* Full width, styled like the panel selects/preset input. */}
       <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
       {permissionMode === "full" ? (
-        <span className="text-ui-11 text-bypass">
+        <span className="text-ui-11 text-muted-foreground">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}

@@ -159,6 +159,37 @@ def _markdown_incomplete(markdown: str, plain: str) -> bool:
     return markdown_letters < _PDF_INCOMPLETE_RATIO * plain_letters
 
 
+# JPEG2000 decodes at ~45 ms per megapixel; a logo stays far below this, a 300 dpi scan far above.
+_SCAN_IMAGE_MIN_PIXELS = 1_000_000
+
+
+def _image_covers_a_corner(doc, number: int) -> bool:
+    """True when a scan-sized raster image overlaps one of the 10pt page corners pymupdf4llm
+    renders to guess the background colour. That render decodes the whole image in one C call
+    holding the GIL (~2 s per JPEG2000 scan page), starving the server's event loop until the
+    desktop watchdog kills it (#13094)."""
+    try:
+        import fitz
+
+        page = doc[number]
+        r = page.rect
+        # 1pt slack: the render clip rounds outward to whole pixels.
+        corners = [
+            fitz.Rect(x - 1, y - 1, x + 11, y + 11)
+            for x in (r.x0, r.x1 - 10)
+            for y in (r.y0, r.y1 - 10)
+        ]
+        # Image boxes are unrotated; the probe clips page.rect, which is rotated.
+        boxes = [
+            fitz.Rect(info["bbox"]) * page.rotation_matrix
+            for info in page.get_image_info()
+            if info["width"] * info["height"] >= _SCAN_IMAGE_MIN_PIXELS
+        ]
+    except Exception:
+        return False
+    return any(box.intersects(corner) for box in boxes for corner in corners)
+
+
 def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
     i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
@@ -168,10 +199,28 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     except Exception:
         return None
     try:
-        kwargs = {"page_chunks": True, "show_progress": False}
-        if pages is not None:
-            kwargs["pages"] = list(pages)
-        chunks = pymupdf4llm.to_markdown(doc, **kwargs)
+        kwargs = {"page_chunks": True, "show_progress": False, "ignore_images": True}
+        indices = list(range(doc.page_count) if pages is None else pages)
+        scans = {i for i in indices if _image_covers_a_corner(doc, i)}
+        if not scans:
+            if pages is not None:
+                kwargs["pages"] = indices
+            chunks = pymupdf4llm.to_markdown(doc, **kwargs)
+        else:
+            # Background detection only where it is cheap. Each call still builds its header
+            # table from the whole (baked) document, so both halves agree on heading levels.
+            by_page = {}
+            for group, detect in (
+                ([i for i in indices if i not in scans], True),
+                ([i for i in indices if i in scans], False),
+            ):
+                if not group:
+                    continue
+                part = pymupdf4llm.to_markdown(doc, pages = group, detect_bg_color = detect, **kwargs)
+                if not isinstance(part, list) or len(part) != len(group):
+                    return None
+                by_page.update(zip(group, part))
+            chunks = [by_page[i] for i in indices]
     except Exception:  # noqa: BLE001 - never let Markdown extraction break ingestion
         logger.warning("pymupdf4llm extraction failed; using plain text", exc_info = True)
         return None
@@ -767,6 +816,11 @@ def _docx_mark_notes(document):
     return label_notes
 
 
+_HIGH_BYTES = bytes(range(0x80, 0x100))
+_ASCII_LETTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_HIGH_RUN = re.compile(rb"[\x80-\xff]+")
+
+
 def _declared_charset(data: bytes) -> str | None:
     # Lazy: tools is heavy, and only HTML that is not UTF-8 gets here.
     from ..inference.tools import _META_CHARSET_SCAN_BYTES, _sniff_meta_charset
@@ -802,6 +856,44 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     non_ascii = len(text) - len(text.encode("ascii", "ignore"))
     if non_ascii >= 2 * text.count("\ufffd"):
         return text
+    high = len(data) - len(data.translate(None, _HIGH_BYTES))
+    letters = len(data) - len(data.translate(None, _ASCII_LETTERS))
+    # A Latin-alphabet text never has half as many accented letters as plain ones; a few bytes say nothing.
+    if high >= 8 and 2 * high > letters:
+        from charset_normalizer import from_bytes
+
+        legacy = [
+            "cp1252",
+            "gb18030",
+            "cp950",
+            "cp932",
+            "cp949",
+            "cp1251",
+            "cp1253",
+            "cp1255",
+            "cp1256",
+        ]
+        results = from_bytes(data, cp_isolation = legacy)
+        match = results.best()
+        if match is not None:
+            guess = str(match)
+            # A tie is ambiguous ("ÜÖÄ" is also Cyrillic); a single-byte page decodes anything, so it needs
+            # language evidence and high-byte words, not lone accents ("À É È"); a CJK guess that paired
+            # no bytes is half-width katakana ("° ± µ").
+            tied = any(
+                other is not match
+                and (other.chaos, other.coherence) == (match.chaos, match.coherence)
+                for other in results
+            )
+            if match.encoding == "cp1252":
+                plausible = True
+            elif match.encoding in ("cp1251", "cp1253", "cp1255", "cp1256"):
+                in_words = sum(len(run) for run in _HIGH_RUN.findall(data) if len(run) >= 3)
+                plausible = match.coherence > 0 and 2 * in_words > high
+            else:
+                plausible = len(guess) < len(data)
+            if not tied and plausible:
+                return guess
     return data.decode("cp1252", errors = "replace")
 
 
@@ -819,10 +911,14 @@ def parse(path: str, *, want_images: bool = False):
         pages = _docx(path)
         return (pages, []) if want_images else pages
 
-    if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
+    if ext in (".html", ".htm", ".txt", ".md", ".markdown") or ext in config.SOURCE_TEXT_EXTS:
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
             raw = _decode_text(f.read(), html = is_html)
+        # NUL never occurs in source text; a binary under a source extension (Fortran .mod, binary .plist) would
+        # otherwise embed as mojibake.
+        if ext in config.SOURCE_TEXT_EXTS and "\x00" in raw:
+            raise ValueError(f"unsupported binary content in text file: {os.path.basename(path)}")
         # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".
         raw = raw.replace("\r\n", "\n").replace("\r", "\n")
         pages = _html(raw) if is_html else [_page(raw, None)]

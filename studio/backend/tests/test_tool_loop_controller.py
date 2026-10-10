@@ -37,7 +37,17 @@ from core.inference.tool_loop_controller import (
     tool_event_provenance,
 )
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
-from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server, execute_tool
+from core.inference.tools import (
+    ALL_TOOLS,
+    MAX_TOOL_TEXT_CHARS,
+    _mcp_specs_for_server,
+    _tool_text_notice_head,
+    cap_tool_text,
+    execute_tool,
+)
+
+
+_NOTICE = _tool_text_notice_head() + " the full output is not retained in model context.)"
 
 
 def test_append_deferred_nudges_merges_deduped_into_one_message():
@@ -252,6 +262,22 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert "already completed successfully" in completion_two.model_message()["content"]
     assert controller.force_final_answer
     assert controller.active_tools() == []
+
+
+def test_deduplication_can_be_disabled():
+    controller = ToolLoopController(
+        tools = [_tool("web_search"), _tool("python")],
+        deduplicate_tool_calls = False,
+    )
+    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
+    controller.record_result(first, "ok")
+
+    repeat = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_b"))
+    assert repeat.action == "execute"
+    assert repeat.should_execute
+    controller.record_result(repeat, "ok")
+    assert not controller.force_final_answer
+    _shared_setup_1(controller)
 
 
 def test_command_can_run_again_after_a_file_edit():
@@ -782,3 +808,190 @@ def test_tool_call_limit_nudge_keeps_long_arguments_whole():
         [{"function": {"name": "python", "arguments": json.dumps({"code": code})}}], 8
     )
     assert json.dumps({"code": code}) in notice["content"]
+
+
+def test_cap_tool_text_passes_results_at_or_under_the_floor_through_unchanged():
+    assert cap_tool_text("short result") == "short result"
+    exact = "x" * MAX_TOOL_TEXT_CHARS
+    assert cap_tool_text(exact) is exact
+
+
+def test_cap_tool_text_cuts_oversized_text_at_a_nearby_line_break_and_appends_notice():
+    line = "x" * 100 + "\n"
+    big = line * (MAX_TOOL_TEXT_CHARS // len(line) + 100)
+    out = cap_tool_text(big)
+
+    assert out.endswith(_NOTICE)
+    body = out[: -len(_NOTICE)]
+    assert big.startswith(body)
+    assert len(body) < MAX_TOOL_TEXT_CHARS
+    assert big[len(body)] == "\n"
+    assert len(out) <= MAX_TOOL_TEXT_CHARS + len(_NOTICE)
+
+
+def test_cap_tool_text_cuts_a_single_line_mid_line_when_no_break_is_near():
+    big = "y" * (MAX_TOOL_TEXT_CHARS + 500)
+    out = cap_tool_text(big)
+
+    assert out.endswith(_NOTICE)
+    body = out[: -len(_NOTICE)]
+    assert body == big[:MAX_TOOL_TEXT_CHARS]
+
+
+def test_text_that_merely_quotes_the_notice_is_still_capped():
+    big = "x" * (MAX_TOOL_TEXT_CHARS + 50_000) + _NOTICE
+    assert cap_tool_text(big) == "x" * MAX_TOOL_TEXT_CHARS + _NOTICE
+
+
+def test_an_oversized_result_is_capped_for_the_card_and_the_model_alike():
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    decision = controller.prepare_call(_call("terminal", {"command": "cat big.log"}))
+    huge = "line of output\n" * 400_000
+    completion = controller.record_result(decision, huge)
+
+    content = completion.tool_message()["content"]
+    assert completion.tool_end_payload()["result"] == content
+    assert content.endswith(_NOTICE)
+    body = content[: -len(_NOTICE)]
+    assert len(body) <= MAX_TOOL_TEXT_CHARS
+    assert huge.startswith(body)
+    assert huge[len(body)] == "\n"
+
+
+def test_the_cap_keeps_the_card_envelope_whole_and_off_the_model():
+    envelope = '\n__WEB_IMAGES__:[{"id": "a1b2c3d4e5f6", "title": "A chart", "domain": "example.com", "source": "https://example.com/a.png"}]'
+    huge = ("z" * (MAX_TOOL_TEXT_CHARS + 2000)) + envelope
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("web_search", {"url": "https://example.com/a"})), huge
+    )
+
+    capped = "z" * MAX_TOOL_TEXT_CHARS + _NOTICE
+    assert completion.tool_end_payload()["result"] == capped + envelope
+    assert completion.tool_message()["content"] == capped
+
+
+@pytest.fixture
+def _sandbox(tmp_path, monkeypatch):
+    import core.inference.tools as tools
+
+    records = tmp_path / "records"
+    records.mkdir()
+    workdir = tmp_path / "sandbox"
+    workdir.mkdir()
+    monkeypatch.setattr(tools, "_spill_records_dir", lambda: str(records))
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    return workdir
+
+
+def _spilled(
+    names,
+    result,
+    session_id = "chat-1",
+):
+    controller = ToolLoopController(
+        tools = [_tool(name) for name in names], session_id = session_id, thread_id = "t1"
+    )
+    return controller.record_result(
+        controller.prepare_call(_call(names[0], {"server": "x", "q": "y"})), result
+    )
+
+
+def test_an_oversized_result_is_spilled_and_the_model_is_told_how_to_search_it(_sandbox):
+    huge = "".join(f"row {i}\n" for i in range(60_000))
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+
+    notice = content[content.index(_tool_text_notice_head()) :]
+    path = notice.split("saved to ")[1].split(" ")[0]
+    assert (_sandbox / path).read_text() == huge
+    assert f"grep -n 'pattern' {path}" in notice
+    assert f"sed -n '1,200p' {path}" in notice
+    assert "open(" not in notice
+
+
+def test_the_hint_names_only_the_reader_the_model_has(_sandbox):
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    content = _spilled(["mcp__docs__dump", "python"], huge).tool_message()["content"]
+    assert "open('.unsloth_tool_output/" in content
+    assert "grep" not in content
+
+
+def test_a_cmd_only_windows_host_gets_findstr_with_a_backslash_path(_sandbox, monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setattr(tools, "_posix_tools_available", lambda: False)
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+    assert 'findstr /n "pattern" .unsloth_tool_output\\' in content
+    assert "grep" not in content
+
+
+def test_no_reader_tool_or_a_shared_sandbox_gets_the_plain_notice(_sandbox):
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    plain = "q" * MAX_TOOL_TEXT_CHARS + _NOTICE
+    assert _spilled(["mcp__docs__dump"], huge).tool_message()["content"] == plain
+    assert (
+        _spilled(["mcp__docs__dump", "terminal"], huge, session_id = None).tool_message()["content"]
+        == plain
+    )
+    assert not (_sandbox / ".unsloth_tool_output").exists()
+
+
+def test_model_message_leaves_an_already_capped_result_alone():
+    big = "a" * (MAX_TOOL_TEXT_CHARS + 10_000)
+    already = cap_tool_text(big)
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "ls"})), already
+    )
+
+    assert completion.tool_message()["content"] == already
+
+
+def test_model_message_keeps_the_error_nudge_on_an_oversized_error_result():
+    huge = "Error: " + "e" * (MAX_TOOL_TEXT_CHARS + 10_000)
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "ls"})), huge
+    )
+
+    assert completion.is_error
+    assert completion.tool_message()["content"] == cap_tool_text(huge) + TOOL_ERROR_NUDGE
+
+
+def test_the_hard_cap_is_tunable(monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setenv("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", "1000")
+    assert tools._env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000) == 1000
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 50_000)
+    completion = _spilled(["mcp__docs__dump"], "w" * 60_000)
+    content = completion.tool_message()["content"]
+    assert content == "w" * 50_000 + _tool_text_notice_head() + (
+        " the full output is not retained in model context.)"
+    )
+    assert "truncated to 50,000 chars" in content
+
+
+def test_the_spill_masks_studio_credentials_like_the_model_copy(_sandbox):
+    key = "sk-unsloth-" + "ab12" * 8
+    huge = f"token {key}\n" + "r\n" * (MAX_TOOL_TEXT_CHARS // 2 + 10)
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+
+    path = content.split("saved to ")[1].split(" ")[0]
+    spilled = (_sandbox / path).read_text()
+    assert key not in spilled and key not in content
+    assert spilled.startswith("token [redacted]")
+
+
+def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 1000)
+    already = tools._truncate("t\n" * 50_000, workdir = None)
+    assert len(already) > 1000
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "yes t"})), already
+    )
+    assert completion.tool_message()["content"] == already

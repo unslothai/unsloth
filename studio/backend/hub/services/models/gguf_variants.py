@@ -28,6 +28,7 @@ from hub.utils.hf_errors import hf_error_status, modelscope_missing
 from hub.utils.hf_tokens import cached_read_refused as hub_cached_read_refused
 from hub.utils.hf_tokens import call_with_anonymous_retry
 from hub.utils.hf_cache_state import (
+    cached_repo_ref_for_path,
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
     repo_cache_dir_name,
@@ -1094,16 +1095,27 @@ async def _audio_cpp_variants_answer(
     from core.inference import audio_cpp_files
 
     def _details():
+        companions = [
+            audio_cpp_models.resolve(c.id, c.variant, hf_token, network = network)
+            for c in model.companions
+        ]
+        companions_cached = all(
+            c is not None and audio_cpp_files.cached_files(c) is not None for c in companions
+        )
+        companion_bytes = sum(c.variant.size_bytes for c in companions if c is not None)
         rows = []
         for variant in model.variants:
-            downloaded = audio_cpp_files.cached_files(model.with_variant(variant)) is not None
+            downloaded = (
+                companions_cached
+                and audio_cpp_files.cached_files(model.with_variant(variant)) is not None
+            )
             rows.append(
                 GgufVariantDetail(
                     filename = variant.main_file,
                     quant = variant.key,
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
-                    download_size_bytes = variant.size_bytes,
+                    download_size_bytes = variant.size_bytes + companion_bytes,
                     downloaded = downloaded,
                 )
             )
@@ -1143,9 +1155,12 @@ async def get_gguf_variants_answer(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
+    access_options = {"offline": True} if offline else {}
     if local_path:
         if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, local_path)
+            await asyncio.to_thread(
+                account_access.require_model_access, local_path, **access_options
+            )
     hf_token = account_access.account_hf_token(hf_token)
     if not local_path:
         audio_cpp_answer = await _audio_cpp_variants_answer(repo_id, hf_token, offline)
@@ -1153,11 +1168,11 @@ async def get_gguf_variants_answer(
             return audio_cpp_answer
     if account_access.managed_account():
         try:
-            await asyncio.to_thread(account_access.require_model_access, repo_id)
+            await asyncio.to_thread(account_access.require_model_access, repo_id, **access_options)
         except HTTPException:
             # No grant exists before the first download, so for a private repo the caller's own
-            # token proves Hub access instead. A cache-only request without a token needs the grant.
-            if not isinstance(hf_token, str) or not hf_token.strip():
+            # token proves Hub access instead. Offline requests need an existing grant or public proof.
+            if offline or not isinstance(hf_token, str) or not hf_token.strip():
                 raise
             if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
                 raise
@@ -1596,6 +1611,16 @@ async def get_gguf_variants_answer(
                 )
                 return _locally_resolved(response, snapshot) if offline else response
             if local_path and is_local_path(local_path):
+                # A named Hub snapshot remains a cache read, even on the filesystem fallback.
+                cached_ref = cached_repo_ref_for_path(local_path)
+                if cached_ref is not None and hub_cached_read_refused(
+                    hf_token,
+                    repo_id = cached_ref[0],
+                    repo_type = cached_ref[1],
+                    is_cached = lambda: True,
+                    offline = bool(offline),
+                ):
+                    raise HTTPException(status_code = 404, detail = "Model not found")
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
                     answered_from[0] = local_path

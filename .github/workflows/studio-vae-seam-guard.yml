@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Runs test_vae_tile_geometry.py on CPU with the pinned diffusers, which Backend CI does not install
+# (there the guard would only skip).
+
+name: Studio VAE seam guard
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/inference/**'
+      - 'studio/backend/requirements/diffusers-*.txt'
+      - 'studio/backend/requirements/studio.txt'
+      - 'studio/backend/tests/test_vae_tile_geometry.py'
+      - 'studio/backend/tests/fixtures/vae_tile_configs.json'
+      - '.github/workflows/studio-vae-seam-guard.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'studio/backend/core/inference/**'
+      - 'studio/backend/requirements/diffusers-*.txt'
+      - 'studio/backend/requirements/studio.txt'
+      - 'studio/backend/tests/test_vae_tile_geometry.py'
+      - 'studio/backend/tests/fixtures/vae_tile_configs.json'
+      - '.github/workflows/studio-vae-seam-guard.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Unique per commit on main, so a merge burst cannot cancel a main run; superseded PR pushes are cancelled.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  seam-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (CPU only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            'torch>=2.4,<2.11'
+          pip install -r studio/backend/requirements/studio.txt
+          # As Studio installs it: the release, then the main commit only while that line is uncommented.
+          pip install -r studio/backend/requirements/diffusers-pin.txt
+          if grep -Eq '^[[:space:]]*[^#[:space:]]' studio/backend/requirements/diffusers-main.txt; then
+            pip install -r studio/backend/requirements/diffusers-main.txt
+          fi
+          pip install pytest pytest-timeout
+
+      - name: Seam guard
+        working-directory: studio/backend
+        run: python -m pytest tests/test_vae_tile_geometry.py -q -rxXs --tb=short --timeout=600

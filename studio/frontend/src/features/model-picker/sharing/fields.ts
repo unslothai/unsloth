@@ -46,10 +46,12 @@ export type SharedConfigKey = Exclude<
   | "tensorSplit"
   | "maxSeqLength"
   | "mlxKvQuant"
+  | "mlxInt8Prefill"
   | "engine"
   | "enginePrecision"
   | "engineParallelism"
-  | "llamaCppConfig"
+  // A named drafter can be a local directory.
+  | "specDraftModel"
 >;
 type Field = { label: string; valid: Validator; error?: string };
 

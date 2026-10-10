@@ -29,12 +29,13 @@ def _reload(monkeypatch, value):
 @pytest.mark.parametrize(
     "value, expected",
     [
-        (None, config.SUPPORTED_UPLOAD_EXTS),
-        ("", config.SUPPORTED_UPLOAD_EXTS),
+        (None, config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS),
+        ("", config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS),
         (" .MD , .Markdown ", {".md", ".markdown"}),
         ("md,pdf", {".md", ".pdf"}),
-        (".md,.py", {".md"}),
-        (".py,.exe", config.SUPPORTED_UPLOAD_EXTS),
+        (".md,.exe", {".md"}),
+        (".py,.exe", {".py"}),
+        (".exe", config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS),
     ],
 )
 def test_upload_exts_env(monkeypatch, value, expected):

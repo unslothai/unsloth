@@ -8,6 +8,7 @@
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
   AUDIO_CPP_MODELS,
+  type AudioCppModel,
   type AudioCppTask,
   audioCppDisplayName,
 } from "../../../audio/audio-cpp-catalog.ts";
@@ -177,7 +178,21 @@ const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
   tts: "Text-to-speech",
   music: "Text-to-music",
   asr: "Speech-to-text",
+  sep: "Source separation",
 };
+
+function audioGgufDescription(model: AudioCppModel): string {
+  const workflows = model.workflows;
+  if (!workflows || workflows.includes("speak")) {
+    return AUDIO_GGUF_DESCRIPTIONS[model.task];
+  }
+  const clones = workflows.includes("clone");
+  const converts = workflows.includes("convert");
+  if (clones && converts) return "Voice cloning and conversion";
+  if (converts) return "Voice conversion";
+  if (clones) return "Voice cloning";
+  return AUDIO_GGUF_DESCRIPTIONS[model.task];
+}
 
 // Recommended audio GGUFs the backend runs on its audio runtime. They are plain GGUF rows, so the
 // quant ladder, fit and downloads work as for any other; the backend routes them by GGUF header.
@@ -186,7 +201,7 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
   AUDIO_CPP_MODELS.filter((model) => tasks.includes(model.task)).map((model) => ({
     canonicalId: model.id,
     displayName: audioCppDisplayName(model.id),
-    description: AUDIO_GGUF_DESCRIPTIONS[model.task],
+    description: audioGgufDescription(model),
     scope: "audio",
     task: model.task === "asr" ? "stt" : "tts",
     artifacts: [gguf(model.id)],
@@ -236,6 +251,22 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
       }),
       gguf("unsloth/Qwen-Image-2.1-GGUF"),
+    ],
+  },
+  {
+    // A different denoiser with its own FP8/INT8 checkpoints; no unsloth mirror, so the vendor pipeline is the row.
+    canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
+    displayName: "Qwen-Image 2.1 Turbo",
+    description: "Text-to-image and image editing in 8 steps",
+    scope: "image",
+    // Same reason as 2.1's alias: the int8 half of the prequant repo has no artifact row.
+    aliases: ["unsloth/Qwen-Image-2.1-Turbo-FP8"],
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
+        totalParams: 7115124736,
+        prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+      }),
     ],
   },
   {
@@ -658,7 +689,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  ...audioGgufGroups(["tts", "music"]),
+  ...audioGgufGroups(["tts", "music", "sep"]),
   // Llasa is deliberately absent: it speaks XCodec2 (65,536 <|s_N|> tokens), which is in neither
   // _AUDIO_TOKEN_PATTERNS nor AudioCodecManager, so a curated row loaded then failed at generation.
   // Training still works (unsloth_Llasa-3B.yaml). Re-add both rows with an xcodec2 decoder.

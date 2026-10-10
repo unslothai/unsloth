@@ -70,3 +70,14 @@ export const useTransformersUpgradeDialogStore = {
     };
   },
 };
+
+// Same rule as lib/upgrade-dialog-actions.ts: the PyPI release, else transformers main.
+export function upgradeInstallVersion(upgrade) {
+  if (upgrade?.supported_in_pypi && upgrade?.pypi_version) {
+    return upgrade.pypi_version;
+  }
+  if (upgrade?.supported_in_main && upgrade?.main_version) {
+    return upgrade.main_version;
+  }
+  return null;
+}

@@ -258,6 +258,10 @@ function isExternalModelId(value: unknown) {
 function resolvePreserveThinkingOnLoad(resp: any) {
   return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
 }
+// Verbatim from lib/speculative-modes.ts, so a load asks for the mode production would.
+function resolveSpeculativeType(chosen: string | null, standing: string, isMlx: boolean) {
+  return chosen ?? (isMlx && standing === "ngram" ? "auto" : standing);
+}
 
 function resolveInferenceCheckpointId(status: any) {
   return status.active_model
@@ -551,11 +555,6 @@ function reasoningCapsFromLoad(_x: any) { return {}; }
 function resolveToolsEnabledOnLoad(_x: any) { return {}; }
 function loadedGpuMemoryFields(_x: any) { return {}; }
 function resolveLoadedSpeculativeSettings(_x: any) { return {}; }
-function managedGpuMemoryFields(_x: any) { return {}; }
-function managedKvCacheFields(_x: any) { return {}; }
-function managedSpeculativeSettings(_x: any) { return {}; }
-function llamaCppConfigPayload(c: any) { return c === undefined ? {} : { llama_cpp_config: c }; }
-function loadedLlamaCppConfigFields(r: any, sent: any) { const c = r.requested_llama_cpp_config ?? sent; return { llamaCppConfig: c, loadedLlamaCppConfig: c ?? null, llamaCppConfigSummary: r.llama_cpp_config_summary ?? null }; }
 function isMultimodalResponse(_x: any) { return false; }
 
 async function listCachedGguf(signal?: any) {
