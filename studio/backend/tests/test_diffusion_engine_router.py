@@ -476,9 +476,7 @@ def test_the_prediction_agrees_with_the_selection_about_an_incapable_build(monke
 
 
 def test_the_prediction_counts_the_upgrade_a_load_performs_for_a_moved_pin(monkeypatch, tmp_path):
-    # #12470: a resident managed build made for an older pin (or the old upstream fallback) cannot
-    # run qwen-image-2.1, but the load replaces it with the current pin before selecting. Predicting
-    # diffusers there stages the dense text encoder for a load that goes native.
+    # #12470: the load replaces a moved-pin build before selecting, so the plan must not stage diffusers.
     _set_device(monkeypatch, "cpu")
     _set_runnable(monkeypatch)
     old = _write_binary(tmp_path, "sd-cli-old4", marker = False)
@@ -489,6 +487,5 @@ def test_the_prediction_counts_the_upgrade_a_load_performs_for_a_moved_pin(monke
     fam = detect_family("qwen-image-2.1")
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
     assert moved == [old]
-    # No install allowed: the load keeps the old build and falls back, so the plan must too.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS

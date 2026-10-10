@@ -44,7 +44,7 @@ UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # the architecture (upstream 137f7409bb, 2026-09-20). The u13b9d92 build this replaces is from
 # 2026-08-09 and cannot load it at all, so the native route for that family is only real from here.
 DEFAULT_TAG = "master-813-bfbef5b-u1d02858"
-# Upstream release for hosts the mirror does not build at DEFAULT_TAG (Windows CUDA / ROCm, Linux ROCm). The pin's own base, master-813, predates Qwen-Image-2.1 (upstream 137f740, master-883) and its reference-alpha fix (e112ab5, master-896), so falling back to it installs a build the router then refuses for that family. Must carry every sd_cpp_arch_marker / sd_cpp_edit_marker the families declare.
+# Upstream fallback for hosts the mirror does not build at DEFAULT_TAG (Windows CUDA / ROCm, Linux ROCm): the pin's base, master-813, predates Qwen-Image-2.1 (master-883) and its reference-alpha fix (master-896). Must carry every sd_cpp_arch_marker / sd_cpp_edit_marker the families declare.
 UPSTREAM_FALLBACK_TAG = "master-929-3f8527a"
 
 REPO = DEFAULT_REPO

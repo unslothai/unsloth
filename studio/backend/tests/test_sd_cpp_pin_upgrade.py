@@ -191,8 +191,7 @@ def test_an_old_record_holding_the_upstream_form_of_the_pin_is_current(tmp_path,
 def test_the_old_upstream_fallback_for_the_current_pin_is_upgraded(
     tmp_path, monkeypatch, with_requested_tag
 ):
-    # #12470: Windows CUDA hosts hold leejet's master-813 under the current pin, which cannot run
-    # Qwen-Image-2.1; nothing else would ever replace it.
+    # #12470: leejet master-813 under the current pin cannot run Qwen-Image-2.1 and was never replaced.
     record = {
         "accelerator": "cuda",
         "repo": sdmod.UPSTREAM_FALLBACK_REPO,
@@ -218,7 +217,6 @@ def test_the_old_upstream_fallback_for_the_current_pin_is_upgraded(
     monkeypatch.setattr(sdmod, "install", _install)
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
     assert cli.read_bytes() == b"new-build"
-    # The new fallback is current: no reinstall on the next load.
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
     assert len(installs) == 1
