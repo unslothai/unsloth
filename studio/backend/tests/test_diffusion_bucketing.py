@@ -29,6 +29,7 @@ from core.training.diffusion_train_common import (
     bucket_groups,
     plan_image_canvases,
     resolve_bucketing,
+    resolve_train_steps,
     train_recipe_overrides,
 )
 from core.training.diffusion_train_extras import (
@@ -191,6 +192,25 @@ def test_canvases_follow_each_image(tmp_path):
     assert set(bucket_groups(canvases)) == set(canvases)
     off = dataclasses.replace(cfg, bucketing = False)
     assert plan_image_canvases(off, paths) == (None, None)
+
+
+def test_an_epoch_covers_every_bucket_batch(tmp_path):
+    # Three buckets of three with batch 2: each bucket pads its last batch within itself, so a full pass is 6 batches,
+    # where ceil(9 / 2) = 5 steps would end the epoch with some images unseen.
+    paths = [
+        _img(tmp_path / f"{kind}{i}.png", w, h)
+        for kind, (w, h) in {"p": (600, 900), "l": (900, 600), "s": (700, 700)}.items()
+        for i in range(3)
+    ]
+    cfg = _cfg(tmp_path, num_epochs = 1, train_batch_size = 2).normalized()
+    assert len(bucket_groups(plan_image_canvases(cfg, paths)[0])) == 3
+    assert resolve_train_steps(cfg, len(paths), paths) == 6
+    assert (
+        resolve_train_steps(dataclasses.replace(cfg, gradient_accumulation_steps = 4), 9, paths) == 2
+    )
+    # Unbucketed (or no paths) keeps ceil(N / (batch x accumulation)).
+    assert resolve_train_steps(dataclasses.replace(cfg, bucketing = False), 9, paths) == 5
+    assert resolve_train_steps(cfg, 9) == 5
 
 
 def test_plan_collapses_variants_without_crop_room():

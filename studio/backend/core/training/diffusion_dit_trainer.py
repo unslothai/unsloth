@@ -1918,7 +1918,11 @@ def run_dit_lora_training(
     )
     # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every downstream
     # read agrees.
-    cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
+    cfg = replace(
+        cfg,
+        train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
+        num_epochs = 0,
+    )
     # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
     # rather than the generic default the config carries.
     identity = identity_for_config(
