@@ -167,3 +167,29 @@ test("an edit leaves unchanged mappings out of the update", () => {
   assert.deepEqual(changedImageMappings(saved, edited), edited);
   assert.deepEqual(changedImageMappings([], []), undefined);
 });
+
+test("any mapping edit on a legacy server sends one row per tool", () => {
+  const saved = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "data_url" },
+    { tool: "search_by_file", field: "filePath", encoding: "base64" },
+    { tool: "search_by_url", field: "url", encoding: "base64" },
+  ] as const;
+  assert.deepEqual(
+    changedImageMappings(
+      saved,
+      withImageField(saved, { tool: "lookup", field: "image" }),
+    ),
+    [
+      saved[0],
+      saved[2],
+      { tool: "lookup", field: "image", encoding: "base64" },
+    ],
+  );
+  assert.deepEqual(
+    changedImageMappings(
+      saved,
+      saved.filter((m) => m.tool !== "search_by_url"),
+    ),
+    [saved[0]],
+  );
+});
