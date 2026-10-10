@@ -23,6 +23,17 @@ VOCAB = 64
 DEVICE = "cuda" if has_real_cuda() else "cpu"
 
 
+@pytest.fixture(autouse = True)
+def _stock_causal_lm_loss(monkeypatch):
+    """An earlier FastModel.from_pretrained on this worker points LOSS_MAPPING at Unsloth's Triton CE, which a
+    CPU forward cannot run; these tests check routing, so each starts from the stock loss."""
+    loss_utils = pytest.importorskip("transformers.loss.loss_utils")
+    stock = loss_utils.ForCausalLMLoss
+    for key, fn in list(loss_utils.LOSS_MAPPING.items()):
+        if getattr(fn, "__name__", "") == "UnslothForCausalLMLoss":
+            monkeypatch.setitem(loss_utils.LOSS_MAPPING, key, stock)
+
+
 def _tiny_config():
     text = dict(
         vocab_size = VOCAB,
