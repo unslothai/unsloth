@@ -3369,10 +3369,16 @@ class SdCppDiffusionBackend:
             into = merged.setdefault(fetch_repo[repo], [])
             into.extend(n for n in names if n not in into)
         by_repo = merged
-        # A cache-only load of a named variant reads the variant's model_index.json for its grid
-        # (_base_sample_sigmas); planned with the assets so locality never approves a pick that would silently fall
-        # back to sd.cpp's own schedule.
-        grid_base = None if base_repo else named_variant_base(fam, repo_id, gguf_filename)
+        # A cache-only load of a named variant, by its name or an explicit base, reads that variant's model_index.json
+        # for its grid (_base_sample_sigmas); planned with the assets so locality never approves a pick that would
+        # silently fall back to sd.cpp's own schedule.
+        if base_repo:
+            explicit = resolve_base_repo(fam, base_repo)
+            variants = {b.lower() for b in getattr(fam, "named_variant_bases", ()) or ()}
+            # The id as given: that is the cache entry the load reads.
+            grid_base = explicit if explicit.lower() in variants else None
+        else:
+            grid_base = named_variant_base(fam, repo_id, gguf_filename)
         if fam.name in _SAMPLE_SIGMAS_FAMILIES and grid_base:
             names = by_repo.setdefault(grid_base, [])
             if "model_index.json" not in names:

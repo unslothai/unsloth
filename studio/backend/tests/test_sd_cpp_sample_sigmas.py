@@ -251,6 +251,8 @@ def test_a_local_turbo_gguf_without_a_card_takes_the_named_grid(monkeypatch):
         (GGUF, None, True),
         ("qwen_image_2.1_Q4_K_M.gguf", None, False),
         (GGUF, "Qwen/Qwen-Image-2.1", False),
+        ("model-Q4_K_M.gguf", "Qwen/Qwen-Image-2.1-Turbo", True),
+        ("model-Q4_K_M.gguf", "qwen/qwen-image-2.1-turbo", True),
     ],
 )
 def test_the_native_plan_stages_a_named_variants_index(monkeypatch, gguf, base_repo, staged):
@@ -269,7 +271,7 @@ def test_the_native_plan_stages_a_named_variants_index(monkeypatch, gguf, base_r
         DiffusionBackend, "_hub_file_is_loadable", staticmethod(lambda *a, **k: False)
     )
     plan = b.download_plan(repo, gguf_filename = gguf, base_repo = base_repo, model_kind = "gguf")
-    index = [e for e in plan["entries"] if e["repo_id"] == "Qwen/Qwen-Image-2.1-Turbo"]
+    index = [e for e in plan["entries"] if e["repo_id"].lower() == "qwen/qwen-image-2.1-turbo"]
     assert (
         (index == [{**index[0], "files": ["model_index.json"], "checkpoint": False}])
         if staged
