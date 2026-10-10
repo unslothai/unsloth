@@ -98,6 +98,14 @@ def test_the_hard_cap_never_cuts_below_the_saved_cap(monkeypatch):
     assert tools._hard_cap_chars() == 54000
 
 
+def test_a_lowered_setting_does_not_lower_the_hard_cap_for_other_tools(monkeypatch):
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 10000)
+    limit.set_max_chars(4000)
+    assert tools._hard_cap_chars() == 20000
+    page = "x" * 15000
+    assert tools.cap_tool_text(page) == page
+
+
 @pytest.mark.parametrize("value, expected", [("32000", 32000), ("abc", 16000), ("-5", 16000)])
 def test_a_set_environment_variable_decides_as_before(monkeypatch, value, expected):
     limit.set_max_chars(64000)

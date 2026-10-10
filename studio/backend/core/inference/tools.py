@@ -21196,7 +21196,7 @@ _TOOL_TEXT_READERS = frozenset({"terminal", "python"})
 def _hard_cap_chars() -> int:
     """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
     spilled) passes through with its own spill reference intact."""
-    return max(MAX_TOOL_TEXT_CHARS, _tool_result_max_chars() + 4_000)
+    return max(MAX_TOOL_TEXT_CHARS, max(_MAX_OUTPUT_CHARS, _tool_result_max_chars()) + 4_000)
 
 
 def _tool_text_notice_head() -> str:
