@@ -66,6 +66,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
+import { loadTrayIconVisible, updateTrayIconVisible } from "../api/tray-icon";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
 import {
@@ -254,6 +255,13 @@ export function GeneralTab() {
     save: updateCloseToTray,
     loadError: t("settings.general.startup.loadError"),
     saveError: t("settings.general.startup.closeToTraySaveError"),
+  });
+  const trayIconSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadTrayIconVisible,
+    save: updateTrayIconVisible,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.menuBarIconSaveError"),
   });
 
   const draftRef = useRef(draftToken);
@@ -658,6 +666,28 @@ export function GeneralTab() {
                 }
                 onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
               />
+            </SettingsRow>
+          ) : null}
+
+          {trayIconSetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.menuBarIcon")}
+              description={t("settings.general.startup.menuBarIconDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={trayIconSetting.value ?? false}
+                  disabled={
+                    trayIconSetting.value === null || trayIconSetting.saving
+                  }
+                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
+                />
+                {trayIconSetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {trayIconSetting.error}
+                  </span>
+                ) : null}
+              </div>
             </SettingsRow>
           ) : null}
         </SettingsSection>
