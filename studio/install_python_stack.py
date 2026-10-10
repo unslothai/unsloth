@@ -4619,7 +4619,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     )
 
 
-def _ensure_xpu_torch() -> "bool | None":
+def _ensure_xpu_torch(probe_only: bool = False) -> "bool | None":
     """Install XPU torch when an XPU pin, or install.sh's Intel GPU route, is not what the venv has.
 
     Counterpart to _ensure_cpu_torch for Intel. `unsloth studio update` runs setup.sh, never
@@ -4628,7 +4628,8 @@ def _ensure_xpu_torch() -> "bool | None":
 
     Windows is excluded on purpose: setup.ps1 owns torch there and already installs the XPU
     trio itself, so acting here would fight it. macOS has no XPU at all. False: a repair is
-    required but the mirror cannot express the XPU index; the caller aborts.
+    required but the mirror cannot express the XPU index; the caller aborts. ``probe_only``
+    answers True where a repair (or that False) would happen, and installs nothing.
     """
     if NO_TORCH or IS_MACOS or IS_WINDOWS:
         return
@@ -4642,9 +4643,10 @@ def _ensure_xpu_torch() -> "bool | None":
             or (_TORCH_BACKEND or _RECORDED_TORCH_TAG) != "xpu"
         ):
             return
-        pin = _pytorch_whl_leaf_url("xpu")
-        if pin is None:
+        # A recorded XPU flavor yields to an NVIDIA or AMD GPU added since.
+        if not _TORCH_BACKEND and (_has_usable_nvidia_gpu() or _has_rocm_gpu()):
             return
+        pin = _pytorch_whl_leaf_url("xpu")  # None: the mirror cannot express it; False below
         _source = "this install selected XPU torch for its Intel GPU"
 
     # Un-importable either way installs from the pin below. One shared probe bounds it.
@@ -4656,6 +4658,8 @@ def _ensure_xpu_torch() -> "bool | None":
         # reinstalling never fixes a driver -- it would just re-download the trio twice per
         # update, since this helper runs at two repair points.
         if _xpu_wheel_supported_on_disk():
+            if probe_only:
+                return
             _safe_print(
                 _red(
                     "   torch did not respond in time; the installed XPU build is supported, "
@@ -4678,6 +4682,8 @@ def _ensure_xpu_torch() -> "bool | None":
     else:
         _why = "torch cannot import"
 
+    if probe_only:
+        return True
     if pin is None:
         return False
     _safe_print(
@@ -5837,6 +5843,18 @@ def _cuda_torch_needs_dependency_pass() -> bool:
     """
     try:
         return bool(_ensure_cuda_torch(probe_only = True))
+    except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
+        return False
+
+
+def _xpu_torch_needs_dependency_pass() -> bool:
+    """True when only the dependency pass can put back the XPU torch this install chose.
+
+    Answered by _ensure_xpu_torch in probe mode, as _cuda_torch_needs_dependency_pass is.
+    Never installs, and fails closed.
+    """
+    try:
+        return bool(_ensure_xpu_torch(probe_only = True))
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
         return False
 
@@ -12901,6 +12919,9 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)
+    if sys.argv[1:] == ["--xpu-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _xpu_torch_needs_dependency_pass() else 1)
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)

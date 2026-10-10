@@ -115,6 +115,10 @@ cell "Arc + NVIDIA -> cu128" cu128 "$_NV"
 cell "Arc + family pin cpu -> cpu" cpu "" UNSLOTH_TORCH_INDEX_FAMILY=cpu
 cell "Arc + opt-out -> cpu" cpu "" UNSLOTH_DISABLE_XPU_AUTO=1
 cell "Arc + declared AMD arch -> cpu" cpu "" UNSLOTH_ROCM_GFX_ARCH=gfx1100
+cell "Arc + emptied ZE_AFFINITY_MASK -> cpu" cpu "" ZE_AFFINITY_MASK=
+cell "Arc + ZE_AFFINITY_MASK=-1 -> cpu" cpu "" ZE_AFFINITY_MASK=-1
+cell "Arc + ZE_AFFINITY_MASK=0 -> xpu" xpu "" ZE_AFFINITY_MASK=0
+cell "Arc + emptied mask + xpu pin -> xpu" xpu "" ZE_AFFINITY_MASK= UNSLOTH_TORCH_INDEX_FAMILY=xpu
 _info=$(env -i HOME="$_TMP" PATH="$_TOOLS" bash -c ". '$_FUNC_FILE'; _ARCH=x86_64; get_torch_index_url" 2>&1 >/dev/null)
 assert_contains "route prints the device and the opt-out" "$_info" "Intel GPU (0x56a0) detected"
 assert_contains "route names UNSLOTH_DISABLE_XPU_AUTO" "$_info" "UNSLOTH_DISABLE_XPU_AUTO=1"

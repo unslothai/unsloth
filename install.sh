@@ -4845,6 +4845,10 @@ _intel_xpu_gpu_id() {
 _intel_xpu_auto_gpu_id() {
     [ "${UNSLOTH_DISABLE_XPU_AUTO:-0}" = 1 ] && return 1
     [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && return 1
+    # An emptied ZE_AFFINITY_MASK hides every Intel device, as Studio reads it.
+    if [ -n "${ZE_AFFINITY_MASK+x}" ]; then
+        case "$(printf '%s' "$ZE_AFFINITY_MASK" | tr -d '[:space:]')" in ''|-1) return 1 ;; esac
+    fi
     _amd_hardware_corroborated && return 1
     _intel_xpu_gpu_id
 }
