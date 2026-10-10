@@ -126,6 +126,20 @@ def test_own_template_replaces_an_override_that_silently_drops_tools(monkeypatch
     assert tokenizer.chat_template == OWN
 
 
+def test_sparse_tool_catalog_is_included_in_the_template_probe(monkeypatch):
+    tokenizer = _OwnToolTemplateTokenizer()
+    dataset_info = _dataset_info(_plain_convo, rows = 40)
+    dataset_info["dataset"] = dataset_info["dataset"].add_column(
+        "tools", [[_WEATHER] if index == 37 else [] for index in range(40)]
+    )
+
+    result = _format(dataset_info, tokenizer, monkeypatch)
+
+    assert result["success"] is True
+    assert result["dataset"][37]["text"].startswith("[tools]")
+    assert tokenizer.chat_template == OWN
+
+
 def test_override_is_kept_when_neither_template_renders(monkeypatch):
     tokenizer = _TemplatedTokenizer()
     broken = lambda index: [{"role": "broken", "content": f"row {index}"}]

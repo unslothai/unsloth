@@ -263,6 +263,19 @@ def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
                 sampled.append((conversation, _row_tools(row.get("tools"))))
             if len(sampled) >= limit:
                 break
+        if (
+            n_rows > limit
+            and not any(tools for _, tools in sampled)
+            and "tools" in (getattr(dataset, "column_names", None) or ())
+        ):
+            for index, value in enumerate(dataset["tools"]):
+                tools = _row_tools(value)
+                if not tools:
+                    continue
+                conversation = dataset[index].get(chat_column)
+                if conversation:
+                    sampled.append((conversation, tools))
+                    break
     except Exception:
         return []
     return sampled
