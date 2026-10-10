@@ -131,6 +131,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             page_char_start INTEGER,
             page_char_end INTEGER,
             token_count INTEGER,
+            whole_document_token_count INTEGER,
             kind TEXT NOT NULL DEFAULT 'text',
             pdf_regions_json TEXT
         );
@@ -258,6 +259,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chunks ADD COLUMN page_char_start INTEGER")
     if "page_char_end" not in chunk_cols:
         conn.execute("ALTER TABLE chunks ADD COLUMN page_char_end INTEGER")
+    if "whole_document_token_count" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN whole_document_token_count INTEGER")
     # Partial, so it is empty until a chat is compacted and the MAX() that allocates the next ordinal is
     # an index probe rather than a scan.
     conn.execute(

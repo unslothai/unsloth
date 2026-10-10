@@ -216,6 +216,11 @@ def _row_token_count(row) -> int:
     return max(1, len(row["text"] or "") // 4)
 
 
+def _whole_document_token_count(row) -> int:
+    token_count = _row_value(row, "whole_document_token_count")
+    return max(0, int(token_count)) if token_count is not None else _row_token_count(row)
+
+
 def search_knowledge_base_with_sources(
     *,
     query: str,
@@ -342,7 +347,7 @@ def whole_document_context(
         conn.close()
     if not rows:
         return None
-    total = sum(_row_token_count(r) for r in rows)
+    total = sum(_whole_document_token_count(r) for r in rows)
     if total > max_tokens:
         return None
 
