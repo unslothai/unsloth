@@ -973,7 +973,11 @@ def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(
 @pytest.mark.parametrize(
     "repo, gguf, expected",
     [
-        ("someone/Qwen-Image-2.1-GGUF", "qwen-image-2.1-turbo-Q4_K_M.gguf", "Qwen/Qwen-Image-2.1-Turbo"),
+        (
+            "someone/Qwen-Image-2.1-GGUF",
+            "qwen-image-2.1-turbo-Q4_K_M.gguf",
+            "Qwen/Qwen-Image-2.1-Turbo",
+        ),
         ("someone/Qwen-Image-2.1-Turbo-GGUF", "model-Q4_K_M.gguf", "Qwen/Qwen-Image-2.1-Turbo"),
         # The selected file decides: a plain 2.1 file in a Turbo-named repo or folder keeps 2.1.
         ("someone/Qwen-Image-2.1-Turbo-GGUF", "qwen_image_2.1_Q4_K_M.gguf", None),
@@ -983,7 +987,6 @@ def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(
 )
 def test_the_selected_file_decides_the_named_variant(repo, gguf, expected):
     from core.inference.diffusion_families import named_variant_base
-
     assert named_variant_base(detect_family("Qwen/Qwen-Image-2.1"), repo, gguf) == expected
 
 
@@ -1000,7 +1003,6 @@ def test_the_selected_file_decides_the_named_variant(repo, gguf, expected):
 )
 def test_a_local_turbo_pipeline_never_plans_the_2_1_artifact(base, expected):
     from core.inference.diffusion_families import family_prequant_repo
-
     fam = detect_family("Qwen/Qwen-Image-2.1")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme, base_repo = base) == expected, (base, scheme)

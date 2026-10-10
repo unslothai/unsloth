@@ -1098,7 +1098,9 @@ def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optiona
     def fold(text: Optional[str]) -> str:
         return "".join(c for c in (text or "").lower() if c.isalnum())
 
-    variants = [(b, fold(b.rsplit("/", 1)[-1])) for b in getattr(fam, "named_variant_bases", ()) or ()]
+    variants = [
+        (b, fold(b.rsplit("/", 1)[-1])) for b in getattr(fam, "named_variant_bases", ()) or ()
+    ]
     plain = fold((getattr(fam, "base_repo", "") or "").rsplit("/", 1)[-1])
     for name in reversed([n for n in names if n]):
         identity = fold(name)
@@ -1480,7 +1482,10 @@ def family_prequant_repo(
     if named and named.lower() != base:
         # A local copy (or other id) naming a variant: that variant's row when the loader's tail compare will accept
         # its checkpoint, else nothing, never the family default, which is baked from another base's weights.
-        if base.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] != named.lower().rsplit("/", 1)[-1]:
+        if (
+            base.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            != named.lower().rsplit("/", 1)[-1]
+        ):
             return None
         base = named.lower()
     if base:
