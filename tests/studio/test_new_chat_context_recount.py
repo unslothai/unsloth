@@ -2155,6 +2155,56 @@ def test_a_mounted_thread_revisited_without_a_countable_model_is_refilled(
     assert (out["cached"] or {}).get("totalTokens") == expected["totalTokens"]
 
 
+@pytest.mark.parametrize(
+    ("run_usage", "expected"),
+    [
+        ("null", {"totalTokens": 13, "estimated": True}),
+        (
+            "{ promptTokens: 40, completionTokens: 9, totalTokens: 49, cachedTokens: 0 }",
+            {"totalTokens": 49, "estimated": None},
+        ),
+    ],
+    ids = ["run_ends_without_usage", "run_reports_usage"],
+)
+def test_a_cloud_estimate_is_repriced_after_a_run_but_exact_usage_stays(run_usage, expected):
+    """A cancelled or failed cloud run, or a provider that omits usage, leaves the pre-run estimate
+    on the bar; the run ending must re-estimate the new turn, while a reported count is kept."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            world.storedMessages["thread-a"] = [
+              {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hello there" }}], metadata: {{}} }},
+              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "general kenobi" }}], metadata: {{}} }},
+            ];
+            seed({{ activeThreadId: "thread-a" }});
+            useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const before = snapshot().contextUsage;
+
+            seed({{ runningByThreadId: {{ "thread-a": true }} }});
+            renderThreadContextUsageRecount();
+            world.storedMessages["thread-a"].push(
+              {{ id: "m3", role: "user", createdAt: 3, content: [{{ type: "text", text: "and what about the moon then" }}], metadata: {{}} }},
+            );
+            const reported = {run_usage};
+            if (reported) useChatRuntimeStore.getState().setContextUsage(reported);
+            seed({{ runningByThreadId: {{}} }});
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{ before, after: snapshot().contextUsage }}));
+            """
+        )
+    )
+    assert (out["before"] or {}).get("totalTokens") == 6
+    after = out["after"] or {}
+    assert after.get("totalTokens") == expected["totalTokens"]
+    assert after.get("estimated") == expected["estimated"]
+
+
 def test_a_cloud_refill_never_reads_a_thread_the_server_does_not_have_yet():
     """A just-sent chat still carries its runtime-local id; reading it 404s (Studio UI CI, IME smoke)."""
     out = _run(

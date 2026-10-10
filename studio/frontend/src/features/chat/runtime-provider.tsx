@@ -3676,12 +3676,17 @@ function ThreadContextUsageRecount({
         store.loadedContextLength != null
       );
     };
-    if (exactCountFollows() || useChatRuntimeStore.getState().contextUsage != null) return;
+    // An estimate is replaced, so a run that ends without usage still re-prices the new turn.
+    const shownIsExact = (): boolean => {
+      const shown = useChatRuntimeStore.getState().contextUsage;
+      return shown != null && !shown.estimated;
+    };
+    if (exactCountFollows() || shownIsExact()) return;
     const threadId = activeThreadId;
     void listStoredChatMessages(threadId)
       .then((records) => {
         const store = useChatRuntimeStore.getState();
-        if (store.activeThreadId !== threadId || store.contextUsage != null) return;
+        if (store.activeThreadId !== threadId || shownIsExact()) return;
         // A turn sent during the read would get a pre-send estimate; the run ending re-fires this.
         if (store.modelLoading || Object.values(store.runningByThreadId).some(Boolean)) return;
         if (exactCountFollows()) return;
