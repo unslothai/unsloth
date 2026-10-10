@@ -1260,6 +1260,12 @@ function MlxSpeculativeRows({
             Ngram copies without one. Drafters are read from the local Hugging
             Face cache, never downloaded.
           </InfoHint>
+          <SettingResetButton
+            label="Speculative Decoding"
+            setting="speculative"
+            config={config}
+            update={update}
+          />
         </div>
         <Select
           value={mode}
@@ -1304,6 +1310,12 @@ function MlxSpeculativeRows({
               ceiling and Unsloth decodes plainly when drafting would be slower.
               Leave blank to let Unsloth tune it for this machine.
             </InfoHint>
+            <SettingResetButton
+              label="Draft Tokens"
+              setting="specDraftNMax"
+              config={config}
+              update={update}
+            />
           </div>
           <input
             type="number"
@@ -1336,6 +1348,12 @@ function MlxSpeculativeRows({
               model. Auto uses the model's own head or the first cached drafter
               named for it.
             </InfoHint>
+            <SettingResetButton
+              label="Drafter"
+              setting="specDraftModel"
+              config={config}
+              update={update}
+            />
           </div>
           <Select
             value={config.specDraftModel ?? "auto"}

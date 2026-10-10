@@ -30,6 +30,7 @@ const CHANGED: [Setting, Partial<Config>][] = [
   ["mlxInt8Prefill", { mlxInt8Prefill: true }],
   ["speculative", { speculativeType: "mtp", specDraftNMax: 3 }],
   ["specDraftNMax", { specDraftNMax: 3 }],
+  ["specDraftModel", { specDraftModel: "z-lab/Qwen3-4B-DFlash" }],
   ["specDraftCacheDtype", { specDraftCacheDtype: "q8_0" }],
   ["nParallel", { nParallel: 4 }],
   ["nBatch", { nBatch: 4096 }],
@@ -112,4 +113,18 @@ test("a non-GGUF context reset clears a pin in either field", () => {
   const reset = { ...both, ...settingResetPatch("contextPin") };
   assert.equal(reset.customContextLength, null);
   assert.equal(reset.maxSeqLength, null);
+});
+
+test("resetting the mode also drops an MLX drafter pin", () => {
+  const changed = {
+    ...DEFAULT_PER_MODEL_CONFIG,
+    speculativeType: "dflash",
+    specDraftNMax: 4,
+    specDraftModel: "z-lab/Qwen3-4B-DFlash",
+  };
+  const reset = { ...changed, ...settingResetPatch("speculative") };
+  assert.equal(reset.speculativeType, null);
+  assert.equal(reset.specDraftNMax, null);
+  assert.equal(reset.specDraftModel, null);
+  assert.equal(isDefaultConfig(reset), true);
 });

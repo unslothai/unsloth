@@ -42,7 +42,12 @@ const SETTING_RESETS = {
       speculativeType: null,
       specDraftNMax: null,
       specDraftCacheDtype: null,
+      specDraftModel: null,
     },
+  },
+  specDraftModel: {
+    isDefault: (c) => c.specDraftModel == null,
+    patch: { specDraftModel: null },
   },
   specDraftNMax: {
     isDefault: (c) => c.specDraftNMax == null,
