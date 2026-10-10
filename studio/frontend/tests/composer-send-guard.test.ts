@@ -306,12 +306,17 @@ test("a composition write with none open at the send is applied", () => {
   }
 });
 
-test("the sent text is still refused with no composition open at the send", () => {
-  const guard = armSentTextGuard([PROMPT], KEY, false);
-  assert.deepEqual(applySentTextGuard(guard, composing(PROMPT)), {
-    accept: false,
-    guard,
+test("retyping a one-character prompt applies with no composition open at the send", () => {
+  const guard = armSentTextGuard(["?"], KEY, false);
+  assert.deepEqual(applySentTextGuard(guard, composing("?")), {
+    accept: true,
+    guard: null,
   });
+});
+
+test("the sent text is still refused when typed by plain keys", () => {
+  const guard = armSentTextGuard([PROMPT], KEY, false);
+  assert.equal(applySentTextGuard(guard, typed(PROMPT)).accept, false);
 });
 
 test("the composer arms the guard with whether an IME session was open", () => {

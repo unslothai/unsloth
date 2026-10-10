@@ -94,6 +94,11 @@ export function applySentTextGuard(
 ): { accept: boolean; guard: SentTextGuard | null } {
   if (guard === null) return { accept: true, guard: null };
   if (write.isDeliberate) return { accept: true, guard: null };
+  // With no composition open at the send, a composition write is typing, even one matching a
+  // one-character prompt.
+  if (write.isComposition && !guard.compositionOpen) {
+    return { accept: true, guard: null };
+  }
   // Re-typing the whole prompt is only one write when it is one character, so equality alone
   // would swallow every retry of a "?" or a single emoji.
   if (guard.texts.includes(write.value)) {
@@ -103,12 +108,7 @@ export function applySentTextGuard(
   if (write.replacesText && write.composerIsEmpty) {
     return { accept: false, guard };
   }
-  if (
-    write.isComposition &&
-    write.composerIsEmpty &&
-    guard.compositionOpen &&
-    !guard.userInputSince
-  ) {
+  if (write.isComposition && write.composerIsEmpty && !guard.userInputSince) {
     return { accept: false, guard };
   }
   // Anything else is the user, so stop guarding rather than judge later writes.
