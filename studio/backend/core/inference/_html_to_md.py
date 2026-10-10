@@ -245,6 +245,10 @@ _SUP_BASE_SCAN_CHARS = 128
 _BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
 # split cents: $19<sup>99</sup> is a price, not an exponent
 _PRICE_TAIL = re.compile(r"(\S)\s?\d(?:[\d,.]|[ \u00a0\u202f]\d)*$")
+_CODE_PRICE_TAIL = re.compile(
+    r"\b(?:USD|EUR|GBP|CHF|JPY|CNY|INR|AUD|CAD|NZD|SEK|NOK|DKK|PLN|CZK|HUF|BRL|MXN|ZAR|TRY|KRW|SGD|HKD)"
+    r"[ \u00a0\u202f]?\d(?:[\d,.]|[ \u00a0\u202f]\d)*$"
+)
 # note markers that keep their plain-text form, like Wikipedia's class="reference"
 _FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
@@ -624,9 +628,12 @@ class _MarkdownRenderer(HTMLParser):
                 base = part[-1]
                 if base.isdigit():
                     context = _visible_tail("".join(p[-40:] for p in target[-8:])[-40:])
-                    price = _PRICE_TAIL.search(context.translate(_STRIP_MD_DELIMITERS))
-                    # any Unicode currency sign (Sc): $, €, ₺, ₱, ...
-                    if price and unicodedata.category(price.group(1)) == "Sc":
+                    context = context.translate(_STRIP_MD_DELIMITERS)
+                    price = _PRICE_TAIL.search(context)
+                    # any Unicode currency sign (Sc): $, €, ₺, ₱, ...; or an ISO code: CHF 19
+                    if (
+                        price and unicodedata.category(price.group(1)) == "Sc"
+                    ) or _CODE_PRICE_TAIL.search(context):
                         return ""
                 return part if base.isalnum() or base in ")]}|" else ""
         return ""
