@@ -1843,6 +1843,16 @@ def _reconcile_folder(job_id: str) -> None:
 
     _check_running()
     _store_withheld(folder["id"], withheld)
+    with closing(rag_db.get_connection()) as conn:
+        # Written while the job is still active, so a later Sync changes clears it in _request_sync and
+        # one queued behind this run (successor_kind) finds nothing to skip.
+        conn.execute(
+            "UPDATE linked_folders SET failed_files=CASE WHEN EXISTS(SELECT 1 FROM "
+            "linked_folder_sync_jobs WHERE id=? AND successor_kind IS NOT NULL) THEN NULL ELSE ? END "
+            "WHERE id=?",
+            (job_id, json.dumps(ingest_failed) if ingest_failed else None, folder["id"]),
+        )
+        conn.commit()
     error = _failure_summary(failures)
     _set_job(
         job_id,
@@ -1853,21 +1863,10 @@ def _reconcile_folder(job_id: str) -> None:
         completed_at = _now(),
     )
     with closing(rag_db.get_connection()) as conn:
-        # A Sync changes queued behind this run asked for a retry, so leave nothing to skip.
         conn.execute(
-            "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=?, "
-            "failed_files=CASE WHEN EXISTS(SELECT 1 FROM linked_folder_sync_jobs "
-            "WHERE id=? AND successor_kind IS NOT NULL) THEN NULL ELSE ? END "
+            "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=? "
             "WHERE id=? AND delete_remove_index IS NULL",
-            (
-                "ready" if error is None else "error",
-                error,
-                _now(),
-                _now(),
-                job_id,
-                json.dumps(ingest_failed) if ingest_failed else None,
-                folder["id"],
-            ),
+            ("ready" if error is None else "error", error, _now(), _now(), folder["id"]),
         )
         conn.commit()
         _prune_terminal_jobs(conn)
