@@ -16,9 +16,10 @@ import torch
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 RL_SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl.py")
 NAMES = (
+    "_without_instance_bound_methods",
     "_packed_seq_lengths_from_position_ids",
     "_is_unsloth_fast_backbone",
-    "_unsloth_async_grpo_add_fused_lm_head",
+    "_unsloth_async_grpo_lm_head",
     "patch_trl_async_grpo",
 )
 
@@ -31,6 +32,8 @@ class _Logger:
 def _load(fast_backbone_types = ()):
     src = open(RL_SOURCE_PATH, encoding = "utf-8").read()
     ns = {
+        "copy": __import__("copy"),
+        "types": types,
         "torch": torch,
         "functools": functools,
         "importlib": importlib,
@@ -195,3 +198,102 @@ def test_patch_is_idempotent(fake_trl):
         mod.add_fused_lm_head,
         mod.AsyncGRPOTrainer.__init__,
     ) == first
+
+
+class Tok:
+    def __init__(self):
+        self.vocab = {"a": 1}
+
+    def save_pretrained(self, d):
+        return "plain"
+
+    def encode(self, s):
+        return [self.vocab[c] for c in s]
+
+
+def _unsloth_tokenizer_save_pretrained(self, d):
+    return "patched"
+
+
+def _patch_like_unsloth(tok):
+    tok.original_save_pretrained = tok.save_pretrained
+    tok.save_pretrained = types.MethodType(_unsloth_tokenizer_save_pretrained, tok)
+    return tok
+
+
+def test_rollout_worker_tokenizer_is_picklable():
+    import pickle
+
+    f = _load()["_without_instance_bound_methods"]
+    plain = Tok()
+    assert f(plain) is plain  # nothing bound per instance: same object
+    tok = _patch_like_unsloth(Tok())
+    with pytest.raises((pickle.PicklingError, AttributeError, TypeError)):
+        pickle.loads(pickle.dumps(tok))
+    clean = f(tok)
+    assert (
+        clean is not tok and tok.save_pretrained(".") == "patched"
+    )  # the trainer's tokenizer keeps Unsloth's saving
+    back = pickle.loads(pickle.dumps(clean))
+    assert back.encode("a") == [1] and back.save_pretrained(".") == "plain"
+    # Processors: the nested tokenizer is cleaned too.
+    proc = types.SimpleNamespace(tokenizer = _patch_like_unsloth(Tok()))
+    clean_proc = f(proc)
+    assert clean_proc is not proc and "save_pretrained" not in vars(clean_proc.tokenizer)
+    assert "save_pretrained" in vars(proc.tokenizer)
+
+
+def test_rollout_worker_subclass_cleans_processing_class(fake_trl):
+    mod, _ = fake_trl
+    seen = {}
+
+    class AsyncRolloutWorker:
+        def __init__(
+            self,
+            processing_class = None,
+            **kw,
+        ):
+            seen["pc"] = processing_class
+
+    mod.AsyncRolloutWorker = AsyncRolloutWorker
+    ns = _load()
+    ns["patch_trl_async_grpo"]()
+    tok = _patch_like_unsloth(Tok())
+    w = mod.AsyncRolloutWorker(processing_class = tok)
+    assert (
+        isinstance(w, AsyncRolloutWorker)
+        and mod.AsyncRolloutWorker.__name__ == "AsyncRolloutWorker"
+    )
+    assert seen["pc"] is not tok and "save_pretrained" not in vars(seen["pc"])
+
+
+def test_trl_113_chunked_head_gets_boundaries(fake_trl):
+    # TRL 1.13 / 1.14 name the head patch_chunked_lm_head and always score through it.
+    mod, calls = fake_trl
+    chunked = mod.add_fused_lm_head
+    del mod.add_fused_lm_head
+
+    def patch_chunked_lm_head(model, **kw):
+        orig = model.forward
+        model.forward = lambda *a, **k: {"chunked": True, **orig(*a, **k)}
+
+    mod.patch_chunked_lm_head = patch_chunked_lm_head
+
+    class Trainer:
+        def __init__(
+            self,
+            model,
+            reward_funcs = None,
+            args = None,
+            **kw,
+        ):
+            mod.patch_chunked_lm_head(mod.create_model_from_path(model))
+
+    mod.AsyncGRPOTrainer = Trainer
+    ns = _load(fast_backbone_types = (FastBackbone,))
+    ns["patch_trl_async_grpo"]()
+    lm = CausalLM(FastBackbone())
+    mod.AsyncGRPOTrainer(Peft(lm), None)
+    out = lm.forward(position_ids = torch.tensor([[0, 1, 2, 0, 1]]))
+    assert out["chunked"] and out["packed_seq_lengths"].tolist() == [3, 2]
+    assert chunked is not mod.patch_chunked_lm_head

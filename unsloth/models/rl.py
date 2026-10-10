@@ -18,6 +18,7 @@ import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import copy
 import copyreg
+import types
 import functools
 import importlib
 import importlib.util
@@ -4196,14 +4197,37 @@ def _packed_seq_lengths_from_position_ids(position_ids):
     return (ends - starts).to(torch.int32)
 
 
+def _without_instance_bound_methods(obj):
+    # Unsloth binds save_pretrained / push_to_hub per instance under its own wrapper names, which unpickling
+    # in a spawned process cannot resolve; a tokenizing-only copy drops them (the class methods remain).
+    if obj is None or not hasattr(obj, "__dict__"):
+        return obj
+    bound = [
+        k for k, v in vars(obj).items() if isinstance(v, types.MethodType) and v.__self__ is obj
+    ]
+    inner = getattr(obj, "tokenizer", None)
+    clean_inner = (
+        _without_instance_bound_methods(inner) if inner is not None and inner is not obj else inner
+    )
+    if not bound and clean_inner is inner:
+        return obj
+    clone = copy.copy(obj)
+    for k in bound:
+        clone.__dict__.pop(k, None)
+    if clean_inner is not inner:
+        clone.__dict__["tokenizer"] = clean_inner
+    return clone
+
+
 def _is_unsloth_fast_backbone(backbone):
     from .llama import LlamaModel_fast_forward
     return getattr(type(backbone), "forward", None) is LlamaModel_fast_forward
 
 
-def _unsloth_async_grpo_add_fused_lm_head(original):
-    def add_fused_lm_head(model, *args, **kwargs):
-        # The fused head replaces the CausalLM forward and calls its backbone, so it must sit under any PEFT wrapper.
+def _unsloth_async_grpo_lm_head(original, flag):
+    # TRL >= 1.15 `add_fused_lm_head` (active when `flag` is passed), TRL 1.13-1.14 `patch_chunked_lm_head` (always).
+    def patch_lm_head(model, *args, **kwargs):
+        # The head replaces the CausalLM forward and calls its backbone, so it must sit under any PEFT wrapper.
         target = model.get_base_model() if hasattr(model, "get_base_model") else model
         original(target, *args, **kwargs)
         if not _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
@@ -4215,25 +4239,21 @@ def _unsloth_async_grpo_add_fused_lm_head(original):
                     "Load the model with FastLanguageModel, or with a flash attention implementation."
                 )
             return
-        fused_forward = target.forward
+        head_forward = target.forward
 
-        @functools.wraps(fused_forward)
-        def forward(
-            *f_args,
-            fused_lm_head = False,
-            **f_kwargs,
-        ):
+        @functools.wraps(head_forward)
+        def forward(*f_args, **f_kwargs):
             # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets.
-            if fused_lm_head and f_kwargs.get("packed_seq_lengths") is None:
+            if (flag is None or f_kwargs.get(flag)) and f_kwargs.get("packed_seq_lengths") is None:
                 lengths = _packed_seq_lengths_from_position_ids(f_kwargs.get("position_ids"))
                 if lengths is not None:
                     f_kwargs["packed_seq_lengths"] = lengths
-            return fused_forward(*f_args, fused_lm_head = fused_lm_head, **f_kwargs)
+            return head_forward(*f_args, **f_kwargs)
 
         target.forward = forward
 
-    add_fused_lm_head._unsloth_async_grpo_patched = True
-    return add_fused_lm_head
+    patch_lm_head._unsloth_async_grpo_patched = True
+    return patch_lm_head
 
 
 def patch_trl_async_grpo():
@@ -4250,12 +4270,16 @@ def patch_trl_async_grpo():
     except Exception as e:
         logger.info(f"Unsloth: Could not import trl.experimental.async_grpo: {e}")
         return
-    if not all(
-        hasattr(async_module, x)
-        for x in ("create_model_from_path", "add_fused_lm_head", "AsyncGRPOTrainer")
+    heads = [
+        (name, flag)
+        for name, flag in (("add_fused_lm_head", "fused_lm_head"), ("patch_chunked_lm_head", None))
+        if hasattr(async_module, name)
+    ]
+    if not heads or not all(
+        hasattr(async_module, x) for x in ("create_model_from_path", "AsyncGRPOTrainer")
     ):
         return
-    if getattr(async_module.add_fused_lm_head, "_unsloth_async_grpo_patched", False):
+    if getattr(getattr(async_module, heads[0][0]), "_unsloth_async_grpo_patched", False):
         return
 
     original_create = async_module.create_model_from_path
@@ -4267,9 +4291,8 @@ def patch_trl_async_grpo():
         return original_create(model_id, *args, **kwargs)
 
     async_module.create_model_from_path = create_model_from_path
-    async_module.add_fused_lm_head = _unsloth_async_grpo_add_fused_lm_head(
-        async_module.add_fused_lm_head
-    )
+    for name, flag in heads:
+        setattr(async_module, name, _unsloth_async_grpo_lm_head(getattr(async_module, name), flag))
 
     trainer_class = async_module.AsyncGRPOTrainer
     original_init = trainer_class.__init__
@@ -4283,6 +4306,19 @@ def patch_trl_async_grpo():
         original_init(self, model, *args, **kwargs)
 
     trainer_class.__init__ = __init__
+
+    if hasattr(async_module, "AsyncRolloutWorker"):
+
+        class AsyncRolloutWorker(async_module.AsyncRolloutWorker):
+            # Its arguments are pickled into a spawned process, which only needs the tokenizer to tokenize.
+            def __init__(self, *args, **kwargs):
+                if "processing_class" in kwargs:
+                    kwargs["processing_class"] = _without_instance_bound_methods(
+                        kwargs["processing_class"]
+                    )
+                super().__init__(*args, **kwargs)
+
+        async_module.AsyncRolloutWorker = AsyncRolloutWorker
     return
 
 
