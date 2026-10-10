@@ -169,7 +169,12 @@ def test_explicit_base_and_cache_only_loads_skip_the_card(monkeypatch):
     calls = _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
     assert (
         bk._base_sample_sigmas(
-            REPO, "Qwen/Qwen-Image-2.1-Turbo", None, family = FAM.name, explicit_base = True, local_files_only = False
+            REPO,
+            "Qwen/Qwen-Image-2.1-Turbo",
+            None,
+            family = FAM.name,
+            explicit_base = True,
+            local_files_only = False,
         )[0]
         == TURBO_GRID
     )
@@ -216,7 +221,9 @@ def test_a_cache_only_reload_follows_the_picks_own_name(monkeypatch):
     calls = _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
     kw = dict(family = FAM.name, explicit_base = False, local_files_only = True)
     # The OpenAI route's auto-switch reloads cache-only with no base: a Turbo-named pick keeps its grid and base.
-    grid, base = bk._base_sample_sigmas(REPO, FAM.base_repo, None, named_base = "Qwen/Qwen-Image-2.1-Turbo", **kw)
+    grid, base = bk._base_sample_sigmas(
+        REPO, FAM.base_repo, None, named_base = "Qwen/Qwen-Image-2.1-Turbo", **kw
+    )
     assert grid == TURBO_GRID and base == "Qwen/Qwen-Image-2.1-Turbo"
     # A plain 2.1 file from the same repo gets 2.1's schedule, whatever an earlier Turbo load resolved.
     assert bk._base_sample_sigmas(REPO, FAM.base_repo, None, **kw) == (None, FAM.base_repo)

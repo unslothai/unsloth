@@ -956,7 +956,9 @@ def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
         ("qwen_image_2.1_turbo-Q4_K_M.gguf", "someone/else", "Qwen/Qwen-Image-2.1"),
     ],
 )
-def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(monkeypatch, tmp_path, name, card, expected):
+def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(
+    monkeypatch, tmp_path, name, card, expected
+):
     from core.inference import diffusion as dmod
     from core.inference.diffusion_families import detect_family_for_pick
 
