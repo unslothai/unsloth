@@ -1997,8 +1997,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     if trl_version >= Version("0.24.0"):
         string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+        # TRL's VLM tool branch has no prompts_text; TRL 1.15 dropped completions_text, rebuilt as in 1.13.
         replacement_string = (
-            "        if images is not None:\n"
+            "        _unsloth_reward_locals = locals()\n"
+            "        if images is not None and 'prompts_text' in _unsloth_reward_locals:\n"
+            "            completions_text = _unsloth_reward_locals.get('completions_text')\n"
+            "            if completions_text is None:\n"
+            "                completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)\n"
             "            rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)\n"
             "        else:\n"
             "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
