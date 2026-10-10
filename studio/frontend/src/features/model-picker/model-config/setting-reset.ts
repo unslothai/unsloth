@@ -45,6 +45,16 @@ const SETTING_RESETS = {
       specDraftModel: null,
     },
   },
+  // MLX stores an explicit Auto (see storedSpeculativeAuto), so only unset follows the global setting.
+  mlxSpeculative: {
+    isDefault: (c) => c.speculativeType == null,
+    patch: {
+      speculativeType: null,
+      specDraftNMax: null,
+      specDraftCacheDtype: null,
+      specDraftModel: null,
+    },
+  },
   specDraftModel: {
     isDefault: (c) => c.specDraftModel == null,
     patch: { specDraftModel: null },

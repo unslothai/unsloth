@@ -1262,7 +1262,7 @@ function MlxSpeculativeRows({
           </InfoHint>
           <SettingResetButton
             label="Speculative Decoding"
-            setting="speculative"
+            setting="mlxSpeculative"
             config={config}
             update={update}
           />

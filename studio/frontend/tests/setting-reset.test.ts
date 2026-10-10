@@ -31,6 +31,10 @@ const CHANGED: [Setting, Partial<Config>][] = [
   ["speculative", { speculativeType: "mtp", specDraftNMax: 3 }],
   ["specDraftNMax", { specDraftNMax: 3 }],
   ["specDraftModel", { specDraftModel: "z-lab/Qwen3-4B-DFlash" }],
+  [
+    "mlxSpeculative",
+    { speculativeType: "dflash", specDraftModel: "z-lab/Qwen3-4B-DFlash" },
+  ],
   ["specDraftCacheDtype", { specDraftCacheDtype: "q8_0" }],
   ["nParallel", { nParallel: 4 }],
   ["nBatch", { nBatch: 4096 }],
@@ -127,4 +131,12 @@ test("resetting the mode also drops an MLX drafter pin", () => {
   assert.equal(reset.specDraftNMax, null);
   assert.equal(reset.specDraftModel, null);
   assert.equal(isDefaultConfig(reset), true);
+});
+
+test("an MLX model's explicit Auto can be reset back to the global setting", () => {
+  const pinned = { ...DEFAULT_PER_MODEL_CONFIG, speculativeType: "auto" };
+  assert.equal(settingIsDefault(pinned, "mlxSpeculative"), false);
+  const reset = { ...pinned, ...settingResetPatch("mlxSpeculative") };
+  assert.equal(reset.speculativeType, null);
+  assert.equal(settingIsDefault(reset, "mlxSpeculative"), true);
 });
