@@ -580,7 +580,7 @@ class _MarkdownRenderer(HTMLParser):
         ):
             return
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"
-        exponent += joined[len(joined.rstrip()):]
+        exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
         if target is self._link_text_parts and len(self._link_heading_parts) > heading_start:
             self._link_heading_parts[heading_start:] = [exponent]
