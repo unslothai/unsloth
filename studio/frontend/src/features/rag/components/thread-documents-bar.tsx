@@ -746,8 +746,9 @@ function ChatFilesPanel({
           className="size-4 shrink-0 text-muted-foreground"
         />
         {info ? (
-          // The whole title is the trigger, so hovering the heading explains it too.
-          <Tooltip>
+          // The whole title is the trigger, so hovering the heading explains it too. Only resting on
+          // it opens the tooltip, and it shuts on leaving: it must not linger over the cards.
+          <Tooltip delayDuration={300} disableHoverableContent={true}>
             <TooltipTrigger asChild={true}>
               <div
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: focus opens the tooltip for keyboard users.
