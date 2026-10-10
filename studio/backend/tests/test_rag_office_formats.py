@@ -1059,8 +1059,8 @@ def test_rtf_decodes_literal_bytes_in_the_document_code_page(tmp_path):
 def test_compound_file_reads_mini_and_regular_streams():
     small, large = b"a" * 100, bytes(range(256)) * 40
     reader = cfb.CompoundFile(compound_file({("small",): small, ("dir", "large"): large}))
-    assert reader.open("small") == small
-    assert reader.open("DIR", "Large") == large
+    assert reader.read("small") == small
+    assert reader.read("DIR", "Large") == large
     assert sorted(reader.listdir()) == ["dir", "small"]
 
 
@@ -1077,7 +1077,7 @@ def test_compound_file_reads_each_fat_sector_once_per_file_sector():
     struct.pack_into("<II", data, 0x44, first, n_difat)
     reader = cfb.CompoundFile(bytes(data))
     assert len(reader._fat) <= len(data) // 4
-    assert reader.open("small") == b"a" * 100
+    assert reader.read("small") == b"a" * 100
 
 
 def test_encrypted_doc_is_refused(tmp_path):

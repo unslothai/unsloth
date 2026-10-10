@@ -154,7 +154,7 @@ class CompoundFile:
                 return []
         return [self._entries[i].name for i in self._children(entry_index).values()]
 
-    def open(self, *path: str) -> bytes:
+    def read(self, *path: str) -> bytes:
         entry = self._find(path)
         if entry is None or entry.kind != _STREAM:
             raise CompoundFileError(f"missing stream: {'/'.join(path)}")

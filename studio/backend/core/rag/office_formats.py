@@ -1132,7 +1132,7 @@ def _clean_control(text: str) -> str:
 def doc(path: str) -> list[Section]:
     cf = _compound(path)
     try:
-        word = cf.open("WordDocument")
+        word = cf.read("WordDocument")
     except CompoundFileError as exc:
         raise ValueError("not a Word 97-2003 document") from exc
     if len(word) < 0x200 or struct.unpack_from("<H", word, 0)[0] != 0xA5EC:
@@ -1140,7 +1140,7 @@ def doc(path: str) -> list[Section]:
     flags = struct.unpack_from("<H", word, 0x0A)[0]
     if flags & 0x0100:
         raise ValueError("file is password protected")
-    table = cf.open("1Table" if flags & 0x0200 else "0Table")
+    table = cf.read("1Table" if flags & 0x0200 else "0Table")
 
     # FibRgLw97 story lengths and FibRgFcLcb97.fcClx/lcbClx, located by the FIB's own counts.
     csw = struct.unpack_from("<H", word, 32)[0]
@@ -1319,7 +1319,7 @@ def xls(path: str) -> list[Section]:
     stream = next((name for name in ("Workbook", "Book") if cf.exists(name)), None)
     if stream is None:
         raise ValueError("not an Excel 97-2003 workbook")
-    data = cf.open(stream)
+    data = cf.read(stream)
     # BIFF5/7 (Excel 95) strings are CODEPAGE bytes with no BIFF8 flags byte.
     biff8 = data[4:6] != b"\x00\x05"
     codec = "cp1252"
@@ -1506,7 +1506,7 @@ def _ppt_current(cf: CompoundFile, data: bytes) -> tuple[dict[int, int], int] | 
     """
     if not cf.exists("Current User"):
         return None
-    user = cf.open("Current User")
+    user = cf.read("Current User")
     if len(user) < 20:
         return None
     offset = struct.unpack_from("<I", user, 16)[0]
@@ -1564,7 +1564,7 @@ def _ppt_sheet_lines(data: bytes, start: int, end: int, listed: list[str]) -> li
 def ppt(path: str) -> list[Section]:
     cf = _compound(path)
     try:
-        data = cf.open("PowerPoint Document")
+        data = cf.read("PowerPoint Document")
     except CompoundFileError as exc:
         raise ValueError("not a PowerPoint 97-2003 presentation") from exc
     if cf.exists("EncryptedSummary"):
@@ -1689,7 +1689,7 @@ def _msg_props(cf: CompoundFile) -> dict[int, bytes]:
     """Fixed-size top-level properties: tag -> 8-byte value."""
     if not cf.exists("__properties_version1.0"):
         return {}
-    props = cf.open("__properties_version1.0")
+    props = cf.read("__properties_version1.0")
     return {
         struct.unpack_from("<I", props, off)[0]: props[off + 8 : off + 16]
         for off in range(32, len(props) - 15, 16)
@@ -1701,7 +1701,7 @@ def _msg_prop(cf: CompoundFile, prefix: tuple[str, ...], prop: str, codec: str) 
     for kind, kind_codec in (("001F", "utf-16-le"), ("001E", codec)):
         name = f"__substg1.0_{prop}{kind}"
         if cf.exists(*prefix, name):
-            return cf.open(*prefix, name).decode(kind_codec, "replace").rstrip("\0")
+            return cf.read(*prefix, name).decode(kind_codec, "replace").rstrip("\0")
     return None
 
 
@@ -1805,11 +1805,11 @@ def msg(path: str, html_text) -> list[Section]:
     ]
     body = (_msg_prop(cf, (), "1000", codec) or "").strip()
     if not body and cf.exists("__substg1.0_10130102"):
-        body = html_text(cf.open("__substg1.0_10130102"))
+        body = html_text(cf.read("__substg1.0_10130102"))
     if not body and (html := _msg_prop(cf, (), "1013", codec)):
         body = html_text(codecs.BOM_UTF8 + html.encode("utf-8"))
     if not body and cf.exists("__substg1.0_10090102"):
-        rtf_bytes = _decompress_rtf(cf.open("__substg1.0_10090102"))
+        rtf_bytes = _decompress_rtf(cf.read("__substg1.0_10090102"))
         body = _rtf_text(rtf_bytes.decode("latin-1"))
     attachments = []
     for name in cf.listdir():
