@@ -243,6 +243,23 @@ def _base_sample_sigmas(
         logger.debug("sd_cpp.sample_sigmas_unavailable: %s", exc)
         return None, base
     grid = valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None)
+<<<<<<< HEAD
+||||||| aecb794ef6
+    if grid is not None and card_base:
+        try:
+            from hub.utils.companion_assets import record_companion_link
+
+            record_companion_link(repo_id, card_base)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping only
+            logger.debug("sd_cpp.grid_base_link_failed: %s", exc)
+=======
+    if grid is not None and card_base:
+        try:
+            from hub.utils.companion_assets import record_companion_link
+            record_companion_link(repo_id, card_base)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping only
+            logger.debug("sd_cpp.grid_base_link_failed: %s", exc)
+>>>>>>> 628301cd1558b1770be7f1d6be28c613ef9d4379
     if grid is not None:
         logger.info(
             "sd_cpp: %s ships a %d-step sampling grid; passing it as custom sigmas", base, len(grid)
@@ -250,6 +267,51 @@ def _base_sample_sigmas(
     return grid, base
 
 
+<<<<<<< HEAD
+||||||| aecb794ef6
+def _linked_grid_base(repo_id: str, default_base: str) -> Optional[str]:
+    """The most recently linked trusted base of ``repo_id`` whose cached model_index.json ships a grid, or None."""
+    from core.inference.diffusion import _is_trusted_diffusion_repo, hub_cache_dir
+    from core.inference.diffusion_comfy_components import read_model_index
+    from hub.utils.companion_assets import read_companion_links
+
+    links = read_companion_links().get(repo_id.strip().lower(), [])
+    for candidate in reversed(links):
+        if candidate == default_base or not _is_trusted_diffusion_repo(candidate):
+            continue
+        try:
+            index = read_model_index(candidate, local_files_only = True, cache_dir = hub_cache_dir())
+        except Exception:  # noqa: BLE001 - an uncached index carries no grid
+            continue
+        if isinstance(index, dict) and valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY)) is not None:
+            return canonical_base(candidate)
+    return None
+
+
+=======
+def _linked_grid_base(repo_id: str, default_base: str) -> Optional[str]:
+    """The most recently linked trusted base of ``repo_id`` whose cached model_index.json ships a grid, or None."""
+    from core.inference.diffusion import _is_trusted_diffusion_repo, hub_cache_dir
+    from core.inference.diffusion_comfy_components import read_model_index
+    from hub.utils.companion_assets import read_companion_links
+
+    links = read_companion_links().get(repo_id.strip().lower(), [])
+    for candidate in reversed(links):
+        if candidate == default_base or not _is_trusted_diffusion_repo(candidate):
+            continue
+        try:
+            index = read_model_index(candidate, local_files_only = True, cache_dir = hub_cache_dir())
+        except Exception:  # noqa: BLE001 - an uncached index carries no grid
+            continue
+        if (
+            isinstance(index, dict)
+            and valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY)) is not None
+        ):
+            return canonical_base(candidate)
+    return None
+
+
+>>>>>>> 628301cd1558b1770be7f1d6be28c613ef9d4379
 def _default_threads() -> int:
     """Physical-core thread count for the sd.cpp CPU backend. ``threads = None`` lets sd.cpp pick
     its own default, which is the logical-core count (all hyperthreads). For the compute-bound
