@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import utils.cpu_threads as cpu_threads
 from utils.cpu_threads import (
     _THREAD_POOL_ENV_VARS,
     configure_cpu_threads,
@@ -57,6 +58,7 @@ def test_cpu_thread_cap_normalises_valid_inputs(raw):
 @pytest.mark.parametrize("raw", [None, "", "   ", "\t"])
 def test_cpu_thread_cap_unset_limits_only_openblas(raw, monkeypatch):
     monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
     env = {} if raw is None else {"UNSLOTH_CPU_THREADS": raw}
     snapshot = dict(env)
 
@@ -71,8 +73,59 @@ def test_cpu_thread_cap_unset_limits_only_openblas(raw, monkeypatch):
 )
 def test_openblas_default_scales_with_cores_and_is_capped(cpus, expected, monkeypatch):
     monkeypatch.setattr(os, "cpu_count", lambda: cpus)
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
 
     assert default_openblas_threads() == expected
+
+
+# A tenth of the memory OpenBLAS's buffers draw on, about 32 MB per thread: a host short of it starts on fewer threads.
+@pytest.mark.parametrize(
+    "headroom_mb, expected",
+    [(None, 8), (64 << 10, 8), (2600, 8), (1280, 4), (640, 2), (320, 1), (100, 1), (0, 1)],
+)
+def test_openblas_default_shrinks_when_memory_is_short(headroom_mb, expected, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(
+        cpu_threads,
+        "_openblas_memory_headroom",
+        lambda: None if headroom_mb is None else headroom_mb << 20,
+    )
+
+    assert default_openblas_threads() == expected
+
+
+def test_an_unreadable_memory_reading_keeps_the_core_count_default(monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+
+    def boom():
+        raise OSError("no reading")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cpu_threads, "_address_space_headroom", boom)
+
+    assert cpu_threads._openblas_memory_headroom() is None
+    assert default_openblas_threads() == 8
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason = "address-space rlimit is read on Linux"
+)
+def test_linux_reads_the_address_space_rlimit(monkeypatch):
+    import resource
+
+    monkeypatch.setattr(
+        resource, "getrlimit", lambda which: (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
+    )
+    assert cpu_threads._address_space_headroom() is None
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (1 << 40, 1 << 40))
+    assert 0 < cpu_threads._address_space_headroom() < 1 << 40
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows commit and job limits")
+def test_windows_reads_the_free_commit():
+    headroom = cpu_threads._windows_commit_headroom()
+
+    assert headroom is not None and headroom > 0
 
 
 def test_openblas_default_keeps_user_value():
@@ -86,6 +139,7 @@ def test_openblas_default_keeps_user_value():
 @pytest.mark.parametrize("raw", ["", "  "])
 def test_openblas_default_replaces_blank_value(raw, monkeypatch):
     monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
     env = {"OPENBLAS_NUM_THREADS": raw}
 
     configure_cpu_threads(env)

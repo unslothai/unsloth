@@ -67,6 +67,8 @@ def fake_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     # Pinned: the cap is clamped to the core count, and CI runners can have as few as 3.
     monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    # Pinned too: the default also shrinks on a host short of memory.
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
     monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising = False)
     monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
     # On a real Windows host importing a worker module has already installed the hook; start from none.

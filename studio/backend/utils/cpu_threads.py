@@ -21,11 +21,139 @@ _THREAD_POOL_ENV_VARS = (
 # and a fault allocating it kills the process (#12374). 8 threads match numpy's default speed on a 32-thread CPU for
 # about a third of the memory; past that SMT siblings mostly add memory.
 _OPENBLAS_DEFAULT_MAX = 8
+# What one more numpy OpenBLAS worker costs at import (Windows: 18 MB committed at 1 thread, 243 MB at 8), and the
+# share of the memory those buffers draw on that the default may spend, so a host short of it starts on fewer.
+_OPENBLAS_THREAD_COST = 32 << 20
+_OPENBLAS_MEMORY_SHARE = 0.1
 
 
 def default_openblas_threads() -> int:
-    """Studio's OPENBLAS_NUM_THREADS when nothing is configured: about one per physical core, at most 8."""
-    return max(1, min(_OPENBLAS_DEFAULT_MAX, (os.cpu_count() or 2) // 2))
+    """Studio's OPENBLAS_NUM_THREADS when nothing is configured: about one per physical core, at most 8, and
+    fewer when the memory OpenBLAS's per-thread buffers draw on is short."""
+    threads = max(1, min(_OPENBLAS_DEFAULT_MAX, (os.cpu_count() or 2) // 2))
+    headroom = _openblas_memory_headroom()
+    if headroom is not None:
+        threads = max(
+            1, min(threads, int(headroom * _OPENBLAS_MEMORY_SHARE) // _OPENBLAS_THREAD_COST)
+        )
+    return threads
+
+
+def _openblas_memory_headroom() -> Optional[int]:
+    """Bytes OpenBLAS's buffers can still claim, None when unbounded or unknown. Stdlib only: runs before any import.
+
+    Windows commits the buffers, so the free system commit, and a job object's memory limit (containers, sandboxes)
+    when one is set. Linux only reserves them, so only an address-space rlimit can refuse them."""
+    try:
+        if sys.platform == "win32":
+            return _windows_commit_headroom()
+        if sys.platform.startswith("linux"):
+            return _address_space_headroom()
+    except Exception:  # noqa: BLE001 -- unknown headroom means the core-count default
+        return None
+    return None
+
+
+def _address_space_headroom() -> Optional[int]:
+    import resource
+
+    soft, _ = resource.getrlimit(resource.RLIMIT_AS)
+    if soft == resource.RLIM_INFINITY or soft <= 0:
+        return None
+    with open("/proc/self/statm", encoding = "ascii") as handle:
+        used = int(handle.read().split()[0]) * os.sysconf("SC_PAGE_SIZE")
+    return max(0, soft - used)
+
+
+def _windows_commit_headroom() -> Optional[int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class MemoryStatusEx(ctypes.Structure):
+        _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD)] + [
+            (name, ctypes.c_ulonglong)
+            for name in (
+                "ullTotalPhys",
+                "ullAvailPhys",
+                "ullTotalPageFile",
+                "ullAvailPageFile",
+                "ullTotalVirtual",
+                "ullAvailVirtual",
+                "ullAvailExtendedVirtual",
+            )
+        ]
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimits),
+            ("IoInfo", ctypes.c_ulonglong * 6),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (name, ctypes.c_size_t)
+            for name in (
+                "PeakWorkingSetSize",
+                "WorkingSetSize",
+                "QuotaPeakPagedPoolUsage",
+                "QuotaPagedPoolUsage",
+                "QuotaPeakNonPagedPoolUsage",
+                "QuotaNonPagedPoolUsage",
+                "PagefileUsage",
+                "PeakPagefileUsage",
+                "PrivateUsage",
+            )
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    status = MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(status)
+    if not kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    headroom = int(status.ullAvailPageFile)
+    limits = ExtendedLimits()
+    # 9 = JobObjectExtendedLimitInformation; a NULL job is this process's own, and the call fails outside any job.
+    if kernel32.QueryInformationJobObject(
+        None, 9, ctypes.byref(limits), ctypes.sizeof(limits), None
+    ):
+        caps = []
+        if limits.BasicLimitInformation.LimitFlags & 0x100:  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
+            caps.append(limits.ProcessMemoryLimit)
+        if limits.BasicLimitInformation.LimitFlags & 0x200:  # JOB_OBJECT_LIMIT_JOB_MEMORY
+            caps.append(limits.JobMemoryLimit)
+        if caps:
+            counters = ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(counters)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.K32GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            ]
+            used = 0
+            if kernel32.K32GetProcessMemoryInfo(
+                kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+            ):
+                used = int(counters.PrivateUsage)
+            headroom = min(headroom, max(0, int(min(caps)) - used))
+    return headroom
 
 
 def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> None:
