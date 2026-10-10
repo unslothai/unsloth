@@ -15,10 +15,10 @@ test("Code on offers both skill tools for any usable skill", () => {
 test("Code off keeps a plain chat out of the tool loop (#11671)", () => {
   assert.deepEqual(skillToolNames([enabled], false, []), []);
   assert.deepEqual(skillToolNames([enabled], false, ["what is guided?"]), []);
-  // Not a mention: no whitespace before the @, or not a spec-shaped name.
+  // not a mention: no whitespace before @, or the name is not spec-shaped.
   assert.deepEqual(skillToolNames([enabled], false, ["mail me@guided"]), []);
   assert.deepEqual(skillToolNames([enabled], false, ["@Guided"]), []);
-  // The backend would not preload these, so they must not open the loop either.
+  // the backend would not preload these, so they must not open the loop either.
   assert.deepEqual(skillToolNames([enabled], false, ["use @guided!!"]), []);
   assert.deepEqual(skillToolNames([enabled], false, ["use @guided]"]), []);
   assert.deepEqual(skillToolNames([enabled], false, ["use @guided."]), ["read_skill"]);
@@ -26,7 +26,7 @@ test("Code off keeps a plain chat out of the tool loop (#11671)", () => {
 
 test("Code off still reads a skill the user @mentions, but never creates one", () => {
   assert.deepEqual(skillToolNames([enabled], false, ["use @guided please"]), ["read_skill"]);
-  // An earlier turn's mention keeps it readable: the preloaded SKILL.md is not replayed.
+  // an earlier mention keeps it readable because preloaded SKILL.md is not replayed.
   assert.deepEqual(skillToolNames([enabled], false, ["@guided", "and now?"]), ["read_skill"]);
 });
 

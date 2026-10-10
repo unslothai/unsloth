@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Spec skill names only, ending at a word boundary: `@example.com`, `@3pm`, `@Probe` are not mentions.
-// At most one trailing sentence mark, as the backend preload's _TOKEN, so `@name!!` loads on neither side.
+// mirror backend preload token boundaries, including at most one trailing sentence mark.
 export const SKILL_MENTION_PATTERN =
   /(^|\s)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;:!?)](?:$|\s))/g;
 
@@ -13,9 +12,7 @@ export interface SkillToolEntry {
   enabled: boolean;
 }
 
-// Home-dir skills are on by default with no pill of their own, so with Code off a plain chat must not
-// open the tool loop for them (#11671). An @mention is the user asking for one, so it offers read_skill
-// alone; create_skill writes files and stays with Code.
+// with Code off, only an @mention offers read_skill; create_skill stays gated by Code (#11671).
 export function skillToolNames(
   skills: readonly SkillToolEntry[],
   codeToolsOn: boolean,
@@ -28,9 +25,8 @@ export function skillToolNames(
   );
   if (usable.size === 0) return [];
   if (codeToolsOn) return ["read_skill", "create_skill"];
-  // Any earlier turn counts too: the preloaded SKILL.md is not replayed, so a follow-up re-reads it.
-  // Code and quotations are not masked here: a mention the backend treats as literal only opens the
-  // loop with read_skill, while a client-side Markdown guess can hide a real one.
+  // earlier turns count because follow-ups must re-read SKILL.md contents that are not replayed.
+  // do not mask code or quotes because frontend Markdown guesses can hide backend-literal mentions.
   const mentioned = userTexts.some((text) =>
     Array.from(text.matchAll(SKILL_MENTION_PATTERN)).some((match) =>
       usable.has(match[2] ?? ""),

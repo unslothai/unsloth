@@ -128,7 +128,7 @@ def test_code_off_mention_loads_and_says_scripts_need_code(mention_client, code_
             "messages": [{"role": "user", "content": "@skill-creator what did i just paste?"}],
             "stream": True,
             "enable_tools": True,
-            # What the composer sends for an @mention with Code off: read_skill alone.
+            # a Code-off mention sends read_skill alone.
             "enabled_tools": ["read_skill", "python", "terminal"] if code_on else ["read_skill"],
             "permission_mode": "auto",
         },

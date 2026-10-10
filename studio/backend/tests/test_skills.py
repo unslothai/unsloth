@@ -1209,7 +1209,7 @@ def test_bulk_enable_disable_and_reset_follow_the_defaults(isolated_skills, monk
     overrides = studio / "skill-overrides.json"
     bundled = {r["name"] for r in skills.list_skills() if r["source"] == "bundled"}
     assert bundled
-    # A choice for a skill not on disk right now survives enable/disable all, like a single toggle.
+    # absent-skill choices survive bulk updates, matching individual toggles.
     skills._save_overrides({"gone-for-now": False})
 
     records = skills.set_all_skills_enabled(False)
@@ -1227,7 +1227,7 @@ def test_bulk_enable_disable_and_reset_follow_the_defaults(isolated_skills, monk
         **{name: True for name in bundled},
     }
 
-    # Reset is a fresh install: home skills on, bundled off, no override left at all.
+    # reset restores fresh-install defaults: home skills on, bundled skills off, no overrides.
     records = skills.set_all_skills_enabled(None)
     assert {record["name"]: record["enabled"] for record in records} == {
         "mine": True,
@@ -1264,8 +1264,7 @@ def test_bulk_enabled_route(isolated_skills, monkeypatch):
     assert inference_routes._AGENT_SKILLS_CACHE == {}
     response = client.put("/api/skills", json = {"enabled": None})
     assert [(r["name"], r["enabled"]) for r in response.json()] == [("api-skill", True)]
-    # Required and strict: a missing or stringly field is rejected, not read as a reset.
+    # missing or string values are rejected instead of being interpreted as reset.
     assert client.put("/api/skills", json = {}).status_code == 422
     assert client.put("/api/skills", json = {"enabled": "false"}).status_code == 422
-    # The per-skill route is untouched.
     assert client.put("/api/skills/api-skill/enabled", json = {"enabled": False}).status_code == 200

@@ -621,7 +621,7 @@ class TestToolActionNudge:
 
         assert "- guided: Guide this task." in nudge
         assert "create_skill" not in nudge
-        # No python/terminal: the model is told a skill's scripts cannot run here.
+        # without python or terminal, a skill's bundled scripts cannot run here.
         assert "bundled scripts cannot run" in nudge
         assert "Unsloth Studio's local Code tool" in nudge
 

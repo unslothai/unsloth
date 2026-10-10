@@ -2276,7 +2276,7 @@ export async function buildLocalTokenCountExtras(
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
 
-  // Every counted user turn, as the send path does, so a skill made since page load is priced like the request.
+  // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
   const skillTools = skillToolNames(
     getSkillsSnapshot().skills,
@@ -2318,7 +2318,7 @@ export async function buildLocalTokenCountExtras(
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
-      // Same gate as the request, so a skill tool is priced only when it would be sent.
+      // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -6575,7 +6575,7 @@ export function createOpenAIStreamAdapter(
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (supportsStudioToolsForThisTurn) {
-            // Every user turn: an earlier mention keeps read_skill offered, so its skill must be known.
+            // include every user turn because follow-ups still need skills mentioned earlier.
             await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
           const skillTools = skillToolNames(

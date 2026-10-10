@@ -100,7 +100,7 @@ test("suggestions rank name prefixes, then names, then descriptions", () => {
   assert.deepEqual(names("notes"), ["notes", "release-notes", "pdf"]);
   assert.deepEqual(names("NOTES"), ["notes", "release-notes", "pdf"]);
   assert.deepEqual(names("re"), ["release-notes", "unrelated", "pdf"]);
-  // An empty query is the bare @: every skill in catalog order, capped.
+  // a bare @ preserves catalog order and applies the cap.
   assert.deepEqual(names(""), skills.map((entry) => entry.name));
   assert.deepEqual(names("", 2), ["release-notes", "notes"]);
   assert.deepEqual(names("zzz"), []);

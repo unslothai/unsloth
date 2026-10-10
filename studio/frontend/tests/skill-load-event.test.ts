@@ -55,7 +55,7 @@ test("legacy and durable streams normalize preload, and history omits UI evidenc
   );
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /studio_load_skill: ReadSkillToolUIConfirmable/);
-  // A mention offers read_skill without Code, so the popover follows tool support alone.
+  // read_skill remains available without Code, so the popover depends only on tool support.
   assert.match(thread, /<SkillMentionPopover[\s\S]*?enabled=\{supportsTools\}/);
   const ui = readSrc("components/assistant-ui/tool-ui-read-skill.tsx");
   assert.match(ui, /Skill not loaded/);

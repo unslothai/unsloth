@@ -41,7 +41,7 @@ import {
   replaceMentionToken,
 } from "./skill-mention-token";
 
-// The catalog allows 1,000 skills per root; a keystroke must not render them all.
+// cap results because each root can contain 1,000 skills.
 const MAX_MENTION_RESULTS = 50;
 
 const skillMentionFormatter: Unstable_DirectiveFormatter = {
@@ -127,8 +127,7 @@ function MentionOpenSignal({
   return null;
 }
 
-// The library picks on Enter only; Tab accepts the highlighted row too, as the shared composer does.
-// Only from inside the composer: the popover stays open when focus moves to another field.
+// accept Tab only in the composer because the library handles Enter and focus may move elsewhere.
 function MentionTabAccept({
   scopeRef,
 }: {
@@ -152,14 +151,14 @@ function MentionTabAccept({
       };
       if (handleKeyDown(enter)) event.stopPropagation();
     };
-    // Capture, so the browser's focus move and the composer's own handlers never see it.
+    // intercept before the browser moves focus or the composer handles Tab.
     window.addEventListener("keydown", accept, true);
     return () => window.removeEventListener("keydown", accept, true);
   }, [active, handleKeyDown, scopeRef]);
   return null;
 }
 
-// The library's insert stops at the caret, leaving "@calculator tor"; replace the whole token.
+// replace the full token because the library insert stops at the caret and leaves trailing text.
 function MentionTokenReplacer(): null {
   const aui = useAui();
   const { registerSelectItemOverride, setCursorPosition } =
@@ -223,7 +222,7 @@ export function SkillMentionPopover({
     includeModelContextTools: false,
     formatter: skillMentionFormatter,
   });
-  // Ranked and capped here: the popover navigates and inserts from these results, not the rendered rows.
+  // cap ranked adapter results because the popover navigates them, not only rendered rows.
   const adapter = useMemo(() => {
     const byName = new Map(items.map((item) => [item.id, item]));
     return {

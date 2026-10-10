@@ -626,13 +626,13 @@ def set_skill_enabled(
 
 
 def set_all_skills_enabled(enabled: Optional[bool], *, home: Optional[Path] = None) -> list[dict]:
-    """Turn every listed skill on or off; None drops every override, back to fresh-install defaults."""
+    """set listed skills, with None clearing overrides to restore fresh-install defaults."""
     if enabled is not None and not isinstance(enabled, bool):
         raise SkillError("Skill enabled state must be a boolean or null.")
     with _LOCK:
         overrides = {} if enabled is None else _load_overrides()
         if enabled is not None:
-            # Overrides for skills not on disk right now are kept, as a single toggle keeps them.
+            # preserve overrides for skills absent from disk, matching single-skill toggles
             for record, _, _ in _discover(home):
                 if not record["valid"] or record["shadowed"]:
                     continue

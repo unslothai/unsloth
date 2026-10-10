@@ -36,7 +36,7 @@ export function mentionableSkills<T extends MentionSkill>(skills: readonly T[]):
   return skills.filter((skill) => skill.valid && !skill.shadowed && skill.enabled);
 }
 
-// Names that start with the query first, then names containing it, then descriptions; catalog order within each.
+// preserve catalog order within the name-prefix, name-substring, and description-match tiers.
 export function rankMentionSkills<T extends MentionSkill>(
   skills: readonly T[],
   query: string,

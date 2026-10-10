@@ -49,7 +49,7 @@ const EMPTY_SNAPSHOT: SkillsSnapshot = {
 };
 let snapshot = EMPTY_SNAPSHOT;
 let requestGeneration = 0;
-// Bumped only by sign-out, so a response for the previous account is never published.
+// increment only on sign-out so a prior account's response cannot be published.
 let sessionEpoch = 0;
 let lastFetchedAt = 0;
 let pending: Promise<readonly SkillRecord[]> | null = null;
@@ -155,7 +155,7 @@ export async function setSkillEnabled(
   return updated;
 }
 
-/** Every skill on or off; null restores the fresh-install defaults. */
+/** set every skill state; null restores fresh-install defaults. */
 export async function setAllSkillsEnabled(
   enabled: boolean | null,
 ): Promise<readonly SkillRecord[]> {
@@ -167,7 +167,7 @@ export async function setAllSkillsEnabled(
   });
   const skills = await parseResponse<SkillRecord[]>(response);
   if (epoch !== sessionEpoch) return skills;
-  // The server's list after the change; a read that started before it must not overwrite it.
+  // invalidate older reads before publishing the server's post-change list.
   requestGeneration += 1;
   lastFetchedAt = Date.now();
   publish({ skills, loading: false, initialized: true, error: null });

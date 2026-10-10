@@ -5581,7 +5581,7 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <SkillMentionPopover
-        // Not gated on Code: a mention offers read_skill on its own.
+        // mentions remain available without Code because each one offers read_skill.
         enabled={supportsTools}
         composerRef={editorRef}
         onConsumesEnterChange={setMentionConsumesEnter}
@@ -5589,9 +5589,7 @@ const Composer: FC<{
       />
     <ComposerPrimitive.Root
       ref={attachComposer}
-      // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
-      // all this leaves to find are the pill labels, and a search for "code" or "images" would land
-      // on the toolbar instead of on the conversation.
+      // skip find-in-page because it cannot index the textarea and would match toolbar pills.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
       data-writing-expanded={

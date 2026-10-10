@@ -40,10 +40,10 @@ test("Tab accepts the highlighted row in the main composer, as Enter does", () =
     mentionsSource,
     /if \(event\.key !== "Tab" \|\| event\.shiftKey \|\| event\.isComposing\) return;/,
   );
-  // Reuses the library's own Enter path, so the token replacer still owns the insert.
+  // reuse the library's Enter path so the token replacer still owns insertion.
   assert.match(mentionsSource, /key: "Enter",\s*shiftKey: false,/);
   assert.match(mentionsSource, /const active = open && items\.length > 0;/);
-  // The popover stays open when focus leaves the composer; Tab elsewhere must stay that field's.
+  // focus may leave while the popover is open; Tab elsewhere must stay with that field.
   assert.match(mentionsSource, /!scopeRef\.current\?\.contains\(event\.target\)/);
   assert.match(mentionsSource, /<MentionTabAccept scopeRef=\{composerRef\} \/>/);
   const thread = readFileSync(

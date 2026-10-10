@@ -77,7 +77,7 @@ type View = { kind: "library" } | { kind: "new" } | { kind: "skill"; key: string
 const EMPTY_DRAFT: SkillDraft = { name: "", description: "", instructions: "" };
 const LIBRARY: View = { kind: "library" };
 const SECTIONS: ReadonlyArray<SkillRecord["source"]> = ["agents", "claude", "bundled"];
-// `changing` value while a bulk change is in flight; skill names cannot contain "*".
+// `*` is the bulk-change sentinel because skill names cannot contain it.
 const ALL_SKILLS = "*";
 
 // A shadowed row shares its name with the one that wins, so skills are keyed by source too.

@@ -6050,7 +6050,7 @@ def _skill_tool_tip(
     create_tip = (
         " To create a skill, read skill-creator and then call create_skill." if can_create else ""
     )
-    # Code off (a mention offers read_skill alone) or hosted Code: a skill's scripts are local.
+    # code-off mentions and hosted Code can read skills but cannot run bundled local scripts
     scripts_tip = (
         ""
         if can_run_scripts
