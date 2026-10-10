@@ -185,3 +185,54 @@ def test_a_checkpoint_from_this_layout_is_not_migrated_again():
     second.load_state_dict(saved)
     assert second.param_groups[0]["lr"] == pytest.approx(EMBEDDING_LR * 0.5)
     assert second.state_dict()["param_groups"][0].get("unsloth_embedding_split")
+
+
+def test_greedy_lr_keeps_its_per_group_arrays_on_the_same_resume():
+    torch = pytest.importorskip("torch")
+    GreedyLR = getattr(pytest.importorskip("transformers.optimization"), "GreedyLR", None)
+    if GreedyLR is None:
+        pytest.skip("transformers without GreedyLR")
+    from unsloth.trainer import _install_legacy_scheduler_resume
+
+    model = _model(torch.nn, tied = False)
+    _, decay = _optimizer(model)
+    params = list(model.named_parameters())
+    old = torch.optim.AdamW(
+        [
+            {"params": [p for n, p in params if n in decay], "weight_decay": 0.01},
+            {"params": [p for n, p in params if n not in decay], "weight_decay": 0.0},
+        ],
+        lr = LR,
+    )
+    saved_scheduler = GreedyLR(old, min_lr = 0.0, max_lr = 1.0).state_dict()
+
+    new, _ = _optimizer(model)
+    scheduler = _install_legacy_scheduler_resume(GreedyLR(new, min_lr = 0.0, max_lr = 1.0), new)
+    new.load_state_dict(old.state_dict())
+    scheduler.load_state_dict(saved_scheduler)
+    for key in ("max_lrs", "_init_lrs", "min_lrs"):
+        assert len(getattr(scheduler, key)) == len(new.param_groups), key
+
+
+def test_q_galore_embeddings_get_embedding_learning_rate():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("bitsandbytes")
+    from unsloth.trainer import QGaloreConfig
+
+    model = _model(torch.nn, tied = False)
+    args = SimpleNamespace(
+        learning_rate = LR,
+        weight_decay = 0.0,
+        adam_beta1 = 0.9,
+        adam_beta2 = 0.999,
+        adam_epsilon = 1e-8,
+    )
+    trainer = SimpleNamespace(args = args, model = model, optimizer = None)
+    config = QGaloreConfig(rank = 2, weight_quant = False, target_modules = ["proj"])
+    optimizer = UnslothTrainer._create_q_galore_optimizer(trainer, config, EMBEDDING_LR, model)
+    named = {id(p): n for n, p in model.named_parameters()}
+    lrs = {named[id(p)]: g["lr"] for g in optimizer.param_groups for p in g["params"]}
+
+    assert lrs["model.embed_tokens.weight"] == EMBEDDING_LR, lrs
+    assert lrs["lm_head.weight"] == EMBEDDING_LR, lrs
+    assert lrs["model.proj.weight"] == LR, lrs

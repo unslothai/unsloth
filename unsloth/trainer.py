@@ -711,6 +711,21 @@ class UnslothTrainingArguments(TrainingArguments):
             )
 
 
+def _embedding_weight_ids(model):
+    """Full finetuning has no modules_to_save copy, so the trainable embedding and lm_head
+    are found by identity; matching on the PEFT name alone trained them at the base lr."""
+    embedding_ids = set()
+    for owner in (model, getattr(model, "module", None)):
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            try:
+                weight = getattr(getattr(owner, getter)(), "weight", None)
+            except Exception:
+                continue
+            if weight is not None:
+                embedding_ids.add(id(weight))
+    return embedding_ids
+
+
 def _create_unsloth_optimizer(
     model,
     optimizer_cls,
@@ -740,17 +755,7 @@ def _create_unsloth_optimizer(
     # A subset of non_embeddings, not its own dict: legacy resume replays the old two-group order.
     lora_plus_names = set()
 
-    # Full finetuning has no modules_to_save copy, so the trainable embedding and lm_head
-    # are found by identity; matching on the PEFT name alone trained them at the base lr.
-    embedding_ids = set()
-    for owner in (model, getattr(model, "module", None)):
-        for getter in ("get_input_embeddings", "get_output_embeddings"):
-            try:
-                weight = getattr(getattr(owner, getter)(), "weight", None)
-            except Exception:
-                continue
-            if weight is not None:
-                embedding_ids.add(id(weight))
+    embedding_ids = _embedding_weight_ids(model)
 
     # Name-only classification of releases before the identity match, kept to resume their checkpoints.
     previous_groups = {"non_embeddings": {}, "embeddings": {}}
@@ -1010,7 +1015,7 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
         state_dict = dict(state_dict)
         if getattr(built, "_unsloth_loaded_previous", False):
             # Per-group lists of the old layout: keep the ones built from this optimizer.
-            for key in ("base_lrs", "_last_lr", "min_lrs"):
+            for key in ("base_lrs", "_last_lr", "min_lrs", "max_lrs", "_init_lrs"):
                 state_dict.pop(key, None)
             base.load_state_dict(self, state_dict)
             self._last_lr = [group["lr"] for group in self.optimizer.param_groups]
@@ -1199,6 +1204,7 @@ class UnslothTrainer(SFTTrainer):
         if embedding_lr is not None:
             # Fast param -> name lookup, O(N) instead of O(N*M).
             param_to_name = {id(p): name for name, p in model.named_parameters()}
+            embedding_ids = _embedding_weight_ids(model)
 
             new_groups = []
             for group in param_groups:
@@ -1211,8 +1217,11 @@ class UnslothTrainer(SFTTrainer):
                 other_params = []
                 for p in group["params"]:
                     name = param_to_name.get(id(p))
-                    if name and name.endswith("modules_to_save.default.weight"):
-                        partial_name = name[: -len(".modules_to_save.default.weight")]
+                    if name and (
+                        name.endswith("modules_to_save.default.weight") or id(p) in embedding_ids
+                    ):
+                        partial_name = name.removesuffix(".modules_to_save.default.weight")
+                        partial_name = partial_name.removesuffix(".weight")
                         partial_name = partial_name[partial_name.rfind(".") + 1 :]
                         print(
                             f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
