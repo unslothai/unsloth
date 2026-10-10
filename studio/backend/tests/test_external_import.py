@@ -370,6 +370,38 @@ def test_claude_releases_filtered_records_while_streaming(tmp_path, monkeypatch)
     assert len(messages) == 1
 
 
+def test_claude_duplicate_reply_ids_do_not_merge_sequential_responses(claude_home):
+    def block(uuid, reply, tool_id, parent):
+        record = c_asst(
+            uuid,
+            [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"cmd": "ls"}}],
+            parent = parent,
+        )
+        record["message"]["id"] = reply
+        return record
+
+    def result(uuid, tool_id, parent):
+        return c_user(
+            uuid, [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}], parent = parent
+        )
+
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            block("a1", "duplicate", "t1", "u1"),
+            result("r1", "t1", "a1"),
+            block("a2", "duplicate", "t2", "r1"),
+            result("r2", "t2", "a2"),
+            c_asst("a3", [{"type": "text", "text": "done"}], parent = "r2"),
+            c_user("u2", "rewind", parent = "a1"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, ids[0], ids[1], ids[2], ids[1]]
+
+
 @pytest.mark.parametrize("logical", ["never-written", "at2"])
 def test_claude_parallel_tool_calls_and_compaction_keep_one_conversation(claude_home, logical):
     def block(uuid, reply, content, parent):

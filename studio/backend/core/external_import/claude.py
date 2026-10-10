@@ -109,12 +109,19 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             records.append(line)
     imported: dict[str, str] = {}
     # parallel tool results hang off their own call; continue from the reply's last block, not a fork.
-    reply_of: dict[str, str] = {}
-    last_block: dict[str, str] = {}
+    tail_of: dict[str, str] = {}
+    active_reply = None
+    active_blocks: list[str] = []
     open_calls: dict[str, dict] = {}
     messages: list[dict] = []
     for index, record in enumerate(records):
         uuid = str(record.get("uuid") or "")
+        reply = record.get("message", {}).get("id") if record["type"] == "assistant" else None
+        if record["type"] != "assistant" or reply != active_reply:
+            if active_blocks:
+                tail_of.update((block, active_blocks[-1]) for block in active_blocks)
+            active_reply = reply
+            active_blocks = []
         message_id = stable_id("claude", session_id, uuid or f"index:{index}", length = 16)
         parts, results = _parts(record, message_id)
         for call_id, result in results.items():
@@ -128,7 +135,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         while parent and parent not in imported and parent not in seen:
             seen.add(parent)
             parent = links.get(parent)
-        parent = last_block.get(reply_of.get(parent), parent)
+        parent = tail_of.get(parent, parent)
         timestamp = iso_ms(record.get("timestamp"))
         messages.append(
             {
@@ -143,10 +150,10 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         )
         if uuid:
             imported[uuid] = message_id
-            reply = record.get("message", {}).get("id") if record["type"] == "assistant" else None
             if reply:
-                reply_of[uuid] = reply
-                last_block[reply] = uuid
+                active_blocks.append(uuid)
+    if active_blocks:
+        tail_of.update((block, active_blocks[-1]) for block in active_blocks)
     return Transcript(
         session_id = session_id,
         thread_id = thread_id,
