@@ -860,7 +860,7 @@ def test_local_ini_symlink_leaving_the_model_folder_is_not_read(tmp_path):
     assert "4096" in mi.locate_model_ini(str(model / "M-Q8_0.gguf")).text
 
 
-@pytest.mark.parametrize("value", ["0,0", "1,3.5e38", "-1,2"])
+@pytest.mark.parametrize("value", ["0,0", "1,3.5e38", "-1,2", "1e-40,1", "3e38,3e38"])
 def test_degenerate_tensor_splits_are_ignored_not_fatal(value):
     compiled = parse_model_ini(f"ts = {value}\nc = 4096\n", quant = None, gguf_filename = None)
     assert compiled.args == ["--ctx-size", "4096"]
@@ -890,3 +890,11 @@ def test_hf_snapshot_ini_linking_into_its_repos_blobs_is_read(tmp_path):
     (snap / "unsloth.ini").unlink()
     (snap / "unsloth.ini").symlink_to(other / "f00d")
     assert mi.locate_model_ini(str(snap / "M-Q8_0.gguf")) is None
+
+
+def test_spec_type_is_left_to_studios_speculative_setting():
+    compiled = parse_model_ini(
+        "spec-type = draft-mtp\nspec-draft-n-max = 3\n", quant = None, gguf_filename = None
+    )
+    assert "--spec-type" not in compiled.args
+    assert [i["key"] for i in compiled.ignored] == ["spec-type"]

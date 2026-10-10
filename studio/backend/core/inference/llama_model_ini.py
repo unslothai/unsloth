@@ -382,6 +382,9 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         return [opt.negative] if opt.negative else []
     if not v:
         raise ValueError("missing value")
+    if opt.flag == "--spec-type":
+        # A raw --spec-type makes Studio skip attaching the detected drafter, and repeats accumulate.
+        raise ValueError("use Studio's speculative decoding setting instead")
     if opt.flag == "--frequency-penalty":
         # Every chat request carries its own frequency_penalty (default 0), which would override this.
         raise ValueError("set by each chat request, so a file value would never apply")
@@ -420,7 +423,12 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         # The boundary refuses a zero total or a non-float32 ratio; ignore the key, not the load.
         if any(n < 0 or n > 3.4e38 for n in numbers) or sum(numbers) <= 0:
             raise ValueError("expected non-negative ratios with a positive total")
-        return [opt.flag, ",".join(parts)]
+        tokens = [opt.flag, ",".join(parts)]
+        # The boundary's own float32 rules (subnormal shares, prefix-sum overflow).
+        from .llama_server_args import parse_tensor_split_override
+
+        parse_tensor_split_override(tokens)
+        return tokens
     if opt.kind == "pattern":
         if len(v) > 1024 or re.search(r"\s", v) or "=" not in v:
             raise ValueError("expected <tensor pattern>=<buffer type>")
