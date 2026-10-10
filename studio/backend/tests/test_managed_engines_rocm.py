@@ -186,6 +186,13 @@ def test_amd_support_ignores_libraries_only_ld_library_path_provides(monkeypatch
         assert not amd._a_bare_soname_resolves(soname, with_ld_library_path = False)
     monkeypatch.setattr(amd, "_system_library_dirs", lambda: [str(custom)])
     assert amd._a_bare_soname_resolves("libnuma.so.1", with_ld_library_path = False)
+    # A host whose loader cache cannot be read proves nothing; the engine needs positive proof.
+    monkeypatch.setattr(amd, "_system_library_dirs", lambda: [])
+    monkeypatch.setattr(amd, "_ld_cache_sonames", lambda: None)
+    assert amd._a_bare_soname_resolves("libnuma.so.1")
+    assert not amd._a_bare_soname_resolves(
+        "libnuma.so.1", with_ld_library_path = False, when_unknown = False
+    )
 
 
 def test_amd_support_needs_a_c_compiler(amd_host, monkeypatch):

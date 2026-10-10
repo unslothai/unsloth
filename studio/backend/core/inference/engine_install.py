@@ -828,7 +828,7 @@ def _rocm_reason(
         for soname, package in ROCM_SYSTEM_LIBRARIES.items()
         # The install and the engine both run without the caller's LD_LIBRARY_PATH.
         if not (ROCM_HOME / "lib" / soname).exists()
-        and not _a_bare_soname_resolves(soname, with_ld_library_path = False)
+        and not _a_bare_soname_resolves(soname, with_ld_library_path = False, when_unknown = False)
     }
     if missing:
         return (

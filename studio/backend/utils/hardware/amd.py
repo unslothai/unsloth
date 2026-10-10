@@ -890,7 +890,12 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
     return _ld_cache_sonames_cached
 
 
-def _a_bare_soname_resolves(soname: str, *, with_ld_library_path: bool = True) -> bool:
+def _a_bare_soname_resolves(
+    soname: str,
+    *,
+    with_ld_library_path: bool = True,
+    when_unknown: bool = True,
+) -> bool:
     """Whether a manifest's bare library name still resolves to something on this host.
 
     A manifest may name its library by soname alone and leave the loader to find it, which
@@ -904,7 +909,8 @@ def _a_bare_soname_resolves(soname: str, *, with_ld_library_path: bool = True) -
     this cannot enumerate answers True, because calling a live driver stale would demote
     the node hint on a host whose other vendor really does have a path.
 
-    ``with_ld_library_path = False`` asks for a child that does not inherit LD_LIBRARY_PATH.
+    ``with_ld_library_path = False`` asks for a child that does not inherit LD_LIBRARY_PATH;
+    ``when_unknown`` is the answer when the cache cannot be read (False for a hard requirement).
     """
     for _directory in (
         _dynamic_loader_search_dirs() if with_ld_library_path else _system_library_dirs()
@@ -916,7 +922,7 @@ def _a_bare_soname_resolves(soname: str, *, with_ld_library_path: bool = True) -
             continue
     _cache = _ld_cache_sonames()
     if _cache is None:
-        return True
+        return when_unknown
     return soname in _cache
 
 
