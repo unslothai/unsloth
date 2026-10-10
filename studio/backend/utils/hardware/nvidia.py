@@ -392,6 +392,40 @@ def _linux_nvidia_procfs_gpu_count() -> int:
     return len(entries)
 
 
+# Native tensor-core support: FP8 from Ada / Hopper (sm_89), NVFP4 from Blackwell (sm_100, sm_120).
+_CHECKPOINT_QUANT_MIN_CAPABILITY = (("fp8", (8, 9)), ("nvfp4", (10, 0)))
+
+
+def get_checkpoint_quant_formats() -> list[str]:
+    """Prequantized checkpoint formats every NVIDIA card runs natively (Hub Recommended filter).
+    A load may land on any card, so the least capable one answers; an unreadable card counts as none."""
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    capabilities: list[tuple[int, int]] = []
+    for line in result.stdout.strip().splitlines():
+        major, _, minor = line.strip().partition(".")
+        if not (major.isdigit() and minor.isdigit()):
+            return []
+        capabilities.append((int(major), int(minor)))
+    if not capabilities:
+        return []
+    floor = min(capabilities)
+    return [fmt for fmt, needed in _CHECKPOINT_QUANT_MIN_CAPABILITY if floor >= needed]
+
+
 def get_physical_gpu_inventory() -> dict[str, Any]:
     """Every NVIDIA GPU the driver enumerates, with no visibility mask and no torch. Display-only inventory: ``index`` is nvidia-smi's own row number, a physical id and NOT something a caller may pin, because the whole point of this probe is that PyTorch cannot open these devices. A failed probe comes back as a structured unavailable result, so this never raises out of an endpoint."""
     rows = _query_gpu_inventory("get_physical_gpu_inventory")

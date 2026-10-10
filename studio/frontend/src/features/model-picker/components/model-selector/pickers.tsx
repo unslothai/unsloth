@@ -228,6 +228,7 @@ import {
   estimateQuantBytes,
   hfModelFitsDevice,
   isMlxId,
+  isCapableCheckpointQuant,
   isMobileVariant,
   isRecommendableFormat,
   loadScopedGpu,
@@ -3057,6 +3058,19 @@ export function HubModelPicker({
   // The saved VRAM Budget, threaded into every fit call here. Passing it to the quant rows alone
   // left the parent rows and the "Fits on device" filter on the 0.97 default.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
+  // FP8 / NVFP4 checkpoints every GPU here runs natively: chat lists them past the GGUF-only rule and
+  // whatever their size. Task pages keep their own formats.
+  const quantFormatsKey = gpu.checkpointQuantFormats.join(",");
+  const runsCheckpointQuant = useCallback(
+    (r: { id: string; quantMethod?: string }) =>
+      !task &&
+      isCapableCheckpointQuant(
+        r.id,
+        r.quantMethod,
+        quantFormatsKey ? quantFormatsKey.split(",") : [],
+      ),
+    [task, quantFormatsKey],
+  );
   // Whether THIS picker's rows load through the diffusion backend. Not `Boolean(task)`: Audio is
   // task-scoped but runs its GGUFs under llama.cpp / whisper.
   const diffusionLoad = useMemo(() => {
@@ -3650,6 +3664,14 @@ export function HubModelPicker({
     },
     [deviceType, task],
   );
+  // A capable FP8 / NVFP4 checkpoint passes the runtime gate's quant-method check (vLLM loads
+  // compressed-tensors), never its pipeline check: an FP8 image model stays off the chat list.
+  const chatSupportedCheckpointQuant = useCallback(
+    (r: HfModelResult) =>
+      isChatSupported(r) ||
+      (runsCheckpointQuant(r) && isChatSupported({ ...r, quantMethod: undefined })),
+    [isChatSupported, runsCheckpointQuant],
+  );
 
   const isTaskRuntimeSupported = useCallback(
     (result: HfModelResult) => {
@@ -3705,11 +3727,15 @@ export function HubModelPicker({
         task
           ? isKnownGgufRepo(id) ||
             Boolean(catalog && artifactForRepoId(id, catalog))
-          : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+          : !chatOnly ||
+            isRecommendableFormat(id, isKnownGgufRepo(id), isMac) ||
+            runsCheckpointQuant({ id }),
       )
       // Member repos would collapse into the canonical group row, but nothing renders those rows yet
       // and a task-scoped picker's `models` is exactly group members, so hiding them emptied it.
-      .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
+      .filter(
+        (id) => runsCheckpointQuant({ id }) || !/-FP8[-.]|FP8-Dynamic/i.test(id),
+      );
     const gguf: string[] = [];
     const hub: string[] = [];
     for (const id of all) {
@@ -3727,6 +3753,7 @@ export function HubModelPicker({
     task,
     catalog,
     taskCatalogSeedIds,
+    runsCheckpointQuant,
   ]);
 
   const showHfSection = debouncedQuery.trim().length > 0;
@@ -3856,8 +3883,10 @@ export function HubModelPicker({
           isHidden: isHiddenModelId(r.id),
           format: formatFilter,
           matchesFormat: matchesFormatFilter(r.id, r.isGguf, formatFilter),
-          matchesTask: isChatSupported(r),
-          isRecommendable: isRecommendableFormat(r.id, r.isGguf, isMac),
+          matchesTask: chatSupportedCheckpointQuant(r),
+          isRecommendable:
+            isRecommendableFormat(r.id, r.isGguf, isMac) ||
+            runsCheckpointQuant(r),
         })
       );
     };
@@ -3881,6 +3910,7 @@ export function HubModelPicker({
     const fits = (r: HfModelResult) =>
       // Downloaded models show regardless of fit.
       cachedIdFor(r.id) !== null ||
+      runsCheckpointQuant(r) ||
       // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
       // hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget)?.fits ??
@@ -3945,6 +3975,8 @@ export function HubModelPicker({
     communityRecommendedEnabled,
     communityBrowse.results,
     isLoadableCommunityRepo,
+    runsCheckpointQuant,
+    chatSupportedCheckpointQuant,
   ]);
 
   // Per-row meta and VRAM badge from the recommended listing's own metadata, with the curated
@@ -5241,13 +5273,14 @@ export function HubModelPicker({
   const searchIdsFrom = useCallback(
     (rows: readonly HfModelResult[], owned: (id: string) => boolean) =>
       rows
-        .filter(isChatSupported)
+        .filter(chatSupportedCheckpointQuant)
         .filter(isTaskRuntimeSupported)
         .filter((r) => !rowFilter || rowFilter({ id: r.id, task: r.pipelineTag }))
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
             cachedIdFor(r.id) !== null ||
+            runsCheckpointQuant(r) ||
             searchRowFits(r),
         )
         .map((result) => result.id)
@@ -5261,9 +5294,14 @@ export function HubModelPicker({
         // empty Recommended view.
         .filter(
           (id) =>
-            !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+            !chatOnly ||
+            isRecommendableFormat(id, isKnownGgufRepo(id), isMac) ||
+            runsCheckpointQuant({ id }),
         )
-        .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
+        .filter(
+          (id) =>
+            runsCheckpointQuant({ id }) || !/-FP8[-.]|FP8-Dynamic/i.test(id),
+        )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
         ),
@@ -5271,7 +5309,7 @@ export function HubModelPicker({
       recommendedSet,
       chatOnly,
       isKnownGgufRepo,
-      isChatSupported,
+      chatSupportedCheckpointQuant,
       isTaskRuntimeSupported,
       formatFilter,
       fitOnDeviceOnly,
@@ -5280,6 +5318,7 @@ export function HubModelPicker({
       isMac,
       curatedOfferable,
       rowFilter,
+      runsCheckpointQuant,
     ],
   );
 
