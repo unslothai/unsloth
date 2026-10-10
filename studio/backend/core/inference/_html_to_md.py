@@ -208,6 +208,9 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
+_ORDINAL_SUFFIXES = frozenset({"st", "nd", "rd", "th"})
+_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
+
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
 _HEADER_LINK_DENSITY = 0.93
 # below this the ratio is noise: link lists start at 182 chars, link-dense headers stop at 93
@@ -496,6 +499,8 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
+        self._sup_starts: list[tuple[list[str], int] | None] = []
+
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
 
@@ -538,22 +543,41 @@ class _MarkdownRenderer(HTMLParser):
         # Tally once, on the emit reaching the frame; counting again on flush doubled it.
         if frame is not None and not nested_open:
             frame.rendered_chars += len(measured.strip())
-            frame.parts.append(text)
-            return
+        elif self._in_link and self._heading_marks:
+            self._link_heading_parts.append(text)
+        self._emit_target().append(text)
+
+    def _emit_target(self) -> list[str]:
+        frame = self._header_stack[-1] if self._header_stack else None
+        if frame is not None and not self._nested_buffer_open(frame):
+            return frame.parts
         if self._in_link:
-            self._link_text_parts.append(text)
-            if self._heading_marks:
-                self._link_heading_parts.append(text)
-        elif self._in_cell:
-            self._cell_parts.append(text)
-        elif self._in_pre:
-            self._pre_parts.append(text)
-        elif self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
-            self._table_stack[-1].parts.append(text)
-        elif self._bq_stack:
-            self._bq_stack[-1].append(text)
-        else:
-            self._out.append(text)
+            return self._link_text_parts
+        if self._in_cell:
+            return self._cell_parts
+        if self._in_pre:
+            return self._pre_parts
+        if self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
+            return self._table_stack[-1].parts
+        if self._bq_stack:
+            return self._bq_stack[-1]
+        return self._out
+
+    def _finish_sup(self) -> None:
+        opened = self._sup_starts.pop()
+        if opened is None or opened[0] is not self._emit_target():
+            return
+        target, start = opened
+        raw = "".join(target[start:]).strip()
+        shown = self._site_links.clean(raw) if self._site_links is not None else raw
+        if (
+            not shown
+            or "\n" in shown
+            or shown.startswith("[")
+            or shown.lower() in _ORDINAL_SUFFIXES
+        ):
+            return
+        target[start:] = [f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"]
 
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
@@ -1008,6 +1032,11 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "br":
             self._emit("\n")
 
+        elif tag == "sup":
+            target = self._emit_target()
+            reference = "reference" in (attr_dict.get("class") or "").split()
+            self._sup_starts.append(None if reference else (target, len(target)))
+
         elif tag in _BLOCK_TAGS:
             if not self._li_marker_pending:
                 self._emit("\n\n")
@@ -1106,6 +1135,9 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
+
+        elif tag == "sup" and self._sup_starts:
+            self._finish_sup()
 
         elif tag in _BLOCK_TAGS:
             self._emit("\n\n")

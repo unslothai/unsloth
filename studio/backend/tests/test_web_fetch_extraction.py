@@ -727,6 +727,40 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
     assert "[[1]](#cite_note-1)" in out
 
 
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("(2<sup>53</sup> &ndash; 1)", "(2^53 – 1)"),
+        ("2<sup>&minus;52</sup>", "2^−52"),
+        ("1.898&times;10<sup>27</sup> kg", "1.898×10^27 kg"),
+        ("6.02214076&times;10<sup>23</sup> mol<sup>&minus;1</sup>", "6.02214076×10^23 mol^−1"),
+        ("2<sup><i>n</i>+1</sup> nodes", "2^(*n*+1) nodes"),
+        ("2<sup>n + 1</sup>", "2^(n + 1)"),
+        ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
+    ],
+)
+def test_superscripts_keep_their_exponent(markup, expected):
+    assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+def test_footnote_superscripts_render_unchanged():
+    html = (
+        '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
+        "volume<sup>[13]</sup></p>"
+    )
+    assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
+
+
+def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):
+    body = (
+        "<html><body><main><article><p>Jupiter has a mass of 1.898&times;10<sup>27</sup> kg"
+        '<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and a surface area of '
+        "6.1419&times;10<sup>10</sup> km<sup>2</sup>.</p></article></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://en.wikipedia.org/wiki/Jupiter", body, "text/html")
+    assert "1.898×10^27 kg[[12]](#cite_note-12) and a surface area of 6.1419×10^10 km^2." in out
+
+
 def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
     from core.inference import tools
 
