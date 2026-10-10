@@ -248,7 +248,7 @@ def _template_render_stats(tokenizer, rows):
 
 
 def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
-    """sample across the dataset, or from the start for streaming datasets."""
+    """sample finite datasets evenly, adding one missed sparse tool row; stream from the front."""
     n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
     sampled = []
     try:
