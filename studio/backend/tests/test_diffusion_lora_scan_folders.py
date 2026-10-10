@@ -235,3 +235,13 @@ def test_generation_rechecks_access_on_resolve(catalog, monkeypatch):
     monkeypatch.setattr(account_access, "model_visible", lambda reference, **_: False)
     with pytest.raises(FileNotFoundError):
         dl.resolve_one("own", 1.0, catalog = catalog_snapshot)
+
+
+def test_a_marked_gguf_beside_a_model_is_not_a_variant(tmp_path):
+    from hub.services.models.common import _main_gguf_files
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (tmp_path / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (tmp_path / "style.json").write_text(json.dumps(_MARK))
+    assert [p.name for p in _main_gguf_files(tmp_path)] == ["model-Q4_K_M.gguf"]

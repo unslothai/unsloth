@@ -742,10 +742,13 @@ def _sum_file_sizes(paths) -> int:
 
 
 def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path]:
+    from core.inference.diffusion_lora import is_image_lora_file
     return [
         entry
         for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
-        if _is_main_gguf_filename(entry.name) and not is_appledouble_metadata(entry)
+        if _is_main_gguf_filename(entry.name)
+        and not is_appledouble_metadata(entry)
+        and not is_image_lora_file(entry)
     ]
 
 
