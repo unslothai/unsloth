@@ -200,9 +200,7 @@ def test_reprepare_uses_normalized_arguments_for_replay_and_dedup():
     first = controller.reprepare_call(first)
 
     assert first.card_id == "painted_a"
-    assert first.as_assistant_tool_call()["function"]["arguments"] == (
-        '{"image":"attached_image"}'
-    )
+    assert first.as_assistant_tool_call()["function"]["arguments"] == ('{"image":"attached_image"}')
     assert first.key == canonical_tool_call_key(tool_name, {"image": "attached_image"})
     controller.record_result(first, "ok")
 
