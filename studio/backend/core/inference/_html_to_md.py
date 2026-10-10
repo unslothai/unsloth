@@ -1386,8 +1386,8 @@ def _select_main_scope_render(
     tag: str,
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
-) -> tuple[int, str, int]:
-    """return the best eligible score, subtree, and count; cap header credit at retained prose."""
+) -> tuple[int, str, int, int]:
+    """return the best eligible score, subtree, count, and visible length; cap header credit at retained prose."""
     renderer = _new_renderer(
         source_html,
         frozenset({tag}),
@@ -1409,19 +1409,49 @@ def _select_main_scope_render(
     )
     best_len = 0
     best_render = ""
+    best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
         scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
         if site_links is not None:
             scored = site_links.clean(scored)
-        prose = _visible_chars(scored) - scoring.scope_heading_prose[i]
+        visible = _visible_chars(scored)
+        prose = visible - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
         size = len(scored) + min(scoring.scope_dropped[i], len(scored))
         if size > best_len:
             best_len = size
             best_render = rendered
-    return best_len, best_render, sum(1 for seg in renderer.scope_segments if seg.strip())
+            best_visible = visible
+    return (
+        best_len,
+        best_render,
+        sum(1 for seg in renderer.scope_segments if seg.strip()),
+        best_visible,
+    )
+
+
+def _render_main_document(
+    source_html: str, site_links: SiteLinks | None, span_char_limit: int
+) -> tuple[int, str]:
+    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit)
+    rendered = _strip_boilerplate_lines(_cleanup("".join(renderer._out)), site_links)
+    scoring = (
+        _new_renderer(
+            source_html,
+            None,
+            True,
+            span_char_limit = 0,
+            header_decisions = renderer.header_decisions,
+        )
+        if renderer._has_generated_spans
+        else renderer
+    )
+    scored = _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    if site_links is not None:
+        scored = site_links.clean(scored)
+    return _visible_chars(scored), rendered
 
 
 def _visible_chars(text: str) -> int:
@@ -1495,43 +1525,27 @@ def html_to_markdown(
     rendered = ""
     full_rendered = ""
     if main_content:
-        length, rendered, articles = _select_main_scope_render(
+        length, rendered, articles, article_visible = _select_main_scope_render(
             source_html, "article", site_links, span_limit
         )
         if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
-            main_length, main_rendered, _ = _select_main_scope_render(
+            main_length, main_rendered, _, main_visible = _select_main_scope_render(
                 source_html, "main", site_links, span_limit
             )
-            clean = site_links.clean if site_links is not None else str
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
-                full_rendered = _strip_boilerplate_lines(
-                    _render(
-                        source_html,
-                        None,
-                        strip_header = True,
-                        site_links = site_links,
-                        span_char_limit = span_limit,
-                    ),
-                    site_links,
+                main_length, full_rendered = _render_main_document(
+                    source_html, site_links, span_limit
                 )
-                main_length = _visible_chars(clean(full_rendered))
                 main_rendered = full_rendered
+                main_visible = main_length
             if main_length >= _MIN_MAIN_CONTENT_CHARS and (
-                length < _MIN_MAIN_CONTENT_CHARS
-                or _visible_chars(clean(main_rendered)) > 2 * _visible_chars(clean(rendered))
+                length < _MIN_MAIN_CONTENT_CHARS or main_visible > 2 * article_visible
             ):
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
-            rendered = full_rendered or _strip_boilerplate_lines(
-                _render(
-                    source_html,
-                    None,
-                    strip_header = True,
-                    site_links = site_links,
-                    span_char_limit = span_limit,
-                ),
-                site_links,
-            )
+            if not full_rendered:
+                _, full_rendered = _render_main_document(source_html, site_links, span_limit)
+            rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
     return site_links.finish(rendered) if site_links is not None else rendered

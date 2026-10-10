@@ -1632,6 +1632,22 @@ def test_link_heavy_comments_do_not_pull_main_over_the_post():
     assert "Thanks for writing this up." not in out
 
 
+def test_generated_table_spans_do_not_pull_main_over_the_post():
+    post = "Primary article prose with real details. " * 30
+    related = "Related card teaser. " * 12
+    rows = "".join(f"<tr><td>row {i}</td></tr>" for i in range(1, 80))
+    table = f"<table><tr><td rowspan='80'>repeated marker</td><td>row 0</td></tr>{rows}</table>"
+    html = (
+        "<body><main>"
+        f"<article><h1>Primary</h1><p>{post}</p></article>"
+        f"<article><p>{related}</p></article>{table}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Primary article prose" in out
+    assert "Related card teaser." not in out
+
+
 @pytest.mark.parametrize("hide", ["hidden", "aria-hidden='true'", "style='display:none'"])
 def test_hidden_duplicate_article_is_not_a_second_card(hide):
     post = "The post explains the topic in full detail here. " * 20
