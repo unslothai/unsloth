@@ -53,6 +53,7 @@ from .diffusion_content import (
 )
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
 from .diffusion_families import (
+    named_variant_base,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     IDEOGRAM4_FAMILY_NAME,
@@ -70,6 +71,7 @@ from .diffusion_families import (
     cache_holds_files,
     comfy_flow_shift_for,
     default_generation_params,
+    generation_params_with_grid,
     detect_family_for_pick,
     excluded_model_reason,
     prefer_ungated_mirror,
@@ -270,7 +272,13 @@ from .diffusion_precision import (
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
-from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_flow_shift import (
+    SAMPLE_SIGMAS_KEY,
+    apply_comfy_flow_shift,
+    install_sample_sigmas,
+    pipe_sample_sigmas,
+    sample_sigmas_for_steps,
+)
 from .diffusion_single_file_converters import (
     CONVERTERS as _ORIGINAL_LAYOUT_CONVERTERS,
     load_original_layout_transformer,
@@ -836,6 +844,7 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
         # pipeline is ever built.
         "qwen/qwen-image-2.1",
+        "qwen/qwen-image-2.1-turbo",
         # Krea 2: assembled per-component. Turbo = inference; Raw = the LoRA training base.
         "krea/krea-2-turbo",
         "krea/krea-2-raw",
@@ -1127,7 +1136,9 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
                 vae_file = vae_file,
             )
             hf_token = (kwargs.get("hf_token") or "").strip() or None
-            base = _resolve_base_repo(repo_id, kwargs.get("base_repo"), fam, hf_token)
+            base = _resolve_base_repo(
+                repo_id, kwargs.get("base_repo"), fam, hf_token, kwargs.get("gguf_filename")
+            )
             overrides = self._plan_component_overrides(
                 fam,
                 repo_id,
@@ -1565,14 +1576,33 @@ def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
     return state_dict
 
 
+def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
+    """``sample_sigmas`` from the model_index.json the pipeline was just built from, never from the network."""
+    from .diffusion_comfy_components import read_model_index
+
+    try:
+        index = read_model_index(
+            base,
+            base_local_dir = base_local_dir,
+            local_files_only = True,
+            cache_dir = hub_cache_dir(),
+        )
+    except Exception:  # noqa: BLE001 - an uncached or unreadable index carries no grid
+        return None
+    return index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None
+
+
 def _generation_defaults_for(
-    repo_id: Optional[str], gguf_filename: Optional[str], base_repo: Optional[str]
+    repo_id: Optional[str],
+    gguf_filename: Optional[str],
+    base_repo: Optional[str],
+    grid: Optional[tuple[float, ...]] = None,
 ) -> Optional[dict[str, float]]:
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
-        steps, guidance = default_generation_params(
-            gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo
+        steps, guidance = generation_params_with_grid(
+            grid, gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo
         )
     except Exception:  # noqa: BLE001 - status must not fail on a recipe lookup
         return None
@@ -1951,15 +1981,25 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
         return None
 
 
-def _quadratic_attention(target: Any, engaged_backend: Optional[str] = None) -> bool:
+def _quadratic_attention(
+    target: Any,
+    engaged_backend: Optional[str] = None,
+    pipe: Any = None,
+) -> bool:
     """Whether attention can only run on SDPA math (quadratic memory); False when unknown.
     Any engaged non-native backend is a fused kernel, so the SDPA probe only speaks for native."""
     if engaged_backend is not None and str(engaged_backend) != "native":
         return False
     try:
-        return bool(sdpa_math_only(target))
+        if not sdpa_math_only(target):
+            return False
     except Exception:  # noqa: BLE001 - a broken probe must never block a generation
         return False
+    try:
+        from .diffusion_qwenimage21_math import bounded_math_attention
+        return not bounded_math_attention(pipe)
+    except Exception:  # noqa: BLE001 - known math stays quadratic unless every processor is verified
+        return True
 
 
 def _activation_guard_batch(chunks: Sequence[Sequence[Any]]) -> int:
@@ -3346,7 +3386,7 @@ class DiffusionBackend:
         if kind == "pipeline":
             base = repo_id  # the full pipeline IS the repo
         else:
-            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
         # Probe the repo the load will FETCH from: refusing the upstream id would reject the gated picks the ungated
         # mirror rescues, and the swap is pure, so it decides the same here as on the load thread. Only the raise
         # matters; _run_load recomputes the excused snapshot.
@@ -3517,7 +3557,11 @@ class DiffusionBackend:
                 base = kwargs["repo_id"]
             else:
                 base = _resolve_base_repo(
-                    kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
+                    kwargs["repo_id"],
+                    kwargs.get("base_repo"),
+                    fam,
+                    kwargs.get("hf_token"),
+                    kwargs.get("gguf_filename"),
                 )
             kwargs["base_repo"] = base
             # Claimed before a byte moves, so the cache-delete guard sees a Hub component repo.
@@ -4657,7 +4701,7 @@ class DiffusionBackend:
             # plan no work.
             return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
         else:
-            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
         # Reported, not raised. The images page falls back to /images/load on ANY plan failure, so a 400 here would
         # start the very download this is meant to prevent; carried in the envelope instead, the picker can refuse at
         # SELECTION time. Metadata only, and None whenever nothing is known to be wrong. The speech verdict belongs
@@ -5839,7 +5883,9 @@ class DiffusionBackend:
             )
         # A full pipeline is its own base; single-file kinds resolve the companion base repo.
         base = (
-            repo_id if kind == "pipeline" else _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+            repo_id
+            if kind == "pipeline"
+            else _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
         )
         # ``base`` stays the UPSTREAM id every report and table lookup keys on; ``fetch_base`` is the only id handed
         # to something that downloads. One decision per load, so nothing stages one repo and assembles from the other.
@@ -6990,6 +7036,13 @@ class DiffusionBackend:
                                         hf_token = hf_token,
                                         logger = logger,
                                         local_files_only = local_files_only,
+                                        # krea assembles from fetch_base below, never the staged dir
+                                        dense_source = (
+                                            None
+                                            if fam.name == KREA2_FAMILY_NAME
+                                            else _base_local_dir
+                                        )
+                                        or (fetch_base if local_files_only else None),
                                     )
                                 )
                                 if pipeline_seed_scheme is not None:
@@ -7277,6 +7330,7 @@ class DiffusionBackend:
                                         hf_token = hf_token,
                                         logger = logger,
                                         local_files_only = local_files_only,
+                                        dense_source = fetch_base if local_files_only else None,
                                     ).get("text_encoder"),
                                 )
                             else:
@@ -7318,6 +7372,8 @@ class DiffusionBackend:
                                         hf_token = hf_token,
                                         logger = logger,
                                         local_files_only = local_files_only,
+                                        dense_source = _base_local_dir
+                                        or (fetch_base if local_files_only else None),
                                     )
                                 )
                                 self._raise_if_load_cancelled(_load_token)
@@ -7810,19 +7866,22 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
-                    # Before from_pipe copies the scheduler.
-                    apply_comfy_flow_shift(
-                        pipe,
-                        comfy_flow_shift_for(
-                            fam,
-                            gguf_filename,
-                            content_variant_hint(repo_id, gguf_filename),
-                            repo_id,
-                            display_repo_id,
-                            base,
-                        ),
-                        logger,
-                    )
+                    # A shipped grid was tuned on the shipped scheduler: no ComfyUI shift.
+                    raw_grid = _model_index_sample_sigmas(fetch_base, _base_local_dir)
+                    if install_sample_sigmas(pipe, raw_grid, logger) is None:
+                        # Before from_pipe copies the scheduler.
+                        apply_comfy_flow_shift(
+                            pipe,
+                            comfy_flow_shift_for(
+                                fam,
+                                gguf_filename,
+                                content_variant_hint(repo_id, gguf_filename),
+                                repo_id,
+                                display_repo_id,
+                                base,
+                            ),
+                            logger,
+                        )
                     # Before the speed optims, so the fused batched tile decode does not replace it.
                     try:
                         install_wide_vae_tiles(getattr(pipe, "vae", None), logger)
@@ -8660,6 +8719,7 @@ class DiffusionBackend:
                     hf_token = hf_token,
                     logger = logger,
                     local_files_only = local_files_only,
+                    dense_source = base_local_dir or (base if local_files_only else None),
                 ).get("text_encoder")
             check_cancelled()
             pipe = load_krea2_pipeline(
@@ -8707,6 +8767,7 @@ class DiffusionBackend:
                     hf_token = hf_token,
                     logger = logger,
                     local_files_only = local_files_only,
+                    dense_source = base_local_dir or (base if local_files_only else None),
                 )
             )
         check_cancelled()
@@ -10494,6 +10555,10 @@ class DiffusionBackend:
                     # Most pipelines use "guidance_scale"; Qwen-Image uses "true_cfg_scale".
                     state.family.cfg_kwarg: guidance,
                 }
+                # Explicit: the pinned pipeline never reads the grid, and a newer one overrides num_inference_steps.
+                sample_sigmas = pipe_sample_sigmas(state.pipe)
+                if sample_sigmas is not None and "sigmas" in call_params:
+                    kwargs["sigmas"] = sample_sigmas_for_steps(sample_sigmas, steps)
                 if state.family.name == IDEOGRAM4_FAMILY_NAME:
                     # Ideogram 4 drives CFG via EITHER a constant guidance_scale OR a per-step guidance_schedule,
                     # never both. At the advertised defaults drop the constant so the recommended 48-step taper
@@ -10639,7 +10704,7 @@ class DiffusionBackend:
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
                         vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
                         quadratic_attention = _quadratic_attention(
-                            guard_target, getattr(state, "attention_backend", None)
+                            guard_target, getattr(state, "attention_backend", None), pipe
                         ),
                         allow_oversized = allow_oversized,
                         calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
@@ -11369,7 +11434,7 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
-                state.repo_id, state.gguf_filename, state.base_repo
+                state.repo_id, state.gguf_filename, state.base_repo, pipe_sample_sigmas(state.pipe)
             ),
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
@@ -11453,7 +11518,11 @@ def _family_workflows(fam: DiffusionFamily) -> list[str]:
 
 
 def _resolve_base_repo(
-    repo_id: str, base_repo: Optional[str], fam: DiffusionFamily, hf_token: Optional[str]
+    repo_id: str,
+    base_repo: Optional[str],
+    fam: DiffusionFamily,
+    hf_token: Optional[str],
+    gguf_filename: Optional[str] = None,
 ) -> str:
     """The companion diffusers repo: caller's base, else the GGUF repo's own ``base_model`` tag,
     else the family fallback. Shared by both load paths so a direct ``load_pipeline`` call
@@ -11470,6 +11539,9 @@ def _resolve_base_repo(
             # this becomes status()["base_repo"] and a trained adapter's default base_model, both of which must stay
             # the vendor id. An EXPLICIT base_repo is verbatim.
             base = canonical_base(tag)
+        elif tag is None:
+            # No card tag: only a curated variant the name spells out.
+            base = named_variant_base(fam, repo_id, gguf_filename) or ""
     # Returns the UPSTREAM id; the swap happens at the fetch sites only.
     resolved = resolve_base_repo(fam, base)
     _remember_companion_base(repo_id, resolved)

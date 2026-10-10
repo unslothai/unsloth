@@ -39,6 +39,11 @@ import {
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import {
+  SPELLCHECK_STORAGE_KEY,
+  setSpellCheck,
+  useSpellCheck,
+} from "@/lib/spellcheck";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Check, Eye, EyeOff } from "lucide-react";
@@ -98,6 +103,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_appearance_customization",
   INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
+  SPELLCHECK_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
   "sidebar_width",
@@ -208,6 +214,7 @@ export function GeneralTab() {
   const showWhisperUpdates = useShowWhisperUpdateBanner();
   const showAudioCppUpdates = useShowAudioCppUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
+  const spellCheck = useSpellCheck();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -601,6 +608,12 @@ export function GeneralTab() {
           description={t("settings.appearance.language.description")}
         >
           <LanguageSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.language.spellCheck")}
+          description={t("settings.appearance.language.spellCheckDescription")}
+        >
+          <Switch checked={spellCheck} onCheckedChange={setSpellCheck} />
         </SettingsRow>
       </SettingsSection>
 

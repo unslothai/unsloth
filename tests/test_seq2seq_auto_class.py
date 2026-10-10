@@ -91,6 +91,67 @@ def test_get_batch_samples_dispatch():
         _utils._unsloth_get_batch_samples = original
 
 
+def test_a_marked_head_is_counted_by_unsloth_zoo(monkeypatch):
+    from types import SimpleNamespace
+    from unsloth.models import _utils
+
+    calls = []
+    dispatch = _utils._make_seq2seq_aware_get_batch_samples(
+        lambda self, *a, **k: calls.append("stock") or "stock"
+    )
+    monkeypatch.setattr(
+        _utils,
+        "_unsloth_get_batch_samples",
+        lambda self, *a, **k: calls.append("unsloth") or "unsloth",
+    )
+
+    class MarkedHead:
+        _unsloth_counts_unshifted_labels = True
+
+        def __init__(self, name):
+            self.config = _config(name)
+
+    class Peft:
+        def __init__(self, head):
+            self.config = head.config
+            self._head = head
+
+        def get_base_model(self):
+            return self._head
+
+    zoo = pytest.importorskip("unsloth_zoo.loss_utils")
+    if not hasattr(zoo, "counts_unshifted_labels"):
+        pytest.skip(reason = "unsloth_zoo predates the unshifted-label marker")
+    for name in ("T5Gemma2Config", "WhisperConfig", "LlamaConfig"):
+        assert dispatch(SimpleNamespace(model = MarkedHead(name)), iter([]), 1) == "unsloth"
+        assert dispatch(SimpleNamespace(model = Peft(MarkedHead(name))), iter([]), 1) == "unsloth"
+    unmarked = SimpleNamespace(config = _config("T5Gemma2Config"))
+    assert dispatch(SimpleNamespace(model = unmarked), iter([]), 1) == "stock"
+
+
+def test_an_older_zoo_without_the_marker_keeps_stock_seq2seq(monkeypatch):
+    import builtins
+    from types import SimpleNamespace
+    from unsloth.models import _utils
+
+    real_import = builtins.__import__
+
+    def no_marker(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        if name == "unsloth_zoo.loss_utils" and fromlist and "counts_unshifted_labels" in fromlist:
+            raise ImportError("old unsloth_zoo")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", no_marker)
+    head = SimpleNamespace(config = _config("T5Gemma2Config"), _unsloth_counts_unshifted_labels = True)
+    assert _utils._head_counts_unshifted_labels(head) is False
+
+
 @pytest.mark.parametrize(
     "name, expected",
     [

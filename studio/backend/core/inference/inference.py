@@ -2962,7 +2962,7 @@ class InferenceBackend:
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
-            logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
+            logger.debug(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
 
         try:
             formatted_prompt = render_prompt_with_boundary(
@@ -2995,7 +2995,7 @@ class InferenceBackend:
                 template_type,
                 chat_template_info.get("special_tokens", {}),
             )
-            logger.info(f"Manual template result: {manual_prompt[:200]}...")
+            logger.debug(f"Manual template result: {manual_prompt[:200]}...")
         else:
             logger.info("Using generic chat formatting for base model")
             manual_prompt = self._format_generic_template(manual_messages, {})

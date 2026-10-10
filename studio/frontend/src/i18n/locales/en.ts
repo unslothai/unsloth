@@ -1273,6 +1273,10 @@ export const en = {
       grantsLabel: "Faster tool starts",
       grantsDescription: "Keeps read-only access to Unsloth's own runtime folders between calls. When off, each call starts a few seconds slower.",
       lockedGrants: "Set by UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
+      memoryLabel: "Memory limit",
+      memoryDescription: "Most memory one sandboxed Python or Terminal call can reserve. Applies from the next call. Default is {defaultSize} GB.",
+      memoryLocked: "Set by UNSLOTH_STUDIO_SANDBOX_AS_GB",
+      memoryInvalid: "Enter a whole number from {min} to {max}.",
       restored: "Removed access from {count} folders.",
       hostPrepLabel: "Administrator setup",
       prepPrepared: "Done",
@@ -2071,6 +2075,8 @@ export const en = {
         label: "Display language",
         description: "The language used by Unsloth.",
         autoDetect: "Auto detect",
+        spellCheck: "Spell check",
+        spellCheckDescription: "Underline misspelled words as you type.",
       },
       layout: {
         title: "Layout",
@@ -2889,7 +2895,7 @@ export const en = {
         backendDescription:
           "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. llama.cpp also reads images.",
         backendDescriptionMlx:
-          "Auto serves Clef text through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads text only. llama.cpp also reads images.",
+          "Auto serves Clef through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads images for Clef models only. llama.cpp also reads images.",
         backendStatus: "Runtime: {backend}",
         backendNone: "unavailable",
         mediaImages: "Reads text and images.",

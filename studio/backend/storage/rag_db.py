@@ -171,6 +171,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             last_error TEXT,
             last_scan_at TEXT,
             withheld_paths TEXT,
+            failed_files TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(scope, path)
@@ -284,6 +285,8 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
     folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
     if folder_cols and "withheld_paths" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
+    if folder_cols and "failed_files" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN failed_files TEXT")
 
 
 def reset_schema_state_for_tests() -> None:

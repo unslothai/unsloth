@@ -8324,6 +8324,16 @@ sys.exit(2 if conflict else (0 if version else 1))
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
             }
+            # A ROCm torch whose device extra lost a family kernel pack still sees the GPU.
+            if ($SkipPythonDeps) {
+                try {
+                    & python (Join-Path $PSScriptRoot "install_python_stack.py") --windows-rocm-device-packs-need-dependency-pass *> $null
+                    if ($LASTEXITCODE -eq 0) {
+                        substep "AMD device packs are incomplete or mismatched -- forcing dependency pass to repair..." "Cyan"
+                        $SkipPythonDeps = $false
+                    }
+                } catch {}
+            }
         }
     }
 }
