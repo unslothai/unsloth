@@ -3520,6 +3520,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       validateFailures += 1;
       return false;
     }
+    // The default engine cannot run it (compressed-tensors, AWQ, GPTQ); choosing vLLM or SGLang is the
+    // user's call in the picker. With the library installed by hand it would otherwise decompress and crawl (#8861).
+    if (validation.managed_engine_offer) {
+      hadNonTrustFailure = true;
+      validateFailures += 1;
+      return false;
+    }
     return true;
   }
 

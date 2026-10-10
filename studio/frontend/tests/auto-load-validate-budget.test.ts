@@ -425,10 +425,10 @@ test("every dead-ended /validate is counted, and no passing one is", () => {
       "failure, so a dead backend would otherwise POST once per cached repo",
   );
 
-  // Exactly the dead ends: two refusals and one rejection, nothing on the passing path.
+  // Exactly the dead ends: three refusals and one rejection, nothing on the passing path.
   assert.equal(
     body.split(increment).length - 1,
-    3,
+    4,
     "a new branch out of canAutoLoad must decide, explicitly, whether it spends the budget",
   );
 });
