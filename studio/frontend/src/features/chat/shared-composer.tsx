@@ -777,6 +777,7 @@ export function SharedComposer({
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
 
+  const mentionOpenRef = useRef(false);
   const skillMentions = useTextareaSkillMentions({
     text,
     setText: setCurrentText,
@@ -784,6 +785,7 @@ export function SharedComposer({
     composingRef,
     enabled: supportsTools,
   });
+  mentionOpenRef.current = skillMentions.inputProps["aria-expanded"];
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -1118,7 +1120,8 @@ export function SharedComposer({
   const [editorHeight, setEditorHeight] = useState(40);
   const [editorRows, setEditorRows] = useState(1);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
-  useEffect(() => {
+  const editorRef = useRef<HTMLDivElement>(null);
+  const measureEditor = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     // The frame clamps the textarea; lift that while measuring its content.
@@ -1138,7 +1141,39 @@ export function SharedComposer({
     ta.style.overflowY = content > maxHeight ? "auto" : "hidden";
     setEditorHeight(next);
     setEditorRows(Math.round((next - paddingY) / lineHeight));
-  }, [text]);
+  }, []);
+  useEffect(measureEditor, [text]);
+  // Wrapping follows the width (window, sidebar, UI scale), so remeasure when it changes; not on
+  // height, which the frame animates itself.
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    let width = editor.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (editor.clientWidth === width) return;
+      width = editor.clientWidth;
+      measureEditor();
+    });
+    observer.observe(editor);
+    return () => observer.disconnect();
+  }, [measureEditor]);
+  // Escape collapses, as in the single composer; not while the @-mention list or an IME owns it.
+  // Window capture runs before the mention popover's own Escape handling closes it.
+  useEffect(() => {
+    const collapseOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        !event.isComposing &&
+        !mentionOpenRef.current &&
+        event.target instanceof Node &&
+        editorRef.current?.contains(event.target)
+      ) {
+        setIsWritingExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", collapseOnEscape, true);
+    return () => window.removeEventListener("keydown", collapseOnEscape, true);
+  }, []);
   const showWritingToggle = text.includes("\n") || editorRows > 3;
   const toggleWritingExpanded = () => {
     setIsWritingExpanded((expanded) => !expanded);
@@ -1444,6 +1479,7 @@ export function SharedComposer({
     };
     const clearSubmittedDraft = () => {
       setCurrentText("");
+      setIsWritingExpanded(false);
       setPendingImages([]);
       setPendingAudio([]);
       clearPendingAudioStore();
@@ -2997,6 +3033,7 @@ export function SharedComposer({
             <SkillsComposerButton side="top" />
           </div>
           <div
+            ref={editorRef}
             className="unsloth-composer-editor"
             style={
               {
@@ -3343,20 +3380,23 @@ export function SharedComposer({
               </>
             }
             {isQueueRunning ? (
-              <button
-                type="button"
-                onClick={() => {
-                  resetPromptQueue();
-                  stop();
-                }}
-                aria-label="Stop prompt queue"
-                className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <SquareIcon className="size-2.5 shrink-0 fill-current" />
-                <span className="tabular-nums">
-                  Stop queue {queueProgress.current}/{queueProgress.total}
-                </span>
-              </button>
+              // Wrapped: the narrow layout squares every direct button of this group, and this one has a label.
+              <div className="ml-1.5 flex">
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetPromptQueue();
+                    stop();
+                  }}
+                  aria-label="Stop prompt queue"
+                  className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <SquareIcon className="size-2.5 shrink-0 fill-current" />
+                  <span className="tabular-nums">
+                    Stop queue {queueProgress.current}/{queueProgress.total}
+                  </span>
+                </button>
+              </div>
             ) : busy ? (
               <Button
                 type="button"
