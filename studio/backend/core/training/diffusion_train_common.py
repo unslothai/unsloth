@@ -1239,6 +1239,10 @@ class DiffusionLoraConfig:
             raise ValueError("learning_rate must be > 0")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
+        # Resume with unset targets keeps the recorded ones, so changing a family default never strands old runs.
+        if resume_from_checkpoint and resolved_family != "sdxl" and targets == DEFAULT_LORA_TARGETS:
+            from core.training.diffusion_checkpoint import recorded_resume_targets
+            targets = recorded_resume_targets(resume_from_checkpoint) or targets
         # A blank Hub token (the Unsloth default when none is configured) must load anonymously, not as an explicit
         # empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token

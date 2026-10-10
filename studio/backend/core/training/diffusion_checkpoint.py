@@ -1855,6 +1855,21 @@ def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
             ) from error
 
 
+def recorded_resume_targets(path_value: Any) -> Optional[tuple[str, ...]]:
+    """LoRA targets recorded by the bundle a resume would continue, else None. Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is not None and saved.lora_target_modules:
+                return tuple(saved.lora_target_modules)
+    except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
+        pass
+    return None
+
+
 def preflight_resume(
     path_value: str, *, identity: CheckpointIdentity, target_steps: int
 ) -> tuple[str, int]:
