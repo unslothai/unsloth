@@ -633,7 +633,8 @@ class ManagedEngine:
         for line in proc.stdout:
             self._last_output = time.monotonic()
             if self.engine == "vllm" and (limit := _MAMBA_SEQ_LIMIT.search(line)):
-                self._mamba_blocks = int(limit.group(2))
+                # Data-parallel ranks each report their own count; the tightest binds all.
+                self._mamba_blocks = min(int(limit.group(2)), self._mamba_blocks or 1 << 30)
             stage = self.adapter.progress(line)
             if stage and self.phase != "ready":
                 self.phase = stage

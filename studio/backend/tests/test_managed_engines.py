@@ -2422,8 +2422,12 @@ def _scripted_engine(isolated, monkeypatch, outcomes):
                 f"HTTPServer(('127.0.0.1', {port}), Handler).serve_forever()\n"
             )
         else:
-            line = _MAMBA_LIMIT_LINE if outcome == "mamba" else "RuntimeError: CUDA out of memory"
-            code = f"import sys\nprint({line!r}, flush = True)\nsys.exit(1)\n"
+            lines = {
+                "mamba": [_MAMBA_LIMIT_LINE],
+                # Two data-parallel ranks with different free memory.
+                "mamba_dp": [_MAMBA_LIMIT_LINE, _MAMBA_LIMIT_LINE.replace("(36)", "(40)")],
+            }.get(outcome, ["RuntimeError: CUDA out of memory"])
+            code = f"import sys\nprint({chr(10).join(lines)!r}, flush = True)\nsys.exit(1)\n"
         return [sys.executable, "-u", "-c", code]
 
     engine.adapter = SimpleNamespace(
@@ -2459,6 +2463,18 @@ def test_vllm_relaunches_once_at_the_mamba_block_count(isolated, monkeypatch):
     finally:
         engine.stop()
     assert [launch.get("max_num_seqs") for launch in launches] == [36]
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_relaunches_at_the_tightest_data_parallel_rank(isolated, monkeypatch):
+    import os
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["mamba_dp", "serve"])
+    try:
+        engine.start("model", 4096, [0, 1], dict(os.environ), options = {"parallelism": "data"})
+    finally:
+        engine.stop()
+    assert [launch.get("max_num_seqs") for launch in launches] == [None, 36]
 
 
 @_LOCAL_ENGINE_HOST
