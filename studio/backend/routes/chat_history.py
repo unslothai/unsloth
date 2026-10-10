@@ -327,6 +327,10 @@ class ChatProject(BaseModel):
     updatedAt: int
 
 
+class ChatAgentsMd(BaseModel):
+    text: str = ""
+
+
 class ChatProjectDeleted(ChatProject):
     """The deleted project, plus the member sandboxes that still hold files."""
 
@@ -1196,6 +1200,15 @@ def get_project(project_id: str, current_subject: str = Depends(get_current_subj
             detail = f"Project {project_id} not found",
         )
     return ChatProject(**project)
+
+
+@router.get("/agents-md", response_model = ChatAgentsMd)
+def get_agents_md(
+    project_id: Optional[str] = Query(None), current_subject: str = Depends(get_current_subject)
+):
+    from core.agents_md import agents_md_text
+    project = get_chat_project(project_id) if project_id else None
+    return ChatAgentsMd(text = agents_md_text(project))
 
 
 @router.patch("/projects/{project_id}", response_model = ChatProject)
