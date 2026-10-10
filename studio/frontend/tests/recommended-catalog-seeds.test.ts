@@ -617,42 +617,54 @@ test("with familyOf, an unslothai family the unsloth listing cannot rank keeps i
   assert.deepEqual(order([{ id: TINY }, { id: TURBO }]), [ASR, TINY, TURBO]);
 });
 
-test("a pinToTop family leads Recommended whatever the listing sort, both artifacts kept together", () => {
+test("pinned families lead Recommended whatever the listing sort, lead rows first", () => {
   const family = (id: string) => groupForRepoId(id, IMAGE_CATALOG)?.canonicalId.toLowerCase();
   const pinnedFamilies = IMAGE_CATALOG.filter((g) => g.pinToTop).map((g) =>
     g.canonicalId.toLowerCase(),
   );
-  assert.deepEqual(pinnedFamilies, ["unsloth/qwen-image-2.1"]);
+  assert.deepEqual(pinnedFamilies, ["unsloth/qwen-image-2.1", "qwen/qwen-image-2.1-turbo"]);
   const qwen21 = "unsloth/Qwen-Image-2.1";
   const qwen21Gguf = "unsloth/Qwen-Image-2.1-GGUF";
+  const turbo = "Qwen/Qwen-Image-2.1-Turbo";
+  const turboGguf = "unsloth/Qwen-Image-2.1-Turbo-GGUF";
   const zImageTurbo = "unsloth/Z-Image-Turbo-GGUF";
   const qwen2512 = "unsloth/Qwen-Image-2512-GGUF";
   const seeds: Row[] = [
     { id: zImageTurbo, isGguf: true },
     { id: qwen21 },
     { id: qwen21Gguf, isGguf: true },
+    { id: turbo },
+    { id: turboGguf, isGguf: true },
     { id: qwen2512, isGguf: true },
   ];
-  // Qwen-Image 2.1 trends last, so only the pin lifts it.
+  // Qwen-Image 2.1 and its Turbo trend last, so only the pin lifts them.
   const results: Row[] = [
     { id: qwen2512, isGguf: true },
     { id: zImageTurbo, isGguf: true },
+    { id: turboGguf, isGguf: true },
     { id: qwen21Gguf, isGguf: true },
   ];
-  const order = (pinned?: readonly string[]) =>
+  const order = (pinned?: readonly string[], fits: (r: Row) => boolean = () => true) =>
     ids(
       orderRecommendedRows({
         seeds,
         results,
         keep: () => true,
-        deviceFiltered: false,
-        fits: () => true,
+        deviceFiltered: true,
+        fits,
         familyOf: family,
         pinnedFamilies: pinned,
       }),
     );
-  assert.deepEqual(order(), [qwen2512, zImageTurbo, qwen21, qwen21Gguf]);
-  assert.deepEqual(order(pinnedFamilies), [qwen21, qwen21Gguf, qwen2512, zImageTurbo]);
+  // Unpinned, the listing sorts them and the vendor-hosted Turbo pipeline trails the first-party rows.
+  assert.deepEqual(order(), [qwen2512, zImageTurbo, turboGguf, qwen21, qwen21Gguf, turbo]);
+  // "Qwen-Image 2.1 Turbo (Fast FP8)" directly under "Qwen-Image 2.1 (Fast FP8)", then their GGUF rows.
+  assert.deepEqual(order(pinnedFamilies), [qwen21, turbo, qwen21Gguf, turboGguf, qwen2512, zImageTurbo]);
+  // A device the pipelines do not fit: the GGUF rows lead, still 2.1 first.
+  assert.deepEqual(
+    order(pinnedFamilies, (r) => Boolean(r.isGguf)),
+    [qwen21Gguf, turboGguf, qwen2512, zImageTurbo],
+  );
 });
 
 test("an empty Recommended list names a failed search or unreachable hub, not an empty catalog", () => {
