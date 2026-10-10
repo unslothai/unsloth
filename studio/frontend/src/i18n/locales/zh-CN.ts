@@ -2435,8 +2435,8 @@ export const zhCN = {
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "工具输出长度",
-      toolResultLimitDescription: "模型读取的单个 Python、终端或工具结果的字符数。默认值为 {count}。",
-      toolResultLimitHint: "更长的输出会保存到文件中，模型可以分段读取。上下文窗口较小的模型仍会获得更少的内容，避免单个结果占满对话。",
+      toolResultLimitDescription: "模型读取的单个 Python 或终端结果的字符数。默认值为 {count}。",
+      toolResultLimitHint: "更长的输出会保存到文件中，模型可以分段读取。更高的上限适用于在 Unsloth 中运行的模型，上下文窗口较小时仍会获得更少的内容。API 模型保持默认值，除非你将其调低。",
       toolResultLimitDefault: "{count}（默认）",
       toolResultLimitLocked: "由 UNSLOTH_TOOL_RESULT_MAX_CHARS 设置",
       toolResultLimitLoadError: "无法加载工具输出长度。",

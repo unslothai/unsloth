@@ -2581,8 +2581,8 @@ export const he = {
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
       toolResultLimit: "אורך פלט הכלים",
-      toolResultLimitDescription: "מספר התווים מתוצאה אחת של Python, Terminal או כלי שהמודל קורא. ברירת המחדל היא {count}.",
-      toolResultLimitHint: "פלט ארוך יותר נשמר בקובץ שהמודל יכול לקרוא בחלקים. מודלים עם חלון הקשר קטן עדיין מקבלים פחות, כדי שתוצאה אחת לא תמלא את הצ'אט.",
+      toolResultLimitDescription: "מספר התווים מתוצאה אחת של Python או Terminal שהמודל קורא. ברירת המחדל היא {count}.",
+      toolResultLimitHint: "פלט ארוך יותר נשמר בקובץ שהמודל יכול לקרוא בחלקים. מגבלה גבוהה יותר חלה על מודלים שרצים ב-Unsloth, וחלונות הקשר קטנים עדיין מקבלים פחות. מודלי API נשארים בברירת המחדל אלא אם תוריד אותה.",
       toolResultLimitDefault: "{count} (ברירת מחדל)",
       toolResultLimitLocked: "מוגדר על ידי UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "טעינת אורך פלט הכלים נכשלה.",

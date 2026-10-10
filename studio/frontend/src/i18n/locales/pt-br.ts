@@ -2491,8 +2491,8 @@ export const ptBR = {
       autoCompactKeywords:
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
       toolResultLimit: "Tamanho da saída das ferramentas",
-      toolResultLimitDescription: "Caracteres de um resultado de Python, Terminal ou ferramenta que o modelo lê. O padrão é {count}.",
-      toolResultLimitHint: "Saídas mais longas são salvas em um arquivo que o modelo pode ler em partes. Modelos com uma janela de contexto pequena continuam recebendo menos, para que um resultado não ocupe o chat inteiro.",
+      toolResultLimitDescription: "Caracteres de um resultado de Python ou Terminal que o modelo lê. O padrão é {count}.",
+      toolResultLimitHint: "Saídas mais longas são salvas em um arquivo que o modelo pode ler em partes. Um limite maior vale para modelos executados no Unsloth, e janelas de contexto pequenas continuam recebendo menos. Modelos de API mantêm o padrão, a menos que você o reduza.",
       toolResultLimitDefault: "{count} (padrão)",
       toolResultLimitLocked: "Definido por UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "Não foi possível carregar o tamanho da saída das ferramentas.",

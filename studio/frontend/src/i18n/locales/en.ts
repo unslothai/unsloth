@@ -2511,8 +2511,8 @@ export const en = {
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
       toolResultLimit: "Tool output length",
-      toolResultLimitDescription: "Characters of one Python, Terminal or tool result the model reads. Default is {count}.",
-      toolResultLimitHint: "Longer output is saved to a file the model can read in parts. Models with a small context window still get less, so one result cannot fill the chat.",
+      toolResultLimitDescription: "Characters of one Python or Terminal result the model reads. Default is {count}.",
+      toolResultLimitHint: "Longer output is saved to a file the model can read in parts. A higher limit applies to models running in Unsloth, and small context windows still get less. API models keep the default unless you lower it.",
       toolResultLimitDefault: "{count} (default)",
       toolResultLimitLocked: "Set by UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "Failed to load the tool output length.",

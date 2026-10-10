@@ -2475,8 +2475,8 @@ export const ar = {
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "طول مخرجات الأدوات",
-      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal أو الأداة الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
-      toolResultLimitHint: "تُحفظ المخرجات الأطول في ملف يمكن للنموذج قراءته على أجزاء. تظل النماذج ذات نافذة السياق الصغيرة تحصل على أقل، حتى لا تملأ نتيجة واحدة المحادثة.",
+      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
+      toolResultLimitHint: "تُحفظ المخرجات الأطول في ملف يمكن للنموذج قراءته على أجزاء. ينطبق الحد الأعلى على النماذج التي تعمل في Unsloth، وتظل نوافذ السياق الصغيرة تحصل على أقل. تحتفظ نماذج API بالقيمة الافتراضية ما لم تخفضها.",
       toolResultLimitDefault: "{count} (افتراضي)",
       toolResultLimitLocked: "مضبوط بواسطة UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "تعذر تحميل طول مخرجات الأدوات.",

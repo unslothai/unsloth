@@ -178,9 +178,10 @@ def _truncate_for_model(
 ) -> str:
     """Hold a hosted result to the same cap a local result gets. Read off ``tools`` rather than
     copied, so an install that lowers ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` (or the Settings > Chat
-    limit) gets the lower cap here too."""
+    limit) gets the lower cap here too. A raised setting is not applied: the provider's window is
+    unknown here."""
     if limit is None:
-        limit = tools_module._tool_result_max_chars()
+        limit = min(tools_module._tool_result_max_chars(), tools_module._MAX_OUTPUT_CHARS)
     if len(text) <= limit:
         return text
     return text[:limit] + f"{joiner}... [truncated, {len(text) - limit} more characters]"

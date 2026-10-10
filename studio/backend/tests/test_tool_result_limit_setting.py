@@ -65,8 +65,18 @@ def test_a_saved_value_raises_the_cap_and_saving_again_is_a_no_op(tmp_path):
     for _ in range(2):
         assert limit.set_max_chars(64000) == 64000
     assert tools._tool_result_max_chars() == 64000
+    tools._REQUEST_CONTEXT_TOKENS.set(131072)
     assert tools._truncate(FILE_50K, workdir = str(tmp_path)) == FILE_50K
-    assert studio_tool_loop._truncate_for_model(FILE_50K) == FILE_50K
+
+
+@pytest.mark.parametrize("unknown", [None, 0], ids = ["no-probe", "external-provider"])
+def test_a_raise_is_not_applied_where_the_window_is_unknown(unknown):
+    """An external provider's window cannot be measured and may be a small local server."""
+    limit.set_max_chars(64000)
+    tools._REQUEST_CONTEXT_TOKENS.set(unknown)
+    assert tools._tool_result_char_budget() == 16000
+    assert "truncated to 16000 chars for the model" in tools._truncate(FILE_50K)
+    assert len(studio_tool_loop._truncate_for_model(FILE_50K)) < 16100
 
 
 def test_a_saved_value_can_lower_the_cap_too():
@@ -96,6 +106,13 @@ def test_a_set_environment_variable_decides_as_before(monkeypatch, value, expect
     assert limit.locked_by_environment() is True
     assert limit.effective_max_chars() == expected
     assert tools._tool_result_max_chars() == expected
+
+
+def test_an_environment_raise_still_applies_where_the_window_is_unknown(monkeypatch):
+    monkeypatch.setenv(limit.MAX_CHARS_ENV, "64000")
+    monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 64000)
+    assert tools._tool_result_char_budget() == 64000
+    assert studio_tool_loop._truncate_for_model(FILE_50K) == FILE_50K
 
 
 def test_an_empty_environment_variable_does_not_lock(monkeypatch):

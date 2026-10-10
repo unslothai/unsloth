@@ -16590,7 +16590,11 @@ def _result_char_budget(cap: int) -> int:
 
 def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
-    return _result_char_budget(_tool_result_max_chars())
+    cap = _tool_result_max_chars()
+    if not _request_context_tokens():
+        # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
+        cap = min(cap, _MAX_OUTPUT_CHARS)
+    return _result_char_budget(cap)
 
 
 def _page_char_budget() -> int:

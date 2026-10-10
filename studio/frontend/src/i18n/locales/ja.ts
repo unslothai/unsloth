@@ -2458,8 +2458,8 @@ export const ja = {
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
       toolResultLimit: "ツール出力の長さ",
-      toolResultLimitDescription: "Python、ターミナル、またはツールの結果 1 件のうち、モデルが読む文字数です。既定値は {count} です。",
-      toolResultLimitHint: "これより長い出力はファイルに保存され、モデルは分割して読めます。コンテキストウィンドウが小さいモデルには引き続き少なく渡されるため、1 件の結果でチャットが埋まることはありません。",
+      toolResultLimitDescription: "Python またはターミナルの結果 1 件のうち、モデルが読む文字数です。既定値は {count} です。",
+      toolResultLimitHint: "これより長い出力はファイルに保存され、モデルは分割して読めます。上限を上げると Unsloth で動作するモデルに適用され、コンテキストウィンドウが小さい場合は引き続き少なくなります。API モデルは、下げない限り既定値のままです。",
       toolResultLimitDefault: "{count}（既定）",
       toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS で設定されています",
       toolResultLimitLoadError: "ツール出力の長さを読み込めませんでした。",

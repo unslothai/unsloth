@@ -2481,8 +2481,8 @@ export const hi = {
       autoCompactKeywords:
         "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "टूल आउटपुट की लंबाई",
-      toolResultLimitDescription: "Python, Terminal या टूल के एक परिणाम के कितने अक्षर मॉडल पढ़ता है। डिफ़ॉल्ट {count} है।",
-      toolResultLimitHint: "लंबा आउटपुट एक फ़ाइल में सहेजा जाता है जिसे मॉडल हिस्सों में पढ़ सकता है। छोटी कॉन्टेक्स्ट विंडो वाले मॉडल को अब भी कम मिलता है, ताकि एक परिणाम पूरी चैट न भर दे।",
+      toolResultLimitDescription: "Python या Terminal के एक परिणाम के कितने अक्षर मॉडल पढ़ता है। डिफ़ॉल्ट {count} है।",
+      toolResultLimitHint: "लंबा आउटपुट एक फ़ाइल में सहेजा जाता है जिसे मॉडल हिस्सों में पढ़ सकता है। ऊँची सीमा Unsloth में चल रहे मॉडल पर लागू होती है, और छोटी कॉन्टेक्स्ट विंडो को अब भी कम मिलता है। API मॉडल डिफ़ॉल्ट पर रहते हैं, जब तक आप इसे कम न करें।",
       toolResultLimitDefault: "{count} (डिफ़ॉल्ट)",
       toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS द्वारा सेट",
       toolResultLimitLoadError: "टूल आउटपुट की लंबाई लोड नहीं हो सकी।",

@@ -2471,8 +2471,8 @@ export const it = {
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
       toolResultLimit: "Lunghezza dell'output degli strumenti",
-      toolResultLimitDescription: "Caratteri di un risultato Python, Terminale o di uno strumento che il modello legge. Il valore predefinito è {count}.",
-      toolResultLimitHint: "L'output più lungo viene salvato in un file che il modello può leggere a parti. I modelli con una finestra di contesto piccola ricevono comunque meno, così un risultato non riempie la chat.",
+      toolResultLimitDescription: "Caratteri di un risultato Python o Terminale che il modello legge. Il valore predefinito è {count}.",
+      toolResultLimitHint: "L'output più lungo viene salvato in un file che il modello può leggere a parti. Un limite più alto si applica ai modelli eseguiti in Unsloth, e le finestre di contesto piccole ricevono comunque meno. I modelli API mantengono il valore predefinito a meno che tu non lo abbassi.",
       toolResultLimitDefault: "{count} (predefinito)",
       toolResultLimitLocked: "Impostato da UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "Impossibile caricare la lunghezza dell'output degli strumenti.",
