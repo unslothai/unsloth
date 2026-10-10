@@ -149,6 +149,18 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
     )
 
 
+def _trl_own_resolution(loss_type):
+    """What TRL itself turns an explicit ``loss_type`` into: TRL 1.15 deprecated ``chunked_nll`` and maps it to ``nll``."""
+    post_init = inspect.getsource(_pristine_sft_config_cls().__post_init__)
+    if (
+        loss_type == "chunked_nll"
+        and 'loss_type == "chunked_nll"' in post_init
+        and 'self.loss_type = "nll"' in post_init
+    ):
+        return "nll"
+    return loss_type
+
+
 def test_explicit_loss_type_still_wins():
     """Pinning a default must not take the choice away from the user."""
     import unsloth  # noqa: F401
@@ -156,8 +168,9 @@ def test_explicit_loss_type_still_wins():
 
     if not hasattr(trl.SFTConfig, "loss_type"):
         pytest.skip("this TRL has no SFTConfig.loss_type")
-    cfg = trl.SFTConfig(output_dir = "unused", loss_type = "chunked_nll")
-    assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
+    for wanted in ("chunked_nll", "dft"):
+        cfg = trl.SFTConfig(output_dir = "unused", loss_type = wanted)
+        assert cfg.loss_type == _trl_own_resolution(wanted), "explicit loss_type was clobbered"
 
 
 def _skip_if_unsloth_refuses_grpo():
@@ -229,7 +242,9 @@ def test_pristine_trl_sft_config_keeps_an_explicit_loss_type():
 
     for wanted in ("chunked_nll", "dft"):
         got = pristine(output_dir = "unused", loss_type = wanted).loss_type
-        assert got == wanted, f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+        assert got == _trl_own_resolution(
+            wanted
+        ), f"explicit loss_type {wanted!r} was clobbered to {got!r}"
 
 
 def test_dataclass_field_default_is_nll_for_hfargumentparser():
