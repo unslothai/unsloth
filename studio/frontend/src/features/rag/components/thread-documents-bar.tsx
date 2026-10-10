@@ -305,10 +305,18 @@ function LinkedFolderCard({
 
 // Same cap as composer attachment previews; bigger files keep the icon.
 const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
-const THUMBNAIL_CACHE_SIZE = 64;
+const THUMBNAIL_CACHE_BYTES = 48 * 1024 * 1024;
 // Source files fetched for card thumbnails, by document id, so a re-render or a return to the chat
 // does not download them again. Insertion order doubles as LRU order.
 const thumbnailFiles = new Map<string, Promise<File | null>>();
+const thumbnailSizes = new Map<string, number>();
+let thumbnailBytes = 0;
+
+function forgetThumbnail(id: string): void {
+  thumbnailFiles.delete(id);
+  thumbnailBytes -= thumbnailSizes.get(id) ?? 0;
+  thumbnailSizes.delete(id);
+}
 
 /** The stored source as a File, or null past `maxBytes` (0 = no cap). */
 async function fetchSourceFile(
@@ -351,17 +359,20 @@ function loadThumbnailFile(doc: TrackedDocument): Promise<File | null> {
   }
   const pending = fetchThumbnailFile(doc).catch(() => null);
   thumbnailFiles.set(doc.id, pending);
-  // A failure is not remembered, so the next mount tries again.
   void pending.then((file) => {
-    if (file === null && thumbnailFiles.get(doc.id) === pending) {
-      thumbnailFiles.delete(doc.id);
+    if (thumbnailFiles.get(doc.id) !== pending) return;
+    // A failure is not remembered, so the next mount tries again.
+    if (file === null) {
+      forgetThumbnail(doc.id);
+      return;
+    }
+    thumbnailSizes.set(doc.id, file.size);
+    thumbnailBytes += file.size;
+    for (const oldest of thumbnailFiles.keys()) {
+      if (thumbnailBytes <= THUMBNAIL_CACHE_BYTES || oldest === doc.id) break;
+      forgetThumbnail(oldest);
     }
   });
-  while (thumbnailFiles.size > THUMBNAIL_CACHE_SIZE) {
-    const oldest = thumbnailFiles.keys().next().value;
-    if (oldest === undefined) break;
-    thumbnailFiles.delete(oldest);
-  }
   return pending;
 }
 
@@ -369,24 +380,29 @@ type Thumbnail =
   | { kind: "image"; url: string }
   | { kind: "file"; file: File; preview: AttachmentPreview };
 
-/** The card's thumbnail, fetched once the card first scrolls into view. */
+/** The card's thumbnail while the card is on screen; off screen it lets go of the file, which the
+ * byte-capped cache may still hold for its return. */
 function useDocumentThumbnail(
   doc: TrackedDocument,
   enabled: boolean,
   element: HTMLElement | null,
 ): Thumbnail | null {
-  const [seen, setSeen] = useState(false);
+  const [visible, setVisible] = useState(false);
   const [thumbnail, setThumbnail] = useState<Thumbnail | null>(null);
   useEffect(() => {
-    if (!enabled || seen || !element) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
-    });
+    if (!enabled || !element) return;
+    const observer = new IntersectionObserver(
+      (entries) => setVisible(entries[entries.length - 1].isIntersecting),
+      { rootMargin: "200px" },
+    );
     observer.observe(element);
     return () => observer.disconnect();
-  }, [enabled, seen, element]);
+  }, [enabled, element]);
   useEffect(() => {
-    if (!enabled || !seen) return;
+    if (!enabled || !visible) {
+      setThumbnail(null);
+      return;
+    }
     let cancelled = false;
     let objectUrl: string | null = null;
     void loadThumbnailFile(doc).then((file) => {
@@ -410,7 +426,7 @@ function useDocumentThumbnail(
     };
     // The id names the stored file; the rest of the row changes with progress frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc.id, enabled, seen]);
+  }, [doc.id, enabled, visible]);
   return enabled ? thumbnail : null;
 }
 
