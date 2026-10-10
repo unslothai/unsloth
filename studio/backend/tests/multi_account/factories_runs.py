@@ -80,6 +80,48 @@ def _create_research_run(account) -> None:
     )
 
 
+BENCHMARK_RUN_ID = "benchmark-matrix-run"
+BENCHMARK_RUN = {
+    "id": BENCHMARK_RUN_ID,
+    "kind": "sweep",
+    "sweep": "draft",
+    "model": MARKER,
+    "config": {"sweep": "draft"},
+    "results": [],
+    "createdAt": 1000,
+}
+
+
+@seeder("benchmark-run")
+def seed_benchmark_run(account) -> dict[str, str]:
+    from storage.benchmark_runs_db import upsert_run
+    from utils.account_context import run_as
+
+    run_as(account, upsert_run, BENCHMARK_RUN)
+    return {"run_id": BENCHMARK_RUN_ID}
+
+
+EVAL_RUN_ID = "benchmark_arc_easy_20261002_000000"
+
+
+@seeder("eval-run")
+def seed_eval_run(account) -> dict[str, str]:
+    from storage.studio_db import insert_benchmark_run
+    from utils.account_context import run_as
+
+    run_as(
+        account,
+        insert_benchmark_run,
+        id = EVAL_RUN_ID,
+        task = "arc_easy",
+        model = MARKER,
+        metrics = [{"name": "acc,none", "score": 0.5, "stderr": None}],
+        n_samples = 1,
+        output_path = "",
+    )
+    return {"run_id": EVAL_RUN_ID}
+
+
 @seeder("runs-research")
 def seed_research_run(account) -> dict[str, str]:
     _create_research_run(account)
@@ -154,6 +196,19 @@ def _preview(fragment: str, query: dict, **overrides) -> Factory:
 
 
 FACTORIES = {
+    "routes.benchmarks:GET:/runs/{run_id}": Factory("benchmark-run", fragment = MARKER),
+    "routes.benchmarks:PUT:/runs/{run_id}": Factory(
+        "benchmark-run",
+        BENCHMARK_RUN,
+        fragment = MARKER,
+        owner = (200,),
+        wrong = (200,),
+        reason = "PUT upserts into the caller's own studio.db, so another account writing the "
+        "same id saves its own run and never reaches Alice's.",
+    ),
+    "routes.benchmarks:DELETE:/runs/{run_id}": Factory("benchmark-run", success = 204),
+    "routes.benchmark:GET:/runs/{run_id}": Factory("eval-run", fragment = MARKER),
+    "routes.benchmark:DELETE:/runs/{run_id}": Factory("eval-run"),
     "routes.research_runs:GET:/{run_id}": Factory("runs-research", fragment = MARKER),
     "routes.research_runs:PUT:/{run_id}/plan": Factory(
         "runs-research", UPDATE_PLAN_BODY, fragment = '"status":"awaiting_approval"'
@@ -197,4 +252,8 @@ FACTORIES = {
     ),
 }
 
-SKIPPED: dict = {}
+SKIPPED: dict = {
+    "routes.benchmark:GET:/task/{task_id}/config": (
+        "reads lm_eval's installed task registry; nothing in it is stored per account"
+    ),
+}

@@ -2335,3 +2335,43 @@ def memory_state_satisfies_settings(
             return False
         return mlock or not mlock_applicable
     return not policy_active
+
+
+_NGRAM_MOD_LEGACY_FLAGS = {
+    "--spec-ngram-mod-n-match": "--spec-ngram-size-n",
+    "--spec-ngram-mod-n-min": "--draft-min",
+    "--spec-ngram-mod-n-max": "--draft-max",
+}
+
+
+def translate_ngram_mod_args(
+    args: Iterable[str],
+    flavor: Optional[str],
+    *,
+    chain_with_mtp: bool = False,
+) -> list[str]:
+    """Respell ``--spec-ngram-mod-n-*`` extras for a pre-rename build (``flavor == "legacy"``).
+
+    Legacy llama.cpp names the same knobs ``--spec-ngram-size-n`` / ``--draft-min`` / ``--draft-max``,
+    as ``_build_ngram_mod_flags`` emits them; passed verbatim the server refuses to start. With MTP
+    in play the draft range is MTP's, so the min/max pair is dropped rather than inverting it.
+    """
+    args = [str(a) for a in args]
+    if flavor != "legacy":
+        return args
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        flag, eq, value = args[i].partition("=")
+        legacy = _NGRAM_MOD_LEGACY_FLAGS.get(flag)
+        if legacy is None or (not eq and i + 1 >= len(args)):
+            out.append(args[i])
+            i += 1
+            continue
+        if not eq:
+            value = args[i + 1]
+        i += 1 if eq else 2
+        if chain_with_mtp and legacy != "--spec-ngram-size-n":
+            continue
+        out.extend([legacy, value])
+    return out

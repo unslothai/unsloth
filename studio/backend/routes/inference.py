@@ -36908,6 +36908,113 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         # streaming branch: unregistered, a non-forced /unload counts zero generations and kills
         # llama-server mid-request, and force_cancel_active has no event. Unpooled client so a
         # cancel-close hits this call only.
+
+        _prompt_value = body.get("prompt")
+        # A prompt array of pure ints is a single token-array prompt (llama.cpp
+        # extension that the OpenAI spec leaves undefined) rather than an OpenAI
+        # batch of prompts — forward it verbatim instead of fanning out one request
+        # per element (an int element alone is a llama-server 400). lm_eval's `gguf`
+        # backend relies on this for exact teacher-forced scoring.
+        if isinstance(_prompt_value, list) and not (
+            _prompt_value
+            and all(isinstance(_el, int) and not isinstance(_el, bool) for _el in _prompt_value)
+        ):
+            if not _prompt_value:
+                raise HTTPException(status_code = 400, detail = "'prompt' array must not be empty")
+            _cancel_event = threading.Event()
+            # Unpooled: the cancel watcher closes this client, which must not
+            # take down other requests sharing the pooled one. Up to a connection per
+            # prompt keeps the batch concurrent, capped like the shared pool so a huge
+            # batch cannot exhaust file descriptors.
+            _client = httpx.AsyncClient(
+                limits = httpx.Limits(
+                    max_connections = min(len(_prompt_value), 64),
+                    max_keepalive_connections = 0,
+                ),
+                trust_env = False,
+            )
+            _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
+            _tracker.__enter__()
+            _cancel_watcher = asyncio.create_task(
+                _await_cancel_or_disconnect_then_close_client(
+                    cancel_event = _cancel_event,
+                    request = request,
+                    client = _client,
+                )
+            )
+            try:
+                try:
+
+                    async def _call_llama(prompt: str) -> dict:
+                        if _cancel_event.is_set():
+                            raise asyncio.CancelledError()
+                        _single_body = dict(body, prompt = prompt)
+                        _resp = await _client.post(
+                            target_url,
+                            json = _single_body,
+                            timeout = _llama_non_streaming_generation_timeout(),
+                        )
+                        if _cancel_event.is_set():
+                            raise asyncio.CancelledError()
+                        if _resp.status_code != 200:
+                            raise _openai_passthrough_error(_resp.status_code, _resp.text)
+                        return _resp.json()
+
+                    _responses = await asyncio.gather(
+                        *[_call_llama(p) for p in _prompt_value],
+                        return_exceptions = True,
+                    )
+                    if _cancel_event.is_set():
+                        raise asyncio.CancelledError()
+
+                    _all_choices = []
+                    _combined_usage: dict = {}
+                    _first_data = None
+                    for _data in _responses:
+                        if isinstance(_data, Exception):
+                            raise _data
+                        if _first_data is None:
+                            _first_data = _data
+                        for _c in _data.get("choices", []):
+                            _c["index"] = len(_all_choices)
+                            _all_choices.append(_c)
+                        _usage = _data.get("usage", {}) or {}
+                        for _k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                            _v = _usage.get(_k)
+                            if _v is not None:
+                                _combined_usage[_k] = _combined_usage.get(_k, 0) + _v
+                except httpx.RequestError:
+                    if _cancel_event.is_set():
+                        raise asyncio.CancelledError()
+                    raise
+                if _cancel_event.is_set():
+                    raise asyncio.CancelledError()
+            except asyncio.CancelledError:
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
+            except Exception as e:
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                raise
+            finally:
+                try:
+                    await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
+                    try:
+                        await _client.aclose()
+                    except Exception:
+                        pass
+                finally:
+                    _tracker.__exit__(None, None, None)
+
+            _first_data["choices"] = _all_choices
+            if _combined_usage:
+                _first_data["usage"] = _combined_usage
+            api_monitor.finish(monitor_id)
+            return Response(
+                content = _rewrite_cmpl_id(json.dumps(_first_data).encode("utf-8")),
+                status_code = 200,
+                media_type = "application/json",
+            )
+
         _cancel_event = threading.Event()
         _client = _cancelable_nonstreaming_client()
         _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
@@ -37595,6 +37702,52 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     return Response(
         content = resp.content,
         status_code = resp.status_code,
+        media_type = "application/json",
+    )
+
+
+# =====================================================================
+
+# llama.cpp tokenize passthrough  (/tokenize → llama-server /tokenize)
+# =====================================================================
+
+
+@router.post("/tokenize")
+@account_access.gpu_busy_route
+async def llama_tokenize(request: Request, current_subject: str = Depends(get_current_subject)):
+    """llama.cpp ``/tokenize`` passthrough (GGUF only).
+
+    Exposed for clients that need the server's exact tokenization — notably
+    lm_eval's ``gguf`` backend, which tokenizes contexts with the model's own
+    tokenizer to split context/continuations at true token boundaries for
+    teacher-forced loglikelihood scoring.
+    """
+    llama_backend = get_llama_cpp_backend()
+    body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    if not llama_backend.is_loaded:
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body) if isinstance(body, dict) else None,
+            request,
+            status = 503,
+        )
+        raise HTTPException(status_code = _status, detail = _detail)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    target_url = f"{llama_backend.base_url}/tokenize"
+    _client = _cancelable_nonstreaming_client()
+    try:
+        _resp = await _client.post(target_url, json = body, timeout = 30)
+    except httpx.RequestError as _exc:
+        raise HTTPException(status_code = 502, detail = _friendly_error(_exc))
+    finally:
+        await _client.aclose()
+    if _resp.status_code != 200:
+        raise _openai_passthrough_error(_resp.status_code, _resp.text)
+    return Response(
+        content = _resp.content,
+        status_code = _resp.status_code,
         media_type = "application/json",
     )
 
