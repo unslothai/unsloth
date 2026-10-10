@@ -44,6 +44,8 @@ UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # the architecture (upstream 137f7409bb, 2026-09-20). The u13b9d92 build this replaces is from
 # 2026-08-09 and cannot load it at all, so the native route for that family is only real from here.
 DEFAULT_TAG = "master-813-bfbef5b-u1d02858"
+# Upstream release for hosts the mirror does not build at DEFAULT_TAG (Windows CUDA / ROCm, Linux ROCm). The pin's own base, master-813, predates Qwen-Image-2.1 (upstream 137f740, master-883) and its reference-alpha fix (e112ab5, master-896), so falling back to it installs a build the router then refuses for that family. Must carry every sd_cpp_arch_marker / sd_cpp_edit_marker the families declare.
+UPSTREAM_FALLBACK_TAG = "master-929-3f8527a"
 
 REPO = DEFAULT_REPO
 
@@ -168,6 +170,8 @@ def install_is_stale(root: Path) -> bool:
             return memo[0] != want
         _INSTALLED_PIN_MEMO.pop(str(root), None)
     rec = read_install_record(root)
+    if _outdated_upstream_fallback(rec, want):
+        return True
     requested = rec.get("requested_tag")
     if isinstance(requested, str) and requested:
         return requested != want
@@ -175,7 +179,7 @@ def install_is_stale(root: Path) -> bool:
     if not isinstance(have, str) or not have:
         return False
     # Pre-requested_tag records: the mirror tag, or its upstream release on hosts the mirror does not build.
-    return have not in (want, upstream_tag_for(want))
+    return have not in (want, upstream_tag_for(want), upstream_fallback_tag(want))
 
 
 def is_mirror_only_tag(tag: Optional[str]) -> bool:
@@ -191,6 +195,21 @@ def upstream_tag_for(tag: Optional[str]) -> Optional[str]:
     if not tag:
         return tag
     return _MIRROR_TAG_SUFFIX.sub("", tag) or tag
+
+
+def upstream_fallback_tag(tag: Optional[str]) -> Optional[str]:
+    """The upstream release to ask for when the mirror has no asset for this host at ``tag``: ``UPSTREAM_FALLBACK_TAG`` for the shipped pin, else the release ``tag`` was built from."""
+    if tag == DEFAULT_TAG:
+        return UPSTREAM_FALLBACK_TAG
+    return upstream_tag_for(tag)
+
+
+def _outdated_upstream_fallback(rec: dict, want: str) -> bool:
+    """True for an install an older Studio fell back to upstream for: the pin's base release, since replaced by ``upstream_fallback_tag``."""
+    if rec.get("repo") != UPSTREAM_FALLBACK_REPO:
+        return False
+    old = upstream_tag_for(want)
+    return rec.get("tag") == old and old != upstream_fallback_tag(want)
 
 
 _LINUX_ACCEL_TOKEN = {"rocm": "rocm", "vulkan": "vulkan"}
@@ -729,7 +748,7 @@ def _resolve_with_fallback(
         attempts.append((primary, tag, False))
         if allow_upstream:
             # The mirror's own tag does not exist upstream.
-            attempts.append((UPSTREAM_FALLBACK_REPO, upstream_tag_for(tag), False))
+            attempts.append((UPSTREAM_FALLBACK_REPO, upstream_fallback_tag(tag), False))
         attempts.append((primary, None, True))
         if allow_upstream:
             attempts.append((UPSTREAM_FALLBACK_REPO, None, True))

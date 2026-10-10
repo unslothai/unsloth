@@ -1402,6 +1402,52 @@ def test_upstream_fallback_asks_for_the_translated_pin_not_latest(monkeypatch):
     assert not any(tag is None for _repo_name, tag in seen)
 
 
+def test_the_shipped_pin_falls_back_to_an_upstream_release_that_runs_qwen_image_2_1(monkeypatch):
+    """#12470: the mirror builds no Windows CUDA / ROCm or Linux ROCm asset, and the shipped pin's
+    upstream base (master-813) predates Qwen-Image-2.1, so those hosts installed a build the router
+    refuses for that family and the load fell back to diffusers after staging native companions."""
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+    monkeypatch.setattr(sdmod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(sdmod.platform, "machine", lambda: "AMD64")
+    seen = []
+
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        token = None,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
+        seen.append((repo, tag))
+        if repo == sdmod.DEFAULT_REPO and tag == DEFAULT_TAG:
+            return {"tag_name": tag, "assets": [{"name": f"sd-{tag}-bin-win-cpu-x64.zip"}]}
+        if repo == sdmod.UPSTREAM_FALLBACK_REPO and tag:
+            short = tag.rsplit("-", 1)[-1]
+            return {
+                "tag_name": tag,
+                "assets": [{"name": f"sd-master-{short}-bin-win-cuda12-x64.zip"}],
+            }
+        raise urllib.error.HTTPError(f"https://api/{repo}", 404, "not found", None, None)
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    repo, release, chosen = sdmod._resolve_with_fallback("cuda", None)
+    assert repo == sdmod.UPSTREAM_FALLBACK_REPO
+    assert release["tag_name"] == sdmod.UPSTREAM_FALLBACK_TAG
+    assert chosen.endswith("-win-cuda12-x64.zip")
+    assert (sdmod.UPSTREAM_FALLBACK_REPO, upstream_tag_for(DEFAULT_TAG)) not in seen
+    # Release order is the build number: Qwen-Image-2.1 landed upstream in master-883 and its
+    # reference-alpha fix in master-896.
+    assert int(sdmod.UPSTREAM_FALLBACK_TAG.split("-")[1]) >= 896
+
+
+def test_an_explicit_non_default_pin_still_falls_back_to_its_own_upstream_base():
+    assert sdmod.upstream_fallback_tag("master-813-bfbef5b-u13b9d92") == "master-813-bfbef5b"
+    assert sdmod.upstream_fallback_tag("master-809-eb7f35c") == "master-809-eb7f35c"
+    assert sdmod.upstream_fallback_tag(None) is None
+
+
 # ── mirror -> upstream fallback in install() ─────────────────────────────────
 
 
@@ -1506,9 +1552,9 @@ def test_a_mirror_only_pin_is_never_requested_upstream(tmp_path, monkeypatch):
     install(install_dir = tmp_path)
     # Never the literal -u<id> string, which upstream cannot have.
     assert (sdmod.UPSTREAM_FALLBACK_REPO, DEFAULT_TAG) not in asked
-    # It asks upstream for the release the mirror built on top of instead, so the pin survives
-    # translation rather than being dropped.
-    upstream_pin = sdmod.upstream_tag_for(DEFAULT_TAG)
+    # It asks upstream for the pinned fallback release instead, so the pin survives translation
+    # rather than being dropped.
+    upstream_pin = sdmod.upstream_fallback_tag(DEFAULT_TAG)
     assert upstream_pin != DEFAULT_TAG
     assert (sdmod.UPSTREAM_FALLBACK_REPO, upstream_pin) in asked
     # And because that pinned attempt succeeds, it never has to settle for upstream latest --
