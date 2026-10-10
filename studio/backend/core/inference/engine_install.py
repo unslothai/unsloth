@@ -757,8 +757,9 @@ def _rocm_gpu_arches() -> dict[int, str]:
             )
 
             # Stacked or ordinal masks renumber the devices; the KFD topology then answers instead.
+            # AMD's SDK / Radeon wheels leave torch.version.hip unset; their label carries ROCm.
             if (
-                getattr(torch.version, "hip", None)
+                (getattr(torch.version, "hip", None) or "rocm" in torch.__version__.lower())
                 and torch.cuda.is_available()
                 and not _rocm_device_ordinal_active()
                 and not _rocm_visibility_masks_are_stacked()
@@ -835,8 +836,14 @@ def _rocm_reason(
     if not (os.environ.get("CC") or shutil.which("gcc") or shutil.which("clang")):
         # Triton builds its HIP driver module the first time the engine compiles a kernel.
         return "Requires a C compiler, which vLLM's AMD build uses at run time (on Ubuntu: sudo apt install gcc)."
-    if not os.access("/dev/kfd", os.R_OK | os.W_OK):
-        return "Studio cannot open /dev/kfd. Add your user to the render and video groups, then sign in again."
+    from utils.hardware.amd import amd_closed_nodes_block_the_runtime, amd_node_permission_hint
+
+    # HIP opens /dev/kfd and an AMD render node; a container mapping only one initialises no GPU.
+    if not os.access("/dev/kfd", os.R_OK | os.W_OK) or amd_closed_nodes_block_the_runtime():
+        return amd_node_permission_hint() or (
+            "Studio cannot open /dev/kfd and an AMD render node (/dev/dri/renderD*). Add your user "
+            "to the render and video groups, then sign in again."
+        )
 
     # The target each GPU presents to the engine (an HSA_OVERRIDE_GFX_VERSION spoof included),
     # else the one the kernel reports.

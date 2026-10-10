@@ -46,6 +46,7 @@ def amd_host(rocm, monkeypatch, tmp_path):
     monkeypatch.setattr(install, "_rocm_gpu_arches", lambda: dict(arches))
     libraries = set(install.ROCM_SYSTEM_LIBRARIES)
     monkeypatch.setattr(amd, "_a_bare_soname_resolves", lambda soname: soname in libraries)
+    monkeypatch.setattr(amd, "amd_closed_nodes_block_the_runtime", lambda **_: False)
     return SimpleNamespace(rocm = tmp_path, targets = targets, libraries = libraries, arches = arches)
 
 
@@ -197,6 +198,42 @@ def test_amd_support_reports_an_unopenable_kfd_and_old_glibc(amd_host, monkeypat
     assert "/dev/kfd" in install.support_reason("vllm", wait = False)
     monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.35"))
     assert install.support_reason("vllm", wait = False) == "vLLM requires glibc 2.39 or newer."
+
+
+def test_amd_support_needs_a_render_node_as_well_as_kfd(amd_host, monkeypatch):
+    # A container given --device /dev/kfd without /dev/dri opens KFD and initialises no GPU.
+    from utils.hardware import amd
+
+    monkeypatch.setattr(amd, "amd_closed_nodes_block_the_runtime", lambda **_: True)
+    monkeypatch.setattr(
+        amd,
+        "amd_node_permission_hint",
+        lambda **_: "Recreate the container with --device /dev/dri.",
+    )
+    assert (
+        install.support_reason("vllm", wait = False)
+        == "Recreate the container with --device /dev/dri."
+    )
+    monkeypatch.setattr(amd, "amd_node_permission_hint", lambda **_: None)
+    assert "/dev/dri/renderD*" in install.support_reason("vllm", wait = False)
+
+
+def test_sdk_rocm_torch_still_maps_each_gpu_to_its_target(monkeypatch):
+    # AMD's SDK / Radeon wheels leave torch.version.hip unset and carry "rocm" in the version.
+    import torch
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(install, "_rocm_arches", None)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+rocmsdk20251116")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    props = {0: SimpleNamespace(gcnArchName = "gfx1100"), 1: SimpleNamespace(gcnArchName = "gfx1030")}
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i: props[i])
+    monkeypatch.setattr(hardware, "_rocm_device_ordinal_active", lambda: False)
+    monkeypatch.setattr(hardware, "_rocm_visibility_masks_are_stacked", lambda: False)
+    monkeypatch.setattr(hardware, "_torch_ordinal_physical_ids", lambda count: [0, 1])
+    assert install._rocm_gpu_arches() == {0: "gfx1100", 1: "gfx1030"}
 
 
 def test_sglang_on_amd_points_to_vllm(amd_host):
