@@ -12,13 +12,16 @@ from typing import Any, Optional
 QUERY_CHUNK_SIZE = 512
 # MiB one score tensor may take before MPS attention is split; unset = 1/8 of the GPU working set.
 SCORE_BUDGET_ENV = "UNSLOTH_DIFFUSION_ATTN_SCORE_BUDGET_MB"
+# Score elements per MPS call. macOS 15 / torch 2.11 SDPA returned wrong values (max error 0.19 vs an fp32 CPU
+# reference) for one 32 x 4096 x 4352 call (1024x1024) and from 0.9 * 2**29 elements in bf16 and fp32, while
+# 0.45 * 2**29 was exact on macOS 15 and 26.
+MPS_SCORE_ELEMENTS = 2**28
 
 
 def mps_score_budget() -> int:
     """Bytes one ``batch x heads x queries x keys`` score tensor may take on MPS before attention is split.
 
-    Sized so 1024x1024 in bf16 on a 16 GB Mac (about 1.1 GB of scores) stays one call, exactly as before; only sizes
-    that would otherwise swap (2048x2048 is about 17 GB per tensor) are split."""
+    Sizes whose scores fit (768x768 is 0.35 GB in bf16) keep one call, exactly as before."""
     raw = (os.environ.get(SCORE_BUDGET_ENV) or "").strip()
     if raw:
         try:
@@ -35,11 +38,12 @@ def mps_score_budget() -> int:
 
 
 def _query_rows(query, key, budget: Optional[int]) -> int:
-    """Query rows per call: ``QUERY_CHUNK_SIZE`` without a budget, else as many as the budget holds (at least that)."""
+    """Query rows per call: ``QUERY_CHUNK_SIZE`` without a budget, else as many as the budget and
+    ``MPS_SCORE_ELEMENTS`` hold (at least that)."""
     if budget is None:
         return QUERY_CHUNK_SIZE
-    per_row = query.shape[0] * query.shape[2] * key.shape[1] * query.element_size()
-    return max(QUERY_CHUNK_SIZE, budget // max(per_row, 1))
+    per_row = max(query.shape[0] * query.shape[2] * key.shape[1], 1)
+    return max(QUERY_CHUNK_SIZE, min(budget // (per_row * query.element_size()), MPS_SCORE_ELEMENTS // per_row))
 
 
 def _bounded_attention(

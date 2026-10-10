@@ -224,7 +224,7 @@ def test_mps_budget_keeps_one_call_per_segment_when_the_scores_fit():
 
 @pytest.mark.parametrize(
     "budget, rows",
-    [(None, 512), (0, 512), (2 * 2 * 4096 * 4 * 700, 700), (2**40, 2**40 // (2 * 2 * 4096 * 4))],
+    [(None, 512), (0, 512), (2 * 2 * 4096 * 4 * 700, 700), (2**40, 2**28 // (2 * 2 * 4096))],
 )
 def test_query_rows_follow_the_score_budget(budget, rows):
     q, k = torch.empty(2, 4096, 2, 8), torch.empty(2, 4096, 2, 8)
@@ -237,3 +237,12 @@ def test_mps_score_budget_reads_the_override(monkeypatch):
     monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, "")
     monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 16 * 2**30, raising = False)
     assert bounded.mps_score_budget() == 2 * 2**30
+
+
+def test_qwen_image_21_1024_splits_below_the_mps_element_cap():
+    # One 32 x 4096 x 4352 call returned wrong values on macOS 15; 768x768 (2304 tokens) stays one call.
+    k = torch.empty(1, 4352, 32, 1, dtype = torch.bfloat16)
+    rows = bounded._query_rows(torch.empty(1, 4096, 32, 1, dtype = torch.bfloat16), k, 2**34)
+    assert rows < 4096 and rows * 32 * 4352 <= bounded.MPS_SCORE_ELEMENTS
+    k = torch.empty(1, 2560, 32, 1, dtype = torch.bfloat16)
+    assert bounded._query_rows(torch.empty(1, 2304, 32, 1, dtype = torch.bfloat16), k, 2**34) >= 2304
