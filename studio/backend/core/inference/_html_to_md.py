@@ -226,6 +226,16 @@ _PRICE_TAIL = re.compile(r"[$€£¥₹¢]\s?\d[\d,]*$")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
 
+
+def _visible_tail(text: str) -> str:
+    """*text* without the emphasis/code delimiters and link markers the renderer appended."""
+    while True:
+        trimmed = _SITE_LINK_MARKER_TAIL.sub("", text.rstrip(_MD_DELIMITERS))
+        if trimmed == text:
+            return text
+        text = trimmed
+
+
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
 _HEADER_LINK_DENSITY = 0.93
 # below this the ratio is noise: link lists start at 182 chars, link-dense headers stop at 93
@@ -585,16 +595,11 @@ class _MarkdownRenderer(HTMLParser):
         ``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
         for part in itertools.islice(reversed(target), _SUP_BASE_SCAN_PARTS):
             part = part[-_SUP_BASE_SCAN_CHARS:]
-            # an emphasis or code delimiter the renderer just opened is not visible text
-            while True:
-                trimmed = _SITE_LINK_MARKER_TAIL.sub("", part.rstrip(_MD_DELIMITERS))
-                if trimmed == part:
-                    break
-                part = trimmed
+            part = _visible_tail(part)
             if part:
                 base = part[-1]
                 if base.isdigit() and _PRICE_TAIL.search(
-                    "".join(p[-40:] for p in target[-4:])[-40:]
+                    _visible_tail("".join(p[-40:] for p in target[-4:])[-40:])
                 ):
                     return ""
                 return base if base.isalnum() or base in ")]}|" else ""
