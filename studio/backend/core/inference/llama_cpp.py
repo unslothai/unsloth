@@ -7728,6 +7728,8 @@ class LlamaCppBackend:
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
+        # Ceiling a fit priced inside the GPU / Metal budget; None when only an anchor or floor exists.
+        self._vram_fit_context_length: Optional[int] = None
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
@@ -8284,6 +8286,11 @@ class LlamaCppBackend:
         ``native_context_length``; dragging above this triggers the warning.
         """
         return self._max_context_length or self._context_length
+
+    @property
+    def vram_fit_context_length(self) -> Optional[int]:
+        """Largest context the load-time fit priced inside GPU / Metal memory, else None."""
+        return self._vram_fit_context_length
 
     @property
     def native_context_length(self) -> Optional[int]:
@@ -19160,6 +19167,7 @@ class LlamaCppBackend:
         # Provisional until the server reports the budget it resolved (auto-size picks it from VRAM).
         self._effective_context_length = maxtok or self._context_length
         self._max_context_length = self._context_length or maxtok or None
+        self._vram_fit_context_length = None
 
         healthy = self._wait_for_health(timeout = self._HEALTH_STALL_TIMEOUT_S, cancelled = cancelled)
         if healthy:
@@ -24821,6 +24829,7 @@ class LlamaCppBackend:
                 _unmeasured_ctx_notice: Optional[str] = None
                 _cuda_ctx_notice: Optional[str] = None
                 _ctx_cap_fits = False
+                _vram_fit_ctx: Optional[int] = None
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
@@ -26332,6 +26341,7 @@ class LlamaCppBackend:
                             if best_cap > 0:
                                 max_available_ctx = best_cap
                                 _ctx_cap_fits = True
+                                _vram_fit_ctx = best_cap
                             else:
                                 # Weights exceed 90% of every GPU subset, so no
                                 # context fits. Anchor the UI "safe zone" at the
@@ -26869,6 +26879,8 @@ class LlamaCppBackend:
                                     _metal_ctx_warning = self._metal_context_pressure_message(
                                         effective_ctx, _requested_mib, _apple_fit_budget_mib
                                     )
+                        # The paravirtual pin loads on CPU, so no Metal budget held anything.
+                        _vram_fit_ctx = None if _paravirtual_cpu_forced else _apple_measured_ceiling
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
                             _apple_host_embd and _apple_measured_ceiling is not None
@@ -27045,6 +27057,7 @@ class LlamaCppBackend:
                                 # the launched plan cannot serve, which is the same ceiling /
                                 # selection inversion #9492 removed, pointing the other way.
                                 max_available_ctx = _ceiling[0]
+                                _vram_fit_ctx = _ceiling[0]
 
                     # Pass the final slot and micro-batch values instead of the defaults
                     # captured before slot reduction.
@@ -30637,6 +30650,7 @@ class LlamaCppBackend:
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
+                self._vram_fit_context_length = _vram_fit_ctx
 
                 # Past the host-RAM and offload advisories, so it can say the ceiling is
                 # the request without costing the user a memory warning it does not
@@ -32877,6 +32891,7 @@ class LlamaCppBackend:
             self._context_length = None
             self._effective_context_length = None
             self._max_context_length = None
+            self._vram_fit_context_length = None
             self._reset_effective_parallel_slots()
             self._slot_save_dir = None
             self._slot_save_binary = None

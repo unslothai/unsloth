@@ -1055,7 +1055,13 @@ class _FakeSpillingLlamaBackend(_FakeLlamaBackend):
     # #12571: a 100k load on a Mac whose Metal budget only fits 8k without spilling.
     context_length = 100000
     max_context_length = 8192
+    vram_fit_context_length = 8192
     native_context_length = 262144
+
+
+class _FakeNothingFitsLlamaBackend(_FakeSpillingLlamaBackend):
+    # Weights over every budget: max_context_length is the Auto anchor, not a fit.
+    vram_fit_context_length = None
 
 
 def test_v1_models_names_the_vram_fit_estimate(monkeypatch):
@@ -1068,6 +1074,14 @@ def test_v1_models_names_the_vram_fit_estimate(monkeypatch):
     # The old name still answers, with the same estimate.
     assert entry["max_context_length"] == 8192
     assert entry["native_context_length"] == 262144
+
+
+def test_v1_models_claims_no_vram_fit_when_nothing_fits(monkeypatch):
+    monkeypatch.setattr(routes_mod, "get_llama_cpp_backend", lambda: _FakeNothingFitsLlamaBackend())
+    monkeypatch.setattr(routes_mod, "get_inference_backend", lambda: _FakeEmptyBackend())
+    entry = _openai_model_objects()[0]
+    assert "vram_fit_context_length" not in entry
+    assert entry["max_context_length"] == 8192
 
 
 def _conversation_with_big_reasoning(trace_chars: int = 40000) -> list[dict]:
