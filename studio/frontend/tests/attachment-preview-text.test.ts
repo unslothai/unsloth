@@ -1735,6 +1735,39 @@ test("a Word numbered list keeps its numbers", async () => {
   }
 });
 
+test("Word heading styles linked to list levels number by their level", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const heading = (text: string, style: string) => `<w:p><w:pPr><w:pStyle w:val="${style}"/></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const styleXml = (id: string) =>
+    `<w:style w:type="paragraph" w:styleId="${id}"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>${heading("Scope", "Heading1")}${heading("Terms", "Heading2")}${heading("Notice", "Heading2")}${heading("Fees", "Heading1")}</w:body></w:document>`,
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">` +
+        '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading1"/><w:lvlText w:val="%1."/></w:lvl>' +
+        '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading2"/><w:lvlText w:val="%1.%2"/></w:lvl>' +
+        '</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+    "word/styles.xml": strToU8(`<w:styles ${w}>${styleXml("Heading1")}${styleXml("Heading2")}</w:styles>`),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) });
+    assert.equal(value, "1. Scope\n\n1.1 Terms\n\n1.2 Notice\n\n2. Fees\n\n");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
 test("a Word legal list reads every level as a decimal and skips unnumbered levels", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
   const p = (text: string, ilvl: number) =>

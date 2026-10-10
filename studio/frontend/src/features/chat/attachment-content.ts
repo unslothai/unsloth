@@ -1132,7 +1132,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   };
   const definedLevels = new Map<string, Map<string, Element>>();
   // Each instance's nine levels are resolved once, not per paragraph.
-  type Instance = { abstractId: string; levels: Level[]; restarts: number[] };
+  type Instance = { abstractId: string; levels: Level[]; restarts: number[]; byStyle: Map<string, number> };
   const instances = new Map<string, Instance | undefined>();
   const instance = (numId: string): Instance | undefined => {
     if (instances.has(numId)) return instances.get(numId);
@@ -1160,7 +1160,12 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
       const restarts = Array.from(overrides.entries())
         .filter(([at, node]) => /^[0-8]$/.test(at) && childElements(node, n, "startOverride").length)
         .map(([at]) => Number(at));
-      resolved = { abstractId, levels, restarts };
+      const byStyle = new Map<string, number>();
+      levels.forEach(({ lvl }, index) => {
+        const style = wordValue(lvl, "pStyle");
+        if (style !== undefined && !byStyle.has(style)) byStyle.set(style, index);
+      });
+      resolved = { abstractId, levels, restarts, byStyle };
     }
     instances.set(numId, resolved);
     return resolved;
@@ -1186,8 +1191,11 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     const numId = wordValue(direct, "numId") ?? wordValue(styled, "numId");
     const list = numId === undefined ? undefined : instance(numId);
     if (!list) return;
-    const { abstractId, levels, restarts } = list;
-    const ilvl = Math.min(8, Math.max(0, Math.trunc(Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? 0) || 0)));
+    const { abstractId, levels, restarts, byStyle } = list;
+    const style = wordValue(pPr, "pStyle");
+    // A heading style's numPr often names only the list; the level linked to the style supplies ilvl.
+    const linked = style === undefined ? undefined : byStyle.get(style);
+    const ilvl = Math.min(8, Math.max(0, Math.trunc(Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? linked ?? 0) || 0)));
     const { lvl, format, legal, text } = levels[ilvl];
     if (!lvl) return;
     // Instances of one abstract definition share its counters, as in Word; a start override
