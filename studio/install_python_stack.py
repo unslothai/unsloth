@@ -4645,7 +4645,6 @@ _INTEL_XPU_PCI_IDS = frozenset((
     0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
 ))  # fmt: skip
 _PCI_DEVICES_ROOT = "/sys/bus/pci/devices"
-# Level Zero / SYCL device filters: their indices need not follow PCI order, so any of them leaves the choice to a pin.
 _INTEL_DEVICE_FILTER_VARS = (
     "ONEAPI_DEVICE_SELECTOR",
     "SYCL_DEVICE_FILTER",
@@ -4707,8 +4706,7 @@ def _ensure_xpu_torch(probe_only: bool = False) -> "bool | None":
     pin = _explicit_xpu_torch_index_url()
     _source = "an explicit XPU index is pinned"
     if pin is None and _explicit_torch_index_family() != "xpu":
-        # Unpinned: install.sh's Intel GPU route (UNSLOTH_TORCH_BACKEND=xpu), or, on a standalone
-        # update, the XPU flavor that install recorded. Any other stated backend or pin wins.
+        # Unpinned: install.sh's route or the recorded flavor; any other stated backend or pin wins.
         if (
             _explicit_torch_index_family() is not None
             or (_TORCH_BACKEND or _RECORDED_TORCH_TAG) != "xpu"
@@ -4722,7 +4720,6 @@ def _ensure_xpu_torch(probe_only: bool = False) -> "bool | None":
         # A recorded XPU flavor yields to an NVIDIA or AMD GPU added since.
         if not _TORCH_BACKEND and (_has_usable_nvidia_gpu() or _has_rocm_gpu()):
             return
-        # Unpinned, the route must still hold: Intel GPU present, not masked, not opted out.
         if not stated and not _intel_xpu_auto_route_holds():
             return
         pin = _pytorch_whl_leaf_url("xpu")  # None: the mirror cannot express it; False below

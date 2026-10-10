@@ -4823,11 +4823,9 @@ _nvidia_gpu_wins_over_amd() {
     fi
     return 0
 }
-# PCI device root; a function so a test can point it at a fake tree.
 _pci_devices_root() { printf '%s' /sys/bus/pci/devices; }
 
-# PCI id of the first Intel display device XPU PyTorch supports, else empty. Same allowlist as
-# studio/backend/utils/hardware/hardware.py (_INTEL_XPU_PCI_ID_RANGES, _INTEL_XPU_PCI_IDS).
+# First XPU-capable Intel display device id; same allowlist as hardware.py _INTEL_XPU_PCI_*.
 _intel_xpu_gpu_id() {
     for _ix_vendor in "$(_pci_devices_root)"/*/vendor; do
         [ -r "$_ix_vendor" ] || continue
@@ -4852,8 +4850,7 @@ _intel_xpu_gpu_id() {
     return 1
 }
 
-# The Intel GPU to route to XPU wheels when nothing else claimed the host, as install.ps1 does.
-# Declines beside any AMD silicon (the runtime-less reroute owns a */cpu index there).
+# Declines beside any AMD silicon: the runtime-less AMD reroute owns a */cpu index there.
 _intel_xpu_auto_gpu_id() {
     [ "${UNSLOTH_DISABLE_XPU_AUTO:-0}" = 1 ] && return 1
     [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && return 1
