@@ -12,21 +12,11 @@ import { useExportRuntimeStore } from "../stores/export-runtime-store";
 
 const STATUS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 600;
-// Short-response fallback cadence, for a proxy that drops or stalls the log stream.
 const LOG_POLL_INTERVAL_MS = 750;
 
 /**
- * Global export runtime driver, mounted once at the app root so it runs on every
- * route (the inline export panel lives on /export, but the run must stay live and
- * visible from any tab). It:
- *   - hydrates `is_export_active` from the backend on mount / reload,
- *   - streams the worker log SSE into the store while a run is active, and
- *   - keeps that stream alive across the load -> export phase boundary so a
- *     transient `complete` between per-phase POSTs does not strand the panel on
- *     "Waiting for worker output..." (the premature-complete bug).
- *
- * The actual export sequence is driven by the store's `runExport` action (a
- * detached promise), so it survives navigation independently of this hook.
+ * Global export driver mounted at the app root: hydrates status, streams logs, and keeps
+ * the stream alive across the load -> export boundary. The sequence itself is runExport.
  */
 export function useExportRuntimeLifecycle(): void {
   useEffect(() => {
@@ -56,11 +46,8 @@ export function useExportRuntimeLifecycle(): void {
       store.getState().setConnected(false);
     };
 
-    // ── JSON log polling (tunnel-safe fallback) ────────────────────────── Runs for the whole
-    // active run, in parallel with the SSE stream. On localhost the SSE delivers first and these
-    // polls are de-duped away by seq; over a Cloudflare tunnel the SSE is buffered and these polls
-    // are what actually fill the log panel. A successful poll marks the stream "connected" so the
-    // panel shows "streaming" rather than "connecting...".
+    // Polling runs alongside SSE; over a Cloudflare tunnel the SSE is buffered, so polls fill
+    // the log. A successful poll marks the stream connected.
     const pollLogsOnce = async () => {
       if (disposed || !store.getState().isExporting) return;
       try {
@@ -122,8 +109,6 @@ export function useExportRuntimeLifecycle(): void {
             if (event.event === "log" && event.entry) {
               store.getState().appendLog(event.entry, event.id ?? undefined);
             }
-            // `complete` / `error` end this connection (streamExportLogs returns);
-            // the finally block reconnects while the run is still in flight.
           },
         });
       } catch {
@@ -133,10 +118,7 @@ export function useExportRuntimeLifecycle(): void {
         if (streamController === controller) {
           streamController = null;
         }
-        // Do NOT clear `connected` here: over a Cloudflare tunnel the SSE drops and reconnects
-        // repeatedly (buffered / premature complete), which used to flap the indicator back to
-        // "connecting...". The log poll owns the connected flag for the duration of the run;
-        // stopStream clears it when the run actually ends.
+        // Do not clear `connected`: tunnel SSE reconnects would flap it. The poll owns the flag.
 
         if (
           !disposed &&
@@ -165,8 +147,7 @@ export function useExportRuntimeLifecycle(): void {
       }
     };
 
-    // React to isExporting flipping (run start / terminal) without needing the
-    // subscribeWithSelector middleware: the base subscribe fires on every change.
+    // The base subscribe fires on every change, so no subscribeWithSelector is needed.
     let prevExporting = store.getState().isExporting;
     const unsubscribe = store.subscribe((state) => {
       if (state.isExporting === prevExporting) return;

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The menus a long chat opens constantly must not be modal: the scroll lock and the inherited
-// `pointer-events` write cost a pause and a layout shift that scale with the thread. Parsed
-// rather than scanned, or re-modalising in any other spelling reads as untouched.
+// Long-chat menus must not be modal: scroll lock and pointer-events writes scale with the thread.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -13,7 +11,6 @@ import ts from "typescript";
 
 import { readSrc } from "./helpers/kit.ts";
 
-/** Keyed by a marker on the menu's trigger. */
 const NON_MODAL = [
   ["components/assistant-ui/thread.tsx", "thinkEffortAriaLabel({"],
   ["components/app-sidebar.tsx", "aria-label={options.ariaLabel}"],
@@ -26,7 +23,6 @@ const NON_MODAL = [
   ["features/chat/shared-composer.tsx", "thinkEffortAriaLabel({"],
 ] as const;
 
-/** Both spellings of a menu root, so the enclosing one is found whichever it is. */
 const MENU_ROOTS = new Set(["NonModalDropdownMenu", "DropdownMenu"]);
 
 const parse = (relative: string): ts.SourceFile =>
@@ -45,7 +41,6 @@ const tagOf = (node: ts.Node): string | undefined =>
       ? node.tagName.getText()
       : undefined;
 
-/** The innermost menu root containing `position`, by tag name. */
 function enclosingMenuRoot(
   source: ts.SourceFile,
   position: number,
@@ -64,7 +59,6 @@ function enclosingMenuRoot(
 for (const [file, marker] of NON_MODAL) {
   test(`${file}: the menu at ${marker} is non-modal`, () => {
     const source = parse(file);
-    // Every occurrence: a second copy of the same trigger is how one drifts back unnoticed.
     const positions: number[] = [];
     for (let at = source.text.indexOf(marker); at !== -1; ) {
       positions.push(at);
@@ -92,14 +86,12 @@ test("NonModalDropdownMenu is non-modal and guards its own dismissal", () => {
   const text = source.text;
   assert.match(text, /<DropdownMenu[^>]*\bmodal=\{false\}/);
   assert.match(text, /<MenuDismissGuard triggerRef=\{triggerRef\} \/>/);
-  // Each mount owns its ref, or a per-row menu restores focus to another row's trigger.
   assert.match(text, /const triggerRef = useRef<HTMLButtonElement>\(null\)/);
   assert.match(text, /trigger\(triggerRef\)/);
 });
 
 test("the dismiss guard is mounted only while the menu is open", () => {
-  // The content outlives the close by its exit animation, and an ungated guard left watching
-  // `document` swallows the next click the user makes anywhere on the page.
+  // The content outlives the close by its exit animation; an ungated guard swallows the next click.
   const source = parse("components/ui/non-modal-dropdown-menu.tsx");
   const text = source.text;
   assert.match(
@@ -115,7 +107,6 @@ test("the dismiss guard is mounted only while the menu is open", () => {
 });
 
 test("the menu content still animates out, which is why the guard is gated", () => {
-  // Without the animation the gate above is merely harmless; revisit it rather than drop it.
   const content = readSrc("components/ui/dropdown-menu.tsx");
   assert.match(content, /data-closed:animate-out/);
 });

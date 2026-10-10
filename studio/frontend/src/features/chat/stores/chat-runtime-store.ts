@@ -159,8 +159,7 @@ export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
 export const CHAT_SANDBOX_LEVEL_KEY = "unsloth_chat_sandbox_level";
 
-/** Local tool-call gate: "ask" every call, "auto" only high-risk ones, "off" never but keeps the
- *  sandbox, "full" drops both and is session-only. */
+/** "ask" every call, "auto" high-risk only, "off" never, "full" no sandbox (session-only). */
 export type PermissionMode = "ask" | "auto" | "off" | "full";
 /** "high" adds the OS sandbox (bubblewrap, Seatbelt, MXC) to the software safeguards; "low" uses only those. */
 export type SandboxLevel = "high" | "low";
@@ -174,18 +173,13 @@ export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
 export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
 export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
-// Only the model-agnostic intents (auto/ngram/off) persist: a saved drafter mode no-ops on a model
-// with no MTP head or DSpark sidecar, so the model-specific modes and spec_draft_n_max stay
-// session-only. Unknown maps to auto.
+// Only model-agnostic modes persist: a saved drafter mode no-ops on models without one.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
-/** Where the composer files an attachment in a project chat; `project` indexes it.
- *  Key a choice made in a chat with no id yet lives under until it gets one. */
 export const PENDING_CHAT_ATTACHMENT_KEY = "__pending__";
 
-/** Bumped when the pending entry changes hands, so a composer can tell it is still its own. */
 let pendingAttachmentTargetClaim = 0;
 
 export function readPendingAttachmentTargetClaim(): number {
@@ -197,13 +191,10 @@ export type RagMode = "hybrid" | "lexical" | "dense";
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
-// `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
 export type RagAutoInject = "auto" | "on" | "off";
 export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
-// OCR scanned/image-only PDF pages at ingest; off skips the extra vision pass (only matters with a vision chat model).
 export const DEFAULT_RAG_OCR = true;
-// Describe figures/charts in PDFs at ingest so they become searchable; no-op without a vision model.
 export const DEFAULT_RAG_CAPTION = false;
 export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
@@ -211,7 +202,7 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
 };
 export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
 
-/** 0 (unlimited) or a finite budget; the patch and run routes drop anything else and 400. */
+/** The patch and run routes reject anything other than 0 or a finite budget with 400. */
 function isSupportedResearchModelTimeout(value: number): boolean {
   if (!Number.isSafeInteger(value) || value < 0) return false;
   if (value > MAX_RESEARCH_MODEL_TIMEOUT_SECONDS) return false;
@@ -343,9 +334,7 @@ function loadRagNumber(
   }
 }
 
-// External picks ride in `params.checkpoint` as `external::<providerId>::<modelId>`.
-// PersistedChatSettings omits `checkpoint`: only the local side is mirrored by
-// /api/inference/status.active_model.
+// External picks are `external::<providerId>::<modelId>`; the backend only mirrors local ones.
 const LAST_EXTERNAL_CHECKPOINT_KEY = "unsloth_chat_last_external_checkpoint";
 
 function loadLastExternalCheckpoint(): string | null {
@@ -358,11 +347,7 @@ function loadLastExternalCheckpoint(): string | null {
   }
 }
 
-/**
- * Two checkpoints naming the same model. normalizeModelIdentity, not toLowerCase: it folds case for
- * repository ids and the case-insensitive path forms while preserving it for POSIX paths, where
- * /home/u/Models/qwen3.8 and /home/u/models/qwen3.8 are two different files.
- */
+/** normalizeModelIdentity, not toLowerCase: POSIX paths are case-sensitive. */
 function isOpaqueModelRef(modelId: string): boolean {
   return isExternalModelId(modelId) || isOllamaManifestRef(modelId);
 }
@@ -374,17 +359,14 @@ function sameCheckpointIdentity(
   if (!(left && right)) {
     return false;
   }
-  // Opaque ids compare exactly: a provider qualifies one and an encoded POSIX
-  // path sits inside the other, and normalizeModelIdentity would fold both.
+  // Opaque ids compare exactly; normalizeModelIdentity would fold them.
   if (isOpaqueModelRef(left) || isOpaqueModelRef(right)) {
     return left === right;
   }
   return normalizeModelIdentity(left) === normalizeModelIdentity(right);
 }
 
-// A checkpoint that arrived without any adoption signal: restored from localStorage at startup, or
-// picked by the user while the settings GET was still in flight. Chat settings are
-// installation-wide, so neither may claim a global snapshot another browser wrote.
+// Chat settings are installation-wide, so an unowned checkpoint may not claim a global snapshot.
 let unownedCheckpointBeforeHydration: string | null = null;
 
 function saveLastExternalCheckpoint(value: string | null): void {
@@ -393,21 +375,17 @@ function saveLastExternalCheckpoint(value: string | null): void {
     if (value && isExternalModelId(value)) {
       window.localStorage.setItem(LAST_EXTERNAL_CHECKPOINT_KEY, value);
     } else {
-      // Cleared on a switch to a local/empty checkpoint, or the next refresh overrides it.
       window.localStorage.removeItem(LAST_EXTERNAL_CHECKPOINT_KEY);
     }
   } catch {
-    // Storage quota / private-mode failures are non-fatal; the selection just will not survive a refresh.
+    // Storage failures are non-fatal; the selection just will not survive a refresh.
   }
 }
 
-// "enable_thinking_effort" is a gate plus a level (GLM-5.2 high|max): it reuses the
-// reasoning_effort dropdown but, unlike gpt-oss, can be turned off entirely.
 export type ReasoningStyle =
   | "enable_thinking"
   | "reasoning_effort"
   | "enable_thinking_effort";
-/** One live DiffusionGemma denoising snapshot: canvas text at a step of a block (0-based; total = steps in block). */
 export type DiffusionCanvasFrame = {
   block: number;
   step: number;
@@ -450,8 +428,6 @@ function warnSettingsPersistenceFailure(): void {
   });
 }
 
-// Setting writes coalesce into one pendingPatch, flushed on a trailing debounce and on
-// beforeunload so a pending patch survives tab close.
 type SettingsPatch = Parameters<typeof savePersistedChatSettingsPatch>[0];
 
 const SETTINGS_DEBOUNCE_MS = 400;
@@ -463,12 +439,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// Discriminated unions, not partial patches: merging a `thread` pick into a stored `kb` one
-// keeps `kbId`, which the backend's thread variant forbids.
+// Replaced whole, not merged: a merged `kbId` is forbidden by the backend's thread variant.
 const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
 
-// Maps of per-model objects, merged one level further in: two edits to different fields in
-// one debounce window must not replace each other.
+// Merged one level deeper so two edits to different fields in one debounce both survive.
 const NESTED_MAP_SETTING_KEYS = new Set<string>(["inferenceParamsByModel"]);
 
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
@@ -506,8 +480,7 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   try {
     await savePersistedChatSettingsPatch(patch, { keepalive });
   } catch (error) {
-    // extra="forbid" refuses the whole body on one bad field, so requeueing as-is would break
-    // every later save. Keep the fields the server did not name; reschedule only if it shrank.
+    // extra="forbid" refuses the whole body on one bad field; drop the fields the server named.
     const { patch: retryable, progressed } = retryablePatchAfterFailure(
       patch,
       error,
@@ -523,7 +496,6 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   }
 }
 
-// Flushes handed to the network and not yet answered: pendingPatch and pendingTimer are both empty across that window.
 let unsettledFlushes = 0;
 
 function settingsWritesAreDrained(): boolean {
@@ -558,15 +530,13 @@ function saveSettingsPatch(patch: SettingsPatch): void {
   scheduleSettingsFlush();
 }
 
-// A wedged PATCH must not hold a send open; past this the run goes ahead on the value the server already has.
+// A wedged PATCH must not hold a send open past this.
 const SETTINGS_FLUSH_TIMEOUT_MS = 2000;
 
-/** Flush the debounced patch and wait. The backend reads some settings out of SQLite at call
- *  time, so a message sent inside the window would run on the pre-toggle value. */
+/** The backend reads some settings from SQLite at call time, so flush before sending. */
 export async function flushPendingChatSettings(): Promise<void> {
   const queued = pendingTimer !== null || Object.keys(pendingPatch).length > 0;
-  // Not just what is queued: the debounce may already have handed its patch to an unanswered
-  // request, leaving both empty while the backend still reads the old value.
+  // The debounce may have handed its patch to an unanswered request.
   if (!queued && unsettledFlushes === 0) return;
   if (pendingTimer !== null) {
     clearTimeout(pendingTimer);
@@ -586,31 +556,24 @@ export async function flushPendingChatSettings(): Promise<void> {
   }
 }
 
-// keepalive lets the PUT outlive the unload; without it the last slider drag is dropped.
+// keepalive lets the PUT outlive the unload.
 function flushSettingsOnPageHidden(terminal: boolean): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
-  // Terminal events only: the beacon PATCHes the row directly, and a row that does not exist
-  // yet answers 404. Chats just sent are excluded, since each beacon takes a higher seq.
+  // Terminal events only: the beacon PATCHes the row directly, and a missing row answers 404.
   const sentNewest = new Set<string>();
   const flushedThreadId = threadSettingsWriteThreadId;
   flushThreadScopedSettingsWrite(terminal);
   if (terminal && flushedThreadId !== null) sentNewest.add(flushedThreadId);
-  // An edit made while its chat's read was out lives only in heldThreadScopedEdits, and effect
-  // cleanup is not guaranteed during unload, so send it from here.
+  // Effect cleanup is not guaranteed during unload, so send held edits from here.
   if (terminal) {
     const heldThreadId = pendingPairingThreadId;
     void commitHeldThreadScopedEditsToTheirThread(true);
     if (heldThreadId !== null) sentNewest.add(heldThreadId);
-    // And anything an earlier visibilitychange flushed the normal way, which this event would
-    // otherwise leave to a cancelled fetch.
     beaconUnsettledThreadSettingsWrites(sentNewest);
   }
-  // An edit still waiting on hydration is a user edit, so send it rather than let the next
-  // session hydrate over it.
   drainPreHydrationPatch();
   if (Object.keys(pendingPatch).length === 0) return;
-  // Counted like any other flush: a keepalive PUT still on the wire would land
-  // after the compare-and-set and restore the legacy row.
+  // Counted: a keepalive PUT still in flight could land after the compare-and-set.
   unsettledFlushes += 1;
   inflightFlush = inflightFlush
     .catch(() => undefined)
@@ -622,8 +585,7 @@ function flushSettingsOnPageHidden(terminal: boolean): void {
 
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => flushSettingsOnPageHidden(true));
-  // beforeunload never fires on discarded mobile tabs, so pagehide and visibilitychange-hidden
-  // are added too. Safe: the pending patch is swapped out before the request.
+  // beforeunload never fires on discarded mobile tabs, so also use pagehide/visibilitychange.
   window.addEventListener("pagehide", () => flushSettingsOnPageHidden(true));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushSettingsOnPageHidden(false);
@@ -655,7 +617,6 @@ function writeStorageValue(key: string, raw: string): void {
 type MirroredSettingCodec = {
   encode: (value: unknown) => string;
   decode: (raw: string) => unknown;
-  /** Value to seed the backend with, for a setting stored under older keys. */
   readForBackfill?: () => unknown;
 };
 
@@ -693,8 +654,6 @@ const RAG_AUTOINJECT_SETTING: MirroredSettingCodec = {
   decode: normalizeStoredRagAutoInject,
 };
 
-/** Settings describing the installation rather than the browser: each pairs a localStorage
- *  slot with the /api/chat/settings field that carries it to another browser. */
 const MIRRORED_SETTINGS = {
   reasoningEnabled: {
     storageKey: CHAT_REASONING_ENABLED_KEY,
@@ -746,7 +705,6 @@ const MIRRORED_SETTINGS = {
   permissionMode: {
     storageKey: CHAT_PERMISSION_MODE_KEY,
     ...STRING_SETTING,
-    // A profile predating permission levels holds only the confirm toggle; the level derives.
     readForBackfill: () =>
       readStorageValue(CHAT_PERMISSION_MODE_KEY) !== null ||
       loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY) !== null
@@ -800,8 +758,7 @@ const MIRRORED_SETTING_BY_STORAGE_KEY: ReadonlyMap<
 let mirroredSettingsHydrated = false;
 let preHydrationPatch: SettingsPatch | null = null;
 
-/** An edit made before the initial GET lands is held and replayed after hydration, since the
- *  request would race it. The mutation version bumps either way, fencing the field. */
+/** Edits before the initial GET are held and replayed after hydration to avoid a race. */
 function mirrorSettingToBackend(key: string, raw: string): void {
   const setting = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
   if (!setting) return;
@@ -830,13 +787,9 @@ function flushPreHydrationSettings(): void {
   saveSettingsPatch(patch);
 }
 
-/** Write a setting to localStorage and, when mirrored, to the backend. Storage is the
- *  synchronous boot cache; the backend copy is what another browser reads. */
 function persistSetting(key: string, raw: string): void {
   const mirrored = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
   const writeGlobal = () => {
-    // Before hydration the cache says nothing about the server's value, so an explicit write is
-    // recorded even when it changes nothing locally.
     if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
       mirrorSettingToBackend(key, raw);
     }
@@ -848,19 +801,14 @@ function persistSetting(key: string, raw: string): void {
 
 const THREAD_SETTINGS_DEBOUNCE_MS = 400;
 
-/** the thread whose snapshot the store shows, or null on a new chat. */
 let threadScopedSettingsThreadId: string | null = null;
-/** that thread's stored values, for the load paths that read a setting outside the store. */
 let activeThreadScopedSettings: ThreadScopedSettings | null = null;
-// Captured on the way into a thread: edits made with a chat open must not move the defaults.
+// Captured on entering a thread: edits with a chat open must not move the defaults.
 let globalThreadScopedDefaults: ThreadScopedSettings | null = null;
 let threadSettingsWriteTimer: ReturnType<typeof setTimeout> | null = null;
 let threadSettingsWriteThreadId: string | null = null;
-// Only when pinning: the values applied on open, not whatever a model-capability effect
-// leaves in the store by the time the debounce fires.
 let threadSettingsWriteSnapshot: ThreadScopedSettings | null = null;
 
-/** Where a thread-scoped key's live value is: sampling under `params`, the rest fields. */
 function readThreadScopedValue(
   state: ChatRuntimeStore,
   key: ThreadScopedSettingKey,
@@ -877,7 +825,7 @@ function readThreadScopedSettings(
   for (const key of THREAD_SCOPED_SETTING_KEYS) {
     source[key] = readThreadScopedValue(state, key);
   }
-  // Drops "full" with it: a stored bypass would come back without the warning dialog.
+  // Drops "full": a stored bypass would come back without the warning dialog.
   return sanitizeThreadScopedSettings(source);
 }
 
@@ -903,11 +851,9 @@ export function threadScopedDefault<K extends ThreadScopedSettingKey>(
 export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   key: K,
 ): ThreadScopedSettings[K] | undefined {
-  // Effort is captured before a model pin can overwrite the live value.
   if (key === "reasoningEffort" && activeThreadScopedSettings?.reasoningEffort !== undefined) {
     return activeThreadScopedSettings.reasoningEffort as ThreadScopedSettings[K];
   }
-  // Other pending edits still live in the store until the debounce.
   if (
     threadSettingsWriteThreadId !== null &&
     threadSettingsWriteThreadId === threadScopedSettingsThreadId
@@ -924,15 +870,11 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   return activeThreadScopedSettings?.[key];
 }
 
-/** Fields the user just set on the open chat, as opposed to ones a model's capabilities
- *  moved. The preservations below must not undo a choice only now made. */
 const explicitlyEditedThreadFields = new Set<string>();
 
-/** Fields a provider constraint moved WITHOUT persisting (Kimi's search turns thinking off
- *  with `{persist:false}`). That value is the provider's, so no snapshot write may save it. */
+/** Fields a provider constraint moved without persisting; no snapshot may save them. */
 const constraintSuppressedThreadFields = new Set<string>();
 
-/** Both pills of Kimi's search/thinking exclusion; the only non-persisting setters. */
 const CONSTRAINT_SUPPRESSIBLE_KEYS = ["reasoningEnabled", "toolsEnabled"] as const;
 
 function noteConstraintSuppressedThreadField(
@@ -950,15 +892,13 @@ function keepsStoredValueUnderConstraint(
   return (
     threadId === threadScopedSettingsThreadId &&
     constraintSuppressedThreadFields.has(key) &&
-    // A choice the user has since made themselves is theirs, constraint or not.
     !explicitlyEditedThreadFields.has(key) &&
     typeof activeThreadScopedSettings?.[key] === "boolean" &&
     settings[key] !== activeThreadScopedSettings[key]
   );
 }
 
-/** Whether a per-model pin currently owns the live `reasoningEffort`. The pin is written into the
- *  store so the composer shows it, but it belongs to the model, not to the chat. */
+/** A per-model effort pin is shown in the store but belongs to the model, not the chat. */
 function pinOwnsLiveReasoningEffort(state: ChatRuntimeStore): boolean {
   return (
     externalReasoningTakesEffort(state) &&
@@ -969,8 +909,6 @@ function pinOwnsLiveReasoningEffort(state: ChatRuntimeStore): boolean {
   );
 }
 
-/** The chat's own effort while a pin hides it: what the chat is on record as running with, so a
- *  snapshot taken under a pin stores the chat's level and not the model's. */
 function reasoningEffortOnRecord(): ReasoningEffort | undefined {
   return (
     activeThreadScopedSettings?.reasoningEffort ??
@@ -980,7 +918,6 @@ function reasoningEffortOnRecord(): ReasoningEffort | undefined {
   );
 }
 
-// The pills chat-page clamps to the selected model's capabilities.
 const CLAMPED_PILL_KEYS = [
   "toolsEnabled",
   "codeToolsEnabled",
@@ -989,8 +926,7 @@ const CLAMPED_PILL_KEYS = [
 ] as const;
 type ClampedPillKey = (typeof CLAMPED_PILL_KEYS)[number];
 
-/** Sampling keys share `params` with the model's recommendation, so a load in this window
- *  would pin the model's value onto the chat. Captured at the edit; last entry wins. */
+/** Sampling keys share `params` with the model's values, so capture edits at edit time. */
 function heldThreadScopedParamValue(key: string): unknown {
   for (let i = heldThreadScopedEdits.length - 1; i >= 0; i -= 1) {
     if (heldThreadScopedEdits[i].field === key) {
@@ -1000,18 +936,14 @@ function heldThreadScopedParamValue(key: string): unknown {
   return undefined;
 }
 
-/** First value actually set. `??` cannot do it: a cleared `seed` is null, and null there is
- *  the chat's own choice rather than a missing key. */
+/** `??` is wrong here: a cleared `seed` is null and that is the chat's own choice. */
 function firstSetThreadScopedValue(...values: unknown[]): unknown {
   return values.find((value) => value !== undefined);
 }
 
-/** Put back the sampling keys the open chat owns, so a load or status poll leaves it running
- *  what it stored. Only an unpinned chat falls through to the model's values. */
 function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
   const kept: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
-    // Not ||, and not ?? either: 0, "", -1 and a cleared seed's null are all values a user sets on purpose.
     const held = firstSetThreadScopedValue(
       heldThreadScopedParamValue(key),
       threadScopedOverride(key),
@@ -1024,9 +956,6 @@ function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
   return hasKeys(kept) ? { ...params, ...kept } : params;
 }
 
-/** Take the open chat's own values out of a snapshot about to be remembered against a model,
- *  or its sampling replays into the next chat opened there. A chat whose read is still out
- *  owns its keys too, so gating on the applied id alone leaked them. */
 function withoutActiveThreadParams(
   state: ChatRuntimeStore,
   params: InferenceParams,
@@ -1039,11 +968,8 @@ function withoutActiveThreadParams(
     : undefined;
   const restored: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
-    // Only a key this chat actually owns; the rest are already the model's.
     const held = heldThreadScopedParamValue(key);
     if (held === undefined && threadScopedOverride(key) === undefined) continue;
-    // For a held key the installation copy can still be null and the store no longer holds the
-    // pre-edit value; the sample taken when the window opened is that value.
     const own = firstSetThreadScopedValue(
       remembered?.[key],
       globalThreadScopedDefaults?.[key],
@@ -1057,8 +983,6 @@ function withoutActiveThreadParams(
   return hasKeys(restored) ? { ...params, ...restored } : params;
 }
 
-/** Drop the sampling keys the open chat just took: they must reach neither the installation
- *  defaults nor this model's memory, both shared with every other chat. */
 function withoutCapturedThreadEdits(
   changedParams: PersistedInferenceParams,
   fromModelDefaults: boolean,
@@ -1068,7 +992,7 @@ function withoutCapturedThreadEdits(
     if (
       isThreadScopedParamKey(key) &&
       !fromModelDefaults &&
-      // By value: this runs inside the updater, so a read-back would find the pre-edit value.
+      // By value: inside the updater a read-back would find the pre-edit value.
       captureThreadScopedEdit(key, null, value)
     ) {
       continue;
@@ -1078,14 +1002,10 @@ function withoutCapturedThreadEdits(
   return shared;
 }
 
-/** Level the in-memory installation defaults with what was just written: a chat with no
- *  snapshot falls back to them, so a stale copy runs the previous model's sampling. */
 function noteThreadScopedDefaults(shared: PersistedInferenceParams): void {
   let next: Record<string, unknown> | null = null;
   for (const [key, value] of Object.entries(shared)) {
     if (!isThreadScopedParamKey(key)) continue;
-    // Held field: the pairing capture restores it from the pre-window sample, so without this
-    // the in-memory defaults stay behind the server's all session.
     if (isHeldThreadScopedField(key)) {
       hydratedDefaultsByHeldField.set(key, value);
     }
@@ -1098,7 +1018,6 @@ function noteThreadScopedDefaults(shared: PersistedInferenceParams): void {
 
 function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   if (Object.is(next, current)) return true;
-  // ragSource is the only object among these, and its variants carry at most a kb id.
   if (isPlainObject(next) && isPlainObject(current)) {
     return next.type === current.type && next.kbId === current.kbId;
   }
@@ -1111,8 +1030,7 @@ function buildThreadScopedSnapshot(
 ): ThreadScopedSettings {
   const settings =
     snapshot ?? readThreadScopedSettings(useChatRuntimeStore.getState());
-  // The write replaces the row and the sanitizer drops a live "full", so any pill toggled
-  // under Full access would otherwise erase the chat's stored level.
+  // Keep the stored level: the sanitizer drops a live "full", which would erase it.
   if (
     settings.permissionMode === undefined &&
     threadId === threadScopedSettingsThreadId &&
@@ -1120,8 +1038,6 @@ function buildThreadScopedSnapshot(
   ) {
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
-  // Same for deep research, which apply() also holds back, or toggling any other pill erases
-  // the stored true. Unless the user just cleared it by enabling Search, Code or Images.
   if (
     threadId === threadScopedSettingsThreadId &&
     !explicitlyEditedThreadFields.has("deepResearchEnabled") &&
@@ -1134,8 +1050,7 @@ function buildThreadScopedSnapshot(
   ) {
     settings.deepResearchEnabled = true;
   }
-  // And for thinking, which a model that cannot stop thinking forces on: that true is the
-  // model's, so persisting it would erase a chat's stored false.
+  // A model that cannot stop thinking forces it on; do not persist that true.
   if (
     threadId === threadScopedSettingsThreadId &&
     !explicitlyEditedThreadFields.has("reasoningEnabled") &&
@@ -1145,13 +1060,10 @@ function buildThreadScopedSnapshot(
   ) {
     settings.reasoningEnabled = false;
   }
-  // The thread record already includes explicit edits waiting on the debounce.
   if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
     const onRecord = reasoningEffortOnRecord();
     if (onRecord !== undefined) settings.reasoningEffort = onRecord;
   }
-  // Same for every pill the model-selection pass clamps off without touching the snapshot:
-  // each pill's own capability rule is exactly when the user could not have done it.
   if (threadId === threadScopedSettingsThreadId) {
     const live = useChatRuntimeStore.getState();
     const modelLoaded = !!live.params.checkpoint && !live.modelLoading;
@@ -1173,8 +1085,6 @@ function buildThreadScopedSnapshot(
       }
     }
   }
-  // And for pills a provider constraint moved without persisting: the store holds the
-  // provider's value, so the chat keeps the one it was stored with.
   if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
     settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
   }
@@ -1184,7 +1094,6 @@ function buildThreadScopedSnapshot(
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
-  // Spent: this snapshot has taken them into account.
   explicitlyEditedThreadFields.clear();
   return settings;
 }
@@ -1192,8 +1101,7 @@ function buildThreadScopedSnapshot(
 const THREAD_SETTINGS_REPLAY_KEY = "unsloth_chat_thread_settings_replay";
 const THREAD_SETTINGS_REPLAY_TIMEOUT_MS = 10_000;
 
-/** Snapshots a terminal event sent but could not confirm, kept where the next session finds
- *  them: the beacon cannot await, and a row still being created answers 404. */
+/** The beacon cannot await and a row being created answers 404, so keep for replay. */
 function rememberThreadSettingsForReplay(
   threadId: string,
   body: Record<string, unknown>,
@@ -1209,11 +1117,9 @@ function rememberThreadSettingsForReplay(
   }
 }
 
-/** Safe to run always: the body carries that session's own seq, so a replay of a write that
- *  did land is refused rather than reverting anything newer. */
+/** Safe to always run: the body carries its seq, so a landed write is refused. */
 export function replayUnconfirmedThreadSettings(): void {
-  // Once per session: both hydration outcomes call it, and sending each body twice would race
-  // two writes carrying the same seq.
+  // Once per session: sending each body twice would race two writes with the same seq.
   if (threadSettingsReplayStarted) return;
   threadSettingsReplayStarted = true;
   if (!canUseStorage()) return;
@@ -1228,8 +1134,7 @@ export function replayUnconfirmedThreadSettings(): void {
   }
   const sent: Promise<unknown>[] = [];
   for (const [threadId, body] of Object.entries(pending)) {
-    // Bounded: every settings write waits on these, so a socket that never settles would block
-    // persistence for the whole session.
+    // Bounded: every settings write waits on these.
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), THREAD_SETTINGS_REPLAY_TIMEOUT_MS);
     const request = authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
@@ -1239,27 +1144,21 @@ export function replayUnconfirmedThreadSettings(): void {
       signal: timeout.signal,
     })
       .finally(() => clearTimeout(timer))
-      // Only an ok response means it landed: authFetch resolves for 404 and 5xx too, and the
-      // missing-row case this exists for is exactly the one that 404s.
+      // authFetch resolves for 404 and 5xx too, so check res.ok.
       .then((res) => {
-        // Only the body this request carried: a terminal event can store a newer one meanwhile, and
-        // dropping that because an older replay succeeded would lose the newest edit.
+        // Only forget this exact body: a newer one may have been stored meanwhile.
         if (res.ok) forgetReplayedThreadSettings(threadId, body);
       })
       .catch(() => undefined);
     sent.push(request);
   }
-  // Every snapshot write waits for this: the replay carries the PREVIOUS session's writer id,
-  // so the server applies it whenever it arrives and could revert a fresh edit.
+  // Every write waits on this: the replay uses the previous writer id and could revert edits.
   threadSettingsReplaySettled = Promise.all(sent).then(() => undefined);
 }
 
-// Resolved once the previous session's unconfirmed writes have been answered.
 let threadSettingsReplaySettled: Promise<void> = Promise.resolve();
 let threadSettingsReplayStarted = false;
 
-/** `expected` narrows the drop to the exact body the caller sent; a caller that has itself
- *  written the row passes nothing, since its values supersede the entry. */
 function forgetReplayedThreadSettings(
   threadId: string,
   expected?: unknown,
@@ -1286,15 +1185,12 @@ function forgetReplayedThreadSettings(
   }
 }
 
-/** The ensure-then-update chain cannot finish during unload, so the row write goes out with
- *  keepalive and whatever it cannot confirm is left for the next session. */
 function sendThreadScopedSettingsBeacon(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
   merge = false,
 ): void {
-  // A merge carries only what the user touched, for a chat whose snapshot was never read; a
-  // replacement built from the defaults on screen would erase the rest of its row.
+  // A merge for a never-read chat; a full replacement would erase the rest of its row.
   const body = merge
     ? {
         settingsPatch: snapshot,
@@ -1306,8 +1202,7 @@ function sendThreadScopedSettingsBeacon(
         settingsSeq: nextThreadSettingsSeq(),
         settingsWriter: threadSettingsWriter,
       };
-  // The beacon carries the newest values but skips the chain, so an older write would land
-  // after it. The ticket stands down queued writes; the abort ends the one out.
+  // Stand down queued and in-flight writes so an older one cannot land after the beacon.
   takeThreadSettingsWriteTicket(threadId);
   threadSettingsWriteAborts.get(threadId)?.abort();
   rememberThreadSettingsForReplay(threadId, body);
@@ -1319,18 +1214,13 @@ function sendThreadScopedSettingsBeacon(
   }).catch(() => undefined);
 }
 
-// One chain per thread: the write REPLACES settings_json, so two unordered writes pick a
-// winner and a slow first landing after a fast second reverts the user.
+// One chain per thread: writes replace settings_json, so they must be ordered.
 const threadSettingsWriteChains = new Map<string, Promise<unknown>>();
-// Newest snapshot per thread, so a queued write can tell it was superseded and skip its PATCH.
 const threadSettingsWriteTickets = new Map<string, number>();
 
-// The request each thread currently has out, so a newer snapshot can stand it down.
 const threadSettingsWriteAborts = new Map<string, AbortController>();
 
-/** Stamps each snapshot write so the server refuses this tab's older ones: a keepalive sent
- *  on unload can be undone by a PATCH the server already had. A counter, never a clock:
- *  comparing machines' clocks silently loses the slower browser's edits. */
+/** Writer id plus a counter (never a clock) lets the server refuse this tab's older writes. */
 const threadSettingsWriter = crypto.randomUUID();
 let lastThreadSettingsSeq = 0;
 
@@ -1345,25 +1235,22 @@ function takeThreadSettingsWriteTicket(threadId: string): number {
   return ticket;
 }
 
-/** Resolves true when the snapshot reached the row, so callers can tell it landed. */
 function writeThreadScopedSettings(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
 ): Promise<boolean> {
-  // Built now, not inside the chain: the snapshot must describe the store at the moment of the edit.
   const settings = buildThreadScopedSnapshot(threadId, snapshot);
-  // Stamped with the snapshot, not the request: the seq says when the edit happened, not when its turn came up.
+  // The seq marks when the edit happened, not when the request was sent.
   const settingsSeq = nextThreadSettingsSeq();
   const ticket = takeThreadSettingsWriteTicket(threadId);
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
-    // Last session's unconfirmed writes go first: one carries a different writer id, so nothing
-    // on the server orders it against this edit.
+    // Previous session's replays go first: their writer id differs so nothing orders them.
     .then(() => threadSettingsReplaySettled)
     .catch(() => undefined)
     .then(async () => {
-      // Superseded while queued: sending this would undo the newer snapshot, so it counts as landed for the caller.
+      // Superseded while queued: sending would undo the newer snapshot.
       if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
         return true;
       }
@@ -1378,14 +1265,10 @@ function writeThreadScopedSettings(
           { settings, settingsSeq, settingsWriter: threadSettingsWriter },
           { signal: controller.signal },
         );
-        // This session's values are now the row's, so a leftover replay entry from the last one would revert them.
         forgetReplayedThreadSettings(threadId);
         return true;
       } catch {
-        // The chat still behaves as edited; only the snapshot for the next visit is lost. An abort
-        // lands here too, deliberately: a newer snapshot won.
         if (!controller.signal.aborted) warnSettingsPersistenceFailure();
-        // An abort means a newer write won and is tracked in its place; a real failure means nothing reached the row.
         return controller.signal.aborted;
       } finally {
         if (threadSettingsWriteAborts.get(threadId) === controller) {
@@ -1403,24 +1286,18 @@ function writeThreadScopedSettings(
   return next;
 }
 
-/** A chat edited, left and re-entered has its PATCH in flight, and a GET overtaking it reads
- *  the pre-edit snapshot. Pending debounce included, or the read races the timer. */
+/** Wait for in-flight and debounced writes so a GET does not read a pre-edit snapshot. */
 export async function settleThreadScopedSettingsForCopy(
   threadId: string,
 ): Promise<void> {
-  // An edit made while this chat's read was out lives in neither the debounce nor the chain.
-  // Only for a caller about to read the row server side.
   if (pendingPairingThreadId === threadId) {
     await commitHeldThreadScopedEditsToTheirThread();
   }
-  // A flushed replacement write that failed resolves false rather than throwing, so the chain
-  // alone cannot tell a saved edit from a lost one.
   if (!(await awaitThreadScopedSettingsWrite(threadId))) {
     throw new Error("This chat's settings could not be saved before copying it");
   }
 }
 
-/** Resolves false only when a write for this chat is known to have failed. */
 export async function awaitThreadScopedSettingsWrite(
   threadId: string,
 ): Promise<boolean> {
@@ -1429,17 +1306,12 @@ export async function awaitThreadScopedSettingsWrite(
   }
   const chain = threadSettingsWriteChains.get(threadId);
   if (chain === undefined) return true;
-  // A rejection is the held-edit merge path, which throws on failure.
   const landed = await chain.catch(() => false);
   return landed !== false;
 }
 
-/** Every row write already started has landed. Not a flush: an unfired debounce is left
- *  alone. Loops rather than spinning a fixed count, since the chain ends in a dynamic
- *  import whose cost is a property of the machine. */
 export async function awaitStartedThreadScopedSettingsWrites(): Promise<void> {
-  // A settled chain can leave a newer one behind for the same chat, so this repeats until the
-  // map is empty. Bounded, so a self-rescheduling write fails an assertion, not hangs.
+  // Repeats because a settled chain can leave a newer one; bounded so it cannot hang.
   for (let pass = 0; pass < 20 && threadSettingsWriteChains.size > 0; pass += 1) {
     await Promise.allSettled([...threadSettingsWriteChains.values()]);
   }
@@ -1462,19 +1334,15 @@ function flushThreadScopedSettingsWrite(keepalive = false): void {
   trackUnsettledThreadSettingsWrite(threadId, snapshot);
 }
 
-/** Some browsers fire visibilitychange(hidden) then pagehide: the first flush clears the
- *  pending snapshot, so holding it lets the terminal path resend with keepalive. */
+/** Some browsers fire visibilitychange(hidden) then pagehide; keep it for the terminal resend. */
 function trackUnsettledThreadSettingsWrite(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
 ): void {
-  // Identity, not value: two ordinary edits both carry a null snapshot, so comparing values
-  // let one request's settle delete another's tracking.
+  // Identity, not value: two edits can both carry a null snapshot.
   const entry: UnsettledThreadSettingsWrite = { snapshot };
   unsettledThreadSettingsWrites.set(threadId, entry);
   void writeThreadScopedSettings(threadId, snapshot).then((landed) => {
-    // Only a write that reached the row stops being unsettled; dropping it on failure left
-    // nothing for a terminal event to beacon.
     if (landed && unsettledThreadSettingsWrites.get(threadId) === entry) {
       unsettledThreadSettingsWrites.delete(threadId);
     }
@@ -1483,14 +1351,11 @@ function trackUnsettledThreadSettingsWrite(
 
 type UnsettledThreadSettingsWrite = { snapshot: ThreadScopedSettings | null };
 
-/** Flushed but not yet acknowledged, so a terminal event can still resend it. */
 const unsettledThreadSettingsWrites = new Map<
   string,
   UnsettledThreadSettingsWrite
 >();
 
-/** `alreadySent` names the threads just beaconed: they carry the newest values and every
- *  beacon takes a higher seq, so resending an older snapshot would let the stale one win. */
 function beaconUnsettledThreadSettingsWrites(
   alreadySent: ReadonlySet<string>,
 ): void {
@@ -1522,39 +1387,28 @@ function scheduleThreadScopedSettingsWrite(
     threadSettingsWriteThreadId = null;
     threadSettingsWriteSnapshot = null;
     if (pendingThreadId !== null) {
-      // Tracked like a manual flush: once the timer fires there is no pending debounce for a
-      // terminal event to find, so the write in flight is the only copy and teardown kills it.
       trackUnsettledThreadSettingsWrite(pendingThreadId, pendingSnapshot);
     }
   }, THREAD_SETTINGS_DEBOUNCE_MS);
 }
 
-// The chat whose snapshot is in flight, plus edits made before it landed: only the read can say
-// whether they are the chat's or the defaults'. Writing them globally moved every other chat's
-// default and was then overwritten by the arriving snapshot.
+// Edits made before this chat's snapshot lands; only the read says whose they are.
 let pendingPairingThreadId: string | null = null;
-/** The store's thread-scoped values as they stood when the current pairing began. */
 let pairingWindowDefaults: ThreadScopedSettings | null = null;
-/** And the chat it was sampled for, so a retry does not resample over its own edit. */
 let pairingWindowDefaultsThreadId: string | null = null;
 let heldThreadScopedEdits: {
   field: string;
   writeGlobal: (() => void) | null;
-  /** Sampling keys only, captured by value; see heldThreadScopedParamValue. */
   value?: unknown;
 }[] = [];
 
-/** Start of the window: the read for `threadId` is out but its snapshot has not landed. */
 export function beginThreadScopedPairing(threadId: string): void {
   if (pendingPairingThreadId === threadId) return;
   releaseHeldThreadScopedEdits();
   pendingPairingThreadId = threadId;
-  // What the installation defaults were before this chat could edit anything; nothing later
-  // can recover it. Once per chat, not per attempt: a retry runs with the edit in the store.
+  // Sample defaults once per chat, not per attempt: a retry runs with the edit in the store.
   if (pairingWindowDefaultsThreadId !== threadId) {
     pairingWindowDefaultsThreadId = threadId;
-    // Switching straight between saved chats the store still holds the OUTGOING chat's values,
-    // so the capture made when it was paired is the source of defaults.
     pairingWindowDefaults =
       threadScopedSettingsThreadId === null
         ? readThreadScopedSettings(useChatRuntimeStore.getState())
@@ -1563,7 +1417,6 @@ export function beginThreadScopedPairing(threadId: string): void {
   openThreadScopedPairingGate(threadId);
 }
 
-/** Sends are held while this is true; see the field's own note. */
 function openThreadScopedPairingGate(threadId: string): void {
   if (!useChatRuntimeStore.getState().threadScopedSettingsPending) {
     useChatRuntimeStore.setState({ threadScopedSettingsPending: true });
@@ -1577,8 +1430,7 @@ function openThreadScopedPairingGate(threadId: string): void {
   }
 }
 
-/** Release ONE chat's gate: releasing all let a run started for A be freed by B's pairing
- *  ending. The composer flag is separate and tracks only the chat on screen. */
+/** Release one chat's gate only, so B's pairing cannot free a run started for A. */
 function closeThreadScopedPairingGate(threadId: string | null): void {
   if (threadId !== null) {
     pairingSettledByThreadId.get(threadId)?.resolve();
@@ -1592,15 +1444,12 @@ function closeThreadScopedPairingGate(threadId: string | null): void {
   }
 }
 
-// Per chat, not one for all: a run started for A must not be released by B's pairing ending.
 const pairingSettledByThreadId = new Map<
   string,
   { promise: Promise<void>; resolve: () => void }
 >();
 
-/** Resolves once `threadId`'s own settings are known; the adapter awaits it so a run cannot start on
- *  the installation defaults (a chat stored "ask" would run "off"). False means the wait ran out and
- *  the store now describes some other chat, so callers must stop. */
+/** The adapter awaits this so a run never starts on installation defaults. */
 export function awaitThreadScopedPairing(
   threadId: string | null | undefined,
 ): Promise<boolean> {
@@ -1615,29 +1464,23 @@ export function awaitThreadScopedPairing(
   ]);
 }
 
-// Longer than the read can take (THREAD_READ_RETRIES retries, each bounded by THREAD_READ_TIMEOUT_MS
-// and spaced THREAD_READ_RETRY_MS apart, plus a give-up that opens the gate), so a run is only
-// refused for a chat whose pairing was genuinely abandoned.
+// Longer than the worst-case read with retries, so only an abandoned pairing refuses a run.
 const THREAD_PAIRING_WAIT_MS = 30_000;
 
-/** The chat turned out to own no snapshot: send the held edits to the defaults, as before. */
 export function releaseHeldThreadScopedEdits(): void {
   const held = heldThreadScopedEdits;
   const threadId = pendingPairingThreadId;
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
   pairingWindowDefaultsThreadId = null;
-  // The answer is in: this chat owns no snapshot, so the defaults ARE its settings and a run waiting on it can go.
   closeThreadScopedPairingGate(threadId);
   for (const edit of held) {
-    // Written to the defaults now, so the value hydration held back is history.
     hydratedDefaultsByHeldField.delete(edit.field);
     edit.writeGlobal?.();
   }
 }
 
-/** The user left before the read finished. The edit belongs to its chat, so write it there:
- *  replaying it into the installation defaults would move every snapshot-less chat. */
+/** Commit to the chat being left: writing to the defaults would move every other chat. */
 export function commitHeldThreadScopedEditsToTheirThread(
   keepalive = false,
 ): Promise<void> {
@@ -1645,25 +1488,20 @@ export function commitHeldThreadScopedEditsToTheirThread(
   const held = heldThreadScopedEdits;
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
-  // pairingWindowDefaultsThreadId is deliberately NOT cleared: a failed read re-pairs the same chat
-  // with the edit in the store, and resampling would take it for a default. The gate stays shut too.
+  // pairingWindowDefaultsThreadId stays set: a retry would resample the edit as a default.
   closeThreadScopedPairingGate(null);
   if (threadId === null || held.length === 0) return Promise.resolve();
   const changes = heldThreadScopedChanges(held);
-  // Read off the store above, so only now that the values are safely captured.
   restoreDefaultsOverCommittedEdits(threadId, held);
   if (keepalive) {
     sendThreadScopedSettingsBeacon(threadId, changes, true);
     return Promise.resolve();
   }
-  // Returned rather than fired and forgotten: forking copies settings_json server side, so it
-  // must wait for a held edit to reach the row.
+  // Returned, not fire-and-forget: forking copies settings_json server side.
   return mergeThreadScopedSettingsIntoRow(threadId, changes);
 }
 
-/** Put the installation values back over the edits just written to the chat being left, or the next
- *  chat takes its temperature and prompt. Only on a real leave: a retried read or a fork commits the
- *  same way while the chat stays open. */
+/** Restore installation values over a left chat's edits, or the next chat inherits them. */
 function restoreDefaultsOverCommittedEdits(
   threadId: string,
   held: { field: string }[],
@@ -1676,13 +1514,10 @@ function restoreDefaultsOverCommittedEdits(
   const fields: Record<string, unknown> = {};
   const params: Record<string, unknown> = {};
   for (const edit of held) {
-    // The server answered for this field while the window was open, so that value is the
-    // installation's; the pre-window sample is only this browser's cache.
     const value = hydratedDefaultsByHeldField.has(edit.field)
       ? hydratedDefaultsByHeldField.get(edit.field)
       : before?.[edit.field];
     hydratedDefaultsByHeldField.delete(edit.field);
-    // Nothing known to go back to: leaving the edit up is no worse than blanking it.
     if (value === undefined) continue;
     if (isThreadScopedParamKey(edit.field)) {
       params[edit.field] = value;
@@ -1691,8 +1526,7 @@ function restoreDefaultsOverCommittedEdits(
     }
   }
   if (!hasKeys(fields) && !hasKeys(params)) return;
-  // setState, not setParams: these values are already the installation's, and the setter would
-  // persist them back to it and to the loaded model's memory.
+  // setState, not setParams: the setter would persist these back to defaults and model memory.
   useChatRuntimeStore.setState((state) =>
     hasKeys(params)
       ? ({ ...fields, params: { ...state.params, ...params } } as Partial<ChatRuntimeStore>)
@@ -1700,14 +1534,12 @@ function restoreDefaultsOverCommittedEdits(
   );
 }
 
-/** What the user actually touched, read off the store, which still holds their edits. */
 function heldThreadScopedChanges(
   held: { field: string; value?: unknown }[],
 ): ThreadScopedSettings {
   const edited: Record<string, unknown> = {};
   const live = useChatRuntimeStore.getState();
-  // Same reader the snapshot path uses: sampling keys sit under `params`, so a direct field
-  // read returns undefined and the sanitizer drops them.
+  // Sampling keys sit under `params`, so use the same reader as the snapshot path.
   for (const edit of held) {
     edited[edit.field] = edit.field === "reasoningEffort" && edit.value !== undefined
       ? edit.value
@@ -1719,8 +1551,6 @@ function heldThreadScopedChanges(
   return sanitizeThreadScopedSettings(edited);
 }
 
-/** PATCH only `changes`. For when the store cannot be trusted to describe the chat (its read
- *  has not landed), since a replacement built from the defaults would erase the rest. */
 async function mergeThreadScopedSettingsIntoRow(
   threadId: string,
   changes: ThreadScopedSettings,
@@ -1748,8 +1578,7 @@ async function mergeThreadScopedSettingsIntoRow(
         forgetReplayedThreadSettings(threadId);
       } catch (error) {
         warnSettingsPersistenceFailure();
-        // Rethrown as well as toasted: a fork waits on this to know the row holds the edit, and a
-        // resolved promise would let it fork the pre-edit snapshot.
+        // Rethrown: a fork awaits this and must not fork the pre-edit snapshot.
         throw error;
       }
     })
@@ -1763,17 +1592,12 @@ async function mergeThreadScopedSettingsIntoRow(
   return next;
 }
 
-/** What the server called an installation default, for fields hydration skipped because the user had
- *  just set them inside a chat whose read was out. When the pairing window closes the default returns
- *  to this rather than the browser's pre-hydration copy. */
 const hydratedDefaultsByHeldField = new Map<string, unknown>();
 
-/** Is this field an edit waiting on its chat's read, and so not the installation's to set? */
 function isHeldThreadScopedField(field: string): boolean {
   return heldThreadScopedEdits.some((edit) => edit.field === field);
 }
 
-// Reports whether the edit was taken; with no chat open the caller persists globally as before.
 function captureThreadScopedEdit(
   field: string,
   writeGlobal: (() => void) | null = null,
@@ -1782,7 +1606,7 @@ function captureThreadScopedEdit(
   if (!isThreadOwnedSettingKey(field)) return false;
   const threadId = useChatRuntimeStore.getState().activeThreadId;
   if (threadId === null) return false;
-  // Both ids: between a switch and its snapshot arriving the store still holds the old values.
+  // Both ids: until the snapshot arrives the store still holds the old values.
   if (threadId === threadScopedSettingsThreadId) {
     if (field === "reasoningEffort" && value !== undefined) {
       activeThreadScopedSettings = {
@@ -1791,7 +1615,6 @@ function captureThreadScopedEdit(
       };
     }
     explicitlyEditedThreadFields.add(field);
-    // Set by the user now, so the chat stores this rather than what it had before a constraint moved the same field.
     constraintSuppressedThreadFields.delete(field);
     scheduleThreadScopedSettingsWrite(threadId);
     return true;
@@ -1803,9 +1626,7 @@ function captureThreadScopedEdit(
   return false;
 }
 
-/** Persist a value a model load applied rather than one the user picked: before hydration such a
- *  write only reflects this browser's cache. `stillCurrent` says it matches the live store, so a load
- *  spanning hydration cannot write its stale capture over the answer. */
+/** Before hydration a load-derived value only reflects this browser's cache. */
 function persistLoadDerivedSetting(
   key: string,
   raw: string,
@@ -1815,7 +1636,6 @@ function persistLoadDerivedSetting(
     writeStorageValue(key, raw);
     return;
   }
-  // Dropped outright: the cache now holds the hydrated preference too.
   if (!stillCurrent) return;
   persistSetting(key, raw);
 }
@@ -1831,8 +1651,6 @@ export function loadOptionalBool(key: string): boolean | null {
   return raw === "true";
 }
 
-/** Pill state to apply on a model load: the persisted preference wins in both directions, the
- *  open chat beats the installation default, and with no preference the pills stay off. */
 export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
@@ -1854,17 +1672,13 @@ function saveBool(key: string, value: boolean): void {
   persistSetting(key, value ? "true" : "false");
 }
 
-// The installation's own answer to the preserve-thinking switch, or null while it has never
-// given one. Only hydration and the composer toggle write it.
 let storedPreserveThinking: boolean | null = null;
 
 function notePreserveThinkingPreference(value: boolean): void {
   storedPreserveThinking = value;
 }
 
-/** The backend's family default is a DEFAULT: it seeds the switch where the installation never
- *  answered and never replaces an answer, as resolveToolsEnabledOnLoad does, which is what makes a
- *  cold boot deterministic when the settings GET and the status race. */
+/** The backend family default only seeds an unanswered switch, never replaces an answer. */
 export function resolvePreserveThinkingOnLoad(resp: {
   supports_preserve_thinking?: boolean | null;
   preserve_thinking_default?: boolean | null;
@@ -1898,17 +1712,13 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
-/** Re-picking the level already in force is not a fresh grant, so a manual Code-off stands. */
 function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
   return state.permissionMode === "full"
     ? state.codeToolsDeclinedUnderFullAccess
     : false;
 }
 
-/** Effective Code setting. Full access auto-enables it only for local models.
- *  Read the level live, never a flag armed on entry: Full access outlives a chat switch
- *  (applyThreadScopedSettings) but codeToolsEnabled does not, so a snapshotted grant missed
- *  every chat opened afterwards. */
+/** Read the level live: Full access outlives a chat switch but codeToolsEnabled does not. */
 export function codeToolsOn(
   state: Pick<
     ChatRuntimeStore,
@@ -1935,8 +1745,6 @@ function saveString(key: string, value: string): void {
   persistSetting(key, value);
 }
 
-// Canonicalises any backend value onto the Speculative Decoding modes; legacy backend-only
-// aliases map to their closest UI mode.
 export function normalizeSpeculativeType(
   v: string | null | undefined,
 ): string | null {
@@ -1944,9 +1752,7 @@ export function normalizeSpeculativeType(
   const s = String(v).trim().toLowerCase();
   if (!s) return null;
   if (s === "auto" || s === "default") return "auto";
-  // The same four spellings _LEGACY_SPEC_MODE_MAP reads as "off". A stored override reaches here raw
-  // (model-overrides.ts binds speculative_type unnormalized), so falling through to Auto would compare
-  // Auto against a status the backend already canonicalised to "off" and re-send /load on every pick.
+  // Same spellings as _LEGACY_SPEC_MODE_MAP "off"; Auto here would re-send /load on every pick.
   if (s === "off" || s === "none" || s === "disable" || s === "disabled") {
     return "off";
   }
@@ -1970,7 +1776,6 @@ export function normalizeSpeculativeType(
   if (hasMtp && hasNgram) return "mtp+ngram";
   if (hasMtp) return "mtp";
   if (hasNgram) return "ngram";
-  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
   return "auto";
 }
 
@@ -2001,14 +1806,11 @@ export function resolveLoadedSpeculativeSettings(response: {
   };
 }
 
-// The user's standing preference, sanitized to the universal set.
 export function readPersistedSpeculativeType(): string {
   const raw = loadString(CHAT_SPECULATIVE_TYPE_KEY, "auto");
   return PERSISTED_SPEC_MODES.has(raw) ? raw : "auto";
 }
 
-// MTP / null / unknown values stay unwritten and so session-only. Called from the load path,
-// so only an applied preference persists.
 export function saveSpeculativeType(value: string | null): void {
   if (value && PERSISTED_SPEC_MODES.has(value)) {
     persistLoadDerivedSetting(
@@ -2019,7 +1821,6 @@ export function saveSpeculativeType(value: string | null): void {
   }
 }
 
-// A standing preference, not per-model: a "manual" choice survives model switches and reloads.
 export function readPersistedGpuMemoryMode(): "auto" | "manual" {
   return loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto") === "manual" ? "manual" : "auto";
 }
@@ -2032,8 +1833,7 @@ export function saveGpuMemoryMode(value: "auto" | "manual"): void {
   );
 }
 
-/** Persist the GPU Memory mode after a load, but only for a non-diffusion GGUF: non-GGUF has
- *  no such mode and diffusion reports "auto", so neither may clobber the preference. */
+/** Only a non-diffusion GGUF: others report "auto" and must not clobber the preference. */
 export function persistGpuMemoryModeOnLoad(
   resp: { is_gguf?: boolean; is_diffusion?: boolean },
   mode: "auto" | "manual",
@@ -2041,11 +1841,8 @@ export function persistGpuMemoryModeOnLoad(
   if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
 }
 
-// Re-exported from its dependency-free home so existing imports keep working.
 export { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
 
-// Round real-valued shares to integers summing to `total`, leftovers to the largest
-// fractional parts (largest-remainder method).
 function largestRemainder(shares: number[], total: number): number[] {
   const out = shares.map((x) => Math.floor(x));
   let rem = total - out.reduce((a, b) => a + b, 0);
@@ -2056,8 +1853,7 @@ function largestRemainder(shares: number[], total: number): number[] {
   return out;
 }
 
-// Spread `total` layers over GPUs in proportion to `weights`, summing to `total`; even split
-// for all-zero weights. Mirrors llama.cpp's free-VRAM default.
+// Mirrors llama.cpp's free-VRAM default split.
 export function distributeByWeight(total: number, weights: number[]): number[] {
   if (weights.length === 0) return [];
   const t = Math.max(0, Math.floor(total));
@@ -2070,8 +1866,7 @@ export function distributeByWeight(total: number, weights: number[]): number[] {
   );
 }
 
-// Set GPU `index` to `value` and rebalance so the counts still sum to `total`. Counts are
-// sent verbatim, and llama.cpp honors each exactly when gpu_layers == sum(counts).
+// llama.cpp honors counts exactly only when gpu_layers == sum(counts).
 export function rebalanceSplit(
   total: number,
   counts: number[],
@@ -2081,7 +1876,6 @@ export function rebalanceSplit(
   const v = Math.max(0, Math.min(value, total));
   const out = counts.slice();
   const otherIdx = counts.map((_, i) => i).filter((i) => i !== index);
-  // No other GPU to absorb the remainder: this one holds everything.
   if (otherIdx.length === 0) {
     out[index] = total;
     return out;
@@ -2095,9 +1889,7 @@ export function rebalanceSplit(
   return out;
 }
 
-// Validate a persisted gpu_ids pick against the GPUs present now, returning null (automatic) when
-// stale, so a saved [1] on a 1-GPU host is not sent and rejected unclearably. A cold device cache
-// leaves it alone; an absent namespace is a legacy physical-ID pick.
+// Null a stale persisted gpu_ids pick so it is not sent and rejected; cold cache leaves it.
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
   savedIndexKind?: GpuIndexKind | null,
@@ -2127,8 +1919,6 @@ export function requestedGpuIdsFromResponse(resp: {
     : (resp.gpu_ids ?? null);
 }
 
-// Store fields derived from a load/status response's GPU-memory settings, shared by every
-// load path so the manual-knob round-trip cannot drift.
 export function loadedGpuMemoryFields(resp: {
   engine?: "auto" | "vllm" | "sglang";
   is_gguf?: boolean;
@@ -2144,12 +1934,8 @@ export function loadedGpuMemoryFields(resp: {
   requested_gpu_ids?: number[] | null;
   diffusion_requested_ngl?: number | null;
 }) {
-  // Meaningful only for a GGUF chat load, and a non-GGUF response still serializes
-  // gpu_memory_mode "auto", so gate on is_gguf or a transformers load resets the preference.
+  // Non-GGUF responses still say gpu_memory_mode "auto"; gate on is_gguf to keep the preference.
   if (!resp.is_gguf) {
-    // Clear the GPU pick / offload baseline a prior GGUF load left, else a stale loadedGpuIds reads as
-    // dirty. gpuIdsDirty is ungated, so Reset would restore it while the picker is hidden. gpuMemoryMode
-    // is kept as the standing preference, but its loaded baseline clears to null.
     const managed = resp.engine === "vllm" || resp.engine === "sglang";
     const gpuIds = managed
       ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
@@ -2176,26 +1962,21 @@ export function loadedGpuMemoryFields(resp: {
   const hydratePlacementControls = shouldHydrateGpuPlacementControls(
     resp.cpu_fallback_reason,
   );
-  // Keep the user's placement pool editable across hydration; gpu_ids stays the fitted subset.
   const reportedGpuIds = requestedGpuIdsFromResponse(resp);
   const gpuIndexKind =
     reportedGpuIds == null
       ? null
       : cachedPinnableGpuIndexKind(resp.is_diffusion === true);
-  // A numeric id is unsafe to adopt once discovery says it is not a physical CUDA/ROCm id or Vulkan
-  // ordinal. While discovery is cold the namespace is merely deferred, so keep the pin, or a reload in
-  // that window lets llama.cpp fall back to every device.
+  // While discovery is cold, keep the pin or llama.cpp falls back to every device.
   const gpuIds =
     reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
-  // A shim without --ngl reports Auto while the backend still holds the ask, so recover it:
-  // in-memory state survives a reload but not a refresh.
+  // A shim without --ngl reports Auto while the backend holds the split, so recover it.
   const droppedSplit = recoverDroppedDiffusionSplit(
     resp.is_diffusion,
     mode,
     resp.diffusion_requested_ngl,
   );
-  // The layer/MoE/split knobs apply only in manual mode, so auto must not seed their baselines.
-  // In manual the server reports gpu_layers = -1 for Auto, round-tripping the slider.
+  // Manual mode only; the server reports gpu_layers = -1 for Auto.
   const manualKnobs =
     mode === "manual"
       ? {
@@ -2214,9 +1995,6 @@ export function loadedGpuMemoryFields(resp: {
           loadedGpuLayers: null,
           loadedNCpuMoe: null,
           loadedSplitRatio: null,
-          // Auto ignores these, so reset the editable knobs or a switch back to Manual sends a previous model's
-          // values. Diffusion excepted: an "auto" response may be an older shim that dropped a manual split, so
-          // restore the ask when the response carries it.
           ...(resp.is_diffusion
             ? droppedSplit != null
               ? { gpuLayers: droppedSplit }
@@ -2226,8 +2004,7 @@ export function loadedGpuMemoryFields(resp: {
           splitRatio: null,
         };
   return {
-    // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert manual
-    // preference must survive it; "manual" means a split was applied (#7574), so adopt it.
+    // A diffusion GGUF reporting "auto" ran on defaults; keep the manual preference.
     ...(hydratePlacementControls
       ? resp.is_diffusion && mode !== "manual"
         ? droppedSplit != null
@@ -2238,12 +2015,8 @@ export function loadedGpuMemoryFields(resp: {
     loadedGpuMemoryMode: mode,
     loadedCpuFallback: resp.cpu_fallback_reason === "vulkan_startup_crash",
     ggufLayerCount: resp.n_layers ?? null,
-    // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
-    // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
-    // gpuIndexKind is `undefined` only in the deferred cache-cold case, since a `null` kind
-    // already forced gpuIds to null; normalize to the explicit-null-namespace convention.
     selectedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
     loadedGpuIds: gpuIds,
     loadedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
@@ -2251,7 +2024,6 @@ export function loadedGpuMemoryFields(resp: {
   };
 }
 
-// Re-exported so every importer keeps its path; defined in a leaf module a test can load.
 export {
   hasGgufSource,
   isDownloadableHubRepo,
@@ -2266,14 +2038,10 @@ type ContextUsageSnapshot = {
   // Studio tool loops only: what the context holds (totalTokens re-counts earlier passes' output).
   contextTokens?: number;
   cachedTokens: number;
-  // Anthropic-only; optional so pre-cache-stats persisted entries load.
   cacheWriteTokens?: number;
-  // a text-length guess from storage, replaced by any count
   estimated?: boolean;
 };
 
-/** One live run behind `runningByThreadId[id]`, with the `local` flag it started with so the
- *  model-swap gate can tell llama-server runs from external ones on a shared key. */
 type ThreadRunOwner = {
   owner: () => void;
   local: boolean;
@@ -2289,11 +2057,8 @@ export type LoadedModelSummary = { id: string; quant?: string | null; checkpoint
 
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
-  /** The open chat's settings were asked for but have not arrived, so the store shows the
-   *  installation defaults and a run started now would be captured with them. Sending waits. */
   threadScopedSettingsPending: boolean;
   params: InferenceParams;
-  /** Last-used sampling params per checkpoint id, replayed on model switch. */
   paramsByModel: Record<string, PersistedInferenceParams>;
   rememberParamsPerModel: boolean;
   customPresets: Preset[];
@@ -2303,43 +2068,30 @@ type ChatRuntimeStore = {
   loras: ChatLoraSummary[];
   loraInventorySettled: boolean;
   runningByThreadId: Record<string, boolean>;
-  /** Runs decoding on the local llama-server. Swapping the local model neither interrupts an
-   *  external chat nor needs its consent, which is why the backend excludes them too. */
   localRunByThreadId: Record<string, boolean>;
-  /** Which runs set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`. A list, since
-   *  runs with no resolved thread id share the "__default" key. */
   runOwnerByThreadId: Record<string, ThreadRunOwner[]>;
   cancelByThreadId: Record<string, () => void>;
-  /** Backend cancels for background threads: `cancelByThreadId` holds only the visible thread's
-   *  `cancelRun()`. A list, since unresolved ids share "__default". */
   serverCancelByThreadId: Record<string, (() => void)[]>;
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
-  // Set only when a LOAD fails (not refresh/list/unload, which use modelsError), so the attach
-  // gates can tell a failed load from "no model picked".
+  // Set only when a LOAD fails, so attach gates can tell it from "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
-  /** What /api/inference/status says is resident, as opposed to what the picker selected.
-   *  undefined until the first read, so the header does not flash "not loaded". */
+  /** Resident per status, not the picker; undefined until first read to avoid a flash. */
   residentCheckpoint: string | null | undefined;
   loadedModels: LoadedModelSummary[];
   activeModelIsLocal: boolean;
   loadedContextLength: number | null;
   maxContextLength: number | null;
   nativeContextLength: number | null;
-  /** The resident's own engine launch settings, which a failed switch rolls back to. */
   loadedEngine: "auto" | "vllm" | "sglang";
   loadedEnginePrecision: NonNullable<InferenceParams["enginePrecision"]>;
   loadedEngineParallelism: NonNullable<InferenceParams["engineParallelism"]>;
-  /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
-   *  loadedContextLength is, so a context never arrives unattributed. */
   loadedIsGguf: boolean | null;
-  /** The backend's own is_mlx for the loaded model; null until one loads. The platform
-   *  cannot answer it: the worker serves native-audio checkpoints off the MLX path. */
+  /** Backend-reported: native-audio checkpoints are served off the MLX path. */
   loadedIsMlx: boolean | null;
-  /** Whether loadedContextLength actually bounds the cache. Null where the backend does
-   *  not answer, which is not the same as a confirmed false. */
+  /** Null when the backend does not answer, which is not a confirmed false. */
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
@@ -2348,8 +2100,6 @@ type ChatRuntimeStore = {
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
-  /** The model the OpenRouter router picked for the latest stream under the openrouter/free
-   *  meta-model. Cleared on a non-OpenRouter model; display only. */
   lastOpenRouterChosenModel: string | null;
   reasoningStyle: ReasoningStyle;
   reasoningEffort: ReasoningEffort;
@@ -2358,14 +2108,8 @@ type ChatRuntimeStore = {
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   supportsTools: boolean;
-  /** Whether the active external provider exposes a server-side web_search (OpenAI /v1/responses).
-   *  Distinct from `supportsTools`: this only lights the Search pill for external models. */
   supportsBuiltinWebSearch: boolean;
-  /** Whether the provider exposes server-side code execution (Anthropic `code_execution_20250825`).
-   *  Distinct from `supportsTools`, since Anthropic dispatches it itself. */
   supportsBuiltinCodeExecution: boolean;
-  /** Whether the provider exposes server-side image generation (OpenAI Responses API).
-   *  Local models never receive it. */
   supportsBuiltinImageGeneration: boolean;
   /** Anthropic server-side web_fetch_* gates Fetch independently of Search. */
   supportsBuiltinWebFetch: boolean;
@@ -2394,31 +2138,20 @@ type ChatRuntimeStore = {
   projectAttachmentTargetByThread: Record<string, ProjectAttachmentTarget>;
   ragMode: RagMode;
   ragTopK: number;
-  // autoInject = forced first-pass retrieval before answering.
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
-  // OCR scanned/image-only PDF pages at ingest time (vision model required).
   ragOcrScanned: boolean;
-  // Describe figures/charts at ingest time (vision model required).
   ragCaptionFigures: boolean;
-  /** When on, local Unsloth tool calls pause for an explicit allow/deny before they run. */
   confirmToolCalls: boolean;
-  /** Tool calls run with no confirmation gate AND no python/terminal sandbox (secrets still
-   *  stripped). Outranks confirmToolCalls; kept in sync with permissionMode "full". */
+  /** No confirmation gate and no sandbox; kept in sync with permissionMode "full". */
   bypassPermissions: boolean;
-  /** Permission level. Single source of truth for the bypass dropdowns; bypassPermissions and
-   *  confirmToolCalls mirror it. "full" is session-only. */
+  /** Source of truth; bypassPermissions and confirmToolCalls mirror it. */
   permissionMode: PermissionMode;
   sandboxLevel: SandboxLevel;
   /** Whether the bypass warning dialog is open. Lifted out of the composer menu so confirming
    *  it does not leave the menu frozen. */
   bypassConfirmOpen: boolean;
-  /** Per-chat tool names auto-approved via "Always allow", keyed by UI confirmation scope
-   *  rather than the backend sandbox session id. Not persisted. */
   alwaysAllowToolsBySession: Map<string, Set<string>>;
-  /** Calls paused for allow/deny, keyed by scoped frontend tool-call id. Each carries the
-   *  backend `approvalId` and the run's `sessionId` so the exact call resolves;
-   *  `autoAllowKey` scopes "Always allow" per chat. Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
     {
@@ -2428,18 +2161,10 @@ type ChatRuntimeStore = {
       imageDisclosure?: ImageDisclosure;
     }
   >;
-  /** Fetch pill state, independent of `toolsEnabled` (Search). Read only when the provider
-   *  supports builtin web_fetch. */
   webFetchToolsEnabled: boolean;
-  /** Live tool status per conversation with its start time. Keyed by thread, or one chat's
-   *  tool call shows above every composer; the timestamp keeps the counter running. */
-  /** Per-run entries, newest last. Unresolved threads share "__default", so one scalar per key
-   *  let a finishing run's clear remove a sibling's status. */
+  /** A list: unresolved threads share "__default", so one clear must not remove a sibling. */
   toolStatusByThreadId: Record<string, ToolStatusEntry[]>;
-  /** Live stdout/stderr from running tools by toolCallId; cleared on tool_end or run end. */
   toolLiveOutput: Record<string, string>;
-  /** Full live output of finished tools whose result was truncated for the model. Finished
-   *  cards prefer it over the truncated result. */
   toolFullOutput: Record<string, string>;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
@@ -2459,15 +2184,9 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
-  /** Why speculative decoding was disabled despite being requested, or null. Mirrors
-   *  InferenceStatusResponse.spec_fallback_reason. */
   specFallbackReason: string | null;
-  /** Projector recovery outcome for the active GGUF, or null. */
   mmprojFallbackReason: MmprojFallbackReason | null;
-  /** Which drafter the speculative resolution was about ("mtp", "dspark", "dflash").
-   *  specFallbackReason alone cannot name the file to fix, since Auto resolves it server-side. */
   specDrafterKind: string | null;
-  /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
   /** MLX companion drafter, a repo id or local path (null = discovery). */
@@ -2477,90 +2196,56 @@ type ChatRuntimeStore = {
    *  on llama-server's --parallel slots; MLX on how many replies decode together.
    *  Never re-seeded from an echo: the resolved count would pin a blank control. */
   nParallel: number | null;
-  /** Slots the last successful load sent (null = default); a rollback re-sends them so a failed
-   *  switch cannot lose the override. */
   loadedNParallel: number | null;
   reasoningBudget: number;
   loadedReasoningBudget: number | null;
-  /** Request baseline for rollback; effective values can include server environment defaults. */
   loadedReasoningBudgetRequested: number | null;
   reasoningBudgetMessage: string;
   loadedReasoningBudgetMessage: string | null;
   loadedReasoningBudgetMessageRequested: string | null;
-  /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
   nBatch: number | null;
   loadedNBatch: number | null;
-  /** Pass-through args the resident model is running, as far as this client knows. A rollback
-   *  resends them: by then the target load has replaced the backend's inheritance source. */
   loadedLlamaExtraArgs: string[] | null;
-  /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
   nUbatch: number | null;
   loadedNUbatch: number | null;
-  /** --spec-draft-type-k/-v override, the DRAFT context's KV dtype (null = f16). Separate from
-   *  kvCacheDtype, which is the target model's. */
   specDraftCacheDtype: string | null;
   loadedSpecDraftCacheDtype: string | null;
-  /** user --load-mode override (null = llama.cpp's own `auto`) */
   loadMode: string | null;
   loadedLoadMode: string | null;
-  /** user --ctx-checkpoints override (null = llama.cpp default 32) */
   ctxCheckpoints: number | null;
   loadedCtxCheckpoints: number | null;
-  /** user --cache-ram override in MiB (null = llama.cpp default 8192) */
   cacheRam: number | null;
   loadedCacheRam: number | null;
-  /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   loadedTensorParallel: boolean | null;
-  /** What the RUNNING server was loaded with, as opposed to what the control shows: a pending
-   *  per-model config reaches disableVision before a switch captures its baseline. */
   loadedDisableVision: boolean | null;
-  /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
   disableVision: boolean;
-  /** Backend-reported: image input is off by request, not by absence of a projector. Null until first hydrated. */
   loadedVisionDisabledByUser: boolean | null;
-  /** GPU memory strategy for GGUF loads. "auto" fits GPUs and context for you; "manual" owns
-   *  the offload (gpuLayers < 0 = Auto/--fit, >= 0 pins layers + nCpuMoe). */
   gpuMemoryMode: "auto" | "manual";
   loadedGpuMemoryMode: "auto" | "manual" | null;
-  /** The active model must use the staged CPU-only runtime when it is reloaded. */
   loadedCpuFallback: boolean;
-  /** Manual mode: layers to offload to GPU. -1 = Auto (--fit); >= model layer count = all. */
+  /** Manual mode: -1 = Auto (--fit); >= model layer count = all. */
   gpuLayers: number;
   loadedGpuLayers: number | null;
-  /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
   nCpuMoe: number;
   loadedNCpuMoe: number | null;
-  /** Manual mode: per-GPU layer counts (--tensor-split), in GPU-in-use order; null = unset. */
   splitRatio: number[] | null;
   loadedSplitRatio: number[] | null;
-  /** Model layer count (GGUF block_count); the manual ceiling is this + 1, the output layer too. */
+  /** GGUF block_count; the manual ceiling is this + 1 for the output layer. */
   ggufLayerCount: number | null;
-  /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
   moeLayerCount: number | null;
-  /** Picked IDs in the backend-declared GPU namespace (null = automatic). */
   selectedGpuIds: number[] | null;
-  /** Namespace used by selectedGpuIds; kept with deferred persisted picks. */
   selectedGpuIndexKind: GpuIndexKind | null;
   loadedGpuIds: number[] | null;
   loadedGpuIndexKind: GpuIndexKind | null;
-  /** Persisted: expand every On Device GGUF repo's quantizations by default. */
   expandQuantizations: boolean;
-  /** Persisted: show non-downloaded quantizations too, not just downloaded. */
   showAllQuantizations: boolean;
-  /** Persisted, off by default: chart each model's VRAM footprint. Opt-in, being estimates. */
   showMemoryBar: boolean;
-  /** Persisted, shared with the Hub page: list only models that fit this device's budget. */
   fitOnDeviceOnly: boolean;
   loadedIsMultimodal: boolean;
-  /** Active model is a block-diffusion model (DiffusionGemma): drives the denoising-canvas artifact auto-render. */
   loadedIsDiffusion: boolean;
-  /** Live denoising frame per conversation ("__default" until the id exists). Transient and
-   *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
   customContextLength: number | null;
-  /** The pinned context the loaded model used (null = Auto), so dirty-tracking and a later fit
-   *  Apply can tell an explicit pin from Auto. */
   loadedCustomContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
@@ -2569,8 +2254,7 @@ type ChatRuntimeStore = {
   activeThreadEpoch: number;
   queuedSettingsEpoch: number;
   activeProjectId: string | null;
-  /** Incognito toggle: the conversation lives only in assistant-ui's in-memory repository and
-   *  never reaches studio.db, so a refresh always exits incognito. */
+  /** Lives only in memory, never studio.db, so a refresh always exits incognito. */
   incognito: boolean;
   settingsPanelOpen: boolean;
   editingMessageId: string | null;
@@ -2578,17 +2262,12 @@ type ChatRuntimeStore = {
   pendingAudioName: string | null;
   pendingImageEditReference: PendingImageEditReference | null;
   contextUsage: ContextUsageSnapshot | null;
-  /** Per-thread copy of the above, so the bar survives a switch: `contextUsage` is the VISIBLE
-   *  conversation's, and a background run may not write it. */
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: (LoadingModelPick & { selectionSuperseded: boolean }) | null;
-  // What the resident model loaded from, when that is not its id: a reload rebuilds its target
-  // from the checkpoint, so without this it goes back down the ref the pin avoided.
   activeLoadId: string | null;
   activeNativePathToken: string | null;
-  // Expiry (ms) of the active native path token: the desktop host prunes file leases on a TTL,
-  // so a reload prompts re-selection instead of reusing a dead token.
+  // The desktop host prunes file leases on a TTL, so an expired token forces re-selection.
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
   beginModelLoading: (phase?: ModelLifecyclePhase) => ModelLifecycleLease | null;
@@ -2601,15 +2280,9 @@ type ChatRuntimeStore = {
     options?: {
       persist?: boolean;
       trackQueuedSettings?: boolean;
-      /** An explicit Min P action fences the pair even when the number did not move. */
       minPChoiceEdited?: boolean;
-      /** These params are the model's defaults, so its remembered settings are laid back over them
-       *  even with no checkpoint change; being the model's, they move the installation defaults. */
       fromModelDefaults?: boolean;
-      /** The context the model just loaded with. */
       maxTokensCap?: number;
-      /** Defaults came from the server-resident model at startup, so a legacy
-       * global snapshot can be attributed to it. */
       migrateOwnedGlobalQwenDefaults?: boolean;
     },
   ) => void;
@@ -2618,18 +2291,13 @@ type ChatRuntimeStore = {
   setActivePresetSource: (source: ChatPresetSource) => void;
   setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
-  /** `local` defaults true so an unqualified caller still counts for the model-swap gate.
-   *  `owner` narrows the clear, since unresolved ids share "__default" and owners accumulate. */
   setThreadRunning: (
     threadId: string,
     running: boolean,
     options?: { local?: boolean; owner?: () => void },
   ) => void;
-  /** Re-key a first turn's run handles once its thread is persisted. Everything files under
-   *  "__default" before the id exists, so the sidebar found no run and Stop had no handle. */
+  /** Runs file under "__default" until the thread is persisted; re-key them then. */
   adoptDefaultThreadRun: (threadId: string) => void;
-  /** Which key this run's handles live under now: `adoptDefaultThreadRun` re-keys them mid-run,
-   *  so a run started under "__default" must look its owner up. */
   runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string, cancel?: () => void) => void;
@@ -2644,14 +2312,11 @@ type ChatRuntimeStore = {
     ggufVariant?: string | null,
     options?: {
       trackQueuedSettings?: boolean;
-      /** False when the switch only puts back what was on screen before a hidden load, so the model
-       *  it steps off was never the user's. */
       persist?: boolean;
       maxTokensCap?: number;
     },
   ) => void;
   setActiveThreadId: (threadId: string | null) => void;
-  /** show `threadId`'s own settings; a null threadId or snapshot restores the global ones. */
   applyThreadScopedSettings: (
     threadId: string | null,
     settings: ThreadScopedSettings | null,
@@ -2665,8 +2330,6 @@ type ChatRuntimeStore = {
     enabled: boolean,
     options?: { persist?: boolean },
   ) => void;
-  /** Write one model's remembered params directly, live or not. For the picker's per-model
-   *  editor; elsewhere an edit belongs to the loaded model and setParams covers it. */
   setRememberedParamsForModel: (
     modelId: string,
     patch: PersistedInferenceParams,
@@ -2710,8 +2373,6 @@ type ChatRuntimeStore = {
     threadId: string | null,
     target: ProjectAttachmentTarget,
   ) => void;
-  /** Carry a choice made before the chat existed onto its new id. `claim` is what
-   *  readPendingAttachmentTargetClaim gave; a newer one means another composer owns it. */
   adoptPendingProjectAttachmentTarget: (threadId: string, claim?: number) =>
     void;
   clearPendingProjectAttachmentTarget: () => void;
@@ -2721,8 +2382,6 @@ type ChatRuntimeStore = {
   setRagAutoInjectMinScore: (score: number) => void;
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
-  /** `owner` is the run's identity token, as for `setThreadRunning`: unresolved threads share
-   *  "__default", so without it one run's cleanup clears a concurrent run's status. */
   setToolStatus: (
     threadId: string,
     status: string | null,
@@ -2731,14 +2390,12 @@ type ChatRuntimeStore = {
   appendToolLiveOutput: (toolCallId: string, text: string) => void;
   clearToolLiveOutput: (toolCallId?: string) => void;
   setToolFullOutput: (toolCallId: string, text: string) => void;
-  /** Drop a stale preserved full output (a new run is reusing the id). */
   clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (
     threadId: string | null,
     canvas: DiffusionCanvasFrame,
   ) => void;
-  /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe another's. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
@@ -2765,7 +2422,6 @@ type ChatRuntimeStore = {
   ) => void;
   clearPendingImageEditReference: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
-  /** A finished run's usage, kept per thread so switching back re-applies it. */
   setThreadContextUsage: (
     threadId: string,
     usage: ContextUsageSnapshot,
@@ -2871,17 +2527,10 @@ const SCALAR_SETTING_KEYS = [
   "gpuMemoryMode",
 ] as const satisfies readonly ScalarSettingKey[];
 
-// Ids this browser holds a local answer for. Hydration keeps these and merges the rest, so a
-// pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
-// Per-model edits made before the settings response landed, held as PATCHES rather than rows.
-// The set above is overlaid wholesale, which is right for a row built from a hydrated entry but
-// not for one typed before there was an entry: that row names only the keys the user touched, so
-// replacing with it would drop the temperature, top-p or seed the response is about to bring.
+// Pre-hydration edits are held as patches: they name only touched keys and must merge.
 const modelParamEditsBeforeHydration = new Map<string, PersistedInferenceParams>();
-/** Deferred, not module scope: per-model-params is in the @/features/chat import cycle, so
- *  naming PERSISTED_INFERENCE_PARAM_KEYS here reads a const in its TDZ and throws at import
- *  time (as watchedStorageKeys() avoids). Memoized, or the `+= 1` bumps stop accumulating. */
+/** Lazy: an import cycle puts PERSISTED_INFERENCE_PARAM_KEYS in its TDZ at module load. */
 let inferenceParamMutationVersionsCache: Record<
   PersistedInferenceParamKey,
   number
@@ -2907,12 +2556,6 @@ let loadedModelReasoningMode: {
   fromLoad: boolean;
 } | null = null;
 
-/**
- * Record the mode a load/status response put the active model in. Persisted settings can describe the
- * previous model, so they cannot pick the migration table after a family default changed on load.
- * `fromLoad` marks a model this browser actually loaded: a status refresh only echoes the
- * reasoningEnabled already in the store, which before hydration is this browser's local default.
- */
 export function noteLoadedModelReasoningMode(
   checkpoint: string,
   enabled: boolean,
@@ -2922,17 +2565,13 @@ export function noteLoadedModelReasoningMode(
   const previous = loadedModelReasoningMode;
   loadedModelReasoningMode = {
     checkpoint,
-    // A thread pin is not a shared model default. When one is active, retain
-    // the installation value captured before that thread was applied.
     enabled:
       threadScopedOverride("reasoningEnabled") !== undefined
         ? installationReasoningEnabled(state)
         : enabled,
     reasoningMutationVersion:
       scalarSettingMutationVersions.reasoningEnabled,
-    // Sticky per checkpoint: performLoad marks the load, then awaits refresh(),
-    // whose status merge calls this again with the default false. Downgrading
-    // there would drop the load's claim before hydration could read it.
+    // Sticky: refresh() calls this again with false right after the load marks it.
     fromLoad:
       fromLoad ||
       (previous !== null &&
@@ -2976,8 +2615,6 @@ function cacheHydratedSettings(
   }
 }
 
-/** Seed the backend from this browser for mirrored settings it never stored; without it an
- *  existing install keeps its preferences local until each is next changed. */
 function readStoredSettingValue(
   setting: { storageKey: string } & MirroredSettingCodec,
 ): unknown {
@@ -2999,8 +2636,6 @@ function backfillMirroredSettings(settings: PersistedChatSettings): void {
   if (hasKeys(patch)) saveSettingsPatch(patch);
 }
 
-/** `bumpVersions` fences the moved keys against a hydration response in flight. A model's own
- *  defaults do not get that: they must not outrank the settings saved for it. */
 function getChangedInferenceParams(
   nextParams: InferenceParams,
   currentParams: InferenceParams,
@@ -3008,7 +2643,6 @@ function getChangedInferenceParams(
   minPChoiceEdited = false,
 ): PersistedInferenceParams {
   const changedParams: PersistedInferenceParams = {};
-  // Mode and number are one choice: fence the pair even if only the mode moved.
   const minPChoiceChanged =
     bumpVersions &&
     (minPChoiceEdited ||
@@ -3029,15 +2663,13 @@ function getChangedInferenceParams(
       setInferenceParam(changedParams as InferenceParams, key, nextValue);
     }
   }
-  // A written number carries its mode, or the next read reads it as legacy intent.
+  // A written number carries its mode, or the next read treats it as legacy.
   if (changedParams.minP !== undefined && nextParams.minPMode !== undefined) {
     changedParams.minPMode = nextParams.minPMode;
   }
   return changedParams;
 }
 
-/** Bump the hydration versions for the replayed keys and mirror them globally, so a reload
- *  lands on this model's settings. */
 function persistReplayedParams(
   state: ChatRuntimeStore,
   nextParams: InferenceParams,
@@ -3049,13 +2681,10 @@ function persistReplayedParams(
   const changed = getChangedInferenceParams(nextParams, state.params);
   if (state.settingsHydrated && hasKeys(changed)) {
     saveSettingsPatch({ inferenceParams: changed });
-    // Same reason as the setParams write: the in-memory copy is what a chat with no snapshot falls back to.
     noteThreadScopedDefaults(changed);
   }
 }
 
-/** Same fence as the inference-param versions, per model so only the edited one is protected.
- *  Before hydration the params are placeholders, so nothing is recorded. */
 function trackParamsByModel(
   state: ChatRuntimeStore,
   paramsByModel: Record<string, PersistedInferenceParams> | null,
@@ -3070,7 +2699,6 @@ function trackParamsByModel(
   return paramsByModel;
 }
 
-/** State a model switch owes to the memory: the outgoing model's snapshot. */
 function getReplayStatePatch(
   state: ChatRuntimeStore,
   nextParams: InferenceParams,
@@ -3081,8 +2709,6 @@ function getReplayStatePatch(
   return outgoing ? { paramsByModel: outgoing } : {};
 }
 
-/** Falls back to the outgoing snapshot: a non-persisting update (a background load) must not
- *  rewrite durable memory. Only an edit is recorded; defaults ride the leaving snapshot. */
 function getParamsByModelAfterEdit(
   state: ChatRuntimeStore,
   outgoing: Record<string, PersistedInferenceParams> | null,
@@ -3100,8 +2726,6 @@ function getParamsByModelAfterEdit(
       outgoing ?? state.paramsByModel,
       nextParams.checkpoint,
       changedParams,
-      // Same filter as the outgoing snapshot: an edit to a key the memory keeps but the chat does
-      // not still records the WHOLE snapshot, riding the chat's sampling into the entry.
       pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
     ),
     nextParams.checkpoint,
@@ -3109,7 +2733,6 @@ function getParamsByModelAfterEdit(
   return recorded ?? outgoing;
 }
 
-/** Snapshot the model being switched away from, so a model that was never edited still keeps what it ran with. */
 function rememberOutgoingModel(
   state: ChatRuntimeStore,
   outgoing: InferenceParams,
@@ -3120,8 +2743,7 @@ function rememberOutgoingModel(
   const snapshot = pickRememberedParams(
     withoutActiveThreadParams(state, outgoing),
   );
-  // Only to seed a model with no entry: later changes are written key by key, and a full
-  // snapshot would put this browser's copy of untouched keys over another tab's.
+  // Seed only: a full snapshot would overwrite another tab's copy of untouched keys.
   const seeding = state.paramsByModel[outgoing.checkpoint] === undefined;
   const next = trackParamsByModel(
     state,
@@ -3134,8 +2756,6 @@ function rememberOutgoingModel(
     ),
     outgoing.checkpoint,
   );
-  // A full snapshot rewrites every field, so send one only when this browser has something to
-  // say: an edit made here, or an entry that does not exist yet.
   if (next && state.settingsHydrated && outgoing.checkpoint && seeding) {
     saveSettingsPatch({
       inferenceParamsByModel: { [outgoing.checkpoint]: snapshot },
@@ -3152,8 +2772,7 @@ function persistParamEdit(
   if (!hasKeys(changedParams)) {
     return;
   }
-  // Only what moved: the server merges per key, so sending the rest would overwrite another
-  // tab's copy of every other key.
+  // Only what moved: the server merges per key.
   const rememberedChanges = pickRememberedChanges(changedParams);
   saveSettingsPatch({
     inferenceParams: changedParams,
@@ -3213,7 +2832,6 @@ function getHydratedPresetState(
   return nextState;
 }
 
-/** Keys the user moved while the request was in flight: the same fence, read the other way round. */
 function pickLocallyEditedParams(
   params: InferenceParams,
   versions: SettingsHydrationVersions,
@@ -3227,9 +2845,6 @@ function pickLocallyEditedParams(
   return edited;
 }
 
-/** The context the last load or status published for the model on screen. loadedContextLength covers
- * only a backend that sizes a window, so without this a safetensors model has nothing to clamp the
- * hydration replay against. Keyed by checkpoint. */
 let loadedContext: { checkpoint: string; cap: number } | null = null;
 
 function noteLoadedContext(checkpoint: string, cap: number | undefined): void {
@@ -3255,38 +2870,27 @@ function capParamsToLoadedContext(
     : params;
 }
 
-/** A model selected while the request was in flight. Its defaults lose to its
- * own entry but outrank the global set, which belongs to the last model used. */
 let modelLoadedBeforeHydration: string | null = null;
 
-/** A model stepped off before hydration: nothing can be filed for it yet, but the global set
- *  the response delivers is what it ran with, so this says who to file it under. */
 let modelLeftBeforeHydration: string | null = null;
 
 function noteModelDefaultsBeforeHydration(
   checkpoint: string,
   ownsPersistedGlobal: boolean,
 ): void {
-  // A model the user selected while settings were in flight does not own the previous session's global
-  // snapshot, even as this tab's first checkpoint. Server-resident startup adoption is the exception.
   if (!ownsPersistedGlobal) {
     modelLoadedBeforeHydration = checkpoint;
     return;
   }
-  // The model already resident at startup is the one the saved global set
-  // describes, so its defaults must not stand in front of it.
   if (!sameCheckpointIdentity(modelLoadedBeforeHydration, checkpoint)) {
     modelLoadedBeforeHydration = null;
   }
-  // setCheckpoint marks any pre-hydration switch as an interactive pick, and
-  // this is the adoption signal that says otherwise.
   if (sameCheckpointIdentity(unownedCheckpointBeforeHydration, checkpoint)) {
     unownedCheckpointBeforeHydration = null;
   }
 }
 
-/** Whether the checkpoint is an external model that cannot run deep research, as the composer
- *  rules it. An unresolved provider is left alone: refusing would drop a Codex preference. */
+/** An unresolved provider is left alone: refusing would drop a Codex preference. */
 function externalCheckpointRefusesDeepResearch(
   checkpoint: string | null | undefined,
 ): boolean {
@@ -3298,8 +2902,7 @@ function externalCheckpointRefusesDeepResearch(
   return provider != null && provider.providerType !== "openai_codex";
 }
 
-/** Kimi's $web_search requires thinking disabled and the composer keeps the pills exclusive,
- *  so a restore must too, or a chat stored elsewhere sends a combination Kimi rejects. */
+/** Kimi rejects search with thinking on, so a restore must keep the pills exclusive. */
 function isKimiCheckpoint(checkpoint: string | null | undefined): boolean {
   const parsed = parseExternalModelId(checkpoint);
   if (!parsed) return false;
@@ -3325,15 +2928,13 @@ function getHydratedSettingsState(
     checkpoint,
   );
   modelLoadedBeforeHydration = null;
-  // The toggle as it will read once this response lands, under the same fence the scalar loop below applies.
   const remembersPerModel =
     settings.rememberParamsPerModel !== undefined &&
     scalarSettingMutationVersions.rememberParamsPerModel ===
       versions.scalarSettings.rememberParamsPerModel
       ? settings.rememberParamsPerModel
       : state.rememberParamsPerModel;
-  // A model loaded mid-flight has no entry to restore defaults from, so the global set would
-  // overwrite them with the last model's. Only while the memory is on.
+  // A model loaded mid-flight has no entry, so the global set would overwrite its defaults.
   const keepModelDefaults =
     remembersPerModel &&
     loadedBeforeHydration &&
@@ -3341,8 +2942,6 @@ function getHydratedSettingsState(
   const params = { ...state.params };
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const value = settings.inferenceParams?.[key];
-    // A slider moved before this response landed is held for the open chat. The edit wins in the
-    // store but belongs to the chat, so keep the server's value for the restore.
     if (value !== undefined && isHeldThreadScopedField(key)) {
       hydratedDefaultsByHeldField.set(key, value);
       continue;
@@ -3350,8 +2949,7 @@ function getHydratedSettingsState(
     if (
       value !== undefined &&
       !keepModelDefaults &&
-      // The context belongs to the load, not the previous model's global set, and no entry carries
-      // one for the replay below.
+      // The context belongs to the load, not the previous model's global set.
       !(loadedBeforeHydration && key === "maxSeqLength") &&
       inferenceParamMutationVersions()[key] === versions.inferenceParams[key]
     ) {
@@ -3364,7 +2962,6 @@ function getHydratedSettingsState(
     for (const [modelId, entry] of Object.entries(
       settings.inferenceParamsByModel,
     )) {
-      // Stored as written: a gap is a key this model never pinned, and there is no honest value to invent.
       hydrated[modelId] = entry;
     }
     for (const modelId of locallyRememberedModels) {
@@ -3375,12 +2972,9 @@ function getHydratedSettingsState(
     }
     for (const [modelId, patch] of modelParamEditsBeforeHydration) {
       hydrated[modelId] = { ...hydrated[modelId], ...patch };
-      // A complete row from here, so a later response takes the wholesale fence above.
       locallyRememberedModels.add(modelId);
     }
     modelParamEditsBeforeHydration.clear();
-    // The entry arriving for this model predates the fenced edit, so lay the edit over it or the
-    // next defaults update replays the stale one.
     if (checkpoint) {
       const edited = pickLocallyEditedParams(params, versions);
       if (hasKeys(edited)) {
@@ -3389,8 +2983,6 @@ function getHydratedSettingsState(
     }
     nextState.paramsByModel = hydrated;
   } else if (checkpoint) {
-    // No map in the response: an install upgraded from before this feature. With no entry the
-    // next defaults update puts the recommendation back over the fenced edit.
     const edited = pickLocallyEditedParams(params, versions);
     if (hasKeys(edited)) {
       nextState.paramsByModel = {
@@ -3399,8 +2991,7 @@ function getHydratedSettingsState(
       };
     }
   }
-  // A model stepped off before this response landed could not be filed then, and only now is
-  // the global set it ran with known; without this, switching back inherits a stranger.
+  // File the global set under a model stepped off before hydration, now that it is known.
   const left = modelLeftBeforeHydration;
   modelLeftBeforeHydration = null;
   const byModel = nextState.paramsByModel ?? state.paramsByModel;
@@ -3421,8 +3012,7 @@ function getHydratedSettingsState(
       nextState.paramsByModel = { ...byModel, [left]: inherited };
     }
   }
-  // Same fence as the scalar loop: a click made while this response was out is the newer
-  // answer, and recording the stored value over it leaves the switch visibly wrong.
+  // A click made while this response was out is the newer answer.
   if (
     settings.preserveThinking !== undefined &&
     scalarSettingMutationVersions.preserveThinking ===
@@ -3432,21 +3022,17 @@ function getHydratedSettingsState(
   }
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
-    // Full access is session-only, so a stored level must not silently drop the sandbox bypass
-    // the user accepted a warning for.
+    // Full access is session-only; a stored level must not drop the accepted bypass.
     if (
       state.permissionMode === "full" &&
       (key === "permissionMode" || key === "confirmToolCalls")
     ) {
       continue;
     }
-    // Both describe the running model through a loaded* shadow this loop cannot set, so skip
-    // them while a shadow owns them. With none resident the store field is what a load reads.
     if (loadShadowOwnsMirroredSetting(key, state)) {
       continue;
     }
-    // A load sets this from the model's own capability, and only a load sets reasoningAlwaysOn,
-    // so a stored false would ask a model that cannot stop thinking to stop.
+    // Only a load sets this; a stored false would ask a model that cannot stop thinking to stop.
     if (
       key === "reasoningEnabled" &&
       value === false &&
@@ -3454,17 +3040,13 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
-    // Same reason, the other direction: a load that landed while this response was in flight already
-    // chose the mode for the running model and advances no mutation version, so the stored toggle
-    // describes the previous one. Only an actual load, though: a status refresh echoes local state.
     if (
       key === "reasoningEnabled" &&
       loadEstablishedReasoningMode(state, true)
     ) {
       continue;
     }
-    // Only a local model or an openai_codex provider can run deep research, so a
-    // stored true must not arm the pill for any other external checkpoint.
+    // Only local models or openai_codex can run deep research.
     if (
       key === "deepResearchEnabled" &&
       value === true &&
@@ -3472,11 +3054,8 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
-    // A click made before this response landed is held for the open chat rather than written
-    // globally, so it advances no mutation version and the server's value would replace it.
+    // Held edits advance no mutation version, so the server value would replace them.
     if (isHeldThreadScopedField(key)) {
-      // The click wins in the STORE but belongs to the chat: when the window closes the default
-      // has to go back to something, so keep the server's authoritative value here.
       if (
         value !== undefined &&
         scalarSettingMutationVersions[key] === versions.scalarSettings[key]
@@ -3492,8 +3071,7 @@ function getHydratedSettingsState(
       (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
     }
   }
-  // The model already selected when this lands never crossed a checkpoint transition, so
-  // nothing replayed its memory and it would run on the last model's global set.
+  // The already-selected model never crossed a transition, so replay its memory here.
   const remembered = (nextState.paramsByModel ?? state.paramsByModel)[
     params.checkpoint
   ];
@@ -3501,8 +3079,7 @@ function getHydratedSettingsState(
     (nextState.rememberParamsPerModel ?? state.rememberParamsPerModel) &&
     remembered
   ) {
-    // Same fence as the global set. REMEMBERED, not PERSISTED, as in getReplayedParams: a
-    // maxSeqLength the row carries must not replace the loaded context.
+    // REMEMBERED, not PERSISTED: a stored maxSeqLength must not replace the loaded context.
     const replayed = { ...params };
     for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
       const value = remembered[key];
@@ -3513,14 +3090,10 @@ function getHydratedSettingsState(
         setInferenceParam(replayed, key, value);
       }
     }
-    // The same cap the load and status replays apply.
     nextState.params = replayed;
   }
-  // Outside the replay: an install with only a global set has no entry, and the budget
-  // restored from it does not fit the load either.
   const capped = nextState.params ?? params;
-  // loadedContextLength describes whatever is resident, which an external pick
-  // leaves loaded, so it is not this checkpoint's context to clamp against.
+  // An external pick leaves the local model resident, so its context is not this cap.
   const residentContextCap = isExternalModelId(checkpoint)
     ? null
     : state.loadedContextLength;
@@ -3569,28 +3142,16 @@ function localQwenMigrationSettings(
   };
 }
 
-// The chat's own effort, kept when a per-model pin took its place in the live store so that
-// clearing the pin can put it back. A pin is applied with a plain setState and persists nothing,
-// and the thread snapshot is read off the live store, so nothing else records what it displaced.
-// Session only: after a reload the live level already IS the pin's and nothing preceded it here,
-// so clearing then resolves without it.
+// The chat's own effort displaced by a per-model pin, restored when the pin clears.
 let effortDisplacedByPin: ReasoningEffort | null = null;
 
-/** Called before a per-model pin overwrites the live effort. The first displacement wins, so
- *  pinning twice and then clearing returns to the chat's own level, not to the earlier pin. */
+/** The first displacement wins, so pin-pin-clear returns to the chat's own level. */
 export function noteEffortDisplacedByPin(current: ReasoningEffort): void {
-  // Nothing before hydration: the level on screen is still this store's own default, not the
-  // chat's, and hydration replaces it because a pin advances no mutation version. The pin sites
-  // rerun once it lands, and the first record is the one that sticks.
+  // Before hydration the live level is only the store default, not the chat's.
   if (!useChatRuntimeStore.getState().settingsHydrated) return;
   effortDisplacedByPin ??= current;
 }
 
-/** Whether the live effort is a pin's rather than the chat's own. A pin in force owns it outright:
- *  every path that applies one writes it, the snapshot apply holds the chat's level back behind it,
- *  and stating a level in the composer clears the pin, so the two cannot disagree. The record
- *  covers the pin that has since gone, whether cleared or withdrawn by a catalogue refresh, while
- *  the level in the store is still it. */
 export function pinHoldsLiveEffort(): boolean {
   return (
     pinOwnsLiveReasoningEffort(useChatRuntimeStore.getState()) ||
@@ -3598,9 +3159,7 @@ export function pinHoldsLiveEffort(): boolean {
   );
 }
 
-/** The level to resolve from when a pin is cleared, or null when neither source has one. The
- *  chat's own level first: the snapshot keeps it because buildThreadScopedSnapshot holds the pin
- *  back, so it survives a reload and a thread switch, which the in-memory record does not. */
+/** Prefers the chat's snapshot level, which survives reloads unlike the in-memory record. */
 export function takeEffortDisplacedByPin(): ReasoningEffort | null {
   const displaced = effortDisplacedByPin;
   effortDisplacedByPin = null;
@@ -3611,7 +3170,6 @@ export function takeEffortDisplacedByPin(): ReasoningEffort | null {
   );
 }
 
-/** Apply a model pin without persisting it as the chat's preference. */
 export function reconcilePinnedReasoningEffort(opts: {
   checkpoint: string;
   caps: ExternalReasoningCapabilities;
@@ -3648,12 +3206,7 @@ function installationReasoningEnabled(state: ChatRuntimeStore): boolean {
     : state.reasoningEnabled;
 }
 
-/**
- * Whether a load or status response established the reasoning mode for the active model, with no user
- * toggle since. A load writes reasoningEnabled without advancing its mutation version, so hydration
- * would otherwise replay a toggle describing the previous model. The migration table and the hydrated
- * pill both read this, so they cannot disagree and show a thinking pill above non-thinking sampling.
- */
+/** A load writes reasoningEnabled without a mutation version; hydration must not undo it. */
 function loadEstablishedReasoningMode(
   state: ChatRuntimeStore,
   requireLoad = false,
@@ -3679,9 +3232,7 @@ function qwenMigrationThinkingOn(
   if (state.reasoningAlwaysOn) {
     return true;
   }
-  // Ahead of the established mode: a model that cannot reason never had the thinking table applied at
-  // load, so its recorded mode is just this browser's toggle. Only once status reported this
-  // checkpoint, since supportsReasoning starts false and "not asked yet" is not "cannot".
+  // supportsReasoning starts false, so wait for status on this checkpoint before trusting it.
   const statusSeen = sameCheckpointIdentity(
     loadedModelReasoningMode?.checkpoint,
     state.params.checkpoint,
@@ -3689,8 +3240,6 @@ function qwenMigrationThinkingOn(
   if (statusSeen && !state.supportsReasoning) {
     return false;
   }
-  // requireLoad, as the hydrated pill uses: a status refresh echoes the toggle
-  // already in the store, which before hydration is this browser's own default.
   const established = loadEstablishedReasoningMode(state, true);
   if (established) {
     return established.enabled;
@@ -3722,14 +3271,8 @@ const QWEN_MIGRATION_DECISION_FIELDS = [
   "inferenceParamsByModel",
 ] as const satisfies ReadonlyArray<keyof PersistedChatSettings>;
 
-// Raw, not sanitized: the server tests `key in current` against what is stored,
-// so asserting absence from the sanitized copy would fence a key the row has.
-/**
- * True when a decision field is stored but sanitizes away, such as an explicit null or an empty
- * inferenceParamsByModel map: the compare-and-set can assert a value or an absence and neither fits,
- * and `expected` matches by recursive subset, so an empty map matches a populated one. Decline rather
- * than migrate unfenced. An absent key is different, and stays fenced by expectedAbsent.
- */
+// Raw, not sanitized: the server tests `key in current` against what is stored.
+/** A stored field that sanitizes away cannot be fenced by CAS, so decline to migrate. */
 function qwenMigrationHasUnfenceableField(
   rawSettings: unknown,
   sanitized: PersistedChatSettings,
@@ -3759,8 +3302,6 @@ function qwenMigrationExpectedAbsentPaths(
   rawSettings: unknown,
   patch: PersistedChatSettings,
 ): Array<[keyof PersistedChatSettings, string]> {
-  // Raw for the same reason as qwenMigrationExpectedAbsent: the server tests the
-  // stored row, so a key sanitizing away must not be fenced as absent.
   const nested = (field: keyof PersistedChatSettings): Record<string, unknown> =>
     typeof rawSettings === "object" && rawSettings !== null
       ? ((rawSettings as Record<string, unknown>)[field] as
@@ -3776,9 +3317,7 @@ function qwenMigrationExpectedAbsentPaths(
       }
     }
   }
-  // Normalizing a differently-cased key writes a new exact-key row. Unfenced, the subset compare only
-  // checks the old spelling, so an exact-key row another tab added after the confirming read would be
-  // overwritten whole.
+  // Fence the exact-key row too, or another tab's newer row would be overwritten.
   const stored = nested("inferenceParamsByModel");
   for (const modelId of Object.keys(patch.inferenceParamsByModel ?? {})) {
     if (!Object.hasOwn(stored, modelId)) {
@@ -3821,8 +3360,6 @@ function applyLegacyQwenDefaultsAfterPresetChange(
       ? migration.patch.inferenceParamsByModel?.[activeModelId]
       : migration.patch.inferenceParams;
     if (activePatch) {
-      // The open chat may pin one of these, but a later snapshot-less chat falls back to the installation
-      // copy captured when pairing began, so move it with the migrated defaults.
       noteThreadScopedDefaults(activePatch);
     }
     return {
@@ -3844,12 +3381,7 @@ function applyLegacyQwenDefaultsAfterPresetChange(
   });
 }
 
-/**
- * Bring local params back in line after a migration the server accepted while a local edit was in
- * flight. The edit flips provenance to "modified", so the ordinary apply refuses and the tab keeps
- * generating from values the server no longer holds. Only the fields the user did not touch are
- * adopted, which is what the per-field mutation versions captured before the write identify.
- */
+/** After a migration raced a local edit, adopt only the fields the user did not touch. */
 function adoptMigratedFieldsAfterLocalEdit(
   patch: PersistedChatSettings,
   checkpoint: string,
@@ -3880,8 +3412,6 @@ function adoptMigratedFieldsAfterLocalEdit(
     }
     const storedRow = state.paramsByModel[checkpoint];
     return {
-      // As the normal application path does: applying a thread pin advances no
-      // mutation version, so nothing above would have noticed it.
       params: restoreThreadScopedParams(nextParams),
       ...(storedRow
         ? {
@@ -3900,14 +3430,10 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
   migrateOwnedGlobalAlongsideModelMemory: boolean,
 ): Promise<void> {
   try {
-    // Land the preset selection first so the confirming GET can recognize the legacy snapshot; a newer
-    // edit in another tab fails the fingerprint safely.
     await flushPendingChatSettings();
-    // A write outstanding past the flush timeout would reach the backend merge after this CAS and restore
-    // the legacy row. Rearm on its settlement rather than wait: an external selection gets no callback.
+    // A write outlasting the flush timeout could land after this CAS and restore the legacy row.
     if (!settingsWritesAreDrained()) {
-      // Bounded: a refused patch is retained and reflushed by each pass, so an unbounded rearm loops on an
-      // unreachable backend. Cleared once writes drain, so a healthy install never spends it.
+      // Bounded: a refused patch is reflushed each pass, so unbounded rearm loops offline.
       if (qwenMigrationRearmsWhileBlocked < QWEN_MIGRATION_MAX_REARMS) {
         qwenMigrationRearmsWhileBlocked += 1;
         void inflightFlush.catch(() => undefined).then(() => {
@@ -3931,8 +3457,6 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     const confirmedRaw = await getChatSettings();
     const confirmed = sanitizeChatSettings(confirmedRaw);
     const confirmedState = useChatRuntimeStore.getState();
-    // A model switch during the GET invalidates both the row and the reasoning
-    // mode this retry would persist. The new model schedules its own.
     if (
       !confirmedState.settingsHydrated ||
       confirmedState.activePresetSource !== "builtin-default" ||
@@ -3949,15 +3473,12 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       checkpoint,
       qwenMigrationThinkingOn(confirmed, confirmedState),
       includeOwnedGlobal,
-      // From the confirming read, as hydration derives it: memory turned on
-      // elsewhere means the global is no longer this checkpoint's to rewrite.
       migrateOwnedGlobalAlongsideModelMemory &&
         !qwenMigrationRemembersPerModel(confirmed, confirmedState),
     );
     if (!migration.patch) return;
     if (qwenMigrationHasUnfenceableField(confirmedRaw, confirmed)) return;
-    // Captured before the write: an edit landing mid-flight is the one case
-    // where the server takes the migration and local refuses it.
+    // Captured before the write: a mid-flight edit makes local refuse what the server took.
     const presetSourceBeforeWrite = activePresetSourceMutationVersion;
     const paramVersionsBeforeWrite = { ...inferenceParamMutationVersions() };
     const persisted = await savePersistedChatSettingsPatchIfCurrent(
@@ -3966,9 +3487,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       qwenMigrationExpectedAbsent(confirmedRaw),
       qwenMigrationExpectedAbsentPaths(confirmedRaw, migration.patch),
     );
-    // Only now touch local state: applying before persisting would leave this tab generating with values
-    // the server rejected. Revalidated after the await too, since the checkpoint can move while the
-    // response is in flight, and an external pick gets no callback to schedule another retry.
+    // Apply locally only after persisting, and revalidate: the checkpoint can move meanwhile.
     if (
       persisted.applied &&
       sameCheckpointIdentity(
@@ -3985,8 +3504,6 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
         migration.patch &&
         useChatRuntimeStore.getState().activePresetSource !== "custom"
       ) {
-        // "modified" is an ordinary edit and belongs here; a custom preset can
-        // hold a legacy value on purpose and bumps no counter for it.
         adoptMigratedFieldsAfterLocalEdit(
           migration.patch,
           checkpoint,
@@ -4001,21 +3518,15 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
 
 let qwenMigrationInFlight: Promise<void> | null = null;
 
-// Same bound as SETTINGS_FLUSH_TIMEOUT_MS, for the same reason.
 const QWEN_MIGRATION_BARRIER_TIMEOUT_MS = 2000;
 
 const QWEN_MIGRATION_MAX_REARMS = 3;
 let qwenMigrationRearmsWhileBlocked = 0;
 
-/**
- * Settles once a scheduled migration has decided and persisted, so a prompt sent right after picking
- * a Qwen with a dormant legacy row does not generate from the values getReplayedParams just put on
- * screen.
- */
+/** Lets a send wait for a scheduled Qwen defaults migration to persist. */
 export async function awaitPendingQwenDefaultsMigration(): Promise<void> {
   if (qwenMigrationInFlight === null) return;
-  // Bounded like the settings flush: neither request takes an abort signal, so
-  // a wedged backend would hold every send open. Past this the run proceeds.
+  // Bounded: neither request takes an abort signal.
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -4029,8 +3540,7 @@ export async function awaitPendingQwenDefaultsMigration(): Promise<void> {
   }
 }
 
-// Re-read rather than await once: a replacement scheduled while this waits owns
-// the checkpoint the send is about to generate from.
+// Re-read: a replacement scheduled while waiting owns the checkpoint.
 async function followPendingQwenDefaultsMigrations(): Promise<void> {
   let pending = qwenMigrationInFlight;
   while (pending) {
@@ -4067,11 +3577,8 @@ function scheduleLegacyQwenDefaultsRetry(
     return;
   }
   qwenDefaultsRetryScheduled = true;
-  // Published from scheduling time, not from when the microtask runs, or a send
-  // landing in between would find nothing to wait for.
+  // Published at scheduling time, or a send in between finds nothing to wait for.
   let settleMigration: () => void = () => undefined;
-  // Cleared only while the pointer still refers to this retry: the scheduler
-  // frees its slot before the async work ends, so a later retry can replace it.
   const migration: Promise<void> = new Promise<void>((resolve) => {
     settleMigration = () => {
       if (qwenMigrationInFlight === migration) {
@@ -4113,8 +3620,6 @@ function scheduleLegacyQwenDefaultsRetry(
         includeOwnedGlobal,
         migrateScheduledOwnedGlobalAlongsideModelMemory,
       ).patch !== null;
-    // A status refresh needs a confirming GET only when the local store still holds a legacy row.
-    // Adoption is the exception: it owns a server snapshot model defaults already replaced locally.
     const hasOwnedGlobalCandidate =
       includeOwnedGlobal && isPresenceBumpQwen(state.params.checkpoint);
     if (!hasLocalCandidate && !hasOwnedGlobalCandidate) {
@@ -4131,8 +3636,7 @@ function scheduleLegacyQwenDefaultsRetry(
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
   threadScopedSettingsPending: false,
-  // Hydrate the last external checkpoint so the picker survives a refresh; local ids are
-  // re-derived from the backend and deliberately not persisted.
+  // Only external checkpoints persist; local ids are re-derived from the backend.
   params: (() => {
     const persistedExternal = loadLastExternalCheckpoint();
     unownedCheckpointBeforeHydration = persistedExternal;
@@ -4141,7 +3645,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       : DEFAULT_INFERENCE_PARAMS;
   })(),
   paramsByModel: {},
-  // On by default; a model with nothing remembered keeps the current settings.
   rememberParamsPerModel: true,
   customPresets: [],
   activePreset: "Default",
@@ -4217,7 +3720,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
-  // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
   ragSource: loadRagSource(),
   projectAttachmentTarget: loadProjectAttachmentTarget(),
@@ -4303,7 +3805,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedGpuIds: null,
   loadedGpuIndexKind: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
-  // Off by default: On Device lists what is on disk, not the whole repo.
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   showMemoryBar: loadBool(CHAT_SHOW_MEMORY_BAR_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
@@ -4346,11 +3847,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           fromServer,
           persisted: settingsArePersisted,
         } = await loadChatSettingsWithLegacyImport();
-        // Assigned by the confirming read below, so the failure path can prefer
-        // it over the older hydration response.
         let confirmed: PersistedChatSettings | undefined;
-        // What to hydrate when nothing was migrated. The confirming read is the newer server truth, but a
-        // legacy merge that failed to save exists only here, and re-reading the server would discard it.
+        // A failed-to-save legacy merge exists only here; re-reading the server would discard it.
         const unmigrated = (
           snapshot: PersistedChatSettings,
         ): QwenDefaultsMigration => ({
@@ -4364,8 +3862,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           get(),
           hydrationVersions.scalarSettings.reasoningEnabled,
         );
-        // A model loaded during the settings GET replaced the one whose global fallback was saved. Only the
-        // model resident at startup can own a global-only legacy snapshot.
+        // Only the model resident at startup can own a global-only legacy snapshot.
         const globalBelongsToActiveCheckpoint =
           !sameCheckpointIdentity(modelLoadedBeforeHydration, checkpoint) &&
           modelLeftBeforeHydration === null &&
@@ -4382,21 +3879,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           globalBelongsToActiveCheckpoint,
           globalBelongsToActiveCheckpoint && !remembersPerModel,
         );
-        // Neither switch path can schedule the new model's retry from here:
-        // both gate on settingsHydrated, still false.
+        // Switch paths cannot schedule a retry here: settingsHydrated is still false.
         let checkpointMovedDuringConfirm = false;
         if (fromServer && migration.patch) {
           try {
-            // Re-read immediately before the write, so the patch derives from this confirmation rather than the
-            // earlier hydration response and a newer edit from another tab is left untouched.
             const confirmedRaw = await getChatSettings();
             confirmed = sanitizeChatSettings(confirmedRaw);
             const confirmedState = get();
-            // A model switch during the confirming GET invalidates the checkpoint and mode this migration would
-            // persist; the new model schedules its own retry. The preset can move too: a slider touched now sets
-            // the local source to "modified" but queues its write behind the debounce, so the server still reads
-            // "builtin-default", and migrating on that stale read would rewrite a preset the user already
-            // modified.
+            // A model switch or a debounced preset edit during the GET invalidates this migration.
             const presetSourceUnchanged =
               activePresetSourceMutationVersion ===
                 hydrationVersions.presets.activePresetSource &&
@@ -4424,8 +3914,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
                       ),
                   )
                 : unmigrated(confirmed);
-            // migrateLegacyQwenDefaults returns its own input when nothing migrates, so a read finding no
-            // candidate would otherwise replace an unsaved legacy merge with server-only settings.
+            // migrateLegacyQwenDefaults returns its input when nothing migrates; keep the unsaved merge.
             if (
               migration.patch === null ||
               qwenMigrationHasUnfenceableField(confirmedRaw, confirmed)
@@ -4452,10 +3941,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               };
             }
           } catch {
-            // Best effort, but that cannot mean hydrating values the server never accepted: the sheet and every
-            // request would show migrated sampling while storage still held the old row, on each start. Fall back
-            // to what was actually read, preferring the confirming snapshot when it landed, since the first read
-            // may already be stale.
+            // Never hydrate values the server did not accept; fall back to what was actually read.
             migration = unmigrated(confirmed ?? settings);
           }
         }
@@ -4484,28 +3970,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (applied) {
           cacheHydratedSettings(hydratedSettings, hydrationVersions);
           mirroredSettingsHydrated = true;
-          // Only an authoritative read says a mirrored field is unset on the server. A GET that fell back to
-          // legacy storage knows nothing about it, and backfilling then pushes this browser's stale values over
-          // whatever another browser wrote.
+          // Only an authoritative read can say a mirrored field is unset; else backfill clobbers.
           if (fromServer) backfillMirroredSettings(hydratedSettings);
           // After the backfill, so a startup edit wins over the stored value.
           flushPreHydrationSettings();
-          // Hydrated now, so the model switched to can be repaired.
           if (checkpointMovedDuringConfirm) {
             scheduleLegacyQwenDefaultsRetry(null);
           }
-          // The previous session's tab-close writes, for the rows that did not exist yet when it sent them. A
-          // replay of one that did land is refused by its own seq, so this cannot revert anything newer.
           replayUnconfirmedThreadSettings();
         }
       } catch {
-        // Hydrate failed: treat as hydrated-with-defaults so later setParams calls reach
-        // saveSettingsPatch, which toasts on real network failure.
+        // Treat as hydrated so later setParams calls reach saveSettingsPatch, which toasts.
         warnSettingsPersistenceFailure();
         mirroredSettingsHydrated = true;
         flushPreHydrationSettings();
-        // Independent of this endpoint: the tab-close snapshots are rows' own settings, and leaving
-        // them unsent because /api/chat/settings blipped strands the last session's edit.
+        // Independent of this endpoint: replay the last session's row writes anyway.
         replayUnconfirmedThreadSettings();
         set({ settingsHydrated: true });
       } finally {
@@ -4549,19 +4028,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params, options) => {
     set((state) => {
-      // Mirror setCheckpoint: the local load path can move params.checkpoint via setParams()
-      // first, leaving stale per-turn counters under the new checkpoint.
+      // The local load path can move params.checkpoint via setParams() before setCheckpoint.
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       const fromModelDefaults = options?.fromModelDefaults === true;
-      // Remember what the outgoing model was running with before replacing it.
       const outgoing = checkpointChanged
         ? rememberOutgoingModel(state, state.params)
         : null;
-      // An interactive local load arrives with the destination checkpoint and recommended params, reaching
-      // setCheckpoint only later, so replay here or the switch never restores the model's own settings.
+      // An interactive load reaches setCheckpoint later, so replay the model's settings here.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
       const replayed = checkpointChanged || fromModelDefaults;
-      // A recommendation carries no mode, and the live one may belong to the thread.
       const incomingParams = fromModelDefaults
         ? { ...params, minPMode: withoutActiveThreadParams(state, params).minPMode }
         : params;
@@ -4573,13 +4048,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         replayed,
         options?.maxTokensCap,
       );
-      // A chat outranks both the model's memory and its defaults, so its pinned sampling goes back
-      // on top of the replay. Live store only; persistence is decided from nextParams.
+      // The chat's pinned sampling goes on top of the replay; live store only.
       const effective = replayed
         ? restoreThreadScopedParams(nextParams)
         : nextParams;
-      // A user edit fences the keys it moved against a hydration response in flight; only the HTTP
-      // write is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(
         nextParams,
         state.params,
@@ -4595,15 +4067,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         );
       const persistingGlobally =
         options?.persist !== false && state.settingsHydrated;
-      // A sampling key moved with a chat open belongs to that chat, so it reaches neither the defaults nor
-      // the model's memory. NOT gated on hydration, unlike the global write: the composer is live while the
-      // initial /api/chat/settings request is out, and an uncaptured edit leaked.
+      // Chat-owned sampling edits reach neither defaults nor model memory, even pre-hydration.
       const sharedParams =
         options?.persist !== false
           ? withoutCapturedThreadEdits(changedParams, fromModelDefaults)
           : changedParams;
-      // An edit belongs to the model the params now describe, so a call moving checkpoint and
-      // sliders at once files them under the destination.
       const paramsByModel = getParamsByModelAfterEdit(
         state,
         outgoing,
@@ -4612,15 +4080,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         options?.persist !== false && !fromModelDefaults,
       );
       if (persistingGlobally) {
-        // A switch replays the destination's entry over the params, so writing it back says nothing
-        // new and, merged per key, would overwrite another tab's copy.
         persistParamEdit(
           sharedParams,
           checkpointChanged ? null : paramsByModel,
           nextParams.checkpoint,
         );
-        // Level with what was just written, or a chat opened later this session falls back to the
-        // sampling from before this model loaded.
         noteThreadScopedDefaults(sharedParams);
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
@@ -4639,8 +4103,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           : {}),
       };
     });
-    // Startup can hydrate before the server's active model is adopted. Once status applies its defaults
-    // the checkpoint and reasoning mode are known, so the deferred active-row migration can run.
     if (options?.fromModelDefaults === true) {
       const retryState = get();
       const ownsPersistedGlobal =
@@ -4674,8 +4136,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { activePresetSource };
     });
     if (returnedToBuiltInDefault) {
-      // The sheet updates provenance before applying the parameter edit. Defer a microtask so a final
-      // slider move restoring built-in Default has landed before the migration inspects and flushes it.
+      // Defer a microtask so the final slider edit lands before the migration inspects it.
       scheduleLegacyQwenDefaultsRetry(
         useChatRuntimeStore.getState().params.checkpoint,
       );
@@ -4695,8 +4156,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (options?.owner) {
           nextOwner[threadId] = [...owners, { owner: options.owner, local }];
         }
-        // Any local owner keeps the key counted by the model-swap gate, so an external run on a
-        // shared key must not clear a sibling's flag.
+        // Any local owner keeps the key counted, so an external run must not clear it.
         if (local) {
           nextLocal[threadId] = true;
         } else if (!owners.some((o) => o.local)) {
@@ -4706,9 +4166,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const remaining = options?.owner
           ? owners.filter((o) => o.owner !== options.owner)
           : [];
-        // An owner missing from the list was already cleared, or the key belongs to siblings only.
         if (options?.owner && remaining.length === owners.length) return state;
-        // An ownerless clear predates per-run tracking, so it must not speak for runs that own the key.
+        // An ownerless clear must not speak for runs that own the key.
         if (!options?.owner && owners.length > 0) return state;
         if (remaining.length > 0) {
           nextOwner[threadId] = remaining;
@@ -4733,10 +4192,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       const key = "__default";
       if (!threadId || threadId === key) return state;
-      // Two first turns can share "__default" with nothing linking a run to the thread being persisted, so
-      // moving the arrays wholesale handed over a sibling's stop handle.
+      // Two first turns can share "__default"; moving wholesale could hand over a sibling's handle.
       if ((state.runOwnerByThreadId[key]?.length ?? 0) > 1) return state;
-      // Only the transient run maps move; anything filed under the real id is better identified.
       const moved: Partial<ChatRuntimeStore> = {};
       const move = <T,>(
         map: Record<string, T>,
@@ -4787,8 +4244,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next[threadId] = [...(state.serverCancelByThreadId[threadId] ?? []), cancel];
       return { serverCancelByThreadId: next };
     }),
-  // `cancel` narrows removal to the run that registered it: unresolved ids share "__default",
-  // so a blind delete would drop a live sibling.
+  // Unresolved ids share "__default", so remove only this run's cancel.
   clearThreadServerCancel: (threadId, cancel) =>
     set((state) => {
       const current = state.serverCancelByThreadId[threadId];
@@ -4815,26 +4271,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setCheckpoint: (modelId, ggufVariant, options) => {
     let scheduleQwenMigration = false;
     set((state) => {
-      // Persist external selections so they survive a refresh. Local ids are re-derived on mount, and a
-      // stale persisted one would race the freshly-loaded model.
+      // Only external selections persist; a stale local id would race the freshly loaded model.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
-      // Only disarm research for a connection that cannot drive it: the id prefix alone switched
-      // it off for capable providers, and saveBool would write that off for every browser.
+      // Only disarm research when the connection cannot drive it.
       const clampsDeepResearch =
         isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId);
       if (clampsDeepResearch) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       }
-      // Clear stale per-turn usage on model change, or the relaxed external render gate shows it.
       const checkpointChanged = state.params.checkpoint !== modelId;
-      // An interactive pick during hydration has no adoption signal either, so
-      // the previous session's global does not become this model's.
       if (checkpointChanged && !state.settingsHydrated) {
         unownedCheckpointBeforeHydration = modelId;
       }
       scheduleQwenMigration = checkpointChanged && state.settingsHydrated;
-      // Remember what the outgoing model was running with. Not for a restore: the model it steps off is the
-      // one a background load put there, and its load defaults are not settings the user chose.
       const outgoing =
         checkpointChanged && options?.persist !== false
           ? rememberOutgoingModel(state, state.params)
@@ -4847,8 +4296,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged,
         options?.maxTokensCap,
       );
-      // Clamp maxTokens to the new model's cap when switching into an external model, so a value
-      // carried over from a local session cannot exceed the slider's max.
       let nextMaxTokens = baseParams.maxTokens;
       if (checkpointChanged && isExternalModelId(modelId)) {
         const parsed = parseExternalModelId(modelId);
@@ -4857,8 +4304,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               .getState()
               .providers.find((p) => p.id === parsed.providerId)
           : null;
-        // Only when the connection is known: a checkpoint restored before the provider store hydrates
-        // reads the 32,768 fallback and lowers a value nothing puts back.
+        // Only when the provider is known: the 32,768 fallback would lower a value permanently.
         if (provider) {
           const cap = getExternalMaxOutputTokens(
             provider.providerType,
@@ -4894,9 +4340,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: modelId,
         maxTokens: nextMaxTokens,
       };
-      // The chat outranks the model it switches to, so its pinned sampling and prompt go back over the
-      // replay; an external switch has no load to do it. Live store only: getReplayStatePatch still persists
-      // from the unrestored object, so the model's own values reach the installation defaults.
       const restoredParams = checkpointChanged
         ? restoreThreadScopedParams(nextParams)
         : nextParams;
@@ -4911,8 +4354,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
           : {}),
-        // Provenance and the spec-fallback reason both describe the model being replaced, so they go
-        // together; dropping one pairs a stale reason with the wrong recovery text.
+        // Provenance and the spec-fallback reason describe the replaced model; clear together.
         ...(checkpointChanged
           ? {
               contextUsage: null,
@@ -4923,21 +4365,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to a provider that cannot run Unsloth's tool loop disables Deep Research; a
-        // capable one keeps the user's choice.
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
     });
-    // An external pick is the whole story for that model: no load and no status follows it, so nothing
-    // else would ever schedule the migration and the replayed legacy row would keep being sent until a
-    // reload. Never with ownership, since selecting a model says nothing about whose global the
-    // installation's snapshot is.
+    // No load or status follows an external pick, so schedule the migration here.
     if (scheduleQwenMigration) {
       scheduleLegacyQwenDefaultsRetry(null);
     }
   },
-  // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished in the
-  // background never wrote the visible value, and a still-mounted runtime skips the history loader.
+  // Re-apply the incoming thread's usage: background runs never wrote the visible value.
   setActiveThreadId: (activeThreadId) =>
     set((state) => ({
       activeThreadId,
@@ -4949,10 +4385,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   applyThreadScopedSettings: (threadId, settings) =>
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
-      // The pending write belongs to the outgoing thread, so it goes out before the swap.
       flushThreadScopedSettingsWrite();
-      // Edits made while this chat's snapshot was in flight: keep them and store them on the chat,
-      // or the read would silently undo a click the user already saw.
+      // Edits made while this chat's snapshot was in flight are kept and stored on the chat.
       const heldFields = new Set<string>();
       let heldEffort: ReasoningEffort | undefined;
       if (threadId !== null && threadId === pendingPairingThreadId) {
@@ -4964,32 +4398,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         }
         heldThreadScopedEdits = [];
         pendingPairingThreadId = null;
-        // The window is over, so the next visit samples afresh rather than reusing this round's.
         pairingWindowDefaultsThreadId = null;
-        // Its snapshot is now the one in the store, so anything waiting on it can go.
         closeThreadScopedPairingGate(threadId);
       } else if (
-        // A drop to the defaults for a chat still open and still waiting on its read keeps holding:
-        // those edits are that chat's, and releasing them here is the leak this path prevents.
         threadId !== null ||
         pendingPairingThreadId === null ||
         pendingPairingThreadId !== state.activeThreadId
       ) {
         releaseHeldThreadScopedEdits();
       }
-      // Set from here rather than trusting the calls above: this updater's return value merges
-      // last, so a `return state` would put the old flag back.
+      // The updater's return merges last, so set the flag here rather than trusting earlier calls.
       const pending = pendingPairingThreadId !== null;
-      // Nothing was overridden while unpaired, so there is nothing to restore.
       if (threadScopedSettingsThreadId === null && threadId === null) {
         return state.threadScopedSettingsPending === pending
           ? state
           : { ...state, threadScopedSettingsPending: pending };
       }
       if (threadScopedSettingsThreadId === null) {
-        // A held edit is in the store but belongs to its chat, so capturing it here would promote it to the
-        // default every snapshot-less chat follows; take the pre-window value. Deleting the key leaves no
-        // fallback and leaks the edited value into the next chat.
+        // Capture the pre-window value: a held edit belongs to its chat, not the defaults.
         const captured = readThreadScopedSettings(state) as Record<
           string,
           unknown
@@ -4997,8 +4423,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const beforeWindow = (pairingWindowDefaults ??
           globalThreadScopedDefaults) as Record<string, unknown> | null;
         for (const field of heldFields) {
-          // The server answered for this field while the window was open and hydration had to skip it:
-          // that value is the installation's, the pre-window copy only this browser's cache.
           if (hydratedDefaultsByHeldField.has(field)) {
             captured[field] = hydratedDefaultsByHeldField.get(field);
           } else if (beforeWindow && field in beforeWindow) {
@@ -5008,9 +4432,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           }
           hydratedDefaultsByHeldField.delete(field);
         }
-        // Same reason as the snapshot: a pin applied before the first chat opened is in the live
-        // effort, and capturing it here would make one model's level the default every
-        // snapshot-less chat follows.
+        // A pin in the live effort must not become the default for snapshot-less chats.
         if (pinOwnsLiveReasoningEffort(state) && !heldFields.has("reasoningEffort")) {
           const onRecord = reasoningEffortOnRecord();
           if (onRecord === undefined) delete captured.reasoningEffort;
@@ -5020,8 +4442,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       threadScopedSettingsThreadId = threadId;
       explicitlyEditedThreadFields.clear();
-      // The constraint belongs to the chat it was applied in, and this chat's own provider effects
-      // will say so again if it still holds.
       constraintSuppressedThreadFields.clear();
       const stored = hasThreadScopedSettings(settings)
         ? (settings as ThreadScopedSettings)
@@ -5032,7 +4452,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const applied: Record<string, unknown> = {};
       const paramsPatch: Record<string, unknown> = {};
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
-        // The user set this one while the read was in flight, so it wins over what came back.
         if (heldFields.has(key)) {
           if (key === "reasoningEffort" && heldEffort !== undefined) {
             applied[key] = heldEffort;
@@ -5044,8 +4463,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           }
           continue;
         }
-        // Full access was accepted through a warning dialog, so a switch must not drop it. The chat
-        // is still pinned with the level underneath, or it would store no level at all.
+        // Full access was accepted via a dialog, so a switch must not drop it.
         if (key === "permissionMode" && state.permissionMode === "full") {
           const underneath =
             stored?.permissionMode ??
@@ -5054,8 +4472,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           if (underneath !== "full") applied[key] = underneath;
           continue;
         }
-        // setCheckpoint clears deep research for external models in the store only, so a stored true
-        // comes back and fails every send. openai_codex is the composer's own exception.
+        // setCheckpoint clears deep research only in the store; openai_codex is the exception.
         if (
           key === "deepResearchEnabled" &&
           (externalCheckpointRefusesDeepResearch(state.params.checkpoint) ||
@@ -5063,28 +4480,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ) {
           continue;
         }
-        // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
+        // A key the snapshot omits falls back to defaults, not the outgoing chat's value.
         const value = firstSetThreadScopedValue(
           stored?.[key],
           globalThreadScopedDefaults?.[key],
         );
         if (value === undefined) continue;
         applied[key] = value;
-        // The pin outranks the chat for as long as its model is selected, so the incoming level
-        // stays the chat's on record, recorded just above, but must not land in the store over
-        // the pin. Same shape as the "full" case: recorded, not applied.
+        // The pin outranks the chat: record the incoming level but do not apply it.
         if (key === "reasoningEffort" && pinOwnsLiveReasoningEffort(state)) {
-          // This chat's own level, which the pin is now sitting on top of, so leaving the model
-          // hands it back. Assigned rather than noted: it replaces the last chat's, and the pin
-          // may have been in the store since before this one opened, displacing nothing then.
-          // The value is one the enum sanitizer already passed.
           effortDisplacedByPin = value as ReasoningEffort;
           continue;
         }
         if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {
           continue;
         }
-        // The sampling ones are one object, gathered and applied together below.
         if (isThreadScopedParamKey(key)) {
           paramsPatch[key] = value;
         } else {
@@ -5094,8 +4504,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (hasKeys(paramsPatch)) {
         nextState.params = { ...state.params, ...paramsPatch };
       }
-      // Search and Thinking are exclusive on Kimi and the enforcing effect does not rerun on a
-      // thread switch, so the restore drops thinking as clicking the Search pill does.
+      // Kimi: the enforcing effect does not rerun on a thread switch, so drop thinking here.
       if (
         isKimiCheckpoint(state.params.checkpoint) &&
         (applied.toolsEnabled ?? state.toolsEnabled) === true &&
@@ -5104,8 +4513,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         applied.reasoningEnabled = false;
         if (state.reasoningEnabled !== false) target.reasoningEnabled = false;
       }
-      // Pin what the chat shows now, or changing the defaults later would rewrite its modes. A
-      // chat that already had a snapshot only needs a write if it carries a held edit.
       if (threadId !== null && (stored === null || heldFields.size > 0)) {
         scheduleThreadScopedSettingsWrite(
           threadId,
@@ -5140,7 +4547,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   setEditingMessageId: (id) => set({ editingMessageId: id }),
   clearCheckpoint: () => {
-    // Mirror setCheckpoint's persistence: dropping the checkpoint must also clear any stored external selection.
     saveLastExternalCheckpoint(null);
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     const restoredEffort = pinHoldsLiveEffort()
@@ -5148,7 +4554,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       : null;
     return set((state) => ({
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      // An unload leaves the model the same way a switch does, so record what it was running with.
       ...(() => {
         const outgoing = rememberOutgoingModel(state, state.params);
         return outgoing ? { paramsByModel: outgoing } : {};
@@ -5158,8 +4563,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
-      // Nothing is picked, so residency has nothing to describe. Unknown, not null: null reads as
-      // "was evicted".
+      // Unknown, not null: null reads as "was evicted".
       residentCheckpoint: undefined,
       activeModelIsLocal: false,
       activeLoadId: null,
@@ -5188,7 +4592,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       deepResearchEnabled: false,
       mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
-      // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatusByThreadId: {},
       toolLiveOutput: {},
@@ -5238,7 +4641,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedDisableVision: null,
       disableVision: false,
       loadedVisionDisabledByUser: null,
-      // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
       loadedCpuFallback: false,
@@ -5293,35 +4695,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // can only set the keys it names, and gating it dropped an edit made while the initial
       // /api/chat/settings request was out.
       saveSettingsPatch({ inferenceParamsByModel: { [modelId]: patch } });
-      // trackParamsByModel files nothing before hydration, so without this the response in flight
-      // rebuilds paramsByModel from the server and the edit is gone. Held as a patch: there is no
-      // entry to have built a row from yet.
+      // Hold pre-hydration edits, or the in-flight response rebuilds paramsByModel without them.
       if (!state.settingsHydrated) {
         modelParamEditsBeforeHydration.set(modelId, {
           ...modelParamEditsBeforeHydration.get(modelId),
           ...patch,
         });
       }
-      // Editing the live model must land on the live params, not just on the next switch back.
-      // Through the restore a switch uses, since systemPrompt is one of the chat's own keys: the
-      // open chat outranks the model it is running, and writing past that would both send the
-      // model's prompt for the rest of the chat and let the next snapshot store it as the chat's.
-      // Live params only, as there: the row above keeps the model's own value.
+      // Apply via the switch restore: the open chat's systemPrompt outranks the model's.
       const live = state.params.checkpoint === modelId;
       const liveParams = live
         ? restoreThreadScopedParams({ ...state.params, ...patch })
         : null;
-      // Nothing left to apply once the chat has taken its keys back.
       const liveChanged =
         liveParams !== null &&
         shouldAdvanceQueuedSettingsEpoch(state.params, liveParams);
-      // And those keys are fenced the way a slider edit fences its own, or a response in flight
-      // puts the global set back over them.
       if (liveChanged) getChangedInferenceParams(liveParams, state.params);
       return {
         paramsByModel: trackParamsByModel(state, next, modelId) ?? next,
-        // The epoch as setParams advances it: a queued prompt or a paste still reading its file
-        // captured the old prompt and cap, and this is what tells it they are no longer current.
+        // Bump the epoch so queued prompts and pending pastes see the old prompt is stale.
         ...(liveChanged
           ? {
               params: liveParams,
@@ -5331,17 +4723,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setReasoningEffort: (reasoningEffort) => {
-    // Choosing another level removes the current model's override.
     const checkpoint = useChatRuntimeStore.getState().params.checkpoint;
     const { effortByModel, setModelReasoningEffort } =
       useModelReasoningEffortStore.getState();
     const pinned = checkpoint ? effortByModel[checkpoint] : undefined;
-    // Re-picking the pin's own level states nothing new, so it keeps the pin.
     if (checkpoint && pinned !== undefined && pinned !== reasoningEffort) {
       setModelReasoningEffort(checkpoint, null);
     }
     set((state) => {
-      // A retained pin must keep the preference it displaced.
       if (pinned !== reasoningEffort) effortDisplacedByPin = null;
       setScalarSettingVersion(
         "reasoningEffort",
@@ -5410,7 +4799,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setDeepResearchEnabled: (deepResearchEnabled) =>
     set((state) => {
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
-      // The level this chat carries, or the global one when it carries none.
       const permissionMode =
         threadScopedOverride("permissionMode") ?? loadPermissionMode();
       if (deepResearchEnabled) {
@@ -5505,7 +4893,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setConfirmToolCalls: (confirmToolCalls) =>
     set((state) => {
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
-      // The legacy toggle is a view over the level: on -> "ask", off -> "off". "full" is untouched.
       if (state.permissionMode === "full") {
         return {
           confirmToolCalls,
@@ -5527,11 +4914,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setPermissionMode: (permissionMode) =>
     set((state) => {
-      // "full" is session-only (see init); ask/auto/off persist and keep the legacy confirm toggle in sync.
       savePermissionMode(permissionMode);
       if (permissionMode === "full") {
-        // Full access sends confirm_tool_calls=false; keep the store flag in sync so metadata does
-        // not report confirmations as enabled.
+        // Full access sends confirm_tool_calls=false; keep the store flag in sync.
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
           permissionMode,
@@ -5554,11 +4939,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setBypassPermissions: (bypassPermissions) =>
-    // Deliberately not persisted (see init): a reload must not keep the sandbox/confirmation
-    // bypass unaccepted. Turning it off returns to the last persisted level.
+    // Not persisted: a reload must not keep the bypass unaccepted.
     set((state) => {
       if (bypassPermissions) {
-        // Full access never prompts; mirror confirm_tool_calls=false so metadata agrees.
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
           bypassPermissions,
@@ -5569,7 +4952,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
-      // Back to the level this chat carries, or the global one when it carries none.
       const permissionMode =
         threadScopedOverride("permissionMode") ?? loadPermissionMode();
       return {
@@ -5653,14 +5035,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   adoptPendingProjectAttachmentTarget: (threadId, claim) =>
     set((state) => {
-      // The entry under the shared key need not be the caller's: an abandoned composer has had its
-      // own dropped and the next one's is sitting there.
       if (claim !== undefined && claim !== pendingAttachmentTargetClaim) {
         return state;
       }
       const pending =
         state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
-      // A chat that already made its own choice keeps it: the pending entry belongs to a chat that does not exist yet.
       if (
         pending === undefined ||
         threadId in state.projectAttachmentTargetByThread
@@ -5690,8 +5069,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         rememberParamsPerModel,
         state.rememberParamsPerModel,
       );
-      // Turning it on adopts the settings on screen for the active model. Inside a chat those are
-      // the chat's, so the outgoing snapshot's filter takes those keys out first.
       const snapshot = pickRememberedParams(
         withoutActiveThreadParams(state, state.params),
       );
@@ -5706,8 +5083,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ),
         state.params.checkpoint,
       );
-      // Turning it on is an explicit statement about the model on screen, so the whole snapshot is
-      // what it means, not a key-by-key patch.
       if (paramsByModel && state.settingsHydrated && state.params.checkpoint) {
         saveSettingsPatch({
           inferenceParamsByModel: {
@@ -5715,11 +5090,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           },
         });
       }
-      // Turning it off makes the settings on screen the one shared set; the global set can still
-      // be the last model's, so write it or the next launch restores that.
+      // The global set may still be the last model's, so write it on turning this off.
       if (!rememberParamsPerModel && state.settingsHydrated) {
         saveSettingsPatch({ inferenceParams: snapshot });
-        // Third write of the installation-wide sampling; level the copy as the others do.
         noteThreadScopedDefaults(snapshot);
       }
       return {
@@ -5786,7 +5159,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const entries = state.toolStatusByThreadId[threadId] ?? [];
       const mine = entries.find((e) => e.owner === owner);
       if (!status) {
-        // Drop only this run's entry: a sibling behind the same key may still be running a tool.
+        // Drop only this run's entry: a sibling under the same key may still run a tool.
         if (mine === undefined) return state;
         const rest = entries.filter((e) => e !== mine);
         if (rest.length > 0) {
@@ -5795,7 +5168,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           delete next[threadId];
         }
       } else {
-        // Same text from the same run means the same call, so keep startedAt.
         if (mine?.status === status) return state;
         const entry = { status, startedAt: Date.now(), owner };
         next[threadId] = mine
@@ -5929,8 +5301,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
-  // A standing preference, persisted only on a successful load (see use-chat-model-runtime),
-  // so an unapplied pick does not stick to the next session.
+  // Persisted only on a successful load, so an unapplied pick does not stick.
   setGpuMemoryMode: (gpuMemoryMode) => set({ gpuMemoryMode }),
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
@@ -5965,8 +5336,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference }),
   clearPendingImageEditReference: () =>
     set({ pendingImageEditReference: null }),
-  // Write through to the visible thread's own entry so a value restored by the history loader
-  // survives a switch: that loader runs once per mount and setActiveThreadId reads the map.
+  // Write through to the thread's entry: the history loader runs once per mount.
   setContextUsage: (contextUsage) =>
     set((state) => {
       if (!state.activeThreadId) return { contextUsage };
@@ -5987,7 +5357,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })),
 }));
 
-// Mirror token edits made through the shared store (e.g. Unsloth's field).
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);

@@ -664,10 +664,8 @@ fn repair_group_from_filename(name: &str) -> Option<String> {
     let rest = stem.strip_prefix("repair-")?;
     let (before_segment, _) = rest.rsplit_once("-s")?;
 
-    // New repair filenames include both child type and attempt id:
-    // repair-<repair_group_id>-<child_type>-<attempt_id>-sNN.log.
-    // Repair/attempt ids contain hyphens, so split on the deterministic
-    // child/attempt prefix pair emitted by SegmentOwner::Repair.
+    // Format: repair-<group>-<child_type>-<attempt_id>-sNN.log. Ids contain hyphens, so split on
+    // the child/attempt prefix pair emitted by SegmentOwner::Repair.
     for child_type in [
         "update",
         "install",
@@ -682,7 +680,7 @@ fn repair_group_from_filename(name: &str) -> Option<String> {
         }
     }
 
-    // Backward-compatible fallback for the older repair-<group>-<child>-sNN form.
+    // Fallback for the older repair-<group>-<child>-sNN form.
     let (group, _) = before_segment.rsplit_once('-')?;
     Some(group.to_string())
 }

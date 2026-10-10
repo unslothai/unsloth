@@ -69,7 +69,6 @@ const CONFIRM_COPY: Record<
 export function KeylessApiAccessSection({
   onSettingsChange,
 }: {
-  /** fires on load and after every save, so the usage examples can follow */
   onSettingsChange?: (settings: {
     scope: KeylessApiAccessScope;
     tools: boolean;

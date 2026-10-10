@@ -6,7 +6,6 @@ import type * as React from "react";
 import { cn } from "@/lib/utils";
 
 const BASE_CLASSES =
-  // White fill with a subtle border, fully-rounded pill for single-row controls.
   "bg-background border-border dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 h-9 rounded-full border px-3.5 py-1 text-base transition-colors file:h-7 file:text-sm file:font-medium aria-invalid:ring-[3px] md:text-sm file:text-foreground placeholder:text-muted-foreground w-full min-w-0 outline-none file:inline-flex file:border-0 file:bg-transparent disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50";
 
 function stepNumberInput(input: HTMLInputElement, direction: 1 | -1): void {
@@ -16,14 +15,11 @@ function stepNumberInput(input: HTMLInputElement, direction: 1 | -1): void {
   const step = input.step === "" ? 1 : Number(input.step) || 1;
   const min = input.min === "" ? null : Number(input.min);
   const max = input.max === "" ? null : Number(input.max);
-  // An empty field steps from its placeholder (the effective default).
   const current =
     input.value === "" ? Number(input.placeholder) : Number(input.value);
   let next: number;
   if (Number.isFinite(current)) {
-    // Snap to the step grid (anchored at min, like the native spinner) rather
-    // than adding step to an off-grid typed value, which would leave a
-    // step-invalid result. Mirrors HTMLInputElement.stepUp/stepDown.
+    // Snap to the step grid anchored at min, as HTMLInputElement.stepUp/stepDown do.
     const base = min ?? 0;
     const pos = (current - base) / step;
     const rounded = Math.round(pos);
@@ -44,11 +40,9 @@ function stepNumberInput(input: HTMLInputElement, direction: 1 | -1): void {
   if (max !== null) {
     next = Math.min(max, next);
   }
-  // Trim float noise from fractional steps.
   const decimals = (String(step).split(".")[1] ?? "").length;
   const value = String(Number(next.toFixed(decimals)));
-  // Write through the native setter and emit "input" so the React onChange
-  // of controlled callers fires.
+  // Native setter plus an "input" event so controlled callers' onChange fires.
   const setter = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
     "value",
@@ -75,7 +69,6 @@ function StepperButton({ direction }: { direction: 1 | -1 }) {
       type="button"
       tabIndex={-1}
       onMouseDown={(event) => {
-        // Keep focus on the field itself.
         event.preventDefault();
       }}
       onClick={(event) => {
@@ -106,17 +99,14 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   if (type !== "number") {
     return field;
   }
-  // Number fields swap the native spinner (hidden globally in index.css) for a shared
-  // grey stepper, shown on hover or focus. Disabled stays hidden: :has() beats :hover.
+  // Number fields swap the native spinner (hidden in index.css) for this stepper; :has() keeps
+  // it hidden when disabled.
   return (
     <span
       data-slot="number-input"
       className={cn(
-        // The wrapper is now the flex/grid item, so mirror the field's width:
-        // default to the full width the bare input used, and let an explicit
-        // w-*/max-w-* from the caller win so the stepper stays on the field edge.
-        // Also carry React Flow interaction classes (nodrag/nopan/nowheel) so
-        // the stepper buttons, which live in the wrapper, don't drag the node.
+        // The wrapper is now the flex item, so mirror the field's width; carry React Flow's
+        // nodrag/nopan/nowheel so the stepper does not drag the node.
         "group/number relative inline-flex items-center w-full min-w-0",
         (className ?? "")
           .split(/\s+/)

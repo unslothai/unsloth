@@ -39,8 +39,6 @@ function apiStatus(over: Partial<ApiLanAccessStatus> = {}): ApiLanAccessStatus {
   };
 }
 
-// ── normalizeLanAccessStatus ──
-
 test("normalize maps every snake_case field onto its camelCase name", () => {
   const s = normalizeLanAccessStatus(
     apiStatus({
@@ -238,8 +236,6 @@ test("servesWebUi is only false for an explicit false", () => {
   );
 });
 
-// ── lanAccessAutoStartReadOnly ──
-
 test("auto-start is read-only with no status, or under Colab", () => {
   assert.equal(lanAccessAutoStartReadOnly(null), true);
   assert.equal(
@@ -249,7 +245,6 @@ test("auto-start is read-only with no status, or under Colab", () => {
     ),
     true,
   );
-  // a launch-managed bind still lets the preference be set for next time
   assert.equal(
     lanAccessAutoStartReadOnly(
       // biome-ignore lint/style/useNamingConvention: API schema
@@ -298,8 +293,7 @@ test("custom LAN ports accept only whole ports in range", () => {
   }
 });
 
-// ── lanAccessStopDisconnectsOrigin ──
-// a false negative here leaves the page polling an origin its own stop just killed
+// lanAccessStopDisconnectsOrigin: a false negative leaves the page polling a killed origin.
 
 test("stop-disconnects matches any of the bound addresses", () => {
   assert.equal(lanAccessStopDisconnectsOrigin([LAN, SECOND], SECOND), true);
@@ -352,8 +346,6 @@ test("stop-disconnects accepts a bracketed IPv6 LAN origin", () => {
   assert.equal(lanAccessStopDisconnectsOrigin([url], url), true);
 });
 
-// ── lanAccessBlockMessage ──
-
 function blocked(
   reason: string,
   over: Partial<LanAccessStatus> = {},
@@ -389,7 +381,6 @@ test("every block reason the backend can emit has a message", () => {
 });
 
 test("a launch bound to one host names that host, not the wildcard", () => {
-  // any host but the three loopback aliases is launch-managed, hostnames included
   for (const host of ["10.1.1.144", "fd00::5", "studio.local"]) {
     const msg = lanAccessBlockMessage(
       blocked("launch_managed", { bindHost: host }),
@@ -426,7 +417,7 @@ test("an empty wildcard bind is distinct from a missing bind field", () => {
 });
 
 test("a backend that omits the bind host still explains the block", () => {
-  // fixed text with nothing to interpolate, so the sentence itself is the contract
+  // Fixed text with nothing to interpolate, so the sentence itself is the contract.
   assert.equal(
     lanAccessBlockMessage(blocked("launch_managed"), false),
     "This launch already puts Unsloth on the network.",
@@ -447,8 +438,6 @@ test("an unknown or absent reason yields no message", () => {
   assert.equal(lanAccessBlockMessage(blocked("something_new"), false), null);
   assert.equal(lanAccessBlockMessage(blocked(""), true), null);
 });
-
-// ── lanAccessErrorMessage ──
 
 test("every listener failure the backend can raise has a message", () => {
   // mirrors the RuntimeError reasons in lan_access.start_lan_listener

@@ -18,9 +18,7 @@ import { EXPORT_METHODS, type ExportMethod } from "../constants";
 interface MethodPickerProps {
   value: ExportMethod | null;
   onChange: (v: ExportMethod) => void;
-  /** Methods that should be shown but disabled (greyed out, not clickable). */
   disabledMethods?: ExportMethod[];
-  /** Optional reason shown in a tooltip on disabled methods. */
   disabledReason?: string;
 }
 

@@ -95,7 +95,6 @@ function looksLikeModelPath(identifier: string): boolean {
   return identifier.split("/").length - 1 >= 2 || identifier.includes("\\");
 }
 
-/** `.../models--org--name/snapshots/<sha>` -> `org/name`, else null. */
 function hfCacheRepoId(path: string): string | null {
   const parts = path.replace(BACKSLASHES_RE, "/").split("/");
   for (let index = 0; index < parts.length; index += 1) {
@@ -107,21 +106,14 @@ function hfCacheRepoId(path: string): string | null {
   return null;
 }
 
-/**
-* Whether *identifier* is an HF cache snapshot dir, so its public id names the repo rather
-* than the revision inside it. Mirrors ``hf_cache_repo_id`` in core/inference/model_ids.py.
-*/
+/** Mirrors `hf_cache_repo_id` in core/inference/model_ids.py. */
 export function isHfCacheSnapshotPath(
   identifier: string | null | undefined,
 ): boolean {
   return identifier != null && hfCacheRepoId(identifier) !== null;
 }
 
-/**
-* The clean id the backend reports for a model loaded by path. Mirrors ``public_model_id`` in
-* core/inference/model_ids.py, which is what ``/api/inference/status`` puts in ``active_model``:
-* an HF cache snapshot becomes its repo id, any other local GGUF its filename stem.
-*/
+/** Mirrors `public_model_id` in core/inference/model_ids.py (what /status reports). */
 export function publicModelId(identifier: string): string {
   const trimmed = identifier.trim();
   if (!(trimmed && looksLikeModelPath(trimmed))) {
@@ -138,8 +130,7 @@ export function publicModelId(identifier: string): string {
   return name.replace(GGUF_SUFFIX_RE, "") || trimmed;
 }
 
-/** `org/name`, including Hub repos named `org/name.gguf`. A file reference carries a
-* repo id plus a filename, so two or more slashes. */
+/** A file reference carries a repo id plus a filename, so two or more slashes. */
 function isHubRepoId(identifier: string): boolean {
   if (identifier.split("/").length - 1 !== 1) {
     return false;
@@ -147,12 +138,7 @@ function isHubRepoId(identifier: string): boolean {
   return !looksLikeModelPath(identifier.replace(GGUF_SUFFIX_RE, ""));
 }
 
-/**
-* The short label for a model id with no catalog entry to take a name from. Mirrors
-* ``display_model_name`` in core/inference/model_ids.py: the public id's trailing
-* segment, so a repo id and the HF cache snapshot it loads from read alike. Splitting
-* the raw id leaks the host layout on Windows, where ``C:\\Users\\...`` holds no ``/``.
-*/
+/** Mirrors `display_model_name` in core/inference/model_ids.py; raw splits leak Windows paths. */
 export function modelDisplayName(identifier: string): string {
   const trimmed = identifier.trim();
   if (isHubRepoId(trimmed)) {
@@ -162,14 +148,7 @@ export function modelDisplayName(identifier: string): string {
   return clean.slice(clean.lastIndexOf("/") + 1) || clean;
 }
 
-/**
-* Whether the model the backend reports as loaded is one of *candidates*.
-*
-* A GGUF from an inactive HF cache loads by path, so a caller holding only the public id would
-* read an exact comparison as "not loaded": candidates are compared literally first, then by
-* public id. That second pass only accepts an identity naming one model, since an HF snapshot
-* collapses onto its unique repo id while other paths collapse onto a shareable stem.
-*/
+/** Compares literally, then by public id, but only when that id names a single model. */
 export function residentModelIdMatches(
   activeModelId: string | null | undefined,
   ...candidates: (string | null | undefined)[]
@@ -178,7 +157,6 @@ export function residentModelIdMatches(
     return true;
   }
   const active = activeModelId?.trim();
-  // A path-shaped active id is the raw identifier, which the literal pass covered.
   if (!active || looksLikeModelPath(active)) {
     return false;
   }
@@ -196,8 +174,7 @@ export function residentModelIdMatches(
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
-/** A `.gguf` link an earlier load materialized. The resolver refuses to index one, so mirroring
- *  settings onto it would advertise a load that cannot happen; a reference it does index. */
+/** The resolver refuses to index a materialized link, so settings must not mirror onto it. */
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
   if (!modelId) {
     return false;
@@ -208,7 +185,6 @@ export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
     .some((segment) => OLLAMA_LINK_SEGMENTS.has(segment));
 }
 
-/** Either spelling of an Ollama model: the inventory's reference, or a materialized link. */
 export function isOllamaModelId(modelId: string | null | undefined): boolean {
   return (
     Boolean(modelId?.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) ||
@@ -216,19 +192,14 @@ export function isOllamaModelId(modelId: string | null | undefined): boolean {
   );
 }
 
-// A dropped or file-picked GGUF is the API's second unreachable identity: /status withholds the
-// host path for a lease-backed load, so the browser keys settings by the bare file name, which
-// _build_index (path and stem only) never uses. Anything loadable carries a separator.
+// Bare file names come from lease-backed loads whose host path /status withholds.
 const NATIVE_FILE_LABEL_RE = /^[^/\\]+\.gguf$/i;
 
 export function isNativeFileLabel(modelId: string | null | undefined): boolean {
   return modelId != null && NATIVE_FILE_LABEL_RE.test(modelId);
 }
 
-// A scanned standalone .gguf, keyed by its on-disk path with no variant: it has no quant to
-// choose between, and adopting the filename label would key one file's config two ways. The
-// suffix alone does not say that -- repo ids ending in .gguf are real on the Hub and hold every
-// quant -- so the id has to name something on this machine too, which a repo id never does.
+// A scanned standalone .gguf has no variant. Repo ids may end in .gguf too, so require a local path.
 export function isStandaloneGgufPath(
   modelId: string | null | undefined,
 ): boolean {
@@ -237,7 +208,6 @@ export function isStandaloneGgufPath(
   }
   return (
     PUBLIC_ID_PATH_PREFIX_RE.test(modelId) ||
-    // A drive letter, or more separators than the single one a repo id carries.
     (modelId.length >= 2 && modelId[1] === ":") ||
     modelId.includes("\\") ||
     modelId.split("/").length - 1 >= 2 ||

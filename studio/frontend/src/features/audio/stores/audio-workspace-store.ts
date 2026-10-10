@@ -7,8 +7,7 @@ import type { AudioWorkflowId } from "../workflows";
 
 export const AUDIO_WORKSPACE_STORAGE_KEY = "unsloth_audio_workspace";
 
-/** Only the page commits `workflow`; the sidebar and deep links put a request in
- *  `requestedWorkflow`, which the page takes once it is free to switch, like an in-page tab click. */
+/** Only the page commits `workflow`; others set `requestedWorkflow` for it to take. */
 interface AudioWorkspaceState {
   workflow: AudioWorkflowId;
   workflowChosen: boolean;

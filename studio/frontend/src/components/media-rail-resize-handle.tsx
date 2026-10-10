@@ -19,14 +19,7 @@ const RAIL_BOX_WIDTH: Record<MediaRailKind, string> = {
   audio: "min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100% - 13rem))",
 };
 
-/**
- * Drag handle on the right edge of a media page's settings rail. Paints `--media-rail-width` on
- * the page root so the header and rail move together.
- *
- * `placement="rail"` sits inside the (relative) rail. `placement="page"` sits in the (relative)
- * page root and spans its full height, for pages whose divider also runs through the header.
- * `className` hides it where the panes stack.
- */
+/** Paints `--media-rail-width` on the page root so the header and rail move together. */
 export function MediaRailResizeHandle({
   kind,
   placement = "rail",
@@ -90,7 +83,6 @@ export function MediaRailResizeHandle({
     />
   );
   if (placement === "page") {
-    // A rail-wide box under the top inset, so the handle on its right edge covers the whole divider.
     return (
       <span
         ref={anchorRef}

@@ -38,8 +38,6 @@ export { TEXT_ATTACHMENT_ACCEPT };
 export type AttachmentText = {
   label: AttachmentTextLabel | null;
   text: string;
-  // True when the file was only read up to the preview cap, so the dialog can say so even if
-  // the extracted text ends up short.
   truncated: boolean;
 };
 
@@ -57,11 +55,8 @@ const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 const MAX_ATTACHMENT_WRAPPER_LENGTH = 4096;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-// mammoth picks the parts it parses out of the relationships, not the filenames, so a target
-// may be called anything and still be parsed as XML, while an .xml part nothing points at
-// is never opened. The bound therefore follows docx-reader.js: the two package parts it
-// always reads plus the five resolved out of those relationships, each with mammoth's own
-// "word/<name>.xml" fallback. Image targets stay lazy and are never read by extractRawText.
+// mammoth picks parts from the relationships, not filenames, so the bound follows docx-reader.js:
+// two package parts plus the five resolved targets, each with its "word/<name>.xml" fallback.
 const DOCX_CONTENT_TYPES_PART = "[Content_Types].xml";
 const DOCX_PACKAGE_RELATIONSHIPS = "_rels/.rels";
 const DOCX_RELATIONSHIP_NAMESPACE =
@@ -74,17 +69,13 @@ const DOCX_RELATED_PART_NAMES = [
   "numbering",
   "styles",
 ];
-// readXmlFileWithBody opens the relationships of every part it reads a body from, so these
-// three carry a .rels part of their own.
+// readXmlFileWithBody opens each body part's relationships, so these carry their own .rels.
 const DOCX_BODY_PART_NAMES = new Set(["comments", "endnotes", "footnotes"]);
 const DOCX_MAIN_DOCUMENT_FALLBACK = "word/document.xml";
-// A <Relationship> tag with the element prefix mammoth's namespace mapping accepts, skipping
-// any ">" that sits inside an attribute value.
+// Matches the prefixes mammoth's namespace mapping accepts, skipping ">" inside attributes.
 const DOCX_RELATIONSHIP_TAG_RE =
   /<(?:[^\s/>"'=]+:)?Relationship(?=[\s/>])(?:"[^"]*"|'[^']*'|[^"'>])*>/g;
-// Attribute names are matched by consuming whole name="value" pairs, so a value containing
-// Target= cannot be mistaken for an attribute. mammoth reads child.attributes.Target,
-// which a prefixed r:Target never populates, so prefixed names are not accepted.
+// Whole name="value" pairs, so a value containing Target= is not an attribute; mammoth ignores r:Target.
 const XML_ATTRIBUTE_RE = /([^\s/>"'=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 /** Non-element markup: a `<Relationship>` inside a comment, CDATA section or processing
  *  instruction is text to mammoth's parser, and each ends at its first delimiter. */
@@ -98,11 +89,8 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
   quot: '"',
   apos: "'",
 };
-/** Ceiling on everything a DOCX unpacks to, and why mammoth never sees the file the user
- *  chose. jszip takes each part's size from the central directory and inflates it in full
- *  before anything can reject it, so an entry declaring 1 KB that expands to 1 GB exhausts
- *  the webview. fflate allocates at the declared size and stops, so mammoth is handed a
- *  repack of fflate's output. */
+/** jszip inflates each part fully before anything can reject it (zip bombs), so mammoth gets a
+ *  repack of fflate's declared-size output. */
 const MAX_DOCX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
 const MAX_DOCX_ENTRIES = 100_000;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
@@ -409,16 +397,12 @@ const CODE_ATTACHMENT_LANGUAGES: Record<string, string> = {
   zig: "zig",
   zsh: "shellscript",
 };
-// Long attachments still render inside a dialog, so the preview stops well before a single
-// <pre> stalls the webview.
+// Cap so a single huge <pre> does not stall the webview.
 const MAX_PREVIEW_TEXT_LENGTH = 200_000;
-// Text and HTML have no upload size limit, so a preview reads a bounded slice. Five bytes
-// per character keeps the slice past the character cap for any UTF-8 input, so truncation
-// is still detected.
+// 5 bytes per char keeps the slice past the char cap for any UTF-8, so truncation is detected.
 const MAX_PREVIEW_TEXT_BYTES = MAX_PREVIEW_TEXT_LENGTH * 5;
 
-/** Own-property lookup: an extension or entity named "constructor" would otherwise resolve to
- *  a member of Object.prototype. */
+/** Own-property lookup, so "constructor" does not resolve to Object.prototype. */
 function lookUp(
   table: Record<string, string>,
   key: string,
@@ -436,8 +420,7 @@ export function isAudioAttachment(
   );
 }
 
-// The audio part keeps only the coarse format the backend needs, so the content type wins,
-// then the extension for uploads the browser typed as empty, then the part format.
+// Prefer content type, then extension for empty browser types, then the part format.
 export function attachmentAudioSrc(
   audio: { data: string; format: string },
   contentType: string | undefined,
@@ -495,10 +478,7 @@ export function isRtfAttachment(
   );
 }
 
-// CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
-// document-specific adapters, so previews must apply the same MIME-or-extension match
-// before looking at PDF/DOCX/HTML names.
-/** Whether the text adapter claims the file; it runs before the document ones. */
+// CompositeAttachmentAdapter takes the first matching accept, and text comes before documents.
 export function isTextAttachment(
   name: string,
   contentType: string | undefined,
@@ -517,10 +497,8 @@ export function isTextAttachment(
   });
 }
 
-// unpdf and mammoth decode the whole file on the main thread, so both refuse a document past
-// the OpenDocument ceiling, and refuse before the read. The adapters call this from add()
-// too: the composer clears text and attachments before awaiting send(), so a throw there
-// loses the typed message along with the file.
+// Refuse oversized documents before reading (decoded on the main thread), also from add(): the
+// composer clears the message before awaiting send().
 export function getDocumentAttachmentSizeError(
   file: File,
   label: "PDF" | "DOCX" | "XLSX" | "PPTX",
@@ -548,8 +526,7 @@ function joinDocxPath(basePath: string, target: string): string {
   return joined.startsWith("/") ? joined.slice(1) : joined;
 }
 
-// XML attribute values are entity-decoded by the parser mammoth uses, so a target only
-// matches the archive once decoded.
+// mammoth's parser entity-decodes attributes, so targets match the archive only once decoded.
 function decodeXmlEntities(value: string): string {
   return value.replace(XML_ENTITY_RE, (match, decimal, hex, name) => {
     const code = decimal
@@ -564,10 +541,8 @@ function decodeXmlEntities(value: string): string {
   });
 }
 
-// The relationship parts are XML, but only their targets are needed, so they are scanned
-// rather than parsed: DOMParser is not available under test, and a malformed rels file is
-// mammoth's to report. The scan accepts every attribute form mammoth's parser resolves, so
-// a crafted rels file cannot hide a target from the bound below.
+// Scanned, not parsed (no DOMParser under test); accepts every attribute form mammoth resolves so
+// a crafted rels file cannot hide a target.
 function readDocxXmlTargets(
   rels: Uint8Array | undefined,
   basePath: string,
@@ -609,17 +584,13 @@ function docxRelationshipsPath(path: string): string {
 
 type DocxArchive = {
   entries: Unzipped;
-  /** Every name the central directory declares, unpacked entries included, so a target resolves
-   *  the way findPartPath resolves it. */
+  /** All central-directory names, so targets resolve the way findPartPath resolves them. */
   names: Set<string>;
   oversized: Set<string>;
 };
 
-/** Inflates the archive under fflate's declared-size allocation. An entry past the XML ceiling
- *  is left out rather than refused: mammoth opens the package parts and whatever the
- *  relationships point at, so a large unreferenced part must still preview.
- *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. `keepLarge` keeps them
- *  (still marked oversized) for the viewer, which needs large images as well as text. */
+/** Entries past the XML ceiling are left out rather than refused (unreferenced parts must still
+ *  preview); `assertDocxPartSizes` refuses the ones mammoth parses. */
 const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
 
 function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => boolean; used: Set<string> } {
@@ -746,8 +717,7 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   return mainDocument;
 }
 
-/** The archive mammoth is given: fflate's own output, so a part that lies about its size
- *  arrives truncated rather than inflated in full. */
+/** fflate's own output, so a part lying about its size arrives truncated, not inflated. */
 export function repackDocxAttachmentArchive(
   filename: string,
   bytes: Uint8Array,
@@ -1355,9 +1325,7 @@ function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument
   Object.assign(archive.entries, images);
 }
 
-/** The bytes of a view, as an ArrayBuffer, without copying when it owns one. jszip reads the
- *  whole buffer and looks for the end-of-directory record at its tail, so a view that does
- *  not span its buffer would arrive as a corrupt archive. */
+/** jszip looks for the end-of-directory at the buffer's tail, so a partial view reads as corrupt. */
 function toArrayBuffer(view: Uint8Array): ArrayBuffer {
   const spansBuffer =
     view.byteOffset === 0 && view.byteLength === view.buffer.byteLength;
@@ -1376,9 +1344,7 @@ function isDocxSizeError(error: unknown): boolean {
   );
 }
 
-/** The verdict add() needs before the attachment exists. The composer clears its text and
- *  attachments before it awaits send(), so a DOCX that only fails there discards the typed
- *  message along with the file. */
+/** Before the attachment exists: the composer clears the message before awaiting send(). */
 export async function getDocxAttachmentError(
   file: File,
 ): Promise<string | null> {
@@ -1444,8 +1410,7 @@ function pdfFormFieldLines(
     if (!fieldName || !value.trim() || unchecked || hidden || password) {
       continue;
     }
-    // The tooltip (/TU) is the human label behind codes like f1_01[0]; a radio
-    // widget's tooltip names one option, not the group's selected value.
+    // A radio widget's /TU tooltip names one option, not the group's selected value.
     const tooltip = radioButton ? "" : alternativeText;
     const label = tooltip?.replace(/\s+/g, " ").trim() || fieldName;
     fields.set(fieldName, `${label}: ${value}`);
@@ -1855,9 +1820,7 @@ export async function readAttachmentText(
   return { label: null, ...(await readBoundedText(file)) };
 }
 
-// Formats that state their own encoding somewhere other than the first bytes: a
-// gettext header sits below the translator comments, and a mail or vCard
-// declaration below whatever came before it in the archive.
+// Formats that declare their encoding beyond the first bytes (gettext, mail, vCard).
 const DECLARES_ITS_CHARSET_RE = /\.(?:po|pot|eml|mbox|vcf)$/i;
 
 async function readBoundedText(
@@ -1865,18 +1828,13 @@ async function readBoundedText(
 ): Promise<{ text: string; truncated: boolean }> {
   const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
   const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
-  // Strict decoding belongs to the files the text adapter owns, where refusing is better than
-  // sending mojibake to the model. A preview of someone else's file may not be stricter than the
-  // adapter that accepted it: .html goes to the HTML adapter, which sends a windows-1252 page
-  // happily, and reading the preview through the strict path meant opening one threw where it used
-  // to render.
+  // Strict decoding only for files the text adapter owns; a preview may not be stricter than the
+  // adapter that accepted the file.
   if (!isTextAttachmentName(file.name)) {
     return { text: await slice.text(), truncated };
   }
   const bytes = new Uint8Array(await slice.arrayBuffer());
-  // The declaration can sit past the preview slice, and looking for it inside
-  // the slice reported an error for a file the attachment itself decodes. Only
-  // the formats that can carry one that far in pay for the second read.
+  // The declaration can sit past the preview slice, so only these formats pay for a full read.
   const whole =
     truncated && DECLARES_ITS_CHARSET_RE.test(file.name)
       ? new Uint8Array(await file.arrayBuffer())

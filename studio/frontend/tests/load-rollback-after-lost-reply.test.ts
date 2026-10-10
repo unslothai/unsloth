@@ -1,22 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A model switch whose /api/inference/load got no answer must not load the previous model back.
-//
-// Switching (or reloading the same model with new settings) unloads the resident model first, and a
-// failed load then restores it. That is right when the backend REPORTED the failure. It is wrong when
-// the connection closed before any answer, because the backend keeps loading after its client goes
-// away: the rollback, sent with force_cancel_active, queued behind the load and replaced it.
-//
-// Reloading the page mid-load is the everyday way to get there. Chromium and Firefox both reject the
-// old document's pending fetch and still let its catch send one more request. Seen in the Chat UI
-// extra lane (playwright_model_config.py, "context length 4096 persists"): the 4096 load finished,
-// the dying page's rollback then loaded the model back at its previous 2048, and the reloaded page
-// correctly declined to show the remembered 4096 for a server running 2048, so it read "Auto".
-//
-// The rollback lives inside performLoad with no seam to call, so the guard is checked at the source,
-// and everything that feeds it (authFetch, loadModel, the padded-body check) runs for real against a
-// loopback server that drops the connection the way a page reload does.
+// A load whose reply was lost (e.g. page reload) keeps running on the backend,
+// so rolling back would replace it with the previous model.
 
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -50,12 +36,11 @@ async function withLoadServer(
     req.resume();
     req.on("end", () => {
       if (reply === "drop") {
-        // The request arrived and the reply never will: what the old page sees on reload.
         req.socket.destroy();
         return;
       }
       if (reply === "padded-drop") {
-        // A load past _TUNNEL_KEEPALIVE_AFTER_S has committed its 200 and is padding when the page goes.
+        // A load past _TUNNEL_KEEPALIVE_AFTER_S has committed its 200 and is padding.
         res.writeHead(200, { "Content-Type": "application/json" });
         res.write("   ");
         setTimeout(() => req.socket.destroy(), 20);
@@ -143,7 +128,6 @@ function realLoadModel(auth: AuthApi): ChatApi {
   });
 }
 
-/** What performLoad's catch receives when this load's reply is `reply`. */
 async function loadError(reply: Reply): Promise<unknown> {
   let caught: unknown = null;
   await withLoadServer(reply, async (port) => {
@@ -200,13 +184,11 @@ test("non-errors and untagged errors keep the rollback", () => {
 });
 
 test("performLoad only rolls back when the failed load was answered", () => {
-  // One rollback site, and its guard consults the helper before any request is sent.
   const sites = RUNTIME.match(/const rollbackResponse = await loadModel\(/g) ?? [];
   assert.equal(sites.length, 1);
   const guarded =
     /if \(\s*previousWasUnloaded &&\s*previousCheckpoint &&\s*shouldRestorePreviousModel\(error\)\s*\) \{[\s\S]*?const rollbackResponse = await loadModel\(/;
   assert.match(RUNTIME, guarded);
-  // The failed load still surfaces: the guard skips the rollback, not the rethrow.
   const catchBlock = RUNTIME.slice(
     RUNTIME.indexOf("notifyLocalPromptQueueLoadFailed(lifecycleLease);"),
     RUNTIME.indexOf("const isCachedLoad = downloadComplete;"),

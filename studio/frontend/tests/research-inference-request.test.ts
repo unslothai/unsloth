@@ -187,7 +187,6 @@ test("the request says whether the saved cap is what grounded its ceiling", () =
 
   assert.equal(build(true, 30000).maxOutputTokensFromSavedCap, true);
   assert.equal(build(false, 30000).maxOutputTokensFromSavedCap, false);
-  // No ceiling to qualify, so the flag has nothing to say and is left off entirely.
   assert.equal("maxOutputTokensFromSavedCap" in build(true, null), false);
 });
 
@@ -198,7 +197,7 @@ test("the published ceiling rides along, unfolded, when the model has one", () =
       providerId: "p1",
       providerType: "gemini",
       modelId: "gemini-3.6-flash",
-      // What the connection actually spends: the override folded into the published cap.
+      // The override folded into the published cap: what the connection spends.
       maxOutputTokens: 8192,
       maxOutputTokensFromSavedCap: false,
       maxOutputTokensPublished: 65536,

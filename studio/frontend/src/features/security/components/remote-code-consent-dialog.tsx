@@ -161,13 +161,11 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
-/** Last path segment of the model id, for display. */
 function modelDisplayName(modelName?: string): string {
   if (!modelName) return "This model";
   return modelName.split("/").pop() || modelName;
 }
 
-/** ` from "<provider>"` clause, rendered only when a provider was resolved. */
 function ProviderSuffix({ provider }: { provider: string | null }) {
   if (!provider) return null;
   return (
@@ -179,8 +177,7 @@ function ProviderSuffix({ provider }: { provider: string | null }) {
   );
 }
 
-/** App-wide consent dialog for trust_remote_code loads: shows scan findings with the
- *  flagged code in context; CRITICAL is a hard block. Mounted once in the root layout. */
+/** Consent dialog for trust_remote_code loads; CRITICAL is a hard block. Mounted once. */
 export function RemoteCodeConsentDialog() {
   const open = useRemoteCodeConsentDialogStore((s) => s.open);
   const scan = useRemoteCodeConsentDialogStore((s) => s.scan);
@@ -191,7 +188,6 @@ export function RemoteCodeConsentDialog() {
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];
-  // Malware (an HF-flagged unsafe serialized file) is a hard block with its own copy.
   const malware = unsafeFiles.length > 0;
 
   return (

@@ -5,9 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-// User agents of the engines the capability gate has to separate. WebKitGTK is
-// the only one that advertises MediaRecorder, resolves audio/mp4, and then
-// records nothing (#9543).
+// WebKitGTK advertises MediaRecorder and audio/mp4, then records nothing.
 const CHROME_LINUX =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const FIREFOX_LINUX =
@@ -24,9 +22,7 @@ const supports =
   (type: string) =>
     types.includes(type);
 
-// --- Fake Web Audio graph ----------------------------------------------------
-// PcmRecorder only ever touches these five factory methods, so the graph can be
-// stubbed rather than pulled in as a DOM implementation.
+// PcmRecorder only touches these five factory methods, so a stub suffices.
 
 class FakeNode {
   connections: unknown[] = [];
@@ -52,7 +48,6 @@ class FakeScriptProcessorNode extends FakeNode {
   addEventListener(_type: string, listener: AudioProcessListener): void {
     this.listener = listener;
   }
-  /** Deliver one audioprocess callback carrying `samples`. */
   emit(samples: Float32Array): void {
     this.listener?.({ inputBuffer: { getChannelData: () => samples } });
   }
@@ -60,8 +55,6 @@ class FakeScriptProcessorNode extends FakeNode {
 
 class FakeAudioContext {
   static last: FakeAudioContext | null = null;
-  /** Set to reject the requested rate, as an engine that only opens a context
-   *  at the device rate does. */
   static refuseRequestedRate = false;
   static requestedRate: number | undefined;
 
@@ -126,8 +119,6 @@ const ascii = (view: DataView, offset: number, length: number) =>
     ...Array.from({ length }, (_, i) => view.getUint8(offset + i)),
   );
 
-// --- The capability gate -----------------------------------------------------
-
 test("an engine that offers an Opus container keeps MediaRecorder", () => {
   assert.equal(
     mediaRecorderCanEncodeAudio(
@@ -161,12 +152,8 @@ test("WebKitGTK offers audio/mp4 alone off an Apple platform, so it takes PCM", 
     mediaRecorderCanEncodeAudio(supports("audio/mp4"), WEBKITGTK_LINUX),
     false,
   );
-  // The same engine with no MediaRecorder at all must not be treated as able
-  // to encode either.
   assert.equal(mediaRecorderCanEncodeAudio(supports(), WEBKITGTK_LINUX), false);
 });
-
-// --- WAV encoding ------------------------------------------------------------
 
 test("encodeWav writes a header the backend's container sniff accepts", () => {
   const wav = encodeWav(new Float32Array(8), 16_000);
@@ -208,8 +195,6 @@ test("encodeWav clamps rather than wrapping an out-of-range sample", () => {
   assert.equal(sample(5), 16_383);
 });
 
-// --- PcmRecorder -------------------------------------------------------------
-
 test("a recording is reported as one WAV dataavailable, then stop", async () => {
   const recorder = newRecorder();
   const events: string[] = [];
@@ -227,8 +212,7 @@ test("a recording is reported as one WAV dataavailable, then stop", async () => 
   FakeAudioContext.last?.processor.emit(new Float32Array([0, 0.5]));
   recorder.stop();
 
-  // The callers' stop handler reads the chunks the dataavailable handler
-  // pushed, so the order is load-bearing, not cosmetic.
+  // The stop handler reads chunks pushed by dataavailable, so order matters.
   assert.deepEqual(events, ["dataavailable", "stop"]);
   assert.equal(recorder.state, "inactive");
   assert.ok(recorded);
@@ -247,13 +231,11 @@ test("samples outside a started recording are not captured", async () => {
   recorder.addEventListener("dataavailable", (event) => {
     recorded = event;
   });
-  // Before start(): the graph is live from construction, so these must be
-  // dropped rather than prepended to the recording.
+  // The graph is live from construction, so pre-start samples must be dropped.
   FakeAudioContext.last?.processor.emit(new Float32Array([0.25, 0.25]));
   recorder.start();
   FakeAudioContext.last?.processor.emit(new Float32Array([0.5]));
   recorder.stop();
-  // After stop(): a late callback must not resurrect a finished recording.
   FakeAudioContext.last?.processor.emit(new Float32Array([0.75, 0.75]));
 
   const view = await wavOf(recorded as unknown as { data: Blob });
@@ -282,8 +264,7 @@ test("a recording that collected nothing reports no bytes", () => {
   });
   recorder.start();
   recorder.stop();
-  // A bare 44-byte header is a WAV with no samples, which the callers would
-  // upload and the decoder could refuse; zero bytes is their silence branch.
+  // Zero bytes is the callers' silence branch; a bare header could be refused by the decoder.
   assert.equal((recorded as unknown as { data: Blob }).data.size, 0);
 });
 
@@ -305,8 +286,7 @@ test("a once stop listener is dropped before the handlers run", () => {
   let persistentCalls = 0;
   recorder.addEventListener("stop", () => {
     persistentCalls += 1;
-    // The dictation adapter opens the next segment from inside a stop handler,
-    // which registers further listeners; a one-shot must already be gone.
+    // The dictation adapter adds listeners from inside a stop handler.
     recorder.addEventListener("stop", () => {
       persistentCalls += 10;
     });
@@ -345,8 +325,6 @@ test("secondsWithin keeps a WAV inside the upload cap", () => {
   const seconds = recorder.secondsWithin(cap);
   // 16-bit mono at 16 kHz is 32000 B/s, so the cap is ~13.6 minutes.
   assert.equal(seconds, 818);
-  // A whole recording of that length, plus the buffer still in flight when the
-  // caller stops on this, has to stay under the cap.
   const inFlightBytes = 4096 * 2;
   assert.ok(44 + seconds * 32_000 + inFlightBytes < cap);
 });

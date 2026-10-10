@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Barrel import (lint rule); the model-picker cycle is fine because the call
-// happens at runtime, not module eval.
+// Barrel import (lint rule); the model-picker cycle is fine since the call is at runtime.
 import {
   adoptCachedRepoConfig,
   loadedContextFields,
@@ -53,8 +52,7 @@ function sameArray<T>(a: T[] | null, b: T[] | null): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// Canonicalises backend / persisted speculative mode values onto the UI modes. Re-exported
-// from the store, which owns the vocabulary: a second copy would drift.
+// Re-exported from the store, which owns the vocabulary.
 export { normalizeSpeculativeType } from "../stores/chat-runtime-store";
 
 export function clampLocalReasoningEffort(
@@ -66,9 +64,7 @@ export function clampLocalReasoningEffort(
   return "low";
 }
 
-/** Reasoning capability fields derived from a load/status response. Centralised so every
- *  load path agrees: a hybrid `enable_thinking_effort` model keeps its high|max|Off
- *  controls instead of falling back to low|medium|high and losing Max/Off. */
+/** Shared so every load path keeps hybrid high|max|Off effort controls. */
 export function reasoningCapsFromLoad(resp: {
   reasoning_style?: ReasoningStyle | null;
   reasoning_effort_levels?: string[] | null;
@@ -83,8 +79,7 @@ export function reasoningCapsFromLoad(resp: {
     resp.reasoning_effort_levels && resp.reasoning_effort_levels.length > 0
       ? (resp.reasoning_effort_levels as ReasoningEffort[])
       : (["low", "medium", "high"] as const);
-  // enable_thinking and enable_thinking_effort can both be turned off; only the pure
-  // gpt-oss-style reasoning_effort is always-on.
+  // Only pure gpt-oss-style reasoning_effort is always-on.
   return {
     reasoningStyle,
     reasoningEffortLevels,
@@ -105,7 +100,6 @@ function ensureActiveModelInStoreList(
 ): void {
   const store = useChatRuntimeStore.getState();
   const caps = {
-    // Adopting a model the backend already had mints a row with no catalog entry behind it.
     isMlx: status.is_mlx ?? false,
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,
@@ -114,8 +108,7 @@ function ensureActiveModelInStoreList(
   };
   const existing = store.models.find((model) => model.id === checkpointId);
   if (existing) {
-    // Backend capability outranks catalog metadata, and adoption has no later
-    // syncModelCapabilities call. Write only on an actual change.
+    // Backend capability outranks catalog; adoption has no later sync call.
     if (Object.entries(caps).some(([k, v]) => existing[k as keyof typeof caps] !== v)) {
       store.setModels(
         store.models.map((m) => (m.id === checkpointId ? { ...m, ...caps } : m)),
@@ -125,8 +118,6 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelRow = {
     id: checkpointId,
-    // active_model is already the clean public id; its leaf matches the catalog rows, and the
-    // fallback keeps a snapshot path out of the trigger.
     name: modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,
     isLora: false,
@@ -138,17 +129,12 @@ function ensureActiveModelInStoreList(
 
 export type ApplyInferenceStatusOptions = {
   previousCheckpoint?: string;
-  /** activeGgufVariant BEFORE the caller's setCheckpoint synced it: without it a variant-only
-   *  switch reads as steady state and the hydration reseed keeps the old quant's baselines. */
+  /** Variant before setCheckpoint synced it, so a variant-only switch reseeds. */
   previousGgufVariant?: string | null;
-  /** Seed settings while the caller holds the model-loading lease. */
   seedLoadParams?: boolean;
-  /** This status belongs to the model already resident when Studio started,
-   * so the persisted global sampling snapshot belongs to this checkpoint. */
   adoptingExistingServerModel?: boolean;
 };
 
-/** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
 export function applyActiveModelStatusToStore(
   status: InferenceStatusResponse,
   options: ApplyInferenceStatusOptions = {},
@@ -156,15 +142,13 @@ export function applyActiveModelStatusToStore(
   const checkpointId = resolveInferenceCheckpointId(status);
   if (!checkpointId) return;
 
-  // Only reached with a model active, so this is the one place both the status poll and the
-  // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
+  // Publish residency here, or a load looks unloaded for up to 10s.
   useChatRuntimeStore.setState({
     residentCheckpoint: checkpointId,
     loadedEngine: status.engine ?? "auto",
     loadedEnginePrecision: status.engine_precision ?? "auto",
     loadedEngineParallelism: status.engine_parallelism ?? "tensor",
   });
-  // Before the settings panel can open on it, which reads only the repo id.
   adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
@@ -183,9 +167,7 @@ export function applyActiveModelStatusToStore(
         presetSource: store.activePresetSource,
         loadedContextLength: loadedContextFields(status).loadedContextLength,
       }),
-      // The model's remembered settings outrank the recommendation, or every poll would undo them,
-      // but not past the context it loaded with. context_length is reported for safetensors too,
-      // so this is not narrowed to GGUF; absent, there is nothing to cap against.
+      // Remembered settings outrank the recommendation, capped at the loaded context.
       {
         fromModelDefaults: true,
         maxTokensCap: replayMaxTokensCap(status.context_length),
@@ -208,8 +190,6 @@ export function applyActiveModelStatusToStore(
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
-  // GLM-5.2-style models report their own effort levels; everything else keeps the default
-  // low/medium/high. They report high|max.
   const reasoningEffortLevels =
     status.reasoning_effort_levels && status.reasoning_effort_levels.length > 0
       ? (status.reasoning_effort_levels as ReasoningEffort[])
@@ -220,10 +200,7 @@ export function applyActiveModelStatusToStore(
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
-  // The chat's own level when the model this replaces was running a per-model pin's: the clamp
-  // narrows the chat's level to this model's ladder, and a pin is one model's, not the chat's.
-  // Taken here rather than where the model was picked, because this is a model that has actually
-  // become resident: everything from the pick to here can still abort, or only queue a download.
+  // A pin is one model's; clamp the chat's own level once the model is actually resident.
   const effortToClamp =
     (pinHoldsLiveEffort() ? takeEffortDisplacedByPin() : null) ??
     prevState.reasoningEffort;
@@ -236,22 +213,12 @@ export function applyActiveModelStatusToStore(
     status.chat_template === undefined
       ? prevState.defaultChatTemplate
       : status.chat_template;
-  // While a load is in flight, performLoad owns the load params. Seeding them
-  // from a stale poll here would clobber the values the load dialog just set.
+  // During a load performLoad owns the params; a stale poll must not clobber them.
   const seedLoadParams = options.seedLoadParams ?? !prevState.modelLoading;
-  // A model/variant change underneath this tab. The controls in the store belong to the model that
-  // just left, so they are reseeded here the way every other load param at this site already is:
-  // the echo cannot stand in, since a new model can report the old count.
   const slotsModelChanged = hydratingExistingModel;
-  // This model's remembered override, read only on a fresh store or a model change, so a steady
-  // poll cannot re-pin a control the user just blanked. A self-sizing backend has no slot fields,
-  // so an unseeded store says nothing about it and it goes by the checkpoint alone. Through the
-  // resident resolver, not the raw id: an API-driven load reports the snapshot path a cached repo
-  // loaded from, while its settings are keyed by the repo id, and the plain lookup misses that
-  // record.
+  // Read the override only on a fresh store or model change, via the resident resolver.
   const slotsUnseeded =
     prevState.loadedNParallel === null && prevState.nParallel === null;
-  // same rule for the batch-size pair
   const batchesUnseeded =
     prevState.loadedNBatch === null &&
     prevState.nBatch === null &&
@@ -288,8 +255,6 @@ export function applyActiveModelStatusToStore(
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
-  // The llama-server tuning group follows the same rule, and resolveBatchSizeSeed is generic
-  // in the value type for exactly this: each is an echo of what the load REQUESTED.
   const loadModeSeed = resolveBatchSizeSeed<string>({
     incoming: status.requested_load_mode,
     isGguf: status.is_gguf ?? true,
@@ -324,27 +289,19 @@ export function applyActiveModelStatusToStore(
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
-  // A load sends its context pin as max_seq_length while status exposes the resolved context
-  // plus the requested n_ctx, and a positive requested n_ctx does NOT mean a human asked
-  // for it. So the pin is re-seeded from what this tab or the saved config recorded, never
-  // inferred from the echo alone. See resolveCtxPinSeed for the full rule.
+  // A positive requested n_ctx does not mean a user pin; see resolveCtxPinSeed.
   const ctxPinFields = resolveCtxPinSeed({
     incoming: status.requested_context_length,
-    // MLX reports a requested context as well, so the rule below is about any
-    // backend that sizes its own window, not llama.cpp alone.
     isGguf:
       (status.is_gguf ?? true) ||
       (status.is_mlx ?? false) ||
       (status.is_npu ?? false),
-    // An NPU status echoes the request itself (null for Auto), so like MLX a positive one is a pin.
     isMlx: (status.is_mlx ?? false) || (status.is_npu ?? false),
     seedLoadParams,
     modelChanged: slotsModelChanged,
-    // Both fields: a record written before the MLX pin moved still carries it in maxSeqLength.
+    // Both fields: older records still carry the MLX pin in maxSeqLength.
     remembered: remembered?.remembered ? savedContextPin(remembered.config) : null,
-    // Raw, not the normalised incomingGpuMode/incomingGpuLayers below: the rule
-    // needs "Manual with AUTO layers", and those normalise layers to null off
-    // manual, which would read as "no layers reported" rather than as Auto.
+    // Raw values: normalisation would turn Manual with AUTO layers into null.
     gpuMemoryMode: status.gpu_memory_mode ?? null,
     gpuLayers: status.gpu_layers ?? null,
     loadedPin: prevState.loadedCustomContextLength ?? null,
@@ -401,8 +358,6 @@ export function applyActiveModelStatusToStore(
       },
       { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
     ) ||
-    // Only a pin this status will actually move counts: a difference it declines to apply
-    // (mid-load, or an unreadable echo) is not one.
     (ctxPinFields.loadedCustomContextLength !== undefined &&
       prevState.loadedCustomContextLength !==
         ctxPinFields.loadedCustomContextLength);
@@ -424,8 +379,7 @@ export function applyActiveModelStatusToStore(
       indexKind: prevState.loadedGpuIndexKind,
     },
   );
-  // A same-model reload from another client advances every loaded baseline.
-  // Preserve each editable group only when this tab has an unapplied change.
+  // Preserve editable groups only when this tab has an unapplied change.
   const preserveSameModelEdits = placementOrContextChanged && !hydratingExistingModel;
   const placementAndContextFields = {
     ...incomingGpuFields,
@@ -535,20 +489,15 @@ export function applyActiveModelStatusToStore(
       }) && {
         disableVision: status.disable_vision,
       }),
-    // The rollback baseline, unguarded like the mirror below rather than seeded once: it must
-    // track the RUNNING server, or a switch failing after a poll restores a stale seed.
+    // Unguarded: the rollback baseline must track the running server.
     ...(seedLoadParams &&
       status.disable_vision !== undefined && {
         loadedDisableVision: status.disable_vision,
       }),
-    // Unguarded, unlike the seed above: this mirrors the live load for the composer's image
-    // gate, not a user setting, so every poll must land.
     ...(seedLoadParams &&
       status.vision_disabled_by_user !== undefined && {
         loadedVisionDisabledByUser: status.vision_disabled_by_user,
       }),
-    // Hydration only, so a steady poll never rewrites settings the store owns. Width, verdict
-    // and request move together; a late reply can overwrite a newer one.
     ...(seedLoadParams &&
       hydratingExistingModel &&
       status.mlx_kv_quant_requested !== undefined &&
@@ -565,15 +514,13 @@ export function applyActiveModelStatusToStore(
               status.mlx_int8_prefill_requested === true,
           }
         : {
-            // The verdict retires; the editable width is dormant, not wrong.
             loadedMlxKvQuantRequested: null,
             mlxKvQuantReason: null,
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
           })),
-    // Recovery for a hydration this tab never saw, and only when nothing is staged: re-seeding
-    // over an earlier edit would discard it.
+    // Only when nothing is staged: reseeding would discard an earlier edit.
     ...(seedLoadParams &&
       !hydratingExistingModel &&
       status.is_mlx === true &&
@@ -597,8 +544,7 @@ export function applyActiveModelStatusToStore(
       status.requested_parallel_slots != null && {
         loadedNParallel: status.requested_parallel_slots,
       }),
-    // A slotless load must not keep the previous model's baseline, since the rollback
-    // re-sends it. /status nulls the echo for a load that decodes one reply at a time.
+    // A slotless load must not keep the previous baseline, since rollback re-sends it.
     ...(seedLoadParams &&
       status.requested_parallel_slots === null && {
         loadedNParallel: null,
@@ -631,28 +577,20 @@ export function applyActiveModelStatusToStore(
           }
         : {}),
     }),
-    // AFTER that clear, which both a first hydration and a model change trip: either would leave
-    // the control blank while the model runs on a remembered override, so the next Apply would
-    // save the blank over it. Adopted only when the running count matches.
+    // AFTER that clear, or the next Apply would save a blank over a remembered override.
     ...(seedLoadParams &&
       (slotsUnseeded || slotsModelChanged) &&
       rememberedNParallel != null &&
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
       }),
-    // What the running server was actually invoked with. Without this a tab opened onto an
-    // already-loaded model knows nothing about its pass-through arguments, and a rollback
-    // after a failed switch restores that model without them. Adopted from every settled
-    // status, not just the first: another client can reload the SAME model with different
-    // arguments, and a pinned baseline would resurrect arguments that are not running.
-    // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
+    // Adopt the running server's extra args every settle, so rollbacks restore what ran.
     ...resolveLlamaExtraArgsSeed({
       incoming: status.requested_llama_extra_args,
       isGguf: status.is_gguf ?? true,
       hydratingExistingModel,
       seedLoadParams,
     }),
-    // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
     ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),
     ...("loaded" in nUbatchSeed && {
@@ -679,10 +617,7 @@ export function applyActiveModelStatusToStore(
       loadedCacheRam: cacheRamSeed.loaded ?? null,
     }),
     ...("value" in cacheRamSeed && { cacheRam: cacheRamSeed.value ?? null }),
-    // A swap under this tab resets the controls too, but that clear belongs INSIDE
-    // resolveBatchSizeSeed (modelChanged), not after it: the batch echo is the REQUESTED size,
-    // so a blanket null here would discard what the seed just adopted from the new model,
-    // leaving "default" over an explicit -b / -ub that the next Apply would revert.
+    // The model-change clear lives inside resolveBatchSizeSeed; nulling here drops adopted sizes.
     ...(seedLoadParams &&
       (batchesUnseeded || slotsModelChanged) &&
       rememberedNBatch != null &&
@@ -695,18 +630,12 @@ export function applyActiveModelStatusToStore(
       rememberedNUbatch === status.requested_n_ubatch && {
         nUbatch: rememberedNUbatch,
       }),
-    // Re-seed on first hydration, model/variant changes, or a same-model backend
-    // placement change. placementAndContextFields preserves dirty local edits in the last
-    // case while advancing their loaded baselines.
     ...(seedLoadParams &&
       (prevState.loadedGpuMemoryMode === null ||
         hydratingExistingModel ||
         placementOrContextChanged) &&
       placementAndContextFields),
-    // The one load param that only ever seeded from null, so a switch left the previous model's
-    // template in the store and Apply saved A's template under B. A same-model reload moves it
-    // too, so the seed follows a changed status like the GPU group: baseline always, control
-    // only while it still sits on that baseline. See resolveChatTemplateSeed.
+    // Follow status like the GPU group, or Apply saves model A's template under B.
     ...resolveChatTemplateSeed({
       incoming: status.chat_template_override,
       previous: {
@@ -725,14 +654,11 @@ export function applyActiveModelStatusToStore(
     hydratingExistingModel &&
     storedReasoningEnabled === null
   ) {
-    // Anchored regex: first "Xb"/"X.Xb" after start or [-_/.] so the version literal in "qwen3.5" /
-    // "qwen3.6" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3 (active).
-    // Mirrors use-chat-model-runtime.ts and the inline regex in llama_cpp.py.
+    // Anchored size regex; mirrors use-chat-model-runtime.ts and the inline regex in llama_cpp.py.
     let reasoningDefault = true;
     const mid = checkpointId.toLowerCase();
     if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-      // Scan path segments right to left so the size nearest the leaf wins over a size-like parent
-      // dir; the trailing boundary prevents matching "8bit".
+      // Scan segments right to left; the trailing boundary prevents matching "8bit".
       const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
       const sizeMatch = mid
         .replace(/\\/g, "/")
@@ -755,10 +681,7 @@ export function applyActiveModelStatusToStore(
     reasoningAlwaysOn || useChatRuntimeStore.getState().reasoningEnabled,
   );
 
-  // Every status merge carries the base family recommendation, including the refresh immediately
-  // after performLoad. Layer the active Qwen mode over it so that refresh cannot undo performLoad's
-  // thinking table. This also covers startup/CLI/external adoption, while model memory still wins
-  // because this remains a defaults update.
+  // Layer the active Qwen mode over the family defaults so a refresh cannot undo performLoad.
   if (status.inference && supportsReasoning) {
     const current = useChatRuntimeStore.getState();
     const qwenParams = resolveQwenThinkingParams(
@@ -779,11 +702,8 @@ export function applyActiveModelStatusToStore(
   }
 }
 
-/** Adopt a server-loaded model without issuing another inference load. */
 export async function tryAdoptServerActiveModel(options?: {
-  /** Ignore modelLoading because the caller owns that lease. */
   allowWhileModelLoading?: boolean;
-  /** A status the caller already read, so the send path does not fetch twice. */
   status?: InferenceStatusResponse;
 }): Promise<boolean> {
   const store = useChatRuntimeStore.getState();
@@ -800,12 +720,10 @@ export async function tryAdoptServerActiveModel(options?: {
     try {
       status = await getInferenceStatus();
     } catch {
-      // Status endpoint unavailable: fall back to the normal auto-load path.
       return false;
     }
   }
-  // Not something chat can adopt; the sweep below picks a real chat model, which evicts
-  // it exactly as an image load would.
+  // Not chat-adoptable; the sweep picks a real chat model, which evicts it.
   if (
     !status.active_model ||
     (status.loading?.length ?? 0) > 0 ||
@@ -819,7 +737,6 @@ export async function tryAdoptServerActiveModel(options?: {
     return false;
   }
 
-  // Preserve concurrent changes unless this caller owns the load lease.
   const latest = useChatRuntimeStore.getState();
   const previousCheckpoint = latest.params.checkpoint;
   if (

@@ -270,7 +270,6 @@ function liveDownloadInventoryRows(
           load_id: job.repoId,
           model_format: modelFormat,
           size_bytes: job.displayBytes,
-          // live jobs already use epoch milliseconds
           last_modified: job.startedAt,
           partial: true,
           partial_transport: null,

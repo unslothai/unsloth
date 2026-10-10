@@ -3,11 +3,7 @@
 
 import { useCallback, useRef } from "react";
 
-/**
- * Callback ref for scroll containers inside modal scroll locks. The lock may
- * cancel native wheel scrolling, so apply the delta before it reaches the
- * portaled dialog boundary.
- */
+/** The modal scroll lock may cancel native wheel scrolling, so apply the delta here. */
 export function useWheelScrollRef<T extends HTMLElement>() {
   const detachRef = useRef<(() => void) | null>(null);
 

@@ -102,7 +102,7 @@ test("kept files across the history name their sandbox copy once each", () => {
 test("a thread past the request's limit carries its most recent files, not none", () => {
   const one = (i: number) => kept(`f${i}.parquet`, i.toString(16).padStart(64, "0"));
   const all = Array.from({ length: 70 }, (_, i) => ({ attachments: [one(i)] }));
-  all.push({ attachments: [one(0)] }); // Attached again late, so it counts as recent.
+  all.push({ attachments: [one(0)] });
   const { messages, sandboxAttachments } = withSandboxAttachmentPaths(all);
   assert.equal(sandboxAttachments.length, 64);
   assert.deepEqual(

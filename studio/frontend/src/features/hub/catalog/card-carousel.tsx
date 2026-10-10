@@ -74,8 +74,6 @@ export function CardCarousel<T>({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
-  // gap-4 and pt-2 scale with the UI font size, like the cards themselves, so
-  // the stride and the arrow's centre line take the same scale.
   const scale = useUiSpaceScale();
   const gapPx = CARD_GAP_PX * scale;
   const topPaddingPx = CAROUSEL_TOP_PADDING_PX * scale;
@@ -99,10 +97,7 @@ export function CardCarousel<T>({
   }, [updateArrows]);
 
   useEffect(() => {
-    // The stride and the cards scale with the UI font size, which moves
-    // scrollWidth. The observer above only sees the scroller's own box, so the
-    // dimensions belong here rather than being left to a height that happens
-    // to change alongside them.
+    // Scaling moves scrollWidth, which the box observer does not see, so recompute here.
     updateArrows();
   }, [updateArrows, items, itemWidth, itemHeight, gapPx]);
 
@@ -116,7 +111,7 @@ export function CardCarousel<T>({
     [stepPx],
   );
 
-  // Click-and-drag panning (mouse only; touch/pen keep native scrolling).
+  // Mouse only; touch and pen keep native scrolling.
   const drag = useRef<{ id: number; x: number; left: number; moved: boolean } | null>(
     null,
   );
@@ -133,15 +128,13 @@ export function CardCarousel<T>({
     const d = drag.current;
     const el = scrollerRef.current;
     if (!d || !el || e.pointerId !== d.id) return;
-    // Primary button no longer held: the press ended off the scroller, so no
-    // pointerup reached us. Drop the stale drag instead of scrolling on hover.
+    // Button released off the scroller with no pointerup: drop the stale drag.
     if ((e.buttons & 1) === 0) {
       if (d.moved) el.style.scrollSnapType = "";
       drag.current = null;
       return;
     }
     const dx = e.clientX - d.x;
-    // Ignore tiny moves so plain clicks still register.
     if (!d.moved && Math.abs(dx) < 5) return;
     if (!d.moved) {
       d.moved = true;
@@ -156,10 +149,8 @@ export function CardCarousel<T>({
     const d = drag.current;
     if (!d || e.pointerId !== d.id) return;
     if (d.moved) {
-      // A drag just happened: swallow the click it would fire on a card.
       suppressClick.current = true;
       const el = scrollerRef.current;
-      // Restore snap so the row settles on a card after the drag.
       if (el) el.style.scrollSnapType = "";
       el?.releasePointerCapture?.(d.id);
     }
@@ -183,11 +174,9 @@ export function CardCarousel<T>({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onClickCapture={onClickCapture}
-        // Stop the avatar image from starting a native drag during a pan.
         onDragStart={(e) => e.preventDefault()}
         aria-label={ariaLabel}
-        // px-2 + -mx-2 give card shadows room so the edge cards aren't clipped;
-        // scroll-px-2 keeps snap-start aligned with the heading.
+        // Padding gives card shadows room; scroll-px-2 keeps snap aligned with the heading.
         className="hub-carousel -mx-2 flex cursor-grab snap-x scroll-px-2 gap-4 overflow-x-auto px-2 pb-4 pt-2 select-none active:cursor-grabbing"
       >
         {items.map((item) => (

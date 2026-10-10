@@ -6,20 +6,13 @@ import test from "node:test";
 
 import { readSrc, readText } from "./helpers/kit.ts";
 
-// The tray label is settled across two languages: the hook pushes a BackendStatus over the
-// IPC and main.rs turns it into a label and an enabled flag. Neither half can be rendered
-// here, so both are asserted against source, as the rest of the desktop startup tests do.
-// tray_toggle_label's own table is covered by the Rust unit tests in main.rs; only a test
-// spanning both files can hold that the two halves still agree on the set of statuses.
+// Neither the hook nor main.rs can run here, so both are asserted against source to hold
+// that they agree on the set of statuses.
 
 const USE_TAURI_BACKEND = readSrc("hooks/use-tauri-backend.ts");
 const MAIN = readText("../../src-tauri/src/main.rs");
 
-/**
- * The body of a `function name(...)` in the hook, to its closing brace. syncTrayStatus
- * sits at module scope and the status committers sit inside the hook, so the indent the
- * declaration and its brace share is whatever precedes the keyword.
- */
+/** Module-scope and in-hook functions differ in indent, so match the declaration's own. */
 function hookFunction(hook: string, name: string): string {
   const declaration = hook.match(
     new RegExp(`^([ ]*)function ${name}\\(`, "m"),
@@ -31,7 +24,6 @@ function hookFunction(hook: string, name: string): string {
   return hook.slice(declaration.index, hook.indexOf(close, declaration.index));
 }
 
-/** The `fn tray_toggle_label` body in main.rs. */
 function trayToggleLabel(rust: string): string {
   const start = rust.indexOf("fn tray_toggle_label(");
   if (start < 0) {
@@ -40,7 +32,6 @@ function trayToggleLabel(rust: string): string {
   return rust.slice(start, rust.indexOf("\n}\n", start));
 }
 
-/** Every status string tray_toggle_label reports as clickable. */
 function enabledStatuses(rust: string): string[] {
   const table = trayToggleLabel(rust);
   const enabled: string[] = [];
@@ -51,7 +42,6 @@ function enabledStatuses(rust: string): string[] {
   return enabled.sort();
 }
 
-/** Every status the tray-toggle-server listener branches on. */
 function actionableStatuses(hook: string): string[] {
   const start = hook.indexOf('register<void>("tray-toggle-server"');
   if (start < 0) {
@@ -70,8 +60,7 @@ function actionableStatuses(hook: string): string[] {
 test("every status the hook commits is also pushed to the tray", async () => {
   const hook = USE_TAURI_BACKEND;
 
-  // setStatus is reached through these three and nowhere else, so covering them
-  // covers every transition the tray can be told about.
+  // setStatus is reached only through these three.
   const committers = ["setBackendStatus", "setBackendError", "setAuthFailure"];
   const setStatusCalls = [...hook.matchAll(/(?<!\w)setStatus\(/g)].length;
   assert.equal(
@@ -93,14 +82,13 @@ test("a tray sync never surfaces on the web build or on a binary without the com
   const hook = USE_TAURI_BACKEND;
   const sync = hookFunction(hook, "syncTrayStatus");
 
-  // The browser build has no IPC at all, so the import must not even be attempted.
+  // The browser build has no IPC, so the import must not even be attempted.
   assert.match(
     sync,
     /if \(!isTauri\) return;/,
     "syncTrayStatus reaches for the Tauri IPC outside the desktop app",
   );
-  // Against an older binary the command is unregistered and the invoke rejects, leaving
-  // the tray on its build-time label. That must not raise an unhandled rejection.
+  // An older binary rejects the unregistered command; that must not be an unhandled rejection.
   assert.match(
     sync,
     /\.catch\(\(\) => \{\}\)/,
@@ -123,8 +111,7 @@ test("an unlisted status falls through rather than going unhandled", async () =>
   const rust = MAIN;
   const table = trayToggleLabel(rust);
 
-  // BackendStatus grows; the command takes a bare String. A wildcard arm keeps a new
-  // status greyed instead of leaving the label on whatever the last transition set.
+  // A wildcard arm keeps a new status greyed instead of keeping a stale label.
   assert.match(
     table,
     /^\s*_ => \(/m,
@@ -165,8 +152,7 @@ test("the tray toggle starts clickable, for a frontend older than this binary", 
     /MenuItemBuilder::with_id\("toggle", "([^"]*)"\)([\s\S]{0,40}?)\.build\(app\)/,
   );
   assert.ok(built, "the toggle item is no longer built with a literal label");
-  // A bundle predating set_tray_server_status never calls it, so seeding it disabled
-  // would strand that user with a tray toggle they can never click.
+  // A bundle predating set_tray_server_status never calls it, so the tray must not seed disabled.
   assert.doesNotMatch(
     built[2],
     /\.enabled\(false\)/,

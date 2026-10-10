@@ -21,8 +21,7 @@ import {
 import { useToolActivityOpen } from "./use-tool-activity-open";
 import { ScrollPane } from "./scroll-pane";
 
-// ToolFallbackTrigger renders whatever component it is handed, so the glyph is bound here.
-// `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
+// `strokeWidth` is dropped: SVG types it `string | number`, HugeiconsIcon wants a number.
 function SkillIcon({
   strokeWidth: _strokeWidth,
   ...props

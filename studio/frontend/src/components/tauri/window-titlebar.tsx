@@ -127,7 +127,6 @@ function CaptionGlyph({
             rx="2"
           />
         )}
-        {/* Windows puts the front window bottom-left. */}
         {kind === "restore" && (
           <>
             <path
@@ -194,8 +193,7 @@ export function DesktopTitlebarNavigation({
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
-  // Window chrome: the band around these is a fixed 34px, so they keep their
-  // size while the slot holding them scales.
+  // Fixed size: the titlebar band is a fixed 34px while the slot scales.
   const buttonClass =
     "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const customTitlebar = shouldUseCustomWindowTitlebar();
@@ -226,7 +224,6 @@ export function DesktopTitlebarNavigation({
           }}
           className={buttonClass}
         >
-          {/* The open sidebar as a panel; closed, Studio's own glyph. */}
           <HugeiconsIcon
             icon={expanded ? PanelLeftIcon : LayoutAlignLeftIcon}
             strokeWidth={1.75}
@@ -234,8 +231,7 @@ export function DesktopTitlebarNavigation({
           />
         </button>
       ) : (
-        // Holds the slot the navbar's own trigger sits in, so it is the
-        // button's fixed size, not a scaled one.
+        // Holds the navbar trigger's slot at the button's fixed, unscaled size.
         <div aria-hidden="true" className="size-[30px] shrink-0" />
       )}
       <button
@@ -292,8 +288,7 @@ export function WindowTitlebar({
 
   const maximizeRefreshSequence = useRef(0);
   const maximizeRefreshTimer = useRef<number | null>(null);
-  // The titlebar sits outside the sidebar wrapper, so it cannot inherit
-  // --sidebar-width. Read the resized width from the same store instead.
+  // Outside the sidebar wrapper, so --sidebar-width is not inherited; read the store instead.
   const { width, scale: widthScale } = useSidebarWidth();
   const sidebarWidth = showSidebarSurface
     ? pinned
@@ -302,9 +297,7 @@ export function WindowTitlebar({
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
-  // The buttons in this slot are fixed but their padding and gaps scale, so
-  // the slot grows with them and never shrinks under the three 30px buttons.
-  // The drag region starts where it ends.
+  // The slot's padding and gaps scale while its buttons do not; the drag region starts at its end.
   const titlebarNavigationWidth =
     showSidebarSurface && !pinned
       ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
@@ -416,8 +409,7 @@ export function WindowTitlebar({
     [runWindowAction],
   );
 
-  // pointerdown, not mousedown: Radix dismisses modals on pointerdown, which fires first,
-  // so a mousedown handler starts the resize but the dialog closes underneath it.
+  // pointerdown: Radix dismisses modals on pointerdown, which fires before mousedown.
   const handleResizePointerDown = useCallback(
     (direction: WindowResizeDirection) =>
       (event: PointerEvent<HTMLDivElement>) => {
@@ -445,9 +437,7 @@ export function WindowTitlebar({
       {showSidebarSurface && (
         <div
           data-slot="window-titlebar-decoration"
-          // Marks a consumer of --studio-sidebar-live-width. Only this and the header below read
-          // it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here instead of on the
-          // document element, where it would restyle the whole document once per drag frame.
+          // Marks a consumer of --studio-sidebar-live-width, so scoped writes land here, not on <html>.
           data-titlebar-live-width-scope=""
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"
@@ -458,9 +448,7 @@ export function WindowTitlebar({
               style={{ left: cornerLeft }}
             />
           )}
-          {/* One border for edge and corner: it snaps to device pixels where a 1px box blurs. Pinned, it
-              is also the sidebar's full-height edge (app-sidebar drops border-r; dark has none). Dark
-              hides it: any visible border there is lighter than both surfaces and reads as a white seam. */}
+          {/* One border snaps to device pixels; dark hides it since any border there reads as a seam. */}
           <div
             className={cn(
               "absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-transparent",
@@ -530,11 +518,7 @@ export function WindowTitlebar({
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
-            // No optimistic overlay here. Rust raises it only once the quit confirmations
-            // have passed, and one of those can be a dialog asking whether to keep
-            // training: painting "Closing Unsloth Desktop..." behind that question would
-            // answer it before the user does. The wait this covers is the reap, and Rust's
-            // app-closing arrives well ahead of that.
+            // No optimistic overlay: a quit confirmation may still be asking; Rust raises the overlay.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             className="hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90"
           >

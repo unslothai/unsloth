@@ -26,7 +26,6 @@ const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
   unknown: "text-foreground",
 };
 
-/** Match the size and type of the surrounding numeric controls. */
 function MemoryFigure({
   label,
   bytes,
@@ -54,8 +53,7 @@ function MemoryFigure({
     let active = true;
     const fit = () => {
       if (!active) return;
-      // Measured on the row, never on the pill or its label: both give way to the figure,
-      // so either would just confirm whatever the first pass picked.
+      // Measured on the row: the pill and label shrink to the figure and would confirm the first pass.
       const style = getComputedStyle(button);
       const gutters =
         Number.parseFloat(style.paddingLeft) +
@@ -94,11 +92,9 @@ function MemoryFigure({
   }, [candidates]);
   return (
     <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
-      {/* No min-w-0: the label holds its width, so the figure shortens instead. */}
       <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
         {label}
       </span>
-      {/* Sizes to the figure it holds, in the same h-8 pill as the controls below. */}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -155,7 +151,6 @@ function MemoryBreakdownLine({
   );
 }
 
-/** Show the loader's estimate and an optional breakdown for the requested settings. */
 export function MemoryEstimateRow({
   estimate,
   loading,
@@ -179,24 +174,20 @@ export function MemoryEstimateRow({
   estimate: MemoryEstimate | null;
   loading: boolean;
   stale: boolean;
-  /** GPU or shared capacity in GiB; 0 means unknown. */
+  /** GiB; 0 means unknown. */
   gpuCapacityGb: number;
-  /** Combined capacity in GiB; 0 means unknown. */
+  /** GiB; 0 means unknown. */
   totalCapacityGb: number;
-  /** Host RAM capacity in GiB. */
   systemRamCapacityGb: number;
-  /** Free GPU memory in GiB; warnings only, since replacement can free memory. */
+  /** Warnings only, since replacement can free memory. */
   freeGpuCapacityGb: number;
   freeGpuCapacityKnown?: boolean;
   freeGpuReserveDeficitGb?: number;
-  /** Available host RAM minus the loader reserve, in GiB. */
   usableSystemRamGb: number;
   usableSystemRamKnown?: boolean;
   systemRamReserveDeficitGb?: number;
   isUnifiedMemory: boolean;
-  /** Whether GPU and CPU share one memory pool. */
   singleMemoryPool: boolean;
-  /** What the resident copy of this model hands back when it is unloaded for the reload. */
   reclaimableTotalBytes?: number;
   reclaimableGpuBytes?: number;
   expanded: boolean;
@@ -204,7 +195,6 @@ export function MemoryEstimateRow({
 }) {
   const contentId = useId();
   if (!estimate?.available) {
-    // Hide unavailable estimates without flickering during loading.
     return null;
   }
   const { gpuFit, totalFit, cpuOnly, bounded, advisory } = resolveMemoryFit(
@@ -256,7 +246,6 @@ export function MemoryEstimateRow({
         aria-busy={loading || stale}
         className={`space-y-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
       >
-        {/* A shared pool uses the total, regardless of CPU offloading. */}
         <MemoryFigure
           label={
             cpuOnly
@@ -317,14 +306,12 @@ export function MemoryEstimateRow({
           label="Compute buffers"
           value={formatMemoryGb(estimate.computeBytes)}
         />
-        {/* Projector weights are already included above. */}
         {estimate.projectorRuntimeBytes > 0 && (
           <MemoryBreakdownLine
             label="Vision encoder"
             value={formatMemoryGb(estimate.projectorRuntimeBytes)}
           />
         )}
-        {/* Draft cache is additional to the drafter's weights. */}
         {estimate.drafterRuntimeBytes > 0 && (
           <MemoryBreakdownLine
             label="Draft cache"

@@ -6,13 +6,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// The segmented control is a wash on whatever is behind it, so its distance
-// from the selected pill is a property of the surface, not of the control. On
-// the page the wash lands 21 levels below --accent; on an elevated panel the
-// same wash lands 7 below and the two halves stop reading apart. These pin the
-// panel case darkening instead, a page-coloured pane inside a panel getting the
-// page track back, a raised card in that pane sinking again, and the pill's
-// hover on borrowed-pill buttons.
+// The track is a wash on whatever is behind it, so its contrast with the pill depends on the surface.
 
 const HUB_CSS = readSrc("features/hub/hub.css");
 const PICKERS = readSrc(
@@ -40,7 +34,6 @@ test("the track reads its colour from the nearest surface", () => {
 test("a track on an elevated panel sinks toward the page, not off the panel", () => {
   const rule = HUB_CSS.match(PANEL_TRACK);
   assert.ok(rule, "panel-scoped track is missing");
-  // Mixing --foreground here is what put the track 7 levels off the pill.
   assert.match(rule[1] ?? "", /--hub-tab-track: [^;]*var\(--background\)/);
   assert.doesNotMatch(rule[1] ?? "", /var\(--foreground\)/);
 });
@@ -60,8 +53,6 @@ test("the panel track stops just under the panel rather than far below it", () =
 });
 
 test("a page-coloured pane inside a panel gets the page track back", () => {
-  // The Settings content pane is bg-background inside the dialog. Sunk toward
-  // the page there, the track matched the pane and the control lost its track.
   const pane = HUB_CSS.match(PANE_TRACK);
   assert.ok(pane, "page-coloured panes inside panels still sink the track");
   const page = HUB_CSS.match(PAGE_TRACK);
@@ -77,15 +68,12 @@ test("a page-coloured pane inside a panel gets the page track back", () => {
 });
 
 test("a raised card inside a page-coloured pane keeps the panel track", () => {
-  // Profile's StatsCard is bg-background washed 6% white in dark. On the page
-  // track its pill sat 1.14:1 above the track, against 1.42:1 sunk.
   assert.ok(HUB_CSS.match(PANEL_TRACK), "raised cards lost the sunk track");
   const card = readSrc("features/profile/components/stats/stat-primitives.tsx");
   assert.match(card, /\bbg-background dark:border-transparent dark:bg-\[/);
 });
 
 test("a selected segment shows no hover, being the tab you are already on", () => {
-  // Grouped with the resting rule, so the two cannot drift apart.
   assert.match(
     HUB_CSS,
     /html\.dark \.hub-tab-toggle-pill,\s*html\.dark \.hub-tab-toggle-pill:hover \{[^}]*background-color: var\(--accent\)/,
@@ -96,15 +84,13 @@ test("no tab pins its hover to a colour that is only right in one theme", () => 
   const tabs = readSrc(
     "features/model-picker/components/model-selector/pill-tabs.tsx",
   );
-  // hover:!bg-[var(--background)] carries no mode variant, so in dark it
-  // painted the page colour over the pill and blacked the tab out.
+  // hover:!bg-[var(--background)] has no mode variant, so in dark it blacked the tab out.
   assert.doesNotMatch(tabs, /hover:!bg-\[var\(--background\)\]/);
 });
 
 test("an option menu rests at its trigger's tone, not the panel's", () => {
   const menu = HUB_CSS.match(/html\.dark \.hub-menu-instant \{([^}]*)\}/);
   assert.ok(menu);
-  // The same 60% .field-soft rests at, made opaque for a floating surface.
   assert.match(menu[1] ?? "", /var\(--accent\) 60%, var\(--popover\)/);
 });
 
@@ -113,7 +99,6 @@ test("a highlighted row still lifts clear of the lighter menu", () => {
     /html\.dark \.hub-menu-instant \[data-slot="select-item"\]:focus,[\s\S]*?\{([^}]*)\}/,
   );
   assert.ok(row);
-  // Bare --accent would sit 8 levels above the menu, too close to pick out.
   assert.match(row[1] ?? "", /var\(--foreground\) 6%, var\(--accent\)/);
 });
 
@@ -130,7 +115,6 @@ test("a button borrowing the pill look gets the hover the pill pins away", () =>
     /html\.dark \.hub-tab-toggle-pill\.hub-pill-action:hover \{([^}]*)\}/,
   );
   assert.ok(hover, "hub-pill-action hover rule is missing");
-  // Lighter than rest: --accent carrying a little --foreground.
   assert.match(hover[1] ?? "", /var\(--foreground\) 8%, var\(--accent\)/);
 });
 

@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// the download state the training-start overlay renders, kept apart from it so the rules can
-// be exercised without mounting the component.
+// Kept apart from the overlay so the rules are testable without mounting it.
 
-// restated rather than imported from the chat feature so this module stays out of its type graph.
+// Restated, not imported, to stay out of the chat feature's type graph.
 export type DownloadProgressReading = {
   downloaded_bytes: number;
   completed_bytes: number;
   expected_bytes: number;
   progress: number;
-  // optional on purpose: a backend older than this field is the one case where treating a
-  // missing value as `true` would settle a row that nothing verified.
+  // Optional: treating a missing value as true would settle an unverified row.
   complete_on_disk?: boolean;
   // omitted, not nulled, when the cache could not be scanned at all.
   cache_path?: string | null;
@@ -19,18 +17,14 @@ export type DownloadProgressReading = {
 
 export type DownloadState = {
   downloadedBytes: number;
-  // finalized blobs only; bytes still landing in a `.incomplete` blob are not counted here.
+  // `.incomplete` blobs are not counted.
   completedBytes: number;
   totalBytes: number;
   percent: number;
   cachePath: string | null;
-  // the backend verified a usable snapshot on disk.
   completeOnDisk: boolean;
-  // nothing left to transfer, by verification or by standing still.
   settled: boolean;
-  // bytes moved between the last two readings, and the snapshot is not verified. Not
-  // `!settled`: an orphaned `.incomplete` blob keeps `downloaded !== completed` forever, so a
-  // row that will never settle is still not transferring anything.
+  // Not `!settled`: an orphaned `.incomplete` blob never settles but is not transferring.
   moving: boolean;
 };
 
@@ -45,8 +39,7 @@ export const EMPTY_DOWNLOAD_STATE: DownloadState = {
   moving: false,
 };
 
-// a training run fetches a subset of the repo, so completed_bytes never reaches expected_bytes
-// and the backend's verification never fires; standing still is the settled signal instead.
+// A run fetches a repo subset, so expected bytes are never reached; standing still means settled.
 export function downloadStateFromProgress(
   reading: DownloadProgressReading,
   previous: DownloadState = EMPTY_DOWNLOAD_STATE,
@@ -56,7 +49,7 @@ export function downloadStateFromProgress(
   const downloadedBytes = reading.downloaded_bytes;
   const completedBytes = reading.completed_bytes;
   const nothingInFlight = downloadedBytes > 0 && downloadedBytes === completedBytes;
-  // two polls, because huggingface_hub finalizes each blob as it lands and a single quiet reading happens between files.
+  // Two polls, because huggingface_hub finalizes blobs one at a time.
   const unchanged =
     downloadedBytes === previous.downloadedBytes &&
     completedBytes === previous.completedBytes;
@@ -68,26 +61,24 @@ export function downloadStateFromProgress(
     cachePath: reading.cache_path ?? null,
     completeOnDisk,
     settled: completeOnDisk || (nothingInFlight && unchanged),
-    // A verified snapshot is not transferring whatever the byte counts did since the last
-    // reading -- and it is the condition the poll stops on, so a `true` here would freeze
-    // and suppress this row's preparation step for the rest of the run.
+    // A verified snapshot stops the poll, so `true` here would freeze the row's preparation step.
     moving: !completeOnDisk && !unchanged,
   };
 }
 
-// presents a settled resource as ready, which the backend's 99% cap never does on its own (#7858).
+// The backend caps cached progress at 99%, so present a settled resource as ready.
 export function coerceCachedStateReady(state: DownloadState): DownloadState {
   if (!state.cachePath) return state;
   if (!state.settled && state.downloadedBytes > 0 && state.percent < 100) {
     return state;
   }
   if (state.downloadedBytes <= 0) {
-    // an unreadable-size entry settles so it cannot hang; one with bytes still expected has not started.
+    // An unreadable size settles so it cannot hang.
     return state.totalBytes > 0
       ? state
       : { ...state, percent: 100, settled: true };
   }
-  // the total becomes what was fetched, not expected_bytes, which counts files this run never wanted.
+  // expected_bytes counts files this run never wanted.
   return {
     ...state,
     completedBytes: state.downloadedBytes,

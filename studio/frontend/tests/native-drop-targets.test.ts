@@ -16,12 +16,10 @@ let hit: FakeElement | null = null;
 
 Object.assign(globalThis, {
   HTMLElement: FakeElement,
-  // devicePixelRatio 2: a physical drop position is twice the CSS position the
-  // DOM is hit-tested in, which is the conversion this module owns.
+  // devicePixelRatio 2, so a physical drop position is twice the CSS position.
   window: { devicePixelRatio: 2, location: { protocol: "http:" } },
   document: {
     elementFromPoint: () => hit,
-    // setAppliedInterfaceZoom writes the mac chrome vars here on its way through.
     documentElement: { style: { setProperty: () => undefined } },
   },
 });
@@ -69,8 +67,6 @@ test("a drop on a child resolves to its registered ancestor", () => {
   unregister();
 });
 
-// The bug: nested zones both matched by bounds, so the outer one could win and
-// swallow a drop meant for the dialog sitting inside it.
 test("the innermost registered ancestor wins", () => {
   const outer = new FakeElement();
   const inner = new FakeElement();
@@ -90,9 +86,7 @@ test("the innermost registered ancestor wins", () => {
   stopOuter();
 });
 
-// wry reports CSS pixels on macOS (NSView points) and GTK (widget coords), and
-// device pixels only on WebView2. Scaling everything by devicePixelRatio put
-// every hit test at half the real position on a Retina Mac, so nothing matched.
+// wry reports CSS pixels on macOS and GTK, device pixels only on WebView2.
 function pointSeenFor(userAgent: string): { x: number; y: number } {
   const zone = new FakeElement();
   const seen: Array<{ x: number; y: number }> = [];
@@ -145,9 +139,7 @@ for (const userAgent of [
   });
 }
 
-// Every other case passes the zoom explicitly, which leaves the default argument
-// unexercised. That default is the seam between the scale store and the drop path, and
-// wiring it to the wrong getter would keep every one of those cases green.
+// Exercises the default zoom argument, which other cases bypass.
 test("the default zoom comes from the applied interface scale", () => {
   Object.defineProperty(globalThis, "navigator", {
     value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X)" },
@@ -175,8 +167,6 @@ test("a Windows drop position is divided by the scale factor", () => {
   });
 });
 
-// Webview zoom moves devicePixelRatio either side of the monitor scale, and
-// elementFromPoint wants CSS pixels. Zoomed in first, then out.
 for (const ratio of [3, 1.5]) {
   test(`a Windows drop position follows a devicePixelRatio of ${ratio}`, () => {
     globalThis.window.devicePixelRatio = ratio;
@@ -191,8 +181,6 @@ for (const ratio of [3, 1.5]) {
   });
 }
 
-// The chat-wide handler has to ask before acting, or a drop aimed at a dialog's
-// own zone lands as a chat attachment behind it.
 test("the chat drop handler defers to a registered target", async () => {
   assert.match(
     USE_NATIVE_DROP,
@@ -205,16 +193,13 @@ test("the shared image picker owns native drops and ignores stale reads", async 
   assert.match(IMAGE_DROPZONE, /ref=\{nativeDropRef\}/);
   assert.match(IMAGE_DROPZONE, /registerNativeAttachmentPath\(path\)/);
   assert.match(IMAGE_DROPZONE, /readNativeAttachmentFile\(intent\.path\.token\)/);
-  // A read outliving the picker would land on whoever holds `onChange` now, and
-  // the native policy takes fewer formats than the picker's own image/*.
+  // A read outliving the picker would land on whoever holds onChange now.
   assert.match(IMAGE_DROPZONE, /if \(!mounted\.current \|\| claimed !== selection\.current\) return;/);
   assert.match(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\.includes\(/);
   // Index-keyed reference slots keep the picker mounted when one is removed.
   assert.match(IMAGE_DROPZONE, /if \(seen\.current === value\) return;\s*seen\.current = value;\s*selection\.current \+= 1;/);
 });
 
-// The picker rejects a format the native side would refuse anyway, so the two
-// lists have to stay in step or a droppable image starts being turned away.
 test("the picker's droppable formats are ones the native path policy admits", async () => {
   const rust = readText("../../src-tauri/src/native_path_policy.rs");
   const listed = (source: string, pattern: RegExp) =>
@@ -228,8 +213,7 @@ test("the picker's droppable formats are ones the native path policy admits", as
   assert.deepEqual(droppable.filter((ext) => !admitted.includes(ext)), []);
 });
 
-// Tauri repeats "over" for every cursor move, and useNativeModelDrop sits in
-// ChatPage, so an unconditional setState there rerenders the page per event.
+// Tauri repeats "over" per cursor move, so only changed state may setState.
 test("the chat drop overlay only publishes a changed state", async () => {
   assert.match(
     USE_NATIVE_DROP,

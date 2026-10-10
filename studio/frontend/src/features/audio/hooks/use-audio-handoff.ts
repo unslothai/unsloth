@@ -57,8 +57,7 @@ export function useAudioHandoff({
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}|${routeSearch.gguf ? "gguf" : ""}|${routeSearch.workflow ?? ""}`;
     if (handledRouteModel.current === key) return;
     if (busyRef.current !== null) return;
-    // Open the named page first: a staged or failed load otherwise left the user on another page.
-    // Without an explicit workflow, the task (and audio type) name the page the load is for.
+    // Open the named page first, or a staged or failed load leaves the user on another page.
     const routedWorkflow = isAudioWorkflowId(routeSearch.workflow)
       ? routeSearch.workflow
       : audioWorkflowForPick({

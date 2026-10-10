@@ -20,7 +20,7 @@ export type SandboxToolStatus = {
 
 export type TerminalShell = "bash" | "cmd_isolated" | "cmd_fallback";
 
-// "arch": not x64 Windows; "build": older than Windows 11 build 26100. MXC cannot run on either.
+// MXC needs x64 Windows 11 build 26100 or newer.
 export type RuntimeUnsupported = "arch" | "build";
 
 export type WindowsSandboxStatus = {
@@ -275,7 +275,7 @@ export function jobFromApi(job: ApiHostPrepJob): HostPrepJob {
   };
 }
 
-// Older backends lack these routes: reported apart from a failure so the tab can say so.
+// Older backends lack these routes; report that apart from a failure.
 async function checked(
   res: Response,
   route: string,

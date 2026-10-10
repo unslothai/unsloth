@@ -14,10 +14,7 @@ import {
   audioCppModelFor,
 } from "./audio-cpp-catalog.ts";
 
-/** Why the installed audio runtime cannot run this recommended speech or music model, or null
- *  when it can or cannot be told (no status yet, a server that predates the runtime block, or a
- *  repo the backend judges at load). Mirrors the backend's model_runtime_problem so a pick is
- *  refused before its load returns 501. */
+/** Mirrors the backend's model_runtime_problem so a pick is refused before a 501; null if unknown. */
 export function audioCppRuntimeProblem(
   id: string | null | undefined,
   runtime: AudioCppRuntimeStatus | null | undefined,
@@ -76,7 +73,6 @@ export function audioRuntimeNoticeMode({
  *  takes it as the caption and YuE2 as the style. The others fall back to the lyrics. */
 const DESCRIBED_MUSIC_FAMILIES = new Set(["minimax_music3", "yue2"]);
 
-/** Whether the loaded music model refuses to generate without a description. */
 export function musicNeedsDescription(
   audioType?: string | null,
   audioFamily?: string | null,
@@ -117,8 +113,7 @@ export type AudioGenerationPresentation = {
   canStop: boolean;
 };
 
-/** Project request-lifetime phases into truthful UI copy. Audio generation has no
- *  browser-visible numeric progress, so these labels never imply a fraction or ETA. */
+/** No browser-visible numeric progress exists, so labels never imply a fraction or ETA. */
 export function audioGenerationPresentation(
   phase: AudioGenerationPhase,
   detail?: string | null,
@@ -229,8 +224,7 @@ export function nativeAudioInstructionsKind(
   return null;
 }
 
-/** The music length range the loaded model honours. The GGUF runtime clamps tighter than the
- *  MiniMax Music 3 pipeline; both take the same 25 frames per second. */
+/** The GGUF runtime clamps tighter than the MiniMax Music 3 pipeline. */
 export function musicDurationRange(requiresCuda: boolean): {
   min: number;
   max: number;
@@ -240,8 +234,7 @@ export function musicDurationRange(requiresCuda: boolean): {
     : { min: AUDIO_CPP_MUSIC_MIN_SECONDS, max: AUDIO_CPP_MUSIC_MAX_SECONDS };
 }
 
-/** Whether temperature and token length reach the model. GGUF runtime speech keeps each
- *  family's own sampling and lets the server bound the length, so both would be ignored. */
+/** GGUF runtime speech keeps each family's sampling and server-bounded length. */
 export function audioSamplingControlsApply(audioType?: string | null): boolean {
   return audioType !== AUDIO_CPP_TTS_AUDIO_TYPE;
 }
@@ -328,9 +321,7 @@ export interface SttDownloadedArtifact {
   engine: SttEngine;
 }
 
-/** Engine-qualified picker artifacts for every locally loadable checkpoint. Whisper uses one
- *  short key for distinct Transformers and whisper.cpp downloads, so engine provenance must
- *  survive this boundary. */
+/** Whisper uses one short key for distinct Transformers and whisper.cpp downloads, so keep the engine. */
 export function sttDownloadedArtifacts(
   status: SttDownloadedStatus,
   repoIdForSidecarKey: (sidecarKey: string, engine: SttEngine) => string,
@@ -381,9 +372,7 @@ export function canTransitionAudioMode(
   );
 }
 
-/** A managed TTS completion owns auto-load only while the same staging generation is selected
- *  in Speak. Downloads continue globally after ownership changes, but their completion must
- *  not mutate the main slot. */
+/** Only the same selected staging generation may auto-load; downloads continue globally. */
 export function stagedTtsLoadIsOwned(
   pendingGeneration: number | null,
   currentGeneration: number,
@@ -404,11 +393,7 @@ export function exactGgufLoadSelector(
   return meta.ggufFilename ?? meta.ggufVariant ?? null;
 }
 
-/** Whether a TTS pick loads through llama.cpp.
- *
- * A direct .gguf file and a GGUF repo id carry no variant filename, so the selector
- * alone misses both. `meta.isGguf` wins where a caller has it; this covers the rest.
- */
+/** A .gguf file or GGUF repo id carries no variant filename; `meta.isGguf` wins when known. */
 export function isGgufTtsTarget({
   repoId,
   ggufFilename,
@@ -418,8 +403,7 @@ export function isGgufTtsTarget({
   repoId: string;
   ggufFilename?: string | null;
   loadId?: string | null;
-  /** The catalog's own answer, when the caller has one. The tests below are
-   * name heuristics, blind to a GGUF repo whose ids do not spell it. */
+  /** The catalog's answer, when known; the name heuristics below can miss a GGUF repo. */
   isGguf?: boolean | null;
 }): boolean {
   const endsWithGguf = (value: string | null | undefined): boolean =>
@@ -496,7 +480,6 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
-/** The first `wanted` gallery rows fetched in pages of at most `maxPage`, merged into one page. */
 export async function fetchGalleryWindow<
   C extends { id: string },
   P extends { audio: C[]; has_more: boolean },
@@ -525,10 +508,10 @@ export async function fetchGalleryWindow<
   return { ...page, audio };
 }
 
-/** Fold a freshly fetched first page into the list already on screen. The page is authoritative
- *  for the newest `page.length` clips and any scrollback below it is kept; replacing outright
- *  collapsed a paginated History on every delete and reselected a different clip.
- *  `removedId` drops a clip this client just deleted; `hasMore` is the server's own report. */
+/**
+ * The fetched first page is authoritative for its window; scrollback below it is kept.
+ * Replacing outright collapsed a paginated History on every delete.
+ */
 export function mergeGalleryPage<T extends { id: string }>(
   page: readonly T[],
   cached: readonly T[],
@@ -538,18 +521,13 @@ export function mergeGalleryPage<T extends { id: string }>(
   const inPage = new Set(page.map((clip) => clip.id));
   // An empty page means the server holds nothing: a clear from anywhere, not scrollback.
   if (page.length === 0) return { clips: [], stitched: false };
-  // A complete first page IS everything the server holds, so there is no scrollback to keep: a
-  // cached clip below it was deleted by another client or pruned by the size cap, and
-  // stitching it back rendered a row that could never be played again.
+  // A complete first page is everything; cached clips below it were deleted or pruned.
   if (hasMore === false) return { clips: [...page], stitched: false };
-  // The page is authoritative over the window it covers, so a cached clip inside that window and
-  // absent from the page was deleted by another client and must go. Only what sits BELOW the
-  // page's oldest entry is scrollback, keyed on that entry's position.
+  // Only clips BELOW the page's oldest entry are scrollback.
   const oldestInPage = cached.findIndex(
     (clip) => clip.id === page[page.length - 1].id,
   );
-  // Without that boundary the cache cannot prove where safe scrollback begins: an external
-  // archive can shift one unseen row into the page while every earlier row still overlaps.
+  // Without that boundary an external archive could shift an unseen row into the page.
   if (oldestInPage === -1 && cached.length > 0) {
     return { clips: [...page], stitched: false };
   }
@@ -596,10 +574,7 @@ type SttResidencyStatus = SttEngineResidency & {
   audiocpp?: SttEngineResidency;
 };
 
-/** Resolve the resident model from the engine-aware status shape. The legacy top-level fields
- *  mirror Transformers only, so reading them for Qwen3-ASR or whisper.cpp clears a model that
- *  is actually ready. While the selected engine is pending, an older model on another engine
- *  must not steal the selector. */
+/** Read the engine-aware status: the legacy top-level fields mirror Transformers only. */
 export function resolveSttLoadedModel(
   status: SttResidencyStatus,
   selectedEngine: SttEngine | null,
@@ -621,11 +596,8 @@ export function resolveSttResidency(
   selectedEngine: SttEngine | null,
   preserveSelected: boolean,
 ): SttResidency | null {
-  // A whisper.cpp pick on a host without whisper-server is deliberately served through
-  // Transformers, so its residency lives in that block. The engine reported stays the selected
-  // one, since that is what the user picked and what the backend routes; the same
-  // sttEngineStatusFor fallback applies. Without this the refresh completing the load found
-  // nothing, since it runs while preserveSelected is true, and Transcribe stayed disabled.
+  // A whisper.cpp pick on a host without whisper-server is served through Transformers, so its
+  // residency lives there while the reported engine stays the selected one.
   const selectedStatus =
     selectedEngine === "transformers" ||
     (selectedEngine === "gguf" && status.gguf?.available === false)
@@ -655,8 +627,7 @@ export function resolveSttResidency(
   return null;
 }
 
-/** Reconcile the picker selection with the sidecar's authoritative status. Preserve a selection
- *  only while its load/download is genuinely pending. */
+/** Reconcile with sidecar status; keep a selection only while its load is pending. */
 export function reconcileSttSelection({
   selectedRepo,
   loadedModel,

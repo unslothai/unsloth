@@ -63,7 +63,6 @@ const REASONING_TAGS = new Set([
   "step-by-step",
 ]);
 
-// Image generation / diffusion (surfaced as "Image/video gen" in filters).
 const DIFFUSION_TAGS = new Set([
   "diffusers",
   "diffusion",

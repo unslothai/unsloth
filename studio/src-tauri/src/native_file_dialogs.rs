@@ -11,8 +11,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
-/// Per redeemed range, not per file: the frontend streams a large import in
-/// pieces, and a piece has to fit in one IPC response.
+/// Per redeemed range, not per file: each piece of a large import must fit one IPC response.
 const MAX_CHAT_IMPORT_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const NATIVE_FILE_NAME_HEADER: &str = "x-unsloth-default-name";
 const NATIVE_FILE_SAVE_TOKEN_HEADER: &str = "x-unsloth-save-token";
@@ -29,7 +28,6 @@ pub struct NativeImportedFile {
     content: String,
 }
 
-/// A picked chat import addressed by an opaque token instead of a path.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeChatImport {
@@ -38,19 +36,16 @@ pub struct NativeChatImport {
     token: String,
 }
 
-/// Keep active handles valid while bounding registry growth.
 const CHAT_IMPORT_HANDLE_LIMIT: usize = 8;
 
 #[derive(Default)]
 pub struct ChatImportRegistry {
-    /// Oldest first, so the eviction below drops the least recent pick.
+    /// Oldest first, so eviction drops the least recent pick.
     files: Mutex<Vec<(String, PathBuf, Arc<Mutex<File>>)>>,
 }
 
 impl ChatImportRegistry {
-    /// Holds the file the picker opened, not just its path. Resolving a path
-    /// again per range would read whatever occupies it by then, so a file
-    /// replaced mid-import could splice its bytes into the stream.
+    /// Holds the opened file, not its path, so a file replaced mid-import cannot splice in bytes.
     fn register(&self, path: PathBuf, file: File) -> String {
         let token: String = (0..4)
             .map(|_| format!("{:016x}", rand::random::<u64>()))
@@ -164,8 +159,7 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<String>) {
         Some("ts") | Some("tsx") => ("TypeScript", filter_extensions(["ts", "tsx"])),
         Some("sql") => ("SQL", filter_extensions(["sql"])),
         Some("zip") => ("ZIP archive", filter_extensions(["zip"])),
-        // Saved chat attachments, not just exports: a name outside the active
-        // filter can be rejected or silently re-extensioned by the OS dialog.
+        // A name outside the active filter can be rejected or re-extensioned by the OS dialog.
         Some("txt") | Some("log") => ("Text", filter_extensions(["txt", "log"])),
         Some("png") => ("PNG image", filter_extensions(["png"])),
         Some("jpg") | Some("jpeg") => ("JPEG image", filter_extensions(["jpg", "jpeg"])),
@@ -296,9 +290,8 @@ fn finish_native_save(save: Arc<Mutex<NativeSave>>) -> Result<String, String> {
     Ok(name)
 }
 
-/// Only the local backend, or the webview could write any host's reply to disk. Parsed
-/// rather than sliced: in `http://127.0.0.1:8888@evil.test/clip` the loopback-looking part
-/// is userinfo and the client would connect to `evil.test`.
+/// Only the local backend. Parsed, not sliced: in `http://127.0.0.1:8888@evil.test/clip` the
+/// loopback-looking part is userinfo.
 fn require_loopback_url(url: &str) -> Result<(), String> {
     const REJECT: &str = "Only local http URLs can be saved.";
     let parsed = reqwest::Url::parse(url).map_err(|_| REJECT.to_string())?;
@@ -354,8 +347,7 @@ fn read_selected_text_import(
         ));
     }
 
-    // Limit the read too, so a file that grows after metadata inspection cannot
-    // make the command allocate without bound.
+    // Limit the read too, so a file that grows after the stat cannot force unbounded allocation.
     let file =
         File::open(&path).map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
@@ -378,7 +370,6 @@ fn read_selected_text_import(
     Ok(Some(NativeImportedFile { name, content }))
 }
 
-/// Register a picked file for bounded range reads through an opaque token.
 fn open_selected_import(
     registry: &ChatImportRegistry,
     selected_path: Option<PathBuf>,
@@ -408,9 +399,7 @@ fn open_selected_import(
         .unwrap_or_else(|| format!("chat-import.{extension}"));
     let file =
         File::open(&path).map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
-    // Size from the handle the token keeps, not from the path: a file swapped in
-    // between the two describes a different object, and this number is what
-    // bounds the streamed read.
+    // Size from the token's handle, not the path, since this bounds the streamed read.
     let opened = file
         .metadata()
         .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
@@ -676,13 +665,11 @@ pub async fn save_native_file_from_url(
     Ok(Some(saved_file_name(&path)))
 }
 
-/// A local backend that has accepted the request should never go quiet for this long, and a
-/// clip that is still arriving resets it, so a large save is not cut short.
+/// Resets per chunk, so a large save is not cut short.
 const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// `bearer` carries a UI-session token for routes that demand one. It is always minted by
-/// the command, never handed in over IPC, so the webview cannot choose what this client
-/// authenticates as -- see `download_logs_to_downloads`.
+/// `bearer` is always minted by the command, never passed over IPC, so the webview cannot choose
+/// what this client authenticates as; see `download_logs_to_downloads`.
 async fn stream_url_to_path(
     url: &str,
     path: &Path,
@@ -700,7 +687,7 @@ async fn stream_url_to_path(
         .send()
         .await
         .map_err(|error| format!("Download failed: {error}"))?;
-    // Redirects are refused rather than followed, so a 3xx is a rejection here, not a hop.
+    // Redirects are refused, so a 3xx is a rejection here, not a hop.
     if !response.status().is_success() {
         return Err(format!(
             "Download failed with status {}.",
@@ -727,49 +714,33 @@ async fn stream_url_to_path(
     Ok(())
 }
 
-/// The only route `download_logs_to_downloads` may fetch.
-///
-/// A suffix match rather than equality, so an install served under a base path still
-/// resolves. The point is that the path cannot be swapped for another endpoint: the
-/// bearer this command mints is a full UI session, so a caller-chosen path would make a
-/// download button into "read any local route as the signed-in user".
+/// The only route `download_logs_to_downloads` may fetch: its bearer is a full UI session.
+/// Suffix match so a base path still resolves.
 const LOG_EXPORT_ROUTE: &str = "/api/settings/debug/logs/export";
 const LOG_ARCHIVE_FALLBACK_NAME: &str = "unsloth-logs.zip";
-/// A Downloads folder already holding this many copies has something else wrong with it;
-/// give up rather than stat forever.
 const LOG_ARCHIVE_MAX_COPIES: u32 = 999;
 
-/// Reduce a caller-suggested name to a bare basename.
-///
-/// The destination is chosen here, not by a file chooser, so nothing else stops a
-/// suggested `../../.bashrc` from landing outside it. `Path::file_name` alone is not
-/// enough: a backslash is an ordinary character on Unix, so `..\..\x` would survive it.
+/// No chooser guards this destination, and on Unix `..\..\x` survives `Path::file_name`.
 fn log_archive_file_name(suggested: &str) -> String {
     let base = suggested
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or_default()
-        // A Windows drive-relative name like `C:evil.zip` keeps its prefix through the
-        // separator split and still resolves off this directory.
+        // A drive-relative name like `C:evil.zip` would still resolve off this directory.
         .rsplit(':')
         .next()
         .unwrap_or_default();
     if base.is_empty() || base == "." || base == ".." || base.contains('\0') {
         return LOG_ARCHIVE_FALLBACK_NAME.to_string();
     }
-    // The destination falls back to $HOME when the OS has no Downloads folder
-    // (a minimal container, a server image with no user-dirs.dirs), and this
-    // name comes from the webview. A leading dot there is `.bashrc`, and any
-    // other extension is an arbitrary drop. Neither is something a "download
-    // the logs" button should be able to write, and both are free to refuse:
-    // the only real caller sends `unsloth-logs-<stamp>.zip`.
+    // The destination may fall back to $HOME and the name comes from the webview: refuse dotfiles
+    // and non-.zip names (the real caller sends `unsloth-logs-<stamp>.zip`).
     if base.starts_with('.') || !base.ends_with(".zip") {
         return LOG_ARCHIVE_FALLBACK_NAME.to_string();
     }
     base.to_string()
 }
 
-/// Where a one-click download belongs, with the fallback the rest of the app uses.
 fn log_archive_directory() -> Result<PathBuf, String> {
     let directory = dirs::download_dir()
         .or_else(dirs::home_dir)
@@ -814,26 +785,12 @@ pub(crate) fn unique_destination(directory: &Path, file_name: &str) -> Result<Pa
 
 const NOT_THE_LOG_EXPORT: &str = "Only the local log export endpoint can be downloaded.";
 
-/// Returned when desktop auth cannot mint a session AND the caller supplied no UI
-/// token of its own. A fixed sentence, matched structurally on the TypeScript side
-/// (`DESKTOP_LOGIN_REQUIRED` in features/settings/api/debug-logs.ts) so the tab can
-/// say "sign in" instead of showing a generic failure. Keep the two in step.
+/// Matched by `DESKTOP_LOGIN_REQUIRED` in features/settings/api/debug-logs.ts; keep the two in step.
 const LOGIN_REQUIRED: &str = "Log export requires a signed-in Unsloth session.";
 
-/// Which bearer token the export is made with: a minted desktop session where one
-/// exists, otherwise the tab's own.
-///
-/// The fallback covers two cases that both leave a signed-in owner unable to export.
-/// `desktop-login` answers LoginRequired UNCONDITIONALLY on a multi-account install:
-/// the desktop secret proves the shell owns the backend, not which account is driving
-/// it (routes/auth.py). And minting can fail outright, because provisioning runs the
-/// backend CLI with UNSLOTH_STUDIO_HOME and STUDIO_HOME scrubbed, so an attached
-/// backend under a custom home writes its secret where this code does not read it.
-/// In both, the tab asking for the export is holding a session that reads that very
-/// endpoint perfectly well.
-///
-/// A minting error survives when there is nothing to fall back to: it says far more
-/// about what went wrong than the sentinel would.
+/// A minted desktop session where one exists, otherwise the tab's own token: desktop-login
+/// refuses on multi-account installs and can fail under a custom home. A minting error wins
+/// when there is no fallback.
 fn select_export_session(
     minted: Result<crate::desktop_auth::DesktopAuthResponse, String>,
     ui_token: Option<String>,
@@ -850,10 +807,7 @@ fn select_export_session(
     }
 }
 
-/// Refuse anything but the export route, before a token is minted for it.
-///
-/// `Url::parse` normalises `..` segments, so a path that walks out of the route fails
-/// here rather than reaching the backend.
+/// `Url::parse` normalises `..` segments, so a path walking out of the route fails here.
 fn require_log_export_route(url: &str) -> Result<reqwest::Url, String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| NOT_THE_LOG_EXPORT.to_string())?;
     if !parsed.path().ends_with(LOG_EXPORT_ROUTE) {
@@ -862,22 +816,14 @@ fn require_log_export_route(url: &str) -> Result<reqwest::Url, String> {
     Ok(parsed)
 }
 
-/// Point the caller's URL at the backend this app is actually running.
-///
-/// The webview names the endpoint; it never names the port. Rebasing onto the live port
-/// pins the authenticated fetch to this install's backend, so it cannot be aimed at some
-/// other loopback listener that would then receive the token. It also means a webview
-/// whose API base is still the `127.0.0.1:0` placeholder resolves correctly here.
+/// Rebase onto the live port so the token cannot be aimed at another loopback listener; this also
+/// fixes a `127.0.0.1:0` placeholder base.
 fn pin_to_backend(mut url: reqwest::Url, port: u16) -> Result<String, String> {
     url.set_host(Some("127.0.0.1"))
         .map_err(|_| NOT_THE_LOG_EXPORT.to_string())?;
     url.set_port(Some(port))
         .map_err(|_| NOT_THE_LOG_EXPORT.to_string())?;
-    // The whole path, not just the host and port. The webview names an endpoint but
-    // gets no say in which one: the bearer minted for this request is a full UI
-    // session, and the backend mounts catch-all routes, so a caller-supplied prefix
-    // is a way to spend that token somewhere else. The desktop API base is only ever
-    // a host and a port, so there is no legitimate prefix to preserve.
+    // The whole path: the bearer is a full UI session and the backend has catch-all routes.
     url.set_path(LOG_EXPORT_ROUTE);
     // The export takes no parameters, so anything here came from the caller.
     url.set_query(None);
@@ -885,17 +831,13 @@ fn pin_to_backend(mut url: reqwest::Url, port: u16) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-/// The port the backend is serving on, resolved the way desktop auth resolves it.
-///
-/// Read *after* minting a token, so any port discovery that minting performed is already
-/// reflected in the state this reads.
+/// Read *after* minting, so any port discovery minting did is reflected.
 fn live_backend_port(state: &State<'_, crate::process::BackendState>) -> Result<u16, String> {
     let backend = state.lock().map_err(|error| error.to_string())?;
     if let Some(port) = backend.owned_backend_port() {
         return Ok(port);
     }
-    // An owned backend whose port is not known yet is starting, not attachable: falling
-    // back to the cached field here would send the token to a stale listener.
+    // An owned backend with no known port is starting; the cached field may be stale.
     if backend.has_owned_backend() {
         return Err("Backend is not ready".to_string());
     }
@@ -904,25 +846,13 @@ fn live_backend_port(state: &State<'_, crate::process::BackendState>) -> Result<
         .ok_or_else(|| "Backend is not ready".to_string())
 }
 
-/// The rewrite itself, compiled on EVERY platform so that a test for it runs in
-/// ordinary CI rather than only on a Windows runner. Gating the body behind
-/// `cfg(windows)` left the UNC branch below covered on no platform at all.
-///
-/// The prefix compare is case-insensitive: `fs::canonicalize` returns the uppercase
-/// `UNC` spelling today, but a lowercase one would otherwise fall through to the
-/// second arm and come out as `unc\server\share`, which is worse than leaving it
-/// alone -- it looks like a relative path.
-// Off Windows the only caller is the test above, and an ordinary build would
-// otherwise warn that it is never used. Kept compiled rather than cfg'd away,
-// which is the entire point: that is what lets the UNC case be tested here.
+/// Compiled on every platform so the UNC branch is tested in ordinary CI. The prefix compare is
+/// case-insensitive so a lowercase `unc` does not come out as a relative-looking path.
+// Off Windows only the test uses it; kept compiled so the UNC case is tested.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn strip_verbatim_prefix_inner(text: String) -> String {
     const UNC: &str = r"\\?\UNC\";
-    // `get` rather than `text[..UNC.len()]`: a Downloads folder directly under a
-    // drive root with a non-ASCII first component canonicalises to `\\?\C:\下载\...`,
-    // where byte 8 falls inside a multibyte character and slicing would panic --
-    // after the archive had already been saved, so the download succeeds and the
-    // command still fails. `get` answers None there instead.
+    // `get`, not slicing: a non-ASCII first component can put byte 8 inside a character.
     if text
         .get(..UNC.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(UNC))
@@ -935,8 +865,7 @@ fn strip_verbatim_prefix_inner(text: String) -> String {
     }
 }
 
-/// Windows canonicalisation returns the `\\?\` verbatim form, which is not the path a
-/// user recognises in a toast. Everywhere else this is the identity.
+/// Strip the `\\?\` verbatim form for display. Identity elsewhere.
 #[cfg(windows)]
 fn strip_verbatim_prefix(text: String) -> String {
     strip_verbatim_prefix_inner(text)
@@ -953,25 +882,10 @@ pub(crate) fn display_path(path: &Path) -> String {
     strip_verbatim_prefix(resolved.display().to_string())
 }
 
-/// Save the backend's log archive straight into the user's Downloads folder.
-///
-/// Sharing a problem means collecting the server log and every runner log by hand, and on
-/// desktop the webview cannot reach the log folder at all. This is the one-click half of
-/// that: no chooser, a known destination, and the real path returned so the UI can say
-/// where the file went and offer to reveal it.
-///
-/// The bearer is minted here rather than accepted as a parameter. The webview already
-/// holds a session, so passing one in would gain it nothing while letting it aim an
-/// arbitrary `Authorization` header at an arbitrary loopback port. Minting internally, and
-/// pinning both the port and the route, keeps this command able to do exactly one thing.
-///
-/// `filename` is a single word on purpose: Tauri renames a snake_case parameter to
-/// camelCase over IPC, and this one is the name the Logs tab already passes.
-/// `ui_token` arrives as `uiToken` for the same reason.
-///
-/// Errors come back with `stream_url_to_path`'s wording, non-2xx included, so the caller
-/// can still tell a 404 (backend too old for the route) and a 403 (no UI session) apart
-/// from a generic failure.
+/// Save the backend's log archive straight into Downloads, returning the real path. The bearer is
+/// minted here and the port and route are pinned, so the webview cannot aim auth elsewhere.
+/// `filename` is one word on purpose: Tauri camelCases params over IPC (`ui_token` arrives as
+/// `uiToken`) and the Logs tab sends `filename`.
 #[tauri::command]
 pub async fn download_logs_to_downloads(
     webview: tauri::Webview,
@@ -982,26 +896,19 @@ pub async fn download_logs_to_downloads(
     ui_token: Option<String>,
 ) -> Result<String, String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    // Both guards run before anything is minted, so a URL this command will not fetch
-    // never causes a token to exist.
+    // Both guards run before anything is minted.
     require_loopback_url(&url)?;
     let target = require_log_export_route(&url)?;
 
-    // Minting is attempted either way, because it also resolves and caches the live
-    // port. The refresh token that comes with it is discarded unused; the backend has
-    // no access-token-only exchange to ask for instead. `select_export_session` says
-    // when the tab's own token stands in, and why. Falling back grants the webview
-    // nothing it did not already have: the token is the one it is already holding, and
-    // this command pins the host, the port and the path, so the only thing it can be
-    // spent on is this one route on this install's backend.
+    // Mint either way: it also resolves and caches the live port. The tab-token fallback grants
+    // nothing new, since host, port and path are pinned.
     let minted = crate::desktop_auth::desktop_auth(state.clone(), diagnostics).await;
     let session = select_export_session(minted, ui_token)?;
     let pinned_url = pin_to_backend(target, live_backend_port(&state)?)?;
 
     let directory = log_archive_directory()?;
     let destination = unique_destination(&directory, &log_archive_file_name(&filename))?;
-    // Staged and renamed, so an interrupted download never leaves a truncated archive
-    // sitting under a name that looks complete.
+    // Staged and renamed, so an interrupted download never leaves a truncated archive.
     stream_url_to_path(
         &pinned_url,
         &destination,
@@ -1018,9 +925,7 @@ fn read_range(
     offset: u64,
     length: usize,
 ) -> Result<Vec<u8>, String> {
-    // Clamped here rather than only at the call site, so the bound holds for
-    // every caller: `take` was reading past it while only the allocation was
-    // capped, which left the read itself unbounded.
+    // Clamped here so the read itself is bounded for every caller, not just the allocation.
     let length = length.min(MAX_CHAT_IMPORT_CHUNK_BYTES);
     let mut file = handle
         .lock()
@@ -1035,7 +940,7 @@ fn read_range(
     Ok(bytes)
 }
 
-/// Read raw bytes so the frontend can decode UTF-8 across range boundaries.
+/// Raw bytes, so the frontend can decode UTF-8 across range boundaries.
 #[tauri::command]
 pub async fn read_native_chat_import_chunk(
     app: AppHandle,
@@ -1132,9 +1037,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
-        // Tests run on parallel threads, and macOS's clock resolves only microseconds, so two
-        // calls with the same name could get the same path and one test's cleanup or swap would
-        // land on the other's file. The counter keeps every name in this process distinct.
+        // Parallel tests plus macOS's microsecond clock can collide on names; the counter keeps
+        // them unique.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
@@ -1192,7 +1096,6 @@ mod tests {
 
     #[test]
     fn writes_text_and_binary_exactly() {
-        // Overwriting must stage the new content before replacing the destination.
         let text_path = temp_path("text").with_extension("json");
         let binary_path = temp_path("binary").with_extension("zip");
 
@@ -1288,7 +1191,6 @@ mod tests {
 
     #[test]
     fn shell_commands_use_a_shell_save_filter() {
-        // The terminal card downloads command.sh through the same cell.
         assert_save_filter("command.sh", "Shell script", &["sh"]);
         assert_save_filter("command.SH", "Shell script", &["sh"]);
     }
@@ -1307,8 +1209,6 @@ mod tests {
 
     #[test]
     fn saved_chat_attachments_keep_their_own_extension() {
-        // Settings > Data saves attachments here; a name outside the filter can
-        // be rejected or re-extensioned by the OS dialog.
         assert_save_filter("report.txt", "Text", &["txt", "log"]);
         assert_save_filter("photo.PNG", "PNG image", &["png"]);
         assert_save_filter("shot.jpeg", "JPEG image", &["jpg", "jpeg"]);
@@ -1316,7 +1216,6 @@ mod tests {
         assert_save_filter("voice.webm", "WebM video or audio", &["webm"]);
     }
 
-    /// A current-thread runtime: these tests need one task, not a worker per core.
     fn test_runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1324,7 +1223,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A one-shot loopback server, so the streaming save is exercised over real HTTP.
     fn serve_once(body: Vec<u8>, status: &'static str) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1354,7 +1252,6 @@ mod tests {
             .unwrap();
         server.join().unwrap();
         assert_eq!(fs::read(&dest).unwrap(), body);
-        // Nothing partial left beside it.
         let strays: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|entry| entry.ok())
@@ -1386,8 +1283,7 @@ mod tests {
         ] {
             assert!(require_loopback_url(url).is_ok(), "should allow {url}");
         }
-        // The userinfo forms are the ones a naive authority split accepts: everything
-        // before the '@' is credentials, so the real host is what follows it.
+        // Everything before the '@' is userinfo, so the real host is what follows it.
         for url in [
             "http://evil.test/x.mp4",
             "https://127.0.0.1:8888/x.mp4",
@@ -1408,8 +1304,7 @@ mod tests {
 
     #[test]
     fn a_backend_that_goes_quiet_mid_body_stops_the_save() {
-        // Headers promise more than is sent, then the server holds the socket open. Without a
-        // per-read timeout the invoke never resolves and the staging file stays behind.
+        // Headers promise more than is sent; without a per-read timeout the invoke never resolves.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (release, stalled) = std::sync::mpsc::channel::<()>();
@@ -1473,8 +1368,6 @@ mod tests {
 
     #[test]
     fn a_gallery_clip_offers_its_own_container() {
-        // The gallery's MP4 is the only export that reaches this dialog; WebM and GIF
-        // save from a blob. Both mp4 arms are named for video since #8173.
         assert_save_filter(
             "Unsloth_video_20260808-120000_1670009728.mp4",
             "MPEG-4 video or audio",
@@ -1508,7 +1401,6 @@ mod tests {
         assert_eq!(opened.size, 15);
         assert_eq!(registry.resolve(&opened.token).unwrap().0, jsonl_path);
 
-        // An Open WebUI export is a .json array, so that extension has to be accepted now.
         let json_path = temp_path("openwebui").with_extension("json");
         fs::write(&json_path, "[{\"chat\":{}}]").unwrap();
         assert!(open_selected_import(&registry, Some(json_path.clone()))
@@ -1549,8 +1441,6 @@ mod tests {
 
     #[test]
     fn a_large_import_is_opened_rather_than_read_into_memory() {
-        // The 64 MiB read cap is what turned a real Open WebUI export away; a
-        // file past it must now open, because the frontend streams it in ranges.
         let registry = ChatImportRegistry::default();
         let huge = temp_path("huge").with_extension("json");
         let file = File::create(&huge).unwrap();
@@ -1584,15 +1474,12 @@ mod tests {
         assert_eq!(resolved, path);
         assert!(registry.resolve("not-a-token").is_none());
 
-        // Ranges are cut on byte boundaries, so a character split across two of
-        // them is the frontend decoder's problem, not a truncated read here.
         assert_eq!(read_range(&handle, &path, 0, 4).unwrap(), b"0123");
         assert_eq!(read_range(&handle, &path, 4, 4).unwrap(), b"4567");
         assert_eq!(read_range(&handle, &path, 8, 4).unwrap(), b"89");
         assert!(read_range(&handle, &path, 10, 4).unwrap().is_empty());
 
-        // Picking again must not invalidate the earlier handle: that import can
-        // still be streaming, and its next range read would fail mid-history.
+        // Picking again must not invalidate an earlier handle that may still be streaming.
         let second = temp_path("ranges-2").with_extension("jsonl");
         fs::write(&second, "abc").unwrap();
         let newer = register_for_test(&registry, &second);
@@ -1600,7 +1487,6 @@ mod tests {
         assert_eq!(registry.resolve(&newer).unwrap().0, second);
         assert_ne!(token, newer);
 
-        // A hostile length cannot read past one chunk, whatever the caller passes.
         let big = temp_path("ranges-clamp").with_extension("jsonl");
         fs::write(&big, vec![b'x'; MAX_CHAT_IMPORT_CHUNK_BYTES + 4096]).unwrap();
         let big_token = register_for_test(&registry, &big);
@@ -1613,7 +1499,6 @@ mod tests {
         );
         let _ = fs::remove_file(big);
 
-        // The map is bounded, so a long session cannot accumulate handles.
         for index in 0..CHAT_IMPORT_HANDLE_LIMIT {
             let filler = temp_path(&format!("ranges-fill-{index}")).with_extension("jsonl");
             fs::write(&filler, "x").unwrap();
@@ -1629,8 +1514,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_file_swapped_under_the_path_mid_import_cannot_reach_the_stream() {
-        // Reopening the path per range would splice a replacement file into the
-        // export, and a same-size swap leaves no short read to catch it.
+        // A same-size swap leaves no short read to catch, so the handle must be reused.
         let registry = ChatImportRegistry::default();
         let path = temp_path("swapped").with_extension("jsonl");
         fs::write(&path, "original--").unwrap();
@@ -1659,10 +1543,7 @@ mod tests {
         let path = std::env::temp_dir().join(OsString::from_vec(vec![
             b'u', b'n', b's', b'l', b'o', b't', b'h', 0xff, b'.', b'c', b's', b'v',
         ]));
-        // Linux happily stores arbitrary bytes in a filename, but macOS enforces
-        // UTF-8 on APFS/HFS+ and rejects this name outright. The name-recovery
-        // path being asserted here is only reachable where such a file can
-        // exist, so skip rather than fail on filesystems that forbid it.
+        // macOS rejects non-UTF-8 filenames, so skip where such a file cannot exist.
         if fs::write(&path, "role,content\nuser,hello\n").is_err() {
             return;
         }
@@ -1676,8 +1557,6 @@ mod tests {
 
     #[test]
     fn a_suggested_log_archive_name_cannot_escape_the_download_folder() {
-        // No chooser sits between the webview and the filesystem here, so this
-        // function is the whole containment check.
         let directory = tempfile::tempdir().unwrap();
         for suggested in [
             "../../.bashrc",
@@ -1706,14 +1585,11 @@ mod tests {
             );
         }
 
-        // A name that was already a basename is left exactly alone.
         assert_eq!(
             log_archive_file_name("unsloth-logs-20260910-101500.zip"),
             "unsloth-logs-20260910-101500.zip"
         );
         assert_eq!(log_archive_file_name("../.."), LOG_ARCHIVE_FALLBACK_NAME);
-        // $HOME is the destination when the OS has no Downloads folder, and this
-        // name comes from the webview: a dotfile or a non-zip is refused there.
         assert_eq!(log_archive_file_name(".bashrc"), LOG_ARCHIVE_FALLBACK_NAME);
         assert_eq!(log_archive_file_name(".ssh"), LOG_ARCHIVE_FALLBACK_NAME);
         assert_eq!(
@@ -1742,10 +1618,8 @@ mod tests {
             unique_destination(directory.path(), "unsloth-logs.zip").unwrap(),
             directory.path().join("unsloth-logs (3).zip")
         );
-        // The earlier archive is still the one the user was told about.
         assert_eq!(fs::read(&first).unwrap(), b"first");
 
-        // A name with no extension still uniquifies rather than looping forever.
         let plain = directory.path().join("logs");
         fs::write(&plain, b"x").unwrap();
         assert_eq!(
@@ -1753,7 +1627,6 @@ mod tests {
             directory.path().join("logs (2)")
         );
 
-        // And the search is bounded.
         for copy in 2..=LOG_ARCHIVE_MAX_COPIES {
             fs::write(directory.path().join(format!("full ({copy}).zip")), b"x").unwrap();
         }
@@ -1769,15 +1642,10 @@ mod tests {
             pin_to_backend(require_log_export_route(url)?, port)
         }
 
-        // Whatever port the webview names, the fetch goes to the running backend. The
-        // placeholder base a Tauri webview starts with is exactly this case.
         assert_eq!(
             resolve("http://127.0.0.1:0/api/settings/debug/logs/export", 8890).unwrap(),
             "http://127.0.0.1:8890/api/settings/debug/logs/export"
         );
-        // A caller-supplied prefix is discarded, not preserved: the token minted
-        // for this request is a full UI session and the backend has catch-all
-        // routes, so the path is rebuilt rather than trusted.
         assert_eq!(
             resolve(
                 "http://localhost:9/base/api/settings/debug/logs/export",
@@ -1787,7 +1655,6 @@ mod tests {
             "http://127.0.0.1:8890/api/settings/debug/logs/export"
         );
 
-        // Query and fragment are the caller's, and the export takes neither.
         assert_eq!(
             resolve(
                 "http://127.0.0.1:0/api/settings/debug/logs/export?x=1#frag",
@@ -1796,13 +1663,11 @@ mod tests {
             .unwrap(),
             "http://127.0.0.1:8890/api/settings/debug/logs/export"
         );
-        // A prefix that smuggles another api mount is flattened to the real route.
         assert_eq!(
             resolve("http://127.0.0.1:0/api/v1/api/settings/debug/logs/export", 8890).unwrap(),
             "http://127.0.0.1:8890/api/settings/debug/logs/export"
         );
 
-        // The bearer is a full UI session, so no other route may be reached with it.
         for url in [
             "http://127.0.0.1:8888/api/settings",
             "http://127.0.0.1:8888/api/settings/debug/logs",
@@ -1814,8 +1679,6 @@ mod tests {
             assert!(resolve(url, 8890).is_err(), "should reject {url}");
         }
 
-        // The loopback guard runs before any of this, and it is the same one the
-        // streaming save uses, so an off-host export never reaches the rebase.
         for url in [
             "http://evil.test/api/settings/debug/logs/export",
             "https://127.0.0.1:8888/api/settings/debug/logs/export",
@@ -1830,10 +1693,6 @@ mod tests {
         );
     }
 
-    /// The four ways the export picks a bearer token. The two fallback rows are the
-    /// point: a signed-in owner on a multi-account install, and one whose minting
-    /// fails because the backend was attached under a custom home, both export with
-    /// the session their tab is already using rather than hitting a dead end.
     #[test]
     fn the_tab_token_stands_in_whenever_minting_cannot_produce_a_session() {
         use crate::desktop_auth::{DesktopAuthResponse, LoginRequired, MultiLoginMode};
@@ -1852,31 +1711,25 @@ mod tests {
         };
         let failed = || Err("Desktop auth provisioning failed: no such file".to_string());
 
-        // A minted session always wins, even with a UI token to hand.
         assert_eq!(
             select_export_session(minted(), Some("ui".to_string())).unwrap(),
             "minted"
         );
         assert_eq!(select_export_session(minted(), None).unwrap(), "minted");
 
-        // Multi-account install: minting refuses on principle, the tab's token works.
         assert_eq!(
             select_export_session(login_required(), Some("ui".to_string())).unwrap(),
             "ui"
         );
-        // Attached backend under UNSLOTH_STUDIO_HOME: minting errors, same answer.
         assert_eq!(
             select_export_session(failed(), Some("ui".to_string())).unwrap(),
             "ui"
         );
 
-        // Blank is not a token, so it must not be mistaken for one.
         assert_eq!(
             select_export_session(login_required(), Some("   ".to_string())).unwrap_err(),
             LOGIN_REQUIRED
         );
-        // Nothing to fall back to: say "sign in" where that is the reason, and keep
-        // the real error where it is not.
         assert_eq!(
             select_export_session(login_required(), None).unwrap_err(),
             LOGIN_REQUIRED
@@ -1888,20 +1741,12 @@ mod tests {
         );
     }
 
-    /// The multi-account fallback, asserted where it is decidable without a live
-    /// backend: the tab must actually SEND a token for the command to fall back
-    /// to. `desktop-login` refuses to mint unconditionally when the install is
-    /// multi-account, so if the caller stops passing `uiToken` the export dies
-    /// there permanently, for an owner who is signed in and cannot fix it by
-    /// signing in again.
+    /// Multi-account installs never mint, so the tab must keep sending `uiToken` or export dies.
     #[test]
     fn the_tab_sends_a_ui_token_for_the_multi_account_fallback() {
         let frontend = include_str!("../../frontend/src/features/settings/api/debug-logs.ts");
-        // How the token is spelled at the call site is the frontend's business:
-        // it has already gone from `uiToken: getAuthToken()` to a refreshing
-        // wrapper to a shorthand property, none of which changed the contract.
-        // So pin the part that is ours -- the payload of THIS command names
-        // `uiToken` -- and that the tab still reads a token to put in it.
+        // Pin only that this command's payload names `uiToken`; how the frontend spells the
+        // value is its own business.
         let payload = frontend
             .split_once("\"download_logs_to_downloads\"")
             .map(|(_, rest)| rest.chars().take(200).collect::<String>());
@@ -1916,9 +1761,7 @@ mod tests {
         );
     }
 
-    /// The login-required sentinel is matched by its exact text on the TypeScript
-    /// side, so a reworded constant here would silently downgrade the toast from
-    /// "sign in" to a generic failure. This fails if the two drift apart.
+    /// The TypeScript side matches the sentinel's exact text; fail if the two drift.
     #[test]
     fn the_login_required_sentinel_matches_what_the_frontend_looks_for() {
         let frontend = include_str!("../../frontend/src/features/settings/api/debug-logs.ts");
@@ -1928,47 +1771,31 @@ mod tests {
         );
     }
 
-    /// The verbatim rewrite, exercised on whatever platform CI happens to be.
-    ///
-    /// `strip_verbatim_prefix` itself is `cfg(windows)`, so on a Linux or macOS
-    /// runner it is the identity and proves nothing; its only caller resolves to
-    /// the identity too. That left the UNC branch -- the one a user hits when
-    /// Downloads is on a network share -- covered on no platform at all. This
-    /// drives the inner function, which is compiled everywhere.
+    /// Drives the inner rewrite, compiled everywhere, so the UNC branch is tested off Windows.
     #[test]
     fn a_verbatim_windows_path_is_shown_the_way_a_user_writes_it() {
-        // Drive-letter form, the ordinary case.
         assert_eq!(
             strip_verbatim_prefix_inner(r"\\?\C:\Users\u\Downloads\a.zip".to_string()),
             r"C:\Users\u\Downloads\a.zip"
         );
-        // UNC form: `\\?\UNC\server\share` names `\\server\share`, and dropping
-        // only the `\\?\` would leave the nonsense `UNC\server\share`.
+        // `\\?\UNC\server\share` names `\\server\share`, not `UNC\server\share`.
         assert_eq!(
             strip_verbatim_prefix_inner(r"\\?\UNC\server\share\a.zip".to_string()),
             r"\\server\share\a.zip"
         );
-        // Lowercase spelling. canonicalize returns uppercase today, so this is
-        // about not degrading if that ever changes.
         assert_eq!(
             strip_verbatim_prefix_inner(r"\\?\unc\server\share\a.zip".to_string()),
             r"\\server\share\a.zip"
         );
-        // A non-ASCII first component under a drive root: byte 8 lands inside the
-        // first multibyte character, so a plain `text[..8]` panics here rather
-        // than deciding the prefix does not match.
+        // Byte 8 lands inside a multibyte character, so a plain `text[..8]` would panic.
         assert_eq!(
             strip_verbatim_prefix_inner(r"\\?\C:\下载\a.zip".to_string()),
             r"C:\下载\a.zip"
         );
-        // The same shape, but long enough that a byte slice would reach past the
-        // character rather than stopping inside the first one.
         assert_eq!(
             strip_verbatim_prefix_inner(r"\\?\C:\ダウンロード\a.zip".to_string()),
             r"C:\ダウンロード\a.zip"
         );
-        // Anything without the prefix is handed back untouched, including a path
-        // shorter than the prefix itself, which must not panic on the slice.
         assert_eq!(
             strip_verbatim_prefix_inner(r"C:\Users\u\a.zip".to_string()),
             r"C:\Users\u\a.zip"
@@ -1980,8 +1807,6 @@ mod tests {
 
     #[test]
     fn the_log_export_sends_the_minted_session_and_lands_a_real_path() {
-        // The token is minted in the command, never handed in, so what matters here is
-        // that stream_url_to_path actually puts it on the wire.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -2013,7 +1838,6 @@ mod tests {
         );
         assert_eq!(fs::read(&destination).unwrap(), b"PK");
 
-        // What the toast shows: absolute, and it names the file that exists.
         let shown = display_path(&destination);
         assert!(Path::new(&shown).is_absolute(), "{shown}");
         assert!(shown.ends_with("unsloth-logs.zip"), "{shown}");
@@ -2022,9 +1846,7 @@ mod tests {
 
     #[test]
     fn an_old_backend_and_a_refused_session_stay_distinguishable_in_the_error() {
-        // The Logs tab reads the status back out of this string to tell "backend too old"
-        // (404) and "not a UI session" (403) apart from a generic failure, so the wording
-        // is a contract, not just a message.
+        // The Logs tab parses the status out of this string, so the wording is a contract.
         for status in ["404 Not Found", "403 Forbidden"] {
             let (url, server) = serve_once(b"nope".to_vec(), status);
             let directory = tempfile::tempdir().unwrap();

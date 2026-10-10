@@ -46,12 +46,11 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
     })
 }
 
-/// Document types the RAG ingest accepts; keep in sync with `config.SUPPORTED_UPLOAD_EXTS`.
+/// Keep in sync with `config.SUPPORTED_UPLOAD_EXTS`.
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
-/// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
 pub const RTF_ATTACHMENT_EXTS: &[&str] = &["rtf"];
-/// Files only the python tool reads; keep in sync with `open-document-accept.ts`.
+/// Keep in sync with `open-document-accept.ts`.
 pub const TOOL_ONLY_ATTACHMENT_EXTS: &[&str] = &[
     "parquet",
     "feather",
@@ -128,10 +127,8 @@ pub const TOOL_ONLY_ATTACHMENT_EXTS: &[&str] = &[
 ];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 
-/// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a
-/// dropped .txt/.md keeps being indexed.
+/// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so .txt/.md stay indexed.
 pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
-    // Prose and documentation
     "text",
     "log",
     "mdx",
@@ -148,7 +145,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "bib",
     "rmd",
     "qmd",
-    // Subtitles and captions
     "srt",
     "vtt",
     "sbv",
@@ -156,7 +152,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "ssa",
     "sub",
     "lrc",
-    // Structured data
     "csv",
     "tsv",
     "psv",
@@ -188,7 +183,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "reg",
     "desktop",
     "service",
-    // Localisation and interchange
     "po",
     "pot",
     "strings",
@@ -201,7 +195,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "mbox",
     "m3u8",
     "pls",
-    // Stylesheets and web templates
     "css",
     "scss",
     "sass",
@@ -232,7 +225,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "jsp",
     "tpl",
     "qml",
-    // JavaScript and TypeScript
     "js",
     "jsx",
     "mjs",
@@ -241,13 +233,11 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "tsx",
     "mts",
     "cts",
-    // Python
     "py",
     "pyi",
     "pyx",
     "pxd",
     "ipynb",
-    // JVM
     "java",
     "kt",
     "kts",
@@ -258,7 +248,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "clj",
     "cljs",
     "cljc",
-    // Systems languages
     "c",
     "h",
     "cc",
@@ -287,7 +276,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "vhdl",
     "asm",
     "s",
-    // .NET
     "cs",
     "vb",
     "vbs",
@@ -300,13 +288,11 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "sln",
     "props",
     "targets",
-    // Apple platforms
     "m",
     "mm",
     "swift",
     "applescript",
     "metal",
-    // Everything else with a compiler or interpreter
     "rb",
     "rake",
     "gemspec",
@@ -357,7 +343,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "mojo",
     "gd",
     "sqf",
-    // Shells
     "sh",
     "bash",
     "zsh",
@@ -371,7 +356,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "psd1",
     "bat",
     "cmd",
-    // Queries and schemas
     "sql",
     "psql",
     "plsql",
@@ -383,7 +367,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "thrift",
     "capnp",
     "prisma",
-    // Infrastructure and build
     "tf",
     "tfvars",
     "tfstate",
@@ -408,7 +391,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "pri",
     "cabal",
     "opam",
-    // Shaders
     "glsl",
     "frag",
     "vert",
@@ -417,7 +399,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "hlsl",
     "wgsl",
     "shader",
-    // Diagrams, specs and request files
     "mmd",
     "mermaid",
     "puml",
@@ -428,12 +409,10 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "robot",
     "http",
     "rest",
-    // Diffs
     "diff",
     "patch",
 ];
 
-/// Conventional extensionless names represented by dotted frontend accept tokens.
 pub const TEXT_ATTACHMENT_NAMES: &[&str] = &["containerfile", "dockerfile", "makefile"];
 
 pub fn is_text_attachment_name(path: &Path) -> bool {
@@ -559,8 +538,7 @@ fn has_soundtracker_pattern_data(bytes: &[u8], pattern_end: usize) -> bool {
     true
 }
 
-/// Legacy Word `.dot` and PowerPoint `.pot` templates are OLE compound files,
-/// unlike Graphviz `.dot` and gettext `.pot`.
+/// Legacy Word `.dot` and PowerPoint `.pot` are OLE files, unlike Graphviz `.dot` and gettext `.pot`.
 pub fn is_binary_office_template(path: &Path, bytes: &[u8]) -> bool {
     (has_extension(path, "dot") || has_extension(path, "pot"))
         && bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
@@ -571,7 +549,6 @@ pub fn is_compiled_fortran_mod(path: &Path, bytes: &[u8]) -> bool {
     has_extension(path, "mod") && bytes.starts_with(b"\x1f\x8b")
 }
 
-/// Detect marker-bearing MODs and earlier 15-sample Soundtracker modules.
 pub fn is_binary_tracker_mod(path: &Path, bytes: &[u8]) -> bool {
     if !has_extension(path, "mod") {
         return false;
@@ -624,7 +601,6 @@ fn bmff_box_payloads<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Vec<&'a [u8]> {
     payloads
 }
 
-/// Whether a 3GP container has audio tracks and no video tracks.
 pub fn is_audio_only_3gp(raw: &[u8]) -> bool {
     let mut has_audio = false;
     let mut has_video = false;
@@ -659,20 +635,19 @@ pub fn is_mpeg_transport_stream(path: &Path, bytes: &[u8]) -> bool {
         })
 }
 
-/// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
+/// Keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tif", "tiff",
 ];
 
-/// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
+/// Keep in sync with `audio-attachment-adapter.ts` `accept`.
 pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &[
     "wav", "mp3", "m4a", "ogg", "oga", "opus", "flac", "aac", "aiff", "aif", "aifc", "caf", "wma",
     "amr", "mp2",
 ];
 
-/// Chat video attachments; keep in sync with `drop-paths.ts`
-/// `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg, so this is what
-/// ffmpeg reads, not what the webview can play.
+/// Keep in sync with `drop-paths.ts` `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg,
+/// so this is what ffmpeg reads, not what the webview can play.
 pub const VIDEO_ATTACHMENT_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "ogv", "m2ts",
 ];
@@ -1171,33 +1146,13 @@ fn has_extension(path: &Path, expected: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Guards process-global environment variables for tests.
-///
-/// `std::env::set_var` is process-wide while the harness runs tests in
-/// parallel, and the policy below reads `XDG_DATA_HOME` through
-/// `dirs::data_local_dir`. Anything that sets or depends on those variables
-/// takes this, `main.rs`'s `with_xdg_data_home` included.
+/// Serialises tests that set or read XDG_DATA_HOME; `set_var` is process-wide.
+/// `main.rs`'s `with_xdg_data_home` takes it too.
 #[cfg(test)]
 pub(crate) static PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A directory that scratch paths for the path-policy tests can be built in:
-/// writable, and accepted by the very policy those tests exercise.
-///
-/// Picking one is not obvious. `std::env::temp_dir()` is out on macOS, where it
-/// is /var/folders/..., whose real path is under /private and which the policy
-/// rejects on purpose, so every scratch path built from it would fail for that
-/// reason rather than the one under test. The test binary's directory is the
-/// usual answer but is not safe either: a checkout under /root or /usr/src puts
-/// it inside a sensitive root, a target directory on /dev/shm or a UNC share is
-/// refused as a device path, and a read-only build tree cannot be written to at
-/// all.
-///
-/// So each candidate is tried for real: a uniquely named child is created in
-/// it, a file is written inside that child, and the child is put through
-/// `classify_native_document_folder`, which is the whole policy rather than one
-/// clause of it. The first candidate that survives all three wins. Chosen once
-/// per test binary, under `PROCESS_ENV_LOCK`, so a concurrent
-/// `with_xdg_data_home` cannot change the answer midway.
+/// A writable scratch directory the path policy accepts. temp_dir is rejected on macOS
+/// (/private), so each candidate is probed for real. Chosen once, under `PROCESS_ENV_LOCK`.
 #[cfg(test)]
 pub(crate) fn scratch_root() -> PathBuf {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -1205,9 +1160,6 @@ pub(crate) fn scratch_root() -> PathBuf {
         let _guard = PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // The temp directory first, since the OS clears it, then the build
-        // tree, then home. On macOS the first is rejected by the policy and the
-        // second is taken, which is the case that started all this.
         let candidates = [
             Some(std::env::temp_dir()),
             std::env::current_exe()
@@ -1216,30 +1168,23 @@ pub(crate) fn scratch_root() -> PathBuf {
             dirs::home_dir(),
         ];
         for candidate in candidates.into_iter().flatten() {
-            // tempfile, not a name derived from the PID: the first candidate is
-            // a shared temp directory, where another local user can pre-create
-            // a predictable path and leave a symlink for the probe write below
-            // to follow. tempdir_in creates an unguessable directory with an
-            // exclusive operation, or fails.
+            // tempfile, not a PID-derived name: in a shared temp dir another user could plant a
+            // symlink for the probe write to follow.
             let Ok(child) = tempfile::Builder::new()
                 .prefix("unsloth-test-scratch-")
                 .tempdir_in(&candidate)
             else {
                 continue;
             };
-            // Existing is not writable: a directory that is already there is
-            // accepted without a byte being written.
             if fs::write(child.path().join("writable"), b"1").is_err() {
                 continue;
             }
             if classify_native_document_folder(child.path()).is_ok() {
-                // Kept rather than dropped, which would delete it out from
-                // under every test that follows.
+                // Kept: dropping it would delete it under every later test.
                 return child.keep();
             }
         }
-        // Nothing qualifies. Fall back rather than skip, so the tests fail
-        // loudly here instead of quietly not running.
+        // Fall back rather than skip, so the tests fail loudly.
         std::env::temp_dir()
     })
     .clone()
@@ -1252,9 +1197,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
-        // Tests run on parallel threads, and macOS's clock resolves only microseconds, so two
-        // calls with the same name could get the same path and one test's cleanup or swap would
-        // land on the other's file. The counter keeps every name in this process distinct.
+        // Parallel tests plus macOS's microsecond clock can collide on names; the counter keeps
+        // them unique.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
@@ -1383,11 +1327,9 @@ mod tests {
 
     #[test]
     fn legacy_office_templates_are_detected_without_rejecting_text_templates() {
-        // OLE compound file header, shared by legacy .dot and .pot templates.
         let ole = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1payload";
         assert!(is_binary_office_template(Path::new("report.dot"), ole));
         assert!(is_binary_office_template(Path::new("deck.pot"), ole));
-        // Graphviz and gettext keep the same extensions and stay accepted.
         assert!(!is_binary_office_template(
             Path::new("graph.dot"),
             b"digraph G { a -> b; }"
@@ -1401,8 +1343,6 @@ mod tests {
 
     #[test]
     fn compiled_fortran_modules_are_detected_without_rejecting_go_mod() {
-        // gfortran gzips its module files; the tracker check reads a music header
-        // and never sees these.
         assert!(is_compiled_fortran_mod(
             Path::new("kinds.mod"),
             b"\x1f\x8b\x08\x00GFORTRAN module"
@@ -1411,7 +1351,6 @@ mod tests {
             Path::new("go.mod"),
             b"module example.com/app\n\ngo 1.22\n"
         ));
-        // An uncompressed gfortran module is readable text and stays accepted.
         assert!(!is_compiled_fortran_mod(
             Path::new("kinds.mod"),
             b"GFORTRAN module version '15'\n"
@@ -1450,7 +1389,6 @@ mod tests {
         assert!(TEXT_ATTACHMENT_EXTS.contains(&"m3u8"));
     }
 
-    // The composer takes audio uploads, so a dropped one has to classify too.
     #[test]
     fn audio_attachments_are_accepted() {
         for ext in AUDIO_ATTACHMENT_EXTS {

@@ -122,7 +122,6 @@ export interface TrainingRuntimeState {
   stopRequested: boolean;
   configureRequest: number;
   selectedHistoryRunId: string | null;
-  // True while the studio "Current Run" tab is the active view, so the sidebar can highlight it.
   currentRunViewActive: boolean;
 }
 
@@ -169,7 +168,7 @@ export interface TrainingViewData {
   currentEpoch: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
-  // True when a newer run reused this run's output_dir (resume), so its on-disk contents differ.
+  // A newer run reused this output_dir (resume), so its on-disk contents differ.
   resumedLater?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;

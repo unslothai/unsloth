@@ -68,7 +68,6 @@ function arrowDelta(key: string, step: number): CropPoint | null {
   return null;
 }
 
-/** A local freeform crop editor for MiniMax-H3 picture references. */
 export function ReferenceImageEditor({
   open,
   picture,
@@ -130,7 +129,6 @@ export function ReferenceImageEditor({
         });
         return;
       }
-      // Browser image dimensions and canvas drawing use the same corrected orientation.
       decodedImage.current = { dataUrl, image };
       setLoadError(null);
       setLoadedSourceSize(size);

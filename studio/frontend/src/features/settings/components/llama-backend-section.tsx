@@ -225,8 +225,6 @@ export function LlamaBackendSection() {
     if (option.backend !== "auto") {
       return backendDisplayName(option.backend, t);
     }
-    // "Automatic" alone hides the decision; naming what it picks is the
-    // difference between an informed choice and a shot in the dark.
     return option.resolvedBackend
       ? t("settings.resources.llamaBackend.autoWith", {
           backend: backendDisplayName(option.resolvedBackend, t),
@@ -236,8 +234,7 @@ export function LlamaBackendSection() {
 
   const job = status?.job;
   const envLocked = status?.envBackend != null;
-  // Null means the marker holds a choice a newer Unsloth wrote. Show it as
-  // unknown rather than as Automatic, and let it be replaced deliberately.
+  // Null means a newer Unsloth wrote the choice; show it as unknown, not Automatic.
   const unknownRecorded = status?.backendRequest === null;
   const value = selected ?? status?.backendRequest ?? "unknown";
   const options = visibleLlamaBackendOptions(
@@ -299,11 +296,8 @@ export function LlamaBackendSection() {
           <Button
             size="sm"
             onClick={apply}
-            // The same hard blockers as the Select above, not just dirtiness. An
-            // environment pin with an automatic choice that has since drifted leaves
-            // selectionApplied false, so the row is dirty while the Select is disabled:
-            // Apply would then be the only live control, and the server rightly refuses
-            // it with environment_override. Do not offer an action that cannot succeed.
+            // Same blockers as the Select: an env pin can leave the row dirty while the server
+            // would refuse it.
             disabled={!dirty || !status?.supported || envLocked}
             data-testid="llama-backend-apply"
           >
@@ -335,8 +329,6 @@ export function LlamaBackendSection() {
       ) : null}
 
       {dirty ? (
-        // The two things a switch costs, said before it is paid: a download, and
-        // the loaded model going away with the server it runs in.
         <p className="pb-3 text-xs text-muted-foreground">
           {pending?.downloadSizeBytes
             ? t("settings.resources.llamaBackend.applyHintWithSize", {

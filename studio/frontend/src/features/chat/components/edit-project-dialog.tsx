@@ -29,14 +29,12 @@ import {
   newInputImeState,
 } from "../utils/composer-preferences";
 
-/** Name, instructions and linked folders for one project. Opened from the folder row's "Edit".
- *  Deleting hands back to the caller, which owns the confirmation. */
+/** Name, instructions and linked folders for one project. The caller owns delete confirm. */
 export function EditProjectDialog({
   project,
   onOpenChange,
   onDelete,
 }: {
-  /** The project being edited, or null while the dialog is closed. */
   project: ProjectRecord | null;
   onOpenChange: (open: boolean) => void;
   onDelete: (project: ProjectRecord) => void;
@@ -136,7 +134,6 @@ export function EditProjectDialog({
             folders it indexes.
           </DialogDescription>
         </DialogHeader>
-        {/* The same name field the create dialog uses. */}
         <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
           <span className="flex w-10 shrink-0 items-center justify-center pl-1 text-muted-foreground">
             <HugeiconsIcon
@@ -195,7 +192,6 @@ export function EditProjectDialog({
             className="mt-0.5 resize-none rounded-[16px]"
           />
         </div>
-        {/* The Sources tab's own manager, so a folder linked here is linked there. */}
         <div className="flex flex-col gap-1.5">
           <h3 className="text-ui-15 font-medium text-foreground">
             Source folders

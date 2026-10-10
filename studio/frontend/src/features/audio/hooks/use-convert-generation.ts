@@ -407,7 +407,6 @@ export function useConvertGeneration({
         controller.signal,
       );
       updateGenerationPhase("finishing");
-      // The side is remembered across runs; a new result is what the user asked for.
       useAudioConvertStore.getState().setCompareSide("converted");
       await showRunResult({
         response,

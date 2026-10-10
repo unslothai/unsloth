@@ -18,8 +18,7 @@ import {
   ArrowRightIcon,
 } from "lucide-react";
 
-/** The link out to another page's workspace (Images, Video, Audio, the Library).
- *  Kept out of the mode strip and parked past a divider so it reads as leaving. */
+/** Link to another page's workspace, parked past a divider so it reads as leaving. */
 export function MediaPageLink({
   to,
   libraryTab,
@@ -36,18 +35,14 @@ export function MediaPageLink({
   icon: IconSvgElement;
   /** Needed on a translated page: the default prefix below is English. */
   tooltip?: string;
-  /** Runs before the route change, for a destination whose mode lives in a store. */
   onNavigate?: () => void;
-  /** Responsive callers can visually collapse the label while the button keeps its accessible name. */
   labelClassName?: string;
-  /** Kept separate from the label because the outbound arrow is the first compact affordance to drop. */
   arrowClassName?: string;
 }) {
   const navigate = useNavigate();
   return (
     <>
-      {/* first:hidden, not a prop: the control to its left is conditional on the Images page,
-          and a divider with nothing before it reads as a stray rule. */}
+      {/* first:hidden: the control to its left is conditional, and a leading divider looks stray. */}
       <span
         aria-hidden="true"
         className="mx-0.5 h-4 w-px shrink-0 bg-border/70 first:hidden"

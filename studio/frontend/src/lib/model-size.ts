@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The leading boundary skips family-version digits ("Qwen3-") and MoE active-param
-// notation ("A3B"), so "Qwen3-30B-A3B" reads as 30B total, not 3B active.
+// Leading boundary skips version digits and MoE active params, so "Qwen3-30B-A3B" reads as 30B.
 const PARAM_COUNT_RE = /(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/;
 
 function matchParamCount(id: string): RegExpMatchArray | null {

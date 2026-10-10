@@ -10,10 +10,6 @@ const OPTIONS: { value: OwnerScope; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
-/**
- * "Unsloth / All" publisher scope as a compact dropdown pill beside the
- * view-mode tabs. Only shown while browsing a model list, never on the hub feed.
- */
 export function OwnerScopeToggle({
   value,
   onChange,
@@ -28,7 +24,6 @@ export function OwnerScopeToggle({
       onValueChange={onChange}
       ariaLabel="Publisher scope"
       align="end"
-      // Extra gap before the chevron; min-width keeps the pill readable.
       className="h-8 min-w-[calc(96px*var(--ui-space-scale,1))] gap-1.5 text-ui-11p5"
     />
   );

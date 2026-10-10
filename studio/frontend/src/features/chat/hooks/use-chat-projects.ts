@@ -106,8 +106,6 @@ export function useChatProjects(): {
       lastProjectsUpdateEvent = event;
       void refresh(true, followUpIfPending);
     };
-    // Cached rows render immediately, then one shared request reconciles changes made by another
-    // browser tab or API client.
     void refresh(projectsLoaded);
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     return () => {
@@ -144,9 +142,7 @@ export async function deleteChatProject(
   args: { deleteFiles?: boolean } = {},
 ): Promise<void> {
   const kept = await deleteStoredChatProject(projectId, args);
-  // The member chats went with the project, so their own sandboxes are reachable from nothing: the
-  // same offer an ordinary chat delete makes, and a sandbox the backend could not remove is kept
-  // even when asked to go.
+  // Member chats went with the project, so offer to delete their kept sandboxes.
   offerToDeleteKeptSandboxes(kept);
 }
 

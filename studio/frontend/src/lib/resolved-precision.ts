@@ -1,21 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The Advanced panel's resolved-control decisions, as pure functions the pages render.
- *
- * The old badge rule was `source === "auto"`, so an EXPLICIT precision the backend declined
- * rendered no badge at all while the dropdown kept advertising the request: a Q4_K_M GGUF could
- * show FP8 with transformer FP8 disabled. These helpers decide from BOTH sides of the record, what
- * was asked for and what engaged, so a fallback is impossible to miss, and they seed the Advanced
- * selects from the loaded model instead of leaving them as pure local request state.
- */
+/** Badges decide from both requested and engaged values, so a declined explicit request is visible. */
 
-// One Advanced control's engaged value + provenance. Structurally shared by the image and video
-// status payloads; declared here so this module needs neither feature's api.ts.
+// Shared by image and video status payloads; declared here to avoid importing either feature.
 export interface ResolvedControl {
   value: string | boolean | null;
-  // What the caller asked for, or null when they left it to the backend. Absent on older backends.
+  // Absent on older backends.
   requested?: string | boolean | null;
   source: "auto" | "explicit";
   // "applied" | "fell_back" | "unsupported". Absent on older backends, which only ever applied.
@@ -26,37 +17,28 @@ export interface ResolvedControl {
 export type ResolvedBadgeTone = "auto" | "warn";
 
 export interface ResolvedBadgeInfo {
-  // Full badge text, e.g. "Auto: FP8" or "FP8 -> OFF".
   label: string;
-  // "auto" is the neutral informational pill; "warn" flags a request that did not survive.
   tone: ResolvedBadgeTone;
-  // Hover tooltip: the backend's reason, prefixed for a declined request so the pill is readable
-  // even when the reason alone reads like a statement of fact.
   tooltip: string;
 }
 
-// The backend refuses an EXPLICIT precision it cannot honor rather than loading at some other one
-// (409 from /images/load and /video/load, or an error phase on load-progress once the decline can
-// only be found mid-load). The detail is one long actionable sentence, so the pages show it as a
-// toast DESCRIPTION under this title instead of as an unreadable single line.
+// The backend refuses an explicit precision it cannot honor (409 or a load-progress error); the
+// detail is shown as a toast description under this title.
 export const PRECISION_REFUSAL_TITLE = "Requested precision is not available";
 
-/** Load kinds that can reach the dense transformer-quant path. Mirrors the backend constant. */
+/** Mirrors the backend constant. */
 export const DENSE_QUANT_KINDS = ["gguf", "pipeline"] as const;
 
-/** Whether this load kind can reach the dense transformer-quant path at all. */
 export function isDenseQuantKind(kind: string | null | undefined): boolean {
   return (DENSE_QUANT_KINDS as readonly string[]).includes(
     (kind ?? "").trim().toLowerCase(),
   );
 }
 
-/** Whether a load failure is that refusal, so it can be presented as an actionable choice. */
 export function isPrecisionRefusal(message: string): boolean {
   return /_quant='[^']*' could not be used/.test(message);
 }
 
-/** Whether an engaged/requested value means "this control is off". */
 function isOff(value: string | boolean | null | undefined): boolean {
   if (value === null || value === undefined || value === false) return true;
   if (value === true) return false;
@@ -64,41 +46,26 @@ function isOff(value: string | boolean | null | undefined): boolean {
   return text === "" || text === "none" || text === "off" || text === "0";
 }
 
-/** The engaged value of a resolved Advanced control, formatted for its badge. */
 export function formatResolvedValue(key: string, value: string | boolean | null | undefined): string {
   if (key === "cpu_offload") return value ? "On" : "Off";
   if (value === null || value === undefined || value === "") return "Off";
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
-  // The kernels-hub build of the "sage" option.
   if (value === "sage_hub") return "SAGE";
-  // Deferred speed auto: the dense pipe stays exact/eager and compiles on the 3rd image (the tooltip carries the full reason).
+  // Deferred speed auto: the dense pipe compiles on the 3rd image.
   if (value === "deferred") return "On from 3rd image";
   return value.toUpperCase();
 }
 
 /**
- * Whether the caller's request survived. True when they left the control to the backend (there was
- * no request to betray) or when the backend says it applied it.
- *
- * The `status` field is authoritative rather than a `requested !== value` comparison, because
- * several controls answer in a DIFFERENT vocabulary than they are asked in: memory_mode takes
- * "low_vram" and reports the offload policy "sequential", attention_backend takes "cudnn" and
- * reports "_native_cudnn". The backend, which owns both vocabularies, classifies it once. Older
- * backends send no `status`, so they fall back to the mismatch test, which is still right for the
- * precision controls since those echo their own vocabulary.
- *
- * Only the two statuses that MEAN a decline are read as one. `status` is deliberately typed wider
- * than the backend's union so a NEWER backend's fourth value still parses, and treating anything
- * that is not "applied" as a failure defeats that: an unknown status would paint a red
- * "FP8 -> FP8" over a request that was honored. An unrecognised status is not a decline, since the
- * build that adds a status ships the frontend that understands it.
+ * `status` is authoritative, since some controls report in a different vocabulary than requested.
+ * Only explicit decline statuses count, so an unknown newer status is not shown as a failure.
+ * Older backends without `status` fall back to comparing requested and engaged values.
  */
 export function isResolvedHonored(resolved: ResolvedControl | undefined | null): boolean {
   if (!resolved) return true;
   if (resolved.source === "auto") return true;
   if (resolved.status) return resolved.status !== "fell_back" && resolved.status !== "unsupported";
-  // Older backend: no status field. Compare directly, treating every "off" spelling as equal.
   const requested = resolved.requested;
   if (requested === undefined || requested === null) return true;
   if (isOff(requested) && isOff(resolved.value)) return true;
@@ -108,11 +75,7 @@ export function isResolvedHonored(resolved: ResolvedControl | undefined | null):
   );
 }
 
-/**
- * The badge for one Advanced control, or null when there is nothing to say (the caller set it and
- * got it). A backend decision reads "Auto: X"; a declined request reads "FP8 -> OFF" so the ask and
- * the outcome are both on screen.
- */
+/** Null when the caller set it and got it. A declined request shows both, e.g. "FP8 -> OFF". */
 export function resolvedBadge(
   key: string,
   resolved: ResolvedControl | undefined | null,
@@ -134,15 +97,7 @@ export function resolvedBadge(
   return { label: `Auto: ${engaged}`, tone: "auto", tooltip: resolved.reason };
 }
 
-/**
- * The value an Advanced select should show for the LOADED model, mapped into that select's option
- * vocabulary by `toOption`. Null when the record says nothing useful, so the caller keeps whatever
- * the user has typed. The backend chose it -> "auto" (the badge already names what that resolved
- * to); an honored explicit request -> that request; a DECLINED explicit request -> the value that
- * actually engaged. The last is the fix on the input side: the selects were pure local request
- * state, so a declined FP8 stayed selected indefinitely and the interface went on displaying a
- * precision the loaded model was not running.
- */
+/** A declined explicit request maps to the engaged value, so the select stops showing a stale ask. */
 export function resolvedSelectValue<T extends string>(
   resolved: ResolvedControl | undefined | null,
   toOption: (value: string) => T | null,
@@ -157,20 +112,9 @@ export function resolvedSelectValue<T extends string>(
 }
 
 /**
- * The key the pages run their Advanced-reseed effect on: the LOAD-TIME half of the resolved record.
- *
- * NOT the whole record serialized. The backend rewrites entries of it at GENERATION time (the
- * speed_mode and attention_backend entries when the deferred compile profile engages, the
- * transformer_cache entry whenever the step-cache threshold flips), so keying the effect on the
- * whole blob re-ran the reseed mid-session and overwrote a Precision the user had picked but not
- * yet loaded. An edit made after the load is meant to survive until the next LOAD replaces it.
- *
- * The text-encoder entry carries its engaged value because a request can be DOWNGRADED there (an
- * int8 ask resolves to fp8) or declined to dense, and the select has to follow what ran.
- *
- * Only the controls the reseed writes are in the key, and for attention only the REQUEST side:
- * `value` is the field the generation-time rewrite touches. A reload still re-fires, including a
- * Reapply with new options, because that always lands a different request or engaged value.
+ * Keys only the load-time half of the record: the backend rewrites some entries at generation
+ * time, which would reseed mid-session and overwrite a Precision picked but not yet loaded.
+ * Attention keys only its request, since generation rewrites its `value`.
  */
 export function resolvedSeedKey(
   resolved: Record<string, ResolvedControl> | null | undefined,
@@ -190,12 +134,7 @@ export function resolvedSeedKey(
   ].join("|");
 }
 
-/**
- * Whether a status describes the native sd.cpp engine rather than a diffusers pipeline. It reports
- * `dtype: "gguf"` and no `engine`/`model_kind` of its own, and the two behave differently in ways
- * the Loaded-build panel has to say out loud: its attention is chosen by native flags, not by the
- * PyTorch dispatcher, and its components are whatever the checkpoint and its companion bundle hold.
- */
+/** sd.cpp reports `dtype: "gguf"` with no `engine`/`model_kind`. */
 export function isNativeEngineStatus(status: {
   engine?: string | null;
   dtype?: string | null;
@@ -206,18 +145,8 @@ export function isNativeEngineStatus(status: {
 }
 
 /**
- * The Loaded-build panel's Transformer row when no dense quant engaged.
- *
- * Shared by the image and video pages because the mistake it prevents is the same on both: the
- * default arm is BF16, and only a full diffusers repo actually is. A GGUF pick runs the
- * checkpoint's own quantisation, so the BF16 arm has to be the LAST resort. `dtype === "gguf"` is
- * the native sd.cpp engine, which reports no `model_kind` at all; without that arm every native
- * GGUF load, the default CPU path, was labelled BF16 in the one panel whose whole job is to say
- * what actually loaded.
- *
- * A single_file load is NOT "as in checkpoint": `from_single_file` is handed the resolved
- * `torch_dtype`, so an fp8 safetensors is upcast on load. Reporting the storage precision there
- * hid the runtime dtype, so it reads the dtype like any other dense load.
+ * BF16 is the last resort: GGUF and native sd.cpp loads run the checkpoint's own quantisation.
+ * single_file loads are upcast to `torch_dtype`, so they read the dtype like any dense load.
  */
 export function denseTransformerBuildLabel(status: {
   model_kind?: string | null;
@@ -227,13 +156,7 @@ export function denseTransformerBuildLabel(status: {
   return denseDtypeLabel(status.dtype);
 }
 
-/**
- * The dtype the pipeline actually loaded in, not the one the happy path uses. A CPU diffusers load
- * reports float32, an older accelerator resolves to float16, and an fp16-incompatible family is
- * promoted to float32 by the video loader, and all three were labelled BF16 by the panel whose
- * whole job is to say what loaded. Unknown falls back to BF16, which is what a diffusers load that
- * reports nothing is.
- */
+/** CPU, older accelerators and fp16-incompatible families load in other dtypes; unknown is BF16. */
 function denseDtypeLabel(dtype: string | null | undefined): string {
   const text = String(dtype ?? "").trim().toLowerCase();
   if (text.includes("bfloat16") || text === "bf16") return "BF16";
@@ -243,24 +166,12 @@ function denseDtypeLabel(dtype: string | null | undefined): string {
   return "BF16";
 }
 
-/**
- * The Loaded-build panel's Text encoder row when no runtime text-encoder quant engaged. The native
- * sd.cpp engine has no runtime TE quant at all, so its status always reports
- * `text_encoder_quant: null`, which is not evidence of a bf16 encoder: its companion bundle is
- * whatever the family's asset mapping names, and several are not bf16 (FLUX.1 loads
- * `t5xxl_fp16.safetensors`). A null on that engine means "as stored", not BF16.
- */
+/** sd.cpp has no runtime TE quant, so a null there means "as stored", not BF16. */
 export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): string {
   return status.dtype === "gguf" ? "As in checkpoint" : denseDtypeLabel(status.dtype);
 }
 
-/**
- * The Recipe popover's Memory row: the placement that actually ran. The two fields answer
- * different questions and either can be absent. `memory_mode` is the torchao-side memory planner's
- * pick, and the native sd.cpp engine never runs it, so its records carry `memory_mode: null`
- * alongside a real `offload_policy`. Substituting "auto" there claimed the planner had chosen a
- * mode on a path that has no planner, so an absent mode reports the offload alone.
- */
+/** sd.cpp never runs the memory planner, so an absent `memory_mode` reports the offload alone. */
 export function memoryRecipeValue(
   memoryMode: string | null | undefined,
   offloadPolicy: string | null | undefined,

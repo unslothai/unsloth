@@ -19,7 +19,6 @@ export function isHtml(name: string, contentType: string): boolean {
   return HTML_NAME.test(name) || HTML_TYPE.test(contentType);
 }
 
-/** How a text file shows, or null for documents, media and files that don't show as text. */
 export function textFileKind(name: string, contentType: string, plainText = false): TextFileKind | null {
   if (plainText) return "text";
   if (mediaKind(name, contentType) || documentKind(name, contentType)) return null;

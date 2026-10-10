@@ -50,8 +50,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     }
   }, []);
 
-  // Background refresh (rename/delete sync, polling): swallow errors so
-  // transient failures don't spam toasts; the next successful fetch heals.
+  // Swallow background refresh errors; the next fetch heals.
   const refresh = useCallback(async (): Promise<void> => {
     try {
       await fetchRuns();
@@ -60,8 +59,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     }
   }, [fetchRuns]);
 
-  // Initial load: bounded retry-with-backoff, then a toast with Retry on final
-  // failure so the user isn't stuck on an empty sidebar if the backend is slow.
+  // Bounded retry, then a toast with Retry so a slow backend does not leave the sidebar empty.
   useEffect(() => {
     if (!enabled) {
       return;
@@ -123,9 +121,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     };
   }, [enabled, fetchRuns]);
 
-  // Poll while a run is active, but only when the tab is visible. Browsers
-  // throttle background timers but don't pause them, so gating on visibility
-  // avoids hammering the API for tabs left open during long training runs.
+  // Browsers throttle but do not pause background timers, so also gate on visibility.
   const hasRunning = items.some((r) => r.status === "running");
   useEffect(() => {
     if (!enabled || !hasRunning) {

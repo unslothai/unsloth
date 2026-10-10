@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The frontend's HuggingFace endpoints, held in one place. `config/env.ts` pushes
- * the values in when `/api/health` answers.
- *
- * A store, not plain module state, so React sees it change. Imports only zustand,
- * deliberately: `network.ts` imports this and the unit tests import that under bare
- * node, which cannot evaluate what `config/env.ts` would bring.
- */
+/** `config/env.ts` pushes values in from `/api/health`. Imports only zustand so `network.ts`
+ * stays testable under bare node. */
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -33,12 +27,8 @@ const store = createStore<{
   proxyBases: [],
 }));
 
-/**
- * Accept a value from `/api/health` only if it parses as an http(s) URL. Not a
- * second copy of the backend's policy: `utils/hf_endpoint.py` is the only
- * producer and has already sanitised and canonicalised it. Deciding the rules
- * twice is what made the two disagree about an IDN host and an IPv6 literal.
- */
+/** Only checks it parses as http(s): `utils/hf_endpoint.py` already sanitised it, and a second
+ * policy disagreed about IDN and IPv6 hosts. */
 function usableEndpoint(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
@@ -52,12 +42,8 @@ function usableEndpoint(raw: string | null | undefined): string | null {
   return trimmed.replace(/\/+$/, "");
 }
 
-/**
- * Apply the endpoints reported by `/api/health`. A blank, absent or unparseable
- * value leaves the current one alone: older backends report neither field, and
- * resetting would strand a mirror-only deployment on huggingface.co. `proxied`
- * marks a value that is the backend's relay rather than the endpoint itself.
- */
+/** Blank or unparseable keeps the current value, so a mirror-only deployment is not reset.
+ * `proxied` marks the backend's relay. */
 export function setHfEndpoints(
   endpoint?: string | null,
   datasetsServer?: string | null,
@@ -132,7 +118,7 @@ export function useHubName(): string {
   return useHubSource() === "modelscope" ? "ModelScope" : "Hugging Face";
 }
 
-/** The datasets-server knows Hugging Face repos only: a ModelScope id would get another dataset's data. */
+/** Hugging Face repos only: a ModelScope id would get another dataset's data. */
 export function hasDatasetsServer(): boolean {
   return store.getState().source !== "modelscope";
 }

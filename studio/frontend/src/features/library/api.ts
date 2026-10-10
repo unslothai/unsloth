@@ -31,7 +31,6 @@ export interface LibraryItem {
   favorite: boolean;
   folderId: string | null;
   openedAt: number | null;
-  /** Set for fine-tuned models, which are directories: opened in chat, never downloaded. */
   model: LibraryModel | null;
   audio?: LibraryAudio | null;
   archived?: boolean;
@@ -112,18 +111,14 @@ function sameSession(epoch: number, message: TranslationKey): () => void {
   };
 }
 
-/** A write: a retry never goes out under an account other than the one that sent it. */
+/** A retry never goes out under a different account than the original. */
 function sendWrite(input: string, init: RequestInit): Promise<Response> {
   return authFetch(input, init, {
     beforeRetry: sameSession(getAuthSessionEpoch(), "library.toast.signedOutBeforeSave"),
   });
 }
 
-/**
- * Sends one write for `target` after the ones before it, so a quick second change never lands
- * first. Per session too: another account can have an item or folder of this id, and must not
- * wait on a write of the account that left, which a sign-out does not cut short.
- */
+/** Serializes writes per target and per session, so a quick second change never lands first. */
 function inOrder(target: string, send: (check: () => void) => Promise<Response>): Promise<void> {
   const epoch = getAuthSessionEpoch();
   const key = `${epoch}:${target}`;
@@ -212,9 +207,9 @@ export interface LibraryUploadBatch {
 }
 
 export const MAX_LIBRARY_UPLOAD_BYTES = 512 * 1024 * 1024;
-// Starlette's form parser refuses more than 1000 files in one request (Request.form max_files).
+// Starlette's form parser caps files per request (Request.form max_files).
 const MAX_LIBRARY_UPLOAD_FILES = 1000;
-// And more than 1000 other fields (max_fields): the leases, with room for folderId.
+// And caps other fields (max_fields): the leases, with room for folderId.
 const MAX_LEASES_PER_REQUEST = 999;
 
 function uploadGroups(files: File[]): File[][] {
@@ -361,7 +356,6 @@ export async function fetchLibraryThumbnail(item: LibraryItem): Promise<Blob> {
   return response.blob();
 }
 
-/** Up to `maxBytes` of the item, decoded as its BOM (or UTF-8) says; the rest is never read. */
 export async function fetchLibraryText(
   item: LibraryItem,
   maxBytes: number,

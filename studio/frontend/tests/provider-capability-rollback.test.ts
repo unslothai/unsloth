@@ -15,12 +15,7 @@ const {
   setProviderModelCapabilities,
 } = await import("../src/features/chat/external-providers.ts");
 
-// The capability map is localStorage, so it outlives the backend that wrote it:
-// a browser carries it across a downgrade, and the sync only ever writes the
-// rows the registry returned. A provider that has been hidden, or that a rolled
-// back backend has never heard of, is simply absent from the response -- so
-// nothing corrects it, and its last-known studio_tools: true keeps the composer
-// offering a loop that backend cannot run. The sync has to converge, not latch.
+// The localStorage capability map outlives the backend, so the sync must prune unlisted providers.
 
 test("a provider the registry stopped listing loses its capability", () => {
   setProviderModelCapabilities("llama_cpp", {
@@ -31,7 +26,6 @@ test("a provider the registry stopped listing loses its capability", () => {
   });
   assert.equal(providerModelSupportsStudioTools("llama_cpp", "any-gguf"), true);
 
-  // The rolled-back backend still knows openai, but not llama_cpp.
   pruneProviderModelCapabilities(["openai"]);
 
   assert.equal(providerModelSupportsStudioTools("llama_cpp", "any-gguf"), null);
@@ -43,9 +37,7 @@ test("an empty registry clears everything rather than freezing it", () => {
     [PROVIDER_CAPABILITY_WILDCARD]: { studio_tools: true },
   });
 
-  // "No provider types exist" is a real answer, and clearing is the safe
-  // direction: an unknown capability reads as null, which every caller treats
-  // as not capable.
+  // Clearing is the safe direction: an unknown capability reads as not capable.
   pruneProviderModelCapabilities([]);
 
   assert.equal(providerModelSupportsStudioTools("vllm", "m"), null);
@@ -56,9 +48,6 @@ test("a row that stops declaring the capability is corrected in place", () => {
     [PROVIDER_CAPABILITY_WILDCARD]: { studio_tools: true },
   });
 
-  // An older backend returns the row without supports_studio_tools, so the sync
-  // rebuilds the entry with no wildcard. The write replaces rather than merges,
-  // which is what makes this half already converge.
   setProviderModelCapabilities("ollama", {});
   pruneProviderModelCapabilities(["ollama"]);
 

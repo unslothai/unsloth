@@ -9,7 +9,6 @@ export interface KnowledgeBase {
   documentCount?: number;
 }
 
-/** Index status: pending -> running -> completed | failed. */
 export type DocumentStatus = "pending" | "running" | "completed" | "failed";
 
 export interface RagDocument {
@@ -30,7 +29,6 @@ export function isLinkedFolderManaged(document: RagDocument): boolean {
   return Boolean(document.managed || document.linkedFolderId);
 }
 
-/** RagDocument enriched for the global uploaded-files list (settings Data tab). */
 export interface UploadedDocument extends RagDocument {
   sizeBytes?: number | null;
   kbName?: string | null;
@@ -71,7 +69,6 @@ export interface IndexJob {
   numChunks?: number | null;
 }
 
-/** One SSE frame from /jobs/{jobId}/events. */
 export interface JobEvent {
   type: "progress" | "complete" | "error";
   stage?: string | null;
@@ -89,7 +86,6 @@ export interface LinkedFolderScope {
 
 export type LinkedFolderStatus = "idle" | "syncing" | "error";
 
-/** A local directory whose durable access grant is held by the desktop backend. */
 export interface LinkedFolder {
   id: string;
   displayName: string;
@@ -128,7 +124,6 @@ export function linkedFolderSourcesChanged(
 
 export type FolderSyncMode = "sync" | "rebuild";
 
-/** Aggregate job for discovering and indexing all changes in a linked folder. */
 export interface FolderSyncJob {
   id: string;
   linkedFolderId: string;
@@ -144,7 +139,6 @@ export interface FolderSyncJob {
   error?: string | null;
 }
 
-/** One SSE frame from /linked-folder-jobs/{jobId}/events. */
 export interface FolderSyncJobEvent extends Partial<FolderSyncJob> {
   type: "progress" | "complete" | "error";
 }

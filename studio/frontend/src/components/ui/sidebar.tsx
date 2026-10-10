@@ -8,8 +8,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-// Deep import, not the feature barrel: the barrel pulls in SettingsDialog,
-// which renders sidebar-aware panels and would close an import cycle.
+// Deep import: the feature barrel pulls in SettingsDialog and closes an import cycle.
 import { useShortcut } from "@/features/settings/hooks/use-shortcut"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -99,8 +98,7 @@ function SidebarProvider({
   setPinned?: (value: boolean) => void
   togglePinned?: () => void
 }) {
-  // The shell decision, not the viewport: a narrowed desktop window keeps the
-  // desktop sidebar. Panels with only room to overlay still read useIsMobile.
+  // The shell decision, not the viewport: a narrowed desktop window keeps the desktop sidebar.
   const isMobile = useIsMobileShell()
   const [openMobile, setOpenMobile] = React.useState(false)
   const {
@@ -120,15 +118,11 @@ function SidebarProvider({
     prevIsMobileRef.current = isMobile
   }, [isMobile])
 
-  // Whether pin mode is active (caller provides pinned + setPinned + togglePinned).
   const hasPinMode = pinnedProp !== undefined && setPinnedProp !== undefined && togglePinnedProp !== undefined
 
-  // This is the internal state of the sidebar.
-  // We use openProp and setOpenProp for control from outside the component.
   const [_open, _setOpen] = React.useState(defaultOpen)
 
-  // When pin mode is active, open is driven entirely by `pinned` (explicit
-  // user toggle). Otherwise fall back to the controlled/uncontrolled pattern.
+  // Pin mode drives open entirely from `pinned`; otherwise controlled/uncontrolled.
   const open = hasPinMode ? !!pinnedProp : (openProp ?? _open)
 
   const setOpen = React.useCallback(
@@ -136,7 +130,6 @@ function SidebarProvider({
       const openState = typeof value === "function" ? value(open) : value
 
       if (hasPinMode) {
-        // In pin mode, setOpen controls pinned state.
         setPinnedProp?.(openState)
         return
       }
@@ -150,7 +143,6 @@ function SidebarProvider({
     [setOpenProp, open, hasPinMode, setPinnedProp]
   )
 
-  // Helper to toggle the sidebar.
   const toggleSidebar = React.useCallback(() => {
     if (isMobile) return setOpenMobile((open) => !open)
     if (hasPinMode && togglePinnedProp) return togglePinnedProp()
@@ -164,7 +156,6 @@ function SidebarProvider({
   const setPinned = setPinnedProp ?? noop
   const togglePinned = togglePinnedProp ?? noop
 
-  // Reaches a collapsed sidebar from the window edge without pinning it.
   const [peeking, setPeekingState] = React.useState(false)
   const retractRef = React.useRef<number | undefined>(undefined)
   // Deferred so the handoff from the edge strip to the panel cannot flicker.
@@ -177,15 +168,11 @@ function SidebarProvider({
     retractRef.current = window.setTimeout(() => setPeekingState(false), 120)
   }, [])
   React.useEffect(() => () => window.clearTimeout(retractRef.current), [])
-  // Nothing to hold out once it is pinned, or once it is a mobile sheet.
   React.useEffect(() => {
     if (pinned || isMobile) setPeekingState(false)
   }, [pinned, isMobile])
 
-  // We add a state so that we can do data-state="expanded" or "collapsed".
-  // This makes it easier to style the sidebar with Tailwind classes. Held out
-  // counts as expanded: the panel is on screen, so the rows it renders are the
-  // ones its tooltips, disclosures and chat chords should see.
+  // Held out counts as expanded: the panel is on screen.
   const state = open || peeking ? "expanded" : "collapsed"
 
   const contextValue = React.useMemo<SidebarContextProps>(
@@ -219,11 +206,8 @@ function SidebarProvider({
         data-slot="sidebar-wrapper"
         style={
           {
-            // The drag handle writes this same property live while resizing. Under
-            // PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to [data-slot="sidebar"], which holds
-            // every consumer, and cannot also stay here: this wrapper is an ancestor of the chat
-            // thread, so a declaration left behind would keep restyling the thread on every render
-            // even once the drag-time write had moved.
+            // Under PANEL_RESIZE_SCOPED_VARS_ENABLED the var moves to [data-slot="sidebar"]: this
+            // wrapper is an ancestor of the thread, so declaring it here would restyle the thread.
             ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
               ? null
               : { "--sidebar-width": `${width * widthScale}px` }),
@@ -232,45 +216,9 @@ function SidebarProvider({
           } as React.CSSProperties
         }
         className={cn(
-          // `has-[>...]`, not `has-[...]`, and the combinator is the whole point.
-          // This wrapper is an ancestor of the chat thread, as the note on
-          // --sidebar-width above already says. A `:has()` whose argument is a
-          // DESCENDANT selector has to be re-checked whenever anything is
-          // inserted or removed anywhere in the subject's subtree, and
-          // answering it means WALKING that subtree. On an ancestor of the
-          // thread that walk is the whole thread, on every mutation.
-          // It is a traversal, NOT a restyle, and the difference matters
-          // because it is why containment does not help. Blink's own
-          // `UpdateLayoutTree.elementCount` for one inserted span is 1 with
-          // these rules in their child form, 2 with one of them in descendant
-          // form and 3 with both: only the subjects are restyled, never the
-          // thread. So there is no scope for `contain:` to reduce, which is
-          // what the note in index.css near `content-visibility: visible` was
-          // seeing when it recorded containment on the message roots as no
-          // help. `content-visibility: auto` on the message roots does not
-          // help either, measured at -7%: the argument re-check walks skipped
-          // content too.
-          // Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
-          // thread: appending one EMPTY span inside a message cost 17.5 and
-          // 18.6 ms in two concurrent arms with this rule in place, 8.7 ms with
-          // this rule alone deleted, and 0.10 ms with this rule and the one on
-          // chat-page.tsx deleted. Deleting the other eleven `:has()` rules
-          // that survived the bisect changed nothing (17.2 / 19.2 ms), and the
-          // same span appended to <body> costs 0.10 ms either way.
-          // CHROMIUM ONLY. On a synthetic thread carrying this same ancestor
-          // chain and the built Unsloth stylesheet, at 300,464 elements, one
-          // inserted span costs 1.20 ms plain / 1.29 ms child / 5.63 ms one
-          // descendant rule / 10.30 ms both in Chromium, and 4.33 / 4.58 /
-          // 4.58 / 4.33 ms in WebKitGTK and 4.65 / 4.72 / 4.45 / 5.10 ms in
-          // Firefox: flat in both, within noise of each other. So this change
-          // is free where it does not help and it does not regress the engine
-          // Unsloth uses on Linux.
-          // The child combinator is not a weakening. `data-variant` is rendered
-          // on the root element of `Sidebar` below, and `Sidebar` is a direct
-          // child of this wrapper (AppSidebar returns it inside a Fragment,
-          // which is not a DOM node), so the two selectors match the same
-          // elements. What changes is that a mutation deep in the thread can no
-          // longer make Blink ask this question again.
+          // `has-[>...]`, not `has-[...]`: on an ancestor of the thread a descendant :has() is
+          // re-checked by walking the whole thread on every mutation (Chromium). The child
+          // combinator matches the same elements, since Sidebar is a direct child of this wrapper.
           "group/sidebar-wrapper has-[>[data-variant=inset]]:bg-sidebar flex min-h-svh w-full",
           className
         )}
@@ -303,9 +251,7 @@ function Sidebar({
   const holdsOut = hasPinMode && !pinned && collapseToZero
   const heldOut = holdsOut && peeking
 
-  // The scoped home for --sidebar-width: every consumer (this element,
-  // sidebar-gap, sidebar-container) is inside it and the chat thread is not.
-  // Empty with the flag off, where the wrapper keeps the declaration.
+  // Scoped home for --sidebar-width: every consumer is inside it and the thread is not.
   const scopedWidthStyle = (
     PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width * widthScale}px` } : {}
   ) as React.CSSProperties
@@ -355,10 +301,7 @@ function Sidebar({
         hasPinMode && !pinned && (collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"),
       )}
       data-state={state}
-      // "zero" when the panel collapses to nothing: the icon-rail rules keyed on
-      // "icon" centre every button, hide every label and repaint the panel white,
-      // which a w-0 sidebar wore for a frame on its way out. That was the ghost.
-      // No selector matches "zero", so the intermediate state no longer exists.
+      // "zero" rather than "icon": the icon-rail rules made a w-0 sidebar flash on its way out.
       data-collapsible={
         state === "collapsed"
           ? hasPinMode && collapseToZero
@@ -374,7 +317,6 @@ function Sidebar({
       aria-hidden={(holdsOut && !heldOut) || undefined}
       inert={(holdsOut && !heldOut) || undefined}
     >
-      {/* This is what handles the sidebar gap on desktop */}
       <div
         data-slot="sidebar-gap"
         className={cn(
@@ -382,7 +324,6 @@ function Sidebar({
           "group-data-[side=right]:rotate-180",
           hasPinMode
             ? cn(
-                // Pin mode: always push content. Expanded when pinned.
                 pinned
                   ? "w-(--sidebar-width)"
                   : collapseToZero
@@ -392,7 +333,6 @@ function Sidebar({
                         : "w-(--sidebar-width-icon)"),
               )
             : cn(
-                // Legacy mode: original shadcn behavior.
                 "w-(--sidebar-width)",
                 "group-data-[collapsible=offcanvas]:w-0",
                 variant === "floating" || variant === "inset"
@@ -405,30 +345,23 @@ function Sidebar({
         data-slot="sidebar-container"
         data-side={side}
         data-held-out={heldOut || undefined}
-        // A hover state of the panel as much as of the edge: the pointer
-        // crosses between them, and only leaving both retracts it.
+        // Hover spans panel and edge; only leaving both retracts it.
         onPointerEnter={holdsOut ? () => setPeeking(true) : undefined}
         onPointerLeave={holdsOut ? () => setPeeking(false) : undefined}
-        // The same for focus, which arrives by Shift+Tab off the edge strip.
-        // Without it the strip's own blur retracts the panel around the focus
-        // that just landed in it, and going inert drops that focus entirely.
+        // Without this the strip's blur retracts the panel around the focus that just landed in it.
         onFocus={holdsOut ? () => setPeeking(true) : undefined}
         onBlur={holdsOut ? () => setPeeking(false) : undefined}
         className={cn(
           hasPinMode
             ? cn(
-                // Pin mode: always push content, full height.
                 "absolute top-0 bottom-0 flex data-[side=left]:left-0",
                 pinned
                   ? "w-(--sidebar-width)"
                   : collapseToZero
                     ? cn(
-                        // Full width all along, parked off-screen: animating a
-                        // width reflows the panel's contents every frame, a
-                        // transform does not.
+                        // Parked off-screen at full width: a transform does not reflow contents.
                         "w-(--sidebar-width)",
-                        // The transition rides on the held-out class alone, so
-                        // collapsing a pinned sidebar still goes instantly.
+                        // Transition only when held out, so collapsing a pinned one is instant.
                         heldOut
                           ? "z-[45] translate-x-0 transition-transform duration-200 ease-out"
                           : "-translate-x-full pointer-events-none",
@@ -436,10 +369,8 @@ function Sidebar({
                     : "w-(--sidebar-width-icon)",
               )
             : cn(
-                // Legacy mode: fixed to viewport (original shadcn behavior).
                 "fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width) data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
               ),
-          // Adjust the padding for floating and inset variants.
           variant === "floating" || variant === "inset"
             ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
             : !hasPinMode && "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
@@ -460,9 +391,7 @@ function Sidebar({
         {state === "expanded" && (!collapseToZero || pinned) && (
           <SidebarResizeHandle
             side={side}
-            // The shared handle hides itself below `sm`, a viewport rule that
-            // does not hold for a desktop window the user narrowed: there the
-            // sidebar is still the desktop one and still resizable.
+            // The handle hides below `sm`, but a narrowed desktop window still has a resizable sidebar.
             className={collapseToZero ? "block" : undefined}
           />
         )}
@@ -471,9 +400,6 @@ function Sidebar({
   )
 }
 
-/**
- * The sidebar's draggable edge, over the shared panel handle.
- */
 function SidebarResizeHandle({
   className,
   side = "left",
@@ -506,13 +432,11 @@ function SidebarResizeHandle({
         cssVar="--sidebar-width"
         // The custom titlebar renders outside the wrapper and cannot inherit it.
         rootVar="--studio-sidebar-live-width"
-        // Both used only under PANEL_RESIZE_SCOPED_VARS_ENABLED. The rail sits
-        // inside sidebar-container, so [data-slot="sidebar"] always encloses it.
+        // Used only under PANEL_RESIZE_SCOPED_VARS_ENABLED; the rail is inside the sidebar slot.
         scopedTarget={() =>
           ref.current?.closest<HTMLElement>('[data-slot="sidebar"]') ?? null
         }
-        // Empty on every build without a custom titlebar: nothing reads the
-        // property there, so nothing needs writing.
+        // Empty without a custom titlebar: nothing reads the property there.
         rootVarTargets={() =>
           Array.from(
             document.querySelectorAll<HTMLElement>("[data-titlebar-live-width-scope]"),
@@ -822,9 +746,7 @@ function SidebarMenuButton({
     }
   }
 
-  // A disabled <button> fires no pointer events (and is not focusable), so the
-  // tooltip would never open. Wrap it in a focusable span with a hoverable box
-  // so the explanation (e.g. why Train/Export are greyed out) is reachable.
+  // A disabled <button> fires no pointer events; wrap it so the tooltip explaining why is reachable.
   const trigger = isDisabled ? (
     <span tabIndex={0} className="flex w-full">
       {button}
@@ -839,10 +761,7 @@ function SidebarMenuButton({
       <TooltipContent
         side="right"
         align="center"
-        // Enabled items only show the tooltip when collapsed (icon labels);
-        // a disabled item shows it while expanded too, since it explains why.
-        // alwaysTooltip is the third case: an enabled row whose tooltip is a
-        // status, not a label repeat, e.g. a capability still being measured.
+        // Enabled items show the tooltip only when collapsed; disabled and alwaysTooltip rows always.
         hidden={isMobile || (!isDisabled && !alwaysTooltip && state !== "collapsed")}
         {...tooltip}
       />
@@ -900,7 +819,6 @@ function SidebarMenuSkeleton({
 }: React.ComponentProps<"div"> & {
   showIcon?: boolean
 }) {
-  // Random width between 50 to 90%.
   const [width] = React.useState(() => {
     return `${Math.floor(Math.random() * 40) + 50}%`
   })

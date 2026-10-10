@@ -153,7 +153,6 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const favorite = useChatFavoritesStore((state) =>
     state.chatIds.includes(menu.item.id),
   );
-  // As the Library exports one: each thread behind the chat, a comparison's two included.
   const exportAs = async (format: ConversationExportFormat) => {
     try {
       for (const id of getSidebarItemThreadIds(menu.item)) {
@@ -346,7 +345,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   );
 }
 
-/** A saved chat's "…" menu, or the temporary toggle on a new chat. Turning a saved chat temporary is not offered: it would quietly stop saving a chat the user kept. */
+/** A saved chat's menu, or the temporary toggle on a new chat. Saved chats cannot turn temporary. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,

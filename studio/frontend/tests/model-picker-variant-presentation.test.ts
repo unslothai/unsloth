@@ -179,7 +179,6 @@ test("an H3 quant chip is the quant alone, because the column is capped", () => 
     ggufQuantChipLabel("minimax_h3_ref2va-UD-Q3_K_XL"),
     "UD-Q3_K_XL",
   );
-  // A suffix still on, and a shard counter, read alike.
   assert.equal(
     ggufQuantChipLabel("minimax_h3_ref2va_pruned-Q4_K_M.gguf"),
     "Q4_K_M",
@@ -214,7 +213,6 @@ test("an ordinary quant key is left exactly as it is", () => {
 });
 
 test("the picker label is unchanged by the key-shaped parse", () => {
-  // The optional suffix must not change what a ROW reads under its heading.
   const pruned = variant("minimax_h3_fl2va_pruned-UD-Q3_K_XL.gguf", 9);
   assert.equal(
     ggufVariantPickerLabel(pruned, {

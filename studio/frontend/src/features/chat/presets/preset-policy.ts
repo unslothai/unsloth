@@ -10,13 +10,11 @@ import type { PresetLoadConfig } from "./preset-load-config";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
 
-/** The fewest tokens the Max Tokens control offers, and so the least any ceiling may be. */
 export const MAX_TOKENS_MIN = 64;
 
 export interface Preset {
   name: string;
   params: InferenceParams;
-  /** Optional GGUF/load knobs captured with the preset. */
   loadConfig?: PresetLoadConfig;
 }
 
@@ -118,7 +116,7 @@ export function getPresetOwnedParams(
     maxTokens: params.maxTokens,
     systemPrompt: params.systemPrompt ?? "",
     systemVariables: params.systemVariables ?? "",
-    // Normalised, so a preset saved before the field existed never reads as modified.
+    // Normalised so presets saved before the field existed are not modified.
     seed: params.seed ?? null,
   };
 }
@@ -165,7 +163,6 @@ export function applyPresetParams(
   };
 }
 
-/** Built-in reset delegates on vLLM; other providers keep their dormant choice. */
 export function applyPresetForProvider(
   current: InferenceParams,
   preset: Preset,
@@ -294,8 +291,7 @@ export function mergeBackendRecommendedInference({
   response: BackendInferenceEnvelope;
   modelId: string;
   presetSource: ChatPresetSource;
-  /** The window the response reports, as the context constructor reads it -- not the raw
-   *  field, where a backend that sizes nothing echoes the length it was asked for. */
+  /** The constructor's reading, not the raw field, which may echo the request. */
   loadedContextLength: number | null;
 }): InferenceParams {
   const inference = response.inference;
@@ -312,8 +308,6 @@ export function mergeBackendRecommendedInference({
     return next;
   }
 
-  // An unreported window leaves Max Tokens on the settings sheet's ceiling, not on
-  // whatever the previous model left behind.
   const defaultMaxTokens = localMaxTokensCeiling(
     loadedContextLength,
     unreportedWindowMaxTokens(response.is_gguf ?? false, current.maxTokens),
@@ -383,13 +377,7 @@ export function resolveLoadMaxSeqLength({
   return unpinnedLoadContext(isGgufLoad, isMlx, defaultMaxSeqLength);
 }
 
-/** The user's own context pin behind a load request, or null where the request is not one.
- *
- *  A record written before the MLX pin moved fields carries it in `maxSeqLength`, which is
- *  the value `resolveLoadMaxSeqLength` builds the request from, so the completed load has
- *  to pin the same number or the UI reads a pinned runtime as Auto. llama.cpp's
- *  `maxSeqLength` is not a context pin, so only MLX admits it.
- */
+/** Older MLX records keep the pin in `maxSeqLength`; llama.cpp's is not a pin. */
 export function loadRequestContextPin(
   customContextLength: number | null,
   isMlx: boolean | null | undefined,
@@ -398,12 +386,7 @@ export function loadRequestContextPin(
   return customContextLength ?? (isMlx ? pinnedMaxSeqLength : null);
 }
 
-/** The context pin to keep for a model that has just loaded, or null if it has none.
- *
- *  They pin for different reasons: llama.cpp's matters only under manual memory with
- *  auto layers, where `--fit` owns sizing; MLX sizes itself when asked for nothing, so
- *  any positive request was the user's choice.
- */
+/** llama.cpp pins only under manual memory + auto layers; any positive MLX request is a pin. */
 export function retainedContextPin({
   isMlx,
   requestedContextLength,
@@ -414,12 +397,7 @@ export function retainedContextPin({
   return isMlx && (requestedContextLength ?? 0) > 0 ? requestedContextLength : null;
 }
 
-/** The context a preset records, in the one field that replays as a pin.
- *
- *  A window nobody pinned is not recorded: replaying asks for nothing and the backend
- *  arrives there again, while storing it would turn it into a request. llama.cpp is the
- *  exception, since its window depends on the machine.
- */
+/** Unpinned windows are not recorded, except llama.cpp whose window depends on the machine. */
 export function capturedContextLength({
   isGguf,
   controlPin,
@@ -432,11 +410,7 @@ export function capturedContextLength({
   return controlPin ?? (isGguf ? (loadedContextLength ?? null) : null);
 }
 
-/** The context length to record for a model that has just loaded.
- *
- *  The reported window, not the request: a self-sizing backend was asked with the
- *  non-positive sentinel. Only where nothing was reported does the request stand.
- */
+/** The reported window, not the request, which may be a sentinel. */
 export function loadedContextForParams(
   reportedContextLength: number | null | undefined,
   requestedMaxSeqLength: number,
@@ -448,12 +422,6 @@ export function loadedContextForParams(
   return requestedMaxSeqLength > 0 ? requestedMaxSeqLength : previousMaxSeqLength;
 }
 
-/** What bounds Max Tokens when the model reported no window at all.
- *
- *  llama.cpp reports one whenever it can read it, so a missing one is a failed read and
- *  the held value stands. A backend that never reports keeps the app default, since the
- *  session's length is a request and on a model change is the outgoing model's.
- */
 export function unreportedWindowMaxTokens(
   isGguf: boolean,
   currentMaxTokens: number,
@@ -461,11 +429,7 @@ export function unreportedWindowMaxTokens(
   return isGguf ? currentMaxTokens : defaultInferenceParams.maxSeqLength;
 }
 
-/** The most tokens a local model may be asked to generate.
- *
- *  The control's minimum outranks the window: a slider whose maximum is below its
- *  minimum cannot be operated. Reachable, since MLX honours a tiny positive request.
- */
+/** The control's minimum outranks the window so the slider stays operable. */
 export function localMaxTokensCeiling(
   loadedContextLength: number | null,
   unreportedWindowFallback: number,
@@ -473,11 +437,6 @@ export function localMaxTokensCeiling(
   return Math.max(MAX_TOKENS_MIN, loadedContextLength ?? unreportedWindowFallback);
 }
 
-/** The cap a load hands `getReplayedParams`, floored the same way the ceiling above is.
- *
- *  That clamp only lowers Max Tokens, so a raw window below the control's minimum would
- *  leave the value outside its own slider. `undefined` means nothing sized a window.
- */
 export function replayMaxTokensCap(
   loadedContextLength: number | null | undefined,
 ): number | undefined {
@@ -486,13 +445,7 @@ export function replayMaxTokensCap(
     : Math.max(MAX_TOKENS_MIN, loadedContextLength);
 }
 
-/** The app-level request to fall back on when the target has no pin of its own.
- *
- *  `params.maxSeqLength` holds a REQUEST only while the backend serving it does not size
- *  its own window. A load that sized one wrote its RESOLVED window there instead, so
- *  carrying that value into the next model asks transformers to allocate the outgoing
- *  model's window: leaving a 131072 MLX model for an unconfigured one loads it at 131072.
- */
+/** `maxSeqLength` may hold a resolved window, which must not carry into the next model. */
 export function unpinnedDefaultRequest(
   outgoingSizedItsOwnWindow: boolean | null | undefined,
   sessionMaxSeqLength: number | null | undefined,
@@ -502,11 +455,6 @@ export function unpinnedDefaultRequest(
   return sessionMaxSeqLength || appDefault;
 }
 
-/** What a load asks for when the user has pinned no context of their own.
- *
- *  Both local backends take the same non-positive sentinel to mean "size it yourself".
- *  The app default covers the remaining case, where nothing fits a window.
- */
 export function unpinnedLoadContext(
   isGgufLoad: boolean,
   isMlx: boolean | null | undefined,
@@ -515,10 +463,7 @@ export function unpinnedLoadContext(
   return isGgufLoad || isMlx ? 0 : appDefault;
 }
 
-/** Adjust a resolved max-seq-length for the GPU Memory mode. Under Manual with Auto layers (GGUF,
- *  gpuLayers < 0) llama.cpp's --fit owns context sizing, so send 0 (the backend omits -c) unless
- *  the user pinned a length; every other case keeps the resolved fallback. Shared by every GGUF
- *  load path so they cannot drift. */
+/** Under Manual + Auto layers, --fit owns context, so send 0 unless the user pinned one. */
 export function resolveFitMaxSeqLength(
   isGguf: boolean | null | undefined,
   gpuMemoryMode: "auto" | "manual",
@@ -538,14 +483,7 @@ export function isReplayedLoadContext(
   return isGguf === true && customContextLength == null && maxSeqLength > 0;
 }
 
-/** The context pin a completed load leaves behind: the Context Length the user EXPLICITLY set, or
- *  null for Auto. Takes the user's setting, never the n_ctx that went on the wire, which cannot
- *  answer this: `resolveLoadMaxSeqLength` sends the resolved context on a same-model reload, so
- *  under a custom preset an Auto load puts a positive n_ctx on the wire too, and reading a pin
- *  back out of that turned Auto into a numeric pin. Takes no GPU Memory mode deliberately: the
- *  predicate this replaces kept a pin only under Manual with Auto layers, narrower than the send
- *  rule, so a load on Default sent the user's pin and then dropped it. Callers keep their own
- *  isGguf guard inline, since a non-GGUF load has no n_ctx. */
+/** The user's explicit Context Length or null; never derived from the wire n_ctx. */
 export function resolveExplicitCtxPin(
   customContextLength: number | null | undefined,
 ): number | null {

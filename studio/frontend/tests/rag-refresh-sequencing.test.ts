@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A project source mutation invalidates before and after itself, and each
-// invalidation starts a list request that can complete out of order. An earlier
-// one landing last restores the pre-mutation list and reports nothing indexing,
-// so a send goes out before the file it needs is in. This pins the
-// latest-request rule useRagDocuments.refresh applies.
+// Invalidation list requests can complete out of order; pins the latest-request rule.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,9 +17,6 @@ const USE_RAG_DOCUMENTS = readSrc("features/rag/components/use-rag-documents.ts"
 
 type Row = { id: string; status: string };
 
-/** The publish gate as refresh applies it: take a ticket, drop the result if a
- * newer request has started since. `clearScope` is the scope-change effect,
- * which takes a ticket without issuing a request of its own. */
 function makeRefresher(published: Row[][]) {
   let seq = 0;
   async function refresh(list: () => Promise<Row[]>) {
@@ -55,14 +48,11 @@ test("a stale list response cannot replace a newer one", async () => {
   const before = deferred<Row[]>();
   const after = deferred<Row[]>();
 
-  // Both fired by the same upload: the pre-mutation refresh first.
   const first = refresh(() => before.promise);
   const second = refresh(() => after.promise);
 
-  // The post-mutation request wins the race back.
   after.resolve(INDEXING);
   await second;
-  // The pre-mutation request lands afterwards, carrying the empty list.
   before.resolve(EMPTY);
   await first;
 
@@ -97,9 +87,7 @@ test("a lone refresh still publishes", async () => {
   assert.deepEqual(published, [INDEXING]);
 });
 
-// Leaving a project clears the scope and issues no replacement request, so
-// without a ticket taken on the way out the project's own response lands
-// afterwards and puts its sources back in a chat that is not in it.
+// Clearing scope issues no request, so without a ticket the old response would republish.
 test("a response for a scope that has been cleared does not publish", async () => {
   const published: Row[][] = [];
   const refresh = makeRefresher(published);
@@ -121,9 +109,7 @@ test("the scope-change effect takes a ticket on the way out", () => {
   );
 });
 
-// A superseded failure describes a scope no longer shown, and a host without the
-// vector extension 503s every one of these: no toast per composer opened. The desktop-update
-// guard may sit between the two, but nothing that reports may come before the supersession check.
+// Nothing that reports may come before the supersession check.
 test("a failure is only reported for the request still being awaited", () => {
   assert.match(
     USE_RAG_DOCUMENTS,
@@ -131,9 +117,7 @@ test("a failure is only reported for the request still being awaited", () => {
   );
 });
 
-// The composer mounts a project scope per project chat, so a host without RAG
-// would fail one request per chat opened. Checked on projectId itself, so the
-// attach controls and target menu go with it rather than offering a certain 503.
+// Without RAG every project chat would fail one request, so no project scope is opened.
 test("no project scope is opened where RAG cannot run", () => {
   assert.match(
     THREAD_DOCUMENTS_BAR,
@@ -142,10 +126,7 @@ test("no project scope is opened where RAG cannot run", () => {
   assert.match(THREAD_DOCUMENTS_BAR, /projectId \? \{ type: "project", projectId \} : null/);
 });
 
-// A project's sources also change from the Sources panel: an upload invalidated
-// before and after, and a folder sync reporting at start and completion only.
-// The composer holds no row for either while it runs, so re-listing alone left
-// it reporting nothing indexing and a send could go out without them.
+// Sources panel work has no composer row while running, so it must count as indexing.
 test("work in the other instance counts as indexing", () => {
   const inFlight = new Map<string, number>();
   const note = (projectId: string, delta: number) => {
@@ -156,7 +137,6 @@ test("work in the other instance counts as indexing", () => {
       inFlight.delete(projectId);
     }
   };
-  // What the composer's instance reports: its own rows, plus uploads elsewhere.
   const composerIndexing = (rows: Row[]) =>
     (inFlight.get("proj-1") ?? 0) > 0 ||
     rows.some((row) => row.status === "pending" || row.status === "running");
@@ -170,7 +150,6 @@ test("work in the other instance counts as indexing", () => {
     "the panel's POST gates the composer before any row exists",
   );
 
-  // The upload finishes and the row the panel created is now listed.
   note("proj-1", -1);
   assert.equal(composerIndexing(INDEXING), true, "still indexing");
   assert.equal(composerIndexing(EMPTY), false);
@@ -180,10 +159,7 @@ test("the composer reads indexing from the hooks, not the listed rows", () => {
   assert.match(USE_RAG_DOCUMENTS, /noteProjectWork\(uploadingProjectId, 1\)/);
   assert.match(USE_RAG_DOCUMENTS, /noteProjectWork\(uploadingProjectId, -1\)/);
   assert.match(USE_RAG_DOCUMENTS, /workElsewhere > 0 \|\|/);
-  // A folder sync reports at start and completion only, so the rows it
-  // creates land with nothing gating the composer in between.
-  // Tied to the job, not to the component that started it: leaving the Sources
-  // tab aborts its event stream, the sync carries on.
+  // Tied to the job, not the component: leaving the Sources tab does not stop the sync.
   assert.match(USE_LINKED_FOLDERS, /watchProjectFolderJob\(scopeId, initial\.id\)/);
   assert.match(RAG_API, /noteProjectWork\(projectId, 1\)/);
   assert.match(RAG_API, /noteProjectWork\(projectId, -1\)/);
@@ -193,9 +169,7 @@ test("the composer reads indexing from the hooks, not the listed rows", () => {
   );
 });
 
-// A list slower than the poll interval used to retire itself: each tick took a
-// newer ticket before the previous response landed, so nothing ever published
-// and the row being watched never reached completed.
+// Each tick used to take a newer ticket, so a slow list never published.
 test("a poll tick is skipped while one is still out", () => {
   let inFlight = false;
   let started = 0;
@@ -220,22 +194,18 @@ test("the poll and the initial list are wired that way", () => {
     USE_RAG_DOCUMENTS,
     /if \(!refreshInFlight\.current\) \{\s*void refresh\(\{ quiet: true \}\);/,
   );
-  // Reopening a project whose job is already running: nothing is listed yet and
-  // no upload of ours is counted, so the gate has to hold for the first list.
   assert.match(
     THREAD_DOCUMENTS_BAR,
     /threadIndexing \|\| threadListLoading \|\| projectIndexing \|\| projectListLoading/,
   );
 });
 
-// Two tabs on the same project share its sources, and a CustomEvent reaches
-// only the tab that fired it.
+// A CustomEvent reaches only the tab that fired it.
 test("an invalidation crosses tabs", () => {
   assert.match(
     RAG_API,
     /getProjectChannel\(\)\?\.postMessage\(\{ kind: "sources", projectId \}\)/,
   );
-  // Work in flight crosses too, or the other tab stays sendable through it.
   assert.match(
     RAG_API,
     /getProjectChannel\(\)\?\.postMessage\(\{\s*kind: "work",\s*projectId,\s*delta,\s*from: TAB_ID,/,
@@ -244,17 +214,14 @@ test("an invalidation crosses tabs", () => {
   assert.match(USE_RAG_DOCUMENTS, /subscribeProjectSourcesBroadcast\(\);/);
 });
 
-// Only the tab that started the work can report it finished, and it may be
-// closed first, so what it reports lapses rather than gating for the session.
+// The reporting tab may close first, so remote work lapses instead of gating forever.
 test("work reported by another tab lapses", () => {
   assert.match(RAG_API, /const REMOTE_WORK_TTL_MS = 120_000;/);
   assert.match(RAG_API, /until: Date\.now\(\) \+ REMOTE_WORK_TTL_MS/);
-  // Local and remote add up; a remote count past its deadline is dropped.
   assert.match(
     RAG_API,
     /if \(entry\.until > now\) remoteCount \+= entry\.count;\s*\}\s*return \(projectWorkInFlight\.get\(projectId\) \?\? 0\) \+ remoteCount;/,
   );
-  // One pending wake-up per project, however chatty the other tab is.
   assert.match(RAG_API, /clearTimeout\(timer\)/);
 
   const TTL = 120_000;
@@ -280,15 +247,12 @@ test("work reported by another tab lapses", () => {
   note("proj-1", -1);
   assert.equal(counted("proj-1"), 0, "and releases when it says so");
 
-  // The other tab goes away mid-upload and never reports the end.
   note("proj-1", 1);
   assert.equal(counted("proj-1"), 1);
   now += TTL + 1;
   assert.equal(counted("proj-1"), 0, "the gate does not outlive the tab");
 });
 
-// Two uploads overlapping in the other tab: the first to finish must not
-// release the gate the second is still holding.
 test("overlapping remote work is counted, not flagged", () => {
   assert.match(
     RAG_API,
@@ -314,15 +278,11 @@ test("overlapping remote work is counted, not flagged", () => {
   assert.equal(remote.has("proj-1"), false);
 });
 
-// The composer says the source is gone on click, but it is there until the
-// DELETE returns, and the probe is invalidated only after that.
 test("a project delete is work on the project", () => {
   assert.match(USE_RAG_DOCUMENTS, /noteProjectWork\(removingProjectId, 1\)/);
   assert.match(USE_RAG_DOCUMENTS, /noteProjectWork\(removingProjectId, -1\)/);
 });
 
-// A superseded request clearing the flag would report the list as known while
-// the request that will publish is still out.
 test("the newest request owns the loading flag", () => {
   assert.match(
     USE_RAG_DOCUMENTS,
@@ -330,12 +290,8 @@ test("the newest request owns the loading flag", () => {
   );
 });
 
-// The mutation releases its lease when its POST returns, and the invalidation it
-// fires afterwards triggers a quiet refresh, which takes no loading gate: between
-// the two the composer would report nothing indexing.
+// Between the lease release and the quiet refresh, the composer would report nothing indexing.
 test("the refresh an invalidation triggers is counted as work", () => {
-  // The listener hands off to the shared loader, which takes the lease for as
-  // long as the list (and its retries) run.
   assert.match(
     USE_RAG_DOCUMENTS,
     /void loadProjectSources\(projectScopeId, \{ quiet: true \}\);/,
@@ -346,18 +302,14 @@ test("the refresh an invalidation triggers is counted as work", () => {
   );
 });
 
-// One failed read is not a finished job: a backend restart misses a tick or two
-// while the durable sync runs on.
+// A backend restart misses a tick or two while the durable sync runs on.
 test("a folder job watcher rides out a failed read", () => {
-  // The catch is inside the loop, so a failure does not reach the finally.
   assert.match(
     RAG_API,
     /if \(isRagClientError\(error\)\) break;\s*consecutiveFailures \+= 1;\s*if \(consecutiveFailures >= MAX_FOLDER_JOB_READ_FAILURES\) \{\s*break;/,
   );
-  // A read that comes back clears the streak, so only a run of them gives up.
   assert.match(RAG_API, /consecutiveFailures = 0;/);
 
-  // The same loop, run against reads that fail and then recover.
   const reads = ["fail", "fail", "fail", "running", "fail", "completed"];
   let failures = 0;
   let released = -1;
@@ -383,14 +335,11 @@ test("a folder job watcher rides out a failed read", () => {
   );
 });
 
-// An upload larger than the deadline sends no delta in between, so without a
-// renewal the other tab stops counting it and becomes sendable mid-upload.
+// A long upload sends no delta, so without renewal the other tab stops counting it.
 test("work in flight renews the deadline other tabs put on it", () => {
   assert.match(RAG_API, /const WORK_HEARTBEAT_MS = 45_000;/);
-  // The absolute count, not a zero delta: a delta cannot revive an entry the
-  // receiver has already let lapse, which a suspended timer produces.
+  // Send the absolute count: a delta cannot revive an entry the receiver already let lapse.
   assert.match(RAG_API, /setInterval\(answerWorkQuery, WORK_HEARTBEAT_MS\)/);
-  // Started and stopped by the count itself, so an idle tab posts nothing.
   assert.match(
     RAG_API,
     /if \(projectWorkInFlight\.size === 0\) \{\s*if \(workHeartbeat !== null\) \{\s*clearInterval\(workHeartbeat\)/,
@@ -402,8 +351,6 @@ test("work in flight renews the deadline other tabs put on it", () => {
     const entry = remote.get(projectId);
     return entry && entry.until > now ? entry.count : 0;
   };
-  // seedRemoteProjectWork: renews the deadline and floors the count, so a
-  // heartbeat both holds a live entry and revives one already let lapse.
   const seed = (projectId: string, count: number) => {
     if (count <= 0) return;
     remote.set(projectId, {
@@ -418,23 +365,19 @@ test("work in flight renews the deadline other tabs put on it", () => {
   now += 90_000;
   assert.equal(counted("proj-1"), 1, "still gated three minutes in");
 
-  // A tab frozen past the deadline: the next heartbeat must count again.
   now += 120_001;
   assert.equal(counted("proj-1"), 0, "lapsed while nothing was heard");
   seed("proj-1", 1);
   assert.equal(counted("proj-1"), 1, "revived by the heartbeat after it lapsed");
 });
 
-// Clearing to a null scope outranks the refresh still in flight but starts no
-// replacement, so nothing reaches the sequence guard that would clear the
-// flags. The composer reads the list as still unknown and holds every send.
+// Clearing to null starts no request, so nothing else would clear the flags.
 test("dropping the scope clears the flags no request will", () => {
   assert.match(
     USE_RAG_DOCUMENTS,
     /if \(scope\) \{[\s\S]{0,300}?: refresh\(\)\);\s*\} else \{[\s\S]{0,300}?refreshInFlight\.current = false;[\s\S]{0,200}?setLoading\(false\);/,
   );
 
-  // The guard that leaves them set: the ticket has already moved on.
   let seq = 0;
   let loading = false;
   const start = () => {
@@ -454,9 +397,7 @@ test("dropping the scope clears the flags no request will", () => {
   );
 });
 
-// The rows a folder sync writes are new sources, and the probe caches its
-// answer for 30s. The watcher is the only observer once the panel unmounts, so
-// a send released by it would still read the cached "no sources".
+// The probe caches for 30s, so the watcher must drop it before releasing a send.
 test("a folder job drops the cached answer before the gate", () => {
   assert.match(
     RAG_API,
@@ -464,10 +405,8 @@ test("a folder job drops the cached answer before the gate", () => {
   );
 });
 
-// BroadcastChannel does not replay, so a tab opened mid-upload hears nothing
-// until the next delta, which for an upload is its completion.
+// BroadcastChannel does not replay, so a new tab must ask what is running.
 test("a tab that opens mid-upload asks what is already running", () => {
-  // Asked once, on the way in.
   assert.match(RAG_API, /askForWorkInFlight\(\);\s*return projectChannel;/);
   assert.match(RAG_API, /postMessage\(\{ kind: "work-query" \}\)/);
   assert.match(
@@ -475,8 +414,7 @@ test("a tab that opens mid-upload asks what is already running", () => {
     /channel\.postMessage\(\{ kind: "work-state", projectId, count, from: TAB_ID \}\)/,
   );
 
-  // Per sender, and a floor within it: the answer can race a delta from the
-  // same tab that is already counted, and must not lower it.
+  // Floor per sender: the answer can race an already-counted delta from the same tab.
   const remote = new Map<string, { count: number; until: number }>();
   const seed = (from: string, count: number) => {
     if (count <= 0) return;
@@ -498,15 +436,12 @@ test("a tab that opens mid-upload asks what is already running", () => {
   assert.equal(remote.has("tab-b"), false, "an idle tab seeds nothing");
 });
 
-// Two tabs uploading to one project are two operations. Merged into a single
-// project-wide count, the first to finish clears the gate the second is still
-// holding, and a send goes out mid-upload.
+// A single project-wide count would let the first upload to finish release the second.
 test("work is counted per reporting tab, not per project", () => {
   assert.match(
     RAG_API,
     /const remoteProjectWork = new Map<\s*string,\s*Map<string, \{ count: number; until: number \}>\s*>\(\);/,
   );
-  // Every message says who sent it, or the counts cannot be kept apart.
   assert.match(RAG_API, /kind: "work",\s*projectId,\s*delta,\s*from: TAB_ID,/);
   assert.match(
     RAG_API,
@@ -514,7 +449,6 @@ test("work is counted per reporting tab, not per project", () => {
   );
   assert.match(RAG_API, /if \(entry\.until > now\) remoteCount \+= entry\.count;/);
 
-  // The reported sequence, per sender.
   const TTL = 120_000;
   const now = 1_000;
   const byProject = new Map<
@@ -535,49 +469,39 @@ test("work is counted per reporting tab, not per project", () => {
     return sum;
   };
 
-  // Both existing tabs answer a late tab's query.
   set("tab-a", 1);
   set("tab-b", 1);
   assert.equal(total(), 2, "two uploads, not one");
 
-  // One finishes; the other still holds the gate.
   set("tab-a", 0);
   assert.equal(total(), 1);
   set("tab-b", 0);
   assert.equal(total(), 0);
 });
 
-// The gate is released by the mutation's reconciling refresh, so a refresh that
-// fails releases it with the composer holding no rows at all.
 test("a failed reconciling refresh is retried before the gate drops", () => {
   assert.match(USE_RAG_DOCUMENTS, /const REFRESH_RETRIES = 3;/);
   assert.match(
     USE_RAG_DOCUMENTS,
     /if \(await refresh\(\{ quiet: opts\?\.quiet, silentErrors: !last \}\)\) return;/,
   );
-  // The release is still guaranteed, retries or not.
   assert.match(
     USE_RAG_DOCUMENTS,
     /\} finally \{\s*noteProjectWork\(projectId, -1\);/,
   );
-  // And the first list of a project takes the same path, so a transient failure
-  // there does not leave an empty list reporting nothing to wait for.
   assert.match(
     USE_RAG_DOCUMENTS,
     /scope\.type === "project"\s*\? loadProjectSources\(scope\.projectId\)\s*: refresh\(\)/,
   );
-  // A superseded request reports the list as known: the newer one owns it.
   assert.match(USE_RAG_DOCUMENTS, /if \(refreshSeq\.current !== requestId\) return true;/);
 });
 
-// The backend creates and starts the job before it answers, so the request
-// itself is time the project is changing with nothing gating on it.
+// The backend starts the job before answering, so the gate is taken before the request.
 test("a folder mutation takes the gate before its request", () => {
   assert.match(
     USE_LINKED_FOLDERS,
     /noteProjectWork\(projectWorkScopeId, 1\);\s*try \{\s*return await run\(\);\s*\} finally \{\s*noteProjectWork\(projectWorkScopeId, -1\);/,
   );
-  // Linking, syncing, rebuilding and unlinking all go through it.
   assert.match(
     USE_LINKED_FOLDERS,
     /withProjectWork\(async \(\) => \{\s*const created = await createLinkedFolder\(/,
@@ -590,16 +514,12 @@ test("a folder mutation takes the gate before its request", () => {
     USE_LINKED_FOLDERS,
     /withProjectWork\(\(\) => deleteLinkedFolder\(folderId, removeIndex\)\)/,
   );
-  // The job's own lease is taken inside the request's, so a scope change
-  // between the response and trackJob cannot leave the project uncounted.
+  // Job lease is taken inside the request's, so a scope change cannot drop the count.
   assert.match(USE_LINKED_FOLDERS, /watchStartedJob\(created\.job\.id\);\s*return created;/);
   assert.match(USE_LINKED_FOLDERS, /watchStartedJob\(started\.job\.id\);\s*return started;/);
 });
 
-// A folder sync outlives the tab that started it. After a reload the watcher is
-// gone, and the backend scans the folder before writing any rows, so the
-// composer's own list is legitimately empty. Only the Sources panel lists
-// linked folders, and a project opens on Chats, so the composer has to ask.
+// After a reload the backend scans before writing rows, so the composer must ask for running syncs.
 test("a project composer picks up a folder sync already running", () => {
   assert.match(
     RAG_API,
@@ -609,8 +529,6 @@ test("a project composer picks up a folder sync already running", () => {
     RAG_API,
     /if \(folder\.activeJobId\) \{\s*watchProjectFolderJob\(projectId, folder\.activeJobId\);/,
   );
-  // Two bars on one project share a look, and a failed look does not count as
-  // an answer, but the project is never closed to a later one.
   assert.match(
     RAG_API,
     /if \(\(folderReconcileNotBefore\.get\(projectId\) \?\? 0\) > now\) return;[\s\S]{0,400}?folderReconcileNotBefore\.set\(projectId, now \+ FOLDER_RECONCILE_MIN_GAP_MS\);/,
@@ -618,14 +536,12 @@ test("a project composer picks up a folder sync already running", () => {
   assert.match(RAG_API, /folderReconcileNotBefore\.delete\(projectId\);/);
 
   assert.match(USE_RAG_DOCUMENTS, /void reconcileProjectFolderJobs\(workScopeId\);/);
-  // The backend enqueues a job per auto-syncing folder on its own timer, so one
-  // look at mount time misses every scan that starts after it.
+  // The backend schedules auto-sync jobs on its own timer, so one mount-time look misses later ones.
   assert.match(
     USE_RAG_DOCUMENTS,
     /const reconcile = setInterval\(\(\) => \{\s*void reconcileProjectFolderJobs\(workScopeId\);\s*\}, FOLDER_RECONCILE_INTERVAL_MS\);/,
   );
-  // The lookup takes a lease before its first await, so the listener that reads
-  // the count has to be registered ahead of it.
+  // The lookup takes a lease before its first await, so the listener must register first.
   assert.match(
     USE_RAG_DOCUMENTS,
     /window\.addEventListener\(PROJECT_WORK_CHANGED_EVENT, read\);[\s\S]{0,400}?void reconcileProjectFolderJobs\(workScopeId\);/,
@@ -633,16 +549,13 @@ test("a project composer picks up a folder sync already running", () => {
   assert.match(USE_RAG_DOCUMENTS, /clearInterval\(reconcile\);/);
 });
 
-// Unlinking a folder deletes its job rows, and so does the history prune, so a
-// detached watcher can poll a job id that will never answer again.
+// Unlinking and history prune delete job rows, so a watcher can poll an id that never answers.
 test("a folder job watcher stops on an answered 4xx", () => {
-  // Read the two constants the loop is bounded by rather than restating them.
   const retryBudget = Number(
     /const MAX_FOLDER_JOB_READ_FAILURES = (\d+);/.exec(RAG_API)?.[1],
   );
   assert.ok(retryBudget > 0);
 
-  // The same loop, run against a job that is deleted mid-sync.
   const run = (clientError: boolean) => {
     let failures = 0;
     for (let tick = 0; tick < 600; tick += 1) {
@@ -656,10 +569,8 @@ test("a folder job watcher stops on an answered 4xx", () => {
   assert.equal(run(false), retryBudget - 1, "a network failure still rides out");
 });
 
-// A queued prompt outlives the bar that watched it, and isIndexing() answers only
-// while that bar is mounted, so the queue has to ask for the project itself.
+// isIndexing() only answers while the bar is mounted, so the queue checks the project itself.
 test("a background prompt queue checks the project it will send to", () => {
-  // The thread-scope check no longer returns early past the project one.
   assert.doesNotMatch(
     THREAD,
     /if \(!item\.target\.usesThreadDocuments\) \{\s*return false;/,
@@ -677,58 +588,45 @@ test("a background prompt queue checks the project it will send to", () => {
   );
 });
 
-// A queue in a chat with no row yet cannot look its project up: the row is not
-// there, and the store holds whichever project is on screen when the poll lands.
+// Without a row, the store holds whichever project is on screen when the poll lands.
 test("a queue in a chat with no row still waits on its project", () => {
-  // Captured at queue start, beside the other snapshots, and never for incognito
-  // (which has no project and no row to reconcile against).
   assert.match(
     THREAD,
     /const projectIdAtQueueStart = incognitoAtQueueStart\s*\?\s*null\s*:\s*\(chatStateAtQueueStart\.activeProjectId \?\? null\);/,
   );
   assert.match(THREAD, /getQueueProjectId: \(\) => projectIdAtQueueStart,/);
-  // The thread lookup stays the source of truth wherever there is a thread.
   assert.match(
     THREAD,
     /const queueProjectId = item\.target\.getQueueProjectId\(\);\s*const projectId = threadId\s*\?\s*await resolveProjectId\(threadId, undefined, \{\s*rethrowReadFailure: true,\s*composerProjectId: queueProjectId,\s*\}\)\s*:\s*queueProjectId;/,
   );
-  // And the thread-document read is still only made when there is a thread.
   assert.match(THREAD, /if \(threadId && item\.target\.usesThreadDocuments\) \{/);
 });
 
-// Unlinking deletes the rows whatever this hook shows by the time the DELETE
-// returns, so an announcement gated on the current scope leaves every other
-// composer, and every other tab, listing files that are gone.
+// Unlinking deletes rows regardless of current scope, so the announcement must not be gated on it.
 test("unlinking a folder announces for the project it was for", () => {
   assert.match(USE_LINKED_FOLDERS, /const unlinkedProjectId = projectWorkScopeId;/);
-  // Announced before the scope guard, so navigating mid-DELETE cannot skip it.
   assert.match(
     USE_LINKED_FOLDERS,
     /if \(unlinkedProjectId\) announceProjectSourcesUpdated\(unlinkedProjectId\);\s*if \(currentScopeKey\.current !== operationScopeKey\) return;/,
   );
 });
 
-// A failed read of the chat's own row is not proof it has no project: recording
-// one files the next attachment into the chat, and nothing re-runs the lookup
-// until the chat or the open project changes.
+// A failed read is not proof of no project; recording null misfiles the next attachment.
 test("a failed project lookup leaves the scope unresolved", () => {
   assert.match(THREAD_DOCUMENTS_BAR, /const PROJECT_LOOKUP_RETRIES = 3;/);
   assert.match(
     THREAD_DOCUMENTS_BAR,
     /for \(let attempt = 0; attempt < PROJECT_LOOKUP_RETRIES; attempt \+= 1\)/,
   );
-  // Nothing records a null project on the failure path any more.
   assert.doesNotMatch(
     THREAD_DOCUMENTS_BAR,
     /setResolved\(\{ threadId, trigger: activeProjectId, projectId: null \}\);/,
   );
-  // And unresolved still disables the attach controls.
   assert.match(THREAD_DOCUMENTS_BAR, /const projectUnresolved = threadProjectId === undefined;/);
   assert.match(THREAD_DOCUMENTS_BAR, /uploading \|\| projectUploading \|\| projectUnresolved/);
 });
 
-// A row the probe could not read is not a chat with no project: answering null
-// dispatches the queued prompt and bypasses the retry the catch exists for.
+// Answering null on a failed read would dispatch the queued prompt and skip the retry.
 test("a failed row read holds a queued prompt instead of releasing it", () => {
   assert.match(CHAT_ADAPTER, /opts\?: \{ rethrowReadFailure\?: boolean;/);
   assert.match(
@@ -739,8 +637,7 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
     THREAD,
     /await resolveProjectId\(threadId, undefined, \{\s*rethrowReadFailure: true,/,
   );
-  // Every other caller keeps failing soft: they run on the send path, where a
-  // read failure must not adopt whichever project is on screen.
+  // Other callers fail soft on the send path, where they must not adopt the on-screen project.
   assert.equal(
     (THREAD.match(/rethrowReadFailure/g) ?? []).length,
     1,
@@ -748,91 +645,70 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
   );
 });
 
-// A knowledge base replaces every other scope in rag_scope, so a queue scoped to
-// one cannot be affected by a project upload or a folder sync.
+// A knowledge base replaces every other scope in rag_scope.
 test("a knowledge-base queue does not wait on project sources", () => {
   assert.match(
     THREAD,
     /const usesKnowledgeBaseAtQueueStart =\s*chatStateAtQueueStart\.ragEnabled &&\s*chatStateAtQueueStart\.ragSource\.type === "kb";/,
   );
   assert.match(THREAD, /usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,/);
-  // Ahead of the project lookup, and after the thread one, which a KB queue
-  // never takes anyway.
   assert.match(
     THREAD,
     /if \(item\.target\.usesKnowledgeBase\) \{\s*return false;\s*\}[\s\S]{0,900}?const projectId = threadId/,
   );
-  // The exclusivity this relies on, in the adapter that builds the scope.
   assert.match(
     CHAT_ADAPTER,
     /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}/,
   );
 });
 
-// A retry sleeps for a second or more and resumes into a closure holding the
-// lister of the project it started for, so after the user moves on it publishes
-// that project's documents into the composer showing another one.
+// A retry resumes with the old project's lister and would publish into another composer.
 test("a retry stops when the scope it started for is gone", () => {
   assert.match(USE_RAG_DOCUMENTS, /const startedFor = `project:\$\{projectId\}`;/);
   assert.match(
     USE_RAG_DOCUMENTS,
     /liveScopeKeyRef\.current = scopeKey;\s*\}, \[scopeKey\]\);/,
   );
-  // Checked after the delay, not before the first attempt: the scope effect that
-  // starts this load runs before the one that records the live scope.
+  // The scope effect starting this load runs before the one recording the live scope.
   assert.match(
     USE_RAG_DOCUMENTS,
     /await new Promise\(\(resolve\) =>\s*setTimeout\(resolve, 1000 \* \(attempt \+ 1\)\),\s*\);[\s\S]{0,400}?if \(liveScopeKeyRef\.current !== startedFor\) return;/,
   );
 });
 
-// A thread has its id before initialize() has finished writing its row, and the
-// store names whichever project is on screen when the queue polls. Falling back
-// to it there probes the project the user moved to, not the one being waited on.
+// A thread gets its id before its row is written, and the store names the on-screen project.
 test("a queue with no row yet falls back to its own project, not the store", () => {
   assert.match(
     CHAT_ADAPTER,
     /opts\?: \{ rethrowReadFailure\?: boolean; composerProjectId\?: string \| null \}/,
   );
-  // The caller's fallback wins over the store, and null from a caller is an
-  // answer rather than a reason to read the store.
   assert.match(
     CHAT_ADAPTER,
     /const composerProjectId =\s*opts\?\.composerProjectId !== undefined\s*\?\s*opts\.composerProjectId\s*:\s*useChatRuntimeStore\.getState\(\)\.activeProjectId;/,
   );
-  // The row and the pending map still outrank it.
   assert.match(CHAT_ADAPTER, /if \(thread\) \{\s*composerProjectByPendingThread\.delete\(threadId\);/);
 });
 
-// One timer covers the project, so arming it for a full TTL on every update
-// pushes it past the deadline of a tab that reported earlier. That tab can close
-// mid-upload, and its stale count then gates a mounted composer until some later
-// event happens to publish.
+// Re-arming a full TTL per update pushes past an earlier sender's deadline.
 test("the work timer is armed for the earliest sender deadline", () => {
   assert.match(
     RAG_API,
     /let earliest = Number\.POSITIVE_INFINITY;\s*for \(const entry of bySender\.values\(\)\) \{\s*earliest = Math\.min\(earliest, entry\.until\);/,
   );
   assert.match(RAG_API, /Math\.max\(0, earliest - Date\.now\(\)\)/);
-  // Fired, it drops what lapsed and arms for the next deadline rather than
-  // leaving the remaining senders with no wake-up at all.
   assert.match(RAG_API, /if \(entry\.until <= now\) live\.delete\(sender\);/);
   assert.match(
     RAG_API,
     /publishProjectWorkChanged\(projectId\);\s*armRemoteWorkExpiry\(projectId\);/,
   );
 
-  // The scheduling rule itself: two senders, the later update must not push the
-  // earlier one's wake-up out.
   const TTL = 120_000;
   const senders = new Map<string, number>();
   const armFor = () => Math.min(...senders.values());
   senders.set("tab-a", 1_000 + TTL);
   assert.equal(armFor(), 1_000 + TTL);
-  // Tab B reports 30s later. The timer still has to fire for A first.
   senders.set("tab-b", 31_000 + TTL);
   assert.equal(armFor(), 1_000 + TTL, "A's deadline still owns the timer");
-  // A lapses and is dropped; the next wake-up is B's.
   senders.delete("tab-a");
   assert.equal(armFor(), 31_000 + TTL);
 });

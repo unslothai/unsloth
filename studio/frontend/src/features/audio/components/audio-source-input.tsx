@@ -45,7 +45,6 @@ import { VoicePicker } from "./voice-picker";
 import { Waveform } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
 
-/** The gallery clips an input card offers under From history. Provided by the page. */
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
 // False while the persistently mounted Audio page is hidden, so no card keeps the mic.
@@ -120,7 +119,6 @@ export function AudioSourceInput({
   onStatusChange?: (status: AudioSourceStatus) => void;
   renderWaveform?: (preview: AudioSourcePreviewView) => ReactNode;
   maxRecordSeconds?: number;
-  /** The card's copy defaults to a clone reference; other pages pass their own. */
   expiredMessage?: string;
   usesFirstSeconds?: number | null;
   recordHint?: string;

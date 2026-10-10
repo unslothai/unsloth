@@ -13,8 +13,7 @@ import {
 
 registerBundlerResolver();
 
-// Installed before the import so the store hydrates from it and its writes land
-// somewhere the persistence cases below can read back.
+// Installed before the import so the store hydrates from it.
 const { store: storageStore, fireWindowEvent } = installLocalStorageFake();
 
 const { pinKey, usePinnedModelsStore } = await import(
@@ -35,12 +34,6 @@ function storedPinned(): string[] | null {
   return raw ? JSON.parse(raw) : null;
 }
 
-/**
- * Another Unsloth window rewriting the pin list: the record changes underneath
- * this window and a "storage" event follows, which is the only way the list can
- * change without this window's store doing it. Goes through the real listener,
- * so what the store learns is exactly what a second window would teach it.
- */
 function externalWrite(pinned: string[], key: string | null = STORAGE_KEY) {
   storageStore.set(STORAGE_KEY, JSON.stringify(pinned));
   if (fireWindowEvent("storage", { key }) !== 1) {
@@ -49,7 +42,6 @@ function externalWrite(pinned: string[], key: string | null = STORAGE_KEY) {
   }
 }
 
-/** Forget the record without touching the store, so a later write is visible. */
 function forgetStoredWrites() {
   storageStore.delete(STORAGE_KEY);
 }
@@ -102,7 +94,6 @@ test("movePinned keeps keys not shown in the current view in relative order", ()
 });
 
 test("movePinned leaves every untouched key in its original relative order", () => {
-  // The invariant behind the case above, stated directly: exactly one key moves.
   const before = ["a", "b::Q4_K_M", "c", "d::Q8_0", "e"];
   setPinned([...before]);
   usePinnedModelsStore.getState().movePinned("e", "b::Q4_K_M");
@@ -116,12 +107,7 @@ test("movePinned leaves every untouched key in its original relative order", () 
   );
 });
 
-// --- the drop convention ---------------------------------------------------
-// The dragged cell lands in the slot the pointer is over, which is what makes
-// reorder-on-dragenter stable: after the move the pointer sits on the dragged
-// cell itself, so the next dragenter is a self-move and does nothing. Getting
-// there means a forward drag inserts AFTER the target and a backward drag
-// inserts BEFORE it, so both are pinned down here on purpose.
+// Forward drags insert after the target, backward before it, so reorder-on-dragenter is stable.
 
 test("dragging forward puts the moved key after the target", () => {
   setPinned(["a", "b", "c", "d"]);
@@ -155,8 +141,6 @@ test("moving to the first and last key reaches both ends", () => {
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["a", "b", "c"]);
 });
 
-// --- degenerate inputs -----------------------------------------------------
-
 test("movePinned on an empty or single-entry list is inert", () => {
   setPinned([]);
   usePinnedModelsStore.getState().movePinned("a", "b");
@@ -173,9 +157,7 @@ test("movePinned with both keys missing changes nothing", () => {
 });
 
 test("a duplicated key in stored order does not lose an entry", () => {
-  // readPinned takes localStorage at its word, so a list written by an older
-  // build can hold the same key twice. Moving it must still leave the list
-  // well formed rather than dropping one of the copies.
+  // Older builds may have stored duplicate keys.
   setPinned(["a", "b", "a"]);
   usePinnedModelsStore.getState().movePinned("a", "b");
   const after = usePinnedModelsStore.getState().pinned;
@@ -183,8 +165,6 @@ test("a duplicated key in stored order does not lose an entry", () => {
   assert.equal(after.filter((key) => key === "a").length, 2);
   assert.equal(after.filter((key) => key === "b").length, 1);
 });
-
-// --- key shapes ------------------------------------------------------------
 
 test("a quant pin reorders like any other key", () => {
   setPinned(["r1::Q4_K_M", "r2", "r3"]);
@@ -197,16 +177,12 @@ test("a quant pin reorders like any other key", () => {
 });
 
 test("a repo key never moves a pin that was stored per quant", () => {
-  // The hub's On Device list keys its cells by repo id alone, so a repo that is
-  // only pinned per quant is not in its Pinned section at all and no repo-keyed
-  // drag can reach it. Asserted so the two surfaces cannot drift apart quietly.
+  // The hub keys cells by repo id, so per-quant-only pins are unreachable from it.
   setPinned(["r1::Q4_K_M", "r2"]);
   usePinnedModelsStore.getState().movePinned(pinKey("r1"), "r2");
   usePinnedModelsStore.getState().movePinned("r2", pinKey("r1"));
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["r1::Q4_K_M", "r2"]);
 });
-
-// --- persistence -----------------------------------------------------------
 
 test("a move persists the new order, and a no-op writes nothing", () => {
   setPinned(["a", "b", "c"]);
@@ -220,11 +196,7 @@ test("a move persists the new order, and a no-op writes nothing", () => {
   assert.equal(storedPinned(), null, "a rejected move must not touch storage");
 });
 
-// --- drag sessions ---------------------------------------------------------
-// A drag reorders live on every dragenter, so the store holds those moves in
-// memory and either commits once on drop or rolls back to the snapshot taken at
-// dragstart. Without that, a drag cancelled with Escape or released outside the
-// grid stayed applied and was already written to localStorage.
+// Drags reorder live, so the store commits on drop or rolls back to the dragstart snapshot.
 
 test("a cancelled drag restores the order it started from", () => {
   setPinned(["a", "b", "c", "d"]);
@@ -270,8 +242,7 @@ test("a dropped drag commits the new order exactly once", () => {
 });
 
 test("endPinnedDrag is idempotent, so dragend after drop cannot undo it", () => {
-  // The browser fires drop and then dragend on the source. The drop commits and
-  // closes the session; the dragend that follows must not roll anything back.
+  // Drop commits, then dragend fires; it must not roll back.
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
@@ -300,21 +271,12 @@ test("endPinnedDrag without a session in flight is inert", () => {
 });
 
 test("outside a drag session movePinned still persists on every call", () => {
-  // The store is shared with surfaces that have no drag at all, so the plain
-  // call has to keep writing through.
   setPinned(["a", "b", "c"]);
   usePinnedModelsStore.getState().movePinned("a", "b");
   assert.deepEqual(storedPinned(), ["b", "a", "c"]);
 });
 
-// --- another window writing mid-drag ---------------------------------------
-// pinned-models installs a window "storage" listener that replaces the list
-// wholesale, so a second Unsloth window can rewrite the order underneath a drag
-// that is still in flight. A snapshot taken before that write no longer
-// describes what is in localStorage, so restoring it would put this window out
-// of step with the record and the next write from here would clobber the other
-// window's change. Whenever a storage event lands mid-drag the order it
-// installed is what the session falls back to, whatever it did to the keys.
+// A storage event mid-drag replaces the snapshot, or the next write clobbers the other window.
 
 test("a pin added in another window mid-drag survives a cancel", () => {
   setPinned(["a", "b", "c"]);
@@ -333,7 +295,6 @@ test("a pin added in another window mid-drag survives a cancel", () => {
 });
 
 test("a pin removed in another window mid-drag stays removed after a cancel", () => {
-  // The mirror image: rolling the snapshot back would resurrect "b".
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
@@ -345,10 +306,7 @@ test("a pin removed in another window mid-drag stays removed after a cancel", ()
 });
 
 test("a reorder in another window mid-drag survives a cancel", () => {
-  // Same keys, different order. The pre-drag snapshot is just as stale here as
-  // it is when the key set changed: localStorage holds the other window's
-  // order, so restoring the snapshot would leave this window disagreeing with
-  // the record while writing nothing to say so.
+  // Same keys, different order: localStorage holds the other window's order, so the snapshot is stale.
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
@@ -365,9 +323,6 @@ test("a reorder in another window mid-drag survives a cancel", () => {
 });
 
 test("a cancel after another window reordered cannot clobber it on the next pin", () => {
-  // Why the case above matters: nothing is lost at the moment of the rollback,
-  // since a cancel writes nothing. The damage lands on the next write from this
-  // window, which persists the whole list.
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
@@ -379,9 +334,6 @@ test("a cancel after another window reordered cannot clobber it on the next pin"
 });
 
 test("a drag cancelled after another window wrote drops its own preview too", () => {
-  // The moves made after the storage event are still just a preview, and the
-  // user abandoned them. Falling back to the order the other window installed
-  // discards them without writing anything.
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
@@ -394,8 +346,7 @@ test("a drag cancelled after another window wrote drops its own preview too", ()
 });
 
 test("a drop after another window wrote mid-drag commits what is on screen", () => {
-  // A drop is the user saying they meant it, so the last writer wins, but it
-  // wins on top of the other window's list rather than the stale snapshot.
+  // A drop wins, but on top of the other window's list rather than the stale snapshot.
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
@@ -419,8 +370,6 @@ test("a drop after another window wrote mid-drag commits what is on screen", () 
 });
 
 test("a drop that only re-applies another window's order writes nothing", () => {
-  // The storage event already put that order in localStorage. "Nothing moved"
-  // is measured against it, not against the snapshot from before it landed.
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
@@ -448,8 +397,6 @@ test("a storage event for another key does not look like a cross-window pin writ
 });
 
 test("a cross-window write is only remembered for the drag it landed in", () => {
-  // The next drag starts from a clean session, so an ordinary cancel after one
-  // that saw a storage event still rolls back.
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
@@ -468,7 +415,6 @@ test("a storage event with no drag in flight just replaces the list", () => {
   setPinned(["a", "b", "c"]);
   externalWrite(["c", "a", "b"]);
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "a", "b"]);
-  // And it becomes the order the next drag snapshots and rolls back to.
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
   store.movePinned("c", "b");
@@ -476,19 +422,13 @@ test("a storage event with no drag in flight just replaces the list", () => {
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "a", "b"]);
 });
 
-// Pin keys carry no repo type, and model and dataset repos are separate
-// namespaces on the Hub, so one id can name both (huggingface/documentation-images,
-// nvidia/PhysicalAI-Robotics-GR00T-X-Embodiment-Sim). An on-device dataset whose
-// repoId also names a pinned model therefore lands in the hub's Pinned grid. The
-// row menu offers datasets no pin action, so the drag must not offer one either,
-// or dragging dataset rows persistently reorders the user's model pins.
+// Model and dataset repos share ids on the Hub, and datasets have no pin action, so no drag.
 test("the hub's pinned grid never makes a dataset row draggable", async () => {
   const lists = await readSrcAsync("features/hub/catalog/models-catalog-lists.tsx");
   assert.match(
     lists,
     /const itemPinKey =\s*!isDataset &&\s*item\.row\.repoId &&\s*pinnedSet\.has\(pinKey\(item\.row\.repoId\)\)/,
   );
-  // The invariant the gate keeps: the row menu withholds pin/unpin for datasets.
   assert.match(
     MODELS_CATALOG_ROWS,
     /pin=\{\s*isDataset \|\| !deletableRepoId\s*\?\s*undefined/,
@@ -496,9 +436,7 @@ test("the hub's pinned grid never makes a dataset row draggable", async () => {
 });
 
 test("deleting a repo drops its quant pins, not just the repo's own", () => {
-  // A pin is keyed `repoId::quant`. A whole-repo delete removes every quant, but only the plain
-  // repo key was being cleared, so the quant pins stayed in localStorage with no row left to
-  // unpin them -- and came back pinned the day that quant was downloaded again.
+  // Pins are keyed `repoId::quant`, so a whole-repo delete must clear every quant pin.
   setPinned([
     "unsloth/Qwen3-8B-GGUF::Q4_K_M",
     "unsloth/Qwen3-8B-GGUF",
@@ -512,13 +450,11 @@ test("deleting a repo drops its quant pins, not just the repo's own", () => {
     "unsloth/Gemma-3-4B-GGUF::Q8_0",
     "unsloth/Gemma-3-4B-GGUF",
   ]);
-  // One write, and the survivors keep their order.
   assert.deepEqual(storedPinned(), left);
 });
 
 test("unpinning a repo leaves a longer repo id that merely starts the same", () => {
-  // Prefix matching on the bare id would take "unsloth/Qwen3-8B-GGUF-128K" with it. The `::`
-  // is what makes the boundary, so it belongs in the filter rather than beside it.
+  // The `::` boundary keeps "X-GGUF" from also matching "X-GGUF-128K".
   setPinned([
     "unsloth/Qwen3-8B-GGUF-128K",
     "unsloth/Qwen3-8B-GGUF-128K::Q4_K_M",
@@ -532,8 +468,7 @@ test("unpinning a repo leaves a longer repo id that merely starts the same", () 
 });
 
 test("unpinning a repo that was never pinned writes nothing", () => {
-  // Every repo-level delete calls this, pinned or not; a write per delete would churn the
-  // record and wake every other window's storage listener for no change.
+  // Called on every repo delete; writing on no change would wake every window's listener.
   setPinned(["unsloth/Gemma-3-4B-GGUF"]);
   usePinnedModelsStore.getState().unpinRepo("unsloth/Nothing-Here");
   assert.deepEqual(usePinnedModelsStore.getState().pinned, [
@@ -543,8 +478,7 @@ test("unpinning a repo that was never pinned writes nothing", () => {
 });
 
 test("both repo-level deletes clear pins through that one action", async () => {
-  // The picker's partial repo row and the Hub's cache row do the same delete, so they must not
-  // drift into two answers about what a pin outlives.
+  // Picker and Hub cache deletes must agree on what a pin outlives.
   const pickers = await readSrcAsync("features/model-picker/components/model-selector/pickers.tsx");
   assert.equal(
     pickers.split("unpinRepo(c.repo_id);").length - 1,
@@ -562,7 +496,7 @@ test("both repo-level deletes clear pins through that one action", async () => {
   );
 });
 
-// A GGUF export's id is its first file, so a variant delete can move it: the pin follows in place.
+// A GGUF export's id is its first file, so a variant delete can change its key.
 test("replacePinned moves a pin to its new key in the same slot", () => {
   setPinned(["a", "/exports/run-gguf/x.Q4_K_M.gguf", "b"]);
   usePinnedModelsStore
@@ -574,11 +508,9 @@ test("replacePinned moves a pin to its new key in the same slot", () => {
     "b",
   ]);
   assert.deepEqual(storedPinned(), usePinnedModelsStore.getState().pinned);
-  // Already pinned under the new key: the old one just goes.
   setPinned(["a", "b", "c"]);
   usePinnedModelsStore.getState().replacePinned("a", "c");
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["b", "c"]);
-  // Not pinned: nothing changes.
   setPinned(["a"]);
   usePinnedModelsStore.getState().replacePinned("z", "y");
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["a"]);

@@ -24,7 +24,6 @@ export function estimateMessagesTokenCount(
   return chars > 0 ? Math.max(1, Math.round(chars / 4)) : null;
 }
 
-// Text only, about 4 characters a token: shown until a loaded model counts the chat exactly.
 export function estimateContextUsage(
   records: readonly MessageRecord[] | null | undefined,
 ) {

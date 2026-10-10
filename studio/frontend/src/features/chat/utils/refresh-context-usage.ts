@@ -31,14 +31,9 @@ function superseded(threadKey: string | null, generation: number): boolean {
   return refreshGenerations.get(threadKey) !== generation;
 }
 
-// Threads with a count on the wire. A model load fires two triggers, and both would otherwise
-// render the template and tokenize.
 const countsInFlight = new Set<string | null>();
 
-// A trigger deferred behind an in-flight count, replayed once that count settles WITHOUT
-// publishing. Dropping it loses the bar: a run stopped before it emits usage fires the
-// retry this depends on. Replaying it unconditionally would restore the doubled model-load
-// count, where the first trigger publishes.
+// Replay a deferred trigger only if the in-flight count settled without publishing.
 const retryAfterInFlight = new Map<string | null, RefreshOptions>();
 
 function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
@@ -81,7 +76,6 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   };
 }
 
-/** Rolling 32-bit hash. Only has to change when the input does, not resist an adversary. */
 function foldHash(text: string, seed: number): number {
   let hash = seed;
   for (let i = 0; i < text.length; i += 1) {
@@ -95,15 +89,12 @@ function foldPart(part: unknown, seed: number): number {
   try {
     serialized = JSON.stringify(part) ?? "";
   } catch {
-    // Unserializable payload: fall back to the part kind, which both sides derive the same way.
     serialized = String((part as { type?: unknown })?.type);
   }
   return foldHash(serialized, seed);
 }
 
-/** Identity of the branch a count priced. Content is hashed, not measured: a run mutates a
- *  turn in place, so neither a length nor a part tally sees it. Attachments are folded in
- *  because the counter prices them too. */
+/** Hashed, not measured: a run mutates a turn in place. */
 function branchSignature(messages: readonly ThreadMessage[]): string {
   let hash = 0;
   let parts = 0;
@@ -122,13 +113,10 @@ function branchSignature(messages: readonly ThreadMessage[]): string {
   return `${messages.length}:${parts}:${messages.at(-1)?.id ?? ""}:${hash}`;
 }
 
-/** The branch the mounted runtime is showing for the thread the store calls active. */
 type ActiveBranchReader = () => readonly ThreadMessage[] | null;
 
 let readActiveBranch: ActiveBranchReader | null = null;
 
-/** Publish the mounted runtime's visible branch so the recount prices it instead of the
- *  persisted records. Only the single-chat pane registers one. */
 export function setActiveBranchReader(reader: ActiveBranchReader | null): void {
   readActiveBranch = reader;
 }
@@ -136,13 +124,11 @@ export function setActiveBranchReader(reader: ActiveBranchReader | null): void {
 type RefreshOptions =
   | {
       threadId?: string;
-      /** When true, skip the modelLoading guard (post-load recount). */
       afterModelLoad?: boolean;
       invalidate?: boolean;
     }
   | undefined;
 
-/** Re-count prompt tokens for the active local chat and fill the usage bar. */
 export async function refreshContextUsage(
   options?: RefreshOptions,
 ): Promise<void> {
@@ -159,8 +145,7 @@ export async function refreshContextUsage(
     return;
   }
 
-  // An output-only audio GGUF never sends a chat completion: the adapter routes the turn to
-  // /audio/generate, which returns no usage, so a chat-template total is never corrected.
+  // Output-only audio GGUFs never get chat usage to correct the count.
   const activeModel = store.models?.find(
     (model: { id: string }) => model.id === checkpoint,
   );
@@ -168,10 +153,7 @@ export async function refreshContextUsage(
 
   if (options?.invalidate) store.setContextUsage(null);
 
-  // Never count while anything is generating: the endpoint refuses, and the recount effect
-  // depends on this so the last run finishing re-fires it. runningByThreadId, not the
-  // narrower local one: the endpoint refuses during an external-provider run too, and
-  // nothing re-fires this effect when an external run ends unless it is in the deps.
+  // The endpoint refuses during any run, external included, and run end re-fires this effect.
   if (Object.values(store.runningByThreadId ?? {}).some(Boolean)) return;
 
   const capturedThreadId = threadId ?? null;
@@ -182,11 +164,8 @@ export async function refreshContextUsage(
     return;
   }
 
-  // Bump only once this call will do work, so a bail-out cannot cancel an in-flight recount.
   const generation = nextGeneration(capturedThreadId);
 
-  // The checkpoint can move under any await below, and a later recount for the same thread
-  // supersedes this one; publishing after either puts another model's number on the bar.
   const stale = (): boolean =>
     superseded(capturedThreadId, generation) ||
     useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
@@ -194,9 +173,7 @@ export async function refreshContextUsage(
   countsInFlight.add(capturedThreadId);
   let published = false;
   try {
-    // Prefer the mounted runtime: it is what the next request reads from. A captured null is
-    // EXCLUDED, not matched: New Chat leaves the outgoing conversation mounted until
-    // switchToNewThread() settles, so null === null would price it into the empty chat.
+    // Exclude a captured null: New Chat keeps the old conversation mounted until the switch settles.
     const readOwnBranch = (): readonly ThreadMessage[] | null =>
       capturedThreadId != null &&
       useChatRuntimeStore.getState().activeThreadId === capturedThreadId
@@ -237,11 +214,8 @@ export async function refreshContextUsage(
       countedLastId = runMessages.at(-1)?.id ?? "";
     }
 
-    // A completion finishing mid-count writes exact usage for a turn this count predates, so drop
-    // the recount rather than roll the bar backwards.
     const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
-    // undefined, not null: a chat with no persisted thread has no project to resolve from.
     const payloadThreadId = threadId ?? undefined;
     const countHistory = await buildLocalTokenCountHistory(
       runMessages,
@@ -254,8 +228,7 @@ export async function refreshContextUsage(
     );
     if (stale()) return;
 
-    // Always ask the server: the template itself has tokens, and `unsloth run --enable-tools`
-    // injects schemas the client cannot see.
+    // Always ask the server: templates and `--enable-tools` add tokens the client cannot see.
     const { input_tokens: inputTokens, model: countedModel } =
       await countChatInputTokens({
         model: capturedCheckpoint,
@@ -265,38 +238,26 @@ export async function refreshContextUsage(
       });
 
     if (stale()) return;
-    // The response type is a compile-time assertion only: anything else answering 200 would put
-    // undefined on the bar and throw from toLocaleString.
     if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) return;
-    // The endpoint counts with whatever is resident, never the model asked for: a load from
-    // another tab returns another tokenizer's total, which the checkpoint guards cannot see.
+    // The endpoint counts with whatever model is resident, which may be another tab's load.
     if (countedModel != null && countedModel !== capturedCheckpoint) {
       return;
     }
-    // Compared even when null: a count started with no thread must not land on one since opened.
     if (useChatRuntimeStore.getState().activeThreadId !== capturedThreadId) {
       return;
     }
     if (useChatRuntimeStore.getState().contextUsage !== usageBeforeCount) {
       return;
     }
-    // A run writes its own usage when it lands, so declining while one is live never loses a
-    // number. A first turn has no thread id yet and files under "__default".
     if (useChatRuntimeStore.getState().runningByThreadId[capturedThreadId ?? "__default"]) {
       return;
     }
-    // The usage snapshot only sees a completion that WROTE usage, so a run stopped before
-    // emitting any leaves it equal and the branch is the only witness. An empty current branch
-    // is a mismatch: deleting the sole exchange mid-count would leave the old total.
     if (countedBranch != null) {
       const current = readActiveBranch?.();
       if (current != null && branchSignature(current) !== countedBranch) {
         return;
       }
     } else if (countedLastId != null) {
-      // The count priced storage because the runtime had not mounted this thread yet; if it has
-      // since, the last id is the one witness the two shapes share. readOwnBranch, not
-      // readActiveBranch: an empty New Chat still sees the conversation it is leaving.
       const current = readOwnBranch();
       if (
         current != null &&

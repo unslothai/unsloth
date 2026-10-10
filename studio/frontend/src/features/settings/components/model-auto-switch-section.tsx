@@ -18,8 +18,6 @@ import { SettingsSection } from "./settings-section";
 // Mirrors MIN_AUTO_UNLOAD_IDLE_SECONDS in the backend settings store.
 const MIN_IDLE_SECONDS = 60;
 
-// Its own row so the section keeps one job per control: this TTL has no enable
-// toggle in front of it, unlike the chat one above.
 function MediaIdleUnloadRow({
   draftSeconds,
   onDraftChange,
@@ -37,9 +35,7 @@ function MediaIdleUnloadRow({
 }) {
   const t = useT();
   const disabled = !settings || isSaving;
-  // A saved TTL that cannot run because residency is vetoing it; the number alone
-  // would not say so. "Only unload models loaded by the API" is per-model now, so
-  // it spares individual pipelines rather than holding the whole TTL off.
+  // A saved TTL held off by a residency veto; the number alone would not say so.
   const paused =
     settings !== null &&
     settings.mediaAutoUnloadIdleSeconds > 0 &&
@@ -99,7 +95,6 @@ export function ModelAutoSwitchSection() {
   const [draftIdleSeconds, setDraftIdleSeconds] = useState("0");
   const [draftMediaIdleSeconds, setDraftMediaIdleSeconds] = useState("0");
   const [error, setError] = useState<string | null>(null);
-  // The media row validates its own input, so its message belongs beside it.
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -126,7 +121,6 @@ export function ModelAutoSwitchSection() {
     };
   }, [t]);
 
-  // Parse an idle-seconds draft: 0 (off) or >= MIN_IDLE_SECONDS; else null.
   const parseIdleSeconds = (draft: string): number | null => {
     if (!draft.trim()) {
       return null;
@@ -138,8 +132,7 @@ export function ModelAutoSwitchSection() {
     return parsed === 0 || parsed >= MIN_IDLE_SECONDS ? parsed : null;
   };
 
-  // syncDraft only for a write the chat idle-seconds input owns; every other row
-  // leaves that draft alone so a save elsewhere cannot discard what is typed there.
+  // syncDraft only for writes the chat input owns, so other saves keep its typed draft.
   const persist = async (
     update: OpenAIAutoSwitchUpdate,
     { syncDraft = false }: { syncDraft?: boolean } = {},
@@ -166,10 +159,7 @@ export function ModelAutoSwitchSection() {
     }
   };
 
-  // Idle-unload is tied to auto-switch (the freed model reloads via the swap). Toggling off
-  // preserves the saved seconds rather than zeroing them — the backend gates unloading on the
-  // enabled flag, so it never unloads while off. Enabling commits the drafted value, falling back
-  // to the last saved one so it can never get stuck.
+  // Toggling off keeps the saved seconds; the backend gates unloading on the enabled flag.
   const handleToggle = (enabled: boolean) => {
     const savedIdleSeconds = settings?.autoUnloadIdleSeconds ?? 0;
     if (!enabled) {
@@ -198,8 +188,6 @@ export function ModelAutoSwitchSection() {
     );
   };
 
-  // The image/video TTL is its own setting, so it saves on its own: no enable
-  // toggle gates it, and the chat seconds are left untouched.
   const handleSaveMediaIdle = () => {
     if (!settings) return;
     const mediaIdleSeconds = parseIdleSeconds(draftMediaIdleSeconds);
@@ -228,7 +216,6 @@ export function ModelAutoSwitchSection() {
     });
   };
 
-  // Its own setting, so it saves alone: the chat toggle above is left untouched.
   const handleMediaAutoSwitchToggle = (mediaAutoSwitch: boolean) => {
     if (!settings) return;
     void persist({

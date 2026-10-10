@@ -12,13 +12,11 @@ type ProfileStatsState = {
   reload: () => void;
 };
 
-/** Load the profile stats on mount, with a manual refresh. */
 export function useProfileStats(): ProfileStatsState {
   const [stats, setStats] = useState<ProfileStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // A refresh aborts the in-flight request so a slow first load cannot land
-  // after (and overwrite) the newer one.
+  // A refresh aborts the in-flight request so a slow first load cannot overwrite the newer one.
   const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
@@ -44,7 +42,7 @@ export function useProfileStats(): ProfileStatsState {
     return () => abortRef.current?.abort();
   }, [load]);
 
-  // Tokens move while backgrounded. Reopen needs no watcher: the dialog is not force-mounted.
+  // Reopen needs no watcher: the dialog is not force-mounted.
   useEffect(() => subscribeResidentStatusRefresh(load), [load]);
 
   const reload = useCallback(() => {

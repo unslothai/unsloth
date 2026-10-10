@@ -8,7 +8,7 @@ export interface PlannedDownloadEntry {
   checkpoint?: boolean;
 }
 
-/** Missing file entries, including unsized entries: zero is not proof of a cache hit. */
+/** Includes unsized entries: zero is not proof of a cache hit. */
 export function additionalAssetDownloads<T extends PlannedDownloadEntry>(
   entries: readonly T[],
 ): T[] {
@@ -48,7 +48,6 @@ export function assetLabel(
   return fallback;
 }
 
-/** Preserve dependency order while presenting and transferring checkpoints first. */
 export function checkpointFirst<T extends { checkpoint?: boolean }>(
   entries: readonly T[],
 ): T[] {

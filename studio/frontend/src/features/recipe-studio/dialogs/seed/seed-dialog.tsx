@@ -606,9 +606,7 @@ export function SeedDialog({
     (state) => state.queueUploadCleanup,
   );
 
-  // config.id collides across recipes (ids reset to n1 on import); use a
-  // stable per-block uid instead. Generate one synchronously so the first
-  // rendered drop zone cannot upload under a legacy node id.
+  // config.id collides across recipes (ids reset on import), so use a stable per-block uid.
   const uploadUid = config.unstructured_upload_uid?.trim() ?? "";
   const unstructuredFileCount = config.unstructured_file_ids?.length ?? 0;
   const generatedUploadUidRef = useRef<string | null>(null);
@@ -760,8 +758,7 @@ export function SeedDialog({
             subset: config.hf_subset?.trim() || undefined,
             preview_size: 10,
           });
-          // Queue the block's upload directory for deletion after the next
-          // save; only uid-namespaced directories qualify (single owner).
+          // Only uid-namespaced upload directories are deleted (single owner).
           if (uploadUid && unstructuredFileCount > 0) {
             queueUploadCleanup(uploadUid);
           }
@@ -800,8 +797,7 @@ export function SeedDialog({
             content_base64: payload,
             preview_size: 10,
           });
-          // Queue the block's upload directory for deletion after the next
-          // save; only uid-namespaced directories qualify (single owner).
+          // Only uid-namespaced upload directories are deleted (single owner).
           if (uploadUid && unstructuredFileCount > 0) {
             queueUploadCleanup(uploadUid);
           }

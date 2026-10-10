@@ -43,25 +43,20 @@ export interface CachedInventoryRow {
   bytes: number;
   cachePath?: string | null;
   loadCachePath?: string | null;
-  /** last changed time as epoch milliseconds. */
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
-  /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
   downloading?: boolean;
-  /** A download manifest or cancel marker exists for some quant; moves on a sibling cancel, which changes neither bytes nor mtime. */
+  /** Moves on a sibling cancel, which changes neither bytes nor mtime. */
   hasVariantState?: boolean;
   pipelineTag?: string | null;
-  // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
   task?: string | null;
   audioType?: string | null;
-  // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
+  // Loadable only via from_single_file, so pickers must not offer it as a pipeline load.
   singleFile?: boolean;
-  // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
-  // run to tens of GB and the row is how they are seen and deleted, but never a pick.
+  // VAE / text encoders without a denoiser: listed so they can be deleted, never picked.
   companion?: boolean;
-  // Holds only a GGUF load's VAE / text encoder: partial for loading, not a download to continue.
   companionPrefetch?: boolean;
   tags?: string[];
   libraryName?: string | null;
@@ -95,11 +90,9 @@ export interface LocalInventoryRow {
   trainingMethod?: string | null;
   task?: string | null;
   audioType?: string | null;
-  /** last changed time as epoch milliseconds. */
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;
-  /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
   downloading?: boolean;
   companionPrefetch?: boolean;

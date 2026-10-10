@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Floating API monitor: opens itself when API traffic arrives, summarises it
-// without taking over the window, and links through to the full page.
-
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
@@ -42,14 +39,12 @@ import {
 } from "./panel-placement";
 import { computeStats } from "./use-api-monitor";
 
-// Live cadence while the panel is on screen.
 const OPEN_POLL_MS = 1500;
 // The body scrolls, so the grip may shrink below content size (the hardware monitor's floor).
 const MIN_PANEL_WIDTH = 280;
 const MIN_PANEL_HEIGHT = 200;
 // Closed, the poll only has to notice traffic started, so it backs off.
 const IDLE_POLL_MS = 5000;
-// Requests shown in the panel; the rest are one click away on the full page.
 const VISIBLE_ENTRIES = 4;
 // Quiet time before a dismissed panel re-arms.
 const REARM_QUIET_MS = 60_000;
@@ -107,7 +102,6 @@ function StatCell({
       >
         {value}
       </span>
-      {/* Sentence case: metric rows read as words, not headers. */}
       <span className="truncate text-ui-11 tracking-nav text-muted-foreground">
         {label}
       </span>
@@ -125,9 +119,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
     ReturnType<typeof getApiMonitor>
   > | null>(null);
 
-  // The chord lives with the panel: reaching this store from the shell would
-  // pull the whole feature index into the root chunk. The full page has
-  // nothing to toggle, being the panel's contents already.
+  // The chord lives here: reaching this store from the shell pulls the feature into the root chunk.
   useShortcut(
     "toggleApiMonitor",
     () => {
@@ -137,18 +129,14 @@ export function ApiMonitorOverlay(): ReactElement | null {
     { enabled: !onFullPage },
   );
 
-  // What this session has already shown, and when it started watching.
   const watchRef = useRef<ApiMonitorWatch>(createWatch(0));
   const lastNewEntryAtRef = useRef(0);
 
-  // One loop for both jobs: panel contents while open, traffic watch while closed.
-  // Stands down on the full page, which polls itself.
+  // One loop: panel contents while open, traffic watch while closed; off on the full page.
   useEffect(() => {
     // Opted out and closed: nothing to open or show, so polling is pure load.
     if (onFullPage || (!autoOpen && !isOpen)) {
-      // Standing down for the opt out leaves the same backlog behind it as the full page
-      // does, so write it off the same way: turning automatic opening back on waits for
-      // the next call rather than popping with the burst that ran while it was off.
+      // Write off the opt-out backlog like the full page, so re-enabling waits for the next call.
       if (!onFullPage) {
         standDownWatch(watchRef.current);
       }
@@ -158,8 +146,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
     let timer: number | undefined;
     const intervalMs = isOpen ? OPEN_POLL_MS : IDLE_POLL_MS;
 
-    // Anchor the watch here, not at mount: the first snapshot can arrive much later
-    // (a hidden tab skips its poll), and everything terminal would read as history.
+    // Anchor here, not at mount: a hidden tab skips its poll and everything would read as history.
     startWatching(watchRef.current, performance.now());
 
     function schedule(): void {
@@ -167,7 +154,6 @@ export function ApiMonitorOverlay(): ReactElement | null {
     }
 
     function poll(): void {
-      // A hidden tab has nobody to show the panel to.
       if (document.hidden) {
         schedule();
         return;
@@ -177,7 +163,6 @@ export function ApiMonitorOverlay(): ReactElement | null {
           if (!cancelled) setData(next);
         })
         .catch(() => {
-          // An unreachable server is the full page's story to tell.
           if (!cancelled) setData(null);
         })
         .finally(() => {
@@ -217,8 +202,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
     open();
   }, [data, autoOpen, suppressed, isOpen, open]);
 
-  // The backlog built while the poll stood down is not new traffic. The watch re-anchors
-  // when the poll stands back up, not here, or the panel pops with rows just read.
+  // The backlog is not new traffic; the watch re-anchors when the poll stands back up.
   useEffect(() => {
     if (onFullPage) {
       rearmWatch(watchRef.current);
@@ -228,7 +212,6 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const visible = isOpen && !onFullPage;
   const [panelKey, setPanelKey] = useState(0);
   const wasVisibleRef = useRef(visible);
-  // Remount on reopen: fresh native size and frame owner.
   useEffect(() => {
     if (wasVisibleRef.current && !visible) {
       setPanelKey((current) => current + 1);
@@ -333,11 +316,9 @@ function ApiMonitorPanel({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        /* Panel language from the sidebar menu: soft surface, 20px corner, heading font. */
         className={cn(
           "menu-soft-surface pointer-events-auto absolute flex max-h-full w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-[20px] border-0 p-2.5 font-heading ring-0",
-          // The CSS corner until it has been measured, so the first paint
-          // is the corner it has always opened in rather than the top left.
+          // Default CSS corner until measured, so the first paint matches where it always opened.
           layout ? "top-0 left-0 resize" : "bottom-0 right-0",
         )}
         style={
@@ -409,7 +390,6 @@ function ApiMonitorPanel({
               {data?.active_model ?? "No model loaded"}
             </p>
 
-            {/* Soft tile, as the Hub and Train pages group readouts. */}
             <div className="grid grid-cols-4 rounded-[14px] bg-muted/45 py-2.5 dark:bg-background/45">
               <StatCell
                 label="Live"
@@ -432,7 +412,6 @@ function ApiMonitorPanel({
               />
             </div>
 
-            {/* Borderless rows on 12px hover pills, as in the sidebar. */}
             <div className="flex flex-col pb-1 pt-1.5">
               {entries.length === 0 ? (
                 <p className="px-1.5 py-4 text-center text-ui-11p5 tracking-nav text-muted-foreground">
@@ -475,7 +454,6 @@ function ApiMonitorPanel({
             </div>
           </div>
         </div>
-        {/* Through to payloads, filters and per request tokens. */}
         <button
           type="button"
           onClick={() => {

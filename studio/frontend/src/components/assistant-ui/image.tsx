@@ -350,7 +350,6 @@ function ImageContentFilterError({
 
 export type ImageActionsProps = {
   part: ImageMessagePart;
-  /** Shows a regenerate button (only when set and the part has a `prompt`). */
   onRegenerate?: () => void | Promise<void>;
   className?: string;
 };

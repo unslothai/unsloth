@@ -7,10 +7,6 @@ import type { TrainingConfigState } from "../types/config";
 
 const EXPECTED_TOP_KEYS = new Set(["training", "lora", "logging", "inference"]);
 
-/**
- * Parse a YAML string into a BackendModelConfig suitable for
- * `mapBackendModelConfigToTrainingPatch`. Throws on invalid input.
- */
 export function parseYamlConfig(text: string): BackendModelConfig {
   const parsed = yaml.load(text);
   if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -27,9 +23,7 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
 
-  // File import is authoritative: force vision_image_size = null when the training section is
-  // missing/malformed/lacks the key, so a stale store value can't survive an import. (Same-model
-  // defaults reloads preserve user choice via Object.hasOwn in model-defaults.ts.)
+  // Import is authoritative: a missing key forces vision_image_size = null.
   const rawTraining = raw.training;
   const isPlainTrainingObject =
     rawTraining != null &&
@@ -52,10 +46,6 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   };
 }
 
-/**
- * Serialize the current training config state to a YAML string matching the
- * backend model-defaults schema.
- */
 export function serializeConfigToYaml(
   state: TrainingConfigState,
   includeVisionFields: boolean,

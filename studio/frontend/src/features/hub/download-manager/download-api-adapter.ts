@@ -95,8 +95,7 @@ export function apiStart(
   useXet: boolean,
   hfToken: string | null,
 ): Promise<DownloadStartResult> {
-  // Already RESOLVED ("xet"/"http"), never "auto": effectiveTransportMode() asked the backend what
-  // auto means here, and that answer must reach both the worker and the on-disk transport marker.
+  // Already resolved, never "auto": it must reach both the worker and the on-disk marker.
   const transport_mode = useXet ? TRANSPORT.XET : TRANSPORT.HTTP;
   return req.kind === DOWNLOAD_KIND.DATASET
     ? startDatasetDownload({
@@ -107,7 +106,6 @@ export function apiStart(
       })
     : startModelDownload({
         repo_id: req.repoId,
-        // A scoped job carries its scope instead of a quant; the backend derives the same "@scope" variant this surface keyed it under.
         gguf_variant: req.scopeId ? null : req.variant,
         scope_id: req.scopeId ?? null,
         files: req.files,
@@ -188,14 +186,12 @@ export async function effectiveTransportMode(
   if (preferred === TRANSPORT.HTTP) {
     return TRANSPORT.HTTP;
   }
-  // Probe only for Auto, and only at download start: a host whose CAS is unreachable but which has
-  // recorded no failure yet would otherwise discover that by stalling for 30s.
+  // Probe only for Auto at download start, so an unreachable CAS is found without a 30s stall.
   const capabilities = await getDownloadTransportCapabilities(
     preferred === TRANSPORT.AUTO ? { probe: true } : {},
   );
   if (preferred === TRANSPORT.AUTO) {
-    // Resolve "auto" from the backend's own verdict, not independently: the resolved transport is
-    // compared against an existing partial's `.transport` marker, so the two must agree.
+    // Use the backend's verdict: it must agree with the partial's `.transport` marker.
     return capabilities.auto_resolves_to === TRANSPORT.HTTP
       ? TRANSPORT.HTTP
       : TRANSPORT.XET;

@@ -30,8 +30,7 @@ import type { KnowledgeBase } from "../types/rag";
 import { EmbeddingModelMenuChip, EmbeddingModelMenuList } from "./embedding-model-menu-picker";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
-// Matches the Thinking/MCP pill chevron. Picks the retrieval source. Shown whenever retrieval is
-// on; dims but stays interactive (so it can be turned off) while the loaded model can't run it.
+// Dims but stays interactive (so retrieval can be turned off) while the model cannot run it.
 export function KnowledgeBaseComposerButton({
   side = "bottom",
 }: {
@@ -77,15 +76,13 @@ export function KnowledgeBaseComposerButton({
     }
   }, []);
 
-  // Load on mount so newly created KBs show up.
   useEffect(() => {
     void refresh();
     return subscribeKnowledgeBasesChanged(() => void refresh());
   }, [refresh]);
 
-  // If the selected KB was deleted, fall back to thread source so we never send a
-  // stale kb_id. Gate on kbsLoaded, not kbs.length: deleting the last KB empties the
-  // list, so a length>0 guard would skip the reset and stick on a ghost KB.
+  // Gate on kbsLoaded, not kbs.length: deleting the last KB empties the list and would leave a
+  // ghost kb_id selected.
   useEffect(() => {
     if (
       kbsLoaded &&
@@ -116,10 +113,6 @@ export function KnowledgeBaseComposerButton({
             data-active={ragDisabled ? "false" : "true"}
             aria-label="Retrieval source"
           >
-            {/* Icon doubles as an off switch: hover swaps to an X; clicking it
-                turns RAG off without opening the menu. In compact icon-only
-                mode the glyph is the whole button, so clicks fall through to
-                the trigger and open the menu instead. */}
             <span
               role="button"
               aria-label="Turn off retrieval"

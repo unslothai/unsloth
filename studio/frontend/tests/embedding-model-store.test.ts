@@ -5,8 +5,7 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-// The api module reaches authFetch through the auth barrel, which re-exports
-// login-page.tsx, and the hub barrel, which reads import.meta.env.
+// The api module pulls in login-page.tsx and import.meta.env through its barrels.
 register("./helpers/vite-env-loader.mjs", import.meta.url);
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 register("./helpers/hub-stub-resolver.mjs", import.meta.url);
@@ -37,7 +36,6 @@ function settings(model: string): Settings {
   };
 }
 
-/** The GET, answering with `model` after `release` resolves. */
 function respondWith(model: string, release?: Promise<void>): void {
   globalThis.fetch = (async () => {
     if (release) await release;
@@ -81,7 +79,6 @@ test("a mount reads the setting", async () => {
 
 test("a save that lands mid-read is not undone by it", async () => {
   reset();
-  // The other tab's read is in flight, and answers with the OLD model.
   let release = (): void => undefined;
   const gate = new Promise<void>((resolve) => {
     release = () => resolve();
@@ -89,7 +86,6 @@ test("a save that lands mid-read is not undone by it", async () => {
   respondWith("unsloth/bge-small-en-v1.5", gate);
   const reading = useEmbeddingModelStore.getState().load();
 
-  // The save from the tab the user just left commits first.
   useEmbeddingModelStore.getState().applySettings(settings("unsloth/bge-m3"));
   release();
   await reading;
@@ -114,7 +110,6 @@ test("a read that finishes first is still replaced by the save", async () => {
 
 test("a slow read cannot report over the one that overtook it", async () => {
   reset();
-  // General mounts and its read hangs; Data mounts behind it and answers.
   let release = (): void => undefined;
   const gate = new Promise<void>((resolve) => {
     release = () => resolve();
@@ -159,8 +154,6 @@ test("a failed read reports the backend's reason", async () => {
 test("an older save cannot land on top of a newer one", async () => {
   reset();
   const store = useEmbeddingModelStore.getState();
-  // General submits, the user switches to Data, and Data submits its own: the
-  // second mount carries its own pending flag, so nothing stopped it.
   let releaseFirst = (): void => undefined;
   const firstGate = new Promise<void>((resolve) => {
     releaseFirst = () => resolve();
@@ -212,8 +205,6 @@ test("selection order is reserved before an older preflight finishes", async () 
 test("a superseded save is reconciled against the backend", async () => {
   reset();
   const store = useEmbeddingModelStore.getState();
-  // The later save fails verification, so the earlier one is the only write
-  // the backend took. Request order said otherwise, so the store re-reads.
   respondWith("unsloth/bge-m3");
   let releaseFirst = (): void => undefined;
   const firstGate = new Promise<void>((resolve) => {
@@ -231,7 +222,6 @@ test("a superseded save is reconciled against the backend", async () => {
   assert.equal(await second, false);
   releaseFirst();
   await first;
-  // The reconciling read is started from the last save to settle.
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(
@@ -275,7 +265,6 @@ test("a save with nothing overlapping it commits without a re-read", async () =>
   }) as typeof fetch;
   assert.ok(await store.save(async () => settings("unsloth/bge-m3")));
   await new Promise((resolve) => setTimeout(resolve, 0));
-  // The ordinary path is one request, not a write followed by a read.
   assert.equal(reads, 0);
   assert.equal(
     useEmbeddingModelStore.getState().settings?.embeddingModel,
@@ -286,7 +275,6 @@ test("a save with nothing overlapping it commits without a re-read", async () =>
 test("the settle flag does not carry into the next save", async () => {
   reset();
   const store = useEmbeddingModelStore.getState();
-  // One overlap, reconciled, and then an ordinary save on its own.
   respondWith("unsloth/bge-m3");
   let release = (): void => undefined;
   const gate = new Promise<void>((resolve) => {
@@ -314,9 +302,6 @@ test("the settle flag does not carry into the next save", async () => {
 test("unloading does not retire an in-flight selection's reservation", async () => {
   reset();
   const store = useEmbeddingModelStore.getState();
-  // The user starts a selection on one surface, switches to the other while its
-  // preflight is still running, and unloads. Unloading releases residency and
-  // leaves the selection alone, so the selection must still be the current save.
   const selection = store.beginSave();
   await store.applyResidency(async () => settings("org/selected"));
 

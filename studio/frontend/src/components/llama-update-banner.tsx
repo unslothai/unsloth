@@ -26,11 +26,9 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Download } from "lucide-react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
-// Creep toward this cap between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
-// The banner is not translated, so these mirror features/settings/lib/llama-backend-
-// labels.ts. An unknown backend prints its own identifier rather than nothing.
+// Not translated, so these mirror features/settings/lib/llama-backend-labels.ts.
 const BACKEND_LABELS: Record<string, string> = {
   auto: "Automatic",
   cpu: "CPU",
@@ -47,7 +45,6 @@ function backendLabel(backend: string | null | undefined): string {
   return BACKEND_LABELS[backend] ?? backend;
 }
 
-// Smooth coarse backend progress without freezing between milestones.
 function useSmoothedProgress(
   active: boolean,
   progress: number | null,
@@ -75,15 +72,15 @@ function useSmoothedProgress(
       const current = displayRef.current;
       const real = progressRef.current ?? 0;
       let target: number;
-      let speed: number; // approach rate (fraction of remaining gap per second)
+      let speed: number;
       if (doneRef.current) {
         target = 1;
         speed = 5;
       } else if (real > current) {
-        target = real; // catch up to a freshly observed milestone
+        target = real;
         speed = 4;
       } else {
-        target = RUNNING_CAP; // no signal: creep toward the cap, never frozen
+        target = RUNNING_CAP;
         speed = 0.3;
       }
       const cap = doneRef.current ? 1 : RUNNING_CAP;
@@ -111,7 +108,6 @@ interface LlamaUpdateBannerProps {
   positioned?: boolean;
 }
 
-/** Bottom-right llama.cpp update toast. */
 export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
@@ -138,18 +134,13 @@ export function LlamaUpdateBanner({
     useNotificationFrequency("audio") === "off",
   );
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
-  // Not gated on showBannerPref: this hook instance is the app-wide listener
-  // for a cross-tab reload_required resync (the settings-sheet's own instance
-  // only runs during an MTP-fallback rebuild), so muting the banner must not
-  // also silence that resync -- it only suppresses the UI below.
+  // Not gated on showBannerPref: this instance is the app-wide listener for cross-tab reload resync.
   const { status, visible, applying, apply, dismiss, snooze } =
     useLlamaUpdateCheck({
       enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
 
-  // The card names one component and the switches answer per component, so the
-  // shown one is picked here, before the version line and the toast read it.
   const migrationPending = Boolean(status?.backend_migration_available);
   const component = updateBannerComponent(
     status?.component ?? "llama.cpp",
@@ -164,8 +155,7 @@ export function LlamaUpdateBanner({
       audio: showAudioCppBannerPref,
     },
   );
-  // Its own release pair and download size, not the ones the backend put at the
-  // top level: those are llama's whatever the card shows.
+  // Use its own release pair and size; the backend's top-level ones are llama's.
   const offer =
     component === "whisper.cpp"
       ? status?.whisper
@@ -199,7 +189,6 @@ export function LlamaUpdateBanner({
     }
   }
 
-  // Muted by the component the card shows.
   const livePref =
     component === "whisper.cpp"
       ? showWhisperBannerPref
@@ -248,8 +237,6 @@ export function LlamaUpdateBanner({
     installedTag,
     latestTag,
   );
-  // Only the migration offer, and only the pair it was measured on: a version update
-  // or a hand-picked switch keeps the plain line.
   const restartNote =
     backendChange &&
     !versionChanged &&
@@ -264,7 +251,6 @@ export function LlamaUpdateBanner({
   const changelogAvailable = Boolean(changelogKey && !status?.source_build);
   const changelogOpen =
     changelogKey !== null && changelogVersion === changelogKey;
-  // Use the same predicate for the panel and its protective height floor.
   const changelogPanelOpen = Boolean(
     !applying &&
       changelogAvailable &&
@@ -278,7 +264,6 @@ export function LlamaUpdateBanner({
       : null;
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";
-  // Display value animates; aria uses the real progress.
   const displayProgress = useSmoothedProgress(
     applying,
     updateProgress,
@@ -293,7 +278,6 @@ export function LlamaUpdateBanner({
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
               "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
-              // Only an open changelog needs a shrinkable height floor.
               changelogPanelOpen
                 ? "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
                 : "shrink-0",
@@ -301,7 +285,6 @@ export function LlamaUpdateBanner({
       )}
       data-testid="llama-update-banner"
     >
-      {/* Paint the full floor even when the changelog content is short. */}
       <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {applying ? null : (
           <button
@@ -429,7 +412,6 @@ export function LlamaUpdateBanner({
               </Button>
               <Button
                 size="sm"
-                // Align pill edge with card padding.
                 className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                 onClick={handleUpdate}
                 data-testid="llama-update-button"

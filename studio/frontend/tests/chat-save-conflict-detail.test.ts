@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// saveChatMessage turns a protected 409 into a typed error so the autosave can tell "stop"
-// from "retry". A manual edit rethrows to the user, so the server's wording must survive.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -22,7 +19,6 @@ type Module = {
   ) => Error & { threadId: string; messageId: string };
 };
 
-/** Minimal Response double: records how many times the body was consumed. */
 function jsonResponse(status: number, body: unknown, kind: string | null = "protected") {
   let reads = 0;
   return {
@@ -70,8 +66,6 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
       "@/features/hf-auth": { prepareHfTokenForUse: async () => undefined },
-      // loadModel calls the notice on every load, and this harness names chat-api's
-      // imports exactly, so the stub must exist even though no toast is raised here.
       "@/features/igpu-carveout": {
         dismissCarveoutAdviceForModel: () => {},
         showCarveoutAdvice: () => {},
@@ -80,8 +74,6 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },
       "@/features/hub/lib/network": { isHuggingFaceOffline: () => false },
       "@/features/native-intents/api": { consumeNativePathToken: () => undefined },
-      // loadModel reads the disk on the way in and out: a model the backend has to download
-      // writes to the cache inside that request, passing no download-manager funnel.
       "@/features/settings/low-disk-check": { checkDiskSpace: () => Promise.resolve() },
       "@/lib/model-lifecycle-events": {},
     },

@@ -15,16 +15,14 @@ export interface ManagedDownload {
   inventoryKind?: Exclude<InventoryHint["kind"], "dataset">;
   state: DownloadJobState;
   downloadedBytes: number;
-  /** False when the last poll HELD `downloadedBytes` instead of measuring it (see `resolveProgressUpdate`): a held
-   * figure belongs to the previous reading's total, so subtracting it from the current `expectedBytes` mixes two plans. */
+  /** False when the last poll held `downloadedBytes` instead of measuring it, so it belongs to
+   * the previous total. */
   measuredTransfer?: boolean;
-  // Finalized bytes on disk, excluding the in-progress `.incomplete` portion; the completion fallback keys off this so a partial cannot be marked complete.
+  // Excludes `.incomplete` bytes so a partial cannot be marked complete.
   completedBytes: number;
   completeOnDisk: boolean;
   expectedBytes: number;
-  /** Optional display scope when an atomic model plan is transferring only one
-   *  missing companion. Counters remain plan-wide; the panel subtracts the
-   *  already-cached prefix for an honest artifact-sized progress bar. */
+  /** Display scope when a plan transfers only one missing companion; counters stay plan-wide. */
   presentation?: DownloadPresentation;
   fraction: number;
   bytesPerSec: number;
@@ -34,12 +32,12 @@ export interface ManagedDownload {
   completedAt?: number;
   serverGeneration?: number;
   serverAttempt?: number;
-  /** Files a scoped job is fetching. Every file set of one repo rides the same scope slot, so this separates "my transfer is running" from "a different quant of this repo is running": adopting the latter reports ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */
+  /** Files a scoped job fetches; separates this transfer from a sibling quant in the same slot. */
   scopedFiles?: string[];
-  /** True for the entry that IS the model the user picked, false for companion repos. Only the stager can tell them apart, since a checkpoint may be a single `.safetensors` and companions carry `.safetensors` too. */
+  /** True for the picked model, false for companions; only the stager can tell them apart. */
   checkpoint?: boolean;
   transport?: ResolvedTransport;
-  /** A Xet run that fell back to HTTP keeps its original cancel marker, so it, not `transport`, decides the stop control. */
+  /** A Xet run that fell back to HTTP keeps its cancel marker, which decides the stop control. */
   cancelTransport?: ResolvedTransport;
   external?: boolean;
   activity?: string;
@@ -57,7 +55,6 @@ export interface DownloadRequest {
   files?: string[];
   checkpoint?: boolean;
   callerToast?: CallerToast;
-  /** Skip repeat Xet notices for later entries in a staged plan. */
   skipXetNotice?: boolean;
 }
 
@@ -65,21 +62,20 @@ export interface DownloadPresentation {
   label: string;
   filename: string;
   expectedBytes: number;
-  /** Plan bytes already present before this sole artifact starts. Frozen when
-   *  the presentation is attached, because later metadata may grow the plan. */
+  /** Frozen when attached, because later metadata may grow the plan. */
   cachedPlanPrefixBytes?: number;
 }
 
 export interface CallerToast {
   title: string;
   description: string;
-  /** Fold into a granted Xet notice, never raise alone: #9663 removed chat's auto-load toast as a duplicate of the download panel. */
+  /** Fold into a granted Xet notice, never raise alone. */
   noticeOnly?: boolean;
-  /** Re-asked just before the raise: false drops this line but keeps the notice, since chat may have moved on while the transfer runs. Absent means always valid. */
+  /** Re-checked before raising; false drops this line but keeps the notice. Absent = always valid. */
   stillValid?: () => boolean;
 }
 
-/** Mirrors the backend's `_scope_variant`: no GGUF quant label starts with "@", so a scope collides with neither a real variant nor the repo's full snapshot. */
+/** Mirrors the backend's `_scope_variant`: no GGUF quant label starts with "@". */
 export function scopedVariant(scopeId: string): string {
   return `@${scopeId}`;
 }
@@ -157,10 +153,9 @@ export interface JobRuntime {
   cancelRequested: boolean;
   watchdog: number | null;
   speedSamples: TransferSample[];
-  /**
-   * A generation change seen on a status-only tick, held until a progress poll consumes it: status polls twice as often. */
+  /** Generation change seen on a status-only tick, held until a progress poll consumes it. */
   pendingGenerationChange?: boolean;
-  /** Set on an attempt change: the GGUF floor stays off until the killed run's partial is purged (see floorHoldEnded). Its attempt is persisted only when the hold ends, so a reload re-detects the retry. */
+  /** GGUF floor stays off until the killed run's partial is purged (see floorHoldEnded). */
   floorHold?: FloorHold | null;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
@@ -174,11 +169,11 @@ export interface ProgressLike {
   complete_on_disk?: boolean;
   expected_bytes: number;
   progress: number;
-  /** The scanned cache dir, or null when no cache for this repo exists. Absent from an older backend, which hydration treats as unknown. */
+  /** Null when no cache exists; absent (older backend) is treated as unknown. */
   cache_path?: string | null;
-  /** Whether the backend found anything for THIS target rather than the shared repo cache dir. Null or absent leaves the repo-level cache_path rule in charge. */
+  /** Whether THIS target was found; null/absent leaves the repo-level cache_path rule in charge. */
   target_present?: boolean | null;
-  /** False when the cache could not be scanned at all: unknown, not empty. Absent from an older backend is also unknown. */
+  /** False when the cache could not be scanned: unknown, not empty. */
   cache_measured?: boolean;
 }
 

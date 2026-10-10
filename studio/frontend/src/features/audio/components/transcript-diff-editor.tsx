@@ -8,7 +8,6 @@ import { type Ref, useMemo } from "react";
 import { EDIT_DIFF_MAX_WORDS, countChanges, diffSegments } from "../edit-diff";
 import { EDIT_COPY } from "../edit-policy";
 
-/** ② the transcript's editable copy, each change marked below it (with sr-only text too). */
 export function TranscriptDiffEditor({
   value,
   onChange,

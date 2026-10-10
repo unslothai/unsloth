@@ -55,9 +55,7 @@ function parseVersionedModelStorageKey(
   }
 }
 
-/** False when an OpenAI API auto-switch can never load this model, so its remembered settings stay
- *  off the server. local_model_resolver serves GGUF and non-GGUF weights alike but never a bare LoRA
- *  adapter or a materialized Ollama link; a row for anything else it refuses is inert. */
+/** False when the API auto-switch can never load it (bare LoRA, materialized Ollama link). */
 export function apiAutoSwitchMayLoad(
   ids: readonly string[],
   isLora: boolean,
@@ -65,10 +63,8 @@ export function apiAutoSwitchMayLoad(
   return !isLora && !ids.some(isOllamaLinkPath);
 }
 
-/** The repo id a cached repo's settings are keyed by when it loads from its snapshot directory with
- *  no quant, else null. /status reports that path while the picker keys the repo id, and the backend
- *  folds the two spellings only for a quant, so a bare snapshot-path row would outrank the picker's
- *  and survive its Forget. */
+/** /status reports the snapshot path while the picker keys the repo id, and the backend folds the
+ *  two only for a quant, so a bare snapshot-path row would survive Forget. */
 export function cachedRepoConfigId(
   modelId: string,
   ggufVariant: string | null | undefined,
@@ -108,10 +104,9 @@ export function ggufVariantFromStorageKey(key: string): string | null {
   return separator >= 0 ? key.slice(separator + 2) : null;
 }
 
-// Mirrors split_quant_suffix in openai_auto_switch_settings.py. The bpw modifier
-// ("IQ4_XS-3.53bpw") is optional: the backend label helpers disagree.
+// Mirrors split_quant_suffix in openai_auto_switch_settings.py; the bpw modifier is optional.
 const BPW_SUFFIX = /-[0-9]+(?:\.[0-9]+)?bpw$/i;
-// One source for the anchored test and the scan below. Mirrors _GGUF_QUANT_RE in gguf.py.
+// Mirrors _GGUF_QUANT_RE in gguf.py.
 const QUANT_TOKEN_SOURCE =
   "(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?|Q[0-9]+_K|BF16|F16|F32)";
 const KNOWN_QUANT = new RegExp(`^${QUANT_TOKEN_SOURCE}$`, "i");
@@ -134,8 +129,7 @@ function ggufStem(filename: string): string {
   return withoutExtension.replace(GGUF_SPLIT_SUFFIX, "").trim();
 }
 
-/** Mirrors extract_quant_label in gguf.py, for a bare filename. The parent-directory pass cannot
- *  fire on a basename, so this is the stem's quant token or the stem itself. */
+/** Mirrors extract_quant_label in gguf.py, for a bare filename. */
 export function ggufQuantLabel(filename: string): string {
   const stem = ggufStem(filename);
   let fallback: RegExpExecArray | null = null;
@@ -152,8 +146,7 @@ export function ggufQuantLabel(filename: string): string {
   return stem || "gguf";
 }
 
-/** `[head, quant]` for a `head:QUANT` key, or null when the colon is not one. The suffix must look
- *  like a real quant, so an ordinary colon in a POSIX filename and a drive letter are left alone. */
+/** The suffix must look like a real quant, so POSIX colons and drive letters are left alone. */
 export function splitQuantSuffix(value: string): [string, string] | null {
   const separator = value.lastIndexOf(":");
   if (separator <= 0 || separator === value.length - 1) {
@@ -170,12 +163,10 @@ export function splitQuantSuffix(value: string): [string, string] | null {
   ) {
     return [head, tail];
   }
-  // A .gguf with no quant is labelled by its stem; a non-.gguf head is a plain colon.
   if (!head.toLowerCase().endsWith(".gguf")) {
     return null;
   }
-  // Exactly that label, as the backend requires: a colon is legal in a POSIX filename, so reading
-  // the suffix as a variant folds two real files onto one lowercased key.
+  // A colon is legal in a POSIX filename, so only the exact label counts as a variant.
   const filename = head.replace(BACKSLASHES, "/").split("/").pop() ?? head;
   return tail.toLowerCase() === ggufQuantLabel(filename).toLowerCase()
     ? [head, tail]
@@ -183,15 +174,9 @@ export function splitQuantSuffix(value: string): [string, string] | null {
 }
 
 /**
-* `[modelId, variant]` for an override key, or `[value, null]` when it names no variant.
-*
-* splitQuantSuffix answers for a bare quant token, which is what a stored key usually spells.
-* A qualified variant is not one: it can name a directory (`distilled/model-Q6_K`) or a whole
-* filename stem, and both are refused there. A repo id carries no colon, so for anything that
-* is not a local path the last colon is the separator whatever the tail spells. A path is left
-* whole for the reason the backend's resolver leaves it whole: a colon is legal in a POSIX
-* filename, so "/models/foo:bar/baz.gguf" is one name and splitting it would answer for a
-* different model. */
+ * `[modelId, variant]` for an override key, or `[value, null]`. Non-path ids split on the last
+ * colon; paths stay whole since a colon is legal in a POSIX filename, as the backend resolver does.
+ */
 export function splitModelOverrideKey(value: string): [string, string | null] {
   const quant = splitQuantSuffix(value);
   if (quant) {

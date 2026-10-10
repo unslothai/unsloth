@@ -31,7 +31,7 @@ import {
 import { SANDBOX_SETUP_POLL_MS, sandboxSetupView } from "./sandbox-setup-state";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
-/** Mounted once at the chat-page root so it outlives the menu that opened it. */
+/** Mounted at the chat-page root so it outlives the menu that opened it. */
 export const useSandboxSetupDialogStore = create<{
   open: boolean;
   setOpen: (open: boolean) => void;
@@ -81,7 +81,7 @@ function SandboxSetupContent({
   const [stillUnavailable, setStillUnavailable] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const mounted = useRef(true);
-  // Only the newest check applies (a retry can overtake a slow first read).
+  // Only the newest check applies: a retry can overtake a slow first read.
   const checks = useRef(0);
   // A level picked while the setup ran wins over turning High on at the end.
   const levelAtOpen = useRef(useChatRuntimeStore.getState().sandboxLevel);

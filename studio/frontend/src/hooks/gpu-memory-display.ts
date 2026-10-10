@@ -3,7 +3,6 @@
 
 import type { GpuDevice, SystemGpuInfo } from "./use-system";
 
-/** Vulkan shared devices report allocation headroom, not a fixed VRAM pool. */
 export function hasSharedMemoryHeadroom(device: GpuDevice): boolean {
   return device.index_kind === "vulkan" && device.shared_memory === true;
 }

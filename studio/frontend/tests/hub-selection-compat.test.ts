@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The selection ID outlives the process in the URL, and the download manager's jobs outlive it in
-// localStorage, so every case below is an upgrade path a bookmark or an older Studio can walk into.
+// Selection IDs persist in URLs and download jobs in localStorage, so each case is an upgrade path.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -135,7 +134,7 @@ test("non-ASCII repo IDs round-trip through the canonical ID", () => {
 
 
 test("malformed selection IDs fail safely instead of throwing", () => {
-  // decodeURIComponent throws URIError on all of these, and this runs inside a render, so an uncaught throw is a blank Hub.
+  // decodeURIComponent throws URIError on these inside a render; an uncaught throw blanks the Hub.
   const malformed = [
     "cache:gguf:%",
     "cache:gguf:%2",
@@ -223,7 +222,7 @@ test("a locally selected path row keeps its exact selection", () => {
   assert.equal(resolve(row.id, [], [row]).selectedId, row.id);
 });
 
-// inventory-dedupe reads a truthy partialTransport as model family and a missing one as gguf; the resolver must not contradict it.
+// inventory-dedupe reads a truthy partialTransport as model family, a missing one as gguf; agree with it.
 
 test("a gguf download does not adopt a snapshot partial the deduper kept apart", () => {
   const repoId = "unsloth/hybrid-repo";
@@ -284,8 +283,7 @@ test("a gguf download still adopts an unclassified gguf partial", () => {
 });
 
 test("a transport-less partial is still adopted, in either direction", () => {
-  // Only the positive direction is provable: the backend never writes a transport for a GGUF partial, but a
-  // snapshot partial with no cancel marker and no manifest also reports none, so an absent transport is not evidence.
+  // An absent transport is not evidence: a snapshot partial with no marker or manifest reports none.
   const repoId = "unsloth/gguf-repo";
   const partial = localRow({
     id: repoId,
@@ -337,7 +335,7 @@ test("a known-format selection does not fall back onto a proven other family", (
 
 
 test("a complete unclassified local row is suppressed by any complete cache row", () => {
-  // partialTransport is null on every complete row, so reading it as "gguf family" would retain the duplicate beside safetensors and drop it beside gguf.
+  // partialTransport is null on every complete row, so it must not be read as "gguf family".
   for (const format of ["gguf", "safetensors"] as const) {
     const repoId = "unsloth/complete-repo";
     const complete = cachedRow(repoId, format);

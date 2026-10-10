@@ -9,7 +9,6 @@ import { type AppMenuAction, menuAccelerators } from "./app-menu-chords";
 
 export type { AppMenuAction } from "./app-menu-chords";
 
-// Only the macOS desktop app has these menus.
 const hasAppMenus = isTauri && isMacPlatform();
 
 // Serialized, so the unmount disable never lands before the sync it follows.
@@ -24,9 +23,7 @@ function sync(
     .catch(() => undefined);
 }
 
-/** Run app menu actions, and enable in the menu only those with a handler.
- *  A null handler leaves its item disabled, and so does every item while `ready` is false (the
- *  desktop app's install, startup or recovery screen). */
+/** Enables only items with a handler; all disabled while `ready` is false. */
 export function useAppMenuActions(
   handlers: Record<AppMenuAction, (() => void) | null>,
   ready: boolean,
@@ -38,7 +35,6 @@ export function useAppMenuActions(
   const enabled = ready
     ? (Object.keys(handlers) as AppMenuAction[]).filter((action) => handlers[action]).join(",")
     : "";
-  // Recomputed only when a binding changes. Joined so the effect re-runs only on a real change.
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const accelerators = useMemo(
     () => (hasAppMenus ? JSON.stringify(menuAccelerators(overrides)) : "{}"),
@@ -50,7 +46,6 @@ export function useAppMenuActions(
     sync(enabled ? enabled.split(",") : [], JSON.parse(accelerators));
   }, [enabled, accelerators]);
 
-  // Disable on unmount only. No chords sent, so the menu keeps its own.
   useEffect(() => {
     if (!hasAppMenus) return;
     return () => sync([]);

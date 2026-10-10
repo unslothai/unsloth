@@ -49,7 +49,6 @@ test("a compatible current pick is left alone", () => {
 });
 
 test("nothing detected still corrects a pick that cannot run", () => {
-  // The non-loopback reset clears the detected list, so this is the only correction point.
   assert.equal(pickCompatibleAgent([], "claude", false), "opencode");
 });
 

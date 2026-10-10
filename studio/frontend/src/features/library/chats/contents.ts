@@ -9,14 +9,11 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { type ChatContents, summarizeChatMessages } from "./model";
 
-// Keyed by chat version (`updatedAt`). Module-level to survive tab switches; capped.
 const cache = new Map<string, ChatContents>();
 const MAX_CACHED = 5000;
-// Keys in flight or failed, so re-renders never re-request. A failed key retries on a new version.
 const pending = new Set<string>();
 const failed = new Set<string>();
 const listeners = new Set<() => void>();
-// Counts are tiny; the older-server fallback reads whole messages.
 const BATCH = 100;
 const FALLBACK_BATCH = 20;
 
@@ -38,7 +35,6 @@ function needsRead(chat: SidebarItem): boolean {
   return !cache.has(key) && !pending.has(key) && !failed.has(key);
 }
 
-/** A compare chat counts its fullest pane: the panes share the user's messages. */
 function combine(counts: number[]): ChatContents {
   return { messages: counts.reduce((best, next) => Math.max(best, next), 0) };
 }

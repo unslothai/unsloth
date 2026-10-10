@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A stored spelling, the tag a load records, two tags on one blob: only the server relates them.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isOllamaModelId } from "../src/features/hub/lib/model-identity.ts";
@@ -22,8 +20,7 @@ const chat = {
   },
 };
 
-// The gate is what this drives, so the hook's other dependencies are empty shells: reaching
-// one throws instead of passing quietly.
+// Other dependencies are empty shells so reaching one throws instead of passing quietly.
 const { isLocalModelAlreadyLoaded } = loadWithStubs<{
   isLocalModelAlreadyLoaded: (selection: Selection) => Promise<boolean>;
 }>(

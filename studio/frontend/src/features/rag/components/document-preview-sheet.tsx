@@ -35,7 +35,6 @@ import { getDocumentFileUrl, getPreviewTarget } from "../api/rag-api";
 import type { PdfRegion, PreviewTarget } from "../types/rag";
 import { useDocumentPreviewStore } from "./preview-store";
 
-// Serve the pdf.js worker from the app origin.
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,
@@ -99,7 +98,6 @@ function PdfPreview({
     top: number;
   } | null>(null);
 
-  // Reset page/zoom when a new citation reuses this viewer.
   useEffect(() => setPage(initialPage), [initialPage, fileUrl]);
 
   useEffect(() => setScale(1), [fileUrl]);
@@ -114,7 +112,7 @@ function PdfPreview({
     return () => ro.disconnect();
   }, []);
 
-  // Non-passive wheel listener so preventDefault can stop the panel scrolling.
+  // Non-passive so preventDefault can stop the panel scrolling.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -141,7 +139,6 @@ function PdfPreview({
     [],
   );
 
-  // Whether the page overflows the panel (so panning matters).
   const recheckScrollable = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -155,7 +152,7 @@ function PdfPreview({
     recheckScrollable();
   }, [recheckScrollable, width, scale, page, numPages]);
 
-  // Grab-to-pan; listen on window so the drag tracks past the panel edge.
+  // Listen on window so the drag tracks past the panel edge.
   useEffect(() => {
     if (!grabbing) return;
     const onMove = (e: MouseEvent) => {
@@ -188,7 +185,7 @@ function PdfPreview({
         top: el.scrollTop,
       };
       setGrabbing(true);
-      e.preventDefault(); // stop canvas image-drag / selection
+      e.preventDefault();
     },
     [scrollable],
   );
@@ -232,8 +229,7 @@ function PdfPreview({
             }
           >
             {width > 0 && (
-              // min-w-fit lets the zoomed row grow past the panel so the page stays
-              // centered and reachable on both sides.
+              // min-w-fit keeps the zoomed page centered and reachable on both sides.
               <div className="flex min-w-fit justify-center">
                 <div className="relative w-fit shadow-sm">
                   <Page
@@ -316,8 +312,6 @@ function PdfPreview({
   );
 }
 
-// Resizable preview width (px). Default matches the prior fixed 44rem; drag the
-// left edge to widen. Persisted so it survives reopen.
 const PREVIEW_WIDTH_KEY = "unsloth-rag-preview-width";
 const MIN_PREVIEW_WIDTH = 384;
 const DEFAULT_PREVIEW_WIDTH = 704;
@@ -354,7 +348,6 @@ export function DocumentPreviewSheet() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Left-edge drag resizing of the panel.
   const [previewWidth, setPreviewWidth] = useState<number>(
     readStoredPreviewWidth,
   );
@@ -374,7 +367,7 @@ export function DocumentPreviewSheet() {
     const onMove = (e: MouseEvent) => {
       const start = resizeRef.current;
       if (!start) return;
-      // Right-anchored panel: dragging left (smaller clientX) widens it.
+      // Right-anchored panel: dragging left widens it.
       setPreviewWidth(
         clampPreviewWidth(start.startWidth + (start.startX - e.clientX)),
       );
@@ -433,7 +426,6 @@ export function DocumentPreviewSheet() {
         )}
         showCloseButton={false}
       >
-        {/* Drag the left edge to widen the preview; double-click to reset. */}
         <div
           role="separator"
           aria-orientation="vertical"

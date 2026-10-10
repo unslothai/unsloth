@@ -2,23 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A value imported from the @/features/chat barrel must not be read while the
- * module is still loading.
- *
- * features/chat is in an import cycle, so a module importing from the barrel
- * can be evaluated while chat-runtime-store is still initializing. Reading one
- * of its `const` exports then hits the temporal dead zone and throws at import
- * time, taking the whole page down:
- *
- *   [ansi-smoke] pageerror: Cannot access 'CHAT_GPU_MEMORY_MODE_KEY'
- *                           before initialization
- *
- * That shipped from hooks/use-model-memory.ts. Reading inside a function is
- * safe: by call time every module has finished loading.
- *
- * Walks the AST rather than the source text. A regex version missed four
- * shapes: a second import declaration, an aliased specifier, a parenthesized
- * read, and anything that is not a const/let initializer.
+ * A value imported from the @/features/chat barrel must not be read at module scope:
+ * the barrel is in an import cycle, so such a read can hit the temporal dead zone.
  */
 
 import assert from "node:assert/strict";
@@ -32,21 +17,13 @@ import ts from "typescript";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(HERE, "..", "src");
 const BARREL = "@/features/chat";
-/** Marks a bridge that re-exports the whole barrel, so it carries every name. */
 const STAR = "*";
 
-/**
- * Local names this module binds to values pulled from the chat barrel.
- *
- * A namespace import contributes its own name: the namespace object is what is
- * uninitialized, so a module-scope mention of `chat` is itself the read.
- */
+/** A namespace import contributes its own name: the namespace object itself is the read. */
 function barrelValueNames(
   source: ts.SourceFile,
-  // A re-export hands out the same live binding, so importing from a bridge is
-  // importing from the barrel. Asked per imported name, not per module: a
-  // bridge also exports values of its own, and those are ordinary imports.
-  // `exported` is undefined when the whole module is taken, as by `import *`.
+  // A re-export hands out the same live binding, so importing from a bridge is importing the barrel.
+  // Asked per name: a bridge may also export values of its own.
   carriesBarrelValues: (specifier: string, exported?: string) => boolean = (s) => s === BARREL,
 ): Set<string> {
   const names = new Set<string>();
@@ -56,7 +33,6 @@ function barrelValueNames(
     if (!ts.isStringLiteral(specifier)) continue;
     const from = specifier.text;
     const clause = statement.importClause;
-    // Erased before the code runs, so it cannot trip a dead zone.
     if (!clause || clause.isTypeOnly) continue;
     if (clause.name && carriesBarrelValues(from, "default")) {
       names.add(clause.name.text);
@@ -69,8 +45,7 @@ function barrelValueNames(
     }
     for (const element of bound.elements) {
       if (element.isTypeOnly) continue;
-      // propertyName is the name on the far side; element.name is the LOCAL
-      // one, so `X as y` is looked up as X and recorded as y.
+      // propertyName is the remote name, element.name the local one: `X as y` is looked up as X.
       if (!carriesBarrelValues(from, (element.propertyName ?? element.name).text)) continue;
       names.add(element.name.text);
     }
@@ -78,13 +53,7 @@ function barrelValueNames(
   return names;
 }
 
-/**
- * A source path as the allowlist writes it: relative to src, forward slashes.
- *
- * Not path.relative alone. On Windows that returns backslashes, so every entry
- * in KNOWN_DEEP_CYCLE_READS missed and the guard failed there while passing on
- * Linux -- caught on a Windows CI runner, not by reasoning about it.
- */
+/** path.relative returns backslashes on Windows, which KNOWN_DEEP_CYCLE_READS never matches. */
 function toPosix(relative: string): string {
   return relative.split("\\").join("/");
 }
@@ -93,7 +62,6 @@ function relativeToSrc(file: string): string {
   return toPosix(path.relative(SRC, file));
 }
 
-/** Local names bound by `import * as X`, whichever module they came from. */
 function namespaceImportNames(source: ts.SourceFile): Set<string> {
   const out = new Set<string>();
   for (const statement of source.statements) {
@@ -116,7 +84,6 @@ function collectBindingNames(name: ts.BindingName, out: Set<string>): void {
   }
 }
 
-/** Nodes that introduce a binding scope. */
 function isScope(node: ts.Node): boolean {
   return (
     ts.isSourceFile(node) ||
@@ -139,7 +106,6 @@ function isScope(node: ts.Node): boolean {
   );
 }
 
-/** Scopes a `var` binds to: a function body or the module itself. */
 function isVarScope(node: ts.Node): boolean {
   return (
     ts.isSourceFile(node) ||
@@ -154,10 +120,8 @@ function isVarScope(node: ts.Node): boolean {
   );
 }
 
-/** Every `var` name declared under this scope, excluding nested function scopes. */
 function collectHoistedVars(scope: ts.Node, out: Set<string>): void {
   const visit = (node: ts.Node): void => {
-    // A nested function owns its own vars; they do not reach this scope.
     if (node !== scope && isVarScope(node)) return;
     if (
       ts.isVariableDeclarationList(node) &&
@@ -172,7 +136,6 @@ function collectHoistedVars(scope: ts.Node, out: Set<string>): void {
 
 const declaredCache = new WeakMap<ts.Node, Set<string>>();
 
-/** Names bound by this scope itself, not by anything nested inside it. */
 function declaredIn(scope: ts.Node): Set<string> {
   const cached = declaredCache.get(scope);
   if (cached) return cached;
@@ -188,9 +151,7 @@ function declaredIn(scope: ts.Node): Set<string> {
       }
     }
   };
-  // `var` binds to the enclosing function, not its block, so recording it only
-  // on the inner block left a later read resolving to the import instead of the
-  // local. `let`/`const` keep block scoping via addStatements above.
+  // `var` binds to the enclosing function, not its block.
   if (isVarScope(scope)) collectHoistedVars(scope, out);
   if (ts.isSourceFile(scope) || ts.isBlock(scope) || ts.isModuleBlock(scope)) {
     addStatements(scope.statements);
@@ -219,17 +180,10 @@ function declaredIn(scope: ts.Node): Set<string> {
   return out;
 }
 
-/**
- * True when an enclosing scope re-declares this name, so it is not the import.
- *
- * Per occurrence, not per file: suppressing a name everywhere once it was
- * shadowed anywhere silenced genuine top-level reads, and this tree has 4969
- * functions to shadow from.
- */
+/** Per occurrence, not per file: per-file suppression silenced genuine top-level reads. */
 function isShadowed(identifier: ts.Identifier): boolean {
   for (let node: ts.Node | undefined = identifier.parent; node; node = node.parent) {
     if (!isScope(node)) continue;
-    // Module scope is where the import itself binds the name.
     if (ts.isSourceFile(node)) return false;
     if (declaredIn(node).has(identifier.text)) return true;
   }
@@ -237,15 +191,10 @@ function isShadowed(identifier: ts.Identifier): boolean {
 }
 
 /**
- * True when this identifier sits in a heritage clause that survives to runtime.
- *
- * A base class is evaluated when the class is defined, but TypeScript wraps it
- * in an ExpressionWithTypeArguments, which `ts.isTypeNode` accepts, so it must
- * be excluded by hand. `implements` and `interface I extends J` stay erased.
+ * A base class is evaluated at definition, but ts.isTypeNode accepts its
+ * ExpressionWithTypeArguments, so it must be excluded by hand.
  */
 function inRuntimeHeritage(node: ts.Node): boolean {
-  // The expression spine only: a type argument hangs off `typeArguments`, so it
-  // stays erased, while `extends ns.K` and `extends makeBase(K)` are reached.
   let current: ts.Node = node;
   let parent = current.parent;
   while (parent && !ts.isExpressionWithTypeArguments(parent)) {
@@ -260,12 +209,10 @@ function inRuntimeHeritage(node: ts.Node): boolean {
   const declaration = clause.parent;
   if (!declaration) return false;
   if (!ts.isClassDeclaration(declaration) && !ts.isClassExpression(declaration)) return false;
-  // `declare class C extends K {}` emits no JavaScript, so its base is never
-  // evaluated and flagging it would reject a file that cannot crash.
+  // `declare class` emits no JavaScript, so its base is never evaluated.
   return !isAmbient(declaration);
 }
 
-/** True when this declaration is ambient, so it emits nothing to run. */
 function isAmbient(node: ts.Node): boolean {
   for (let current: ts.Node | undefined = node; current; current = current.parent) {
     if (ts.isSourceFile(current)) return current.isDeclarationFile;
@@ -275,7 +222,6 @@ function isAmbient(node: ts.Node): boolean {
   return false;
 }
 
-/** True when this identifier sits anywhere inside erased type syntax. */
 function insideTypeSyntax(node: ts.Node): boolean {
   if (inRuntimeHeritage(node)) return false;
   for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
@@ -291,7 +237,6 @@ function insideTypeSyntax(node: ts.Node): boolean {
   return false;
 }
 
-/** True when this function is called on the spot, so its body runs eagerly. */
 function isImmediatelyInvoked(node: ts.Node): boolean {
   let current: ts.Node = node;
   let parent = current.parent;
@@ -300,17 +245,13 @@ function isImmediatelyInvoked(node: ts.Node): boolean {
     parent = parent.parent;
   }
   if (!parent) return false;
-  // `new (function () { ... })()` runs the body synchronously during
-  // construction, so it is as eager as a plain call.
   if (
     (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
     parent.expression === current
   ) {
     return true;
   }
-  // `new Promise(executor)` runs the executor before returning, so it is as
-  // eager as an IIFE. Promise only: an arbitrary callback may be stored and
-  // called long after load, and treating those as eager would over-report.
+  // `new Promise(executor)` runs it eagerly. Promise only: other callbacks may run long after load.
   if (
     ts.isNewExpression(parent) &&
     ts.isIdentifier(parent.expression) &&
@@ -319,9 +260,7 @@ function isImmediatelyInvoked(node: ts.Node): boolean {
   ) {
     return true;
   }
-  // `.call(...)` and `.apply(...)` invoke on the spot too, but they put a
-  // property access between the function expression and the call, so the check
-  // above reads the body as deferred and the walk never looks inside it.
+  // `.call`/`.apply` put a property access between the function and the call, so handle them here.
   return (
     ts.isPropertyAccessExpression(parent) &&
     parent.expression === current &&
@@ -332,7 +271,6 @@ function isImmediatelyInvoked(node: ts.Node): boolean {
   );
 }
 
-/** True when this node is something with a callable body. */
 function isCallableNode(node: ts.Node): node is ts.FunctionLikeDeclaration {
   return (
     ts.isFunctionDeclaration(node) ||
@@ -345,7 +283,6 @@ function isCallableNode(node: ts.Node): node is ts.FunctionLikeDeclaration {
   );
 }
 
-/** The call or construction that invokes this function expression, if any. */
 function invocationOf(node: ts.Node): ts.CallExpression | ts.NewExpression | undefined {
   let current: ts.Node = node;
   let parent = current.parent;
@@ -357,19 +294,15 @@ function invocationOf(node: ts.Node): ts.CallExpression | ts.NewExpression | und
   if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === current) {
     return parent;
   }
-  // `.call(...)` / `.apply(...)`: the arguments are the callee's, shifted by the
-  // receiver, so they cannot be matched positionally. Report no arguments,
-  // which makes defaults conservatively eligible.
+  // `.call`/`.apply` arguments are shifted by the receiver; report none so defaults stay eligible.
   return undefined;
 }
 
-/** Array and Object helpers that run their callback before returning. */
 const SYNCHRONOUS_CALLBACK_METHODS = new Set([
   "map", "forEach", "filter", "reduce", "reduceRight", "flatMap",
   "find", "findLast", "findIndex", "findLastIndex", "some", "every", "sort",
 ]);
 
-/** Nodes whose bodies run when called, not when the module loads. */
 function defersEvaluation(node: ts.Node): boolean {
   if (
     ts.isFunctionDeclaration(node) ||
@@ -380,13 +313,10 @@ function defersEvaluation(node: ts.Node): boolean {
     ts.isGetAccessorDeclaration(node) ||
     ts.isSetAccessorDeclaration(node)
   ) {
-    // Always deferred here. An IIFE does run now, but it is entered through
-    // enterCallable so that a generator or an await inside it is respected;
-    // walking the body eagerly from here ignored both.
+    // Always deferred here: an IIFE goes through enterCallable so its generator/await is respected.
     return true;
   }
-  // An instance field initializer runs at construction; a static one runs at
-  // class definition, which is module load, so it is NOT deferred.
+  // Instance field initializers run at construction; static ones run at module load.
   if (ts.isPropertyDeclaration(node)) {
     const isStatic = ts
       .getModifiers(node)
@@ -396,7 +326,6 @@ function defersEvaluation(node: ts.Node): boolean {
   return false;
 }
 
-/** True when this namespace identifier is being read through, as `chat.K`. */
 function isNamespaceMemberRead(node: ts.Identifier): boolean {
   const parent = node.parent;
   if (!parent) return false;
@@ -405,16 +334,12 @@ function isNamespaceMemberRead(node: ts.Identifier): boolean {
   return false;
 }
 
-/** True when this identifier is a name being declared or a property label. */
 function isNonReference(node: ts.Identifier): boolean {
   const parent = node.parent;
   if (!parent) return false;
-  // obj.NAME / {NAME: value} / label: -- not a read of the import.
   if (ts.isPropertyAccessExpression(parent) && parent.name === node) return true;
   if (ts.isPropertyAssignment(parent) && parent.name === node) return true;
   if (ts.isBindingElement(parent) && parent.propertyName === node) return true;
-  // `class C { static K = 1 }` -- a label, not a read. Computed names fall
-  // through on purpose.
   if (
     (ts.isPropertyDeclaration(parent) ||
       ts.isMethodDeclaration(parent) ||
@@ -424,27 +349,16 @@ function isNonReference(node: ts.Identifier): boolean {
   ) {
     return true;
   }
-  // Erased before the code runs. Every ancestor, not just the parent: in
-  // `type T = chat.Entry` the parent is a QualifiedName.
   if (insideTypeSyntax(node)) return true;
   return false;
 }
 
-/** What an eager call or construction in this scope can be followed into. */
 interface Targets {
   functions: Map<string, ts.Node>;
   classes: Map<string, ts.ClassLikeDeclaration>;
   objects: Map<string, ts.ObjectLiteralExpression>;
 }
 
-/**
- * The callables a scope's own statements declare, layered over the enclosing
- * scope's.
- *
- * Per scope rather than top level only: a helper declared inside a function
- * that is itself called during initialization is reached by that outer call, so
- * `inner` must be visible while outer's body is walked.
- */
 function collectTargets(statements: readonly ts.Statement[], inherited?: Targets): Targets {
   const targets: Targets = {
     functions: new Map(inherited?.functions),
@@ -461,11 +375,7 @@ function collectTargets(statements: readonly ts.Statement[], inherited?: Targets
       continue;
     }
     if (!ts.isVariableStatement(statement)) continue;
-    // `const` only. A reassignable binding's declaration initializer is not
-    // what the call reaches: `let read = () => 1; read = () => K; read()` reads
-    // K, and swapping the two bodies rejects code that does not. Tracking
-    // assignments would mean flow analysis, so a mutable target is simply not
-    // resolved -- that loses a hazard rather than inventing one.
+    // `const` only: a reassignable binding's initializer is not necessarily what the call reaches.
     if (!(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
     for (const declaration of statement.declarationList.declarations) {
       const initializer = declaration.initializer;
@@ -475,7 +385,6 @@ function collectTargets(statements: readonly ts.Statement[], inherited?: Targets
       } else if (ts.isClassExpression(initializer)) {
         targets.classes.set(declaration.name.text, initializer);
       } else if (ts.isObjectLiteralExpression(initializer)) {
-        // Reading a property off this object can run a getter defined on it.
         targets.objects.set(declaration.name.text, initializer);
       }
     }
@@ -483,7 +392,6 @@ function collectTargets(statements: readonly ts.Statement[], inherited?: Targets
   return targets;
 }
 
-/** The scope a declaration belongs to. */
 function declaringScopeOf(node: ts.Node): ts.Node | undefined {
   for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
     if (isScope(current)) return current;
@@ -491,13 +399,6 @@ function declaringScopeOf(node: ts.Node): ts.Node | undefined {
   return undefined;
 }
 
-/**
- * True when this name really refers to that target here.
- *
- * "Shadowed anywhere above" cannot answer this once helpers resolve per scope:
- * a nested helper's own declaration is a binding above the call and reads as a
- * shadow of itself. Walk out and ask which scope comes first.
- */
 function resolvesToTarget(identifier: ts.Identifier, target: ts.Node): boolean {
   const home = declaringScopeOf(target);
   if (!home) return false;
@@ -510,13 +411,6 @@ function resolvesToTarget(identifier: ts.Identifier, target: ts.Node): boolean {
   return false;
 }
 
-/**
- * What a constructor hands to its base, or undefined when it writes no `super`.
- *
- * Undefined is not "no arguments": it means the walk could not tell, and every
- * base default stays eligible. A `super` inside a nested function belongs to
- * that function, so it is not this constructor's call.
- */
 function superArgumentsOf(
   ctor: ts.ConstructorDeclaration,
 ): readonly ts.Expression[] | undefined {
@@ -534,21 +428,17 @@ function superArgumentsOf(
   return found;
 }
 
-/** True when this node carries the given modifier. */
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
   return Boolean(modifiers?.some((m) => m.kind === kind));
 }
 
-/** Constructs whose body may be skipped, so an await inside is not certain. */
 function isConditionalConstruct(node: ts.Node): boolean {
   return (
     ts.isIfStatement(node) ||
     ts.isSwitchStatement(node) ||
     ts.isTryStatement(node) ||
     ts.isConditionalExpression(node) ||
-    // `flag && await x` and `a ?? await x` skip their right side, so an await
-    // there is not certain to run either.
     (ts.isBinaryExpression(node) &&
       (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
         node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
@@ -561,22 +451,12 @@ function isConditionalConstruct(node: ts.Node): boolean {
   );
 }
 
-/**
- * Where this body first suspends for certain, or null if it never does.
- *
- * Only an await that always runs counts. `if (skip) await x; return K;` reads K
- * synchronously whenever the branch is not taken, so treating the lexically
- * first await as the boundary would skip a genuine eager read. Awaits inside
- * conditionals and loops are therefore not boundaries, which keeps the rest of
- * the body eager and errs toward reporting. Nested functions are skipped too:
- * an await in a callback declared here does not suspend its declarer.
- */
+/** Where this body certainly suspends; conditional awaits do not count. */
 function firstSuspensionPos(body: ts.Node): number | null {
   let earliest: number | null = null;
   const visit = (node: ts.Node): void => {
     if (node !== body && isVarScope(node) && !ts.isSourceFile(node)) return;
     if (node !== body && isConditionalConstruct(node)) {
-      // `for await (...)` suspends on entry, before the body is skippable.
       if (ts.isForOfStatement(node) && node.awaitModifier !== undefined) {
         if (earliest === null || node.getStart() < earliest) earliest = node.getStart();
       }
@@ -591,7 +471,6 @@ function firstSuspensionPos(body: ts.Node): number | null {
   return earliest;
 }
 
-/** Walk only the part of a body that runs before `limit`. */
 function visitUntil(
   body: ts.Node,
   limit: number,
@@ -604,7 +483,6 @@ function visitUntil(
   body.forEachChild(walk);
 }
 
-/** A function another module exports, together with that module's barrel names. */
 interface ImportedHelper {
   file: string;
   source: ts.SourceFile;
@@ -613,11 +491,8 @@ interface ImportedHelper {
 }
 
 interface ScanOptions {
-  /** Start at this callable instead of the module body. */
   entry?: ts.Node;
-  /** Arguments of the call that reached `entry`, for its parameter defaults. */
   entryArgs?: readonly ts.Expression[];
-  /** Local name -> a helper another module exports, for cross-file calls. */
   helpers?: Map<string, ImportedHelper>;
 }
 
@@ -625,28 +500,17 @@ function eagerReads(
   source: ts.SourceFile,
   names: Set<string>,
   options: ScanOptions = {},
-  // `import * as chat` binds the namespace OBJECT, which exists from
-  // instantiation. Passing it around is safe; only `chat.K` reads an export
-  // that may still be uninitialized.
+  // A namespace object exists from instantiation; only `chat.K` reads a possibly uninitialized export.
   namespaces: Set<string> = new Set(),
 ): string[] {
   if (names.size === 0 && !options.helpers?.size) return [];
 
   const moduleTargets = collectTargets(source.statements);
-  // Guards against recursion, and stops a function called twice from being
-  // reported twice.
   const entered = new Set<ts.Node>();
   const helpers = options.helpers ?? new Map<string, ImportedHelper>();
 
   const found: string[] = [];
 
-  /**
-   * Walk a callable an eager call reached, holding back what does not run yet.
-   *
-   * Defaults are evaluated on entry, before the body. A generator call only
-   * builds an iterator, and an async function resumes past initialization, so
-   * the body is walked only as far as its first suspension.
-   */
   const enterCallable = (
     target: ts.Node,
     targets: Targets,
@@ -656,10 +520,7 @@ function eagerReads(
     const fn = target as ts.FunctionLikeDeclaration;
     (fn.parameters ?? []).forEach((parameter, index) => {
       if (!parameter.initializer) return;
-      // A default only runs when the argument is missing or literally
-      // `undefined`. `read(1)` never evaluates `value = K`, and reporting it
-      // rejects code that cannot crash. A rest parameter has no single
-      // argument to match, so leave those alone.
+      // A default only runs when the argument is missing or undefined; rest parameters are skipped.
       if (args && !parameter.dotDotDotToken) {
         const supplied = args[index];
         const omitted =
@@ -677,12 +538,6 @@ function eagerReads(
     else visitUntil(fn.body, suspendsAt, (n, d) => visit(n, d, inner));
   };
 
-  /**
-   * Run the getters an eager property read would invoke.
-   *
-   * `wanted` null means every getter on the object: a spread and a rest element
-   * both read every own property, so there is no single name to match.
-   */
   const enterGetters = (
     object: ts.ObjectLiteralExpression,
     targets: Targets,
@@ -699,9 +554,7 @@ function eagerReads(
   };
 
   const visit = (node: ts.Node, deferred: boolean, targets: Targets): void => {
-    // The import declaration binds these names; it does not read them.
     if (ts.isImportDeclaration(node)) return;
-    // `export { X }` re-exports the binding without evaluating it.
     if (ts.isExportDeclaration(node)) return;
     if (
       !deferred &&
@@ -714,9 +567,6 @@ function eagerReads(
       const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
       found.push(`${node.text} (line ${line + 1})`);
     }
-    // An IIFE runs now, but through enterCallable so a generator body or an
-    // await inside it still holds back what does not run yet. Walking it
-    // eagerly reported reads that only happen after the module has loaded.
     if (!deferred && isCallableNode(node) && isImmediatelyInvoked(node)) {
       if (!entered.has(node)) {
         entered.add(node);
@@ -724,7 +574,6 @@ function eagerReads(
       }
       return;
     }
-    // `` tag`value` `` invokes tag synchronously, exactly like tag("value").
     if (!deferred && ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag)) {
       const tagged = targets.functions.get(node.tag.text);
       if (tagged && !entered.has(tagged) && resolvesToTarget(node.tag, tagged)) {
@@ -732,7 +581,6 @@ function eagerReads(
         enterCallable(tagged, targets);
       }
     }
-    // `f.call(...)` / `f.apply(...)` on a local function runs it now.
     if (
       !deferred &&
       ts.isCallExpression(node) &&
@@ -746,9 +594,6 @@ function eagerReads(
         enterCallable(named, targets);
       }
     }
-    // `[0].map(cb)` runs cb before it returns. Only these built-ins: an
-    // arbitrary callback may be stored and invoked long after load, which is
-    // the same line the Promise executor case draws.
     if (
       !deferred &&
       ts.isCallExpression(node) &&
@@ -756,8 +601,6 @@ function eagerReads(
       SYNCHRONOUS_CALLBACK_METHODS.has(node.expression.name.text)
     ) {
       for (const argument of node.arguments) {
-        // A named callback resolves through the target map, as a call to it
-        // would; an inline one is the callable itself.
         let callee: ts.Node | undefined;
         if (isCallableNode(argument)) callee = argument;
         else if (ts.isIdentifier(argument)) {
@@ -769,7 +612,6 @@ function eagerReads(
         enterCallable(callee, targets);
       }
     }
-    // `C.read()` runs a static method now, the same as any other eager call.
     if (
       !deferred &&
       ts.isCallExpression(node) &&
@@ -789,8 +631,6 @@ function eagerReads(
         }
       }
     }
-    // `obj.read()` on a local object literal runs that method now. The getter
-    // case below covers a bare `obj.value`; this is the invoked-method twin.
     if (
       !deferred &&
       ts.isCallExpression(node) &&
@@ -815,24 +655,15 @@ function eagerReads(
         }
       }
     }
-    // `const value = read()` at module scope runs read's body now, so the read
-    // inside it is eager even though the declaration looked deferred. Without
-    // this the guard's own advice -- move the read into a function -- could be
-    // followed to the letter and still leave the crash in place.
+    // `const value = read()` at module scope runs read's body now, so reads inside it are eager.
     if (!deferred && ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       const target = targets.functions.get(node.expression.text);
       if (target && resolvesToTarget(node.expression, target)) {
-        // Defaults depend on THIS call's arguments, so they are re-checked even
-        // when the body has already been walked: `read(1); read();` evaluates
-        // the default only on the second call.
+        // Defaults depend on this call's arguments, so they are rechecked even for walked bodies.
         enterCallable(target, targets, node.arguments, entered.has(target));
         entered.add(target);
       }
-      // Extracting the helper into its own module is the same move as
-      // extracting it into a function, and it hid the read just as well: the
-      // helper only ever sees a deferred read, and the caller has no barrel
-      // name of its own to match. Reported at the call site, since that is the
-      // line that has to change.
+      // A helper in another module hides the read the same way; report it at the call site.
       const helper = !target ? helpers.get(node.expression.text) : undefined;
       if (helper && !entered.has(helper.fn) && !isShadowed(node.expression)) {
         entered.add(helper.fn);
@@ -847,9 +678,6 @@ function eagerReads(
         }
       }
     }
-    // `new Promise(read)` calls read before it returns, exactly as an inline
-    // executor does. The inline form goes through isImmediatelyInvoked; a named
-    // one has to be resolved here.
     if (
       !deferred &&
       ts.isNewExpression(node) &&
@@ -865,14 +693,8 @@ function eagerReads(
         }
       }
     }
-    // `new C()` runs the constructor and every instance field initializer now,
-    // for a named class exactly as for an inline function expression.
     if (!deferred && ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
-      // A derived class runs its base's constructor and instance fields first,
-      // even when it declares no constructor of its own, so walk the chain.
-      // Each level carries ITS OWN arguments: the base sees what `super(...)`
-      // passes, not what `new` did, so handing the outer arguments down the
-      // chain both misses defaults and rejects code that supplies them.
+      // A derived class runs its base constructor first; each level gets its own super() arguments.
       const chain: Array<{
         cls: ts.ClassLikeDeclaration;
         args: readonly ts.Expression[] | undefined;
@@ -888,8 +710,6 @@ function eagerReads(
           (m): m is ts.ConstructorDeclaration =>
             ts.isConstructorDeclaration(m) && Boolean(m.body),
         );
-        // No constructor of its own means an implicit `super(...args)`, which
-        // forwards everything it was given.
         args = ctor === undefined ? args : superArgumentsOf(ctor);
         anchor = undefined;
         for (const clause of cls.heritageClauses ?? []) {
@@ -915,14 +735,11 @@ function eagerReads(
         }
       }
     }
-    // `obj.value` runs a getter defined on obj synchronously, so an eager read
-    // of the property is an eager read of whatever the accessor body touches.
     if (!deferred && ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
       const object = targets.objects.get(node.expression.text);
       if (object && resolvesToTarget(node.expression, object)) {
         enterGetters(object, targets, new Set([node.name.text]));
       }
-      // `C.value` runs a static getter for the same reason.
       const cls = targets.classes.get(node.expression.text);
       if (cls && resolvesToTarget(node.expression, cls)) {
         for (const member of cls.members) {
@@ -935,9 +752,6 @@ function eagerReads(
         }
       }
     }
-    // `const { value } = obj` performs the same property read `obj.value` does,
-    // so it runs the getter too. A rest element takes every own property, which
-    // is why it asks for all of them.
     if (
       !deferred &&
       ts.isVariableDeclaration(node) &&
@@ -957,7 +771,6 @@ function eagerReads(
           if (ts.isIdentifier(key)) wanted.add(key.text);
           else if (ts.isStringLiteral(key)) wanted.add(key.text);
           else {
-            // A computed key names a property this walk cannot predict.
             wanted = null;
             break;
           }
@@ -965,15 +778,12 @@ function eagerReads(
         enterGetters(object, targets, wanted);
       }
     }
-    // `{ ...obj }` copies every own enumerable property, running each getter.
     if (!deferred && ts.isSpreadAssignment(node) && ts.isIdentifier(node.expression)) {
       const object = targets.objects.get(node.expression.text);
       if (object && resolvesToTarget(node.expression, object)) {
         enterGetters(object, targets, null);
       }
     }
-    // `obj.value = 1` and `C.value = 1` run a setter synchronously, the write
-    // twin of the getter case above.
     if (
       !deferred &&
       ts.isBinaryExpression(node) &&
@@ -1004,8 +814,6 @@ function eagerReads(
         }
       }
     }
-    // `@deco class C {}` calls deco as the class is defined. The factory form
-    // `@deco()` is an ordinary call and already goes through the path above.
     if (!deferred && ts.isDecorator(node) && ts.isIdentifier(node.expression)) {
       const named = targets.functions.get(node.expression.text);
       if (named && !entered.has(named) && resolvesToTarget(node.expression, named)) {
@@ -1014,9 +822,6 @@ function eagerReads(
       }
     }
     const next = deferred || defersEvaluation(node);
-    // A block, a switch case and a module body each declare callables of their
-    // own. Without layering them here a helper declared inside `if (ready) {
-    // ... }` never resolves, so an eager call to it reads as deferred.
     const scoped =
       ts.isBlock(node) || ts.isModuleBlock(node)
         ? collectTargets(node.statements, targets)
@@ -1024,10 +829,7 @@ function eagerReads(
           ? collectTargets(node.statements, targets)
           : targets;
     node.forEachChild((child) => {
-      // A computed name and a decorator are both evaluated where they are
-      // written, as the class or object is created, even though the body or
-      // initializer beneath them waits. Both carry the INCOMING state, so one
-      // inside a deferred function stays deferred.
+      // Computed names and decorators run where written, carrying the incoming deferred state.
       const eagerName =
         (child === (node as ts.NamedDeclaration).name && ts.isComputedPropertyName(child)) ||
         ts.isDecorator(child);
@@ -1039,21 +841,15 @@ function eagerReads(
   return found;
 }
 
-/**
- * True when this import/export contributes nothing at runtime, so it cannot
- * pull the target into the barrel's initialization. A bare `import "./x"` is
- * kept: a side-effect import does evaluate the target.
- */
 function isErasedEdge(statement: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
   if (ts.isImportDeclaration(statement)) {
     const clause = statement.importClause;
-    if (!clause) return false; // side-effect import
+    if (!clause) return false;
     if (clause.isTypeOnly) return true;
-    if (clause.name) return false; // default import
+    if (clause.name) return false;
     const bound = clause.namedBindings;
     if (!bound || ts.isNamespaceImport(bound)) return false;
-    // `import {}` still evaluates the target and `every` is vacuously true on
-    // an empty list, so the length check is load-bearing.
+    // `import {}` still evaluates the target, and `every` is vacuously true, so the length check matters.
     return bound.elements.length > 0 && bound.elements.every((e) => e.isTypeOnly);
   }
   if (statement.isTypeOnly) return true;
@@ -1062,10 +858,7 @@ function isErasedEdge(statement: ts.ImportDeclaration | ts.ExportDeclaration): b
   return clause.elements.length > 0 && clause.elements.every((e) => e.isTypeOnly);
 }
 
-// Keyed on the text as well as the name: the unit cases below reparse "t.ts"
-// with different sources, so caching on the name alone would return the wrong
-// tree. Without this the bearing fixpoint reparses every file on each pass and
-// the scan reparses each imported module once per importer.
+// Keyed on text too: unit cases reparse "t.ts" with different sources.
 const parseCache = new Map<string, ts.SourceFile>();
 
 function parse(fileName: string, text: string): ts.SourceFile {
@@ -1094,11 +887,6 @@ function walkSources(dir: string, out: string[] = []): string[] {
 
 type Resolver = (specifier: string, from: string) => string | null;
 
-/**
- * A specifier that leaves the app for node_modules: neither the `@/` alias nor a
- * relative path. Syntactic on purpose, so an app path this resolver happens not
- * to model still counts as an edge rather than being waved through.
- */
 function isBareSpecifier(spec: string): boolean {
   return !(spec.startsWith("@/") || spec.startsWith("."));
 }
@@ -1109,8 +897,7 @@ function makeResolver(sources: Map<string, string>): Resolver {
     if (spec.startsWith("@/")) base = path.join(SRC, spec.slice(2));
     else if (spec.startsWith(".")) base = path.resolve(path.dirname(from), spec);
     else return null;
-    // Exact path first: 66 imports here spell the extension, and appending a
-    // second one silently dropped those edges.
+    // Exact path first: some imports spell the extension already.
     const candidates = [
       base,
       `${base}.ts`,
@@ -1131,21 +918,11 @@ function readAll(files: string[]): Map<string, string> {
   return sources;
 }
 
-/**
- * Modules that hand out the barrel's own bindings, transitively.
- *
- * A bridge re-exports the live binding rather than a copy, so its consumers sit
- * in the same dead zone. Without this the check silently stops applying the
- * moment someone adds a bridge, which is an ordinary refactor.
- */
 function barrelBearingModules(
   sources: Map<string, string>,
   resolve: Resolver,
 ): Map<string, Set<string>> {
-  // file -> the names IT exports that are the barrel's own bindings. Per name,
-  // not per module: a bridge usually also exports things of its own, and
-  // `export { K } from barrel; export const SAFE = 1` must not make an
-  // importer of SAFE look like a barrel consumer.
+  // Per exported name, not per module: a bridge may also export values of its own.
   const bearing = new Map<string, Set<string>>();
   const record = (file: string, name: string): boolean => {
     let names = bearing.get(file);
@@ -1169,9 +946,6 @@ function barrelBearingModules(
     changed = false;
     for (const [file, text] of sources) {
       const source = parse(file, text);
-      // `import { K } from barrel; export { K }` re-exports the same live
-      // binding as `export { K } from barrel`, just spelled in two statements,
-      // so the local names have to be known before the exports are read.
       const imported = barrelValueNames(source, carries(file));
       for (const statement of source.statements) {
         if (!ts.isExportDeclaration(statement)) continue;
@@ -1181,8 +955,6 @@ function barrelBearingModules(
         if (!specifier) {
           if (!clause || !ts.isNamedExports(clause)) continue;
           for (const element of clause.elements) {
-            // The LOCAL name is what was imported; the EXPORTED name is what a
-            // consumer sees, so `export { K as J }` publishes J.
             if (element.isTypeOnly) continue;
             if (!imported.has((element.propertyName ?? element.name).text)) continue;
             if (record(file, element.name.text)) changed = true;
@@ -1195,9 +967,6 @@ function barrelBearingModules(
         const upstream = target ? bearing.get(target) : undefined;
         if (!fromBarrel && !upstream) continue;
         if (!clause) {
-          // `export * from x` republishes whatever x carries. From the barrel
-          // that is every one of its exports, so record a wildcard rather than
-          // enumerating them; the predicate treats it as matching any name.
           if (fromBarrel) {
             if (record(file, STAR)) changed = true;
           } else {
@@ -1206,7 +975,6 @@ function barrelBearingModules(
           continue;
         }
         if (ts.isNamespaceExport(clause)) {
-          // `export * as ns from x` -- the namespace object itself carries them.
           if (record(file, clause.name.text)) changed = true;
           continue;
         }
@@ -1222,14 +990,7 @@ function barrelBearingModules(
   return bearing;
 }
 
-/**
- * Exported names that can sit in a temporal dead zone.
- *
- * `function` declarations are hoisted and initialized before any module body
- * runs, so importing one from a half-evaluated module is always safe. Only
- * `const`, `let` and `class` bindings can be read before initialization, and
- * they are the only ones worth reporting on a deep import into the cycle.
- */
+/** Only const, let and class exports can sit in a TDZ; function declarations are hoisted. */
 function tdzProneExportNames(source: ts.SourceFile): Set<string> {
   const prone = new Set<string>();
   const lexical = new Set<string>();
@@ -1249,19 +1010,12 @@ function tdzProneExportNames(source: ts.SourceFile): Set<string> {
     } else if (ts.isClassDeclaration(statement)) {
       if (statement.name) lexical.add(statement.name.text);
       if (!exported) continue;
-      // `export default class K {}` publishes "default"; K is a local name a
-      // consumer cannot import, so recording it there is what let a default
-      // import of a half-initialized class through.
       if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) prone.add("default");
       else if (statement.name) prone.add(statement.name.text);
     } else if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
-      // `export default <expression>` binds where the statement runs, so it is
-      // in the dead zone until then. A default FUNCTION declaration is not an
-      // ExportAssignment and stays hoisted, as above.
       prone.add("default");
     }
   }
-  // `export { X }` publishes a lexical binding declared above.
   for (const statement of source.statements) {
     if (!ts.isExportDeclaration(statement) || statement.moduleSpecifier) continue;
     const clause = statement.exportClause;
@@ -1274,23 +1028,12 @@ function tdzProneExportNames(source: ts.SourceFile): Set<string> {
   return prone;
 }
 
-/** What a module publishes that can still be uninitialized when a consumer reads it. */
 interface ProneExports {
   names: Set<string>;
-  /** True when the module may publish names this walk cannot enumerate. */
   star: boolean;
 }
 
-/**
- * Per module, the export names a cyclic consumer can catch in the dead zone.
- *
- * A re-export hands out the ORIGINAL binding, so what decides the answer is how
- * the declaring module writes it: a hoisted `function` is initialized before any
- * module body runs and can never be uninitialized, however many hops it travels.
- * Folded to a fixed point rather than recursively, because the barrel's own
- * re-export graph has cycles and a recursion would have to truncate them --
- * quietly dropping hazards on whichever module it happened to enter first.
- */
+/** Folded to a fixed point because the barrel's re-export graph has cycles. */
 function proneExportSets(
   files: string[],
   sources: Map<string, string>,
@@ -1311,10 +1054,6 @@ function proneExportSets(
         (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
         statement.moduleSpecifier !== undefined &&
         !isErasedEdge(statement);
-      // Only an edge back into src counts. A bare package specifier leaves the
-      // graph for node_modules, which does not import app source, so it is not a
-      // way back in and cannot catch this module half-initialized. A specifier
-      // this resolver cannot model is counted, since it may well be a path.
       const leavesApp =
         runtimeEdge &&
         ts.isStringLiteral(statement.moduleSpecifier) &&
@@ -1324,19 +1063,10 @@ function proneExportSets(
       const specifier = statement.moduleSpecifier;
       if (!specifier || !ts.isStringLiteral(specifier)) continue;
       const clause = statement.exportClause;
-      // `export * as ns from "./x"` binds a namespace OBJECT, which exists from
-      // instantiation, so it is never in the dead zone.
       if (clause && !ts.isNamedExports(clause)) continue;
       list.push({ target: resolve(specifier.text, file), clause });
     }
-    // A module with no runtime imports INTO THE APP has nothing that can
-    // re-enter it, so its body always finishes before any importer's does and
-    // none of its bindings can be caught uninitialized. That is why
-    // prompt-queue-events.ts exists, and it holds however many re-export hops
-    // away the reader sits. Package-only modules are leaves by the same
-    // argument: lib/hugeicons-derived.ts and assistant-ui/code-themes.ts derive
-    // consts from a package and import nothing else, and counting those edges
-    // reported both as hazards they cannot be.
+    // A module with no runtime imports into the app cannot be re-entered, so its bindings are safe.
     out.set(file, {
       names: edges === 0 ? new Set<string>() : tdzProneExportNames(source),
       star: false,
@@ -1348,9 +1078,7 @@ function proneExportSets(
     for (const file of files) {
       const own = out.get(file) as ProneExports;
       for (const hop of hops.get(file) ?? []) {
-        // An unresolved hop -- a package, or a path this resolver does not
-        // model -- could publish anything, so it carries every name rather than
-        // silently dropping the hazard.
+        // An unresolved hop could publish anything, so it carries every name.
         const inner: ProneExports | undefined =
           hop.target === null ? { names: new Set<string>(), star: true } : out.get(hop.target);
         if (!inner) continue;
@@ -1380,7 +1108,6 @@ function proneExportSets(
   return out;
 }
 
-/** Functions a module exports by name, for resolving a cross-module call. */
 function exportedFunctions(source: ts.SourceFile): Map<string, ts.FunctionLikeDeclaration> {
   const out = new Map<string, ts.FunctionLikeDeclaration>();
   for (const statement of source.statements) {
@@ -1405,7 +1132,6 @@ function exportedFunctions(source: ts.SourceFile): Map<string, ts.FunctionLikeDe
       continue;
     }
     if (!ts.isVariableStatement(statement)) continue;
-    // `const` only, for the same reason collectTargets takes only const.
     if (!(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
     for (const declaration of statement.declarationList.declarations) {
       const initializer = declaration.initializer;
@@ -1415,9 +1141,6 @@ function exportedFunctions(source: ts.SourceFile): Map<string, ts.FunctionLikeDe
       }
     }
   }
-  // `function read() {} export { read }` publishes a local callable without any
-  // export modifier on the declaration, so the loop above never sees it and the
-  // caller got no helper to follow. `export { read as default }` lands here too.
   const local = new Map<string, ts.FunctionLikeDeclaration>();
   for (const statement of source.statements) {
     if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
@@ -1447,7 +1170,6 @@ function exportedFunctions(source: ts.SourceFile): Map<string, ts.FunctionLikeDe
   return out;
 }
 
-/** Every module the barrel's own initialization can pull in, transitively. */
 function barrelInitClosure(files: string[]): Set<string> {
   const sources = readAll(files);
   const resolve = makeResolver(sources);
@@ -1459,8 +1181,6 @@ function barrelInitClosure(files: string[]): Set<string> {
       const spec =
         (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier;
       if (!spec || !ts.isStringLiteral(spec)) continue;
-      // An erased edge cannot drag a module into evaluation. Specifiers are
-      // checked too: `import { type A }` sets no declaration-level flag.
       if (isErasedEdge(st)) continue;
       const target = resolve(spec.text, file);
       if (target) out.push(target);
@@ -1468,10 +1188,7 @@ function barrelInitClosure(files: string[]): Set<string> {
     return out;
   };
 
-  // Resolved, not hard-coded. Moving the barrel to an equally importable
-  // features/chat.ts would leave a hard-coded index.ts path with no edges, so
-  // atRisk would come back empty and every offender would silently stop being
-  // reported while the importer count still looked healthy.
+  // Resolved, not hard-coded, so moving the barrel cannot silently empty atRisk.
   const entry = resolve(BARREL, path.join(SRC, "index.ts"));
   assert.ok(
     entry !== null,
@@ -1493,22 +1210,8 @@ function barrelInitClosure(files: string[]): Set<string> {
 }
 
 /**
- * Module-scope reads that already existed when deep imports into the cycle
- * started being checked.
- *
- * Every one is the same hazard as the crash this file exists for: a lexical
- * binding read at module scope from a module the barrel's own initialization
- * can reach. They are allowed only because clearing them is a refactor of
- * unrelated features, not because they are safe.
- *
- * This list may SHRINK, never grow. A new entry means a new latent blank-page
- * bug, and the assertion below rejects it.
- *
- * Keyed by file and name with a COUNT, deliberately not by line: an unrelated
- * edit higher up the file moves every read below it, and keying on the line
- * turned that into a red guard on a branch that changed nothing. The count is
- * what the exception is really about -- how many of these reads a file still
- * has -- and it holds still while the lines move.
+ * Pre-existing module-scope reads into the cycle. This list may only shrink.
+ * Keyed by file and name with a count, not by line, so unrelated edits do not break it.
  */
 const KNOWN_DEEP_CYCLE_READS = new Map<string, number>([
   ["components/assistant-ui/markdown-text.tsx: SEARCH_IMAGE_TAG", 2],
@@ -1537,9 +1240,7 @@ const KNOWN_DEEP_CYCLE_READS = new Map<string, number>([
 
 test("no module-scope read of a chat barrel value", () => {
   const files = walkSources(SRC);
-  // Only a module the barrel can reach during its own initialization can be
-  // caught half-initialized. A leaf that merely imports from the barrel is
-  // always evaluated after it, so an eager read there is safe.
+  // Only modules the barrel reaches during its own initialization can be caught half-initialized.
   const atRisk = barrelInitClosure(files);
   const sources = readAll(files);
   const resolve = makeResolver(sources);
@@ -1552,8 +1253,6 @@ test("no module-scope read of a chat barrel value", () => {
         (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier;
       if (!spec || !ts.isStringLiteral(spec)) continue;
       if (isErasedEdge(st)) continue;
-      // Same rule as proneExportSets: a package edge leaves the graph and is not
-      // a way back into this module.
       if (!isBareSpecifier(spec.text)) {
         out.push(spec.text);
       }
@@ -1573,32 +1272,17 @@ test("no module-scope read of a chat barrel value", () => {
   const barrelNameFilter =
     (from: string) =>
     (specifier: string, exported?: string): boolean => {
-      // A hoisted `function` the barrel re-exports is initialized before any
-      // module body runs, so a cyclic consumer reading that name cannot crash;
-      // only `const`, `let` and `class` bindings can. Following the re-export to
-      // the declaring module is what tells the two apart.
       if (specifier === BARREL) {
         return barrelFile === null ? true : carriesProne(barrelFile, exported);
       }
       const target = resolve(specifier, from);
       if (target === null) return false;
-      // A deep import into the cycle is the same hazard as the barrel. The
-      // crash this guard exists for was a read of a const imported straight
-      // from chat-runtime-store; #9852 later moved that import off the barrel,
-      // which silently put the original defect outside a barrel-only filter.
-      // Any module the barrel's own initialization can reach may itself be
-      // mid-initialization when an at-risk module reads from it.
+      // A deep import into a module the barrel's initialization reaches is the same hazard.
       if (atRisk.has(target)) {
-        // A module with no runtime imports has nothing that can re-enter it, so
-        // its bindings are always initialized before any importer body runs.
-        // That is exactly why prompt-queue-events.ts exists, and reading from
-        // such a leaf is safe however the barrel reaches it.
         if (runtimeEdges(target).length === 0) return false;
         return carriesProne(target, exported);
       }
-      // A bridge that re-exports a barrel binding keeps the conservative
-      // answer: bearing knows the name travelled, not which module declared it,
-      // so an import-then-export hop stays reported rather than guessed at.
+      // A bridge only knows the name travelled, not where it was declared, so stay conservative.
       const carried = bearing.get(target);
       if (!carried) return false;
       if (carried.has(STAR)) return true;
@@ -1609,8 +1293,7 @@ test("no module-scope read of a chat barrel value", () => {
   let importers = 0;
   for (const file of files) {
     const text = sources.get(file) ?? "";
-    // No text prefilter on BARREL: a module importing through a bridge never
-    // spells the name, and skipping it was the hole.
+    // No text prefilter on BARREL: a module importing through a bridge never spells it.
     const source = parse(file, text);
     const names = barrelValueNames(source, barrelNameFilter(file));
     const helpers = new Map<string, ImportedHelper>();
@@ -1629,7 +1312,6 @@ test("no module-scope read of a chat barrel value", () => {
       const helperNames = barrelValueNames(helperSource, barrelNameFilter(target));
       if (helperNames.size === 0) continue;
       const exported = exportedFunctions(helperSource);
-      // `import read from "./helper"` binds whatever that module default-exports.
       if (clause.name) {
         const fn = exported.get("default");
         if (fn) {
@@ -1648,8 +1330,6 @@ test("no module-scope read of a chat barrel value", () => {
     if (!atRisk.has(file)) continue;
     for (const hit of eagerReads(source, names, { helpers }, namespaceImportNames(source))) {
       const entry = `${relativeToSrc(file)}: ${hit}`;
-      // The line is dropped from the key, and only from the key: the offender
-      // message below still says where to look.
       const key = entry.replace(/ \(line \d+\)/g, "");
       if (KNOWN_DEEP_CYCLE_READS.has(key)) {
         seenCounts.set(key, (seenCounts.get(key) ?? 0) + 1);
@@ -1666,9 +1346,7 @@ test("no module-scope read of a chat barrel value", () => {
       `Move the read inside a function, as hooks/use-model-memory.ts does with ` +
       `watchedStorageKeys().\n  ${offenders.join("\n  ")}`,
   );
-  // The list may only shrink, and nothing enforced that: an entry that stopped
-  // matching stayed armed, ready to suppress a real regression that reappeared
-  // under the same name later.
+  // Stale entries must fail, or they could suppress a reappearing regression.
   const drifted = [...KNOWN_DEEP_CYCLE_READS]
     .map(([key, allowed]) => ({ key, allowed, seen: seenCounts.get(key) ?? 0 }))
     .filter(({ allowed, seen }) => allowed !== seen)
@@ -1767,12 +1445,10 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nclass C { [K] = 1; }\n`,
     ],
     [
-      // Defaults are evaluated on entry, before the body runs.
       "default parameter of an eagerly called function",
       `import { K } from "${BARREL}";\nfunction read(v = K) {}\nread();\n`,
     ],
     [
-      // Reachable only because its caller runs at load.
       "helper declared and called inside an eagerly called function",
       `import { K } from "${BARREL}";\nfunction outer() { function inner() { return K; } return inner(); }\nouter();\n`,
     ],
@@ -1785,7 +1461,6 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nclass C { f = K; }\nnew C();\n`,
     ],
     [
-      // The Promise constructor runs its executor before it returns.
       "promise executor",
       `import { K } from "${BARREL}";\nnew Promise(() => consume(K));\n`,
     ],
@@ -1794,12 +1469,10 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\nconst v = obj.value;\n`,
     ],
     [
-      // Constructing a function expression runs its body on the spot.
       "function expression invoked with new",
       `import { K } from "${BARREL}";\nnew (function () { consume(K); })();\n`,
     ],
     [
-      // The decorator is applied as the class is defined, before any call.
       "decorator argument on a deferred method",
       `import { K } from "${BARREL}";\nclass C { @decorate(K) method() {} }\n`,
     ],
@@ -1869,8 +1542,6 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nfunction inner() { return K; }\nfunction outer() { return inner(); }\nconst v = outer();\n`,
     ],
     [
-      // The block's own declarations were never collected, so the call to a
-      // helper declared beside it resolved to nothing.
       "helper declared and called inside a nested block",
       `import { K } from "${BARREL}";\nif (ready) { const read = () => K; read(); }\n`,
     ],
@@ -1883,7 +1554,6 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nswitch (v) { case 1: { function read() { return K; } read(); } }\n`,
     ],
     [
-      // Destructuring performs the same property read `obj.value` does.
       "getter run by destructuring",
       `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\nconst { value } = obj;\n`,
     ],
@@ -1908,13 +1578,10 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nclass C { static get value() { return K; } }\nconst v = C.value;\n`,
     ],
     [
-      // The Promise constructor calls it before returning, named or not.
       "named promise executor",
       `import { K } from "${BARREL}";\nfunction read() { return K; }\nnew Promise(read);\n`,
     ],
     [
-      // The base default runs because the derived constructor's `super()`
-      // supplies nothing, whatever `new` was given.
       "base default reached through an argument-less super",
       `import { K } from "${BARREL}";\nclass Base { constructor(v = K) {} }\nclass D extends Base { constructor(v) { super(); } }\nnew D(1);\n`,
     ],
@@ -1992,7 +1659,6 @@ test("deferred reads and non-references are left alone", () => {
       `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\n`,
     ],
     [
-      // An ordinary callback may be stored and invoked long after load.
       "callback handed to an unknown function",
       `import { K } from "${BARREL}";\nregister(() => consume(K));\n`,
     ],
@@ -2001,18 +1667,14 @@ test("deferred reads and non-references are left alone", () => {
       `import { K } from "${BARREL}";\nclass C { constructor() { consume(K); } }\n`,
     ],
     [
-      // The parameter shadows the module function, so the call is not that one.
       "a call through a name a parameter rebinds",
       `import { K } from "${BARREL}";\nfunction read() { return K; }\nfunction outer(read) { return read(); }\n`,
     ],
     [
-      // `var` binds to the function, not the `if` block it sits in, so the read
-      // below it is the local one.
       "var hoisted out of a nested block to its function scope",
       `import { K } from "${BARREL}";\n(function () { if (c) { var K = 1; } consume(K); })();\n`,
     ],
     [
-      // An ambient declaration emits no JavaScript, so its base is never read.
       "ambient class heritage",
       `import { K } from "${BARREL}";\ndeclare class C extends K {}\n`,
     ],
@@ -2097,9 +1759,6 @@ test("deferred reads and non-references are left alone", () => {
       `import { K } from "${BARREL}";\nfunction loop() { return loop(); }\nconst v = loop();\n`,
     ],
     [
-      // The base default is skipped because `super(1)` supplies the argument,
-      // which is the inverse of the positive case above: handing `new`'s own
-      // arguments down the chain would have rejected this.
       "base default skipped because super supplies the argument",
       `import { K } from "${BARREL}";\nclass Base { constructor(v = K) {} }\nclass D extends Base { constructor() { super(1); } }\nnew D();\n`,
     ],
@@ -2116,7 +1775,6 @@ test("deferred reads and non-references are left alone", () => {
       `import { K } from "${BARREL}";\nconst obj = { set value(v) { consume(K); } };\n`,
     ],
     [
-      // Promise runs its executor; an arbitrary constructor does not.
       "named function handed to an unknown constructor",
       `import { K } from "${BARREL}";\nfunction read() { return K; }\nnew Registry(read);\n`,
     ],
@@ -2131,7 +1789,6 @@ test("deferred reads and non-references are left alone", () => {
 });
 
 test("the barrel closure resolves imports that spell their extension", () => {
-  // Invisible to the previous resolver, which appended a second extension.
   const closure = barrelInitClosure(walkSources(SRC));
   for (const relative of [
     "features/chat/utils/clipboard-payload.ts",
@@ -2152,7 +1809,6 @@ test("barrel bindings are tracked through local re-export bridges", () => {
   const sources = new Map<string, string>([
     [bridge, `export { K } from "${BARREL}";\n`],
     [deeper, `export { K } from "./bridge";\n`],
-    // Re-exports something of its own, so it hands out no barrel binding.
     [plain, `export const K = 1;\n`],
     [consumer, `import { K } from "./bridge";\nconst a = [K];\n`],
   ]);
@@ -2202,7 +1858,6 @@ test("an import-then-export bridge carries barrel bindings too", () => {
   const sources = new Map<string, string>([
     [bridge, `import { K } from "${BARREL}";\nexport { K };\n`],
     [aliased, `import { K } from "${BARREL}";\nexport { K as J };\n`],
-    // A fresh binding initialized from the import, not the barrel's own.
     [copy, `import { K } from "${BARREL}";\nexport const J = K;\n`],
   ]);
   const bearing = barrelBearingModules(sources, makeResolver(sources));
@@ -2260,9 +1915,7 @@ test("an eager call into an imported helper is followed across modules", () => {
 });
 
 test("the barrel entry is resolved, so moving it cannot silently empty the scan", () => {
-  // The guard's own vacuity hazard: a hard-coded index.ts path would resolve to
-  // nothing after a move, atRisk would be empty, and every offender would stop
-  // being reported while `importers >= 5` still passed.
+  // A hard-coded index.ts path would resolve to nothing after a move and pass vacuously.
   const moved = path.join(SRC, "features", "chat.ts");
   const leaf = path.join(SRC, "leaf.ts");
   const sources = new Map<string, string>([
@@ -2328,10 +1981,7 @@ test("an imported helper is entered with the caller's arguments, default import 
 });
 
 test("allowlist keys are written the same way on every platform", () => {
-  // A Windows runner reports path.relative with backslashes, which made every
-  // entry in KNOWN_DEEP_CYCLE_READS miss and the guard fail there alone.
-  // Written against a Windows-shaped path rather than this platform's, or the
-  // assertion is an identity on Linux and proves nothing.
+  // Uses a Windows-shaped path so the assertion is not an identity on Linux.
   assert.equal(toPosix("components\\assistant-ui\\thread.tsx"), "components/assistant-ui/thread.tsx");
   assert.equal(toPosix("features/chat/chat-page.tsx"), "features/chat/chat-page.tsx");
   assert.equal(relativeToSrc(path.join(SRC, "features", "chat", "x.ts")), "features/chat/x.ts");
@@ -2368,7 +2018,6 @@ test("re-exported bindings are judged where they are declared", () => {
   const deep = path.join(SRC, "fake", "deepconst.ts");
   const bridge = path.join(SRC, "fake", "prone-bridge.ts");
   const sources = new Map<string, string>([
-    // No runtime imports, so nothing can re-enter it mid-initialization.
     [leaf, `export const SAFE = 1;\n`],
     [deep, `import "./leafconst";\nexport const LATE = 1;\nexport function fn() {}\nexport class C {}\n`],
     [bridge, `export { SAFE } from "./leafconst";\nexport { LATE, fn, C } from "./deepconst";\n`],
@@ -2388,7 +2037,6 @@ test("a package edge is not a way back into a module", () => {
   const app = path.join(SRC, "fake", "appedge.ts");
   const unmodelled = path.join(SRC, "fake", "unmodelled.ts");
   const sources = new Map<string, string>([
-    // The shape of lib/hugeicons-derived.ts: a const derived from a package.
     [pkg, `import { Icon } from "@hugeicons/core-free-icons";\nexport const DERIVED = Icon.slice(0, 1);\n`],
     [app, `import { DERIVED } from "./pkgleaf";\nexport const LATE = DERIVED;\n`],
     [unmodelled, `import { X } from "@/does/not/exist";\nexport const MAYBE = X;\n`],

@@ -7,9 +7,7 @@ import { InfoHint } from "@/components/ui/info-hint";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
-/** Collapsible negative prompt, shared by the Images and Video Create panels. */
-// Keep normal input below the unload request budget. Restored legacy recipes may be longer, and
-// the preset API accepts them because the generation contract does too.
+// Below the unload request budget; restored legacy recipes may be longer.
 export const NEGATIVE_PROMPT_MAX_LENGTH = 20_000;
 
 export function NegativePromptField({
@@ -27,7 +25,6 @@ export function NegativePromptField({
   hint: string;
   textareaClassName?: string;
 }) {
-  // Same shape as Field, so it keeps the panel's spacing.
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1">
@@ -39,7 +36,6 @@ export function NegativePromptField({
         >
           Negative prompt
         </button>
-        {/* Chevron before the hint, so it stays next to the label it expands. */}
         <button
           type="button"
           // The labelled button above is the accessible toggle; this is decoration.

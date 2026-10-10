@@ -42,7 +42,6 @@ function permissionUi(
   const capabilityStub = {
     loadSandboxCapability: async () => capability,
     loadSettledSandboxCapability: async () => capability,
-    // Nothing cached: every pick reads, so these cases see the settled answer.
     cachedSandboxCapability: () => null,
     onSandboxCapabilityChange: () => () => {},
     sandboxReady: (value: NonNullable<Capability>) =>

@@ -89,8 +89,7 @@ interface DesktopPreflightResult {
 
 const MANAGED_STARTUP_POLL_MS = 500;
 const MANAGED_ENVIRONMENT_POLL_MS = 5_000;
-// Five minutes. Only bounds a gate held outside this app, e.g. a terminal
-// `unsloth studio update` left at a prompt, which need never finish.
+// Five minutes; bounds only a gate held outside this app, e.g. a terminal update at a prompt.
 const MANAGED_ENVIRONMENT_WAIT_POLLS = 60;
 
 type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
@@ -113,9 +112,8 @@ function externalConflictMessage(preflight: DesktopPreflightResult) {
     return "The desktop-owned Unsloth backend is still starting. Wait a moment, then try again.";
   }
 
-  // A backend we cannot attribute to this install no longer reaches here: the
-  // launch steps over its port. Only a mutation still refuses, and that message
-  // comes from external_conflict_message in commands.rs.
+  // Unattributable backends are stepped over at launch; only a mutation refuses, with
+  // external_conflict_message from commands.rs.
 
   if (preflight.reason?.startsWith("desktop_owned_backend_unmanageable:")) {
     return preflight.port
@@ -155,17 +153,11 @@ export function useTauriBackend() {
   const [installDiskFull, setInstallDiskFull] = useState(false);
   // Guard against double startServer calls
   const startingRef = useRef(false);
-  // Guard against double stopServer calls
   const stoppingRef = useRef(false);
-  // Guard against React Strict Mode double-mount
   const mountedRef = useRef(false);
-  // Track the discovered port from server-port event
   const portRef = useRef<number | null>(null);
-  // Set once server-start-timeout has reported a stalled startup. commands.rs's
-  // health watchdog kills that same portless backend ~30 s later and emits a
-  // payload-free server-crashed, so without this the log tail the timeout carried
-  // is replaced by "Server stopped unexpectedly" on an unattended error screen.
-  // Cleared whenever a start attempt begins or a validated port arrives.
+  // commands.rs's watchdog kills a timed-out backend ~30 s later with a payload-free server-crashed;
+  // this keeps the timeout's log tail on screen.
   const startTimedOutRef = useRef(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [elevationPackages, setElevationPackages] = useState<string[]>([]);
@@ -173,9 +165,9 @@ export function useTauriBackend() {
   const [startupMessage, setStartupMessage] = useState<StartupMessage>(
     INITIAL_STARTUP_MESSAGE,
   );
-  // Track seen step names to deduplicate (Strict Mode, event replay, etc.)
+  // Dedupe step names (Strict Mode, event replay).
   const seenStepsRef = useRef(new Set<string>());
-  // True when we attached to a server we didn't spawn (can't stop it)
+  // Attached to a server we did not spawn, so we cannot stop it.
   const [isExternalServer, setIsExternalServer] = useState(false);
   const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const externalPollAbortedRef = useRef(false);
@@ -183,27 +175,21 @@ export function useTauriBackend() {
   const environmentWaitPollsRef = useRef(0);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
-  // Whether the repair in flight was asked to skip straight to the installer. Read back by
-  // approveElevation, which restarts the repair after the system packages land.
+  // approveElevation restarts the repair with this after system packages land.
   const forcedRepairRef = useRef(false);
   const repairReasonRef = useRef<string | null>(null);
-  // Set by Retry: the next preflight may repair a runtime that was repaired recently. Only
-  // the automatic launch-time repair is held back; a click is the user asking for it.
+  // Retry may repair a recently repaired runtime; only the automatic launch-time repair is held.
   const allowHeldRuntimeRepairRef = useRef(false);
-  // One preflight and one repair at a time. Retry runs the preflight, a stale verdict starts a
-  // repair, and five clicks two seconds apart used to fan out into five of each: the Rust side
-  // saw them as five repairs racing for one installer.
+  // One preflight and one repair at a time; rapid Retry clicks raced the installer.
   const preflightInFlightRef = useRef(false);
   const repairInFlightRef = useRef(false);
   const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
-  // Read through rather than mirrored into state: the app-closing listener is registered
-  // inside the long event effect below, which cannot reach a setState from this render.
+  // Read through: the listener lives in an effect that cannot reach this render's setState.
   const closing = useSyncExternalStore(subscribeAppClosing, isAppClosing);
 
   function setBackendStatus(nextStatus: BackendStatus) {
     if (authFailureRef.current) return;
-    // A native install or repair outlives a reload and can raise elevation or
-    // failure over the wait, which the next poll would otherwise overwrite.
+    // A native install or repair outlives a reload; do not let the next poll overwrite its state.
     stopManagedEnvironmentWait();
     statusRef.current = nextStatus;
     setStatus(nextStatus);
@@ -282,7 +268,6 @@ export function useTauriBackend() {
     }, 15_000);
   }
 
-  // Keep ref in sync for event listener closures
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
@@ -316,9 +301,7 @@ export function useTauriBackend() {
   }
 
   async function checkInstallAndStart() {
-    // Honor a persisted stop before preflight: the native command side-effects
-    // (it can adopt a still-reaping backend, reset the intentional-stop flag,
-    // and arm a watchdog that later fires server-crashed over this screen).
+    // Before preflight: the native command can adopt a reaping backend and arm a crash watchdog.
     if (hasServerStopIntent()) {
       setBackendStatus("stopped");
       return;
@@ -327,8 +310,7 @@ export function useTauriBackend() {
     preflightInFlightRef.current = true;
     const allowHeldRuntimeRepair = allowHeldRuntimeRepairRef.current;
     allowHeldRuntimeRepairRef.current = false;
-    // Released below and again in the finally; by then a later call may hold the flag, and
-    // clearing it unowned would let a third preflight through.
+    // A later call may hold the flag by the finally; clearing it unowned lets a third preflight in.
     let ownsPreflight = true;
     const releasePreflight = () => {
       if (!ownsPreflight) return;
@@ -339,8 +321,7 @@ export function useTauriBackend() {
       const { invoke } = await import("@tauri-apps/api/core");
 
       const preflight = await invoke<DesktopPreflightResult>("desktop_preflight");
-      // The probe is what this guards; the arms below are re-entrant already. Held longer, it
-      // swallows the Retry that server-start-timeout offers from inside the port poll.
+      // Held longer, it swallows the Retry server-start-timeout offers.
       releasePreflight();
       switch (preflight.disposition) {
         case "attached_ready": {
@@ -382,7 +363,6 @@ export function useTauriBackend() {
             preflight.reason === MANAGED_ENVIRONMENT_BUSY ||
             preflight.reason === MANAGED_ENVIRONMENT_UPDATING
           ) {
-            // Still the same Retry: the check the wait ends in may use it.
             allowHeldRuntimeRepairRef.current = allowHeldRuntimeRepair;
             waitForManagedEnvironment(preflight.reason === MANAGED_ENVIRONMENT_BUSY);
             return;
@@ -416,10 +396,8 @@ export function useTauriBackend() {
   }
 
   async function startManagedServer() {
-    // Ahead of the re-entry guard: a start the user asked for retires the stop they
-    // asked for earlier, whether or not this particular call goes on to do the work.
+    // Before the re-entry guard: a requested start retires the earlier stop.
     clearServerStopIntent();
-    // Prevent double-start race condition
     if (startingRef.current) {
       return;
     }
@@ -433,8 +411,7 @@ export function useTauriBackend() {
       // backend/run.py keeps the 8888-8908 fallback via server-port/TAURI_PORT.
       await invoke("start_managed_server", { port: 8888 });
 
-      // Rust emits server-port only after validating the desktop-owned process.
-      // Treat that as the UI handoff point instead of doing a second health poll.
+      // Rust emits server-port only after validating the process; no second health poll needed.
       const startupResult = await waitForManagedServerPort(
         () => portRef.current,
         () => startingRef.current,
@@ -465,15 +442,11 @@ export function useTauriBackend() {
     startingRef.current = false;
   }
 
-  // `forceInstaller` runs the bundled installer without trying `studio update` first. The
-  // automatic callers leave it off, because an out-of-date venv is the common case. Settings'
-  // manual repair turns it on: an update reuses the environment it finds, so a venv whose
-  // PyTorch was replaced by a CPU-only wheel comes back from one still CPU-only.
+  // `forceInstaller` skips `studio update`, which would keep a CPU-only PyTorch; only manual repair
+  // sets it.
   async function startRepair(options?: { forceInstaller?: boolean; preflightReason?: string | null }) {
     if (repairInFlightRef.current) return;
     repairInFlightRef.current = true;
-    // Same ownership rule as the preflight flag, handed to runRepair so it can release as soon
-    // as the native repair returns.
     let ownsRepair = true;
     const releaseRepair = () => {
       if (!ownsRepair) return;
@@ -492,7 +465,7 @@ export function useTauriBackend() {
     releaseRepair: () => void = () => {},
   ) {
     const forceInstaller = options?.forceInstaller ?? false;
-    // Survives the elevation round trip: approveElevation resumes by calling this again.
+    // Survives the elevation round trip.
     forcedRepairRef.current = forceInstaller;
     repairReasonRef.current = options?.preflightReason ?? null;
     elevationResumeRef.current = null;
@@ -511,8 +484,7 @@ export function useTauriBackend() {
     try {
       await invoke("start_managed_repair", { forceInstaller });
       recordRuntimeRepair(repairReasonRef.current);
-      // The repair ends here; what follows is an ordinary start, and holding the flag across it
-      // swallows the Retry that server-start-timeout offers.
+      // Held across the following start, it swallows server-start-timeout's Retry.
       releaseRepair();
     } catch (e) {
       const msg = String(e);
@@ -533,9 +505,7 @@ export function useTauriBackend() {
     await startManagedServer();
   }
 
-  // One stop at a time. The tray toggle branches on statusRef, which stays "running" until
-  // the invoke resolves, so a second tray Stop otherwise runs a second shutdown against the
-  // backend the first is still taking down. Mirrors the startingRef guard on the start path.
+  // statusRef stays "running" until the invoke resolves, so a second tray Stop would double-shutdown.
   async function stopServer() {
     if (stoppingRef.current) return;
     stoppingRef.current = true;
@@ -548,7 +518,6 @@ export function useTauriBackend() {
 
   async function runStopServer() {
     if (isExternalServer) {
-      // We attached to a server we didn't spawn: can't kill it, just disconnect the UI.
       startingRef.current = false;
       setIsExternalServer(false);
       stopExternalServerPoll();
@@ -557,8 +526,7 @@ export function useTauriBackend() {
       return;
     }
     const { invoke } = await import("@tauri-apps/api/core");
-    // Record intent before the await: reaping can block ~15s and a reload
-    // mid-await would lose the marker. Roll back if the stop fails.
+    // Record intent before the await (reaping can block ~15s); roll back if the stop fails.
     markServerStopIntent();
     try {
       await invoke("stop_server");
@@ -581,16 +549,14 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
-      // Install done: start the managed backend we just installed. Don't run the general preflight
-      // here, it can attach to an unrelated running CLI/backend before launching ours. The
-      // install-complete listener does NOT call startServer() to avoid a double-start race.
+      // Skip the general preflight, which can attach to an unrelated backend; install-complete does not
+      // call startServer, to avoid a double start.
       setBackendStatus("starting");
       elevationResumeRef.current = null;
       await startServer();
     } catch (e) {
       const msg = String(e);
-      // NEEDS_ELEVATION is not a real error: the Rust side also emits install-needs-elevation (sets
-      // needs-elevation status). Don't race with it by setting install-error here.
+      // Rust also emits install-needs-elevation; do not race it with install-error.
       if (msg.includes("NEEDS_ELEVATION")) return;
       // install-failed is emitted before the command returns and already set this error
       // with its disk-full flag; setting it again here would clear that flag.
@@ -600,11 +566,8 @@ export function useTauriBackend() {
   }
 
   const retry = useCallback(() => {
-    // Retry on a FORCED repair has to re-run that repair, not the preflight. The installer
-    // is transactional, so a failed attempt over an existing install restores the desktop-ready
-    // environment it found: checkInstallAndStart() then sees a ready install and restarts the
-    // same CPU-only backend the user pressed Repair about, and the button does nothing.
-    // Elevation resumes already preserve this; the error path did not.
+    // Retry on a FORCED repair re-runs it: the transactional installer restores the old environment, so
+    // a preflight would restart the same CPU-only backend.
     const resumeForcedRepair =
       statusRef.current === "repair-error" && forcedRepairRef.current;
     forcedRepairRef.current = false;
@@ -657,7 +620,6 @@ export function useTauriBackend() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("install_system_packages", { packages: elevationPackages });
-      // Packages installed successfully, resume the flow that requested them.
       setCurrentStepIndex(-1);
       setProgressDetail(null);
       elevationResumeRef.current = null;
@@ -699,7 +661,7 @@ export function useTauriBackend() {
     });
   }, [currentStepIndex, elevationPackages, error, logs, progressDetail]);
 
-  // Initial check on mount after Tauri event listeners are registered.
+  // After the Tauri listeners are registered.
   useEffect(() => {
     if (!tauriEventsReady || mountedRef.current) return;
     mountedRef.current = true;
@@ -711,7 +673,6 @@ export function useTauriBackend() {
     checkInstallAndStart();
   }, [tauriEventsReady]);
 
-  // Listen for Tauri events
   useEffect(() => {
     if (!isTauri) return;
     const cleanup: (() => void)[] = [];
@@ -738,15 +699,14 @@ export function useTauriBackend() {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
       });
 
-      // install-complete is informational only; does NOT trigger startServer. The
-      // invoke("start_install") success path handles that to avoid races.
+      // Informational only; start_install's success path starts the server, to avoid races.
       register<void>("install-complete", () => {
-        setCurrentStepIndex(999); // all steps done
+        setCurrentStepIndex(999);
       });
 
       register<string>("install-step", (e) => {
         const stepName = e.payload;
-        if (seenStepsRef.current.has(stepName)) return; // deduplicate
+        if (seenStepsRef.current.has(stepName)) return;
         seenStepsRef.current.add(stepName);
         setCurrentStepIndex((prev) => prev + 1);
         setProgressDetail(null);
@@ -793,23 +753,19 @@ export function useTauriBackend() {
 
       register<number>("server-port", (e) => {
         portRef.current = e.payload;
-        // A validated port means startup finished after all, so a later crash is
-        // a real crash and deserves the generic message.
+        // A validated port means startup finished, so later crashes get the generic message.
         startTimedOutRef.current = false;
         setApiBase(e.payload);
       });
 
       register<void>("server-crashed", () => {
         startingRef.current = false;
-        // Startup already timed out and left a message naming the backend's last
-        // output. That is strictly more actionable than this one, and the kill it
-        // reports is the timeout's own consequence, so keep the detail.
+        // The timeout message with the backend's output is more actionable than this one.
         if (startTimedOutRef.current) return;
         setBackendError("Server stopped unexpectedly");
       });
 
-      // A backend that hangs never closes stdout, so server-crashed never fires and the
-      // startup screen would otherwise spin forever. Payload carries the backend's tail.
+      // A hung backend never closes stdout, so server-crashed never fires; payload carries its tail.
       register<string>("server-start-timeout", (e) => {
         startingRef.current = false;
         startTimedOutRef.current = true;
@@ -821,8 +777,7 @@ export function useTauriBackend() {
         setStartupMessage((current) => startupMessageFromLog(current, e.payload));
       });
 
-      // Reaping the backend blocks Rust's quit thread for up to ~15s. Cover the window
-      // for that, or it reads as a freeze.
+      // Reaping blocks Rust's quit thread up to ~15s; cover it or it looks frozen.
       register<void>(APP_CLOSING_EVENT, () => {
         markAppClosing();
       });
@@ -880,8 +835,7 @@ export function useTauriBackend() {
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
-    // The same function startup uses, so a manual repair renders the same repairing screen
-    // and restarts the backend afterwards rather than leaving it stopped.
+    // Same function as startup, so manual repair shows the same screen and restarts the backend.
     startRepair,
   };
 }

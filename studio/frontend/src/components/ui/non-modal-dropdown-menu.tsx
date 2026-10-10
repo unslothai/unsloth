@@ -11,8 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 
-/** A dropdown that leaves `<body>` alone: modal writes an inherited `pointer-events` there, so
- *  every open restyles the whole subtree. `trigger` takes the ref so a per-row menu owns one. */
+/** Non-modal: a modal menu writes inherited `pointer-events` on <body>, restyling everything. */
 export function NonModalDropdownMenu({
   trigger,
   children,
@@ -23,12 +22,9 @@ export function NonModalDropdownMenu({
   children: ReactNode;
 } & ComponentProps<typeof DropdownMenuContent>) {
   const triggerRef = useRef<HTMLButtonElement>(null);
-  // Gates the guard. The content animates out, so it outlives the close, and a mount-scoped
-  // guard left watching `document` swallows the next click the user makes.
+  // Gates the guard: the content outlives the close, and a lingering guard swallows the next click.
   const [open, setOpen] = useState(false);
-  // Nothing locks scroll here, and Radix pins the content to the viewport edge once the trigger
-  // scrolls out, leaving a menu acting on a row the user cannot see. Close on a scroll of a
-  // trigger ancestor; the menu's own viewport does not contain it, so it scrolls untouched.
+  // Radix pins the content once the trigger scrolls out; close on a scroll of a trigger ancestor.
   const closedByScroll = useRef(false);
   useEffect(() => {
     if (!open) return;
@@ -56,9 +52,7 @@ export function NonModalDropdownMenu({
           closedByScroll.current = false;
           if (event.defaultPrevented) return;
           event.preventDefault();
-          // The content stays mounted for the exit animation, so the user can click into
-          // something else before this runs. Radix's own restore checks that; preventing
-          // its default skips the check, so make it here or the trigger steals the caret.
+          // Preventing Radix's restore skips its check that focus moved elsewhere, so do it here.
           const active = document.activeElement;
           const claimedByTheUser =
             active !== null &&

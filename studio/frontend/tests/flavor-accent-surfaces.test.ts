@@ -60,8 +60,6 @@ const withAccent = (accent: string) => ({
   },
 });
 
-// Corrected against white alone, #aaaa33 fell to 2.14:1 on Neon Cyberpunk's
-// light card wash.
 test("custom accents stay readable on each flavor theme's own surfaces", () => {
   for (const id of FLAVOR_THEME_IDS) {
     for (const mode of ["light", "dark"] as const) {

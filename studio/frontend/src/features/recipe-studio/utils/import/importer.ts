@@ -484,9 +484,7 @@ export function importRecipePayload(
       preferredSourceType: uiSeedSourceType,
       drop:
         payloadSeedSourceIsUnstructured && payloadSeedDropColumns.length > 0,
-      // Payload-only unstructured recipes have no preview metadata, but their
-      // generated rows always expose these fields. Keep the imported drop
-      // processor usable until a real preview replaces this fallback.
+      // Payload-only unstructured recipes lack preview metadata but always produce these fields.
       seed_columns:
         (uiSeedColumns?.length ?? 0) > 0
           ? uiSeedColumns

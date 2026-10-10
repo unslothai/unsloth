@@ -11,8 +11,7 @@ const ExportPage = lazyRouteComponent(
 );
 
 export type ExportSearch = {
-  // Preselect a training run on the Export page (its output-dir basename, which
-  // equals the checkpoint scan's model name). Set when arriving from a run view.
+  // Run's output-dir basename, which equals the checkpoint scan's model name.
   run?: string;
 };
 

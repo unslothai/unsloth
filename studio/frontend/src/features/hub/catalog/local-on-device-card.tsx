@@ -69,10 +69,7 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
-  /** False for a local diffusion / audio / video GGUF: it runs through the media
-   *  planner rather than llama.cpp, so the KV estimator describes the wrong
-   *  runtime -- and it still falls back to the file size, so it draws a
-   *  confident weights-only verdict rather than nothing. */
+  /** False for media GGUFs: they run through the media planner, so the KV estimate is wrong. */
   showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
@@ -90,7 +87,6 @@ interface LocalOnDeviceCardProps {
   preferredFileIntent?: number;
 
   gpuGb?: number;
-  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
@@ -243,8 +239,6 @@ export function LocalOnDeviceCard({
     setUpdateConflictKey(null);
   }, [updateConflictKey]);
   const hfToken = useHfTokenStore((s) => s.token);
-  // Update availability is derived from the GGUF variant metadata; offline rows
-  // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
   const deleteImpact = useDeleteImpact(
     deleteOpen && Boolean(repoId),
@@ -253,9 +247,7 @@ export function LocalOnDeviceCard({
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
-      // Delete is only offered for hf_cache rows (see canDelete), so `path` is
-      // the cache snapshot path: pass it so the delete targets the cache this
-      // card shows instead of falling back to the active cache.
+      // Pass the cache snapshot path so delete targets this card's cache, not the active one.
       await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
@@ -313,8 +305,7 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
-        // Both sides measure the same cache; keep the local reading and let the
-        // remote one cover a row the local listing could not price.
+        // Both sides measure the same cache; prefer local, fall back to remote.
         download_remaining_bytes:
           variant.download_remaining_bytes ??
           remoteVariant.download_remaining_bytes,
@@ -322,9 +313,7 @@ export function LocalOnDeviceCard({
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
-  // The same live VRAM Budget the memory bar on this card reads. Without it the quant menu ranked
-  // against the 0.97 default while the bar beside it used the saved fraction, so an over-budget
-  // variant could sit above a smaller one that actually fits.
+  // Same live VRAM budget the memory bar reads, so the quant menu ranks consistently.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
@@ -367,7 +356,6 @@ export function LocalOnDeviceCard({
     defaultVariant: currentVariantState.defaultVariant,
   });
   const selectedQuant = selectedVariant?.quant ?? null;
-  // True while a managed download/update for this repo+variant is in flight.
   const updateJobActive = useDownloadManagerStore((s) =>
     repoId
       ? Boolean(
@@ -396,9 +384,7 @@ export function LocalOnDeviceCard({
     !runPending &&
     !updateJobActive &&
     updateAvailable;
-  // Update runs as a MANAGED download (same path as a normal download) so it shows in the Downloads
-  // panel with manifest-based progress and a working Cancel. The worker re-resolves `main` and
-  // pulls changed blobs while the old cached copy stays runnable until the new revision verifies.
+  // Update runs as a managed download so it gets Downloads-panel progress and Cancel.
   const handleConfirmUpdate = () => {
     if (!repoId || !updateTargetVariant) return;
     setUpdateOpen(false);
@@ -609,9 +595,7 @@ export function LocalOnDeviceCard({
         (repoId || localGgufPath) &&
         (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
           <ModelMemoryBarFor
-            // The card's exact path identifies the downloaded artifact across
-            // cache roots and revisions. It is also the only identity available
-            // for a custom or local GGUF when repoId is null.
+            // The exact path identifies the artifact across caches; it is the only id for local GGUFs.
             repoId={repoId || localGgufPath}
             loadId={localGgufPath}
             quant={selectedQuant ?? ""}
@@ -636,8 +620,7 @@ export function LocalOnDeviceCard({
         }}
         title="Delete cached model?"
         deleting={deleting}
-        // Same gate the model row menu applies: when an installed image model still needs these
-        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        // Same gate as the row menu: blocked deletes would otherwise just return a 400.
         blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={

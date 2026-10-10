@@ -25,8 +25,7 @@ type TauriAutoAuthOptions = {
   force?: boolean;
 };
 
-// Concurrency guard: multiple route guards can call tauriAutoAuth at once;
-// without this the first-launch password-change could race with itself.
+// Route guards can call this concurrently; dedupe so first-launch password change cannot race.
 let pending: { promise: Promise<boolean>; force: boolean } | null = null;
 let lastTauriAuthFailure: string | null = null;
 let tauriLoginRequired = false;
@@ -71,7 +70,6 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
     return true;
   }
 
-  // Try refreshing an existing session.
   if (!options.force && hasRefreshToken()) {
     const refreshed = await refreshSession();
     if (refreshed && hasAuthToken() && !mustChangePassword()) {

@@ -22,10 +22,7 @@ test("only the tools that emit the image envelope are in the set", () => {
   }
 });
 
-// Asserted against the source like the other chat-adapter tests: importing the adapter
-// drags in the whole app. The backend keeps a well-formed `__IMAGES__` line from a tool
-// that does not emit the envelope as content the model reads, so the card must not slice
-// it off and fetch a sandbox file that was never written.
+// Source-asserted: importing the adapter drags in the whole app.
 test("the adapter slices the image envelope only for the tools that emit it", () => {
   const source = readSrc("features/chat/api/chat-adapter.ts");
   const gate = source.indexOf(

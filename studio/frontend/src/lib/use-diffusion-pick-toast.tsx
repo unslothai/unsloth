@@ -12,7 +12,6 @@ import {
   type PickToastProgress,
 } from "@/lib/diffusion-pick-toast";
 
-// Match the load toast's styling for a seamless handoff.
 const PICK_TOAST_CLASSNAMES = {
   toast: "chat-model-load-toast items-center gap-2.5",
   content: "gap-0.5 flex-1 min-w-0",
@@ -69,7 +68,6 @@ function describePick(phase: PickToastPhase, progress: PickToastProgress | null)
   );
 }
 
-/** One pick toast per page, dropped with the page. */
 export function useDiffusionPickToast(): PickToast {
   const [pickToast] = useState(() =>
     createPickToast({ describe: describePick, classNames: PICK_TOAST_CLASSNAMES }),
@@ -78,7 +76,7 @@ export function useDiffusionPickToast(): PickToast {
   return pickToast;
 }
 
-/** Bind progress separately because staging is initialized after the pick toast. */
+/** Separate because staging is initialized after the pick toast. */
 export function usePickToastProgress(
   pickToast: PickToast,
   progress: StagedDownloadProgress | null,

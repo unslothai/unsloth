@@ -15,20 +15,7 @@ import {
 
 import { readText } from "./helpers/kit.ts";
 
-/*
- * THE THREE PIECES ONLY WORK TOGETHER, and nothing in the type system joins them:
- *
- *   1. the marker has to be composed onto the MATHS plugin's own rehype pass. A `rehypePlugins` prop
- *      entry would run before that pass, and the prop itself replaces Streamdown's default pipeline
- *      (the `allowedTags` schema then rides only on what the passed pipeline carries -- see
- *      `lib/markdown-data-images.ts`);
- *   2. the stylesheet has to name the class the marker writes and the attribute the resolver sets;
- *   3. `main.tsx` has to set that attribute before the first render.
- *
- * Each is checked against the real source. Where a check is a string search it says what it is
- * defending, so a rename that breaks the join fails here by name rather than by measuring as a
- * change that does nothing.
- */
+/* Marker on the maths rehype pass, stylesheet class/attribute, and main.tsx setup must agree. */
 
 const MARKDOWN_TEXT = readText(
   "../src/components/assistant-ui/markdown-text.tsx",
@@ -56,9 +43,7 @@ test("the marker is composed onto the maths plugin", () => {
 });
 
 test("the chat renderer's rehypePlugins pipeline carries the allowedTags merge itself", () => {
-  // Streamdown auto-merges `allowedTags` into its sanitize schema only while `rehypePlugins` is
-  // still its default pipeline (identity check). The renderer now passes one, so it must carry the
-  // merge itself; a passed pipeline that dropped it would silently drop the sanitizer instead.
+  // Streamdown merges allowedTags only for its default pipeline, so a passed one must carry it.
   assert.ok(
     MARKDOWN_TEXT.includes("allowedTags={STREAMDOWN_ALLOWED_TAGS}"),
     "PRECONDITION: the chat renderer relies on the allowedTags sanitizer",
@@ -105,8 +90,6 @@ test("the stylesheet rule names the class, the attribute and both declarations",
       "WebKitGTK 2.50.4 does not reproduce it.",
   );
   for (const rule of rules) {
-    // Scoped to THESE rules rather than to the file, which carries other `:has()` rules that #9669
-    // deliberately narrowed to direct children rather than removing.
     assert.equal(
       rule.includes(":has("),
       false,
@@ -115,13 +98,7 @@ test("the stylesheet rule names the class, the attribute and both declarations",
     );
   }
 
-  /*
-   * THE TWO PLACEHOLDERS ARE DIFFERENT, AND THAT IS THE POINT. A marked block is a PARAGRAPH of
-   * prose holding a formula and measured a 138.04px mean; a display formula is one line of maths
-   * and measured 49.13px. One shared value was tried and was 18px short on every paragraph and
-   * 71px too tall on every formula, which queued up under a first-time scroller as a 3,995px
-   * scrollbar excursion. If these two ever become equal again, that regression is back.
-   */
+  /* The two placeholder heights differ on purpose (paragraph vs display); equal values regress scroll. */
   assert.ok(
     marked.includes("contain-intrinsic-size: auto 8.5rem"),
     "the paragraph placeholder, near the measured 138px mean",
@@ -138,16 +115,12 @@ test("the stylesheet rule names the class, the attribute and both declarations",
 });
 
 test("the rule is armed by nothing except that attribute", () => {
-  // PRECONDITION: the stylesheet already carries an UNGATED `content-visibility: visible` on code
-  // blocks, put there to stop a flicker. So "no content-visibility anywhere else" would be false
-  // and this test has to be specific about which declaration it is defending.
+  // An ungated content-visibility: visible already exists on code blocks.
   assert.ok(
     INDEX_CSS.includes("content-visibility: visible !important"),
     "the code-block flicker rule is still there",
   );
 
-  // Two gated copies of `auto`, one per population. A third, ungated one would turn the flag
-  // into decoration.
   const declarations = INDEX_CSS.split("content-visibility: auto;").length - 1;
   assert.equal(
     declarations,
@@ -163,30 +136,7 @@ test("the rule is armed by nothing except that attribute", () => {
 });
 
 test("a print turns the containment off, for both populations", () => {
-  /*
-   * WHAT IS AT STAKE. Skipped content is not painted and the box keeps its placeholder height, so a
-   * block still skipped when the reader prints comes out as an EMPTY 8.5rem or 3rem rectangle. The
-   * Gecko report that got printing fixed there describes precisely that: "the contents are not
-   * visible in the print preview. However, the height is reserved, resulting in a few empty pages."
-   * (bugzilla.mozilla.org/show_bug.cgi?id=1907081, fixed in Firefox 130.)
-   *
-   * AND THE ENGINE DOES NOT DO IT FOR US. css-contain-2 lists on-screen, focused, selected and top
-   * layer as the ways to be "relevant to the user" and says nothing about printing; the CSSWG
-   * resolved to add a print carve-out on 2024-06-13 (w3c/csswg-drafts#10347) and the spec is still
-   * unedited. Chromium and Gecko each fixed it themselves. WebKit has not: `ContentRelevancy` is
-   * `OnScreen | Focused | IsInTopLayer | Selected` and nothing in its
-   * `ContentVisibilityDocumentState` mentions printing. WebKit is what Studio renders through on
-   * Linux, and it is an engine this feature ARMS on, since the `anchor-name` probe passes on Safari
-   * 26 and on WebKitGTK 2.50.4. So this rule, not the engine, is what keeps the equations on the
-   * page -- which makes it worth a test rather than a comment.
-   *
-   * NOT a `beforeprint` hook, unlike `code-fence-defer.tsx`, which has to script its print upgrade
-   * because what it defers is not in the DOM. Here the maths is in the DOM and only its rendering
-   * is skipped, so a media query is the whole fix and it covers `page.pdf()` too.
-   */
-  // Balanced-brace slices, so the assertions below are about a print block and not about whatever
-  // the next 200 characters of the file happen to be, and every `@media print` in the file is a
-  // candidate rather than just the first one.
+  /* WebKit does not render skipped content when printing, so a print media rule is required. */
   const printBlocks: string[] = [];
   for (
     let start = INDEX_CSS.indexOf("@media print");
@@ -230,8 +180,6 @@ test("a print turns the containment off, for both populations", () => {
     "and the placeholder height cleared, or a rendered block still prints at its fallback size",
   );
 
-  // ANTI-VACUITY: the two gated `auto` rules really are the thing being overridden, and they are
-  // still there to override. Without this the block above could be defending nothing.
   assert.equal(
     INDEX_CSS.split("content-visibility: auto;").length - 1,
     2,
@@ -240,16 +188,7 @@ test("a print turns the containment off, for both populations", () => {
 });
 
 test("no comment anywhere claims this feature ships off", () => {
-  // THIS HAS NOW GONE WRONG THREE TIMES. Flipping `SHIP_DEFAULT` to "contain" left prose in
-  // `math-block-mode.ts`, `main.tsx` and `index.css` still saying the feature defaults to off;
-  // fixing "all three" then missed a SECOND block in `index.css`, because the fix was a grep for
-  // the passage already known about rather than for every statement of the default. A comment
-  // that documents the opposite of the shipped behaviour is what someone diagnosing a rendering
-  // problem or attempting a rollback will read and believe, so it is worth a test rather than
-  // another round of care.
-  //
-  // Deliberately a search of the WHOLE text of each file, comments included, rather than of the
-  // one block a previous fix touched.
+  // Searches whole files, comments included, for stale statements of the default.
   const STALE = [
     /OFF BY DEFAULT/i,
     /never arms this rule/i,
@@ -269,8 +208,6 @@ test("no comment anywhere claims this feature ships off", () => {
     }
   }
 
-  // ANTI-VACUITY. The four patterns above are only meaningful if this file's text is actually
-  // being searched; a bad path would make every assertion above pass on an empty string.
   for (const [name, text] of [
     ["index.css", INDEX_CSS],
     ["main.tsx", MAIN_TSX],
@@ -285,15 +222,7 @@ test("no comment anywhere claims this feature ships off", () => {
 });
 
 test("every override name a comment advertises is one the code actually reads", () => {
-  // Same failure family as the test above, and it cost a review round of its own: `index.css`
-  // documented the rollback switches as `VITE_UNSLOTH_MATH_BLOCK` and `__UNSLOTH_MATH_BLOCK__`,
-  // but the resolver reads the `_CONTAINMENT`-suffixed names. Vite substitutes the LITERAL
-  // property name at build time (vite.dev/guide/env-and-mode), so the shorter build flag is never
-  // consulted, and the shorter global is never read either. An operator rolling the feature back
-  // by the documented names would set them, see containment stay on, and have no signal why.
-  //
-  // So: gather every override-looking token out of the prose and require each to be the real one.
-  // A truncated or renamed variant fails by name.
+  // Vite substitutes the literal name, so docs must use the exact _CONTAINMENT override names.
   const BUILD = "VITE_UNSLOTH_MATH_BLOCK_CONTAINMENT";
   const RUNTIME = "__UNSLOTH_MATH_BLOCK_CONTAINMENT__";
   assert.ok(
@@ -326,8 +255,6 @@ test("every override name a comment advertises is one the code actually reads", 
     }
   }
 
-  // ANTI-VACUITY. The loops above pass trivially if nothing matched, which is also what a bad
-  // path or a wholesale rename looks like.
   assert.ok(
     INDEX_CSS.includes(BUILD) && INDEX_CSS.includes(RUNTIME),
     "PRECONDITION: the stylesheet still documents both overrides",
@@ -335,8 +262,7 @@ test("every override name a comment advertises is one the code actually reads", 
 });
 
 test("startup applies the mode before the first render", () => {
-  // A LINE, not a substring. `includes` is satisfied by a commented-out call, which is exactly the
-  // shape of the mutation that first slipped past this test.
+  // Line match, not substring: includes() accepts a commented-out call.
   const lines = MAIN_TSX.split("\n");
   const callLine = lines.findIndex(
     (line) => line.trim() === "applyMathBlockContainment();",

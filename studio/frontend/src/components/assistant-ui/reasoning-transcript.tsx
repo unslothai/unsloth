@@ -100,8 +100,7 @@ const CodeFragment = memo(
     );
   },
   (previous, next) => {
-    // Appending later lines cannot change this fragment's grammar or text. Keep its
-    // highlighted subtree and selection alive instead of repainting it for every token.
+    // Appending later lines cannot change this fragment; keep its subtree and selection alive.
     const a = previous.fragment;
     const b = next.fragment;
     return (
@@ -158,8 +157,7 @@ function CodeGroup({
   useLayoutEffect(() => {
     const element = surface.current;
     if (!element) return;
-    // ResizeObserver does not report inline span geometry. Observe their shared
-    // formatting surface and feed each bounded row's measured contribution back.
+    // ResizeObserver does not report inline span geometry; observe the shared surface instead.
     const observer = new ResizeObserver(() => {
       for (const row of element.querySelectorAll<HTMLElement>(
         "[data-reasoning-code-row]",
@@ -170,7 +168,6 @@ function CodeGroup({
     return () => observer.disconnect();
   }, [measure]);
   const code = fragments[items[0].index].code!;
-  // One highlighter subscription per visible fence, with its complete grammar context.
   const lines = [
     ...new Set(
       items.flatMap((item) =>
@@ -244,8 +241,6 @@ const Fragment = memo(function Fragment({
 }: Omit<Props, "documents"> & { fragment: ReasoningFragment }) {
   const root = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    // Continuation containers preserve indentation/numbering but must not paint
-    // another bullet for the same item. Later, real siblings retain their markers.
     const items: HTMLElement[] = [];
     let container: Element | null | undefined = root.current?.firstElementChild;
     for (
@@ -326,8 +321,7 @@ export function ReasoningTranscript({
     scrollMargin: geometry.top,
     initialOffset: () => viewport()?.scrollTop ?? 0,
     observeElementOffset: (instance, callback) => {
-      // The viewport predates this transcript. Subscribe with its current offset;
-      // waiting for the next scroll event leaves TanStack's initial zero cached.
+      // Subscribe with the current offset; waiting for a scroll event leaves TanStack's zero cached.
       callback(instance.scrollElement?.scrollTop ?? 0, false);
       return observeElementOffset(instance, callback);
     },
@@ -383,8 +377,7 @@ export function ReasoningTranscript({
         });
       return [...mounted].sort((a, b) => a - b);
     },
-    // TanStack reports measurement corrections; the thread controller owns all scroll writes.
-    // Its own initial-position writes are intentionally ignored.
+    // The thread controller owns all scroll writes; only TanStack's corrections are forwarded.
     scrollToFn: (offset, { adjustments }) => {
       const element = viewport();
       if (element && adjustments !== undefined)
@@ -392,9 +385,8 @@ export function ReasoningTranscript({
     },
   });
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item) =>
-    // Ref measurements run before the virtualizer observes the shared viewport.
-    // Its offset is still zero then: applying that correction would send a reader
-    // back to the beginning when a live trace first crosses the threshold.
+    // Before the virtualizer observes the viewport its offset is zero; applying that correction
+    // would send the reader back to the start.
     virtualizer.scrollElement !== null &&
     item.end < (viewport()?.scrollTop ?? 0);
 
@@ -425,8 +417,7 @@ export function ReasoningTranscript({
           : next,
       );
       if (width && width !== rect.width) {
-        // Capture before reflow: a long user message above us may push the whole
-        // transcript offscreen at the new width before ResizeObserver runs.
+        // Capture before reflow: content above may push the transcript offscreen first.
         if (readingAnchor) {
           setAnchor(readingAnchor);
           setAnchoring(true);
@@ -464,8 +455,7 @@ export function ReasoningTranscript({
 
   useLayoutEffect(() => {
     if (!anchoring || !anchor) return;
-    // Keep this passage mounted through the initial estimates, then reconcile its
-    // measured position through the thread's single scroll owner before releasing it.
+    // Keep mounted through initial estimates, then reconcile via the thread's scroll owner.
     const frame = requestAnimationFrame(() => {
       const row = root.current?.querySelector(`[data-index="${anchor.index}"]`);
       const passage =

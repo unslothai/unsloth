@@ -80,8 +80,6 @@ function canUseDownloadManager(pathname: string): boolean {
   return hasAuthToken() && !mustChangePassword();
 }
 
-/** The repo as a row names it. A package folder of the shared GGUF audio repo is known by its
- *  folder name, as the Hub and the pickers show it; every other id reads as itself. */
 function repoLabel(repoId: string): string {
   return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
 }
@@ -263,10 +261,7 @@ export function DownloadManagerPanel({
   return (
     <div
       className={cn(
-        // Standalone: anchor bottom-right. In a shared stack (positioned=false)
-        // flow as a right-aligned row so overlays stack instead of overlapping.
-        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
-        // stack would squeeze the update card instead of this list.
+        // min-h-0: a flex item's min-height defaults to auto, so the capped stack would squeeze the card.
         "pointer-events-none",
         positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}

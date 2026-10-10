@@ -413,7 +413,6 @@ export const ko = {
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "OS 샌드박스를 사용할 수 없습니다",
@@ -504,7 +503,6 @@ export const ko = {
     queueingOnHint: "새 메시지는 순서를 기다립니다.",
     queueingHintShared: "대기열은 유지됩니다.",
   },
-  // The chat header's "…" menu.
   chatMenu: {
     more: "채팅 옵션",
     copy: "복사",
@@ -564,7 +562,6 @@ export const ko = {
     shutdown: "종료",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "문서",
       keyboardShortcuts: "키보드 단축키",
@@ -633,11 +630,8 @@ export const ko = {
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
-      // Shown under an empty project folder in the sidebar.
       noChats: "채팅 없음",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "모든 프로젝트가 고정됨",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "모든 프로젝트가 고정되었거나 섹션에 있음",
       noProjects: "프로젝트 없음",
       showMore: "더 보기",
@@ -738,11 +732,9 @@ export const ko = {
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
-      // Header of the menu's section-visibility toggles.
       show: "표시",
       newSection: "새 섹션",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "새 섹션",
       createDescription: "채팅과 프로젝트를 원하는 대로 묶어 보세요",
@@ -753,16 +745,13 @@ export const ko = {
       edit: "편집",
       remove: "섹션 제거",
       markAllRead: "모두 읽음으로 표시",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "이동",
       section: "섹션",
       sectionsHeading: "섹션",
       removeFromProject: "프로젝트에서 제거",
       newSection: "새 섹션",
       removeFromSection: "섹션에서 제거",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "{name}에서 제거",
-      // Shown in a section with nothing filed in it yet.
       empty: "채팅이나 프로젝트를 여기로 드래그하세요",
       sectionOptions: "섹션 옵션",
       newChatInSection: "{name}에 새 채팅",
@@ -2167,7 +2156,6 @@ export const ko = {
           updateChecksDisabled:
             "업데이트 확인이 비활성화되어 있어(UNSLOTH_DISABLE_UPDATE_CHECK=1) 사용 가능한 백엔드를 조회하지 않습니다.",
         },
-        // 표시되지 않음: 설정 검색용 추가 키워드.
         llamaBackendKeywords:
           "llama.cpp backend gguf 추론 cuda rocm hip vulkan metal cpu gpu 가속기 prebuilt 전환 엔진",
       },
@@ -2188,7 +2176,6 @@ export const ko = {
         reloadRequired: "새 메모리 옵션을 적용하려면 모델을 다시 로드하세요.",
         loadError: "모델 메모리 설정을 불러오지 못했습니다",
         saveError: "모델 메모리 설정을 저장하지 못했습니다",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 메모리 ram 상주 고정 잠금 유지 로드됨 언로드 유휴 mmap no-mmap load-mode 스왑 페이징",
       },
@@ -3832,7 +3819,6 @@ export const ko = {
       all: "전체",
       chats: "채팅",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "채팅",

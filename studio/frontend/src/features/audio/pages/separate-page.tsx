@@ -434,7 +434,6 @@ export function SeparateOutput({
     lastResult !== null &&
     selected !== null &&
     (lastResult.groupId === null || selected.groupId === lastResult.groupId);
-  // Once only; later re-renders keep focus where the user put it.
   const [focusedGroup, setFocusedGroup] = useState<string | null>(null);
   useEffect(() => {
     if (fresh && selected) setFocusedGroup(selected.groupId);

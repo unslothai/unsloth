@@ -14,7 +14,6 @@ test("every Meta org shows the Meta mark, whatever the repo is named", () => {
   for (const owner of ["meta-models", "meta-llama", "facebook"]) {
     assert.equal(matchProviderLogoByOwner(owner)?.id, "meta-llama", owner);
   }
-  // Muse Glimmer matches no prefix; the org alone decides.
   assert.equal(
     resolveOwnerProviderLogo("meta-models", "Muse-Glimmer-30B-GGUF")?.logoPath,
     "/hub/profile/logo/meta.svg",
@@ -29,7 +28,6 @@ test("every Meta org shows the Meta mark, whatever the repo is named", () => {
 test("owners match in full, never as a prefix", () => {
   assert.equal(matchProviderLogoByOwner("META-MODELS")?.id, "meta-llama");
   assert.equal(matchProviderLogoByOwner("  meta-models  ")?.id, "meta-llama");
-  // Unrelated accounts that merely start with the same letters stay untouched.
   assert.equal(matchProviderLogoByOwner("metavoice"), null);
   assert.equal(matchProviderLogoByOwner("meta-models-community"), null);
   assert.equal(matchProviderLogoByOwner("facebookresearch"), null);

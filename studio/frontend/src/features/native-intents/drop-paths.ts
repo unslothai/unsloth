@@ -26,7 +26,6 @@ const TEXT_EXTS = TEXT_ATTACHMENT_EXTENSIONS.map((ext) =>
   ext.toLowerCase(),
 ).filter((ext) => !DOC_EXTS.includes(ext));
 
-/** Dropped paths with an inline adapter but no RAG parser. */
 export function isComposerAttachmentName(path: string): boolean {
   return (
     isOpenDocumentAttachmentName(path) ||
@@ -41,7 +40,6 @@ function isTextDropName(path: string): boolean {
   if (!name.includes(".") && isTextAttachmentName(name)) {
     return true;
   }
-  // A dotfile like ".env" has no extension and remains unsupported.
   const dot = name.lastIndexOf(".");
   return dot > 0 && TEXT_EXTS.includes(name.slice(dot));
 }
@@ -52,7 +50,7 @@ const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
 );
 
-/** Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`. */
+/** Keep in sync with `audio-attachment-adapter.ts` `accept`. */
 export const CHAT_AUDIO_DROP_ACCEPT =
   ".wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2";
 
@@ -60,9 +58,7 @@ const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
 );
 
-/** Chat video attachments; keep in sync with `native_path_policy.rs`
- * `VIDEO_ATTACHMENT_EXTS`. llama-server decodes with ffmpeg, so this is what
- * ffmpeg reads, not what the webview can play. */
+/** Keep in sync with `native_path_policy.rs` `VIDEO_ATTACHMENT_EXTS` (what ffmpeg reads). */
 export const CHAT_VIDEO_DROP_ACCEPT =
   ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
 
@@ -70,10 +66,8 @@ const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
 );
 
-/** What the window actually takes, for the rejection toast and the overlay. */
 export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Code on, ${CHAT_IMAGE_DROP_ACCEPT}, up to ${MAX_AUDIO_FILES} of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
-/** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
   const segments = path.split(/[\\/]/);
   return segments[segments.length - 1] || path;
@@ -99,11 +93,10 @@ export type NativeDropClass =
     }
   | { kind: "unsupported" };
 
-/** What a native drag payload is, before any of it is registered with Rust. */
 export function classifyDropPaths(paths: string[]): NativeDropClass {
   if (paths.length === 0) return { kind: "none" };
   const ggufs = paths.filter((path) => hasExt(path, ".gguf"));
-  // One model loads; a batch of models is ambiguous, so it isn't a drop target.
+  // A batch of models is ambiguous, so it is not a drop target.
   if (ggufs.length > 0) {
     return paths.length === 1 && ggufs.length === 1
       ? { kind: "model", path: ggufs[0] }
@@ -129,12 +122,11 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   ) {
     return { kind: "unsupported" };
   }
-  // Over the per-message cap a batch would only partly attach. The adapter applies per-model limits.
+  // Over the per-message cap a batch would only partly attach.
   if (audio.length > MAX_AUDIO_FILES) {
     return { kind: "unsupported" };
   }
-  // Same for video: one clip expands into a run of frames, so a batch would
-  // blow the context before reaching the model.
+  // One video expands into many frames, so a batch would blow the context.
   if (video.length > 1) {
     return { kind: "unsupported" };
   }

@@ -66,17 +66,13 @@ export function normalizeChatGenerationChunkPayload(
     if (frameType === "skill_load") {
       return { _toolEvent: skillLoadCardEvent(payload) } as unknown as OpenAIChatChunk;
     }
-    // Relay server-side reasoning duration.
     if (frameType === "reasoning_summary") {
       return {
         _reasoningDurationMs: (payload as { duration_ms?: unknown }).duration_ms,
       } as unknown as OpenAIChatChunk;
     }
-    // The producer persists every decoded SSE data frame as a `chunk` event and _SSEDecoder drops the
-    // SSE event field, so persisted tool/media control frames arrive here indistinguishable from OpenAI
-    // chunks. Re-tag them exactly as the legacy stream (chat-api.ts) does before yielding, or a resumed
-    // run replays raw {type} payloads into consumers that only read `_tool*`/`_diffusionFrame` and tool
-    // activity silently vanishes.
+    // Persisted control frames arrive as plain chunks (the decoder drops the SSE event field); re-tag
+    // them as chat-api.ts does or a resumed run loses tool activity.
     if (frameType === "tool_status") {
       return {
         _toolStatus: (payload as { content?: unknown }).content ?? "",
@@ -88,8 +84,7 @@ export function normalizeChatGenerationChunkPayload(
       frameType === "tool_output" ||
       frameType === "tool_args"
     ) {
-      // tool_start/end carry full input/output; tool_output streams incremental stdout and
-      // tool_args streams the call arguments live. The consumer accumulates by tag, so keep the frame whole.
+      // The consumer accumulates tool events by tag, so keep the frame whole.
       return { _toolEvent: payload } as unknown as OpenAIChatChunk;
     }
     if (frameType === "diffusion_frame") {
@@ -142,8 +137,7 @@ export function isLegacyFallbackChatGenerationAdmissionError(
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
       error.message === "Credentials cannot be persisted") ||
-    // A media-bearing payload is a POLICY rejection meaning "use the legacy stream", the same class as the tool-enabled
-    // case below - not an error to surface. Without this it rethrows and the turn dies with "An error occurred".
+    // A media payload rejection is a policy signal to use the legacy stream, not an error.
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
       error.message === "Media chat runs use the legacy streaming path") ||
@@ -210,12 +204,8 @@ export function isTerminalChatGenerationRun(run: ChatGenerationRun): boolean {
   return TERMINAL_STATUSES.has(run.status);
 }
 
-/** Where a Stop has to be sent, given how far durable admission has got. Admission resolves well
- *  after the abort listener is installed: the turn first has to auto-load a model, retrieve
- *  RAG, upload attachments and save history. A Stop landing in that window has no run id yet
- *  and may still end up on the legacy stream, so it needs the `cancel_id` POST, whose server
- *  side stashes the cancel for a generation that registers afterwards. That POST is safe once
- *  the run exists too, since the durable request pins `cancel_id` to the same run id. */
+/** A Stop before admission resolves has no run id and may still go legacy, so it needs the
+ *  `cancel_id` POST, which the server stashes; also safe once the run exists. */
 export function chatGenerationStopPlan(
   decision: "pending" | "durable" | "legacy",
   runId: string | null,
@@ -274,15 +264,8 @@ export async function getActiveChatGenerationRuns(
   return (await json<{ runs: ChatGenerationRun[] }>(response)).runs ?? [];
 }
 
-/** Whether a parked approval is still waiting on a human.
- *
- *  A reopened tab cannot tell this from the saved card: a call the user already answered looks
- *  exactly like one still parked, since the result only arrives with tool_end. Answering from the
- *  server is the only way to avoid restoring Approve/Deny over a call that is already executing.
- *
- *  An older backend has no such route, so a 404 or 405 means "cannot tell" rather than "answered",
- *  and the caller keeps its previous arm-everything behaviour instead of silently dropping buttons.
- */
+/** A reopened tab cannot tell an answered approval from a parked one, so ask the server. 404/405
+ *  (older backend) means "cannot tell", keeping the arm-everything fallback. */
 export async function toolApprovalIsPending(
   approvalId: string,
   sessionId: string,
@@ -385,10 +368,7 @@ async function* streamChatGenerationEvents(
   id: string,
   after: number,
   signal?: AbortSignal,
-  /** Called for each event, and for each keep-alive with that keep-alive's progress stamp. A
-   *  keep-alive is only progress if the stamp MOVED, which this generator cannot decide: it is
-   *  re-invoked on every reconnect, so a per-connection memory would treat the first keep-alive
-   *  after each reconnect as progress and rearm the caller's deadline forever. */
+  /** A keep-alive is progress only if its stamp MOVED, judged by the caller across reconnects. */
   onActivity?: (keepAliveStamp?: string) => void,
 ): AsyncGenerator<ChatGenerationEvent> {
   const response = await authFetch(
@@ -413,8 +393,7 @@ async function* streamChatGenerationEvents(
         const data: string[] = [];
         for (const line of block.split("\n")) {
           if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
-          // Reported, not judged. Whether this counts as progress depends on the last stamp seen across
-          // ALL connections for this run, and this generator is re-invoked on every reconnect.
+          // Reported, not judged: progress depends on stamps across all reconnects of this run.
           else if (line.startsWith(KEEPALIVE_PREFIX)) {
             const stamp = line.slice(KEEPALIVE_PREFIX.length).trim();
             if (stamp !== "") onActivity?.(stamp);
@@ -437,16 +416,10 @@ async function* streamChatGenerationEvents(
   }
 }
 
-/** How long a follower tolerates a run that makes no progress. Progress, not connectedness, ends
- *  a follow: every event and every change to the run row resets it. A deadline on SILENCE
- *  rather than duration is what lets it stay short while the backend tolerates far longer
- *  work. Preparation waits emit no events, but the keep-alive comments carry the run's
- *  progress stamp, which the lease renewals move, so a two hour download rearms this while a
- *  wedged run does not. Bytes alone are deliberately NOT progress: keep-alives keep arriving
- *  for as long as the socket holds. */
+/** Deadline on no PROGRESS, not duration: keep-alives carry a progress stamp that lease renewals
+ *  move. Bytes alone are not progress. */
 export const CHAT_GENERATION_STALL_TIMEOUT_MS = 30 * 60_000;
 
-/** Replay from the caller's applied cursor and reconnect until the run is terminal. */
 export async function* followChatGenerationRun(
   id: string,
   options: {
@@ -460,9 +433,7 @@ export async function* followChatGenerationRun(
   const { replayFrom } = options;
   const stallTimeoutMs =
     options.stallTimeoutMs ?? CHAT_GENERATION_STALL_TIMEOUT_MS;
-  // The deadline must reach the open stream as well as the sleep between reconnects: a stream
-  // that stays open and sends nothing parks the reader just as permanently. One controller
-  // downstream of the caller's signal covers both.
+  // One controller downstream of the caller covers both the open stream and reconnect sleeps.
   const deadline = new AbortController();
   const callerSignal = options.signal;
   const forwardAbort = () => deadline.abort(callerSignal?.reason);
@@ -473,9 +444,7 @@ export async function* followChatGenerationRun(
   }
   const signal = deadline.signal;
   let stallTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-  // Both abort `signal` but must not end the same way: a caller abort is a clean stop, while the
-  // deadline means we walked away from a run the backend may still be working on, so it must
-  // reach the consumer as a failure rather than a complete reply.
+  // Caller abort is a clean stop; the deadline must surface as a failure, not a complete reply.
   let stalled = false;
   let settled = false;
   // Spans reconnects on purpose: see the onActivity contract in streamChatGenerationEvents.
@@ -569,9 +538,7 @@ export async function* followChatGenerationRun(
   } finally {
     if (stallTimer !== undefined) globalThis.clearTimeout(stallTimer);
     callerSignal?.removeEventListener("abort", forwardAbort);
-    // Every exit path funnels here, including the two `while (!signal.aborted)` loop conditions, so
-    // this is the one place that catches all of them. `settled` keeps a run that reached a
-    // terminal status on the same tick as the timer from being reported as stalled.
+    // Every exit funnels here; `settled` stops a same-tick terminal run being reported stalled.
     if (stalled && !settled) throw new ChatGenerationStalledError(id);
   }
 }

@@ -34,16 +34,12 @@ import { EmbeddingModelPicker } from "./embedding-model-picker";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** One slot per repo for the embedder's GGUF, so re-picking adopts the running transfer and a full-repo Hub download keeps its own. */
+/** One slot per repo so re-picking adopts the running transfer. */
 const EMBEDDING_DOWNLOAD_SCOPE = "rag-embedding";
 
-/**
- * Which model indexes uploaded documents, rendered in both General and Data off one shared store.
- * A model not on disk is marked pending and offered as a download, and its loader stays cache-only,
- * so closing or cancelling cannot turn into a first-index transfer.
- */
 const RESIDENCY_POLL_MS = 5000;
 
+/** A missing model is offered as a download and its loader stays cache-only. */
 export function DocumentsRagSection(): ReactElement {
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
@@ -52,7 +48,7 @@ export function DocumentsRagSection(): ReactElement {
   const beginSave = useEmbeddingModelStore((s) => s.beginSave);
   const isSaveCurrent = useEmbeddingModelStore((s) => s.isSaveCurrent);
   const save = useEmbeddingModelStore((s) => s.save);
-  // Unloading leaves the selection alone, so it must not take a place in save order and retire an in-flight selection's reservation.
+  // Unloading must not take a save-order slot and retire an in-flight selection's reservation.
   const applyResidency = useEmbeddingModelStore((s) => s.applyResidency);
   const [saveError, setSaveError] = useState<string | null>(null);
   const loadFailure =
@@ -61,7 +57,7 @@ export function DocumentsRagSection(): ReactElement {
       : loadError || t("settings.general.rag.loadError");
   const embeddingModelError = saveError ?? loadFailure;
   const [forceCandidate, setForceCandidate] = useState<string | null>(null);
-  /** Bumped when a save leaves the model string unchanged, which the effect below keys on. */
+  /** Bumped when a save leaves the model string unchanged, which the effect keys on. */
   const [resolveNonce, setResolveNonce] = useState(0);
   const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
   const [resolution, setResolution] = useState<EmbeddingModelResolution | null>(
@@ -90,7 +86,7 @@ export function DocumentsRagSection(): ReactElement {
     void useEmbeddingModelStore.getState().load();
   }, []);
 
-  // Residency changes with no settings mutation and there is no lifecycle event to subscribe to, so re-read while visible; a hidden tab catches up when it returns.
+  // Residency changes with no event to subscribe to, so re-read while visible.
   useEffect(() => {
     const refresh = () => {
       if (document.hidden) return;
@@ -184,7 +180,7 @@ export function DocumentsRagSection(): ReactElement {
     }
   };
 
-  /** Resolve first, so a model that needs fetching is offered as a download rather than saved and quietly fetched at the first index. */
+  /** Resolve first so a model needing a fetch is offered as a download, not fetched silently. */
   const applyEmbeddingModel = async (model: string, force: boolean) => {
     setForceCandidate(null);
     const trimmed = model.trim();
@@ -192,14 +188,14 @@ export function DocumentsRagSection(): ReactElement {
       setSaveError(t("settings.general.rag.emptyError"));
       return;
     }
-    // Claim cross-surface ordering before the resolver await, else a slower older selection saves last and overwrites a newer pick.
+    // Reserve ordering before the await, or a slower older selection saves last.
     const reservation = beginSave();
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
     setResolution(null);
     try {
       if (force) {
-        // A force save can leave the model string unchanged, so the savedModel effect does not re-run and nothing restores the plan this call cleared.
+        // A force save can leave the model string unchanged, so the savedModel effect won't re-run.
         if (await persist(trimmed, null, true, reservation)) {
           setResolveNonce((n) => n + 1);
         }
@@ -222,7 +218,7 @@ export function DocumentsRagSection(): ReactElement {
         setSaveError(resolution.error);
         return;
       }
-      // Retain the plan only after the server accepted the matching setting: a rejected save must not expose Download for an unsaved repo.
+      // Only after the server accepted it: a rejected save must not expose Download.
       if (await persist(trimmed, resolution, false, reservation)) {
         setResolution(resolution);
       }
@@ -234,7 +230,7 @@ export function DocumentsRagSection(): ReactElement {
   const startDownload = async (resolution: EmbeddingModelResolution) => {
     const repoId = resolution.downloadRepo;
     if (!repoId) return;
-    // Scoped when the backend named a file: the companion repo carries every quant, and the embedder opens one.
+    // The companion repo carries every quant and the embedder opens one.
     const scoped = resolution.files !== null && resolution.files.length > 0;
     try {
       const outcome = await downloadManager.requestStart({
@@ -254,12 +250,12 @@ export function DocumentsRagSection(): ReactElement {
           { description: t("settings.general.rag.downloadingDescription") },
         );
       } else if (outcome === "conflict") {
-        // Not a failure: an earlier partial used a different transport and the Hub's own card is where it resumes.
+        // Not a failure: an earlier partial used another transport and resumes from the Hub card.
         toast.info(t("settings.general.rag.downloadConflict"));
       } else if (outcome === "busy") {
         toast.info(t("settings.general.rag.downloadBusy"));
       } else {
-        // requestStart turns refused starts into outcomes rather than throws, so every remaining non-start needs feedback here.
+        // requestStart returns refusals as outcomes, so every non-start needs feedback here.
         toast.error(t("settings.general.rag.downloadFailed"));
       }
     } catch (error) {

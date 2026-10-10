@@ -3,8 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { bumpInventoryVersion } from "@/features/hub";
-// Leaf module, not the barrel: the barrel re-exports .tsx panels, and tests stub
-// it down to the cache bump alone.
+// Leaf module, not the barrel: tests stub the barrel down to the cache bump.
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
@@ -14,10 +13,8 @@ export type EmbeddingModelSettings = {
   defaultEmbeddingModel: string;
   defaultEmbeddingGgufRepo: string;
   isCustom: boolean;
-  /** THIS model is held in memory right now, for the status line. */
   loaded: boolean;
-  /** ANY embedder is resident, so Unload has something to do. Saving a new model
-   * does not release the old one, so not the same question as `loaded`. */
+  /** ANY embedder is resident; saving a new model does not release the old one. */
   backendLoaded: boolean;
 };
 
@@ -37,12 +34,10 @@ type ApiEmbeddingModelSettings = {
   backend_loaded?: boolean;
 };
 
-/** 409 from the backend: the model could not be verified as an embedding model
- * (wrong type, gated repo, or offline). Retry with force to save anyway. */
+/** 409: not verifiable as an embedding model; retry with force to save anyway. */
 export class EmbeddingModelVerificationError extends Error {}
 
-/** 403 from the backend: the repo is flagged unsafe by Hugging Face's security scan.
- * A hard block; force cannot bypass it, so it must not enter the "save anyway" flow. */
+/** 403: flagged unsafe by HF; force cannot bypass it. */
 export class EmbeddingModelBlockedError extends Error {}
 
 function fromApi(settings: ApiEmbeddingModelSettings): EmbeddingModelSettings {
@@ -53,8 +48,7 @@ function fromApi(settings: ApiEmbeddingModelSettings): EmbeddingModelSettings {
     defaultEmbeddingGgufRepo: settings.default_embedding_gguf_repo,
     isCustom: settings.is_custom,
     loaded: settings.loaded ?? false,
-    // A backend predating this field answers only about the selected model,
-    // which is the old behaviour and the right fallback.
+    // Older backends only report the selected model.
     backendLoaded: settings.backend_loaded ?? settings.loaded ?? false,
   };
 }
@@ -112,17 +106,13 @@ export async function updateEmbeddingModelSettings(
   return settings;
 }
 
-/** What saving a model would need fetched, and whether it is already on disk. */
 export type EmbeddingModelResolution = {
   embeddingModel: string;
   backend: "llama" | "sentence-transformers";
-  /** Repo to hand the download manager; null when nothing needs fetching. */
   downloadRepo: string | null;
-  /** The selected GGUF family (all shards when split), on llama-server. */
   files: string[] | null;
   cached: boolean;
   sizeBytes: number | null;
-  /** Why the model is unusable here; the detail the save would refuse with. */
   error: string | null;
 };
 
@@ -146,7 +136,7 @@ export async function resolveEmbeddingModel(
   const params = new URLSearchParams({ model: embeddingModel });
   const res = await authFetch(
     `/api/settings/embedding-model/resolve?${params}`,
-    // The token rides a header so a gated repo's credential stays out of the URL.
+    // Header keeps a gated repo's token out of the URL.
     { headers: hubTokenHeader(options?.hfToken) },
   );
   if (!res.ok) {

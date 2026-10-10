@@ -99,10 +99,7 @@ test("every shipped default parses, on either platform", () => {
   }
 });
 
-// formatBindingValue emits Mod, Ctrl, Alt, Shift, key. A default written in any
-// other order would never equal a chord the recorder produces, so rebinding to
-// the shipped chord would read as a change and the reset button would never
-// appear to have worked.
+// Defaults must be in formatBindingValue order (Mod, Ctrl, Alt, Shift, key) to equal recorded chords.
 test("every shipped default is already in canonical order", () => {
   for (const def of SHORTCUT_DEFS) {
     for (const mac of [true, false]) {
@@ -121,9 +118,7 @@ test("every shipped default is already in canonical order", () => {
   }
 });
 
-// Off macOS there is no ⌃-versus-⌘ distinction, so a Ctrl-only default would be
-// both unreachable and a duplicate of the Mod row. Those actions must ship a
-// different chord there.
+// Off macOS Ctrl is Mod, so a Ctrl-only default would be unreachable and duplicate the Mod row.
 test("no Ctrl-only default survives onto Windows and Linux", () => {
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -141,15 +136,13 @@ test("a focused control keeps its own Enter", () => {
   const enter = parseBinding("Enter");
   assert.ok(enter);
   const deny = { tagName: "BUTTON", getAttribute: () => null };
-  // preventDefault on a window keydown cancels the click the browser would
-  // have made, so approving here would overrule the button the user picked.
+  // preventDefault on a window keydown cancels the browser's click on the focused button.
   assert.equal(activationBelongsToFocus(enter, deny), true);
   assert.equal(activationBelongsToFocus(enter, null), false);
   assert.equal(
     activationBelongsToFocus(enter, { tagName: "DIV", getAttribute: () => null }),
     false,
   );
-  // A div acting as a button counts too.
   assert.equal(
     activationBelongsToFocus(enter, {
       tagName: "DIV",
@@ -157,11 +150,9 @@ test("a focused control keeps its own Enter", () => {
     }),
     true,
   );
-  // Escape activates nothing, so declining still works from any focus.
   const escape = parseBinding("Escape");
   assert.ok(escape);
   assert.equal(activationBelongsToFocus(escape, deny), false);
-  // A chord with a modifier is nobody else's.
   const modEnter = parseBinding("Mod+Enter");
   assert.ok(modEnter);
   assert.equal(activationBelongsToFocus(modEnter, deny), false);
@@ -187,7 +178,6 @@ test("an unassigned action ships both slots empty", () => {
 test("matching is exact about modifiers", () => {
   const binding = parseBinding("Mod+Shift+KeyO");
   assert.ok(binding);
-  // Non-mac, so Mod is Ctrl.
   assert.ok(
     matchesBinding(
       binding,
@@ -195,7 +185,6 @@ test("matching is exact about modifiers", () => {
       false,
     ),
   );
-  // Missing Shift, extra Alt, and wrong key must all miss.
   assert.equal(
     matchesBinding(binding, keyEvent("KeyO", { ctrlKey: true }), false),
     false,
@@ -221,7 +210,6 @@ test("matching is exact about modifiers", () => {
 test("off-platform Meta does not satisfy a Mod binding", () => {
   const binding = parseBinding("Mod+KeyB");
   assert.ok(binding);
-  // Windows key held instead of Ctrl, on a non-mac platform.
   assert.equal(
     matchesBinding(binding, keyEvent("KeyB", { metaKey: true }), false),
     false,
@@ -236,7 +224,6 @@ test("on macOS Mod is Cmd, and a bare Ctrl is not a substitute", () => {
     matchesBinding(binding, keyEvent("KeyB", { ctrlKey: true }), true),
     false,
   );
-  // Ctrl is bindable in its own right on macOS.
   const ctrlBinding = parseBinding("Ctrl+KeyB");
   assert.ok(ctrlBinding);
   assert.ok(
@@ -245,8 +232,6 @@ test("on macOS Mod is Cmd, and a bare Ctrl is not a substitute", () => {
 });
 
 test("a Ctrl chord from a Mac cannot fire on Windows or Linux", () => {
-  // Ctrl is Mod off macOS, so this value is unreachable there. What it must
-  // not do is drop the modifier it cannot express and fire on the bare key.
   const binding = parseBinding("Ctrl+KeyB");
   assert.ok(binding);
   assert.equal(matchesBinding(binding, keyEvent("KeyB"), false), false);
@@ -259,7 +244,6 @@ test("a Ctrl chord from a Mac cannot fire on Windows or Linux", () => {
 test("AltGr typing does not fire an Alt chord off macOS", () => {
   const binding = parseBinding("Mod+Alt+KeyC");
   assert.ok(binding);
-  // A real Ctrl+Alt press on a US layout still works.
   assert.ok(
     matchesBinding(
       binding,
@@ -286,8 +270,7 @@ test("AltGr typing does not fire an Alt chord off macOS", () => {
 });
 
 test("macOS Option still fires an ⌥ chord when AltGraph is reported", () => {
-  // WebKit and Chromium report AltGraph for Option, so the guard above has to
-  // stay off macOS or every ⌥ chord in the list would stop working.
+  // WebKit and Chromium report AltGraph for Option, so the AltGr guard must stay off macOS.
   const binding = parseBinding("Mod+Alt+KeyC");
   assert.ok(binding);
   assert.ok(
@@ -300,38 +283,29 @@ test("macOS Option still fires an ⌥ chord when AltGraph is reported", () => {
 });
 
 test("the tab-search chord counts as browser-owned on both platforms", () => {
-  // Chrome's tab search on both, and Firefox's add-ons manager off macOS, so
-  // the tab warns about it wherever a user picks it.
   assert.ok(isBrowserReservedBinding("Mod+Shift+KeyA", true));
   assert.ok(isBrowserReservedBinding("Mod+Shift+KeyA", false));
 });
 
-// The walk is the one chord whose end is a key coming up rather than going
-// down, so it is the one that a window losing focus can strand.
+// The walk ends on a key coming up, so a window losing focus can strand it.
 test("the recent walk ends on losing the window, not just on keyup", async () => {
   const at = APP_SIDEBAR.indexOf("const end = () =>");
   assert.ok(at !== -1, "the traversal listener moved");
   const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("}, []);", at));
-  // Both signals reach the same end, and both are torn down again.
   assert.match(body, /window\.addEventListener\("keyup", onKeyUp\);/);
   assert.match(body, /window\.addEventListener\("blur", end\);/);
   assert.match(body, /window\.removeEventListener\("blur", end\);/);
-  // Still only once every modifier is up: a walk is held, so a Tab release
-  // with Ctrl still down is mid-walk, not the end of it.
   assert.match(
     body,
     /if \(event\.ctrlKey \|\| event\.metaKey \|\| event\.altKey \|\| event\.shiftKey\)/,
   );
 });
 
-// Firefox's new private window, which no page can cancel. Chrome's incognito
-// on ⇧⌘N was already reserved; this is the other half of the same pair.
 test("the private-window chord is reserved and carries no default", () => {
   for (const mac of [true, false]) {
     assert.ok(isBrowserReservedBinding("Mod+Shift+KeyP", mac));
     assert.ok(isBrowserReservedBinding("Mod+Shift+KeyN", mac));
   }
-  // Search keeps ⌘K alone rather than moving the alternate somewhere else.
   const search = SHORTCUT_DEFS.find((d) => d.id === "searchChats");
   assert.ok(search);
   for (const mac of [true, false]) {
@@ -340,9 +314,6 @@ test("the private-window chord is reserved and carries no default", () => {
   }
 });
 
-// Train and Video are the two rows the sidebar grays out on a measured
-// verdict, so they are the two workspace chords that can put a gate where the
-// user's workspace was.
 test("the workspace chords land where the guard lets them", async () => {
   assert.match(
     SRC__ROOT,
@@ -356,9 +327,7 @@ test("the workspace chords land where the guard lets them", async () => {
     SRC__ROOT,
     /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !chatOnlyMeasured,/,
   );
-  // Video has its own predicate rather than the chat-only one: /video checks
-  // auth and nothing else, so the chord would land on the unsupported-hardware
-  // gate. Read through the same helper the disabled row reads.
+  // /video checks only auth, so the chord would land on the unsupported-hardware gate.
   assert.match(
     SRC__ROOT,
     /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason\) !== undefined;/,
@@ -373,8 +342,6 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(APP_SIDEBAR, /disabled: videoDisabled,/);
 
-  // The rest are on the allowlist, so they stay reachable and ungated: gating
-  // them would take away a page the guard is happy to serve.
   for (const [id, path] of [
     ["switchToProjects", "/projects"],
     ["switchToHub", "/hub"],
@@ -390,10 +357,7 @@ test("the workspace chords land where the guard lets them", async () => {
   }
 });
 
-// A chord behind a hidden developer menu is not one the browser took from the
-// user, and these sets drive a warning the user reads. Safari has both of
-// these, but only once the Develop menu is switched on, so reserving them
-// would tell every macOS user something untrue about their own keyboard.
+// Safari's Develop-menu chords are opt-in, so they are not treated as browser-reserved.
 test("an opt-in developer chord is not treated as taken", () => {
   for (const value of ["Mod+Alt+KeyE", "Mod+Alt+KeyR"]) {
     for (const mac of [true, false]) {
@@ -404,7 +368,6 @@ test("an opt-in developer chord is not treated as taken", () => {
       );
     }
   }
-  // So they stay usable as defaults, which is where the chat chords sit.
   for (const [id, value] of [
     ["archiveChat", "Mod+Alt+KeyE"],
     ["renameChat", "Mod+Alt+KeyR"],
@@ -413,15 +376,11 @@ test("an opt-in developer chord is not treated as taken", () => {
     assert.ok(def);
     assert.equal(defaultBindingFor(def, "primary", true), value);
   }
-  // The bar is what the browser takes out of the box, which ⌥⌘U is: Chrome
-  // ships view source on it with nothing to enable.
   assert.ok(isBrowserReservedBinding("Mod+Alt+KeyU", true));
 });
 
 test("the browsers' own run on macOS is reserved there and only there", () => {
-  // ⌥⌘ is Chrome's run: view source, dev tools, console, bookmarks, split
-  // view, web search, Page Setup, tab switching; Firefox adds its element
-  // picker and console. Off macOS these read as Ctrl+Alt, which none claim.
+  // Chrome owns the ⌥⌘ run on macOS; off macOS these read as Ctrl+Alt, which none claim.
   const macOwned = [
     "Mod+Alt+KeyU",
     "Mod+Alt+KeyP",
@@ -445,8 +404,6 @@ test("the browsers' own run on macOS is reserved there and only there", () => {
       `${value} warns off macOS for nothing`,
     );
   }
-  // The letters left on that run stay usable, or the chat chords lose the
-  // family they are built on.
   for (const value of [
     "Mod+Alt+KeyE",
     "Mod+Alt+KeyO",
@@ -459,9 +416,6 @@ test("the browsers' own run on macOS is reserved there and only there", () => {
   }
 });
 
-// Three actions whose macOS chord Chrome owns: view source, the element picker
-// and Page Setup. Each keeps its letter on the run the composer pair uses, so
-// the mnemonic survives the platform swap.
 test("view source, the element picker and Page Setup carry no Unsloth action", () => {
   for (const [id, mac, other] of [
     ["toggleApiMonitor", "Ctrl+Shift+KeyU", "Mod+Alt+Shift+KeyM"],
@@ -475,8 +429,6 @@ test("view source, the element picker and Page Setup carry no Unsloth action", (
     assert.equal(isBrowserReservedBinding(mac, true), false);
     assert.equal(isBrowserReservedBinding(other, false), false);
   }
-  // The API monitor is the one that gives its letter up rather than swapping
-  // runs: off macOS U carries the two unread actions and has nothing left.
   for (const [id, value] of [
     ["markChatUnread", "Mod+Alt+KeyU"],
     ["clearAllUnreads", "Mod+Alt+Shift+KeyU"],
@@ -487,10 +439,7 @@ test("view source, the element picker and Page Setup carry no Unsloth action", (
   }
 });
 
-// GTK binds hex entry to Ctrl+Shift+U in GtkIMContextSimple, and IBus binds it
-// again, so off macOS that chord belongs to text composition. A composer with
-// focus is where Mark unread is most likely to be pressed, so it cannot be a
-// chord the input method is also listening for.
+// GTK and IBus bind Ctrl+Shift+U to hex entry, so off macOS it belongs to text composition.
 test("no default sits on Linux's own text-composition prefix", () => {
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -501,15 +450,13 @@ test("no default sits on Linux's own text-composition prefix", () => {
       );
     }
   }
-  // Still fine on macOS, which has no such prefix.
   const unread = SHORTCUT_DEFS.find((d) => d.id === "markChatUnread");
   assert.ok(unread);
   assert.equal(defaultBindingFor(unread, "primary", true), "Mod+Shift+KeyU");
 });
 
 test("no default takes a chord the browser owns without a reason", () => {
-  // The exceptions are the spec chords Unsloth keeps for the desktop build,
-  // where they work; everything else has to be reachable on the web.
+  // Exceptions are spec chords kept for the desktop build, where they work.
   const deliberate = new Set([
     "Mod+KeyN",
     "Mod+Shift+KeyN",
@@ -517,15 +464,11 @@ test("no default takes a chord the browser owns without a reason", () => {
     "Mod+Shift+Tab",
     "Ctrl+Tab",
     "Ctrl+Shift+Tab",
-    // The chat walk. Safari and Chrome own the bracket pair on macOS only, and
-    // the desktop build is where these are pressed.
+    // Safari and Chrome own the bracket pair on macOS only.
     "Mod+Shift+BracketLeft",
     "Mod+Shift+BracketRight",
-    // Find in page: the one default that takes a browser chord on the web too,
-    // because the browser's own find is what it replaces. Reserving it is still
-    // right -- it is what warns a web user before they rebind onto it.
+    // Find in page replaces the browser's own find, so it takes that chord on the web too.
     "Mod+KeyF",
-    // The command palette takes Print the same way.
     "Mod+KeyP",
   ]);
   for (const def of SHORTCUT_DEFS) {
@@ -541,8 +484,7 @@ test("no default takes a chord the browser owns without a reason", () => {
       }
     }
   }
-  // Being on the list has to MEAN the chord is flagged, or dropping a value from the reserved set
-  // silently turns an exception into an unwarned default and this test keeps passing.
+  // Being on the list must MEAN the chord is flagged, or a dropped reserved value goes unnoticed.
   for (const value of deliberate) {
     assert.ok(
       isBrowserReservedBinding(value, true) ||
@@ -560,7 +502,6 @@ test("recording a chord ignores a lone modifier", () => {
   const binding = bindingFromEvent(keyEvent("KeyK", { ctrlKey: true }), false);
   assert.ok(binding);
   assert.equal(formatBindingValue(binding), "Mod+KeyK");
-  // The same physical chord on macOS is Cmd, not Ctrl.
   const macBinding = bindingFromEvent(
     keyEvent("KeyK", { metaKey: true }),
     true,
@@ -589,8 +530,7 @@ test("a bare letter is refused but function keys stand alone", () => {
       alt: false,
     }),
   );
-  // Enter is bare, and only allowed for the two actions that register solely
-  // while an approval prompt is on screen.
+  // Bare Enter only for the two actions registered solely while an approval prompt is shown.
   const enter = {
     code: "Enter",
     mod: false,
@@ -612,17 +552,14 @@ test("bare Escape is the recorder's own exit, so only a prompt-gated row takes i
   };
   assert.equal(isAcceptableBinding(bare), false);
   assert.ok(isAcceptableBinding(bare, true));
-  // Shift keeps it clear of the exit, which is where clearAllUnreads ships.
   assert.ok(isAcceptableBinding({ ...bare, shift: true }));
 
-  // The recorder swallows every keydown, so bare Escape has to stay its way
-  // out, except on the rows whose own chord it is.
+  // The recorder swallows every keydown, so bare Escape has to stay its way out.
   assert.match(
     KEYBOARD_SHORTCUTS_TAB,
     /event\.code === "Escape" &&\n(?:\s*![a-zA-Z.]+ &&\n)+\s*!def\?\.allowBareKey\n\s*\) \{\n\s*setRecording\(null\);/,
   );
 
-  // Which leaves no shipped bare Escape that its own tab could not record.
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
       for (const mac of [true, false]) {
@@ -682,9 +619,7 @@ test("an override wins, and null means unassigned", () => {
     resolveBinding({ toggleSidebar: { primary: null } }, "toggleSidebar"),
     null,
   );
-  // Overriding one slot leaves the other on its shipped chord. newChat, not
-  // nextChat: the ⌥⌘→ pair is macOS only, and resolveBinding reads the host's
-  // platform, so asserting it here would pass on a Mac and fail on CI.
+  // newChat, not nextChat: resolveBinding reads the host platform and ⌥⌘→ is macOS only.
   assert.equal(
     resolveBinding({ newChat: { primary: null } }, "newChat", "alternate"),
     "Mod+KeyN",
@@ -704,9 +639,7 @@ test("both slots resolve together", () => {
 });
 
 test("the chat walk ships no arrow alternate on either platform", () => {
-  // ⌥⌘→ is Chrome's own next tab, and the same chord off macOS is Ctrl+Alt+→,
-  // desktop switching on GNOME and KDE. Taken everywhere, so the bracket pair
-  // carries these alone.
+  // ⌥⌘→ is Chrome's next tab and Ctrl+Alt+→ switches desktops on GNOME/KDE.
   for (const id of ["nextChat", "previousChat"] as const) {
     const def = SHORTCUT_DEFS.find((d) => d.id === id);
     assert.ok(def);
@@ -729,9 +662,7 @@ test("a slot reports whether it carries an edit", () => {
   assert.ok(isSlotOverridden(overrides, "nextChat", "alternate"));
 });
 
-// Builds before alternates existed stored `id -> string | null`. Read as-is,
-// that shape would resolve to nothing and silently revert every customization
-// made since the shortcuts tab shipped.
+// Older builds stored `id -> string | null`; read as-is it would revert every customization.
 test("the pre-alternate override shape migrates to the primary slot", () => {
   const legacy = JSON.stringify({
     toggleSidebar: "Mod+Alt+KeyB",
@@ -742,20 +673,15 @@ test("the pre-alternate override shape migrates to the primary slot", () => {
   const migrated = migrateStoredOverrides(JSON.parse(legacy));
   assert.deepEqual(migrated, {
     toggleSidebar: { primary: "Mod+Alt+KeyB" },
-    // A clear reaches both slots, a rebind only the one the user set.
     searchChats: { primary: null, alternate: null },
     newChat: { primary: "Mod+Alt+KeyJ" },
   });
   assert.equal(resolveBinding(migrated, "toggleSidebar"), "Mod+Alt+KeyB");
   assert.equal(resolveBinding(migrated, "searchChats"), null);
-  // The alternate is untouched, so the shipped one still reaches a user who
-  // rebound the primary before alternates existed.
   assert.equal(resolveBinding(migrated, "newChat", "alternate"), "Mod+KeyN");
 });
 
-// Back then an action had one chord, so a stored null meant the action was
-// off. Clearing only the primary would hand it whatever alternate has shipped
-// since and switch it back on, which is what newChat carries on ⌘N.
+// A stored null once meant the action was off; clearing only the primary would re-enable it.
 test("an action cleared before alternates existed stays cleared", () => {
   const migrated = migrateStoredOverrides(JSON.parse('{"newChat":null}'));
   assert.deepEqual(migrated, { newChat: { primary: null, alternate: null } });
@@ -763,12 +689,9 @@ test("an action cleared before alternates existed stays cleared", () => {
     primary: null,
     alternate: null,
   });
-  // The shipped alternate is real, so this is the slot that would have come
-  // back had the clear stopped at the primary.
   const shipped = SHORTCUT_DEFS.find((d) => d.id === "newChat");
   assert.ok(shipped);
   assert.equal(defaultBindingFor(shipped, "alternate", true), "Mod+KeyN");
-  // Both slots read as edits, so the tab offers to reset them.
   for (const slot of SHORTCUT_SLOTS) {
     assert.ok(isSlotOverridden(migrated, "newChat", slot), slot);
   }
@@ -780,9 +703,7 @@ test("the current override shape round-trips unchanged", () => {
 });
 
 test("defaults ship without conflicts on either platform", () => {
-  // findConflicts resolves against this process's platform, so check the other
-  // one by hand: ⌘1-9 and ⌃1-9 collapse onto each other off macOS, and the
-  // registry has to have moved one of them.
+  // findConflicts uses this process's platform, so check the other: ⌘1-9 and ⌃1-9 collapse off macOS.
   assert.equal(findConflicts({}).size, 0);
   for (const mac of [true, false]) {
     const seen = new Map<string, string>();
@@ -812,8 +733,6 @@ test("two actions on one chord are both flagged", () => {
   );
 });
 
-// A clash across slots is just as real as one between two primaries: both
-// chords fire the same listener path, so the tab has to say so.
 test("an alternate clashing with another action's primary is flagged", () => {
   const conflicts = findConflicts({
     archiveChat: { alternate: "Mod+KeyB" },
@@ -849,8 +768,7 @@ const registryIndex = (id: string) =>
   SHORTCUT_DEFS.findIndex((def) => def.id === id);
 
 test("a contested chord is owned by the earlier action in registry order", () => {
-  // Derived, not hard-coded: the list is deliberately ordered for the UI, so a
-  // reorder must keep this rule rather than trip a name-shaped assertion.
+  // Derived, not hard-coded: the list is ordered for the UI and may be reordered.
   const overrides = { toggleSidebar: { primary: "Mod+KeyK" } };
   const owner = shortcutOwningBinding(overrides, "Mod+KeyK");
   assert.ok(owner);
@@ -859,7 +777,6 @@ test("a contested chord is owned by the earlier action in registry order", () =>
     owner,
     claimants.sort((a, b) => registryIndex(a) - registryIndex(b))[0],
   );
-  // The loser keeps its own binding elsewhere, so ownership is per chord.
   assert.equal(shortcutOwningBinding(overrides, "Mod+Comma"), "openSettings");
 });
 
@@ -883,7 +800,6 @@ test("exactly one owner exists per contested chord", () => {
 test("an unbound or unclaimed chord has no owner", () => {
   assert.equal(shortcutOwningBinding({}, null), null);
   assert.equal(shortcutOwningBinding({}, "Mod+Alt+KeyZ"), null);
-  // A cleared action does not own the chord it used to have.
   assert.equal(
     shortcutOwningBinding(
       { searchChats: { primary: null } },
@@ -893,9 +809,7 @@ test("an unbound or unclaimed chord has no owner", () => {
   );
 });
 
-// Reset-all is the documented escape hatch. A chord bound to something the
-// browser eats leaves the Shortcuts tab itself hard to reach, so the General
-// reset has to cover this key or the user is stuck with it.
+// A chord bound to something the browser eats can make the Shortcuts tab hard to reach.
 test("Reset all local preferences clears the rebound chords", async () => {
   const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(
@@ -910,8 +824,6 @@ test("Reset all local preferences clears the rebound chords", async () => {
   );
 });
 
-// Every overlay carries the tab label and every row, or a non-English install
-// shows an English word in the middle of a translated settings dialog.
 test("every locale overlay carries the shortcut strings", async () => {
   const locales = [
     "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "sv",
@@ -936,8 +848,6 @@ test("every locale overlay carries the shortcut strings", async () => {
       );
     }
     for (const def of SHORTCUT_DEFS) {
-      // Both halves: a row with a label and no description renders an empty
-      // second line rather than falling back to English.
       const row = new RegExp(
         `\\n        ${def.id}: \\{\\n          label: "[^"]+",\\n          description: "[^"]+",\\n        \\},`,
       );
@@ -951,8 +861,7 @@ test("every locale overlay carries the shortcut strings", async () => {
 });
 
 test("a cleared alternate keeps its row, so it can be restored", async () => {
-  // Clearing a slot stores null, so a row that keys off the resolved value
-  // alone would hide the slot's own restore control along with the chord.
+  // Clearing a slot stores null, so keying off the resolved value would hide its restore control.
   assert.match(
     KEYBOARD_SHORTCUTS_TAB,
     /hasAlternate =\s*\n\s*defaultBindingFor\(def, "alternate", mac\) !== null/,
@@ -969,34 +878,27 @@ test("the chords that need one target do not fire where there are two", async ()
     "../src/components/assistant-ui/tool-confirmation-controls.tsx",
   );
 
-  // Compare drops the header pickers and gives each pane its own, so the
-  // header chord would toggle state nothing renders.
+  // Compare drops the header pickers, so the header chord would toggle state nothing renders.
   assert.match(
     chatPage,
     /const headerPickersShown = active && view\.mode !== "compare";/,
   );
   assert.match(chatPage, /enabled: headerPickersShown[,\s]*\}/);
-  // Both panes mount the last message, and the chord would go to whichever
-  // registered its listener first. `If last` carries the other half.
+  // Both panes mount the last message; the first registered listener would win.
   assert.match(thread, /enabled: chatActive && !inComparePane && !forkDisabled/);
-  // Same for a second parked tool request: neither card claims the keys.
   assert.match(
     toolCard,
     /soleRequest &&\n\s*!selectionActive &&\n\s*showControls &&/,
   );
 });
 
-// Both of these open a surface whose "is it open" flag outlives the thing it
-// opens, so leaving without closing brings it back on the next visit.
+// These surfaces' open flags outlive what they open, so leaving without closing reopens them.
 test("a chord's surface does not come back open on the next visit", async () => {
   const read = async (path: string) =>
     readFile(new URL(path, import.meta.url), "utf8");
   const chatPage = await read("../src/features/chat/chat-page.tsx");
   const mcp = await read("../src/features/chat/mcp-composer-button.tsx");
 
-  // The switcher renders on Chat, outside Compare, with a project. Reading the
-  // whole condition means Compare and a standalone chat reset it too, not just
-  // going off-route.
   assert.match(
     chatPage,
     /const projectSwitcherShown = headerPickersShown && Boolean\(currentProjectId\);/,
@@ -1012,8 +914,7 @@ test("a chord's surface does not come back open on the next visit", async () => 
     "the reset no longer matches what the switcher renders by",
   );
 
-  // The MCP dialog's flag lives in a store, so an unmount with no
-  // chatActive=false render in front of it leaves the dialog armed.
+  // The MCP dialog's flag lives in a store, so an unmount alone leaves it armed.
   assert.match(mcp, /if \(!chatActive && open\) setOpen\(false\);/);
   assert.match(
     mcp,
@@ -1021,14 +922,11 @@ test("a chord's surface does not come back open on the next visit", async () => 
   );
 });
 
-// Escape clears the selection from the sidebar's own listener, not the
-// registry, so nothing stops another chord built on Escape from reaching it.
-// Clear all unreads ships one on macOS.
+// The sidebar clears selection on Escape outside the registry, so modified Escape must not reach it.
 test("only bare Escape drops the selection", async () => {
   const at = APP_SIDEBAR.indexOf('if (event.key !== "Escape"');
   assert.notEqual(at, -1, "the selection listener moved");
   const block = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("clearSelection();", at));
-  // Every modifier, so ⇧Esc goes to Clear all unreads alone.
   for (const modifier of ["metaKey", "ctrlKey", "altKey", "shiftKey"]) {
     assert.ok(
       block.includes(`event.${modifier}`),
@@ -1036,55 +934,43 @@ test("only bare Escape drops the selection", async () => {
     );
   }
   assert.ok(block.includes("event.defaultPrevented"));
-  // The chord it has to stay clear of.
   const clearAll = SHORTCUT_DEFS.find((d) => d.id === "clearAllUnreads");
   assert.ok(clearAll);
   assert.equal(defaultBindingFor(clearAll, "primary", true), "Shift+Escape");
 });
 
-// The mobile drawer is a Sheet owned by SidebarProvider, which __root mounts
-// outside the Outlet, so it survives a navigation. Every sidebar row closes it
-// by hand afterwards; the chords are registered above that provider and cannot.
+// The mobile drawer is owned by SidebarProvider outside the Outlet, so it survives navigation.
 test("the workspace chords do not leave the mobile drawer over the workspace", async () => {
   const read = async (path: string) =>
     readFile(new URL(path, import.meta.url), "utf8");
   const root = await read("../src/app/routes/__root.tsx");
   const sidebar = await read("../src/components/app-sidebar.tsx");
 
-  // The provider outlives the route, which is what makes this necessary.
   assert.match(root, /<SidebarProvider/);
   assert.match(root, /useShortcut\("switchToProjects", goTo\("\/projects"\)/);
 
-  // Closed on the location instead, which the chords change and the rows do
-  // too. href, not pathname: a new chat from /chat only moves the search.
+  // href, not pathname: a new chat from /chat only moves the search.
   assert.match(
     sidebar,
     /useEffect\(\(\) => \{\n\s*if \(isMobile\) setOpenMobile\(false\);\n\s*\}, \[href, isMobile, setOpenMobile\]\);/,
   );
   assert.match(sidebar, /href: s\.location\.href,/);
 
-  // The rows keep their own call: opening a chat moves neither, and the drawer
-  // still has to go.
   assert.match(
     sidebar,
     /const closeMobileIfOpen = \(\) => \{\n\s*if \(isMobile\) setOpenMobile\(false\);\n\s*\};/,
   );
 });
 
-// An action bar is the wrong place to register a chord: ActionBarRoot returns
-// null when hidden and the user bar is autohide="always", so its children are
-// gone unless the message is hovered. The assistant bar never mounted the fork
-// button, so any thread ending in a reply had no listener at all.
+// ActionBarRoot returns null when hidden, so a chord registered in an action bar is often gone.
 test("the fork chord is registered where it mounts, not from an action bar", async () => {
 
-  // The registration is its own component, rendering nothing.
   const start = THREAD.indexOf("const ForkChatShortcut: FC = () => {");
   assert.notEqual(start, -1, "the fork registration moved");
   const block = THREAD.slice(start, THREAD.indexOf("\n};", start));
   assert.match(block, /useShortcut\(\n\s*"forkChat",/);
   assert.match(block, /return null;/);
 
-  // The button keeps the click and takes no part in the chord.
   const buttonAt = THREAD.indexOf("const ForkMessageButton: FC = () => {");
   const button = THREAD.slice(buttonAt, THREAD.indexOf("\n};", buttonAt));
   assert.ok(
@@ -1092,10 +978,7 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
     "an autohidden bar cannot hold the registration",
   );
 
-  // Two instances of the action now exist on the last message, the chord's and
-  // the button's, and the sidebar row menu is a third, so the in-flight flag cannot be any one
-  // of their own state: the chord followed by a click would post two forks with two thread ids.
-  // It lives in its own module so every caller reads the one flag.
+  // Chord, button and sidebar menu share one in-flight flag module, or two forks could post.
   const FORK_STORE = await readSrcAsync("features/chat/utils/fork-in-flight.ts");
   assert.match(
     FORK_STORE,
@@ -1112,8 +995,6 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
     "the per-instance flag is what let two forks run",
   );
 
-  // Mounted from both roles, since either can be the last message, and only
-  // for the last one, which is the message a fork may be taken from.
   const mounts = THREAD.match(
     /<MessagePrimitive\.If last=\{true\}>\n\s*<ForkChatShortcut \/>\n\s*<\/MessagePrimitive\.If>/g,
   );
@@ -1128,12 +1009,9 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
   }
 });
 
-// The tour's opener pins the picker open, and an effect shuts anything left
-// pinned while no tour is running. A chord routed through it would open the
-// picker and lose it on the next tick.
+// The tour's opener pins the picker and an effect unpins it when no tour runs.
 test("the model picker chord opens without the tour's pin", async () => {
 
-  // The pin, and the effect that keys on it.
   assert.match(
     CHAT_PAGE,
     /const openModelSelector = useCallback\(\(\) => \{\n\s*setModelSelectorLocked\(true\);/,
@@ -1143,30 +1021,22 @@ test("the model picker chord opens without the tour's pin", async () => {
     /if \(tour\.open\) return;\n\s*if \(!modelSelectorLocked\) return;[\s\S]{0,200}?setModelSelectorOpen\(false\);/,
   );
 
-  // So the chord takes its own door, and stands aside while a step is on it.
   assert.match(
     CHAT_PAGE,
     /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open\);/,
   );
   assert.match(CHAT_PAGE, /useShortcut\(\n\s*"openModelPicker",[\s\S]*?toggleModelSelector\(\);/);
 
-  // Three mentions left, all the tour's: the declaration, the step builder's
-  // argument, and that memo's dependency. Nothing else may pin it open.
+  // Three mentions, all the tour's: declaration, step builder argument, memo dependency.
   assert.equal((CHAT_PAGE.match(/openModelSelector/g) ?? []).length, 3);
 });
 
-// The inline rename pill is rendered by the row, so it needs the row to be on
-// screen. A chord has no row under the cursor, and the open chat may be behind
-// a collapsed section, past a folder's limit, or on a route with no chat list.
+// The rename pill needs its row on screen, which a chord cannot guarantee.
 test("the rename chord does not land in a surface only a row can show", async () => {
-  // The chord asks for the dialog; the context menu, which has a row under the
-  // cursor by definition, keeps the pill.
   assert.match(
     APP_SIDEBAR,
     /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
   );
-  // The menu names the list its row is in, so a chat on screen twice renames in the row the
-  // user opened, not in both at once.
   assert.match(
     APP_SIDEBAR,
     /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
@@ -1176,14 +1046,10 @@ test("the rename chord does not land in a surface only a row can show", async ()
     /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
   );
 
-  // The pill is gated on it, so a dialog rename cannot also arm a row that is
-  // off screen and surprise the user when it comes back.
   assert.match(
     APP_SIDEBAR,
     /const isRenamingThis =\n\s*renamingTarget\?\.kind === "chat" &&\n\s*renamingTarget\.inline &&/,
   );
-  // And the dialog takes chats now, which is what its chat strings were always
-  // written for.
   assert.match(
     APP_SIDEBAR,
     /\(renamingTarget\.kind !== "chat" \|\| !renamingTarget\.inline\)/,
@@ -1191,9 +1057,7 @@ test("the rename chord does not land in a surface only a row can show", async ()
   assert.ok(APP_SIDEBAR.includes('t("shell.dialog.renameChat.title")'));
 });
 
-// Bare Escape has more than one owner. The sidebar answers it while rows are
-// selected and does not consume it, so without a guard one press would clear
-// the selection and deny a waiting tool call at the same time.
+// The sidebar answers bare Escape without consuming it, so one press could also deny a tool call.
 test("one Escape does not both drop a selection and deny a tool call", async () => {
   const read = async (path: string) =>
     readFile(new URL(path, import.meta.url), "utf8");
@@ -1205,11 +1069,9 @@ test("one Escape does not both drop a selection and deny a tool call", async () 
     "../src/features/chat/stores/chat-navigation-store.ts",
   );
 
-  // The tool card is the one that stands down: dropping a selection is undone
-  // by selecting again, and denying a call is not.
+  // The tool card stands down: a dropped selection is recoverable, a denied call is not.
   assert.match(toolCard, /const selectionActive = useChatNavigationStore\(/);
   assert.match(toolCard, /!selectionActive &&/);
-  // Both keys, not just Escape: the buttons stay either way.
   for (const id of ["approveToolRequest", "declineToolRequest"]) {
     const at = toolCard.indexOf(`"${id}",`);
     assert.ok(at !== -1, `${id} lost its call site`);
@@ -1219,8 +1081,7 @@ test("one Escape does not both drop a selection and deny a tool call", async () 
     );
   }
 
-  // Published from the sidebar, cleared on unmount so an unmounted sidebar
-  // cannot leave the card mute.
+  // Cleared on unmount so an unmounted sidebar cannot leave the card mute.
   assert.match(
     sidebar,
     /const selectionActive = selectionCount > 0 \|\| projectSelectionCount > 0;/,
@@ -1232,9 +1093,7 @@ test("one Escape does not both drop a selection and deny a tool call", async () 
   assert.match(store, /selectionActive: boolean;/);
   assert.match(store, /selectionActive: false,/);
 
-  // And the sidebar listener stays passive. Dictation reads defaultPrevented
-  // before cancelling, so consuming Escape here would let a stale selection
-  // outrank a live recording.
+  // Dictation reads defaultPrevented before cancelling, so the sidebar must not consume Escape.
   const at = sidebar.indexOf("Escape is the way out of a selection");
   const body = sidebar.slice(at, sidebar.indexOf("}, [selectionActive", at));
   assert.ok(!body.includes("preventDefault"), "the listener consumes Escape");
@@ -1242,8 +1101,7 @@ test("one Escape does not both drop a selection and deny a tool call", async () 
 });
 
 test("the composer chords outlive the recording bar", async () => {
-  // Dictation swaps ComposerRightControls out for the recording bar, so a
-  // chord registered in there could start dictation and never stop it.
+  // Dictation swaps ComposerRightControls out, so a chord registered there could never stop it.
   const controls = THREAD.indexOf("const ComposerRightControls:");
   assert.ok(controls !== -1, "the controls component moved");
   for (const id of ["startDictation", "sendMessage"]) {
@@ -1253,9 +1111,7 @@ test("the composer chords outlive the recording bar", async () => {
     assert.ok(found !== -1, `${id} lost its call site`);
     assert.ok(found < controls, `${id} registers inside the recording swap`);
   }
-  // Send goes through the form, which runs the parking, queueing and refusing
-  // that the runtime's own send knows nothing about, and through the recording
-  // bar's own path while dictation is running.
+  // Send goes through the form, which runs parking, queueing and refusing the runtime skips.
   assert.match(THREAD, /formRef\.current\?\.requestSubmit\(\);/);
   assert.match(
     THREAD,
@@ -1264,14 +1120,10 @@ test("the composer chords outlive the recording bar", async () => {
 });
 
 test("a collapsed sidebar section is not published for the chords", async () => {
-  // Navigation and Select all walk what is on screen, so a section the user
-  // closed counts as gone, the same as a closed project folder.
-  // Pinned is walked in its drawn order, folders and chats together, behind its disclosure.
   assert.match(
     APP_SIDEBAR,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(/,
   );
-  // A custom section closes on its own, as Pinned does, and takes only its own rows.
   assert.match(
     APP_SIDEBAR,
     /visibleCustomSections\.flatMap\(\(section\) =>\n\s*collapsedSectionIds\.has\(section\.id\)\n\s*\? \[\]/,
@@ -1280,8 +1132,6 @@ test("a collapsed sidebar section is not published for the chords", async () => 
     APP_SIDEBAR,
     /chatListsOnScreen && chatOpen \? sortedRecentChatItems/,
   );
-  // Folders follow the section they render in: the pinned ones close with Pinned, the rest
-  // with Projects, so neither disclosure speaks for the other's rows.
   assert.match(
     APP_SIDEBAR,
     /folderChatItems\(true, \[row\.project\]\)/,
@@ -1292,16 +1142,13 @@ test("a collapsed sidebar section is not published for the chords", async () => 
   );
   // In one list every project chat is a Recents row, so a folder must not list it again.
   assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\)/);
-  // And the published lists are the filtered ones.
   assert.match(APP_SIDEBAR, /pinnedItems: upToPinnedChatItems,/);
   assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
 });
 
 test("the MCP chord does not live behind the MCP pill", async () => {
   const button = await readSrcAsync("features/chat/mcp-composer-button.tsx");
-  // MCP ships off for a chat and the pill only renders once it is on, so a
-  // chord registered inside the pill would do nothing until it was found by
-  // hand. The dialog and its chord mount for the chat instead.
+  // MCP ships off and the pill only renders once on, so the chord mounts with the chat instead.
   const pill = button.indexOf("export function McpComposerButton");
   const mount = button.indexOf("export function McpServersDialogMount");
   assert.ok(pill !== -1 && mount > pill, "the mount moved");
@@ -1309,9 +1156,7 @@ test("the MCP chord does not live behind the MCP pill", async () => {
     button.indexOf('useShortcut("openMcpServers"') > mount,
     "the chord is back inside the pill",
   );
-  // Mounted through the route change, not gated on `active`: the flag lives in
-  // a store, so a dialog left open has to be closed on the way out rather than
-  // unmounted with it still set.
+  // The flag lives in a store, so an open dialog has to be closed on the way out.
   assert.match(CHAT_PAGE, /\n\s*<McpServersDialogMount \/>/);
   assert.match(button, /if \(!chatActive && open\) setOpen\(false\);/);
   assert.match(button, /open=\{chatActive && open\}/);
@@ -1319,9 +1164,7 @@ test("the MCP chord does not live behind the MCP pill", async () => {
 
 test("the copy chords keep their gesture across the read", async () => {
   const clipboard = await readSrcAsync("lib/copy-to-clipboard.ts");
-  // Both copies read storage first, and a strict engine drops the gesture
-  // across that await, leaving writeText and its execCommand fallback with
-  // nothing to run inside. The write starts with a promised payload instead.
+  // A strict engine drops the gesture across the storage await, so pass a promised payload.
   assert.match(clipboard, /"text\/plain": payload\.then\(/);
   for (const fn of ["copyChatItemAsMarkdown", "copyChatSessionId"]) {
     const at = APP_SIDEBAR.indexOf(`async function ${fn}(`);
@@ -1335,8 +1178,6 @@ test("the copy chords keep their gesture across the read", async () => {
 });
 
 test("the project picker chord is described by what it does", async () => {
-  // The header switcher navigates to the chosen project's landing; moving a
-  // chat between projects is a different flow, on the chat row's own menu.
   assert.match(CHAT_PAGE, /onSelectProject=\{openProjectLanding\}/);
   const at = EN.indexOf("openProjectPicker: {");
   const entry = EN.slice(at, EN.indexOf("},", at));
@@ -1345,8 +1186,7 @@ test("the project picker chord is described by what it does", async () => {
 });
 
 test("the new-chat chords stay out of the auth flow", async () => {
-  // /login has no shell, and requireAuth bounces /chat straight back, so these
-  // are gated like the workspace chords beside them.
+  // /login has no shell and requireAuth bounces /chat straight back.
   for (const id of ["newChat", "newTemporaryChat", "newStandaloneChat"]) {
     // The id, not the whole call: two of the three wrap onto their own line.
     const at = SRC__ROOT.indexOf(`"${id}"`);
@@ -1357,27 +1197,21 @@ test("the new-chat chords stay out of the auth flow", async () => {
 });
 
 test("switching back to Chat lands on the view the user left", async () => {
-  // ChatPage renders the frozen search while off-route, and a bare /chat is a
-  // fresh chat, so the chord has to hand that search back to the router.
   const at = SRC__ROOT.indexOf('"switchToChat"');
   assert.ok(at !== -1, "switchToChat is registered");
   const call = SRC__ROOT.slice(at, SRC__ROOT.indexOf("\n  );", at) + 5);
   assert.match(call, /navigate\(\{ to: "\/chat", search: chatSearch \}\)/);
   assert.match(call, /enabled: routeShortcutEnabled/);
-  // The other workspaces keep the bare helper; only chat carries a search.
   assert.match(SRC__ROOT, /useShortcut\("switchToImages", goTo\("\/images"\)/);
-  // location.search is the raw URL's, not the matched route's, so a seeded
-  // freeze would hand /images?project=x to the chord as a chat never opened.
+  // location.search is the raw URL's, not the matched route's.
   assert.match(SRC__ROOT, /useState<ChatSearch>\(\{\}\)/);
 });
 
 test("opening a chat by chord drops the selection, as clicking a row does", async () => {
-  // Archive, pin and mark-unread prefer the selection when there is one, so a
-  // stale one sends them to rows that are no longer on screen.
+  // Archive, pin and mark-unread prefer the selection, so a stale one hits off-screen rows.
   const at = APP_SIDEBAR.indexOf("function openChatItem(");
   const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  }", at));
   assert.ok(body.includes("clearSelection()"), "the shared opener clears it");
-  // One path only: the row reaches it through the same function.
   assert.ok(
     !APP_SIDEBAR.includes("clearSelection();\n                openChatItem(item);"),
     "the row no longer clears it separately",
@@ -1394,20 +1228,13 @@ test("effort chords only run for a model whose effort is read", async () => {
 });
 
 test("New chat inherits the project on screen, inferred or not", async () => {
-  // On Chat the runtime's project is the visible one, inferred ones included:
-  // the page resolves it from the thread or the compare pair when the URL
-  // carries no ?project=, so a chat in a project stays in it.
   assert.match(SRC__ROOT, /isChatRoute \? chatRuntime\.activeProjectId : null/);
   assert.match(CHAT_PAGE, /const projectId = thread\?\.projectId \?\? null;/);
   assert.match(CHAT_PAGE, /const projectId = threads\[0\]\?\.projectId \?\? null;/);
   assert.match(CHAT_PAGE, /setCurrentProjectId\(projectId\);\n\s*useChatRuntimeStore\.getState\(\)\.setActiveProjectId\(projectId\);/);
-  // The page's own New chat button starts from the same value, so the chord
-  // and the button cannot disagree about which project a new chat is in.
   assert.match(CHAT_PAGE, /runtime\.setActiveProjectId\(currentProjectId\);/);
-  // Off Chat the page is hidden rather than unmounted, so the runtime still
-  // names a project the user is not looking at. That one stays excluded.
+  // Off Chat the page is hidden rather than unmounted, so its project stays excluded.
   assert.match(SRC__ROOT, /isChatRoute \? chatRuntime\.activeProjectId : null/);
-  // Leaving the project is its own action, so this one must not also do it.
   assert.match(
     SRC__ROOT,
     /useShortcut\("newStandaloneChat", \(\) => startNewChat\(\{ standalone: true \}\)/,
@@ -1416,16 +1243,13 @@ test("New chat inherits the project on screen, inferred or not", async () => {
 });
 
 test("every settings tab survives a reload", () => {
-  // The persisted-tab check reads this same list, so a tab added to the union
-  // alone can no longer be rejected back to General.
+  // The persisted-tab check reads this same list.
   assert.ok(SETTINGS_TABS.includes("keyboard-shortcuts"));
   assert.equal(new Set(SETTINGS_TABS).size, SETTINGS_TABS.length);
 });
 
 test("a Super chord off macOS records nothing rather than a different chord", () => {
-  // matchesBinding rejects a non-mac event carrying Meta, so there is nowhere to
-  // put it. Persisting Alt+K for a user who pressed Super+Alt+K would assign an
-  // action to a chord they did not choose, and fire it on Alt+K alone.
+  // matchesBinding rejects a non-mac event with Meta, so Super+Alt+K must not record as Alt+K.
   assert.equal(
     bindingFromEvent(keyEvent("KeyK", { metaKey: true, altKey: true }), false),
     null,
@@ -1434,12 +1258,10 @@ test("a Super chord off macOS records nothing rather than a different chord", ()
     bindingFromEvent(keyEvent("KeyK", { metaKey: true }), false),
     null,
   );
-  // Ctrl+Meta is likewise not a Mod chord with the Meta quietly dropped.
   assert.equal(
     bindingFromEvent(keyEvent("KeyK", { metaKey: true, ctrlKey: true }), false),
     null,
   );
-  // The same chords on macOS are ordinary Cmd bindings and still record.
   const mac = bindingFromEvent(
     keyEvent("KeyK", { metaKey: true, altKey: true }),
     true,
@@ -1448,9 +1270,7 @@ test("a Super chord off macOS records nothing rather than a different chord", ()
   assert.equal(formatBindingValue(mac), "Mod+Alt+KeyK");
 });
 
-// The sidebar search tooltip and the Settings menu row are the two hints a
-// user sees outside the shortcuts tab. Hard-coded, they keep advertising the
-// shipped chord after a rebind, and a dead one after a clear.
+// Hints outside the shortcuts tab must follow rebinds and clears.
 test("the sidebar hints render the bound chord, not the shipped default", async () => {
   for (const literal of ['"⌘K"', '"Ctrl+K"', "<DropdownMenuShortcut>⌘,"]) {
     assert.ok(
@@ -1460,7 +1280,6 @@ test("the sidebar hints render the bound chord, not the shipped default", async 
   }
   assert.ok(APP_SIDEBAR.includes('useShortcutLabel("searchChats")'));
   assert.ok(APP_SIDEBAR.includes('useShortcutLabel("openSettings")'));
-  // Unassigned actions must drop the hint rather than render an empty key cap.
   assert.ok(APP_SIDEBAR.includes("{searchShortcutLabel && ("));
   assert.ok(APP_SIDEBAR.includes("{settingsShortcutLabel && ("));
 });
@@ -1482,8 +1301,6 @@ test("a hint label follows the override and disappears when cleared", () => {
   assert.equal(label({}, "openSettings"), "Ctrl+,");
 });
 
-// A row with no i18n keys renders a raw key path, and one missing from the
-// search index cannot be found from the settings search box.
 test("every action is translated and indexed for settings search", async () => {
   const at = EN.indexOf("    keyboardShortcuts: {");
   assert.notEqual(at, -1);
@@ -1512,7 +1329,6 @@ test("every action is translated and indexed for settings search", async () => {
   }
 });
 
-// Every action needs a place to run, or the row is a control that does nothing.
 test("every action has a useShortcut call site", async () => {
   const files = [
     "../src/app/routes/__root.tsx",
@@ -1537,8 +1353,7 @@ test("every action has a useShortcut call site", async () => {
   for (const def of SHORTCUT_DEFS) {
     // Biome wraps longer calls, so the id can land on its own line.
     const called = new RegExp(`useShortcut\\(\\s*"${def.id}"`).test(joined);
-    // The numbered slots register through <Shortcut> elements built from a
-    // template id, because a loop of hooks breaks the rules of hooks.
+    // Numbered slots register through <Shortcut> elements: a loop of hooks breaks the rules of hooks.
     const slot = /^(goToChat|goToRecentChat)(\d)$/.exec(def.id);
     const rendered =
       slot !== null &&
@@ -1547,9 +1362,7 @@ test("every action has a useShortcut call site", async () => {
   }
 });
 
-// The call-site test above accepts the numbered slots on the template alone, so a
-// shorter RECENT_SLOT_NUMBERS would leave the trailing rows showing a chord with
-// nothing behind it. Tie the loop to what the registry declares.
+// The call-site test accepts numbered slots on the template alone, so tie the loop to the registry.
 test("the Recents loop registers every numbered slot the registry declares", () => {
   const slots = /const RECENT_SLOT_NUMBERS = \[([\d, ]+)\] as const;/.exec(APP_SIDEBAR);
   assert.ok(slots, "RECENT_SLOT_NUMBERS is no longer a literal list");
@@ -1561,21 +1374,17 @@ test("the Recents loop registers every numbered slot the registry declares", () 
   );
 });
 
-// Holding a chord past the OS repeat delay resends it. A toggle would land
-// wherever the user let go, and an archive would run once per repeat.
+// Held chords auto-repeat past the OS delay; toggles and archives must not.
 test("auto-repeat only reaches the actions that walk a list", async () => {
   const read = async (path: string) =>
     readFile(new URL(path, import.meta.url), "utf8");
   const hook = await read("../src/features/settings/hooks/use-shortcut.ts");
-  // Suppressed after preventDefault: the chord is ours either way, so the
-  // browser must not act on the repeats we drop.
   const at = hook.indexOf("event.preventDefault();");
   assert.ok(at !== -1, "the hook stopped consuming the chord");
   assert.match(
     hook.slice(at),
     /event\.preventDefault\(\);\n(?:\s*\/\/[^\n]*\n)*\s*if \(event\.repeat && !repeats\) return;/,
   );
-  // Off by default, so a new call site is one-shot until it says otherwise.
   assert.match(hook, /repeats = false,\n(?:\s*\w+,\n)*\s*\} = options;/);
   assert.match(
     hook,
@@ -1598,16 +1407,12 @@ test("auto-repeat only reaches the actions that walk a list", async () => {
       `${id} should step while held`,
     );
   }
-  // Everything else is one-shot. A held toggle or archive is not a gesture.
   const optedIn = sidebar.match(/repeats: true/g) ?? [];
   assert.equal(optedIn.length, walkers.length);
 });
 
-// The chords read the published lists, so those have to end where the screen
-// does: whole-sidebar gates included, not just each section's disclosure.
 test("the published chat lists stop where the sidebar stops", async () => {
-  // The same two conditions the three chat groups render behind, plus the
-  // icon rail, which hides them in CSS rather than dropping them.
+  // Plus the icon rail, which hides the groups in CSS rather than dropping them.
   assert.match(
     APP_SIDEBAR,
     /const chatListsOnScreen =\n\s*!isStudioRoute &&\n\s*!showTrainingRecents &&\n\s*\(isMobile \|\| sidebarState !== "collapsed"\);/,
@@ -1620,7 +1425,6 @@ test("the published chat lists stop where the sidebar stops", async () => {
   ]) {
     assert.match(APP_SIDEBAR, group);
   }
-  // Select All reads the same rows the walk does, so it cannot reach further.
   const selectAll = APP_SIDEBAR.indexOf("const selectAllChats = useCallback(");
   assert.ok(selectAll !== -1, "selectAllChats moved");
   assert.match(
@@ -1631,7 +1435,6 @@ test("the published chat lists stop where the sidebar stops", async () => {
     APP_SIDEBAR,
     /const renderedChatItems = useMemo\(\n\s*\(\) => \[\.\.\.upToPinnedChatItems, \.\.\.belowPinnedChatItems, \.\.\.visibleRecentItems\],/,
   );
-  // Gating the arrays is enough because nothing renders from them.
   const rendered = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("return (", selectAll));
   for (const name of [
     "pinnedSectionChatItems",
@@ -1644,34 +1447,25 @@ test("the published chat lists stop where the sidebar stops", async () => {
   }
 });
 
-// The bulk chords take the selection over the open chat, and a selection has
-// no presence outside the rows, so one carried off screen is invisible and
-// still live.
+// Bulk chords prefer the selection, so one carried off screen would be invisible and live.
 test("a selection does not outlive the rows it was made on", async () => {
-  // The whole sidebar going takes the whole selection with it.
   assert.match(
     APP_SIDEBAR,
     /if \(!chatRowsOnScreen\) \{\n\s*clearSelection\(\);\n\s*return;\n\s*\}/,
   );
-  // Which is the stricter of the two: the lists can exist while their rows do
-  // not, because a closed mobile sheet unmounts them the way the rail does.
+  // Stricter: a closed mobile sheet unmounts rows while the lists still exist.
   assert.match(
     APP_SIDEBAR,
     /const chatRowsOnScreen = chatListsOnScreen && \(!isMobile \|\| openMobile\);/,
   );
-  // Select All is the one that builds a selection out of nothing, so it takes
-  // the same gate rather than waiting for the cleanup to undo it.
   assert.match(
     APP_SIDEBAR,
     /const selectAllChats = useCallback\(\(\) => \{\n\s*if \(!chatRowsOnScreen\) return;/,
   );
-  // Navigation is deliberately left on the looser one.
   assert.match(
     APP_SIDEBAR,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   );
-  // A single section closing takes only its own rows: the rest are still on
-  // screen, so the selection is held to what is rendered rather than dropped.
   assert.match(
     APP_SIDEBAR,
     /for \(const id of prev\) \{\n\s*if \(renderedChatIds\.has\(id\)\) kept\.add\(id\);/,
@@ -1684,9 +1478,7 @@ test("a selection does not outlive the rows it was made on", async () => {
     APP_SIDEBAR,
     /\}, \[chatRowsOnScreen, clearSelection, renderedChatIds, renderedProjectIds\]\);/,
   );
-  // Folder rows are selectable too, and selectionActive counts them, so one
-  // left behind by a closed section keeps the tool card's Escape standing
-  // aside for a selection with nothing on screen to show for it.
+  // selectionActive counts folder rows too, so stale ones would keep the tool card's Escape aside.
   assert.match(
     APP_SIDEBAR,
     /for \(const id of prev\) \{\n\s*if \(renderedProjectIds\.has\(id\)\) kept\.add\(id\);/,
@@ -1695,8 +1487,6 @@ test("a selection does not outlive the rows it was made on", async () => {
     APP_SIDEBAR,
     /if \(projectAnchor && !renderedProjectIds\.has\(projectAnchor\)\) \{\n\s*projectAnchorRef\.current = null;/,
   );
-  // The ways a folder row leaves without the sidebar going with it — including its section
-  // closing, which for a pinned folder is Pinned, not Projects.
   assert.match(
     APP_SIDEBAR,
     /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen\) return new Set<string>\(\);/,
@@ -1709,18 +1499,14 @@ test("a selection does not outlive the rows it was made on", async () => {
     APP_SIDEBAR,
     /if \(projectsOpen && projectsSectionConfigured\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
   );
-  // Both counts feed the flag, which is why both have to be pruned.
   assert.match(
     APP_SIDEBAR,
     /const selectionActive =\n?\s*selectionCount > 0 \|\| projectSelectionCount > 0;/,
   );
-  // Built from the draw-order list, which already carries every disclosure state, so
-  // a collapse or a "show less" needs nothing restated here.
   assert.match(
     APP_SIDEBAR,
     /const renderedChatIds = useMemo\(\n\s*\(\) => new Set\(renderedChatItems\.map\(\(item\) => item\.id\)\),/,
   );
-  // Which is what makes the four bulk branches safe to leave as they are.
   for (const id of [
     "archiveChat",
     "markChatUnread",
@@ -1735,17 +1521,13 @@ test("a selection does not outlive the rows it was made on", async () => {
       `${id} no longer prefers the selection`,
     );
   }
-  // The anchor goes with its row, so a later shift-click cannot reach back to
-  // one that is no longer there.
   assert.match(
     APP_SIDEBAR,
     /if \(anchor && !renderedChatIds\.has\(anchor\.id\)\) \{\n\s*selectionAnchorRef\.current = null;/,
   );
 });
 
-// Acting on a selection clears it, so the same chord pressed again reads
-// selectionCount as 0. Without a latch it archives the open chat, which was
-// never selected, and says nothing about it.
+// Acting clears the selection, so a repeated chord would otherwise hit the open chat.
 test("a selection chord does not fall through to the open chat", async () => {
   assert.match(APP_SIDEBAR, /const SELECTION_ACTION_GRACE_MS = \d+;/);
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
@@ -1753,9 +1535,7 @@ test("a selection chord does not fall through to the open chat", async () => {
       APP_SIDEBAR.indexOf(`useShortcut("${id}"`),
       APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf(`useShortcut("${id}"`)),
     );
-    // Both halves name the action. A shared latch would hold back Archive
-    // after Pin took the selection, and that is a different command the user
-    // chose, not the repeat this guard exists for.
+    // Per-action latches: a shared one would block Archive after Pin took the selection.
     assert.match(
       body,
       new RegExp(`actOnSelection\\("${id}",`),
@@ -1769,7 +1549,6 @@ test("a selection chord does not fall through to the open chat", async () => {
       `${id} reaches the open chat without checking its own latch`,
     );
   }
-  // deleteSelectedChats needs none of this: it has no open-chat branch.
   const del = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf('useShortcut("deleteSelectedChats"'),
     APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf('useShortcut("deleteSelectedChats"')),
@@ -1777,32 +1556,25 @@ test("a selection chord does not fall through to the open chat", async () => {
   assert.doesNotMatch(del, /withActiveChat\(/);
 });
 
-// The only action with no menu item anywhere and no undo, so a silent wipe
-// leaves the user nothing to tell it apart from a dead key.
 test("clearing every unread says what it cleared", async () => {
   const body = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf('useShortcut("clearAllUnreads"'),
     APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf('useShortcut("clearAllUnreads"')),
   );
-  // Counted before the wipe, or the toast reports zero every time. Rows, not
-  // threads: a Compare row is backed by two and would be cleared as two chats.
+  // Counted before the wipe; rows, not threads, since a Compare row is backed by two.
   assert.match(body, /const cleared = countUnreadRows\(state\);[\s\S]*state\.clearAllUnreads\(\)/);
   assert.match(body, /if \(state\.unreadThreadIds\.size === 0\) \{\n\s*toast\.info\(/);
   assert.match(body, /toast\.success\(/);
 });
 
-// Two parked requests must count as two, or both cards claim Enter and mount
-// order picks the winner. Compare panes make that easy to get wrong: the
-// backend reuses "call_0" per response, so the store key cannot be it.
+// The backend reuses "call_0" per response, so it cannot be the store key.
 test("a parked tool request is keyed by its own approval, not call_0", async () => {
   const adapter = await readSrcAsync("features/chat/api/chat-adapter.ts");
-  // Scope first, so two panes differ even before the approval token does.
   assert.match(
     adapter,
     /const toolConfirmationScopeId = resolvedThreadId\n\s*\? `\$\{sandboxSessionId \|\| "_default"\}:\$\{resolvedThreadId\}`/,
   );
   assert.match(adapter, /\? `\$\{toolConfirmationScopeId\}:\$\{approvalId\}`/);
-  // The other branch mints a unique part id rather than reusing the backend's.
   assert.match(
     adapter,
     /\(\) => `\$\{backendToolCallId\}:\$\{crypto\.randomUUID\(\)\}`/,
@@ -1811,31 +1583,24 @@ test("a parked tool request is keyed by its own approval, not call_0", async () 
   const { resolveToolCallPartId } = await import(
     "../src/features/chat/tool-call-id.ts"
   );
-  // One run's map cannot hand another run's the same id for "call_0".
   let minted = 0;
   const mint = () => `call_0:${(minted += 1)}`;
   const paneA = resolveToolCallPartId(new Map(), "call_0", undefined, "", mint);
   const paneB = resolveToolCallPartId(new Map(), "call_0", undefined, "", mint);
   assert.notEqual(paneA, paneB);
-  // Within a run the same backend id keeps resolving to the one card.
   const ids = new Map<string, string>();
   const first = resolveToolCallPartId(ids, "call_0", undefined, "", mint);
   assert.equal(
     resolveToolCallPartId(ids, "call_0", undefined, "", mint),
     first,
   );
-  // A confirmation id wins outright: that is the scoped key above.
   assert.equal(
     resolveToolCallPartId(ids, "call_0", "sess:thread:tok", "", mint),
     "sess:thread:tok",
   );
 });
 
-// The selection guard's effect depends on the set of rendered rows, and its
-// setState bails out on an unchanged selection. React still re-renders once to
-// discover that, so a dependency rebuilt during that render schedules the
-// effect again, without end. React error #185, which took down the whole chat
-// route rather than just the sidebar.
+// A dependency rebuilt each render re-runs the guard effect forever (React error #185).
 test("the rows the selection guard reads keep their identity", async () => {
   for (const name of [
     "visibleProjectRecords",
@@ -1854,16 +1619,12 @@ test("the rows the selection guard reads keep their identity", async () => {
       `${name} is rebuilt every render and feeds a selection effect`,
     );
   }
-  // The builder those lists memoise on has to hold its identity too, or they rebuild with it.
   const builder = APP_SIDEBAR.indexOf("const folderChatItems = ");
   assert.notEqual(builder, -1, "folderChatItems is gone");
   assert.match(APP_SIDEBAR.slice(builder, builder + 64), /= useCallback\(/);
 });
 
-// The root of the chain the test above pins. groupThreads returns a fresh
-// array, so calling it during render gives every derived sidebar list a new
-// identity on every render, which is what made the selection guard's effect
-// re-run without end.
+// groupThreads returns a fresh array, so calling it during render breaks list identity.
 test("the sidebar item lists are built once per change, not per render", async () => {
   const hook = await readSrcAsync("features/chat/hooks/use-chat-sidebar-items.ts");
   for (const name of ["items", "archivedItems"]) {
@@ -1877,9 +1638,7 @@ test("the sidebar item lists are built once per change, not per render", async (
   }
 });
 
-// Ctrl/Cmd-clicking a project row selects it without selecting any chat. The
-// chat-only chords used to read that as "no selection" and act on the open
-// chat, so Archive archived a chat the user had not pointed at.
+// Ctrl/Cmd-clicking a project selects no chat; that must not read as "no selection".
 test("the chat-only chords stand aside for a project selection", async () => {
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
     const at = APP_SIDEBAR.indexOf(`useShortcut("${id}", () => {`);
@@ -1892,17 +1651,13 @@ test("the chat-only chords stand aside for a project selection", async () => {
       `${id} checks the project selection too late`,
     );
   }
-  // Only when no chat is selected: a mixed selection still has chats to act on.
   assert.match(
     APP_SIDEBAR,
     /const projectsOnlySelected = \(\) =>\n\s*selectionCount === 0 && projectSelectionCount > 0;/,
   );
 });
 
-// Apple lists Shift-Command-] and Shift-Command-[ as Safari's Show Next Tab
-// and Show Previous Tab, and Chrome carries the same pair on macOS. The chat
-// walk ships on them for the desktop build, so Settings has to say so rather
-// than let a web user rebind into a chord the browser takes first.
+// Safari and Chrome use Shift-Command-[ / ] for tab switching on macOS.
 test("the chat walk's bracket pair is reserved on macOS only", () => {
   for (const value of ["Mod+Shift+BracketLeft", "Mod+Shift+BracketRight"]) {
     assert.ok(
@@ -1915,18 +1670,14 @@ test("the chat walk's bracket pair is reserved on macOS only", () => {
       `${value} is not taken off macOS`,
     );
   }
-  // Still the shipped default, which is why it is on the deliberate list.
   const walk = SHORTCUT_DEFS.find((def) => def.id === "nextChat");
   assert.equal(defaultBindingFor(walk!, "primary", true), "Mod+Shift+BracketRight");
 });
 
-// The desktop signs out through the OS account menu, so the chord's handler
-// returns there and the sidebar hides its own logout item. Offering the row in
-// Settings let a desktop user bind a key that can never fire.
+// The desktop signs out through the OS account menu, so the chord can never fire there.
 test("the logout row is not offered on the desktop build", async () => {
   const logout = SHORTCUT_DEFS.find((def) => def.id === "logOut");
   assert.equal(logout?.webOnly, true);
-  // Nothing else claims it, or the flag would hide a working action.
   assert.deepEqual(
     SHORTCUT_DEFS.filter((def) => def.webOnly).map((def) => def.id),
     ["logOut"],
@@ -1934,14 +1685,9 @@ test("the logout row is not offered on the desktop build", async () => {
   assert.match(KEYBOARD_SHORTCUTS_TAB, /!\(isTauri && def\.webOnly\)/);
 });
 
-// The composer's own keydown runs before the window listener and calls
-// preventDefault, which useShortcut treats as "already handled". A queue or
-// steer chord bound onto an Enter combination would therefore submit with the
-// send preference's intent instead of the behaviour it names, so the composer
-// looks the chord up itself.
+// The composer's keydown runs first and preventDefaults, so it must look follow-up chords up itself.
 const FOLLOW_UP_IDS = ["queueMessage", "steerMessage"] as const;
 
-/** Mod+Enter as it arrives on each platform: Cmd on macOS, Ctrl elsewhere. */
 const modEnterOn = (mac: boolean) => ({
   code: "Enter",
   metaKey: mac,
@@ -1963,7 +1709,6 @@ test("an Enter chord bound to queue or steer is recognised in the composer", () 
       ),
       "queueMessage",
     );
-    // A different chord is not this one: the composer keeps its own intent.
     assert.equal(
       shortcutMatchingEvent(
         { queueMessage: { primary: "Mod+Enter" } },
@@ -1973,8 +1718,7 @@ test("an Enter chord bound to queue or steer is recognised in the composer", () 
       ),
       null,
     );
-    // Shared with an action the registry ranks higher, so that one runs and
-    // this row is shadowed, the same rule useShortcut applies.
+    // Shadowed by a higher-ranked action, the same rule useShortcut applies.
     assert.equal(
       shortcutMatchingEvent(
         {
@@ -1994,9 +1738,6 @@ test("the composer submits an Enter-bound chord with the named behavior", async 
   const { composerFollowUpBehavior, followUpSubmitIntent } = await import(
     "../src/features/chat/utils/composer-preferences.ts"
   );
-  // ⌘⏎ with the send preference on Enter is the "opposite" chord, so a steer
-  // user pressing it would queue. Bound to Queue message it has to queue for
-  // both, and bound to Steer response it has to steer for both.
   for (const preference of ["queue", "steer"] as const) {
     for (const [id, behavior] of [
       ["queueMessage", "queue"],
@@ -2019,16 +1760,13 @@ test("the composer submits an Enter-bound chord with the named behavior", async 
       );
     }
   }
-  // The composer path has to consult the chord before it uses the intent the
-  // send preference produced.
   const submitOnKey = THREAD.slice(THREAD.indexOf("const submitOnKey = useCallback("));
   const body = submitOnKey.slice(0, submitOnKey.indexOf("\n  );"));
   assert.match(body, /const named = followUpShortcutBehavior\(event\);/);
   assert.match(body, /submitIntentRef\.current = named\n?\s*\?/);
 });
 
-// Compare hides the thread composer and puts SharedComposer on screen, so a
-// composer chord registered in only one of them is dead in the other mode.
+// Compare hides the thread composer for SharedComposer, so chords must register in both.
 test("the follow-up chords are registered in both composers", async () => {
   const shared = await readSrcAsync("features/chat/shared-composer.tsx");
   for (const id of FOLLOW_UP_IDS) {
@@ -2043,11 +1781,9 @@ test("the follow-up chords are registered in both composers", async () => {
       `shared-composer.tsx does not register ${id}`,
     );
   }
-  // The reason the second registration is needed rather than optional.
   assert.match(CHAT_PAGE, /<Thread hideComposer=\{true\}/);
 });
 
-/** Searching the list by chord: the press narrows, it does not have to be exact. */
 function chord(value: string) {
   const parsed = parseBinding(value);
   assert.ok(parsed, `unparsable test binding ${value}`);
@@ -2067,7 +1803,6 @@ test("a keystroke search matches the chord it names", () => {
 });
 
 test("a keystroke search widens as modifiers come off", () => {
-  // Bare O finds every chord on O, which is what makes the key alone a useful search.
   for (const bound of ["Mod+Shift+KeyO", "Mod+Alt+KeyO", "Mod+Alt+Shift+KeyO"]) {
     assert.equal(
       keystrokeMatchesBinding(chord("KeyO"), chord(bound)),
@@ -2075,7 +1810,6 @@ test("a keystroke search widens as modifiers come off", () => {
       bound,
     );
   }
-  // ⇧⌘O keeps the ones carrying both, and drops ⌥⌘O.
   assert.equal(
     keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Alt+Shift+KeyO")),
     true,
@@ -2131,35 +1865,25 @@ test("the shortcuts tab arms the keystroke search ahead of Radix and the registr
     src,
     /window\.addEventListener\("keydown", onKeyDown, \{ capture: true \}\)/,
   );
-  // Keys read through bindingFromEvent, which carries the fallback for an engine
-  // reporting no code. Off event.code, Tab and Escape would not be recognised there.
+  // bindingFromEvent carries the fallback for engines reporting no event.code.
   const listener = src.slice(
     src.indexOf("if (!byKeystroke || recording) return;"),
   );
   assert.doesNotMatch(listener, /event\.code\s*===/);
   assert.match(listener, /const binding = bindingFromEvent\(event\);/);
   assert.match(listener, /binding\.code === "Escape"/);
-  // The recorder owns the keyboard while it runs.
   assert.match(src, /if \(!byKeystroke \|\| recording\) return;/);
 });
 
-/**
- * Bare Escape is the one shipped default the chord box will not take as a query: it is
- * what backs out of the box. The recorder can free Escape because it swallows keys for a
- * single chord, while this mode persists, so a focused box would eat the dialog's own
- * dismiss for as long as it is on. The row stays reachable by name, where the query
- * matches the cap label too.
- */
+/** Bare Escape backs out of the chord box, so it is not taken as a query; the name search finds it. */
 test("the chord box keeps bare Escape, and the name search still finds that row", () => {
   const decline = SHORTCUT_DEFS.find((def) => def.id === "declineToolRequest");
   assert.ok(decline);
   assert.equal(defaultBindingFor(decline, "primary", true), "Escape");
-  // What the name search matches on, since the label is part of its haystack.
   const escape = parseBinding("Escape");
   assert.ok(escape);
   assert.equal(formatBindingLabel(escape, true), "Esc");
   assert.ok(formatBindingLabel(escape, true).toLowerCase().includes("esc"));
-  // The branch that reserves it, and the modifier that is left searchable.
   assert.match(
     KEYBOARD_SHORTCUTS_TAB,
     /binding\.code === "Escape" && bare && !binding\.shift/,

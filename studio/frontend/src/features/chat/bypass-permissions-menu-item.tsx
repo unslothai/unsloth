@@ -17,8 +17,7 @@ import {
   PermissionModeMenuItems,
 } from "./permission-mode-select";
 
-// Dictation-only "+" menu fallback: the composer pill is the normal control, but it is hidden
-// while recording, so this is the sole way to reach permission mode then.
+// Fallback while recording hides the composer pill, the normal permission-mode control.
 export function BypassPermissionsMenuItem() {
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
@@ -33,8 +32,7 @@ export function BypassPermissionsMenuItem() {
       <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(330px*var(--ui-space-scale,1))]">
         <PermissionMenuLabel sandboxControls />
         <PermissionModeMenuItems
-          // Defer past Radix's menu-close focus restoration, or the dropdown grabs focus back
-          // and breaks the dialog's focus trap.
+          // Defer past Radix focus restoration, or the dropdown steals focus from the dialog trap.
           onRequestFullAccess={() =>
             setTimeout(() => setBypassConfirmOpen(true), 0)
           }
@@ -44,9 +42,7 @@ export function BypassPermissionsMenuItem() {
   );
 }
 
-// The danger-confirmation dialog. Mounted once at the chat-page root, not inside a Composer or the
-// menu, and driven by global store state, so it works for both the main and shared composers,
-// never duplicates in Compare mode, and never leaves the composer popovers frozen open.
+// Mounted once at the chat-page root and store-driven, so it never duplicates in Compare.
 export function BypassPermissionsConfirmDialog() {
   const open = useChatRuntimeStore((s) => s.bypassConfirmOpen);
   const setOpen = useChatRuntimeStore((s) => s.setBypassConfirmOpen);

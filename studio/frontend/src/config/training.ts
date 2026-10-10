@@ -17,10 +17,8 @@ export const TARGET_MODULES = [
   "down_proj",
 ];
 
-/** CPT trains embeddings via modules_to_save; keep them visible in the UI. */
 export const CPT_EMBEDDING_MODULES = ["embed_tokens", "lm_head"] as const;
 
-/** CPT requires embed_tokens and lm_head in addition to standard LoRA modules. */
 export const CPT_TARGET_MODULES = [...TARGET_MODULES, ...CPT_EMBEDDING_MODULES];
 
 const CPT_UI_TARGET_MODULES = ["all-linear", ...CPT_TARGET_MODULES] as const;
@@ -39,7 +37,6 @@ export function isCptAllLinearTargetModules(
   );
 }
 
-/** Preserve all-linear model defaults for CPT. */
 export function resolveCptTargetModules(
   currentTargetModules: readonly string[],
 ): string[] {
@@ -112,8 +109,7 @@ export const OPTIMIZER_OPTIONS: ReadonlyArray<{
   { value: "adamw_torch_fused", label: "AdamW (PyTorch Fused)" },
 ];
 
-// MLX trainer optimizers (Apple Silicon); must match SUPPORTED_MLX_OPTIMIZERS in unsloth-zoo's
-// mlx/trainer.py. The CUDA/torch names above are remapped to AdamW on MLX.
+// Must match SUPPORTED_MLX_OPTIMIZERS in unsloth-zoo's mlx/trainer.py.
 export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{
   value: string;
   label: string;
@@ -134,8 +130,7 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
   { value: "cosine", label: "Cosine" },
 ];
 
-/** Method-aware learning rate defaults; the backend mirrors these in
- * studio/backend/assets/configs/. */
+/** Method-aware LR defaults; mirrored in studio/backend/assets/configs/. */
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;
@@ -231,7 +226,6 @@ export const PRIORITY_TRAINING_MODELS: readonly string[] = [
   "unsloth/Llama-3.2-3B-Instruct",
 ];
 
-/** Pin priority models to the top of a list of model IDs, preserving their defined order. */
 export function applyPriorityOrdering(ids: string[]): string[] {
   const idSet = new Set(ids);
   const pinned = PRIORITY_TRAINING_MODELS.filter((id) => idSet.has(id));

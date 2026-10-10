@@ -15,11 +15,8 @@ export interface EngineStatus {
   restored?: boolean;
   can_rollback: boolean;
   unsupported_reason: string | null;
-  /** "wsl": on Windows the engine runs inside Studio's own WSL2 distro. */
   host?: "local" | "wsl";
-  /** WSL2 state from Studio's own record; distro is set once its Ubuntu has been imported. */
   wsl?: { state: string | null; distro: string | null };
-  // Wheel bytes the offered install or update downloads; null when unknown or nothing is on offer.
   download_bytes?: number | null;
   job: {
     state: string;
@@ -56,7 +53,6 @@ export function precisionAfterEngineSwitch<P extends string>(
     : precision;
 }
 
-/** What the install prompt tells a Windows user about WSL2, or null when the engine runs locally. */
 export function wslNoticeKey(
   engine: EngineStatus,
 ): "managedEngines.wslSetup" | "managedEngines.wslReady" | "managedEngines.wslRestart" | null {

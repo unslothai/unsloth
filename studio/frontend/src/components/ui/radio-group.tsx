@@ -36,8 +36,7 @@ function RadioGroupItem({
     >
       <RadioGroupPrimitive.Indicator
         data-slot="radio-group-indicator"
-        // The dot sits on data-checked:bg-primary, which a custom accent can
-        // set to any color, so it has to track that background's foreground.
+        // A custom accent can make bg-primary any color, so the dot tracks its foreground.
         className="group-aria-invalid/radio-group-item:text-destructive flex size-4 items-center justify-center text-primary-foreground"
       >
         <HugeiconsIcon

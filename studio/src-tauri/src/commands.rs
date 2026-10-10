@@ -10,70 +10,26 @@ use tauri::{AppHandle, Emitter};
 const BACKEND_STARTUP_GRACE_PERIOD: Duration = Duration::from_secs(5 * 60);
 const HEALTH_WATCHDOG_INTERVAL: Duration = Duration::from_secs(15);
 const HEALTH_WATCHDOG_MAX_FAILURES: u32 = 3;
-/// Strikes allowed when the last answered probe said the backend was generating and the
-/// ones since then timed out rather than being refused.
-///
-/// Three strikes is ~75s of silence here, not 45s: the loop sleeps HEALTH_WATCHDOG_INTERVAL
-/// and only then probes, so a strike that TIMES OUT costs 15s + 10s, where a refused one
-/// costs only the 15s. A saturated host clears 75s easily -- a model that does not fit runs
-/// at fractions of a token per second, and the loop serving it can miss several probes in a
-/// row while the response is still being produced. Killing there ends a stream the user is
-/// waiting on and reports it as "Server stopped unexpectedly". Twelve strikes is ~300s.
-///
-/// Only the stalled case gets this. A refused connection still counts against the plain
-/// budget, so a backend that really died is reported just as fast as before.
+/// Busy budget: a timed-out strike costs ~25s (sleep + probe), so 12 strikes is ~300s.
+/// Only stalls after a busy answer get it; refused connections use the plain budget.
 const HEALTH_WATCHDOG_MAX_FAILURES_BUSY: u32 = 12;
-/// Per-probe HTTP budget for the launcher's liveness probe.
-///
-/// Generous on purpose. The backend imports torch and transformers on a background warm
-/// thread, and those C-extension imports hold the GIL, so the event loop can go silent for
-/// seconds at a time on a cold start (3735ms measured on a Mac, with the process quiet for
-/// ~27s around it). A 2s budget turns that into a probe timeout, and three of those in a row
-/// kill a backend that is merely busy. Kept below HEALTH_WATCHDOG_INTERVAL so a slow probe
-/// cannot overlap the next one.
-///
-/// This is not the preflight budget: `preflight::backend::probe_ownerless_spawned_backend`
-/// deliberately keeps its own 2s, because a preflight timeout dead-ends the launch rather
-/// than retrying, and `backend/tests/test_health_answers_within_probe_budget.py` derives
-/// `_HEALTH_DETECT_BUDGET_S` from that number.
+/// Generous: warm-thread imports hold the GIL for seconds. Must stay below HEALTH_WATCHDOG_INTERVAL.
+/// Not the preflight budget, which stays 2s (test_health_answers_within_probe_budget.py).
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long one loopback connect gets to be REFUSED before silence starts meaning a filtered
-/// handshake (#10520) rather than an empty port, in which case the full ladder is kept.
-///
-/// Per platform because the wait before a refusal is: 0.1ms worst on linux and 0.2ms on
-/// macOS, but 2030.2ms on Windows, which retransmits the SYN first (as libuv documents when
-/// it disables that per socket via SIO_TCP_INITIAL_RTO). The legal window is therefore
-/// (2030, 2500] on Windows, since `the_refusal_probe_cannot_eat_the_ladder_it_short_circuits`
-/// caps it at a quarter of HEALTH_PROBE_TIMEOUT, and this takes the end with the headroom.
-/// Measurements per platform are in the PR description.
-///
-/// Spent BEFORE the first rung, so it is also the whole cost the fast path can add, and only
-/// a port nobody here manages that neither answers nor refuses ever pays it.
+/// How long a loopback connect gets to be refused. Windows retransmits the SYN (~2030ms first),
+/// so its window is (2030, 2500], capped at a quarter of HEALTH_PROBE_TIMEOUT.
 #[cfg(windows)]
 const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(2_500);
 #[cfg(not(windows))]
 const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
-/// Budget for the single last-chance probe spent before a stalled backend is declared dead.
-///
-/// Deliberately above HEALTH_WATCHDOG_INTERVAL, unlike the per-cycle budget: this one is not
-/// part of the cadence. It runs at most once per backend, and only when the alternative is
-/// killing it, so overlapping the next probe is not a concern -- there is no next probe if
-/// this one does not save the backend. 30s covers a loop running a couple of probe budgets
-/// behind, which is the regime where a generation is still producing tokens but nothing
-/// answers within 10s.
+/// Last-chance probe budget; above the interval on purpose since it runs at most once, before a kill.
 const HEALTH_CONFIRM_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn should_count_watchdog_failure(has_seen_healthy: bool, elapsed_since_start: Duration) -> bool {
     has_seen_healthy || elapsed_since_start >= BACKEND_STARTUP_GRACE_PERIOD
 }
 
-/// Whether the startup grace has ended, given what the latest probe reported.
-///
-/// A backend that answers while still warming clears the latch instead of leaving it: an
-/// adopted backend starts latched (it was serving before this app attached), so a watchdog
-/// that only declined to *set* it would keep counting failures against a host that has just
-/// said it is still importing the ML stack. A probe that got no answer leaves the latch
-/// alone, since silence says nothing about whether startup finished.
+/// A warming answer clears the latch (adopted backends start latched); no answer leaves it alone.
 fn watchdog_seen_healthy_after(previous: bool, alive: bool, warming_up: bool) -> bool {
     if !alive {
         return previous;
@@ -81,11 +37,7 @@ fn watchdog_seen_healthy_after(previous: bool, alive: bool, warming_up: bool) ->
     !warming_up
 }
 
-/// Whether the backend was generating, given what the latest probe reported.
-///
-/// Same shape as the warm-up latch above: only an answer updates it. A probe that got
-/// nothing leaves the last answer standing, which is the whole point here, since the
-/// stall being ridden out is exactly when no answer comes back.
+/// Only an answer updates the latch; silence keeps the last answer, since a stall gives no answer.
 fn watchdog_inference_active_after(previous: bool, alive: bool, inference_active: bool) -> bool {
     if !alive {
         return previous;
@@ -93,11 +45,7 @@ fn watchdog_inference_active_after(previous: bool, alive: bool, inference_active
     inference_active
 }
 
-/// What a failed probe says about the port.
-///
-/// A spent budget means a process accepted the connection and did not answer, which is the
-/// stall the busy budget exists for. Anything else (refused, reset, no route) means nothing
-/// is serving there, and that is death.
+/// A timeout means something accepted and stalled; any other error means nothing is serving (death).
 fn liveness_from_probe_error(error: &reqwest::Error) -> BackendLiveness {
     BackendLiveness {
         probe_timed_out: error.is_timeout(),
@@ -105,49 +53,19 @@ fn liveness_from_probe_error(error: &reqwest::Error) -> BackendLiveness {
     }
 }
 
-/// Whether a failed adopted-path check is a stall rather than a dead port.
-///
-/// The ownership probe cannot answer this on its own: every transport error inside it becomes
-/// `NotVerified`, indistinguishable from a port that a different process now owns. The
-/// pre-probe can: it answered, from an Unsloth backend, on this port. Silence from the
-/// requests after that is the same stall the owned path already rides out.
-///
-/// `different_owner` is the one thing the probe *can* say for certain, so it overrides both:
-/// an adopted backend that exits while the busy latch is set leaves a freed port, and a
-/// restarted Unsloth backend binding it answers the pre-probe just as the old one did. That
-/// answer is not silence -- the ownership probe got a complete reply naming a different root,
-/// token or no desktop owner at all -- so it is a takeover, not a stall, and the port must be
-/// cleared on the normal three-strike budget rather than held for twelve.
+/// A failed adopted check is a stall if the pre-probe answered, unless a different owner answered.
 fn adopted_failure_is_a_stall(verified: bool, served_alive: bool, different_owner: bool) -> bool {
     !verified && served_alive && !different_owner
 }
 
-/// Whether the last-chance probe brought back evidence that a generation is still running.
-///
-/// Not `alive && inference_active`. On the adopted path `alive` means "the ownership probe
-/// re-verified us", and that probe's two extra loopback requests are exactly what a
-/// saturated backend drops -- the one this probe exists to reach. Such a backend answers
-/// the pre-probe with the busy marker set and then goes quiet, so requiring verification
-/// threw away the answer and cleared a backend mid-response, which is the loss this whole
-/// path is for. A stalled port that says it is generating is kept; silence is not, and a
-/// port a different Unsloth backend took over never reaches here with the marker set.
+/// Not `alive && inference_active`: a saturated adopted backend fails ownership re-verification,
+/// but its pre-probe busy marker is still evidence that it is generating.
 fn watchdog_confirm_keeps_backend(confirmed: &BackendLiveness) -> bool {
     confirmed.inference_active && (confirmed.alive || confirmed.probe_timed_out)
 }
 
-/// Whether to spend one long last-chance probe before declaring a backend dead.
-///
-/// The busy budget can only widen on a marker that some probe actually brought back, and
-/// there is a window where none can: a generation that starts just after an idle answer
-/// and saturates the loop before the next probe leaves the latch false for the rest of its
-/// life, so it dies on the plain three-strike budget with a response in flight -- the exact
-/// loss this change is for. Nothing in the backend can close that window, because a starved
-/// loop cannot answer at all, and the desktop UI cannot either: #8945 is an external
-/// agentic client posting straight to `/v1/messages`, with no frontend in the path.
-///
-/// What can close it is asking once more, with a budget wide enough that a loop running
-/// tens of seconds behind still gets a word in. Only ever spent on a stall: a refused port
-/// is death and is still reported at three strikes, at the same speed, with no extra wait.
+/// One long last-chance probe before a kill, for a generation that started between probes.
+/// Only on a stall; a refused port still dies at three strikes.
 fn watchdog_should_confirm_before_death(
     consecutive_failures: u32,
     budget: u32,
@@ -156,16 +74,8 @@ fn watchdog_should_confirm_before_death(
     consecutive_failures >= budget && probe_timed_out
 }
 
-/// Whether the watchdog may still act on the backend it set out to watch.
-///
-/// Every probe is an await, and the last-chance one is 30s wide on top of the 10s cycle
-/// probe, so up to 40s of wall clock passes between reading the state at the top of the
-/// loop and spending the verdict on it. A stop or a restart lands in that window as a
-/// swapped handle: `start_backend` bumps the generation and stores a new child, and
-/// `stop_backend` has no generation guard of its own, so a watchdog acting on its
-/// pre-await snapshot kills the replacement and reports the healthy new backend as
-/// crashed. The generation is the identity the probe never carried, and the shutdown flag
-/// covers the stop that has not been followed by a start yet.
+/// Probes await up to ~40s; a restart (new generation) or stop may land meanwhile, so recheck
+/// before killing or the replacement gets killed.
 fn watchdog_may_still_act(
     current_generation: u64,
     watched_generation: u64,
@@ -175,7 +85,6 @@ fn watchdog_may_still_act(
     current_generation == watched_generation && has_owned && !shutting_down
 }
 
-/// Consecutive failures tolerated before the backend is declared dead.
 fn watchdog_failure_budget(inference_active: bool, probe_timed_out: bool) -> u32 {
     if inference_active && probe_timed_out {
         HEALTH_WATCHDOG_MAX_FAILURES_BUSY
@@ -243,9 +152,7 @@ pub async fn desktop_preflight(
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
     let started = Instant::now();
-    // A window reload re-runs this during our own install or update, and the
-    // installer phase does not hold the runtime gate. Checked on both sides of the
-    // probe: one that ends mid-probe still leaves a half-written reading.
+    // The installer phase does not hold the runtime gate; checked before and after the probe.
     let mutating = || {
         install::is_install_running(install_state.inner())
             || update::is_update_running(update_state.inner())
@@ -296,10 +203,7 @@ pub async fn desktop_preflight(
     Ok(result)
 }
 
-/// Check if unsloth is installed AND functional.
-/// Runs `unsloth -h` to verify the import chain works — a partial install
-/// (binary exists but deps missing) will fail on import and return false,
-/// which sends the user to the install screen for a clean re-install.
+/// Runs `unsloth -h` so a partial install (deps missing) reports false.
 #[tauri::command]
 pub async fn check_install_status() -> bool {
     let Some(bin) = process::find_unsloth_binary() else {
@@ -367,9 +271,7 @@ pub async fn check_install_status() -> bool {
     }
 }
 
-/// Start the backend server on the given port.
-/// Also spawns a health watchdog that monitors the backend and emits
-/// `server-crashed` if it becomes unresponsive (deadlock, OOM, etc.).
+/// Start the backend and spawn a health watchdog that emits `server-crashed` if it hangs.
 #[tauri::command]
 pub async fn start_server(
     app: AppHandle,
@@ -383,8 +285,6 @@ pub async fn start_server(
     let diagnostics_state = diagnostics.inner().clone();
     let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
 
-    // Spawn health watchdog for the owned backend — detects
-    // deadlocks and hangs that stdout-based crash detection misses.
     let watchdog_state = state.inner().clone();
     let watchdog_shutdown = shutdown.inner().clone();
     let watchdog_app = app.clone();
@@ -463,18 +363,12 @@ pub async fn stop_server(
 /// What one launcher probe learned about the backend process.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct BackendLiveness {
-    /// The port answered with an Unsloth backend reply.
     alive: bool,
-    /// The backend answered but has not finished its background warm, so the ML-stack
-    /// imports on its warm thread are still in flight. Alive, but not yet done starting.
+    /// Answered, but the background warm (ML-stack imports) is still in flight.
     warming_up: bool,
-    /// The backend answered and had at least one generation in flight. On the adopted path
-    /// this is the pre-probe's reading, which survives an ownership re-check that went
-    /// silent; readers that need "answered right now" pair it with `alive`.
+    /// On the adopted path this is the pre-probe reading; pair with `alive` for "answered now".
     inference_active: bool,
-    /// The probe ran out of budget rather than being refused, so a process is still
-    /// holding the port. Silence from a closed port is death; silence from an accepted
-    /// connection is a stall.
+    /// Timed out rather than refused: a process still holds the port (stall, not death).
     probe_timed_out: bool,
     /// An HTTP RESPONSE, whatever its status. Weaker than `alive`, which also requires the payload to name this service.
     answered: bool,
@@ -487,16 +381,13 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
     match check_health_inner(port, HEALTH_PROBE_TIMEOUT).await {
         Ok(liveness) => Ok(liveness.alive),
         Err(e) => {
-            // Network errors are not command errors — just means not healthy
             info!("Health check on port {} failed: {}", port, e);
             Ok(false)
         }
     }
 }
 
-/// Whether a process still holds the port. `check_health_inner` only returns `Ok` with
-/// `probe_timed_out: false`, so a stall arrives through the `Err` arm; a REFUSED connection
-/// is not a timeout.
+/// A stall arrives through the `Err` arm; a refused connection is not a timeout.
 #[tauri::command]
 pub async fn check_backend_present(
     state: tauri::State<'_, BackendState>,
@@ -524,11 +415,7 @@ async fn backend_presence(
     }
 }
 
-/// Whether the webview can stop retrying and tell the user the backend is gone.
-///
-/// Not `check_backend_present`: presence reports a backend of ours that has not bound its
-/// port yet exactly as it reports one that was never there, and that first case is the slow
-/// start the ladder exists to survive. Ownership is asked FIRST for the same reason.
+/// Not `check_backend_present`: our own backend may not have bound its port yet. Ownership asked first.
 #[tauri::command]
 pub async fn check_backend_is_gone(
     state: tauri::State<'_, BackendState>,
@@ -546,26 +433,20 @@ async fn backend_is_gone(port: u16, budget: Duration, we_manage_it: impl Fn() ->
     if port == 0 {
         return false;
     }
-    // A backend we started may simply not have bound its port yet: #10520, keep waiting.
+    // A backend we started may not have bound its port yet: keep waiting.
     if we_manage_it() {
         return false;
     }
     if !matches!(connect_outcome(port, budget).await, ConnectOutcome::Refused) {
         return false;
     }
-    // Ownership was read BEFORE the connect, and a refusal is not instant everywhere: Windows
-    // retransmits the SYN first, so that read can be 2s stale by the time it decides. Asking
-    // again costs one mutex read and no network, and only a port nobody was bringing up at
-    // either end is reported gone.
+    // Re-check ownership: Windows refusals can take ~2s, so the earlier read may be stale.
     !we_manage_it()
 }
 
-/// What one loopback connect established, as three answers rather than two.
 #[derive(Debug, PartialEq, Eq)]
 enum ConnectOutcome {
-    /// The kernel answered that nothing holds the port. Proof, not an expiring budget.
     Refused,
-    /// Something accepted, so an empty port is not what the webview ran into.
     Accepted,
     /// No answer inside the budget, or an error not naming a closed port: #10520 lands here.
     Unsettled,
@@ -580,8 +461,7 @@ async fn connect_outcome(port: u16, budget: Duration) -> ConnectOutcome {
     classify_connect(settled)
 }
 
-/// `None` is a spent budget. Split from the connect so the rule is testable without a port
-/// that behaves the way each branch needs.
+/// `None` is a spent budget.
 fn classify_connect(settled: Option<std::io::Result<()>>) -> ConnectOutcome {
     match settled {
         Some(Ok(())) => ConnectOutcome::Accepted,
@@ -605,25 +485,13 @@ fn we_could_be_bringing_up(state: &BackendState, port: u16) -> bool {
     process::owned_backend_could_bind_port(state, port)
 }
 
-/// The rule `check_backend_present` applies, as a value so the test for it can actually fail.
 fn backend_is_present(liveness: &BackendLiveness, we_manage_it: bool) -> bool {
     // A healthy answer is presence whoever owns the port; a timeout or unhealthy reply counts only for a backend we manage.
     liveness.alive || ((liveness.probe_timed_out || liveness.answered) && we_manage_it)
 }
 
-/// Probe the backend for process liveness.
-///
-/// `/api/liveness` rather than `/api/health`: health awaits hardware detection through
-/// `_await_hardware_detection`, so it deliberately bills the probe for work that says
-/// nothing about whether the process is alive. Liveness reads module-level caches only,
-/// which is the reason it was added. Backends older than that route answer 404, so fall
-/// back to health for them, the same order `process::generic_backend_health_ok` and
-/// `desktop_backend_owner::fetch_liveness` already use.
-///
-/// The budget is a parameter rather than the constant, because the last-chance probe the
-/// watchdog spends before declaring a stalled backend dead needs a wider one: a loop that
-/// is starved past 10s is exactly the loop whose answer decides whether a generation is
-/// still running, and abandoning that read at 10s is what leaves the question unanswered.
+/// Uses /api/liveness (health awaits hardware detection), falling back to /api/health on 404.
+/// The budget is a parameter so the last-chance probe can use a wider one.
 async fn check_health_inner(
     port: u16,
     budget: Duration,
@@ -659,15 +527,13 @@ async fn check_health_inner(
         break;
     }
     let Some(json) = json else {
-        // Every path answered 404, which is still an answer.
         return Ok(BackendLiveness {
             answered: true,
             ..BackendLiveness::default()
         });
     };
 
-    // Liveness answers "alive" and health answers "healthy". Accept either, so the fallback
-    // above and a downgraded backend both still validate.
+    // Liveness answers "alive", health "healthy"; accept either.
     let live = json
         .get("status")
         .and_then(|v| v.as_str())
@@ -678,22 +544,13 @@ async fn check_health_inner(
         .and_then(|v| v.as_str())
         .map(|s| s == "Unsloth UI Backend")
         .unwrap_or(false);
-    // Both routes carry `torch_warm_in_progress` while the backend's coordinated warm thread
-    // is running, and drop it the moment that thread is done or was never started. That is
-    // the whole warm, not just its first stage: hardware detection settles early and the
-    // transformers, datasets and unsloth_zoo imports that follow hold the GIL just as hard,
-    // so this is the field that says "startup is still in flight".
+    // `torch_warm_in_progress` covers the whole warm, not just hardware detection.
     let warming = json
         .get("torch_warm_in_progress")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    // `hardware_detecting` is the older, narrower signal, kept as a fallback for backends
-    // that predate the field above; on those it is the only warm-up marker there is. It also
-    // means "this hardware verdict is provisional", which is why a deferred warm sets
-    // `hardware_detection_deferred` alongside it: nothing will ever settle the verdict then,
-    // and counting that as warming up would hold the startup grace open until it expired.
-    // A backend too old to send any of these reads as settled, which is what this launcher
-    // assumed before, so a downgrade loses the extra grace and nothing else.
+    // Fallback for older backends. A deferred warm sets hardware_detection_deferred and must not count
+    // as warming, or the grace would never end.
     let detecting = json
         .get("hardware_detecting")
         .and_then(|v| v.as_bool())
@@ -703,8 +560,7 @@ async fn check_health_inner(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Absent on a backend too old to publish it, which reads as "not busy": the widened
-    // budget is the only thing such a backend loses.
+    // Absent on old backends, which read as not busy.
     let inference_active = json
         .get("inference_active")
         .and_then(|v| v.as_bool())
@@ -747,21 +603,12 @@ async fn check_watchdog_health(
     let Some(owner) = snapshot.owner else {
         return BackendLiveness::default();
     };
-    // Ask the backend before asking who owns it. The ownership probe folds every transport
-    // error into "not verified", so classifying the failure has to happen here or a stalled
-    // adopted backend is indistinguishable from a dead one and loses the busy budget.
-    //
-    // Nothing is skipped by returning early: the probe's own first step is this same GET,
-    // on the same port with the same budget and the same /api/liveness -> /api/health
-    // fallback, so a port that answers nothing here cannot verify ownership either.
+    // Classify the failure here first: the ownership probe folds every transport error into not-verified.
     let served = match check_health_inner(port, budget).await {
         Ok(liveness) => liveness,
         Err(error) => return liveness_from_probe_error(&error),
     };
-    // HEALTH_PROBE_TIMEOUT, not the ownership path's default 2s. Every request inside the
-    // probe would otherwise time out during the very GIL stall this watchdog is supposed to
-    // ride out, so the backend came back unverified and the warm-up read below -- which is
-    // gated on that verification -- never ran at all.
+    // HEALTH_PROBE_TIMEOUT, not the 2s default, or every request times out during the GIL stall.
     let ownership = crate::desktop_backend_owner::probe_owned_backend_state_with_timeout(
         owner,
         Some(port),
@@ -773,24 +620,12 @@ async fn check_watchdog_health(
         ownership,
         crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
     );
-    // The one failure the probe can be certain about: a complete answer naming an owner that
-    // is not ours. Everything else it reports could be silence.
+    // The one failure the probe is certain about: a complete answer naming another owner.
     let different_owner = crate::desktop_backend_owner::probe_saw_a_different_owner(&ownership);
-    // The ownership probe answers "is this still our process", not "is startup over", which
-    // is why the read above is consulted as well. An adopted backend having served one
-    // request before this app attached is the same fallacy the owned path fixes below: a
-    // force-quit during a cold start leaves the backend running and still importing the ML
-    // stack, and the app relaunches straight onto it. Without a warm-up signal that host is
-    // declared dead three probes later while it is perfectly healthy.
-    //
     adopted_backend_liveness(verified, &served, different_owner)
 }
 
-/// Fold the adopted path's two readings -- what the backend served and what the ownership
-/// probe made of it -- into one verdict.
-///
-/// `alive` and `warming_up` stay gated on verification, so a foreign process on the port
-/// cannot hold the startup grace open.
+/// `alive` and `warming_up` stay gated on verification so a foreign process cannot hold the grace open.
 fn adopted_backend_liveness(
     verified: bool,
     served: &BackendLiveness,
@@ -799,34 +634,12 @@ fn adopted_backend_liveness(
     BackendLiveness {
         alive: verified,
         warming_up: verified && served.warming_up,
-        // NOT gated on verification, for the same reason `probe_timed_out` below is not.
-        // The ownership probe's extra requests are the ones a saturated backend drops, so
-        // requiring verification here discards the one thing the pre-probe did bring back:
-        // this backend, on this port, said a generation was in flight. That is precisely
-        // the evidence the last-chance confirmation spends, and gating it meant a stalled
-        // adopted backend answered "still generating" and was cleared anyway, mid-response.
-        //
-        // A takeover still clears it: `different_owner` is a complete answer naming someone
-        // else, so the generation it reports is not ours to protect. Every other reader
-        // gates on `alive` already (`watchdog_inference_active_after` returns the previous
-        // latch when the probe did not answer), so nothing else changes shape here.
+        // Not gated on verification: the pre-probe busy marker is the evidence the confirm probe needs.
+        // A takeover (different_owner) still clears it.
         inference_active: served.inference_active && !different_owner,
-        // The read above answering does not mean the whole check answered. The ownership
-        // probe issues two more loopback requests -- its own `/api/liveness` and the
-        // `/api/auth/desktop-login` compatibility POST -- each with its own budget, and it
-        // folds a timeout on either into "not verified". Hard-coding this false there gave
-        // the three-strike budget to an adopted backend that had just told us it was
-        // generating, which is the kill this whole change exists to prevent. Worse, the
-        // narrower budget is re-read on every failure, so one such cycle could fire the
-        // kill immediately on a count already past three.
-        //
-        // The read is the evidence: an Unsloth backend answered on this port, so silence
-        // from the rest of the check is a stall, not an empty port. A refused port never
-        // reaches here -- it returns above with `probe_timed_out` set from the error, and a
-        // port a different Unsloth backend has taken over is excluded by `different_owner`,
-        // since that one answered rather than fell silent.
+        // Ownership's extra requests can time out on a saturated backend; the pre-probe answer
+        // makes it a stall.
         probe_timed_out: adopted_failure_is_a_stall(verified, served.alive, different_owner),
-        // The pre-probe got a reply out of this port, whatever the re-check then did.
         answered: served.answered || served.alive,
     }
 }
@@ -843,8 +656,7 @@ pub fn get_server_logs(state: tauri::State<'_, BackendState>) -> Vec<String> {
     }
 }
 
-/// Open an existing directory in the system file manager. Validates the path
-/// up front so callers get a clean error instead of a raw OS failure.
+/// Validates the path first so callers get a clean error, not a raw OS failure.
 fn open_existing_dir_with<E>(
     dir: &std::path::Path,
     opener: impl FnOnce(&std::path::Path) -> Result<(), E>,
@@ -869,16 +681,14 @@ pub fn open_logs_dir(webview: tauri::Webview) -> Result<(), String> {
     open_existing_dir(&diagnostics::logs_dir())
 }
 
-/// Open a models directory (resolved by the backend, e.g. the HF cache) in the
-/// system file manager.
+/// Open a models directory (resolved by the backend) in the system file manager.
 #[tauri::command]
 pub fn open_models_dir(webview: tauri::Webview, path: String) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&webview)?;
     open_existing_dir(std::path::Path::new(&path))
 }
 
-/// Start the first-launch installation process.
-/// Runs the platform installer script with --tauri flag and streams progress events.
+/// Run the platform installer with --tauri, streaming progress.
 /// Returns "NEEDS_ELEVATION" if system packages need elevated install (Linux only).
 #[tauri::command]
 pub async fn start_install(
@@ -917,9 +727,7 @@ pub fn cancel_pending_elevation(
     Ok(())
 }
 
-/// Install system packages with elevated permissions (Linux only).
-/// Called by frontend after user approves the elevation dialog.
-/// Only allows packages that the install script reported as needed.
+/// Install system packages elevated (Linux); only packages the install script reported are allowed.
 #[cfg(target_os = "linux")]
 #[tauri::command]
 pub fn install_system_packages(
@@ -927,7 +735,6 @@ pub fn install_system_packages(
     state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
-    // Cross-check against the packages the install script actually reported
     let allowed = state
         .lock()
         .map(|s| s.needed_packages.clone())
@@ -943,7 +750,7 @@ pub fn install_system_packages(
     install::install_system_packages(&packages, &state, diagnostics.inner())
 }
 
-/// Stub for non-Linux platforms — elevation is handled by the scripts themselves.
+/// Non-Linux stub: elevation is handled by the scripts themselves.
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
 pub fn install_system_packages(
@@ -970,8 +777,7 @@ pub async fn confirm_backend_update(app: AppHandle) -> bool {
     .unwrap_or(false)
 }
 
-/// Run backend update: stop server, run `unsloth studio update`, emit progress.
-/// Does NOT restart the backend — the frontend handles shell update + relaunch after.
+/// Stop the server and run `unsloth studio update`. Does NOT restart; the frontend relaunches.
 #[tauri::command]
 pub async fn start_backend_update(
     app: AppHandle,
@@ -1024,15 +830,8 @@ pub async fn start_backend_update(
         .map_err(|e| format!("Update task panicked: {e}"))?
 }
 
-/// Repair a stale managed Unsloth install.
-/// Whether a native path lease this app signs can actually be verified.
-///
-/// The key is per process, so only a backend THIS process spawned holds it. An
-/// adopted survivor and an attached terminal-started backend both advertise
-/// `native_path_leases_supported` with a key that is not ours, and the boolean
-/// cannot tell them apart, so answer from the positive fact instead. Restarting
-/// them would also work, but adoption exists so a possibly mid-training backend
-/// is not killed, and the UI's only restart path runs a network update.
+/// Whether a native path lease this app signs can be verified: the key is per process, so only a
+/// backend THIS process spawned holds it; adopted ones advertise support with another key.
 #[tauri::command]
 pub async fn native_path_leases_usable(
     backend_state: tauri::State<'_, BackendState>,
@@ -1043,15 +842,8 @@ pub async fn native_path_leases_usable(
     )
 }
 
-/// `force_installer` skips the update attempt and runs the bundled installer directly.
-///
-/// The automatic repair tries `studio update` first because it is the cheap fix for a venv
-/// one release behind. But an update reuses the environment it finds, so a managed venv
-/// whose PyTorch has been replaced by a CPU-only wheel comes back from a successful update
-/// still CPU-only. Only install.ps1 / install.sh re-select the torch index.
-///
-/// Settings' manual "Repair installation" therefore passes true. Absent (the startup
-/// auto-repair path) reads as false, so that path is unchanged.
+/// Repair a stale managed Unsloth install.
+/// `force_installer` skips `studio update`, which keeps a CPU-only torch; only the installer re-selects it.
 #[tauri::command]
 pub async fn start_managed_repair(
     app: AppHandle,
@@ -1076,9 +868,7 @@ pub async fn start_managed_repair(
         return Err("Cannot repair while installation is in progress.".to_string());
     }
 
-    // Taken before anything else and held to the end: the process handles below are empty
-    // while the backend stops and between the update child and the installer, and every
-    // duplicate call that slipped through there ran its own update and raced for the installer.
+    // Held to the end: process handles are empty between stop, update and installer, so duplicates raced.
     let _repair = update::RepairInFlight::claim(update_state.inner())?;
 
     let diagnostics_state = diagnostics.inner().clone();
@@ -1100,8 +890,6 @@ pub async fn start_managed_repair(
     let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
         .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
 
-    // Ok(()) rather than skipping the match: a second copy of the fallback under a
-    // `if force_installer` would be the one place a future change could miss.
     let update_result = if force_installer {
         let _ = app.emit("repair-progress", "Running bundled installer...");
         Ok(())
@@ -1130,7 +918,6 @@ pub async fn start_managed_repair(
             let _ = app.emit("repair-complete", ());
             return Ok(());
         }
-        // The forced path already emitted its own progress line and ran no update.
         Ok(()) if force_installer => {}
         Ok(()) => {
             warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");
@@ -1140,13 +927,10 @@ pub async fn start_managed_repair(
             );
         }
         Err(msg) => {
-            // A stop is the user quitting or cancelling, not a broken install. Running
-            // the installer here rewrites a working venv and leaves it half-built when
-            // the app exits underneath it.
+            // A stop is the user quitting, not a broken install; running the installer would
+            // half-build the venv.
             if msg == update::UPDATE_STOPPED {
                 info!("Managed repair update stopped; skipping installer fallback");
-                // Only a user stop reaches this branch, and the support report prints
-                // final_status verbatim. Matches record_pending_elevation_canceled.
                 diagnostics::finish_repair_group(
                     &diagnostics_state,
                     &repair_group_id,
@@ -1388,9 +1172,7 @@ mod tests {
         assert!(err.contains("Stop that server"));
     }
 
-    /// Stub backend for the launcher probe. `liveness` of `None` models a backend older
-    /// than the route, which answers 404 there. Returns the port and the paths it was asked
-    /// for, so a test can assert which route the probe actually used.
+    /// Stub backend; `liveness: None` models a backend older than the route (404).
     async fn probe_test_backend(
         liveness: Option<String>,
         health: String,
@@ -1437,8 +1219,7 @@ mod tests {
 
     #[tokio::test]
     async fn liveness_is_probed_instead_of_the_detection_gated_health_route() {
-        // /api/health awaits hardware detection on purpose, so probing it bills the
-        // watchdog for a torch import. Liveness must be the only route touched.
+        // Health awaits hardware detection, so liveness must be the only route touched.
         let (port, paths) = probe_test_backend(
             Some(r#"{"status":"alive","service":"Unsloth UI Backend"}"#.to_string()),
             ready_health(false),
@@ -1456,8 +1237,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_backend_without_the_liveness_route_still_validates_through_health() {
-        // The desktop app talks to backends of varying versions; a downgrade answers
-        // "healthy" from /api/health and 404s liveness.
         let (port, paths) = probe_test_backend(None, ready_health(false)).await;
 
         let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
@@ -1495,10 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_late_warm_stage_still_counts_as_warming_up() {
-        // The regression: hardware detection is the warm's first stage, so its marker is
-        // gone while transformers, datasets and unsloth_zoo are still importing. Ending the
-        // startup grace here puts a GIL stall from those imports straight back into the
-        // three-strikes count that killed a healthy backend.
+        // Hardware detection ends early; the grace must last until the whole warm finishes.
         let (port, _) = probe_test_backend(
             Some(
                 r#"{"status":"alive","service":"Unsloth UI Backend","torch_warm_in_progress":true}"#
@@ -1522,8 +1298,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_finished_warm_ends_the_startup_grace() {
-        // The other half: the field has to disappear, or the grace never ends on its own
-        // and a genuinely hung backend waits out the full five minutes.
         let (port, _) = probe_test_backend(
             Some(
                 r#"{"status":"alive","service":"Unsloth UI Backend","torch_warm_in_progress":false}"#
@@ -1543,8 +1317,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_backend_predating_the_warm_field_still_gets_its_grace() {
-        // Backwards compatibility: a downgraded backend sends only hardware_detecting, and
-        // it is the only warm-up signal that backend has.
         let (port, _) = probe_test_backend(
             Some(
                 r#"{"status":"alive","service":"Unsloth UI Backend","hardware_detecting":true}"#
@@ -1563,8 +1335,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_deferred_warm_is_not_reported_as_still_warming_up() {
-        // With the warm switched off nothing will ever settle the verdict, so treating it
-        // as warming up would hold the startup grace open until it expires on its own.
         let (port, _) = probe_test_backend(
             Some(
                 r#"{"status":"alive","service":"Unsloth UI Backend","hardware_detecting":true,"hardware_detection_deferred":true}"#
@@ -1616,7 +1386,7 @@ mod tests {
 
     #[test]
     fn the_frontend_retry_ladder_outlives_one_probe_budget() {
-        // #10520: the ladder lives in TypeScript and the budget here, so only this guard keeps them in step.
+        // The ladder lives in TypeScript and the budget here; this guard keeps them in step.
         let src = include_str!("../../frontend/src/features/auth/api.ts").replace("\r\n", "\n");
         let marker = "const TAURI_FETCH_RETRY_DELAYS_MS = [";
         let start = src
@@ -1657,7 +1427,6 @@ mod tests {
 
     #[test]
     fn a_stalled_probe_is_not_reported_as_an_absent_backend() {
-        // check_health answers `alive`, so a timeout and a closed port are the same answer.
         let stalled = super::BackendLiveness {
             alive: false,
             probe_timed_out: true,
@@ -1684,7 +1453,6 @@ mod tests {
             "a refused connection must still read as absent"
         );
         assert!(super::backend_is_present(&answered, false));
-        // And the health command must keep collapsing the stall for its own caller.
         assert!(
             !stalled.alive,
             "check_health still reports a stall as not usable"
@@ -1693,9 +1461,6 @@ mod tests {
 
     #[test]
     fn the_startup_grace_survives_the_mac_cold_start_timeline() {
-        // Replays the macOS report this grace period exists for. The warm thread held the
-        // GIL through `import torch`, three probes in a row timed out inside the first
-        // minute, and the watchdog SIGTERMed a backend that was starting normally.
         for (label, elapsed) in [
             ("no validated port yet", Duration::from_secs(15)),
             ("probe timeout 1/3", Duration::from_secs(30)),
@@ -1721,14 +1486,8 @@ mod tests {
 
     #[test]
     fn the_adopted_ownership_probe_uses_the_watchdog_budget() {
-        // The warm-up read for an adopted backend is gated on ownership verifying, and that
-        // probe defaults to a 2s per-request budget. At 2s every request inside it times out
-        // during the very GIL stall the watchdog exists to ride out, so the backend reads as
-        // unverified, the warm-up read never runs, and the grace never reopens. Binding the
-        // call to HEALTH_PROBE_TIMEOUT here keeps the two from drifting apart again.
-        // Normalise line endings first. include_str! embeds the file exactly as checked
-        // out, and on Windows that is CRLF, so a bare "\n}\n" never matches and this
-        // panicked on the Tauri CI runner while passing everywhere else.
+        // The ownership probe must use HEALTH_PROBE_TIMEOUT or the warm-up read never runs.
+        // Normalise CRLF: include_str! embeds Windows checkouts verbatim.
         let src = include_str!("commands.rs").replace("\r\n", "\n");
         let start = src
             .find("async fn check_watchdog_health")
@@ -1747,11 +1506,7 @@ mod tests {
 
     #[test]
     fn an_adopted_backend_that_is_still_warming_gets_the_grace_back() {
-        // The other half of the reported crash. A force-quit during a cold start leaves the
-        // backend running and still importing the ML stack, and the relaunched app adopts it
-        // rather than spawning a new one. Adopted watchdogs start latched, so before this the
-        // grace never applied: three GIL-stalled probes cleared the backend at ~45s and put a
-        // "server stopped unexpectedly" screen in front of a host that was starting normally.
+        // Adopted watchdogs start latched; a cold-starting backend relaunched onto must still get the grace.
         let mut has_seen_healthy = true; // adopted: count_failures_immediately
         has_seen_healthy = super::watchdog_seen_healthy_after(has_seen_healthy, true, true);
         assert!(
@@ -1777,25 +1532,19 @@ mod tests {
 
     #[test]
     fn the_latch_tracks_the_last_answer_and_ignores_silence() {
-        // alive + done warming latches; alive + warming clears; no answer changes nothing,
-        // because a probe that timed out says nothing about whether startup finished.
         assert!(super::watchdog_seen_healthy_after(false, true, false));
         assert!(!super::watchdog_seen_healthy_after(true, true, true));
         assert!(super::watchdog_seen_healthy_after(true, false, false));
         assert!(!super::watchdog_seen_healthy_after(false, false, false));
-        // A warm that finishes after a stall re-latches, so the grace does not linger.
         assert!(super::watchdog_seen_healthy_after(false, true, false));
     }
 
     #[test]
     fn a_backend_that_stalls_while_generating_is_not_killed_at_three_strikes() {
-        // #8945. Four concurrent requests against a 27B Q8 on an APU ran at 0.28 tok/s, the
-        // loop serving them went quiet, and three probes later the response the user was
-        // waiting on was killed and reported as "Server stopped unexpectedly".
+        // A saturated host (0.28 tok/s) can miss probes while still streaming.
         let mut generating = false;
         generating = super::watchdog_inference_active_after(generating, true, true);
         assert!(generating);
-        // Silence leaves the last answer standing: no answer is exactly what a stall gives.
         generating = super::watchdog_inference_active_after(generating, false, false);
         assert!(generating);
         assert_eq!(
@@ -1807,8 +1556,6 @@ mod tests {
 
     #[test]
     fn a_dead_port_is_still_declared_dead_at_three_strikes() {
-        // The budget widens for a stall, never for a refusal, so a backend that really
-        // exited is reported just as fast as before. Same for one that was idle.
         assert_eq!(
             super::watchdog_failure_budget(true, false),
             super::HEALTH_WATCHDOG_MAX_FAILURES
@@ -1819,9 +1566,7 @@ mod tests {
         );
     }
 
-    /// A port that completes the handshake and then says nothing, which is what a stalled
-    /// backend looks like from here. The accepted streams are parked, not dropped: closing
-    /// one would answer the probe with a reset and the request would fail early.
+    /// Accepted streams are parked, not dropped: dropping would answer with a reset.
     async fn stalling_test_backend() -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -1836,7 +1581,6 @@ mod tests {
         port
     }
 
-    /// A port that answers every request with *status* and *body*.
     async fn answering_test_backend(status: &'static str, body: &'static str) -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -1891,7 +1635,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_managed_backend_that_answers_unhealthily_is_still_present() {
-        // A backend still building its app answers a non-2xx, collapsed onto the refused-connection default.
         let port = answering_test_backend("503 Service Unavailable", "").await;
         assert_eq!(
             super::backend_presence(port, || true).await,
@@ -1903,7 +1646,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_reply_this_build_cannot_parse_is_still_an_answer() {
-        // Propagating the parse error made presence indistinguishable from a refusal.
         let port = answering_test_backend("200 OK", "not json at all").await;
         assert_eq!(
             super::backend_presence(port, || true).await,
@@ -1921,8 +1663,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_that_accepts_and_never_answers_reads_as_a_stall() {
-        // The premise of the busy budget: a saturated backend still holds its port open, so
-        // the probe runs out of budget rather than being refused.
         let port = stalling_test_backend().await;
         let client = crate::loopback_http::client(Duration::from_millis(250)).unwrap();
 
@@ -1941,7 +1681,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_backend_present_reports_a_stalled_port_as_present() {
-        // The bug lives in the `Err` arm, which a struct-level test cannot reach; costs HEALTH_PROBE_TIMEOUT in wall clock.
+        // Costs HEALTH_PROBE_TIMEOUT in wall clock.
         let port = stalling_test_backend().await;
         assert_eq!(
             super::backend_presence(port, || true).await,
@@ -1953,7 +1693,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_stalled_port_this_app_does_not_manage_is_not_our_backend() {
-        // With no backend of our own on that port there is nothing to wait for.
         let port = stalling_test_backend().await;
         assert_eq!(
             super::backend_presence(port, || false).await,
@@ -1964,7 +1703,6 @@ mod tests {
 
     #[tokio::test]
     async fn check_backend_present_reports_a_closed_port_as_absent() {
-        // Classifying the error must not turn every failed probe into "present".
         let port = {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -1978,8 +1716,7 @@ mod tests {
         );
     }
 
-    /// Below the ephemeral range (32768 on Linux, 49152 elsewhere) and in its own window, so
-    /// no sibling test can be handed this port back the way a dropped port-0 binding can be.
+    /// Below the ephemeral range so no sibling test's port-0 binding can be handed this port.
     async fn a_closed_port_below_the_ephemeral_range() -> u16 {
         for candidate in 20_064..20_128u16 {
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)).await {
@@ -1990,8 +1727,6 @@ mod tests {
         panic!("every port in the probe window was already bound")
     }
 
-    /// Carried into the assertion message because the two failures need opposite fixes: an
-    /// answer that is not `ConnectionRefused` indicts the classifier, a late one the budget.
     async fn describe_connect(port: u16, budget: Duration) -> String {
         let target =
             std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
@@ -2009,13 +1744,9 @@ mod tests {
         }
     }
 
-    /// A budget under the platform's own wait before a refusal classifies every dead port as
-    /// Unsettled, and the fast path silently stops existing. The floors are well under
-    /// `REFUSAL_PROBE_TIMEOUT`, not equal to it, so only a real drop fails this.
+    /// Floors are well under REFUSAL_PROBE_TIMEOUT so only a real drop fails this.
     #[test]
     fn the_refusal_budget_clears_the_wait_this_platform_actually_takes() {
-        // Not the budget itself: the ladder invariant below also caps it, and pinning both
-        // ends would leave exactly one legal value.
         let floor = if cfg!(windows) {
             Duration::from_millis(2_100)
         } else {
@@ -2043,9 +1774,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_closed_port_we_are_bringing_up_is_not_gone() {
-        // #10520: our own backend has not bound its port yet, so the connect is refused
-        // exactly as for a dead one. Port 0 is safe here where it is not above, because
-        // ownership is read before anything connects.
+        // Port 0 is safe here: ownership is read before anything connects.
         let port = {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -2060,12 +1789,9 @@ mod tests {
 
     #[tokio::test]
     async fn ownership_taken_while_the_probe_ran_still_keeps_the_ladder() {
-        // A refusal is not instant on Windows, so without the second read a backend that
-        // starts during the probe is reported gone on a look taken a whole budget earlier.
         let port = a_closed_port_below_the_ephemeral_range().await;
         let asked = std::sync::atomic::AtomicUsize::new(0);
         let gone = super::backend_is_gone(port, super::REFUSAL_PROBE_TIMEOUT, || {
-            // nobody owns it when the probe starts, somebody does by the time it answers
             asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0
         })
         .await;
@@ -2092,14 +1818,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_placeholder_port_is_never_an_answer() {
-        // Port 0 is the base the webview holds before server-port arrives.
         assert!(!super::backend_is_gone(0, super::REFUSAL_PROBE_TIMEOUT, || false).await);
     }
 
     #[test]
     fn a_connect_that_never_answers_is_unsettled_not_refused() {
-        // A filtered loopback handshake is #10520 itself, and no test here can drop a SYN,
-        // so the rule is checked on its own: only a refusal is proof, a spent budget is not.
+        // No test can drop a SYN, so the rule is checked on its own.
         assert_eq!(
             super::classify_connect(None),
             super::ConnectOutcome::Unsettled,
@@ -2132,16 +1856,12 @@ mod tests {
 
     #[test]
     fn the_refusal_probe_cannot_eat_the_ladder_it_short_circuits() {
-        // It is spent before the first rung, so it is the whole cost the fast path adds to
-        // a backend that turns out to be alive.
         assert!(super::REFUSAL_PROBE_TIMEOUT * 4 <= super::HEALTH_PROBE_TIMEOUT);
     }
 
     #[test]
     fn the_fast_path_asks_for_absence_and_not_for_presence() {
-        // Two different questions. `check_backend_present` reports a backend of ours that
-        // has not bound its port yet as absent, so shortening the ladder on that answer
-        // would undo #10520.
+        // `check_backend_present` reports our unbound backend as absent; the ladder must not use it.
         let src = include_str!("../../frontend/src/features/auth/api.ts").replace("\r\n", "\n");
         assert!(
             src.contains("invoke<boolean>(\"check_backend_is_gone\""),
@@ -2157,24 +1877,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_with_nothing_on_it_reads_as_death_not_a_stall() {
-        // The other half: a backend that really exited leaves a closed port, and that must
-        // still be declared dead at three strikes.
         let client = crate::loopback_http::client(Duration::from_secs(5)).unwrap();
 
-        // Binding port 0 and dropping the listener frees the port, it does not reserve it, and
-        // every other test in this binary binds port 0 too. The allocator can hand this one
-        // straight to one of them between the drop and the probe, and the request is answered
-        // rather than refused.
-        //
-        // So draw from below the ephemeral range instead of retrying: 32768 on Linux, 49152 on
-        // macOS and Windows, all above this. A sibling cannot be given a port from here, which
-        // is the difference that matters. Retrying a port that answered would be actively
-        // harmful, because answering means the probe just consumed someone's connection, and
-        // the one-shot fixture in loopback_http accepts exactly once before its own test sends
-        // the request it cares about. That does not fix the flake, it relocates it.
-        //
-        // A port here being occupied is a real listener on the machine, not a race, so walk a
-        // small window and let the probe assert on the one that was free.
+        // Draw from below the ephemeral range: a freed port-0 port can be rebound by a sibling test,
+        // and retrying a port that answered would consume another test's one-shot connection.
         let port = {
             let mut free = None;
             for candidate in 20_000..20_064u16 {
@@ -2204,8 +1910,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_busy_marker_survives_the_wire() {
-        // End to end through the same client and parser the watchdog uses, so the field name
-        // is checked against what main.py publishes rather than against itself.
+        // End to end, so the field name is checked against what main.py publishes.
         let (busy_port, _) = probe_test_backend(
             Some(
                 r#"{"status":"alive","service":"Unsloth UI Backend","inference_active":true}"#
@@ -2226,7 +1931,6 @@ mod tests {
                 .unwrap()
                 .inference_active
         );
-        // Absent on an older backend, which reads as idle rather than as busy forever.
         assert!(
             !super::check_health_inner(idle_port, super::HEALTH_PROBE_TIMEOUT)
                 .await
@@ -2237,10 +1941,7 @@ mod tests {
 
     #[test]
     fn both_watchdog_paths_classify_a_failed_probe() {
-        // The adopted path folds every transport error into "not verified", so it has to
-        // classify the failure itself. Hard-coding it false there killed a stalled adopted
-        // backend at three strikes while the owned path rode the same stall out.
-        // Normalise line endings first: include_str! embeds CRLF on Windows checkouts.
+        // Normalise CRLF: include_str! embeds CRLF on Windows checkouts.
         let src = include_str!("commands.rs").replace("\r\n", "\n");
         let start = src
             .find("async fn check_watchdog_health")
@@ -2257,8 +1958,6 @@ mod tests {
 
     #[test]
     fn a_backend_that_answers_idle_gives_the_wide_budget_back() {
-        // The latch follows the last answer, so a finished stream drops straight back to
-        // three strikes rather than leaving the wide budget armed for the whole session.
         let generating = super::watchdog_inference_active_after(true, true, false);
         assert!(!generating);
         assert_eq!(
@@ -2269,9 +1968,6 @@ mod tests {
 
     #[test]
     fn an_adopted_backend_that_answers_and_then_stalls_keeps_the_busy_budget() {
-        // The ownership check issues two more loopback requests after the read that already
-        // answered, and folds a timeout on either into "not verified". Reporting that as a
-        // refusal handed a generating adopted backend the three-strike budget.
         assert!(super::adopted_failure_is_a_stall(false, true, false));
         assert_eq!(
             super::watchdog_failure_budget(
@@ -2284,11 +1980,6 @@ mod tests {
 
     #[test]
     fn a_stalled_adopted_backend_that_says_it_is_generating_survives_the_confirmation() {
-        // The shape the last-chance probe really brings back from a saturated adopted
-        // backend: the pre-probe answered with the busy marker, and the ownership probe's
-        // two extra loopback requests timed out behind it, so nothing is verified. Judging
-        // that on `alive` threw the answer away and cleared the backend with the response
-        // still streaming, which is the kill this whole path exists to prevent.
         let served = super::BackendLiveness {
             alive: true,
             warming_up: false,
@@ -2303,12 +1994,10 @@ mod tests {
         );
         assert!(super::watchdog_confirm_keeps_backend(&confirmed));
 
-        // Silence is still death: the same unverified re-check with nothing served.
         let quiet =
             super::adopted_backend_liveness(false, &super::BackendLiveness::default(), false);
         assert!(!super::watchdog_confirm_keeps_backend(&quiet));
 
-        // So is an idle backend that answered: only a generation buys the reprieve.
         let idle = super::adopted_backend_liveness(
             true,
             &super::BackendLiveness {
@@ -2322,22 +2011,13 @@ mod tests {
         );
         assert!(!super::watchdog_confirm_keeps_backend(&idle));
 
-        // And a port a different Unsloth backend took over answers with its own generation,
-        // which is not ours to hold the port open for.
         let taken_over = super::adopted_backend_liveness(false, &served, true);
         assert!(!super::watchdog_confirm_keeps_backend(&taken_over));
     }
 
     #[test]
     fn a_port_another_backend_took_over_stays_on_the_normal_budget() {
-        // An adopted backend that exits mid-generation leaves the busy latch set, and the
-        // freed port is routinely rebound by the next Unsloth backend the user starts. That
-        // one answers the pre-probe exactly as the old one did, so `served.alive` is true
-        // while the ownership probe rejects it -- with a complete answer, not silence.
-        //
-        // Calling that a stall gave a foreign port twelve strikes instead of three: 12 * 15s
-        // = ~180s of a backend the app still shows as running, against ~45s, plus a
-        // last-chance probe that is spent for nothing.
+        // A freed port rebound by another Unsloth backend is a takeover, not a stall.
         assert!(!super::adopted_failure_is_a_stall(false, true, true));
         assert_eq!(
             super::watchdog_failure_budget(
@@ -2355,8 +2035,6 @@ mod tests {
 
     #[test]
     fn an_adopted_port_that_answered_nothing_is_not_called_a_stall() {
-        // The read is the only evidence there is. Without it the failure is a dead port,
-        // and a dead port must still be reported at three strikes.
         assert!(!super::adopted_failure_is_a_stall(false, false, false));
         assert_eq!(
             super::watchdog_failure_budget(
@@ -2365,28 +2043,21 @@ mod tests {
             ),
             super::HEALTH_WATCHDOG_MAX_FAILURES
         );
-        // And a check that passed is not a failure at all, so it is not a stall either.
         assert!(!super::adopted_failure_is_a_stall(true, true, false));
     }
 
     #[test]
     fn a_generation_that_starts_between_probes_still_gets_one_last_chance() {
-        // The latch can only be set by a probe that answered. A generation that starts just
-        // after an idle answer and saturates the loop before the next probe never sets it,
-        // so it dies on three strikes with a response in flight unless something asks again.
         assert!(super::watchdog_should_confirm_before_death(
             super::HEALTH_WATCHDOG_MAX_FAILURES,
             super::HEALTH_WATCHDOG_MAX_FAILURES,
             true,
         ));
-        // Not before the budget is actually spent: the normal cadence is untouched.
         assert!(!super::watchdog_should_confirm_before_death(
             super::HEALTH_WATCHDOG_MAX_FAILURES - 1,
             super::HEALTH_WATCHDOG_MAX_FAILURES,
             true,
         ));
-        // And never for a refused port, so a backend that really exited is reported at the
-        // same speed as before, with no extra wait bolted on.
         assert!(!super::watchdog_should_confirm_before_death(
             super::HEALTH_WATCHDOG_MAX_FAILURES,
             super::HEALTH_WATCHDOG_MAX_FAILURES,
@@ -2396,12 +2067,9 @@ mod tests {
 
     #[test]
     fn the_last_chance_budget_is_wider_than_the_one_that_gave_up() {
-        // The point of the extra probe is a budget the per-cycle one cannot afford. Equal
-        // budgets would just repeat the read that already failed.
         assert!(super::HEALTH_CONFIRM_PROBE_TIMEOUT > super::HEALTH_PROBE_TIMEOUT);
     }
 
-    /// What one watchdog cycle got back from the port.
     #[derive(Clone, Copy, Debug)]
     enum Probe {
         Answered { warming: bool, busy: bool },
@@ -2416,13 +2084,8 @@ mod tests {
         }
     }
 
-    /// Replay a timeline through the watchdog's failure accounting and report the wall
-    /// clock at which the backend was declared dead, or `None` if it survived.
-    ///
-    /// Mirrors the loop in `health_watchdog` rather than calling it: the loop needs an
-    /// `AppHandle` and a real 15s sleep per cycle. Every decision it makes comes from the
-    /// helpers below, so the arithmetic being checked here is the arithmetic it runs.
-    /// `confirms` supplies what the last-chance probe gets back, in order.
+    /// Mirrors health_watchdog's failure accounting (it needs an AppHandle and real sleeps) using the
+    /// same helpers; returns the second the backend was declared dead.
     fn simulate_watchdog(probes: &[Probe], confirms: &[Probe]) -> Option<u64> {
         let interval = super::HEALTH_WATCHDOG_INTERVAL.as_secs();
         let probe_budget = super::HEALTH_PROBE_TIMEOUT.as_secs();
@@ -2502,12 +2165,8 @@ mod tests {
         let confirm_budget = super::HEALTH_CONFIRM_PROBE_TIMEOUT.as_secs();
         let stall_cycle = interval + probe_budget;
 
-        // A healthy idle backend is never touched.
         assert_eq!(simulate_watchdog(&vec![answered(false); 200], &[]), None);
-        // Neither is one that answers while it generates, which is the #8945 log: liveness
-        // came back every 15s right up to the end.
         assert_eq!(simulate_watchdog(&vec![answered(true); 200], &[]), None);
-        // A backend still importing the ML stack answers, so it never counts a failure.
         assert_eq!(
             simulate_watchdog(
                 &vec![
@@ -2522,25 +2181,17 @@ mod tests {
             None
         );
 
-        // A backend that exited leaves a refused port, and dies at three strikes with no
-        // last-chance wait bolted on: 3 x 15s, exactly what it cost before this change.
         let mut dead = vec![answered(false)];
         dead.extend(vec![Probe::Refused; plain]);
         assert_eq!(simulate_watchdog(&dead, &[]), Some(interval * 4));
-        // Even one that was generating when it went: the busy budget is for silence from a
-        // port that is still accepting, never for a refusal.
         let mut died_generating = vec![answered(true)];
         died_generating.extend(vec![Probe::Refused; plain]);
         assert_eq!(simulate_watchdog(&died_generating, &[]), Some(interval * 4));
 
-        // The regression this PR is for: answered busy, then the loop goes quiet. It has to
-        // survive far past three strikes.
         let mut stalling = vec![answered(true)];
         stalling.extend(vec![Probe::TimedOut; busy - 1]);
         assert_eq!(simulate_watchdog(&stalling, &[]), None);
 
-        // A backend that is genuinely wedged is still killed, just later. Bounded, and the
-        // bound is checked so nobody can widen it by accident.
         let mut wedged = vec![answered(true)];
         wedged.extend(vec![Probe::TimedOut; busy + 4]);
         assert_eq!(
@@ -2548,9 +2199,6 @@ mod tests {
             Some(interval + busy as u64 * stall_cycle + confirm_budget)
         );
 
-        // Codex #3: the generation starts between two probes, so no answer ever reports it.
-        // Before the last-chance probe this died at three strikes; now the probe that a
-        // starved loop can still answer within 30s reports the generation and it lives.
         let mut started_between_probes = vec![answered(false)];
         started_between_probes.extend(vec![Probe::TimedOut; 40]);
         assert_eq!(
@@ -2560,27 +2208,19 @@ mod tests {
             ),
             None
         );
-        // Without an answer to that probe it still dies, one confirm budget later than the
-        // three strikes it used to take. That is the whole cost to a hung idle backend.
         assert_eq!(
             simulate_watchdog(&started_between_probes, &[Probe::TimedOut]),
             Some(interval + plain as u64 * stall_cycle + confirm_budget)
         );
-        // And an answer that says the backend is idle is not a reprieve: a backend that is
-        // alive but unresponsive and doing nothing dies exactly where it did before.
         assert_eq!(
             simulate_watchdog(&started_between_probes, &[answered(false)]),
             Some(interval + plain as u64 * stall_cycle)
         );
 
-        // A stream that finishes hands the wide budget straight back.
         let mut finished = vec![answered(true), answered(false)];
         finished.extend(vec![Probe::Refused; plain]);
         assert_eq!(simulate_watchdog(&finished, &[]), Some(interval * 5));
 
-        // Mixed causes: stalling on the busy budget and then the port disappears. The
-        // budget is re-read per failure, so the refusal ends it immediately rather than
-        // waiting out the remaining busy strikes.
         let mut stalled_then_gone = vec![answered(true)];
         stalled_then_gone.extend(vec![Probe::TimedOut; 5]);
         stalled_then_gone.push(Probe::Refused);
@@ -2589,7 +2229,6 @@ mod tests {
             Some(interval + 5 * stall_cycle + interval)
         );
 
-        // A backend that answers every other probe never accumulates a budget at all.
         let flapping: Vec<Probe> = (0..200)
             .map(|i| {
                 if i % 2 == 0 {
@@ -2602,8 +2241,7 @@ mod tests {
         assert_eq!(simulate_watchdog(&flapping, &[]), None);
     }
 
-    /// A port that answers, but only after `delay`. This is the regime the last-chance
-    /// probe exists for: the loop is running behind, not gone.
+    /// Answers only after `delay`: a loop running behind, not gone.
     async fn slow_test_backend(delay: Duration, body: &'static str) -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -2630,8 +2268,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_wider_budget_reaches_a_backend_the_per_cycle_one_gives_up_on() {
-        // Measured, not asserted from the constants: the same port, the same parser, one
-        // budget that expires before the answer and one that does not.
         let port = slow_test_backend(
             Duration::from_millis(600),
             r#"{"status":"alive","service":"Unsloth UI Backend","inference_active":true}"#,
@@ -2698,32 +2334,17 @@ mod tests {
 
     #[test]
     fn a_restart_during_the_last_chance_probe_is_not_declared_dead() {
-        // The watched generation is the only identity this task has: `check_health_inner`
-        // matches on a service name, so a probe answer says "an Unsloth backend is on this
-        // port", never "the one I was started for". Anything that is not still generation
-        // G with a handle stored and no stop in flight has to end the loop rather than
-        // reach `stop_backend`, which takes whatever handle is stored *now*.
+        // A probe answer names a service, not a generation; anything but the same live generation must stop.
         assert!(super::watchdog_may_still_act(7, 7, true, false));
-        // Restarted under the probe: start_backend bumped the generation and stored a new
-        // child, so the kill below would land on the replacement.
         assert!(!super::watchdog_may_still_act(8, 7, true, false));
-        // Stopped and not started again: the handle is gone, so there is nothing to kill
-        // and "server stopped unexpectedly" would contradict the stop the user asked for.
         assert!(!super::watchdog_may_still_act(7, 7, false, false));
-        // A stop in flight: stop_backend sets the flag before it takes the handle, so this
-        // is the same restart caught one instant earlier.
         assert!(!super::watchdog_may_still_act(7, 7, true, true));
     }
 
     #[test]
     fn the_watchdog_rereads_the_generation_after_the_confirm_probe() {
-        // HEALTH_CONFIRM_PROBE_TIMEOUT is 30s on top of the 10s cycle probe, so up to 40s
-        // of wall clock separates the generation check at the top of the loop from the
-        // kill at the bottom, and both stop_server and start_server are async commands
-        // that run while this task is parked on the await. Losing the re-read reinstates a
-        // 40s window in which a user restarting a hung backend has the new one killed.
-        // Normalised line endings for the same reason as the guard above: include_str!
-        // embeds CRLF on the Windows runner.
+        // Up to 40s separates the generation check from the kill; without the re-read a restart gets killed.
+        // Normalise CRLF: include_str! embeds CRLF on the Windows runner.
         let src = include_str!("commands.rs").replace("\r\n", "\n");
         let start = src
             .find("async fn health_watchdog")
@@ -2747,13 +2368,8 @@ mod tests {
     }
 }
 
-/// Periodic health check that detects deadlocked or hung backends.
-/// During startup, failures are ignored for a generous grace period so a slow
-/// but legitimate backend boot is not killed. After the backend has answered a probe
-/// that says its warm-up is finished, or after the startup grace expires, 3 consecutive
-/// failed checks emit `server-crashed` so the frontend can offer a restart.
-/// A backend last seen generating gets the wider `HEALTH_WATCHDOG_MAX_FAILURES_BUSY`
-/// budget for probes that time out, since a saturated host stalls one that is healthy.
+/// Periodic check for hung backends. Failures are ignored during the startup grace; afterwards 3
+/// failures (12 when last seen generating and probes time out) emit `server-crashed`.
 async fn health_watchdog(
     app: AppHandle,
     state: BackendState,
@@ -2795,7 +2411,6 @@ async fn health_watchdog(
             break;
         }
 
-        // Stop watching if the backend is gone
         if !has_owned {
             info!("Health watchdog: backend stopped, exiting");
             break;
@@ -2848,11 +2463,7 @@ async fn health_watchdog(
             check_watchdog_health(&state, generation, port, has_adopted, HEALTH_PROBE_TIMEOUT)
                 .await;
         if liveness.alive {
-            // One answer is proof of life, not proof that startup is over. The backend
-            // imports the ML stack on a warm thread and those C-extension imports hold the
-            // GIL, so a process that replies now can still miss the next three probes while
-            // it is perfectly healthy. Only end the startup grace once the backend reports
-            // that whole warm finished, not merely its first (hardware detection) stage.
+            // Only end the grace once the whole warm finished: warm imports hold the GIL and can miss probes.
             if liveness.warming_up {
                 info!(
                     "Health watchdog: backend on port {} is alive but still warming up, holding the startup grace period",
@@ -2891,11 +2502,8 @@ async fn health_watchdog(
                 budget,
                 liveness.probe_timed_out,
             ) {
-                // The budget is spent and the port is still accepting connections. Before
-                // ending a response that may still be streaming, ask once with a budget the
-                // per-cycle one cannot afford. An answer here is not a reprieve on its own:
-                // only a backend that says it is generating gets the count reset, so one
-                // that is alive but idle and unresponsive still dies, as it did before.
+                // Before killing, one wider probe; only a backend reporting it is generating gets the
+                // count reset.
                 let confirmed = check_watchdog_health(
                     &state,
                     generation,
@@ -2919,10 +2527,7 @@ async fn health_watchdog(
                     continue;
                 }
             }
-            // The verdict below is about the backend that was current when this cycle read
-            // the state, and both probes above have awaited since. Re-read before spending
-            // it: `stop_backend` acts on whatever handle is stored now, so a restart during
-            // the last-chance probe would have this task kill the replacement instead.
+            // Re-read before acting: a restart during the probes would make stop_backend kill the replacement.
             let (current_generation, still_owned) = {
                 let proc = match state.lock() {
                     Ok(p) => p,
@@ -2959,7 +2564,6 @@ async fn health_watchdog(
                     );
                 } else {
                     error!("Health watchdog: backend unresponsive, killing and declaring dead");
-                    // Kill the zombie process so retry can start fresh
                     let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
                 }
                 let _ = app.emit("server-crashed", ());

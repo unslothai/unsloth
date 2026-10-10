@@ -414,7 +414,6 @@ export const ja = {
       clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "OS サンドボックスを利用できません",
@@ -505,7 +504,6 @@ export const ja = {
     queueingOnHint: "新しいメッセージは順番待ちになります。",
     queueingHintShared: "キューは保持されます。",
   },
-  // The chat header's "…" menu.
   chatMenu: {
     more: "チャットのオプション",
     copy: "コピー",
@@ -566,7 +564,6 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "ドキュメント",
       keyboardShortcuts: "キーボードショートカット",
@@ -635,11 +632,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
-      // Shown under an empty project folder in the sidebar.
       noChats: "チャットなし",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "すべてのプロジェクトをピン留め済み",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "すべてのプロジェクトがピン留め済みまたはセクション内にあります",
       noProjects: "プロジェクトはありません",
       showMore: "もっと見る",
@@ -740,11 +734,9 @@ export const ja = {
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
-      // Header of the menu's section-visibility toggles.
       show: "表示",
       newSection: "新しいセクション",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "新しいセクション",
       createDescription: "チャットやプロジェクトを自由にグループ化できます",
@@ -755,16 +747,13 @@ export const ja = {
       edit: "編集",
       remove: "セクションを削除",
       markAllRead: "すべて既読にする",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "移動先",
       section: "セクション",
       sectionsHeading: "セクション",
       removeFromProject: "プロジェクトから削除",
       newSection: "新しいセクション",
       removeFromSection: "セクションから削除",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "{name}から削除",
-      // Shown in a section with nothing filed in it yet.
       empty: "ここにチャットやプロジェクトをドラッグ",
       sectionOptions: "セクションのオプション",
       newChatInSection: "{name} に新しいチャット",
@@ -2151,7 +2140,6 @@ export const ja = {
           updateChecksDisabled:
             "更新チェックが無効になっているため (UNSLOTH_DISABLE_UPDATE_CHECK=1)、利用可能なバックエンドは確認されません。",
         },
-        // 非表示: 設定検索用の追加キーワード。
         llamaBackendKeywords:
           "llama.cpp backend gguf 推論 cuda rocm hip vulkan metal cpu gpu アクセラレータ prebuilt 切り替え エンジン",
       },
@@ -2172,7 +2160,6 @@ export const ja = {
         reloadRequired: "新しいメモリ設定を適用するにはモデルを再読み込みしてください。",
         loadError: "モデルメモリ設定の読み込みに失敗しました",
         saveError: "モデルメモリ設定の保存に失敗しました",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu メモリ ram 常駐 固定 ロック 保持 ロード済み アンロード アイドル mmap no-mmap load-mode スワップ ページング",
       },
@@ -2300,8 +2287,6 @@ export const ja = {
       docsLabel: "unsloth start のドキュメントを開く",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -3789,7 +3774,6 @@ export const ja = {
       all: "すべて",
       chats: "チャット",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "チャット",

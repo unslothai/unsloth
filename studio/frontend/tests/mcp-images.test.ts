@@ -58,19 +58,15 @@ test("replaying a tool result re-attaches its images for the backend", () => {
 });
 
 test("only an image tool call carries the privileged envelope", () => {
-  // A client tool is free to answer {text, images:[{data, mimeType}]}, which is
-  // the shape isMcpImageToolResult accepts. Without the provenance gate its bytes
-  // would be promoted into model image input on the next request.
+  // Without the provenance gate a client tool's images would become model input.
   assert.equal(isMcpToolName("mcp__fs__read_media_file"), true);
   assert.equal(isMcpToolName("render_chart"), false);
   assert.equal(isMcpToolName(undefined), false);
-  // The envelope is gated...
   assert.match(
     adapter,
     /if \(isMcpImageToolResult\(result\) && isImageToolName\(tc\.toolName\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
   );
-  // ...but the wrapper branch is NOT: excluding a non-MCP wrapper there dropped it
-  // into JSON.stringify, which replays the whole base64 array as prompt text.
+  // The wrapper branch is not gated, or JSON.stringify replays base64 as prompt text.
   assert.match(adapter, /^\s*isMcpImageToolResult\(result\) \|\|$/m);
 });
 
@@ -97,9 +93,7 @@ const countImages = (messages: { content?: unknown }[]) =>
   );
 
 test("history is bounded before it is uploaded, not after", () => {
-  // The backend's cap runs after the body is parsed, so it cannot bound transport.
-  // The ceiling counts CANDIDATES, which sit above the promotable budget so the
-  // backend can still scan past entries it cannot decode.
+  // The backend cap runs after parsing, so it cannot bound transport.
   const messages = [0, 1, 2, 3, 4].map((n) => shot(n));
 
   const bounded = boundMcpImageEnvelopes(messages);
@@ -110,7 +104,6 @@ test("history is bounded before it is uploaded, not after", () => {
     countImages(bounded) <= MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE,
     `uploaded ${countImages(bounded)} candidates`,
   );
-  // The oldest result is still dropped outright.
   assert.equal(splitMcpImages(bounded[0].content).images.length, 0);
 });
 
@@ -119,7 +112,6 @@ test("the newest pictures are the ones kept", () => {
 
   assert.equal(splitMcpImages(bounded[4].content).images.length, 3);
   assert.equal(splitMcpImages(bounded[0].content).images.length, 0);
-  // The note survives even when its payload does not.
   assert.match(bounded[0].content, /^\[3 images returned\]$/);
 });
 
@@ -130,9 +122,6 @@ test("a conversation inside the budget is left byte-identical", () => {
 });
 
 test("a non-MCP tool result keeps its text and loses only the envelope", () => {
-  // The backend never promotes a named non-MCP result and strips its envelope
-  // regardless, so leaving it whole here only re-uploaded megabytes of base64 on
-  // every later turn. The text the model reads is unchanged.
   const message = {
     role: "tool",
     name: "read_file",
@@ -159,16 +148,13 @@ const shotOf = (n: string, count: number) => ({
 });
 
 test("a fat newest result does not evict older usable images", () => {
-  // Budget is charged at the promotable rate, so an oversized newest envelope
-  // cannot spend the whole history allowance on images the backend would drop.
   const bounded = boundMcpImageEnvelopes([shotOf("old", 4), shotOf("new", 8)]);
 
   assert.equal(splitMcpImages(bounded[0].content).images.length, 4);
 });
 
 test("no single result uploads more than the backend could ever decode", () => {
-  // Bounded, but above the quota: the backend counts successful decodes and this
-  // side cannot tell which entries will decode.
+  // The backend counts successful decodes, which this side cannot predict.
   const bounded = boundMcpImageEnvelopes([shotOf("only", 12)]);
 
   assert.equal(
@@ -178,9 +164,6 @@ test("no single result uploads more than the backend could ever decode", () => {
 });
 
 test("candidates survive the transport bound for the backend to decode", () => {
-  // The backend's quota counts SUCCESSFUL decodes and scans past failures. This
-  // side cannot decode, so cutting at the quota drops valid PNGs sitting behind
-  // formats Pillow rejects -- shown on the first turn, lost on the replay.
   const bounded = boundMcpImageEnvelopes([shotOf("a", 8)]);
 
   assert.equal(
@@ -196,9 +179,6 @@ test("the spare candidates do not evict an older result", () => {
 });
 
 test("a partly-spent budget still leaves an older result its decode spares", () => {
-  // A newer one-image result leaves 7 of 8. The older result has corrupt entries
-  // ahead of valid PNGs, so slicing it to the remaining budget alone strands the
-  // last valid one even though both quotas had room.
   const bounded = boundMcpImageEnvelopes([shotOf("old", 8), shotOf("new", 1)]);
 
   assert.equal(
@@ -209,10 +189,6 @@ test("a partly-spent budget still leaves an older result its decode spares", () 
 });
 
 test("the decode-failure allowance survives an undecodable newest result", () => {
-  // Four entries the frontend cannot tell apart from PNGs, then two results of four
-  // real ones. Per-result, the first spends the whole room and the oldest envelope is
-  // dropped outright, so the backend can find only four decodable pictures out of the
-  // eight the cap allows.
   const undecodable = Array.from({ length: 4 }, (_, i) => ({
     data: `SVG${i}`,
     mimeType: "image/svg+xml",
@@ -245,9 +221,7 @@ test("the decode-failure allowance survives an undecodable newest result", () =>
 });
 
 test("a replayed history is bounded by bytes, not only by image count", () => {
-  // One authentic result may carry MAX_IMAGE_PAYLOAD_CHARS (12M) of base64, so the
-  // twelve candidates the count bound allows could re-upload ~144MB on every later
-  // turn of an image-heavy chat.
+  // One result may carry 12M chars of base64, so a size bound is also needed.
   const huge = "A".repeat(4_000_000);
   const messages = Array.from({ length: 6 }, (_, i) => ({
     role: "tool",
@@ -266,7 +240,6 @@ test("a replayed history is bounded by bytes, not only by image count", () => {
     `${chars} characters uploaded against a budget of ${MAX_TOTAL_MCP_IMAGE_CHARS}`,
   );
   assert.ok(kept.length > 0, "the budget must not starve the newest result");
-  // The newest results are the ones kept, as everywhere else here.
   const newest = splitMcpImages(bounded[5].content as string).images;
   assert.equal(newest.length, 1, "the newest result keeps its picture");
   assert.equal(
@@ -290,8 +263,6 @@ test("an ordinary conversation is untouched by the byte budget", () => {
 });
 
 test("an oversized replay image is skipped, not the rest of its result", () => {
-  // Breaking on the first candidate that does not fit threw away three 1MB pictures
-  // sitting behind a 5MB one, which the backend could have replayed.
   const newest = "N".repeat(9_000_000);
   const oversized = "X".repeat(5_000_000);
   const small = (tag: string) => tag.repeat(900_000);
@@ -384,8 +355,7 @@ const imagesPerToolResult = (messages: { role?: string; content?: unknown }[]) =
     .map((m) => splitMcpImages(m.content as string).images.length);
 
 test("a marker target is charged one picture per round, so every round keeps one", () => {
-  // Eight rounds of three: the backend's local path replays one per round, eight in
-  // all. Four per result spent the budget on the newest rounds and stripped the rest.
+  // Eight rounds of three: the backend's local path replays one per round.
   const messages = Array.from({ length: 8 }, (_, n) => round(n)).flat();
 
   const parts = imagesPerToolResult(boundMcpImageEnvelopes(messages));
@@ -402,8 +372,6 @@ test("a marker target is charged one picture per round, so every round keeps one
 });
 
 test("consecutive results are one batch on a marker target and share one charge", () => {
-  // Three parallel results land as one turn carrying one picture: charged once,
-  // not three times, so eight such rounds all keep a candidate.
   const messages = Array.from({ length: 8 }, (_, n) => round(n, 3, 2)).flat();
 
   const markers = imagesPerToolResult(
@@ -417,8 +385,6 @@ test("consecutive results are one batch on a marker target and share one charge"
 });
 
 test("the send path bounds the run's own results before serializing them", () => {
-  // Decided before the slice tests/studio executes standalone, applied to the raw
-  // results, so no envelope the request will not carry is ever built or parsed back.
   assert.match(
     adapter,
     /const mcpImagesLocalMarkers =\n\s*!isExternalRequest &&\n\s*runtime\.models\.find\(\(model\) => model\.id === runtime\.params\.checkpoint\)\n\s*\?\.isGguf === false;/,
@@ -432,15 +398,12 @@ test("the send path bounds the run's own results before serializing them", () =>
 });
 
 test("the upload gate is the backend's external MCP gate, not provider-level vision", () => {
-  // A mixed catalog says nothing about most models: the backend sends no picture
-  // there, so uploading the envelopes only had it strip 12 MB again on every turn.
+  // The backend sends no images to unknown models in mixed catalogs.
   assert.equal(providerModelTakesMcpImages("openrouter", "some/unknown-model"), false);
   assert.equal(providerModelTakesMcpImages("huggingface", "org/unknown"), false);
   assert.equal(providerModelTakesMcpImages("qwen", "qwen2.5-72b-instruct"), false);
-  // Known text-only endpoints stay a no; a vision family with a plain catalog is a yes.
   assert.equal(providerModelTakesMcpImages("mistral", "mistral-large"), false);
   assert.equal(providerModelTakesMcpImages("anthropic", "claude-x"), true);
-  // Unknown provider type keeps them: the backend decides.
   assert.equal(providerModelTakesMcpImages(undefined, undefined), true);
 });
 
@@ -461,8 +424,7 @@ test("both local paths read the model's vision flag, not just multimodal", () =>
 });
 
 test("an entry with an unbounded mimeType is dropped, not charged", () => {
-  // A token subtype has no length bound, so a tiny picture can carry megabytes of
-  // mimeType; charging data alone let that envelope through on every turn.
+  // A token mimeType subtype has no length bound, so it is charged too.
   const heavy = (n: number) => ({
     role: "tool",
     name: "mcp__fs__screenshot",
@@ -485,9 +447,6 @@ test("an entry with an unbounded mimeType is dropped, not charged", () => {
 });
 
 test("a picture the live turn accepted at the limit still fits its own replay", () => {
-  // The live limit is on data; charging the serialized entry pushed a picture of
-  // exactly that size over the identically sized replay budget, and the only
-  // picture in the conversation vanished from the next request.
   const messages = [
     {
       role: "tool",
@@ -504,9 +463,6 @@ test("a picture the live turn accepted at the limit still fits its own replay", 
 });
 
 test("the byte filter scans past candidates that do not fit", () => {
-  // A newer result leaves about 1 MB. The older result's first eight candidates are
-  // 1.4 MB each; slicing to the allowance first inspected only those and dropped the
-  // small ninth, which fits and which the backend could have replayed.
   const big = (tag: string, n: number, size: number) =>
     Array.from({ length: n }, (_, i) => ({ data: tag.repeat(size / tag.length) + i, mimeType: "image/png" }));
   const messages = [
@@ -528,8 +484,7 @@ test("the byte filter scans past candidates that do not fit", () => {
 });
 
 test("the planner is the bound the envelope form applies", () => {
-  // Both carriers plan through one function, so the raw-result bound the send path
-  // takes and the envelope bound agree result for result.
+  // Both carriers plan through one function so the bounds agree.
   const rounds = Array.from({ length: 8 }, (_, n) => round(n, 3, 2)).flat();
   const envelopes = boundMcpImageEnvelopes(rounds, { localMarkers: true });
   const viaEnvelopes = imagesPerToolResult(envelopes);
@@ -542,15 +497,12 @@ test("the planner is the bound the envelope form applies", () => {
     .flat()
     .map((kept) => kept.length);
   assert.deepEqual(viaPlanner, viaEnvelopes);
-  // A result that keeps nothing is an empty plan, which the raw bound turns into text.
   const dropped = planMcpImageBound([[[{ data: "x", mimeType: "image/png" }]], [[Array.from({ length: 12 }, (_, i) => ({ data: `${i}`, mimeType: "image/png" }))].flat()]]);
   assert.equal(dropped[0][0].length, 1);
 });
 
 test("a message's results are batched by replay exchange, not as one block", () => {
-  // Three local rounds accumulate in one assistant message, told apart by round_id;
-  // the serializer emits them as three exchanges, so the bound treats them as three
-  // batches (one picture each), not one batch sharing a single picture's allowance.
+  // Local rounds share one assistant message but serialize as separate exchanges.
   type P = { round: number | null; flush: boolean };
   const parts: P[] = [
     { round: 0, flush: false },
@@ -566,7 +518,6 @@ test("a message's results are batched by replay exchange, not as one block", () 
     (p) => p.flush,
   );
   assert.deepEqual(indexes, [0, 0, 1, 2, 3, 4]);
-  // The bound's partition uses the serializer's own conditions.
   assert.match(adapter, /startsNewCodexToolRound\(pendingLocalToolRoundId, localRoundId\)/);
   assert.match(adapter, /localRoundId === null && shouldFlushCompletedLocalToolPair\(toolPart\)/);
   assert.match(
@@ -576,9 +527,7 @@ test("a message's results are batched by replay exchange, not as one block", () 
 });
 
 test("a client tool's structured result is not unwrapped as the MCP wrapper", () => {
-  // Unwrapping by shape alone reduced {text, images, ...} from a non-MCP client tool
-  // to its text, silently dropping every other field. The bare live-parser wrapper
-  // is still unwrapped, since JSON of it would replay base64 as prompt text.
+  // Only the bare live-parser wrapper is unwrapped; other fields must survive.
   assert.match(
     adapter,
     /\(isMcpImageToolResult\(result\) &&\n\s*\(isImageToolName\(tc\.toolName\) \|\| isBareMcpImageWrapper\(result\)\)\) \|\|/,

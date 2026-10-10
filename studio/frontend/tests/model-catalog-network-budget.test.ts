@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The network catalog check promises that an unreachable Hub produces warnings, never a red run.
-// Bounding each request is not enough to keep that promise: the batches are serial, so a peer
-// that stalls every one of them can still outlive the workflow's own timeout and be killed --
-// which is the red run, arriving by a different route. This pins the arithmetic.
+// Batches are serial, so stalls can outlive the workflow timeout; this pins the budget.
 
 import assert from "node:assert/strict";
 import test from "node:test";

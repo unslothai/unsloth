@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Split out of use-system.ts so the VRAM rules can be unit tested without pulling the auth and React graph in
-// behind them. Typed structurally, so SystemGpuInfo and GpuDevice satisfy these without importing them.
+// Kept apart from use-system.ts so it is testable without the auth/React graph; typed structurally.
 
 export interface VramReportingDevice {
   vram_used_gb?: number;
@@ -10,12 +9,11 @@ export interface VramReportingDevice {
 
 export interface MemoryTotalDevice {
   memory_total_gb?: number;
-  /** True when the reported GPU budget comes from shared system memory. */
   shared_memory?: boolean;
-  /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
+  /** Host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
-  /** `hardware.py` sets `shared_memory` only on Windows, so a Linux ROCm APU arrives
-   *  as `unified_memory: true, shared_memory: false`. */
+  /** `hardware.py` sets `shared_memory` only on Windows, so a Linux ROCm APU arrives as
+   * `unified_memory: true, shared_memory: false`. */
   unified_memory?: boolean;
 }
 
@@ -27,8 +25,7 @@ export interface GpuMemoryTotalsGb {
 
 export interface VramReportingGpu {
   devices?: VramReportingDevice[];
-  /** Used VRAM across the visible GPUs when no single device's usage could be
-   * attributed. Windows ROCm only; null everywhere else. See #7452. */
+  /** Windows ROCm only, when no single device's usage could be attributed (#7452). */
   vram_used_gb_aggregate?: number | null;
 }
 
@@ -39,9 +36,7 @@ function sharesHostMemoryDevice(device: MemoryTotalDevice): boolean {
   });
 }
 
-/** Sum dedicated VRAM while counting a shared host-memory pool only once. Devices arrive rounded to 2dp, so
- * summing them reintroduces float error (three B200s at 179.06 give 537.1800000000001) and not every caller rounds
- * again before printing. Round back to the precision they arrived with. */
+/** Counts a shared host pool once, and rounds back to the devices' 2dp to drop float error. */
 export function aggregateGpuMemoryTotalGb(
   devices: MemoryTotalDevice[],
 ): number {
@@ -55,7 +50,6 @@ export function gpuMemoryTotalsGb(
     const total = device.memory_total_gb ?? 0;
     return Number.isFinite(total) && total > 0 ? total : 0;
   };
-  // A no-op for callers that already fold on their way in (use-gpu-info, memory-fit).
   const dedicatedDevices = roundToDevicePrecision(
     devices
       .filter((device) => !sharesHostMemoryDevice(device))
@@ -74,9 +68,8 @@ export function gpuMemoryTotalsGb(
           ? Math.min(total, hostBackedReported as number)
           : total;
         return {
-          // `shared_memory` means "this budget IS the host pool", so several are views
-          // of one and the largest is it. `unified_memory` alone means only shared with
-          // its OWN cpu: a pool per socket, and collapsing those reports MI300A as one card.
+          // `shared_memory` devices are views of one host pool (take the largest);
+          // `unified_memory` alone is a pool per socket (MI300A), which stays additive.
           hostBacked:
             device.shared_memory === true
               ? Math.max(totals.hostBacked, hostBacked)
@@ -131,18 +124,10 @@ export interface MemoryCapacityDevice {
   memoryTotalGb: number;
   sharedMemory: boolean;
   sharedMemoryHostBackedGb?: number | null;
-  /** The backend's per-device `unified_memory`, for a ROCm APU. Separate from `sharedMemory` because the backend
-     *  reports them separately and they do not coincide: `hardware.py` sets `shared_memory` only on Windows, so on
-     *  Linux the very same APU arrives as `unified_memory: true, shared_memory: false`. Reading only `sharedMemory`
-     *  there counts the APU's carved window as VRAM standing BESIDE system RAM, when it is a view INTO it. Both
-     *  flags mean the same thing for capacity, which is why `sharesHostMemory` below folds them together rather than
-     *  either one being taught about the other. */
+  /** Linux ROCm APUs report only this flag; see `sharesHostMemory`, which folds both. */
   unifiedMemory?: boolean;
 }
 
-/** Whether this device's memory is a view into host RAM rather than beside it.
- *  The one question capacity cares about; the two flags are how the backend
- *  happens to report it on two platforms. */
 export function sharesHostMemory(device: {
   sharedMemory?: boolean;
   unifiedMemory?: boolean;
@@ -159,10 +144,7 @@ function budgetedGpuMemoryGb(
   let partialSharedDemand = 0;
   let fullySharedDemand = 0;
   let sharedPool = 0;
-  // The same split `gpuMemoryTotalsGb` makes, for the same reason: `shared_memory`
-  // devices are views of ONE host pool and collapse, while `unified_memory`-only
-  // devices are a pool per socket and stay additive. Without this the capacity path
-  // answers 48 GiB for the inventory the totals path calls 96.
+  // Same split as `gpuMemoryTotalsGb`, or capacity and totals disagree on the same inventory.
   let perDevicePool = 0;
   let perDeviceDemand = 0;
   for (const device of devices) {
@@ -209,97 +191,60 @@ function budgetedGpuMemoryGb(
 }
 
 export interface MemoryCapacityInput {
-  /** The devices a pin names, or empty when the load may use the whole host. */
   pinnedDevices: MemoryCapacityDevice[];
   hostDevices?: MemoryCapacityDevice[];
-  /** Aggregate GPU budget of the whole inventory, for the unpinned case. */
   hostGpuTotalGb: number;
-  /** The same aggregate with shared-memory devices left out, for the unpinned case. Only the dedicated cards are
-     *  memory BESIDE system RAM; an iGPU's budget is a capped view of that same RAM, so adding both to reach a
-     *  machine-wide ceiling counts the shared bytes twice. Absent means "no shared device", i.e. the same figure as
-     *  `hostGpuTotalGb`. */
+  /** Excludes shared-memory devices, whose budget is already inside system RAM. Absent means
+   * the same as `hostGpuTotalGb`. */
   hostDedicatedGpuTotalGb?: number;
-  /** Whether ANY device on the host reports a shared pool. Only consulted when
-   *  nothing is pinned; a pin answers for itself. */
+  /** Only consulted when nothing is pinned. */
   hostSharesSystemRam: boolean;
   systemRamTotalGb: number;
-  /** One pool for everything, whatever the shared-memory flags say. True on Apple
-   *  Silicon and on a ROCm APU, which is why the pool's SIZE is a separate question
-   *  below: the two report it differently. */
+  /** True on Apple Silicon and ROCm APUs, which report the pool's size differently. */
   unifiedMemory: boolean;
-  /** Whether the GPU figure already describes the whole pool.
-   *
-   *  True on Apple, where `memory_total_gb` IS the machine's unified memory, so the
-   *  budgeted GPU capacity is the ceiling and adding RAM would double count.
-   *
-   *  False on a ROCm APU, where the GPU figure is a BIOS-carved window onto system
-   *  RAM -- 48 GiB of a 96 GiB machine is typical -- and taking it as the ceiling
-   *  discards the rest of the pool the weights actually load into. The backend says
-   *  so in as many words (`llama_cpp.py::_available_system_memory_mib`: "On a
-   *  unified-memory APU this, not the ROCm-reported VRAM, is the real ceiling").
-   *
-   *  Defaults to true, which is the answer for every caller that predates the ROCm
-   *  case and passed `unifiedMemory` meaning Apple. */
+  /**
+   * True on Apple, where memory_total_gb IS the unified memory. False on a ROCm APU, whose GPU figure
+   * is a BIOS-carved window onto RAM (see llama_cpp.py::_available_system_memory_mib). Defaults true.
+   */
   unifiedPoolReportedAsGpuMemory?: boolean;
-  /** VRAM Budget: the fraction of each GPU a load may claim, from the setting beside
-   *  this row. 1 (or absent) means the whole card. Applied to the GPU figure only --
-   *  it caps what llama.cpp is allowed to take, not how much RAM the host has. */
+  /** Fraction of each GPU a load may claim; applied to the GPU figure only, not RAM. */
   gpuBudgetFraction?: number;
 }
 
-/** What a prospective load may draw on: the GPU pool, and the ceiling once layers
- *  spill to host RAM.
- *
- *  System RAM is added only where it is a pool BESIDE the GPU budget. A Vulkan
- *  iGPU's reported budget is already a capped view of that same RAM, so adding it
- *  would count the bytes twice. That question is per device, not per host: a mixed
- *  inventory pairs a discrete card with an iGPU, and a pin naming only the discrete
- *  card can still spill into RAM the iGPU would have been sharing.
- *
- *  Both figures are 0 when nothing was probed, which callers read as "no verdict"
- *  rather than as a fit. */
+/**
+ * RAM is added only where it is a pool BESIDE the GPU budget, judged per device: a Vulkan iGPU's
+ * budget is already a view of RAM. Both figures are 0 when nothing was probed ("no verdict").
+ */
 export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   gpuCapacityGb: number;
   totalCapacityGb: number;
-  /** One pool for both figures, so a caller shows one number rather than two. */
   singleMemoryPool: boolean;
 } {
   const pinnedTotals = gpuMemoryTotalsGb(
     input.pinnedDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      // Both flags raw. Folding here first loses the distinction gpuMemoryTotalsGb
-      // needs: one host pool collapses, a pool per socket does not, and pre-folding
-      // made this path answer 48 GiB where the totals path answered 96 for the very
-      // same inventory (reported by ItsRoy69 on #11366).
+      // Both flags raw: pre-folding made this path answer 48 GiB where totals said 96 (#11366).
       shared_memory: device.sharedMemory === true,
       unified_memory: device.unifiedMemory === true,
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
     })),
   );
-  // One flag for both answers, so the capacity and the pool question cannot
-  // disagree about which devices they are describing.
+  // One flag for both answers so capacity and pool cannot disagree.
   const pinGoverns = pinnedTotals.total > 0;
-  // The host figure comes from aggregateGpuMemoryTotalGb on the caller's side, which
-  // guards itself, but this is a plain number on a public interface and a non-finite
-  // one here would make every figure below NaN.
+  // Guard a non-finite number on this public interface, which would NaN every figure.
   const hostGpuTotalGb =
     Number.isFinite(input.hostGpuTotalGb) && input.hostGpuTotalGb > 0
       ? input.hostGpuTotalGb
       : 0;
   const rawGpuCapacityGb = pinGoverns ? pinnedTotals.total : hostGpuTotalGb;
-  // The dedicated-only figure for the same governing set. A pin answers for itself;
-  // unpinned takes the caller's, falling back to the full aggregate, which is the
-  // right answer on every host that has no shared device at all.
+  // Unpinned falls back to the full aggregate, correct on hosts with no shared device.
   const rawDedicatedCapacityGb = pinGoverns
     ? pinnedTotals.dedicated
     : Number.isFinite(input.hostDedicatedGpuTotalGb) &&
         (input.hostDedicatedGpuTotalGb as number) >= 0
       ? (input.hostDedicatedGpuTotalGb as number)
       : hostGpuTotalGb;
-  // The budget is what the next load is ALLOWED to claim, so it is the capacity a verdict should be
-  // measured against: at 80% a 20 GB footprint on a 24 GB card is over the line the slider draws,
-  // and reading the raw total called it comfortable. Guarded rather than trusted: a 0 or a missing
-  // value would silently zero the capacity, which every caller reads as "nothing probed".
+  // Measure against the budgeted capacity the slider draws; a 0 or missing value would zero it.
   const budget =
     typeof input.gpuBudgetFraction === "number" &&
     input.gpuBudgetFraction > 0 &&
@@ -312,10 +257,7 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const capacityDeviceTotals = gpuMemoryTotalsGb(
     capacityDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      // Both flags raw. Folding here first loses the distinction gpuMemoryTotalsGb
-      // needs: one host pool collapses, a pool per socket does not, and pre-folding
-      // made this path answer 48 GiB where the totals path answered 96 for the very
-      // same inventory (reported by ItsRoy69 on #11366).
+      // Both flags raw, as above.
       shared_memory: device.sharedMemory === true,
       unified_memory: device.unifiedMemory === true,
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
@@ -333,16 +275,12 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const dedicatedCapacityGb =
     budgetedGpuMemory?.independent ??
     Math.round(rawDedicatedCapacityGb * budget * 100) / 100;
-  // Same guard as the device totals: psutil's figure arrives over the wire too, and a
-  // non-finite one would turn the ceiling below into NaN, which classifyMemoryFit
-  // reads as no verdict at all rather than as the RAM the machine plainly has.
+  // A non-finite RAM figure would NaN the ceiling, which classifyMemoryFit reads as no verdict.
   const systemRamTotalGb =
     Number.isFinite(input.systemRamTotalGb) && input.systemRamTotalGb > 0
       ? input.systemRamTotalGb
       : 0;
-  // Every, for the same reason the host-level flag uses every: a pin naming a discrete card
-  // alongside an iGPU still has dedicated VRAM beside system RAM, and calling that one pool hides
-  // the GPU verdict on the only figure that would catch a fixed placement too large for the card.
+  // Every, not some: a pin with a discrete card still has dedicated VRAM beside RAM.
   const sharesSystemRam = pinGoverns
     ? pinnedTotals.shared > 0 && pinnedTotals.dedicated === 0
     : input.hostSharesSystemRam;
@@ -353,24 +291,14 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
       ? input.unifiedMemory && input.unifiedPoolReportedAsGpuMemory !== false
         // Apple reports the one pool as the GPU budget already.
         ? gpuCapacityGb
-        // A Vulkan iGPU's budget, and a ROCm APU's, are both a CAPPED view of system RAM, so RAM
-        // must not be added to it -- but it must not replace it either. The pool's real size is the
-        // RAM, and taking the capped figure as the machine's whole capacity called a 20 GB
-        // CPU-offloaded load impossible on a 91 GiB host because the iGPU was allowed 12. The
-        // larger of the two is the pool; on a mixed inventory that under-counts a discrete card
-        // sitting beside it, which is the side that refuses a load rather than admitting one that
-        // cannot run.
+        // A capped iGPU/APU view must not be added to RAM nor replace it: the larger is the pool.
         : Math.max(gpuCapacityGb, systemRamTotalGb)
-      // Dedicated VRAM, not the whole GPU figure: on a mixed inventory the iGPU's
-      // budget is already inside systemRamTotalGb, and adding it again inflated the
-      // ceiling in the direction that admits a load. Identical to gpuCapacityGb on
-      // any host without a shared device, which is every discrete-only machine.
+      // Dedicated VRAM only: the iGPU's budget is already inside systemRamTotalGb.
       : dedicatedCapacityGb + systemRamTotalGb,
     singleMemoryPool,
   };
 }
 
-/** Whether every device reports its own usage, so each row and their sum are real. */
 export function gpuVramUsedIsPerDevice(
   devices: VramReportingDevice[],
 ): boolean {
@@ -380,16 +308,8 @@ export function gpuVramUsedIsPerDevice(
   );
 }
 
-/** Used VRAM across the GPUs, or null when it is genuinely unknown.
- *
- * Per-device usage is preferred. On Windows ROCm nothing keys the LUID usage
- * counters to torch ordinals, so a usage that fits more than one card cannot be
- * attributed to either and every device reports unknown -- which is idle and every
- * small model on an asymmetric pair. The sum does not depend on that attribution,
- * so the backend still reports it, and rendering Unknown for a figure it already
- * has is what #7452 was.
- *
- * Never falls back to 0: a fabricated 0 used / full free is the #7072 symptom. */
+/** Null when unknown, never 0 (#7072). Prefers per-device usage; Windows ROCm cannot attribute
+ * usage per card, so the backend's sum is used there (#7452). */
 export function resolveGpuVramUsedGb(
   gpu: VramReportingGpu | null | undefined,
 ): number | null {
@@ -407,25 +327,15 @@ export const DEFAULT_VRAM_FRACTION = 0.97;
 const VRAM_FLOOR_RESERVE_GB = 512 / 1024;
 
 /**
- * Free VRAM a load may actually claim on one card, by the loader's own rule.
- *
- * `_vram_usable_mib` subtracts an ABSOLUTE reserve from what is free -- it does not
- * scale free memory by the fraction. The two agree only on an idle card. On a 24 GB
- * card with 10 GB free at an 80% budget the loader offers 5.2 GB while a
- * multiplication says 8, so a 7 GB load looked comfortable and will be fitted down.
- *
- * The floor keeps the budget monotonic: capped at the default's own reserve so that
- * nudging the slider up never hands back less, which a flat 512 MiB would do on any
- * card under about 17 GB.
+ * Mirrors `_vram_usable_mib`: an ABSOLUTE reserve is subtracted from free memory, not a fraction
+ * of it. The floor is capped at the default's reserve so raising the budget never returns less.
  */
 export function usableFreeVramGb(
   freeGb: number,
   totalGb: number,
   fraction: number,
 ): number {
-  // Every argument is a probe reading off the wire. A NaN or an Infinity propagates
-  // through the arithmetic below into a figure a fit verdict is drawn from, so it is
-  // rejected here rather than at each of the four call sites.
+  // Probe readings off the wire: reject NaN/Infinity here rather than at each call site.
   if (!Number.isFinite(freeGb) || freeGb <= 0) {
     return 0;
   }
@@ -433,8 +343,7 @@ export function usableFreeVramGb(
   const frac =
     Number.isFinite(fraction) && fraction > 0 && fraction <= 1 ? fraction : 1;
   if (!(total > 0)) {
-    // No total to take a percentage of; the free reading is the only scale there is,
-    // and the loader falls back the same way.
+    // No total to take a percentage of; the loader falls back the same way.
     return Math.max(0, freeGb * frac);
   }
   const floor = Math.min(VRAM_FLOOR_RESERVE_GB, (1 - DEFAULT_VRAM_FRACTION) * total);
@@ -442,24 +351,15 @@ export function usableFreeVramGb(
   return Math.max(0, freeGb - reserve);
 }
 
-/** A device as the free-VRAM aggregate sees it. Structural, so a SystemGpuDevice fits. */
 export interface FreeVramDevice {
   memoryFreeGb?: number;
   memoryTotalGb?: number;
-  /** True when this device's budget is a capped view of the host's own RAM. */
   sharedMemory?: boolean;
-  /** Host-backed portion of memoryTotalGb when sharedMemory is true. */
   sharedMemoryHostBackedGb?: number | null;
-  /** The backend's per-device `unified_memory`. Same reason it exists on
-   *  MemoryCapacityDevice: a Linux ROCm APU reports `unified_memory: true,
-   *  shared_memory: false`, and summing its window into the DEDICATED free total
-   *  counts memory that is already inside the host's RAM. */
+  /** A Linux ROCm APU reports only this, and its window is already inside host RAM. */
   unifiedMemory?: boolean;
 }
 
-/** A device as the free-capacity resolver sees it: the free-VRAM shape plus the
- *  identity the resident-model filter matches on. Structural like the rest of this
- *  module, so a SystemGpuDevice fits without importing it. */
 export interface FreeCapacityDevice extends FreeVramDevice {
   index: number;
   indexKind?: string | null;
@@ -468,45 +368,29 @@ export interface FreeCapacityDevice extends FreeVramDevice {
 }
 
 export interface FreeCapacityInput {
-  /** Every GPU on the host; the pin narrows it. */
   devices: FreeCapacityDevice[];
   pinnedGpuIds?: number[] | null;
   budgetFraction: number;
-  /** Every governing device is one pool with the host: Apple Silicon, or a ROCm APU. */
   unifiedMemory: boolean;
-  /** ...and that pool's size is what the GPU itself reports, which is true of Apple
-   *  and false of a ROCm APU, whose figure is a BIOS-carved window onto system RAM. */
+  /** True for Apple, false for a ROCm APU's BIOS-carved window. */
   unifiedPoolReportedAsGpuMemory: boolean;
-  /** Host RAM a load may claim, already less the loader's reserve. */
+  /** Already less the loader's reserve. */
   usableSystemRamGb: number;
   systemRamReserveDeficitGb: number;
-  /** False while the host RAM reading is unavailable. */
   systemRamAvailableKnown?: boolean;
-  /** The devices the resident model occupies, when one is loaded. */
   loadedGpuIds?: number[] | null;
   loadedGpuIndexKind?: string | null;
 }
 
 export interface FreeCapacityGb {
   gb: number;
-  /** False when the figure is a placeholder rather than a reading. */
   known: boolean;
   reserveDeficitGb: number;
 }
 
 /**
- * Free memory a prospective load may claim, and whether that figure was actually read.
- *
- * On a non-Apple unified pool the per-device free reading is the space inside a
- * BIOS-carved window, and `resolveMemoryFit` asks it the WHOLE-LOAD question as soon
- * as the pool is single: together they warned that a 60 GiB load does not fit a 96 GiB
- * machine with 60+ GiB free, purely because it exceeds a 48 GiB window. That pool's
- * free memory is the HOST's, so this path answers from the host view and reports
- * `known: false` when the host reading is missing. Substituting the window there is
- * the same double count with a friendlier face: it answers a whole-load question with
- * a figure that describes a part of the pool.
- *
- * Apple is left on the ordinary path, because its GPU figure already IS the pool.
+ * On a non-Apple unified pool, free memory is the HOST's: the per-device window would fail a load
+ * that fits the machine. Reports `known: false` when the host reading is missing.
  */
 export function resolveFreeGpuCapacityGb({
   devices,
@@ -531,10 +415,7 @@ export function resolveFreeGpuCapacityGb({
     pinnedGpuIds && pinnedGpuIds.length > 0
       ? devices.filter((device) => pinnedGpuIds.includes(device.index))
       : devices;
-  // Per device, and by the loader's absolute-reserve rule rather than a multiplication:
-  // the budget is subtracted from the card, not applied to what happens to be free.
-  // Aggregated with the same count-the-shared-pool-once rule the TOTALS use, since a
-  // plain sum over a mixed inventory counted the iGPU's share of host RAM twice.
+  // Per device by the loader's absolute-reserve rule, aggregated counting the shared pool once.
   const residentDevices = loadedGpuIds?.length
     ? pinned.filter(
         (device) =>
@@ -554,7 +435,6 @@ export function resolveFreeGpuCapacityGb({
   };
 }
 
-/** Reserve still unmet before unloading; per-device reclaimed amounts are unknown. */
 export function aggregateVramReserveDeficitGb(
 	devices: FreeVramDevice[],
 	fraction: number,
@@ -591,20 +471,8 @@ export function aggregateVramReserveDeficitGb(
 }
 
 /**
- * Free memory a prospective load may claim across an inventory, counting a shared
- * host-memory pool only once.
- *
- * The same rule `aggregateGpuMemoryTotalGb` applies to totals, and for the same
- * reason: on a discrete-plus-iGPU host the iGPU's free reading IS the host's free RAM
- * seen through a cap, so adding it to the discrete card's free VRAM counts those
- * bytes twice and hands the free-memory verdict a capacity the machine does not have.
- * Summing blindly is worse here than for totals, because a shared device can report a
- * total of 0 (`hardware.py` zeroes it for an iGPU on one path), and `usableFreeVramGb`
- * then falls back to the raw free reading with no reserve subtracted at all.
- *
- * Fully shared devices are views of one pool, so only the largest is taken. A
- * partially shared APU also has an independent reserved segment, which remains
- * additive while its host-backed demand is capped by the common pool.
+ * Counts a shared host pool once, as the totals do. A shared device can report total 0, making
+ * usableFreeVramGb skip the reserve. Partially shared APUs keep their reserved segment additive.
  */
 export function aggregateUsableFreeVramGb(
   devices: FreeVramDevice[],
@@ -661,8 +529,7 @@ export function aggregateUsableFreeVramGb(
     }
   }
   const sharedFree = Math.max(partialSharedFree, fullySharedFree);
-  // Devices arrive rounded to 2dp and the reserve is a fraction of them, so the sum
-  // reintroduces float error the same way the totals aggregate does.
+  // Round back to 2dp, as the totals aggregate does.
   return (
     Math.round(
       (dedicated +

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Thumbnails are auth-fetched blobs, so the browser cache cannot hold them. The most recent stay as
-// object URLs within a count and a byte budget, so a revisit paints at once. An entry a card still
-// shows (or waits on) is never evicted, since its URL would be revoked under it.
+// Auth-fetched blobs bypass the browser cache; entries a card still shows are never evicted.
 
 const MAX_CACHED_URLS = 300;
 const MAX_CACHED_BYTES = 128 * 1024 * 1024;

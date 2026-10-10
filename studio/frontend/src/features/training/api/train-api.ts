@@ -152,20 +152,8 @@ export async function startTraining(
   payload: TrainingStartRequest,
   startRequestId: string,
 ): Promise<TrainingStartResponse> {
-  // A third way bytes reach the cache, and the largest of them. The worker this
-  // starts downloads the base model itself through FastLanguageModel.from_pretrained
-  // (core/training/trainer.py) and pulls remote datasets, none of which passes
-  // requestStart or loadModel, so a run begun with room and no warning is exactly
-  // the case this notice exists for.
-  //
-  // Only the PRE reading belongs here. The download happens asynchronously in the
-  // worker, long after this request returns, so a forced reading in a finally would
-  // report the disk as it was BEFORE the bytes landed and read as reassurance. The
-  // post-download side is in useTrainingCompletionWatch, which sees the run leave
-  // the active state whether it finished or failed.
-  //
-  // void and throttled, like every other caller: a disk reading must never gate or
-  // delay the start of a run.
+  // The worker downloads the base model and datasets itself, bypassing requestStart. Only the pre
+  // reading belongs here; useTrainingCompletionWatch takes the post-download one. Never gates the start.
   void checkDiskSpace();
   let result: TrainingStartResponse;
   try {

@@ -413,7 +413,6 @@ export const zhCN = {
       clearDataFailed: "无法清除网站数据。请重试。",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "操作系统沙盒不可用",
@@ -504,7 +503,6 @@ export const zhCN = {
     queueingOnHint: "新消息会排队并按顺序执行。",
     queueingHintShared: "队列会保留。",
   },
-  // The chat header's "…" menu.
   chatMenu: {
     more: "聊天选项",
     copy: "复制",
@@ -562,7 +560,6 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "文档",
       keyboardShortcuts: "键盘快捷键",
@@ -631,11 +628,8 @@ export const zhCN = {
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
-      // Shown under an empty project folder in the sidebar.
       noChats: "无对话",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "所有项目均已置顶",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "所有项目均已置顶或归入分区",
       noProjects: "暂无项目",
       showMore: "显示更多",
@@ -736,11 +730,9 @@ export const zhCN = {
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
-      // Header of the menu's section-visibility toggles.
       show: "显示",
       newSection: "新建分区",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "新建分区",
       createDescription: "按你的喜好对对话和项目进行分组",
@@ -751,16 +743,13 @@ export const zhCN = {
       edit: "编辑",
       remove: "移除分区",
       markAllRead: "全部标为已读",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "移动到",
       section: "分区",
       sectionsHeading: "分区",
       removeFromProject: "从项目中移除",
       newSection: "新建分区",
       removeFromSection: "从分区中移除",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "从{name}中移除",
-      // Shown in a section with nothing filed in it yet.
       empty: "将对话或项目拖到此处",
       sectionOptions: "分区选项",
       newChatInSection: "在 {name} 中新建聊天",
@@ -2142,7 +2131,6 @@ export const zhCN = {
           updateChecksDisabled:
             "更新检查已禁用（UNSLOTH_DISABLE_UPDATE_CHECK=1），因此不会查询可用的后端。",
         },
-        // 不显示：用于设置搜索的额外词条。
         llamaBackendKeywords:
           "llama.cpp backend gguf 推理 cuda rocm hip vulkan metal cpu gpu 加速器 prebuilt 切换 引擎",
       },
@@ -2163,7 +2151,6 @@ export const zhCN = {
         reloadRequired: "重新加载模型以应用新的内存选项。",
         loadError: "加载模型内存设置失败",
         saveError: "保存模型内存设置失败",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 内存 显存 常驻 固定 锁定 保持 已加载 卸载 空闲 mmap no-mmap load-mode 交换 分页",
       },
@@ -2286,8 +2273,6 @@ export const zhCN = {
       docsLabel: "打开 unsloth start 文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -3746,7 +3731,6 @@ export const zhCN = {
       all: "全部",
       chats: "聊天",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "聊天",

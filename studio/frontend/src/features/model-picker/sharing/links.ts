@@ -205,7 +205,7 @@ function browserLink(params: URLSearchParams, address: string): string {
     throw new Error("Use an HTTP or HTTPS Unsloth Web address.");
   }
   url.pathname = "/chat";
-  // Force document navigation from /chat: link intake ignores same-document hash changes.
+  // Force document navigation: link intake ignores same-document hash changes.
   url.search = "?run=1";
   url.hash = `run?${params}`;
   return url.href;

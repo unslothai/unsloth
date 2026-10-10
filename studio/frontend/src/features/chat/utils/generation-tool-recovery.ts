@@ -81,7 +81,6 @@ function recoveredToolResult(
   const { text: withUi, files } = sandbox
     ? extractCreatedFiles(event.result)
     : { text: event.result, files: [] };
-  // As the live adapter does: the UI line comes off first, then the image envelope.
   const { text, ui } = extractMcpUiEnvelope(
     withUi,
     typeof toolName === "string" ? toolName : "",
@@ -123,22 +122,11 @@ function recoveredToolResult(
   return text;
 }
 
-/** How a reopened tab re-arms a tool call that is still waiting on a human.
- *
- *  The live stream registers a parked call with the confirmation store, and `ToolConfirmationControls`
- *  renders Approve/Deny only for a card that has an entry there. Recovery rebuilds the card but has no
- *  store of its own, so without this the reopened tab shows the call spinning with no way to answer it
- *  while the backend sits parked -- see `state/tool_approvals.wait_tool_decision`, which waits for the
- *  returning session precisely so that tab can answer.
- *
- *  Passed in rather than imported so this module stays a pure util: the caller owns the store. Both
- *  calls must be idempotent -- a card can be re-raised from the seed AND re-folded from its frame. */
+/** Re-arms a tool call still waiting on approval after a tab reopens; the caller owns the store.
+ *  Both calls must be idempotent: a card can be re-raised from the seed and its frame. */
 export type RecoveredToolConfirmations = {
-  /** This card is waiting on a decision. `partId` is the card's own `toolCallId`, which is what the
-   *  controls look themselves up by, whichever path minted it. `sessionId` is the run's sandbox
-   *  session, which the decision is resolved against and which scopes "Always allow". */
+  /** `partId` is the card's toolCallId; `sessionId` scopes the decision and "Always allow". */
   register: (partId: string, approvalId: string, sessionId: string) => void;
-  /** It is no longer waiting: answered, denied, timed out, or finished. */
   resolve: (partId: string) => void;
 };
 
@@ -149,11 +137,7 @@ export function createGenerationToolRecovery(
   toolConfirmations?: RecoveredToolConfirmations,
 ) {
   const pending = new Map<string, CarriedPart>();
-  /** Arm the card a frame or a seed says is parked. Reads the id off the part rather than taking one,
-   *  so the seed path and the fold path cannot disagree about which card is being armed. */
-  /** Cards this recovery armed, so it only ever resolves its own. The live adapter clears
-   *  unconditionally because it owns every card in its stream; a recovery shares the store with
-   *  whatever else is on screen, so reaching for a card it never raised is not its business. */
+  /** The store is shared with other cards on screen, so only resolve the ones armed here. */
   const armed = new Set<string>();
   const armApproval = (
     entry: CarriedPart,
@@ -175,24 +159,14 @@ export function createGenerationToolRecovery(
     armed.delete(partId);
     toolConfirmations.resolve(partId);
   };
-  /** Drop every card this recovery armed, for the end of the run rather than the end of a call.
-   *  A run that terminates WITHOUT a tool_end (the backend failed or restarted while the call was
-   *  parked) never reaches disarmApproval, so the card would outlive its own run: buttons still on
-   *  screen, tool group still open, and a decision that can only 404 because the backend's pending
-   *  slot went with the restart. Still only this recovery's own cards, for the same reason
-   *  disarmApproval is scoped that way. */
+  /** For runs ending without tool_end (backend failed or restarted), which would orphan the card. */
   const disarmAll = () => {
     if (!toolConfirmations) return;
     for (const partId of armed) toolConfirmations.resolve(partId);
     armed.clear();
   };
   const researchHandoff = newDeepResearchHandoff();
-  /** The sources a finished search card yields, parsed once per card rather than per publish.
-   *  Every rebuild used to re-run the parse over every finished search result in the turn,
-   *  which measured as the bulk of a recovery's per-publish cost on a long tool-using reply.
-   *  `apply` replaces a card object wholesale rather than editing one, so an entry that is
-   *  still the same object still holds the same result; the result is compared as well, so
-   *  an in-place edit somewhere else could not make this serve a stale list either. */
+  /** Parsed once per card; `apply` replaces cards wholesale, so identity implies same result. */
   const parsedSources = new WeakMap<
     object,
     { result: unknown; sources: ReturnType<typeof parseSourcesFromResult> }
@@ -212,11 +186,7 @@ export function createGenerationToolRecovery(
     parsedSources.set(card, { result: card.result, sources });
     return sources;
   };
-  // A source a previous recovery appended is carried at the offset it was appended AT, so text
-  // replayed after it lands behind it and cuts the reply in two, breaking any markdown that
-  // spans the cut. `withSources` rebuilds these from the card, so drop them and let every
-  // rebuild re-append them, which is also where the live adapter puts them. A citation source
-  // is anchored where it arrived and has no card to rebuild it, so it stays.
+  // Drop rebuildable sources so withSources re-appends them at the end; citations stay in place.
   const rebuildableSourceIds = new Set(
     carried.flatMap(({ part }) => {
       const card = searchCard(part);
@@ -253,20 +223,8 @@ export function createGenerationToolRecovery(
       pending.set(id || `#idless:saved:${savedIdless++}`, entry);
     }
   }
-  /** Re-arm every call that parked BEFORE the tab closed.
-   *
-   *  Such a call was saved as an unresolved card and its `tool_start` sits at or below the cursor, so
-   *  no frame re-folds it and the fold's own registration never fires for it: the seed is the only
-   *  place it still exists. Called by the follower once the run's session is known rather than at
-   *  construction, because the decision is resolved against that session. A call whose `tool_start`
-   *  lands above the cursor arms itself as the frame folds; `register` is idempotent, so both paths
-   *  can name the same pair without raising two cards. */
-  /*  `stillPending` is what keeps this from arming a call the user ALREADY answered. A saved card
-   *  looks the same either way: no result, approval id intact, because the result only lands with
-   *  tool_end. So a tab closed between the click and the tool finishing would otherwise reopen
-   *  with Approve/Deny over a call that is already executing, and every press 404s. Optional, and
-   *  when it is absent the old arm-everything behaviour stands, so a caller with no way to ask is
-   *  no worse off than before. */
+  /** Re-arm calls parked before the tab closed; the seed is the only place they still exist. */
+  /*  `stillPending` avoids arming a call already answered; a saved card looks the same either way. */
   const armSeededApprovals = async (
     sessionId: unknown,
     stillPending?: (approvalId: string) => Promise<boolean>,
@@ -276,8 +234,7 @@ export function createGenerationToolRecovery(
     for (const entry of savedPending) {
       const approvalId = record(entry.part)?.toolApprovalId;
       if (stillPending && typeof approvalId === "string" && approvalId) {
-        // A check that throws (offline, server gone) must not cost the user their buttons on a
-        // call that really is parked, so an unanswerable question falls back to arming.
+        // A failed check falls back to arming, so the user keeps their buttons.
         let pending = true;
         try {
           pending = await stillPending(approvalId);
@@ -286,9 +243,7 @@ export function createGenerationToolRecovery(
         }
         if (!pending) continue;
       }
-      // Re-read AFTER the await: the replay runs concurrently now, so `tool_end` can fold this card
-      // mid-request. Arming a finished call leaves an entry until disarmAll, long enough to make a
-      // LATER approval non-sole and silently drop its Enter/Escape chord.
+      // Re-read after the await: tool_end can fold this card concurrently.
       if (record(entry.part)?.result !== undefined) continue;
       armApproval(entry, approvalId, session);
     }
@@ -306,9 +261,7 @@ export function createGenerationToolRecovery(
     if (at !== -1) legacyPending.splice(at, 1);
     return entry;
   };
-  // Seeded from saves: a reload between two completions of one card leaves it in no other lookup.
   const completed = new Map<string, CarriedPart>();
-  /** Most recent finished card a provider gave no id, for a repeated id-less ending. */
   let lastIdless: CarriedPart | undefined;
   for (const entry of carried) {
     const part = record(entry.part);
@@ -317,8 +270,7 @@ export function createGenerationToolRecovery(
     if (typeof id === "string" && id) completed.set(id, entry);
     else if (id === "") lastIdless = entry;
   }
-  /** A card the previous frontend saved carries its backend id inside toolCallId and nowhere
-   *  else, so a later completion has to recognise it the way the pending lookup already does. */
+  /** Legacy saved cards carry their backend id only inside toolCallId. */
   const findCompletedLegacy = (backendId: string) => {
     if (!backendId) return undefined;
     for (let i = carried.length - 1; i >= 0; i--) {
@@ -393,7 +345,6 @@ export function createGenerationToolRecovery(
         researchHandoff.hiddenCallIds.delete(backendId);
       if (readDeepResearchToolEvent(researchHandoff, event)) return;
     }
-    // Older approval cards need their original start event to recover the backend id.
     if (seq <= snapshotSeq) {
       const entry =
         event.type === "tool_start"
@@ -474,7 +425,6 @@ export function createGenerationToolRecovery(
       if (!toolName) {
         return;
       }
-      // A save can hold this card past its cursor; minting it again duplicates the part key.
       const toolCallId = `${backendId || "tool"}:${runId}:${seq}`;
       entry ??= carried.find(({ part }) => {
         const card = record(part);
@@ -504,8 +454,7 @@ export function createGenerationToolRecovery(
       pending.set(backendId || `#idless:${runId}:${seq}`, entry);
       if (backendId) completed.delete(backendId);
       else lastIdless = undefined;
-      // The frame says this call is waiting on a human, so the card must offer the decision here too:
-      // the backend parks for the returning session, and this tab IS the returning session.
+      // The backend parks for the returning session, and this tab is that session.
       if (event.awaiting_confirmation === true) {
         armApproval(entry, event.approval_id, sessionId);
       }
@@ -546,25 +495,18 @@ export function createGenerationToolRecovery(
         pending.delete(id);
       }
     }
-    // The call is answered, denied, or timed out: the card now has a result, so the decision is gone.
-    // Unconditional, as the live path's clearToolConfirmation is: a card that was never armed resolves
-    // to a no-op, and a card left armed would offer buttons over a finished result.
     disarmApproval(entry);
     if (backendId) completed.set(backendId, entry);
     else lastIdless = entry;
   };
-  // Recovery never reaches the live path's end-of-stream source yield, so rebuild those entries.
-  // Per occurrence, not per url, because the live path flat-maps the cards: two rounds finding
-  // the same page carry their own title and snippet, and the Sources panel lists both.
+  // Recovery never hits the live end-of-stream source yield; rebuild per occurrence, not per url.
   const withSources = <TPart>(parts: TPart[]): TPart[] => {
     const out: TPart[] = [...parts];
     for (const { part } of carried) {
       const card = searchCard(part);
       if (!card) continue;
       for (const source of cardSources(card)) {
-        // Copied rather than handed out from the cache, `metadata` included: before the
-        // cache each rebuild yielded its own objects all the way down, and a caller that
-        // edits a part it was given must not reach back into what the next rebuild yields.
+        // Copy cached parts so callers editing them cannot alter the next rebuild.
         out.push({
           ...source,
           ...(source.metadata ? { metadata: { ...source.metadata } } : {}),

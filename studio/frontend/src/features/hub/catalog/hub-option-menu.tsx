@@ -50,11 +50,9 @@ export function HubOptionMenu<T extends string>({
   showChevron?: boolean;
   title?: string;
   triggerContent?: ReactNode;
-  /** Rendered under the options behind a separator; clicks keep the menu open. */
   footer?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  // -1 = nothing highlighted (no hover, no keyboard nav yet).
   const [activeIndex, setActiveIndex] = useState(-1);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const listboxRef = useRef<HTMLDivElement | null>(null);
@@ -98,8 +96,6 @@ export function HubOptionMenu<T extends string>({
     (nextOpen: boolean) => {
       setOpen(nextOpen);
       if (nextOpen) {
-        // Nothing highlighted until the user hovers or uses the keyboard;
-        // keyboard nav anchors on the selected option (handleContentKeyDown).
         activateIndex(-1);
         requestAnimationFrame(() => listboxRef.current?.focus());
       }
@@ -120,7 +116,6 @@ export function HubOptionMenu<T extends string>({
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        // First arrow press highlights the selected option, then steps.
         setActiveIndex(
           resolvedActiveIndex < 0
             ? selectedIndex
@@ -235,8 +230,7 @@ export function HubOptionMenu<T extends string>({
                 }}
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
-                  // 14px menu radius minus the 4px padding, so the hover nests
-                  // cleanly into the dropdown's corners.
+                  // 14px menu radius minus 4px padding.
                   "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[10px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
                 )}
               >
@@ -257,9 +251,7 @@ export function HubOptionMenu<T extends string>({
           })}
         </div>
         {footer && (
-          // -mt-3 cancels the surface's 16px flex gap down to 4px. No side
-          // padding: the footer label carries the same padding as the options
-          // so its checkbox lines up with the option text.
+          // -mt-3 cancels the surface's 16px flex gap down to 4px.
           <div className="-mt-3 border-t border-border/60 pt-1">{footer}</div>
         )}
       </PopoverContent>

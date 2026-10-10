@@ -27,10 +27,7 @@
     }
   }
   var initialAccountMarker = readAccountMarker();
-  // Appearance is inline custom properties on <html> plus these gate attributes, written by
-  // theme-boot.js (mode and palette) and applyCustomizationToDocument in
-  // src/features/settings/stores/appearance-custom-store.ts (the rest). Uncarried, the copy paints
-  // in stock colors until React restyles it.
+  // Appearance gate attributes from theme-boot.js and appearance-custom-store.ts.
   var appearanceAttributes = [
     "data-chat-font",
     "data-code-font-size",
@@ -39,9 +36,7 @@
     "data-ui-font",
     "data-ui-font-size",
   ];
-  // Keep this in sync with applyCustomizationToDocument. Other inline root
-  // variables are transient runtime state (for example an in-progress panel
-  // resize) and must not be replayed into the replacement document.
+  // Keep in sync with applyCustomizationToDocument; other inline vars are transient.
   var appearanceVariables = [
     "--background",
     "--chart-1",
@@ -132,9 +127,7 @@
     return styles;
   }
 
-  // Design tokens the app defines through `:root` do not reach a shadow tree: `:root` matches only
-  // a document's root element, and Tailwind's `:host` block redeclares some of them on the host.
-  // Freeze the computed set and put it on the copy's own root instead.
+  // `:root` tokens do not reach a shadow tree, so freeze the computed set onto the copy's root.
   function readTokens() {
     var style = getComputedStyle(document.documentElement);
     var tokens = {};
@@ -171,8 +164,6 @@
     });
   }
 
-  // React re-applies all of these on mount, so this only brings that forward.
-  // Nothing here needs undoing when the overlay goes.
   function applyAppearance(appearance) {
     if (!appearance) return;
     var root = document.documentElement;
@@ -283,23 +274,17 @@
     retainedSnapshot = snapshot;
     overlay = document.createElement("div");
     overlay.className = "reload-snapshot";
-    // Vite injects index.css only after main.tsx runs, and styles inside the
-    // closed shadow tree cannot match its host. Keep the host full-viewport
-    // during that development-only gap; index.css repeats this for production.
+    // Dev only: index.css loads after main.tsx, so keep the host full-viewport until then.
     overlay.style.position = "fixed";
     overlay.style.inset = "0";
     overlay.style.zIndex = "2147483647";
     overlay.style.pointerEvents = "none";
     overlay.style.background = "var(--background)";
     overlay.setAttribute("aria-hidden", "true");
-    // pointer-events: none on the host is not enough, since the copy carries
-    // the app's own pointer-events-auto classes. inert is. The property is a
-    // silent expando where unsupported, so set the attribute too.
+    // The copy carries pointer-events-auto classes, so use inert; set the attribute too.
     overlay.inert = true;
     overlay.setAttribute("inert", "");
-    // A closed shadow tree keeps the copy out of every document query. The
-    // markup is a duplicate of the live shell, so leaving it in the page tree
-    // makes `#root textarea` (and the UI tests that wait on one) ambiguous.
+    // Closed shadow tree keeps the duplicate shell out of document queries like `#root textarea`.
     var shell = overlay.attachShadow({ mode: "closed" });
     var pendingLinkedStyles = 0;
     var linkedStylesRestored = false;
@@ -319,8 +304,7 @@
         pendingLinkedStyles -= 1;
         if (pendingLinkedStyles === 0) restoreAfterLinkedStyles();
       };
-      // A rebuilt bundle renames its hashed CSS, so the shell would come back
-      // unstyled. Drop it and let the real document through instead.
+      // A rebuilt bundle renames hashed CSS; drop the overlay rather than show it unstyled.
       link.onerror = removeOverlay;
       shell.appendChild(link);
     });
@@ -330,10 +314,7 @@
       style.textContent = text;
       shell.appendChild(style);
     });
-    // Selectors do not cross the shadow boundary, and 80-odd rules are anchored
-    // on `html` (light/dark theming above all), so the copy is rooted in an
-    // <html> element carrying the classes and gate attributes it was styled by,
-    // plus the marker index.css hangs the shell's own rules off.
+    // Selectors do not cross the shadow boundary and many rules anchor on `html`, so root in one.
     var shellRoot = document.createElement("html");
     if (fontLoads.length) shellRoot.style.visibility = "hidden";
     shellRoot.className =
@@ -346,15 +327,12 @@
         shellRoot.style.setProperty(name, tokens[name]);
       }
     });
-    // Global typography and foreground styles hang off body, not html, so the
-    // copy needs that inheritance boundary rather than a bare html root.
     shellBody = document.createElement("body");
     shellBody.innerHTML = snapshot.html;
     shellRoot.appendChild(shellBody);
     shell.appendChild(shellRoot);
     document.documentElement.appendChild(overlay);
-    // Arm the fail-open timeout before anything else can throw. Once the host
-    // is in the document, a throw below would otherwise strand it.
+    // Arm the fail-open timeout first so a throw below cannot strand the overlay.
     removalTimer = setTimeout(removeOverlay, 5000);
     if (fontLoads.length) {
       var revealShell = function () {
@@ -371,8 +349,6 @@
         }),
       ]).then(revealShell, revealShell);
     }
-    // Apply immediately and on the next frame for inline styles, then once
-    // linked styles settle (or after a bounded wait) for their final geometry.
     restoreScrollState(shellBody);
     requestAnimationFrame(function () {
       if (overlay) restoreScrollState(shellBody);
@@ -382,10 +358,8 @@
     }
   }
 
-  // React drives value/checked/selected as DOM properties and cloneNode copies
-  // attributes, so a populated composer or a ticked box would come back empty.
-  // Secret inputs must be identified independently of their presentation type:
-  // password and token fields can temporarily become type=text when revealed.
+  // cloneNode copies attributes, not React-driven properties. Detect secrets independently of
+  // type: revealed password/token fields can become type=text.
   function isSensitiveField(field) {
     var autocomplete =
       typeof field.autocomplete === "string"
@@ -406,9 +380,7 @@
   function mirrorFieldState(original, cloned) {
     var tag = original.tagName;
     if (isSensitiveField(original)) {
-      // cloneNode retains input attributes, textarea text, and any secret in a
-      // code/span subtree. The same value usually also sits in a tooltip or an
-      // accessible name, which clearing children alone would leave behind.
+      // Secrets can also sit in value attributes, tooltips and accessible names; clear those too.
       cloned.removeAttribute("value");
       sensitiveAttributes.forEach(function (name) {
         cloned.removeAttribute(name);
@@ -601,7 +573,6 @@
   }
 
   function hasSensitiveUrl(value) {
-    // Dropping a URL only costs the copy an image, so err towards dropping.
     return /[?&](?:access_token|api[-_]?key|apikey|auth|authorization|code|credential|key|secret|sig|signature|token|x-amz-credential|x-amz-signature|x-goog-signature)=/i.test(
       value,
     );
@@ -612,9 +583,6 @@
     var source = original.currentSrc || original.getAttribute("src") || "";
     if (source.slice(0, 5) !== "blob:" && !hasSensitiveUrl(source)) return;
 
-    // Audio controls still read as a shell without their expiring source.
-    // Images and video can carry rendered pixels as a bounded data URL; if a
-    // cross-origin frame refuses canvas capture, the URL is dropped, not kept.
     if (tag !== "IMG" && tag !== "VIDEO") {
       cloned.removeAttribute("src");
       return;
@@ -654,9 +622,7 @@
     );
   }
 
-  // Pixels are rasterized at devicePixelRatio, so one page costs 4x on a 2x
-  // display and can pass the cap alone. Dropping them keeps the layout, which
-  // is the point of the copy; dropping the snapshot puts the blank flash back.
+  // Pixels scale with devicePixelRatio and can pass the cap alone; drop media, keep the layout.
   function dropMaterializedMedia(clone) {
     var dropped = 0;
     clone.querySelectorAll("[src], [poster], [style]").forEach(function (el) {
@@ -687,9 +653,7 @@
       clearStoredSnapshot();
       return;
     }
-    // A second reload can happen before the replacement app is ready. The
-    // visible frame is still the closed-shadow copy, not the loading body
-    // underneath it, so carry that retained snapshot forward verbatim.
+    // A second reload before the app is ready: carry the retained snapshot forward verbatim.
     if (overlay && retainedSnapshot) {
       try {
         retainedSnapshot.createdAt = Date.now();
@@ -703,9 +667,7 @@
     var root = document.getElementById("root");
     if (!root || !root.firstElementChild) return;
     try {
-      // Clone the body's rendered surface, not just #root: dialogs, menus and
-      // other primitives portal beside the app root and are part of the frame
-      // the user sees. Active content is stripped before serialization below.
+      // Clone body, not #root: portaled dialogs and menus are part of the visible frame.
       var clone = document.body.cloneNode(true);
       var originalElements = Array.from(document.body.querySelectorAll("*"));
       var clonedElements = Array.from(clone.querySelectorAll("*"));
@@ -713,9 +675,7 @@
         var original = originalElements[index];
         var cloned = clonedElements[index];
         if (original.closest("svg")) continue;
-        // ChartStyle is passive, component-generated CSS needed by the cloned
-        // SVG. It has no layout box, so keep it out of rectangle pruning; every
-        // unmarked style is still removed by the sanitizer below.
+        // ChartStyle has no layout box, so exempt it from rectangle pruning.
         if (
           original.tagName === "STYLE" &&
           original.hasAttribute("data-reload-snapshot-style")
@@ -723,19 +683,14 @@
           continue;
         }
         var style = getComputedStyle(original);
-        // Two shapes with empty rectangles that are nonetheless visible: a `display: contents`
-        // wrapper generates no box however much its children fill, and a closed select still paints
-        // its selected option's label. Judging either by its rectangle drops what it shows.
+        // `display: contents` wrappers and closed selects paint despite empty rectangles.
         var paintsThroughSelect =
           (original.tagName === "OPTION" ||
             original.tagName === "OPTGROUP") &&
           original.closest("select");
         var laidOut = !paintsThroughSelect && style.display !== "contents";
         var bounds = laidOut ? original.getBoundingClientRect() : null;
-        // Removing children from a scroll container changes its scroll geometry
-        // and can shift the visible slice. Fully offscreen subtrees become
-        // coalesced spacers at the first laid-out level outside the viewport;
-        // this preserves the slice without serializing an unbounded transcript.
+        // Coalesce offscreen subtrees into spacers so the scroll geometry and visible slice stay put.
         var scrollContainer = nearestScrollContainer(original);
         var outsideViewport =
           laidOut &&
@@ -783,14 +738,10 @@
           element.remove();
       });
       clone.querySelectorAll("*").forEach(function (element) {
-        // IDs are scoped to the closed shadow root, so they cannot collide with
-        // the live document. Keep them for internal references such as
-        // SVG fill="url(#gradient-id)" and aria-labelledby.
+        // IDs are scoped to the closed shadow root, so keep them for SVG url(#id) and aria refs.
         element.removeAttribute("autofocus");
         element.removeAttribute("srcdoc");
-        // SVG <use> carries the same URLs on xlink:href, which a plain `href`
-        // lookup misses. javascript: cannot be activated on an inert copy, but
-        // it has no reason to be stored either.
+        // SVG <use> carries URLs on xlink:href, which a plain href lookup misses.
         [
           "src",
           "srcset",
@@ -864,11 +815,8 @@
       saveSnapshot();
     }
   });
-  // Firefox, WebKitGTK and Safari before 18.2 do not expose pageswap, but still deliver pagehide on
-  // reload. Do not register both: Chromium fires pagehide after pageswap and a second full-DOM
-  // capture during unload is both expensive and lower fidelity. pagehide cannot tell a reload from
-  // any other unload, so on those engines a snapshot is also written when the user navigates away;
-  // the restore side discards it (navigationType below).
+  // Engines without pageswap still fire pagehide; do not register both (Chromium fires both).
+  // pagehide also fires on navigation; the restore side discards those via navigationType.
   if (!("onpageswap" in window)) {
     window.addEventListener("pagehide", function (event) {
       if (!event.persisted) saveSnapshot();

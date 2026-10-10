@@ -94,27 +94,19 @@ async function activeSiblingTransport(
   return null;
 }
 
-// Outcome of a start request so callers can tell whether a transfer for this exact request is
-// actually live before telling the user it began. "started" means a running/cancelling job exists
-// for this key (a fresh start or an already-active one). "conflict" means a transport partial
-// conflict was recorded and must be resolved from the Hub download card; "busy" means the repo is
-// occupied by a sibling variant/snapshot/pending start that is not this transfer; "error" means the
-// start failed or was refused.
+// "started": a live job exists for this key; "conflict": resolve from the Hub card;
+// "busy": a sibling occupies the repo; "error": failed or refused.
 export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
 
-// A start can no-op without throwing: the backend can refuse it (startJob finalizes "error"),
-// startJob's peer guard can skip it, or hasActiveOrPendingStart can trip on a snapshot/peer/pending
-// that is not this request. Derive the outcome from the actual job state of this exact key so
-// callers never claim a download began when it did not.
+// A start can no-op without throwing, so derive the outcome from this exact key's job state.
 function isJobActiveFor(req: DownloadRequest): boolean {
   const job = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
   if (!job || !ACTIVE_STATES.has(job.state)) return false;
   return !scopedFileSetDiffers(job, req);
 }
 
-// Every file set of one repo rides the same scope slot, so a live job on this key counts as this request's transfer only when it is fetching the
-// same files: adopting a sibling quant's job would report ready for files nobody fetched. A job with no recorded list is adoptable only when the
-// request is unscoped; the old permissive answer let a second browser profile report "started" for a checkpoint nobody was fetching.
+// A shared scope slot counts as this transfer only if it fetches the same files; a job with
+// no file list is adoptable only for an unscoped request.
 function scopedFileSetDiffers(
   job: ManagedDownload,
   req: DownloadRequest,
@@ -133,12 +125,9 @@ async function runWithPendingStartGuard(
   action: () => Promise<DownloadStartOutcome>,
 ): Promise<DownloadStartOutcome> {
   const startKey = pendingStartKey(req);
-  // Already active or pending for the repo: only report "started" when this
-  // exact request is the live transfer; a peer/snapshot/pending start has not.
   if (hasActiveOrPendingStart(req)) {
     if (!isJobActiveFor(req)) return "busy";
-    // Returns "started" WITHOUT running the action, so startJob never announces;
-    // now the manager owns the message, this is the only feedback there is.
+    // Returns "started" without running the action, so this is the only feedback.
     showCallerToast(
       jobKeyOf(req.kind, req.repoId, req.variant),
       req.callerToast,
@@ -159,14 +148,10 @@ async function runWithPendingStartGuard(
 export async function requestStart(
   req: DownloadRequest,
 ): Promise<DownloadStartOutcome> {
-  // Before the preflight below, which is two round trips the user can navigate
-  // during; read after them it would name the page they moved to.
+  // Read before the preflight round trips, during which the user can navigate.
   const originRoute = currentRoute();
   const originSelectionEpoch = currentStartToastSelectionEpoch();
-  // The one funnel every download passes through, and the reason the low-disk notice needs no
-  // interval. Not awaited and never a gate: a download is not blocked on a disk reading, and a
-  // host that cannot answer must not stop one. The check throttles itself, so a page that
-  // starts several downloads at once still makes one request.
+  // Fire-and-forget, never a gate; the check throttles itself.
   void checkDiskSpace();
   return runWithPendingStartGuard(req, async () => {
     const preferred: TransportMode = await resolveTransportMode();
@@ -220,8 +205,7 @@ export async function requestStart(
               next: resolved,
               resumable: status.resumable,
             },
-            // Without the caller's line: resolved later from the Hub, where "it'll
-            // load automatically" is a promise chat cannot keep. The notice stands.
+            // Drop the caller's line: resolved later from the Hub, chat's auto-load promise no longer holds.
             pending: { ...req, callerToast: undefined },
           });
           return "conflict";
@@ -232,8 +216,7 @@ export async function requestStart(
         status.has_partial &&
         (status.resumable === false || !status.last_transport)
       ) {
-        // Do not raise during preflight: the backend may still reject or attach
-        // this start. The accepted job owns and later dismisses the disclosure.
+        // Do not raise during preflight: the backend may still reject or attach this start.
         restartDisclosure = true;
       }
     } catch (err) {
@@ -241,10 +224,8 @@ export async function requestStart(
         "Transport status check failed; starting without partial-conflict preflight.",
         err,
       );
-      // Fail safe: Xet purges any partial unconditionally, so when the partial can't be verified we
-      // downgrade this one start to HTTP (resumes an HTTP partial, harmless for a fresh download);
-      // the Xet preference is kept for next time. Only downgrade once we confirmed no sibling
-      // variant is downloading, since a live sibling may be mid-transfer on Xet.
+      // Xet purges partials unconditionally, so an unverifiable partial downgrades this start to HTTP,
+      // but only once no sibling variant is live (it may be on Xet).
       if (mode === TRANSPORT.XET && siblingProbed && !siblingTransport) {
         toast.warning("Couldn't verify existing partial download", {
           description:

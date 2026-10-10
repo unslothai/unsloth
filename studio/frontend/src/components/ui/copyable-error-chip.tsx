@@ -27,7 +27,6 @@ export function CopyableErrorChip({
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clear any pending reset on unmount to avoid a setState on an unmounted component.
   useEffect(() => () => {
     if (resetTimer.current) clearTimeout(resetTimer.current);
   }, []);
@@ -46,9 +45,7 @@ export function CopyableErrorChip({
   return (
     <Popover>
       <PopoverTrigger asChild={true}>
-        {/* No aria-label override: the visible message text is the
-            button's accessible name, so screen readers announce the
-            full (untruncated) error. Truncation here is purely visual. */}
+        {/* No aria-label: the visible text names the button, so readers get the untruncated error. */}
         <button
           type="button"
           className={cn(

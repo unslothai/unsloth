@@ -1,17 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The dictation unload answers {loaded_model: null} whatever it did, and the
-// backend serves `gguf` from the transformers engine when whisper-server is
-// absent, so the eject re-reads the status to find out what actually happened.
-// That re-read returns null on any non-2xx as well as on an empty runtime, and
-// reading those two as the same thing defeats the check: a transient 404 on the
-// verification would toast "Ejected" and drop a row whose model is still
-// holding memory.
-//
-// The eject path is bound to authFetch and the chat store, so this asserts the
-// shape of the decision rather than driving it: the three branches must be
-// distinguishable, and the unreadable one must not be spelled `null`.
+// The status re-read returns null on both errors and empty runtime; unreadable must differ.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -48,8 +38,7 @@ test("the STT re-read returns the sentinel rather than null on a failed read", (
 });
 
 test("the sentinel is checked before the truthiness test that would hide it", () => {
-  // A Symbol is truthy, so an UNVERIFIED reaching the `stillResident` branch
-  // would report the runtime as still holding something called "Symbol()".
+  // A Symbol is truthy, so UNVERIFIED must not reach the stillResident branch.
   const fn = SOURCE.slice(
     SOURCE.indexOf("const stillResident = await unload();"),
     SOURCE.indexOf("/** Release one row"),

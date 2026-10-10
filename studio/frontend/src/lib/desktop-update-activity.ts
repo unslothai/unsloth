@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The desktop update stops the backend on purpose while the app stays mounted under the update screen.
+// The update stops the backend while the app stays mounted under the update screen.
 let backendDownForUpdate = false;
 
 export function isBackendDownForDesktopUpdate(): boolean {
   return backendDownForUpdate;
 }
 
-/**
- * Tracks the update screen and returns the effect cleanup. Leaving it holds the flag until `resync`
- * settles: Skip & Restart and the shell-failure recovery spawn a fresh backend without waiting for it
- * to answer.
- */
+/** Holds the flag until `resync` settles, since recovery spawns a backend without waiting. */
 export function followDesktopUpdateScreen(
   isUpdating: boolean,
   wasUpdating: boolean,
@@ -32,10 +28,7 @@ export function followDesktopUpdateScreen(
   };
 }
 
-/**
- * Whether a failed read never reached a backend the update stopped. `downWhenIssued` is latched when
- * the request is issued: its rejection can land ~20s later, after the update screen has gone.
- */
+/** `downWhenIssued` is latched at issue: the rejection can land ~20s later. */
 export function isSilencedDesktopUpdateFailure(
   error: unknown,
   downWhenIssued: boolean,

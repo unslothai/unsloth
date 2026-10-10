@@ -24,8 +24,6 @@ import {
   useRagDocuments,
 } from "./use-rag-documents";
 
-/** Project "Sources" tab: documents indexed for retrieval in every chat that
- * belongs to the project. */
 export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lister = useCallback(
@@ -35,10 +33,8 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const { documents, loading, uploading, refresh, upload, remove } =
     useRagDocuments({ type: "project", projectId }, lister);
 
-  // Invalidate the sources probe before each mutation so a chat sent mid-upload
-  // cannot cache "no sources" for the probe's TTL, and announce after it, which
-  // is the half other instances and other tabs listen for. Announcing before
-  // would refetch and resurrect the row this panel has already dropped.
+  // Invalidate the probe before each mutation and announce after; announcing before would
+  // resurrect the row this panel has already dropped.
   const handleItems = useCallback(
     async (items: RagUploadItem[]) => {
       if (items.length === 0) return;
@@ -54,8 +50,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     [handleItems],
   );
 
-  // Desktop drops arrive as paths; the upload mints a lease per file rather
-  // than reading a document through the webview.
   const handleNativeIntents = useCallback(
     (intents: NativeIntent[]) =>
       handleItems(
@@ -83,9 +77,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce when they are done;
-  // refresh the mounted list so a source saved from a chat shows up here without a remount. The
-  // list only polls while a row it already knows is indexing, so nothing else would ever fetch it.
+  // The list only polls while a known row is indexing, so external mutations must trigger a refresh.
   useEffect(
     () =>
       subscribeProjectSourcesUpdated(projectId, () => {
@@ -96,8 +88,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
 
   const empty = documents.length === 0;
 
-  // Tauri suppresses webview drop events, so the plain `onDrop` this panel
-  // carried never fired on desktop: no border, file ignored (#9036).
+  // Tauri suppresses webview drop events, so a plain onDrop never fires on desktop.
   const {
     ref: dropRef,
     dragging,

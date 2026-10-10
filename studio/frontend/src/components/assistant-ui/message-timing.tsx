@@ -24,12 +24,6 @@ const formatRate = (r: number | undefined): string => {
   return `${Math.round(r).toLocaleString()} tok/s`;
 };
 
-/**
- * Shows streaming stats as a badge with hover tooltip.
- * When server timings are available (GGUF, MLX, safetensors), shows prompt eval,
- * prompt speed, generation, speed, tokens, and cache hits. Falls back to
- * client-side metrics otherwise.
- */
 export const MessageTiming: FC<{
   className?: string;
   side?: "top" | "right" | "bottom" | "left";
@@ -51,19 +45,13 @@ export const MessageTiming: FC<{
       }
     | undefined;
   const st = custom?.serverTimings;
-  // `??` (not `||`) so an explicit cache_n=0 isn't replaced by a stale
-  // contextUsage.cachedTokens from a prior turn.
+  // `??` not `||`: an explicit cache_n=0 must not fall back to a stale prior-turn value.
   const cacheHits =
     st?.cache_n ?? custom?.contextUsage?.cachedTokens ?? 0;
   const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;
-  // DiffusionGemma reports separately-labelled throughput (no prefill, so no "prompt
-  // speed"), matching the CLI: in-step parallel, effective (canvas*blocks/wall), and
-  // output (answer tokens/wall).
   const isDiffusion = (st as { diffusion?: boolean } | undefined)?.diffusion === true;
 
-  // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op turns,
-  // blowing the rate up to Infinity. Require >=1 token, a non-zero decode
-  // window, and a finite rate. Fast cached sub-10ms responses are legit.
+  // llama.cpp emits predicted_ms=0 on no-op turns; guard against an Infinity rate.
   const hasPredicted =
     (st?.predicted_n ?? 0) >= 1 && (st?.predicted_ms ?? 0) > 0;
   const predictedRate =
@@ -73,7 +61,6 @@ export const MessageTiming: FC<{
       ? st.predicted_per_second
       : undefined;
 
-  // Badge text: show tok/s if available, otherwise total time
   const badgeText = predictedRate != null
     ? `${predictedRate.toFixed(1)} tok/s`
     : formatTimingMs(timing.totalStreamTime);
@@ -104,7 +91,6 @@ export const MessageTiming: FC<{
           {st ? (
             isDiffusion ? (
             <>
-              {/* DiffusionGemma: honest throughput (no autoregressive prompt speed) */}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">First token</span>
@@ -196,7 +182,6 @@ export const MessageTiming: FC<{
             </>
             ) : (
             <>
-              {/* Server-side metrics (GGUF, MLX, safetensors) */}
               {st?.prompt_ms != null && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Prompt eval</span>
@@ -296,7 +281,6 @@ export const MessageTiming: FC<{
             )
           ) : (
             <>
-              {/* Client-side metrics (external provider fallback) */}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">First token</span>

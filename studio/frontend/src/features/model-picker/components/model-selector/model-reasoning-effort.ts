@@ -65,8 +65,7 @@ export function createModelReasoningEffortStore(storage: EffortStorage | null) {
         if (effort) Object.assign(next, { [modelId]: effort });
         else delete next[modelId];
         try {
-          // Independent writes cannot erase another model's pin.
-          // Empty entries prevent a cleared legacy pin from returning.
+          // Per-model keys so writes cannot erase another pin; empty entries stop a legacy pin returning.
           storage?.setItem(`${MODEL_KEY_PREFIX}${modelId}`, effort ?? "");
         } catch {
           // Keep the choice for this session.
@@ -80,7 +79,6 @@ export function createModelReasoningEffortStore(storage: EffortStorage | null) {
 const storage = browserStorage();
 export const useModelReasoningEffortStore = createModelReasoningEffortStore(storage);
 
-/** Return only a pin offered by the current model. */
 export function pinnedReasoningEffort(
   modelId: string | null | undefined,
   allowed: readonly string[] | null | undefined,

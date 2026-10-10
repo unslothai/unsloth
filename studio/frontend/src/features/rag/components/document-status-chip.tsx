@@ -33,8 +33,6 @@ export function DocumentStatusChip({
   stage?: string | null;
   error?: string | null;
   onRemove?: () => void;
-  /** Indexed for the whole project rather than this one chat: swap the file
-   * glyph for a folder so the two scopes are told apart at a glance. */
   shared?: boolean;
 }) {
   const processing = status === "pending" || status === "running";
@@ -55,14 +53,12 @@ export function DocumentStatusChip({
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >
-      {/* file, or folder when the doc is a project-wide source */}
       <HugeiconsIcon
         icon={shared ? Folder02Icon : FileEmpty02Icon}
         strokeWidth={2}
         className="size-3 shrink-0"
       />
       <span className="truncate">{filename}</span>
-      {/* spinner while indexing, else close button */}
       {processing ? (
         <span className="flex shrink-0 items-center gap-1 text-ui-10 text-muted-foreground">
           {progress != null

@@ -27,7 +27,7 @@ import {
 } from "./mcp-ui";
 
 const MAX_PENDING_TOOL_CALLS = 8;
-// Each backend call can hold a server worker for up to a minute; a widget polling a slow tool must not pile them up.
+// Each call can hold a server worker for a minute, so cap in-flight calls.
 const MAX_IN_FLIGHT_SERVER_CALLS = 8;
 const SERVER_METHODS = new Set(["tools/call", "resources/read"]);
 const DEFAULT_HEIGHT = 320;
@@ -68,7 +68,7 @@ interface PendingToolCall {
   argsPreview: string;
   scope: string;
   toolKey: string;
-  /** A ui/open-link request: opened from the Open click itself, so the browser sees a user gesture. */
+  /** Opened from the Open click itself so the browser sees a user gesture. */
   link?: string;
   decide: (allow: boolean, always: boolean) => void;
 }
@@ -86,14 +86,14 @@ function argsPreview(args: Record<string, unknown>): string {
   }
 }
 
-// The shell's CSP is fixed at request time, so declared domains ride the URL; never the auth token.
+// CSP is fixed at request time, so declared domains ride the URL; never the auth token.
 function frameSrc(csp: McpUiResource["ui"]["csp"] | null): string {
   const query = cspFrameQuery(csp);
   return apiUrl(`/api/inference/mcp-app-frame${query ? `?${query}` : ""}`);
 }
 
 export interface McpAppFrameProps {
-  /** The host's, from the tool part that drew the frame; never taken from the widget. */
+  /** From the host's tool part; never taken from the widget. */
   serverId: string;
   toolName: string;
   ui: McpUiEnvelope;
@@ -108,14 +108,12 @@ export function McpAppFrame(props: McpAppFrameProps) {
   const { serverId, toolName, ui, threadId, sessionId, className } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const { resolved: theme } = useTheme();
-  // Fetch scope rides with the template: new props must not redirect the old widget's requests.
   const [resource, setResource] = useState<
     (McpUiResource & { scope: FrameScope }) | null
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [pendingCalls, setPendingCalls] = useState<PendingToolCall[]>([]);
-  // The bridge reads props through refs, so a parent re-render never rebuilds it.
   const latest = useRef({ props, theme });
   latest.current = { props, theme };
   const pendingRef = useRef<PendingToolCall[]>([]);
@@ -154,7 +152,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
     };
   }, [resource]);
 
-  // Layout, not passive: the listener must be armed before the iframe's onLoad and first message.
+  // Layout effect: the listener must be armed before the iframe's onLoad.
   useLayoutEffect(() => {
     const setQueue = (queue: PendingToolCall[]) => {
       pendingRef.current = queue;
@@ -222,7 +220,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
         return { content: [{ type: "text", text: DECLINED }], isError: true };
       }
       const result = await send(true);
-      // After the call, as the model's confirm flow does: a failed press must not auto-approve later calls.
+      // After the call: a failed press must not auto-approve later calls.
       if (always) {
         useChatRuntimeStore.getState().allowToolAlways(scope, toolKey);
       }
@@ -280,7 +278,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
           if (pendingRef.current.length >= MAX_PENDING_TOOL_CALLS) {
             throw new RpcError("Too many requests are waiting");
           }
-          // Asked like a tool call: the widget is untrusted and Desktop has no popup blocker.
+          // Widget is untrusted and Desktop has no popup blocker, so ask first.
           const opened = await new Promise<boolean>((done) =>
             setQueue([
               ...pendingRef.current,
@@ -305,7 +303,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
 
     let inFlight = 0;
     const handler = (event: MessageEvent) => {
-      // Replies go down the port the request came up, never contentWindow: the window survives navigation.
+      // Reply on the port, never contentWindow: the window survives navigation.
       const port = event.target as MessagePort;
       const data = event.data;
       if (typeof data?.mcpAppHeight === "number") {
@@ -344,7 +342,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
             }),
         );
       } else if (data.method === "ui/notifications/initialized") {
-        // Nothing may be sent before `initialized`, and tool-input precedes the result.
+        // Nothing may be sent before `initialized`; tool-input precedes the result.
         initializedRef.current = true;
         let args: unknown = {};
         try {
@@ -374,7 +372,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
       }
     };
 
-    // Only the token-checked handshake is read off the window: source and origin survive navigation.
+    // Only the token-checked handshake is read off the window.
     const onHandshake = (event: MessageEvent) => {
       const data = event.data;
       const port = event.ports[0];
@@ -410,7 +408,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
     });
   }, [theme]);
 
-  // Only the parent-initiated first load is fed, so a self-navigated frame is never re-seeded.
+  // Only the first parent-initiated load is seeded.
   const onLoad = () => {
     if (!frame || frame.fed) return;
     frame.fed = true;
@@ -457,7 +455,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
       <iframe
         ref={iframeRef}
         src={frame.src}
-        // No allow-same-origin (app storage/cookies), no allow-downloads.
+        // No allow-same-origin or allow-downloads.
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         onLoad={onLoad}

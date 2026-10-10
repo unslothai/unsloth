@@ -32,7 +32,6 @@ const LABELS: Readonly<Record<string, string>> = {
 export const FAMILY_OVERRIDE_HINT =
   "Architecture family. Auto detects it from the repository or pipeline metadata. Choose one only for a custom Diffusers pipeline whose metadata does not identify a supported family.";
 
-/** Options come from the backend registry, so a new family cannot leave the UI stale. */
 export function familyOverrideOptions(supported: readonly string[] | null | undefined): [string, string][] {
   const names = [...new Set(supported ?? [])].filter(Boolean);
   return [["auto", "Auto (detect)"], ...names.map((n): [string, string] => [n, LABELS[n] ?? n])];

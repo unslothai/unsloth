@@ -29,8 +29,6 @@ test("browser update searches keep routing to About", () => {
 });
 
 test("interface scale is searchable on every build", () => {
-  // The browser build scales through the UI tokens, so the row renders there
-  // too and search has to find it.
   const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
   const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
 
@@ -42,8 +40,7 @@ test("interface scale is searchable on every build", () => {
   );
 });
 
-// The words a user types for this feature are not substrings of any of its
-// labels, so without keywords the rows it is named after were unfindable.
+// The feature's search terms are not substrings of its labels.
 test("model memory rows are reachable by the terms the feature is about", () => {
   const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
   const rows = [
@@ -93,10 +90,7 @@ test("desktop startup entries are absent from browser search", () => {
 });
 
 test("the repair row is searchable on the desktop, where it exists", () => {
-  // The capability message for a host whose PyTorch cannot use its GPUs sends the user to
-  // "Repair installation in Settings", so searching Settings for it has to find it. Only
-  // on the desktop: DesktopRepairControl renders nothing in a browser, and an index entry
-  // there would scroll to a row that is not on the page.
+  // Desktop only: DesktopRepairControl renders nothing in a browser.
   const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
   const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
 

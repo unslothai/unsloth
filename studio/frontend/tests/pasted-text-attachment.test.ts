@@ -88,7 +88,6 @@ test("short pastes stay inline", () => {
     shouldAttachPastedText("a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS - 1)),
     false,
   );
-  // Line count no longer decides: a tall but short paste stays inline.
   assert.equal(shouldAttachPastedText("line\n".repeat(200)), false);
 });
 
@@ -109,7 +108,6 @@ test("the threshold is configurable", () => {
 test("the off choice keeps every paste inline", () => {
   const huge = "a".repeat(5 * 1024 * 1024);
   assert.equal(shouldAttachPastedText(huge, PASTED_TEXT_THRESHOLD_OFF), false);
-  // A negative or nonsense value cannot turn it back on either.
   assert.equal(shouldAttachPastedText(huge, -1), false);
 });
 
@@ -129,12 +127,10 @@ test("the file is named after the opening of the paste", () => {
     pastedTextFileName("Introducing Unsloth"),
     "Introducing Unsloth.txt",
   );
-  // Leading blank lines are skipped.
   assert.equal(
     pastedTextFileName("\n\n  Release notes  \nbody"),
     "Release notes.txt",
   );
-  // Long openings cut on a word boundary, short ones are not padded.
   assert.equal(
     pastedTextFileName(
       "Introducing Unsloth Studio, the fastest way to finetune",
@@ -145,14 +141,12 @@ test("the file is named after the opening of the paste", () => {
     pastedTextFileName(`${"z".repeat(60)} tail`),
     `${"z".repeat(32)}.txt`,
   );
-  // Path separators and control characters cannot reach the filename.
   assert.equal(
     pastedTextFileName("src/lib\\util:\tmain"),
     "src lib util main.txt",
   );
   assert.equal(pastedTextFileName("\n   \n"), "Pasted text.txt");
   assert.equal(pastedTextFileName("///"), "Pasted text.txt");
-  // A single line of megabytes is read through a window, not copied whole.
   assert.equal(
     pastedTextFileName("b".repeat(4 * 1024 * 1024)),
     `${"b".repeat(32)}.txt`,
@@ -161,8 +155,6 @@ test("the file is named after the opening of the paste", () => {
     pastedTextFileName(`${" ".repeat(300)}${"b".repeat(1000)}`),
     "Pasted text.txt",
   );
-  // Blank lines are stepped over one at a time, so the walk is bounded too:
-  // naming must not depend on how many of them there are.
   const started = process.hrtime.bigint();
   assert.equal(
     pastedTextFileName(`${"\n".repeat(4 * 1024 * 1024)}Deploy log`),
@@ -176,7 +168,6 @@ test("pasted text files are recognised by identity", () => {
   assert.equal(file.name, "Deploy log.txt");
   assert.equal(file.type, "text/plain");
   assert.equal(isPastedTextFile(file), true);
-  // A .txt the user actually attached keeps the normal file tile.
   assert.equal(
     isPastedTextFile(
       new File(["hi"], "Deploy log.txt", { type: "text/plain" }),
@@ -198,9 +189,7 @@ test("the pasted text is kept beside the file, not re-read from it", () => {
 });
 
 test("a file the paste check accepts always has its body, byte for byte", async () => {
-  // How the queue stacks a pasted prompt without awaiting the File: both
-  // records are written together, so the identity check passing means the body
-  // is there. Otherwise a later gesture would be queued ahead of this one.
+  // Both records are written together, so a passing identity check means the body is there.
   for (const text of [
     "x".repeat(4000),
     `${"é中🚀".repeat(500)}\r\n\ttrailing  `,
@@ -210,7 +199,6 @@ test("a file the paste check accepts always has its body, byte for byte", async 
     assert.equal(isPastedTextFile(file), true);
     const body = pastedTextOf(file);
     assert.equal(body, text);
-    // The read the queue no longer waits for, kept as the reference.
     assert.equal(body, await file.text());
   }
 });
@@ -223,7 +211,6 @@ test("the sent wrapper is what marks a paste after the File is gone", () => {
     pasted,
     "<pasted_text name=Deploy log.txt bytes=4>\nbody\n</pasted_text>",
   );
-  // Only the paste is tagged and sized; a real attachment keeps its wrapper.
   assert.equal(attached, "<attachment name=notes.txt>\nbody\n</attachment>");
   assert.equal(isPastedTextContent(pasted), true);
   assert.equal(isPastedTextContent(attached), false);
@@ -234,7 +221,6 @@ test("the sent wrapper is what marks a paste after the File is gone", () => {
 test("the chip size is read off the header, never measured", () => {
   const pasted = attachmentContentText("Deploy log.txt", "body", true, 12_483);
   assert.equal(pastedTextContentBytes(pasted), 12_483);
-  // A name that itself looks like the size must not win over the real one.
   assert.equal(
     pastedTextContentBytes(
       attachmentContentText("x bytes=5.txt", "body", true, 99),
@@ -271,7 +257,6 @@ test("previewing sent content never materialises the body", () => {
   assert.equal(cut.text.length, PASTED_TEXT_PREVIEW_MAX_CHARS);
   assert.equal(cut.remaining, 40);
 
-  // Unwrapped or truncated content still previews rather than throwing.
   assert.deepEqual(pastedTextContentPreview("bare text"), {
     text: "bare text",
     remaining: 0,
@@ -291,8 +276,6 @@ test("a paste-only message still has something to name the thread with", () => {
     paste.length,
   );
 
-  // The composer sends no text at all in this case, so the title comes from
-  // the attachment or the thread stays "New Chat".
   assert.equal(
     fallbackTitleFromUserText(attachmentsSample([{ content: [] }])),
     "New Chat",
@@ -303,12 +286,10 @@ test("a paste-only message still has something to name the thread with", () => {
     ),
     "Fix the retry backoff",
   );
-  // Only a bounded opening is read, never the whole body.
   assert.ok(
     attachmentsSample([{ content: [{ type: "text", text: sent }] }]).length <=
       512,
   );
-  // Non-text parts are skipped, and the first text part wins.
   assert.equal(
     attachmentsSample([
       { content: [{ type: "image" }] },
@@ -331,7 +312,6 @@ test("chat search still finds what the paste moved out of the message", () => {
     body,
   );
 
-  // Attachments that were never indexed stay that way.
   assert.equal(pastedTextContentBody("[PDF: paper.pdf]\nAbstract"), "");
   assert.equal(
     pastedTextContentBody(attachmentContentText("notes.txt", body, false)),
@@ -346,7 +326,6 @@ test("chat search still finds what the paste moved out of the message", () => {
   );
   assert.equal(attachmentsPastedText(undefined), "");
 
-  // Several pastes on one message all reach the index.
   const second = attachmentContentText("Log.txt", "second body", true, 11);
   assert.equal(
     attachmentsPastedText([
@@ -361,13 +340,9 @@ test("copies and exports carry the paste, not its wrapper", () => {
   const body = "Deploy log\nline two";
   const sent = attachmentContentText("Deploy log.txt", body, true, 19);
 
-  // The marker is an implementation detail; the same text pasted below the
-  // threshold never had one.
   assert.equal(unwrapPastedTextContent(sent), body);
   assert.ok(!unwrapPastedTextContent(sent).includes("pasted_text"));
 
-  // Everything else is handed back untouched, including the wrapper a real
-  // attachment has always exported with.
   const attached = attachmentContentText("notes.txt", body, false);
   assert.equal(unwrapPastedTextContent(attached), attached);
   assert.equal(unwrapPastedTextContent("bare text"), "bare text");
@@ -375,7 +350,6 @@ test("copies and exports carry the paste, not its wrapper", () => {
 });
 
 test("a sample of unwrapped content is left as it is", () => {
-  // PDF and DOCX adapters write their own prefix with no wrapper.
   assert.equal(
     attachmentContentSample("[PDF: paper.pdf]\nAbstract"),
     "[PDF: paper.pdf]\nAbstract",
@@ -419,8 +393,7 @@ test("normal pastes and file pastes fall through untouched", () => {
   );
   assert.equal(shortPaste.defaultPrevented, false);
 
-  // An image on the clipboard belongs to the file-paste path, even when the
-  // app also offers a long text/plain rendering of it.
+  // A clipboard image goes to the file-paste path even with a long text/plain rendering.
   const withFile = pasteEvent(
     clipboard("a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS), [
       new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" }),
@@ -439,11 +412,8 @@ test("normal pastes and file pastes fall through untouched", () => {
 });
 
 test("a paste too big to hold inline still attaches", () => {
-  // Anything the old cap rejected fell back to pasting inline, which is the
-  // one case the input cannot survive.
   const huge = "a".repeat(20 * 1024 * 1024 + 1);
   assert.equal(shouldAttachPastedText(huge), true);
-  // Whitespace is no exemption either.
   assert.equal(
     shouldAttachPastedText(" ".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS)),
     true,
@@ -467,8 +437,7 @@ test("an attachment that throws on the spot reports instead of vanishing", () =>
     },
   );
 
-  // The paste is already swallowed at this point, so the toast is the only
-  // thing standing between the user and silently losing the clipboard.
+  // The paste is already swallowed, so the toast is the only signal to the user.
   assert.equal(handled, true);
   assert.equal(event.defaultPrevented, true);
   assert.equal(errors, 1);
@@ -503,7 +472,6 @@ test("native image and file payloads stay on the file paste path", () => {
     false,
   );
 
-  // A plain text/html copy is still text, not a file payload.
   const richText = pasteEvent(
     clipboard(text, [], { types: ["text/plain", "text/html"] }),
   );
@@ -533,16 +501,14 @@ function keyEvent(
 }
 
 test("paste without formatting is the chord each platform binds", () => {
-  // macOS puts Paste and Match Style on Option+Shift+Cmd+V, so that is the
-  // one that actually pastes there.
+  // macOS Paste and Match Style is Option+Shift+Cmd+V.
   assert.ok(
     isPlainPasteChord(
       keyEvent("KeyV", { metaKey: true, shiftKey: true, altKey: true }),
       true,
     ),
   );
-  // Shift+Cmd+V is taken too: web apps bind it, so a host that maps it should
-  // reach the field rather than the attachment path.
+  // Web apps bind Shift+Cmd+V, so a host mapping it should reach the field.
   assert.ok(
     isPlainPasteChord(
       keyEvent("KeyV", { metaKey: true, shiftKey: true }),
@@ -555,7 +521,6 @@ test("paste without formatting is the chord each platform binds", () => {
       false,
     ),
   );
-  // The other platform's modifier is a different chord, not this one.
   assert.equal(
     isPlainPasteChord(
       keyEvent("KeyV", { ctrlKey: true, shiftKey: true }),
@@ -573,7 +538,6 @@ test("paste without formatting is the chord each platform binds", () => {
 });
 
 test("an ordinary paste is left to the attachment threshold", () => {
-  // No Shift is plain Cmd/Ctrl+V, the paste that still attaches when long.
   assert.equal(
     isPlainPasteChord(keyEvent("KeyV", { metaKey: true }), true),
     false,
@@ -582,7 +546,6 @@ test("an ordinary paste is left to the attachment threshold", () => {
     isPlainPasteChord(keyEvent("KeyV", { ctrlKey: true, altKey: true }), false),
     false,
   );
-  // Alt belongs to the chord on macOS and to nothing off it.
   assert.equal(
     isPlainPasteChord(
       keyEvent("KeyV", { ctrlKey: true, shiftKey: true, altKey: true }),
@@ -597,7 +560,6 @@ test("an ordinary paste is left to the attachment threshold", () => {
     ),
     false,
   );
-  // Modifiers alone, which is what the first keydowns of the chord carry.
   assert.equal(
     isPlainPasteChord(keyEvent("ShiftLeft", { shiftKey: true }), true),
     false,
@@ -616,9 +578,7 @@ test("a keyboard reporting no code reads the physical key", () => {
     altKey: true,
   };
   assert.ok(isPlainPasteChord(optionChord, true));
-  // A different physical key on the same glyph path is still refused.
   assert.equal(isPlainPasteChord({ ...optionChord, keyCode: 67 }, true), false);
-  // keyCode wins over key, so a "v" on another physical key does not pass.
   assert.equal(
     isPlainPasteChord({ ...optionChord, key: "v", keyCode: 67 }, true),
     false,
@@ -626,8 +586,7 @@ test("a keyboard reporting no code reads the physical key", () => {
 });
 
 test("the chord follows the layout, not the board", () => {
-  // Dvorak puts V on the QWERTY period key and moves paste there with it, so
-  // the chord arrives as code "Period" typing "V".
+  // Dvorak V sits on the QWERTY period key: code "Period", key "V".
   const dvorak = {
     code: "Period",
     key: "V",
@@ -638,15 +597,11 @@ test("the chord follows the layout, not the board", () => {
     altKey: false,
   };
   assert.ok(isPlainPasteChord(dvorak, true));
-  // And the QWERTY V position types K there, which is not this chord, however
-  // much the board says otherwise.
   assert.equal(
     isPlainPasteChord({ ...dvorak, code: "KeyV", key: "K", keyCode: 75 }, true),
     false,
   );
-  // A layout that types no Latin letter leaves nothing to read, so the two
-  // remaining signals answer. Either pointing at V is enough, because on a
-  // remapped board only one of them can be.
+  // Non-Latin layouts: either remaining signal pointing at V suffices.
   assert.ok(
     isPlainPasteChord(
       { ...dvorak, code: "KeyV", key: "\u041c", keyCode: 86 },
@@ -669,10 +624,8 @@ test("the chord follows the layout, not the board", () => {
 });
 
 test("the Option chord follows the layout too", () => {
-  // \u2325\u21e7\u2318V is what the macOS Edit menu carries, and macOS routes it by the
-  // letter, so on Dvorak it lands on the QWERTY period key. Option then
-  // rewrites `key` into a glyph, leaving `code` at the position it sits at and
-  // `keyCode` at the letter it stands for. Only one of those is the chord.
+  // macOS routes the menu chord by letter; Option turns `key` into a glyph, so code and keyCode
+  // disagree on Dvorak.
   const optionOnDvorak = {
     code: "Period",
     key: "\u25ca",
@@ -683,17 +636,11 @@ test("the Option chord follows the layout too", () => {
     altKey: true,
   };
   assert.ok(isPlainPasteChord(optionOnDvorak, true));
-  // QWERTY, where both agree.
   assert.ok(isPlainPasteChord({ ...optionOnDvorak, code: "KeyV" }, true));
-  // Taking either signal accepts a little more than the chord: \u2325\u21e7\u2318K on Dvorak
-  // sits on the QWERTY V key, so the position says V while the letter says K.
-  // That is the deliberate half of the trade, and it costs nothing, because
-  // the flag is read only by a paste arriving before the keys come up and no
-  // paste follows this.
+  // Accepting either signal admits Option+Shift+Cmd+K on Dvorak; harmless, no paste follows.
   assert.ok(
     isPlainPasteChord({ ...optionOnDvorak, code: "KeyV", keyCode: 75 }, true),
   );
-  // Neither signal pointing at V is still a refusal.
   assert.equal(
     isPlainPasteChord({ ...optionOnDvorak, code: "Period", keyCode: 75 }, true),
     false,
@@ -734,24 +681,19 @@ test("a keyboard reporting no code falls back to the key", () => {
 test("the composer reads the chord from the keydown and clears it", async () => {
   const { readFile } = await import("node:fs/promises");
   const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
-  // A paste event carries no modifiers, so the chord has to come from the
-  // keydown before it, on capture so inputProps keeps its own onKeyDown.
+  // A paste event has no modifiers; capture the keydown so inputProps keeps its onKeyDown.
   assert.match(thread, /onKeyDownCapture=\{notePlainPasteChord\}/);
   assert.match(
     thread,
     /isPlainPasteChord\(event\)\n\s*\? performance\.now\(\)/,
   );
-  // And it lasts only while the keys are down. The paste is the keydown's own
-  // default action, so it has already run by the time anything is released,
-  // while a menu cannot be reached without letting go first.
+  // The paste runs as the keydown's default action, before any key is released.
   assert.match(thread, /onKeyUpCapture=\{endPlainPasteChord\}/);
   assert.match(thread, /onBlurCapture=\{endPlainPasteChord\}/);
   assert.match(
     thread,
     /const endPlainPasteChord = useCallback\(\(\) => \{\n\s*plainPasteAtRef\.current = 0;/,
   );
-  // Read once per paste, and only inside the gesture: a menu paste with no
-  // chord before it, or long after one, is ordinary.
   const at = thread.indexOf("const handleFilePaste = useCallback(");
   const body = thread.slice(at, thread.indexOf("\n  );", at));
   assert.match(body, /plainPasteStillCounts\(\n\s*plainPasteAtRef\.current,/);
@@ -761,7 +703,6 @@ test("the composer reads the chord from the keydown and clears it", async () => 
 
 test("the chord carries a bulk paste past the threshold, inline", () => {
   const text = "a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS);
-  // What the composer does: read the chord off the keydown, then decide.
   const decide = (key: ReturnType<typeof keyEvent>) => {
     const plainPaste = isPlainPasteChord(key, true);
     const event = pasteEvent(clipboard(text));
@@ -773,12 +714,10 @@ test("the chord carries a bulk paste past the threshold, inline", () => {
     return { attached, defaultPrevented: event.defaultPrevented };
   };
 
-  // Cmd+V: long enough, so it attaches and the browser paste is swallowed.
   const ordinary = decide(keyEvent("KeyV", { metaKey: true }));
   assert.equal(ordinary.attached, true);
   assert.equal(ordinary.defaultPrevented, true);
 
-  // Option+Shift+Cmd+V: same text, left to the field, browser paste untouched.
   const plain = decide(
     keyEvent("KeyV", { metaKey: true, shiftKey: true, altKey: true }),
   );
@@ -790,7 +729,6 @@ test("the chord carries a bulk paste past the threshold, inline", () => {
   );
 });
 
-/** Every value stored under `key`, anywhere in a locale tree. */
 const valuesForKey = (tree: unknown, key: string): string[] => {
   const found: string[] = [];
   const walk = (node: unknown) => {
@@ -812,14 +750,7 @@ test("every locale keeps the shortcut in the threshold description", async () =>
   const files = (await readdir(dir)).filter((name) => name.endsWith(".ts"));
   assert.ok(files.length >= 12, "every shipped locale is read");
   for (const name of files) {
-    // The RESOLVED value, not a slice of the source. This used to take
-    // source.indexOf("pastedTextThresholdDescription:") and read to the next
-    // newline, which asserts about the formatter as much as the translation: a
-    // value Prettier wraps onto the following line leaves the slice holding only
-    // the key, and the placeholder is invisible while being right there. ar.ts is
-    // wrapped that way on main today, so this was red on every PR, and every other
-    // locale would have broken it in turn as they got rewrapped. Importing the
-    // module reads what the app reads and cannot be moved by layout.
+    // Import the resolved value: slicing source text broke when Prettier wrapped a locale.
     const module = (await import(new URL(name, dir).href)) as Record<
       string,
       unknown
@@ -833,8 +764,6 @@ test("every locale keeps the shortcut in the threshold description", async () =>
       1,
       `${name} carries the description exactly once`,
     );
-    // The chord reads ⇧⌘V or Ctrl+Shift+V, so the tab supplies it and a
-    // translation that drops the placeholder loses the escape hatch.
     assert.ok(values[0].includes("{shortcut}"), `${name} keeps {shortcut}`);
   }
 });
@@ -851,7 +780,6 @@ test("the settings label names the chord the composer accepts", async () => {
       shift: true,
       alt: mac,
     };
-    // The label is only honest if the predicate answers to the same chord.
     assert.ok(
       isPlainPasteChord(
         keyEvent("KeyV", {
@@ -869,7 +797,6 @@ test("the settings label names the chord the composer accepts", async () => {
       mac ? "\u2325\u21e7\u2318V" : "Ctrl+Shift+V",
     );
   }
-  // The tab builds that same binding rather than spelling the chord out.
   const tab = await readSrcAsync("features/settings/tabs/chat-tab.tsx");
   assert.match(
     tab,
@@ -878,19 +805,14 @@ test("the settings label names the chord the composer accepts", async () => {
 });
 
 test("the chord only stands for the paste it asks for", () => {
-  // The browser dispatches that paste while still handling the keydown, so
-  // the window only has to survive one task.
   assert.ok(plainPasteStillCounts(1000, 1000));
   assert.ok(plainPasteStillCounts(1000, 1000 + PLAIN_PASTE_GESTURE_MS - 1));
-  // ⇧⌘V on macOS is a web-app convention, not a menu command, so it can be
-  // pressed and paste nothing. The Edit-menu paste the user reaches for next
-  // carries no keydown to clear the chord, so time has to.
+  // Shift+Cmd+V may paste nothing on macOS, and a later menu paste has no keydown to clear it.
   assert.equal(
     plainPasteStillCounts(1000, 1000 + PLAIN_PASTE_GESTURE_MS),
     false,
   );
   assert.equal(plainPasteStillCounts(1000, 30000), false);
-  // Never pressed, so a menu paste on a fresh composer is ordinary.
   assert.equal(plainPasteStillCounts(0, 0), false);
   assert.equal(plainPasteStillCounts(0, 500), false);
 });

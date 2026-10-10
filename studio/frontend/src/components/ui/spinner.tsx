@@ -6,8 +6,7 @@
 import { Loader2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-/** App-wide spinner inheriting the current text color. `label` overrides the announcement
- * where "loading" is not what it means (a sidebar chat is generating). */
+/** Spinner in current text color; `label` overrides the "loading" announcement. */
 function Spinner({
   className,
   label = "Loading",

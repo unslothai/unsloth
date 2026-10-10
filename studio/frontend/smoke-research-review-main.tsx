@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Real message and plan dialog; no backend or model required.
 import {
   AssistantRuntimeProvider,
   MessagePrimitive,
@@ -37,7 +36,6 @@ const run: ResearchRun = {
   updatedAt: 1,
 };
 ingestResearchUpdate(run);
-// Model the existing follower without starting a backend connection.
 useResearchRunStore.getState().setFollowing(run.id, true, "connected");
 useResearchRunStore.getState().openPanel(run.id);
 

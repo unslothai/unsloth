@@ -65,10 +65,8 @@ const COARSE_POINTER =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
-// Defer the cached-size chip (Radix Tooltip + two store subscriptions) until a row is first
-// hovered/focused so scrolling the virtualized list doesn't pay that cost per row; an identical
-// StatChip placeholder makes the swap invisible. Coarse pointers have no hover, so they arm
-// immediately. Default true so any out-of-row usage stays functional.
+// Defer the cached-size chip until first hover/focus to keep virtualized scrolling cheap.
+// Coarse pointers arm immediately; default true so out-of-row usage works.
 const CatalogRowInteractiveContext = createContext(true);
 
 function CachedSizeChip(props: {
@@ -188,7 +186,6 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
-                  {/* Brightened for the dark tooltip: muted grey reads poorly there. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
@@ -208,7 +205,6 @@ function CachedSizeChipLive({
   );
 }
 
-// Thin "·" separator for inline meta lines (owner · format · params).
 function MetaDivider() {
   return (
     <span aria-hidden="true" className="shrink-0 text-muted-foreground/35">
@@ -577,7 +573,6 @@ export const InventoryRow = memo(function InventoryRow({
   isDataset: boolean;
   dimmed: boolean;
   deviceType: string | null;
-  /** Narrow split master pane: drop the capability column so the name fits. */
   compact?: boolean;
   showFormatDot?: boolean;
   onSelect: (id: string) => void;
@@ -600,7 +595,6 @@ export const InventoryRow = memo(function InventoryRow({
       deviceType,
       vllmAvailable,
     });
-    // Images/Video run these, so they are not unsupported to a user.
     return classified.status === "unsupported" && !classified.supportedIn;
   }, [
     isDataset,
@@ -643,8 +637,6 @@ export const InventoryRow = memo(function InventoryRow({
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
-  // Always-derivable stats so on-device rows don't show empty placeholder cells:
-  // format badge, parameter count from the repo name, and GGUF quant variant.
   const formatLabel =
     row.modelFormat === "gguf"
       ? "GGUF"
@@ -659,7 +651,6 @@ export const InventoryRow = memo(function InventoryRow({
   const metaChips =
     !isDataset && (formatLabel || paramLabel || quantLabel) ? (
       <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
-        {/* Format already shows as the status dot, so the pill stays neutral. */}
         {formatLabel && <span className="hub-chip">{formatLabel}</span>}
         {paramLabel && (
           <span className="hub-chip tabular-nums">{paramLabel}</span>
@@ -672,7 +663,6 @@ export const InventoryRow = memo(function InventoryRow({
       </div>
     ) : null;
 
-  // On-disk size for cached repos, else local source or last-modified date.
   const sourceLabel = row.kind === "local" ? row.sourceLabel : null;
 
   const statusMarkers = (
@@ -702,8 +692,6 @@ export const InventoryRow = memo(function InventoryRow({
     </>
   );
 
-  // Compact rows are all on-device, so the format dots are noise: surface only
-  // exceptional states; format + params move to the meta line.
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
@@ -772,8 +760,7 @@ export const InventoryRow = memo(function InventoryRow({
           ),
           successMessage: `Deleted ${deletableRepoId}`,
           onConfirm: async () => {
-            // Delete only the copy this row shows: cache rows carry the owning
-            // cache path, so pass it through and leave other caches untouched.
+            // Pass the owning cache path so only this row's copy is deleted.
             const rowCachePath =
               row.kind === "cache" ? (row.cachePath ?? undefined) : undefined;
             if (isDataset) {
@@ -800,8 +787,6 @@ export const InventoryRow = memo(function InventoryRow({
       />
     ) : null;
 
-  // Compact master pane: drop the capability column and collapse size + date
-  // into one trailing group so the name keeps the whole middle.
   if (compact) {
     return (
       <CatalogRow
@@ -936,7 +921,6 @@ export const InventoryRow = memo(function InventoryRow({
 });
 
 export const CATALOG_ROW_HEIGHT_PX = 57;
-/** Gutter between lanes, shared with the hand-laid grids beside these rows. */
 export const CATALOG_COLUMN_GAP_PX = 12;
 
 export function VirtualRows<T>({
@@ -962,8 +946,7 @@ export function VirtualRows<T>({
 }) {
   const lanes = Math.max(1, columns);
   const rowCount = Math.ceil(items.length / lanes);
-  // The rows inside these slots scale with the UI font size, so the slots do
-  // too, or tall rows run into the next absolutely positioned one.
+  // Slots scale with the UI font size or tall rows overlap the next absolutely positioned one.
   const scale = useUiSpaceScale();
   const slotHeight = Math.round(rowHeight * scale);
   const slotCellHeight = Math.round(cellHeight * scale);
@@ -1007,8 +990,7 @@ export function VirtualRows<T>({
               left: 0,
               width: "100%",
               transform: `translateY(${virtualRow.start - scrollMargin}px)`,
-              // Fixed height matching estimateSize (no measureElement ref): dynamic per-row
-              // measurement churns virtualizer state and causes visible jumps as new rows arrive.
+              // Fixed height, no measureElement: per-row measurement causes visible jumps.
               height: `${slotHeight}px`,
               contain: "layout",
             }}

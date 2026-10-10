@@ -14,10 +14,7 @@ const {
   turnRequiresLegacyStream,
 } = await import("../src/features/chat/api/durable-gate.ts");
 
-// A turn stays durable (returns false) unless a tool the BROWSER must execute is enabled. The regression these
-// tests pin: the gate used to read `requestPayload.tools`, which is absent on the local path and is the caller's
-// schema catalog on the passthrough path - so a catalog-bearing turn was forced onto the cancel-on-disconnect
-// stream and a closed browser halted generation mid-turn.
+// A turn stays durable unless a browser-executed tool is enabled; requestPayload.tools is not that.
 
 test("a local agentic turn with server-executed tools stays durable", () => {
   assert.equal(
@@ -48,13 +45,6 @@ test("only a browser-executed tool forces the legacy stream", () => {
   assert.equal(BROWSER_EXECUTED_TOOLS.size, 0, "nothing is browser-executed today");
 });
 
-// ── The gate itself: every term of the conjunction, as a truth table ─────────────────────
-// These replace grepping the adapter's source for a token that happens to spell the rule. A turn is a durable-run
-// candidate unless exactly one of these is true of it; each case below flips ONE term and says out loud which path
-// that sends the turn to and why.
-
-/** A plain text turn on a persisted thread, with its message in hand: everything the gate wants.
- *  Field names are the values the adapter resolves and passes; the gate itself resolves nothing. */
 const durableTurn = {
   externalProvider: false,
   modelIsAudio: false,
@@ -130,9 +120,5 @@ for (const [name, override, why] of legacyCases) {
 }
 
 test("the gate reads the turn's own media, never the thread's history", () => {
-  // The regression this pins: the scan that fills `turnCarriesMedia` walked post-prune HISTORY, so one screenshot
-  // from an earlier turn refused every later text-only turn AND sent it to the legacy stream. A turn whose OWN
-  // message carries no media is a candidate even when the thread above it is full of it - which is what the adapter
-  // passes here (currentTurnMessages), pinned by tests/studio/test_multi_chat_prompt_queue_contract.py.
   assert.equal(isDurableRunCandidate({ ...durableTurn, turnCarriesMedia: false }), true);
 });

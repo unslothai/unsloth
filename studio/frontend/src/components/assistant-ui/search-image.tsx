@@ -17,7 +17,6 @@ import {
   useState,
 } from "react";
 
-// Provided once per message part by MarkdownText, so every chip reads the same map.
 export const SearchImagesContext = createContext<
   ReadonlyMap<string, SearchImageEntry>
 >(new Map());
@@ -30,8 +29,7 @@ type LoadState =
 const IDLE: LoadState = { status: "idle" };
 
 function useSearchThumbnail(id: string, nearViewport: boolean): LoadState {
-  // Keyed by id so a re-used element for another image reads idle, not the
-  // previous image's blob, without resetting state inside the effect.
+  // Keyed by id so a reused element reads idle for a new image without resetting state in the effect.
   const [state, setState] = useState<{ id: string; load: LoadState }>({
     id,
     load: IDLE,
@@ -45,10 +43,7 @@ function useSearchThumbnail(id: string, nearViewport: boolean): LoadState {
     authFetch(searchImagePath(id), { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
-          // Guarded like the success path below: a non-ok response for the id this
-          // element used to hold would otherwise write that id's state back, and the
-          // render below falls through to idle for it -- a skeleton that never resolves
-          // because the effect has no reason to run again.
+          // Guard like the success path, or a stale id's state is written back and the skeleton never resolves.
           if (controller.signal.aborted) return;
           setState({ id, load: { status: "failed" } });
           return;
@@ -129,7 +124,6 @@ export function SearchImageThumb({
   const gallery = useContext(SearchImagesContext);
   const [ref, nearViewport] = useNearViewport<HTMLAnchorElement>();
   const image = useSearchThumbnail(entry.id, nearViewport);
-  // Only a card the backend actually served gets a live link.
   const href = image.status === "loaded" ? entry.source : undefined;
   const label = entry.title || entry.domain || "Image";
 
@@ -142,7 +136,6 @@ export function SearchImageThumb({
       rel="noopener noreferrer"
       title={entry.domain ? `${label} · ${entry.domain}` : label}
       aria-label={label}
-      // Opens the picture, as ChatGPT does; its page is one click away in the viewer.
       onClick={(event) => {
         if (!href) return;
         event.preventDefault();
@@ -207,17 +200,14 @@ export function SearchImageThumb({
   );
 }
 
-// Rendered by Streamdown for <search-image token="…">; a token the message cannot
-// resolve renders nothing, so an invented one never shows as text or markup.
+// A token the message cannot resolve renders nothing, so an invented one never shows.
 export const SearchImageElement = memo(function SearchImageElement(props: {
   token?: string;
 }) {
   const images = useContext(SearchImagesContext);
   const entry = props.token ? images.get(props.token) : undefined;
   if (!entry) return null;
-  // Explicitly block: a list item styles its paragraphs `[&>p]:inline`, so an
-  // inline card would flow into the sentence and the text would wrap around it.
-  // `empty:hidden` keeps a thumb that failed to load from leaving a gap.
+  // Explicitly block: list items make paragraphs inline, so text would wrap around the card.
   return (
     <span
       className="my-2 flex flex-wrap gap-2 empty:hidden"

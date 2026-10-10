@@ -41,11 +41,6 @@ import {
   downloadActionLabel,
 } from "./use-download-card-state";
 
-/**
- * Shared shell for every download surface (safetensors, GGUF, dataset): card
- * frame, progress bar, transport-conflict dialog, plus card-specific `dialogs`
- * and children.
- */
 export function DownloadCard({
   job,
   progress,
@@ -64,8 +59,6 @@ export function DownloadCard({
       <div className="hub-download-card">
         <div className="group/dl flex items-center">{children}</div>
         {progress && (
-          // Match the row's inner text bounds: the trigger and the action button both inset 12px,
-          // so the bar lines up with the quant label on the left and the percentage on the right.
           <div className="px-3">
             <DownloadProgressBar
               progress={progress}
@@ -88,7 +81,6 @@ export function DownloadCard({
   );
 }
 
-/** Vertical hairline that fades out on row hover, separating info from actions. */
 export function CardDivider() {
   return (
     <div
@@ -171,11 +163,7 @@ export function CardUpdateButton({
 }: {
   label: string;
   onClick: () => void;
-  /** When true (a newer revision is available) the control becomes a prominent
-   *  labeled amber pill instead of the quiet hover-revealed icon — the
-   *  "update available" cue. Amber is the established status tone in this surface
-   *  (the older-cache hint banner), kept tinted (never solid) per the design
-   *  system's feedback-color convention, so the one emerald accent stays scarce. */
+  /** Shows a tinted amber "update available" pill instead of the quiet icon. */
   emphasized?: boolean;
 }) {
   if (emphasized) {
@@ -231,7 +219,6 @@ export function CardUpdateButton({
   );
 }
 
-/** Download / Cancel / Resume button for the safetensors and dataset cards. */
 export function DownloadActionButton({
   downloading,
   cancelling,
@@ -248,9 +235,7 @@ export function DownloadActionButton({
   cancelling: boolean;
   loading?: boolean;
   isPartial?: boolean;
-  /** This row's partial can be continued byte for byte (backend verdict). */
   partialResumable?: boolean;
-  /** What stopping the running job costs; see downloadStopMode. */
   stopMode?: DownloadStopMode;
   progressPercent?: number | null;
   disabled: boolean;
@@ -297,7 +282,6 @@ export function DownloadActionButton({
   );
 }
 
-/** Confirmation dialog shared by the model, quantization, and dataset delete flows. */
 export function DeleteConfirmDialog({
   open,
   onOpenChange,
@@ -341,7 +325,6 @@ export function DeleteConfirmDialog({
   );
 }
 
-/** Confirmation dialog shared by the model and quantization update flows. */
 export function UpdateConfirmDialog({
   open,
   onOpenChange,

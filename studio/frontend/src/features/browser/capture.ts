@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Print and screenshot for the panel. The desktop app does both natively: a page in a native view
-// through its own engine, and anything else as a snapshot of the app's webview cropped to the page
-// (src-tauri/src/browser_capture.rs), with no screen-share prompt. The web build prints a copy of a
-// framed page and captures through the browser's region capture, where it has one (Chromium).
+// Desktop prints and screenshots natively (src-tauri/src/browser_capture.rs), no share prompt; the
+// web build prints a copy of a framed page and uses region capture where available (Chromium).
 
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { callNative } from "./native-support";
@@ -26,7 +24,6 @@ export function canPrintFrames(): boolean {
   return !(isTauri && isMac);
 }
 
-/** Print the tab's page: the engine's dialog for a native view, else a copy of the framed page. */
 export async function printPage(tab: BrowserTab): Promise<boolean> {
   if (!nativePageOf(tab)) return printFramePage(tab.id);
   // The menu that asked hides the view; print what the reader sees once it's back.
@@ -77,8 +74,7 @@ type CroppableTrack = MediaStreamTrack & { cropTo: (target: unknown) => Promise<
 
 export class OtherSurfaceError extends Error {}
 
-/** A PNG of the page area: null if there was nothing to capture or the reader stopped it.
- *  Rejects with NotAllowedError when the share prompt is declined, OtherSurfaceError for another surface. */
+/** Null if nothing captured or sharing stopped; rejects NotAllowedError or OtherSurfaceError. */
 export async function screenshotPage(tab: BrowserTab, element: HTMLElement): Promise<Blob | null> {
   if (isTauri) return nativeScreenshot(tab, element);
   return regionScreenshot(element);
@@ -167,8 +163,7 @@ const STEADY_MIN_MS = 250;
 const STEADY_MAX_MS = 2000;
 const STEADY_FRAMES = 3;
 
-/** Wait until the captured frames and the page keep one size for a few frames (the sharing bar
- *  has settled); false if the reader stopped sharing first. */
+/** Wait until frame and page size hold steady (sharing bar settled); false if sharing stopped. */
 async function steadyFrames(video: HTMLVideoElement, track: MediaStreamTrack, element: HTMLElement): Promise<boolean> {
   const started = performance.now();
   let last = "";
@@ -192,7 +187,6 @@ function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
-/** Wait (briefly) for menus and dialogs over the page to finish closing, then for a paint. */
 async function clearOfOverlays(element: HTMLElement, timeoutMs = 1000): Promise<void> {
   const started = performance.now();
   const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));

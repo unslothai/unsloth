@@ -34,7 +34,6 @@ export interface PersistedChatPreset {
 
 export interface PersistedChatSettings {
   inferenceParams?: PersistedInferenceParams;
-  /** Last-used params per checkpoint id, replayed on model switch. */
   inferenceParamsByModel?: Record<string, PersistedInferenceParams>;
   rememberParamsPerModel?: boolean;
   customPresets?: PersistedChatPreset[];
@@ -123,9 +122,7 @@ function parseErrorText(status: number, body: unknown): string {
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    // Typed, not a bare Error: the settings queue has to tell a server that is down (keep the patch)
-    // from a server that refuses this body (drop the offending fields), and that decision needs the
-    // status and the detail.
+    // Typed so the settings queue can tell server-down (keep patch) from rejection (drop fields).
     throw new ChatSettingsRequestError(
       parseErrorText(response.status, body),
       response.status,
@@ -152,11 +149,7 @@ export async function saveChatSettingsPatch(
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body,
-    // keepalive lets the PUT survive a tab close from the page-hidden flush, but only under the Fetch
-    // standard's 64 KiB budget for in-flight keepalive bodies. Over it the request fails immediately
-    // in every engine, and researchWebsitePolicy alone can carry 2000 domains of 253 characters.
-    // Sending without keepalive is a chance rather than a certain failure, and on the
-    // visibilitychange flush, where the page is only hidden, it simply succeeds.
+    // keepalive only under the Fetch standard's 64 KiB in-flight budget; over it every engine fails.
     keepalive: options.keepalive ? isUnderKeepaliveBudget(body) : undefined,
   });
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
@@ -179,9 +172,7 @@ export async function saveChatSettingsPatchIfCurrent(
       patch,
     }),
   });
-  // A backend without this route answers 404 (--api-only) or 405 (the browser build's GET-only SPA
-  // catch-all). The desktop app adopts any backend above a version floor, so that pairing is
-  // supported, not a bug. Report "not applied" so the caller leaves the server alone.
+  // 404 (--api-only) or 405 (browser SPA catch-all) means an older backend: report not applied.
   if (response.status === 404 || response.status === 405) {
     return { settings: expected, applied: false };
   }

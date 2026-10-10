@@ -48,13 +48,8 @@ type MarkdownPreviewProps = {
   markdown: string;
   className?: string;
   plain?: boolean;
-  /** No links or checkboxes, for a preview nested in another control. */
   inert?: boolean;
-  /**
-   * Parse on the next idle callback so the surrounding UI paints first. For a document that
-   * arrives whole and is big enough to stall - a finished research report - the wait is the same
-   * either way, but the window stays interactive through it.
-   */
+  /** Parse on the next idle callback so the UI stays interactive for large documents. */
   defer?: boolean;
 };
 
@@ -65,8 +60,7 @@ function MarkdownPreviewImpl({
   inert = false,
   defer = false,
 }: MarkdownPreviewProps): ReactElement {
-  // Math and mermaid over a document with neither still cost a pass per node, and shiki over a
-  // very long one costs more than it is worth; the report lands in one synchronous commit.
+  // Skip plugins with nothing to do or too costly on very long documents.
   const plugins = useMemo<MarkdownPlugins>(() => {
     const needs = markdownPluginNeeds(markdown);
     const next: MarkdownPlugins = {};
@@ -75,9 +69,7 @@ function MarkdownPreviewImpl({
     if (needs.mermaid) next.mermaid = mermaid;
     return next;
   }, [markdown]);
-  // Readiness belongs to the markdown value, not the component: resetting it from an effect is
-  // one commit late, so the new document is parsed synchronously and thrown away - the stall
-  // `defer` exists to avoid, paid twice. Deriving it during render keeps it out of Streamdown.
+  // Derived during render: resetting from an effect is one commit late and parses twice.
   const [readyMarkdown, setReadyMarkdown] = useState<string | null>(null);
   const ready = !defer || readyMarkdown === markdown;
   useEffect(() => {

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Register AFTER settings-api-resolver so this sees the bare specifier first.
-// See hub-inventory-stub.mjs.
 const STUB = new URL("./hub-inventory-stub.mjs", import.meta.url).href;
 
 export function resolve(specifier, context, next) {

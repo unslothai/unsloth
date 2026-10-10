@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Asking the backend for one of the three Xet notices. The count was in per-origin
-// localStorage, and an Unsloth origin moves whenever port 8888 is taken, so every new
-// origin handed out a fresh three and the notice never stopped.
+// The notice count lives on the backend: per-origin localStorage reset whenever the port moved.
 
 import { authFetch } from "@/features/auth/api";
 
@@ -16,8 +14,7 @@ export interface XetNoticeReservation {
   limit: number;
 }
 
-/** A count recorded before the tally moved server-side. Sent until the server
- * confirms it, and it can only raise the stored value. */
+/** Legacy browser count, sent until the server confirms; it can only raise the stored value. */
 function readLegacyCount(): number {
   if (typeof window === "undefined") return 0;
   try {
@@ -28,14 +25,11 @@ function readLegacyCount(): number {
     );
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
   } catch {
-    // Private mode, or storage disabled. Nothing to migrate.
     return 0;
   }
 }
 
-/** Only once a response proves the server took the hint. Marking it on the way out
- * dropped the floor on any failed POST, handing three fresh notices to someone who
- * had already spent them. */
+/** Only after the server confirms, or a failed POST would hand out three fresh notices. */
 function markLegacyMigrated(): void {
   if (typeof window === "undefined") return;
   try {
@@ -49,10 +43,7 @@ function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-/** Take one of the remaining notices, or report that none are left.
- *
- * FAILS CLOSED: an unreachable, older or erroring backend shows nothing. Falling back
- * to the browser count would restore the resetting bug on any failed request. */
+/** Fails closed: falling back to the browser count would restore the resetting bug. */
 export async function reserveXetNoticeFromServer(): Promise<XetNoticeReservation> {
   const denied: XetNoticeReservation = { granted: false, shown: 0, limit: 0 };
   try {
@@ -63,15 +54,12 @@ export async function reserveXetNoticeFromServer(): Promise<XetNoticeReservation
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ seen_hint: readLegacyCount() }),
       },
-      // This POST increments a counter, so a retry whose predecessor reached the
-      // backend spends a second notice. Every other mutation here opts out too.
+      // This POST increments a counter, so a retry could spend a second notice.
       { retryNetworkErrors: false },
     );
     if (!res.ok) return denied;
     const body = (await res.json()) as Partial<XetNoticeReservation>;
-    // A proxy or older backend can answer this unknown route with a 200 and other
-    // JSON, so `res.ok` is no proof the hint was stored. Only a reply reporting the
-    // cap it enforced came from the reservation endpoint.
+    // A proxy can answer an unknown route with 200; only a reply with the cap is genuine.
     if (typeof body.granted !== "boolean" || !isCount(body.limit)) return denied;
     markLegacyMigrated();
     return {

@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A GGUF audio model's own options arrive as a schema on the loaded-model status and go back as
-// `audio_options` on the speech request. Only what the user set is sent, checked against the
-// schema, and it is remembered per model id.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -69,7 +65,6 @@ test("the status schema parses, dropping what cannot be rendered", () => {
   assert.equal(specs[4].default, null);
   assert.deepEqual(parseAudioOptions(undefined), []);
   assert.deepEqual(parseAudioOptions({ name: "x" }), []);
-  // A default outside the declared range is clamped, an unlisted enum default dropped.
   const [steps, cot] = parseAudioOptions([
     { name: "steps", type: "int", default: 500, max: 200 },
     { name: "cot", type: "enum", values: ["off"], default: "full" },
@@ -145,7 +140,6 @@ test("values are remembered per model id, whatever its casing", () => {
   saveAudioOptionValues("audio-cpp/Yue2-3B-GGUF", {});
   assert.deepEqual(readAudioOptionValues("audio-cpp/Yue2-3B-GGUF"), {});
   assert.deepEqual(readAudioOptionValues(null), {});
-  // A corrupt store reads as empty rather than throwing.
   globalThis.localStorage.setItem(AUDIO_OPTIONS_STORAGE_KEY, "{not json");
   assert.deepEqual(readAudioOptionValues("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"), {});
 });
@@ -155,7 +149,6 @@ test("built-in voices read as names, and Kokoro ids also name their language", (
   assert.equal(audioVoiceLabel("bm_george", "kokoro_tts"), "George (British English, male)");
   assert.equal(audioVoiceLabel("zf_xiaoxiao", "kokoro_tts"), "Xiaoxiao (Mandarin Chinese, female)");
   assert.equal(audioVoiceLabel("uncle_fu", "qwen3_tts"), "Uncle Fu");
-  // Another family's ids that happen to look like Kokoro's are not given a language.
   assert.equal(audioVoiceLabel("af_heart", "kitten_tts"), "Af Heart");
   assert.equal(audioVoiceLabel("Custom Voice.wav", null), "Custom Voice.wav");
 });

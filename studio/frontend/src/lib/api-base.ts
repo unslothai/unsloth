@@ -34,10 +34,7 @@ export function getApiBase(): string {
   return apiBase
 }
 
-/**
- * The port the backend is currently expected on, or null when none is known yet. The
- * placeholder base above is port 0, which reads as "no port yet".
- */
+/** null when no port is known yet (the placeholder base is port 0). */
 export function getApiPort(): number | null {
   const match = LOOPBACK_BASE_PORT.exec(apiBase)
   if (!match) {
@@ -52,11 +49,11 @@ export function apiUrl(path: string): string {
   return `${apiBase}${path}`
 }
 
-/** Whether `url` is served by this Studio's backend, so a request to it may carry the sign-in. */
+/** So a request to it may carry the sign-in. */
 export function isStudioUrl(url: string): boolean {
   const page = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
   try {
-    // Resolved, not prefixed: "HTTPS://x" and "//x" are other hosts, not backend paths.
+    // Resolved, not prefixed: "HTTPS://x" and "//x" are other hosts.
     const studio = new URL(apiBase || page)
     return new URL(url, studio).origin === studio.origin
   } catch {

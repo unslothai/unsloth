@@ -85,7 +85,7 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
     for (const item of items) await downloadLibraryItem(item, epoch);
     return;
   }
-  // A file of unknown size could be any size, so it never goes into a zip held in memory.
+  // Unknown size counts as Infinity so it never goes into an in-memory zip.
   const bytes = items.reduce((sum, item) => sum + (item.sizeBytes ?? Infinity), 0);
   if (bytes > MAX_ZIP_BYTES) {
     toast(translate("library.toast.downloadingMany", { count: items.length }), {
@@ -104,7 +104,6 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
         file = await libraryItemFile(item, budget);
       } catch (error) {
         if (!(error instanceof LibraryFileTooLarge)) throw error;
-        // Grown past what the listing said: one download at a time instead of one zip in memory.
         toast.dismiss(progress);
         for (const each of items) await downloadLibraryItem(each, epoch);
         return;
@@ -154,9 +153,8 @@ export async function chatAboutItems(
   const chosen = fitting.slice(0, MAX_CHAT_FILES);
   const epoch = getAuthSessionEpoch();
   try {
-    // One at a time, so a folder never holds ten downloads in flight at once.
     const files: File[] = [];
-    // Bounded as it reads: a size the listing did not know, or a file grown since, is only found here.
+    // Size is bounded while reading: unknown or grown files are only caught here.
     for (const item of chosen) {
       try {
         files.push(await libraryItemFile(item, chatSizeLimit(item)));

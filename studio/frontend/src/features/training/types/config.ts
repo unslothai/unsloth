@@ -60,7 +60,6 @@ export interface TrainingMethodProvenance {
   trainOnCompletionsBeforeCpt: boolean | null;
 }
 
-/** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
 /** Decoder layers kept in host RAM during LoRA training: a count (0 = off) or "auto". */

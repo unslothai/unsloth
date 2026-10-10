@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// clipboard-resolver.mjs's two rules, for the notification plugin:
-//
-//   1. "@tauri-apps/plugin-notification" -> a local stub; the real package only
-//      resolves inside a Tauri webview.
-//   2. A "?bust=N" query on the importer is copied onto every src module it pulls
-//      in. api-base computes `isTauri` once at module evaluation, and
-//      native-notifications caches the grant and its sent-key set in module scope,
-//      so exercising a second environment means re-evaluating the whole subgraph.
+// Tauri notification plugin stub, plus "?bust=N" propagation to re-evaluate module state.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

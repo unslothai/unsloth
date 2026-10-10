@@ -28,9 +28,7 @@ interface DatasetSizeApiResponse {
   };
 }
 
-// Transient (429/5xx/network) misses cache briefly so a rate-limited burst doesn't pin the size to
-// "unknown" until reload. "longlived" covers stable-ish answers like datasets-server 404 ("not
-// processed yet"); "permanent" is a genuinely missing repo (HF models API 404).
+// Transient misses cache briefly; "longlived" covers datasets-server 404; "permanent" a missing repo.
 const TRANSIENT_MISS_TTL_MS = 60_000;
 const LONGLIVED_MISS_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
@@ -236,7 +234,7 @@ export function fetchDatasetSize(
         FETCH_TIMEOUT_MS,
       );
       if (!res.ok) {
-        // datasets-server 404 often means "not processed yet", not "never".
+        // datasets-server 404 often means "not processed yet".
         return { miss: res.status === 404 ? "longlived" : "transient" };
       }
       const data = (await res.json()) as DatasetSizeApiResponse;
@@ -277,18 +275,13 @@ const SNAPSHOT_WEIGHT_FILE_RE =
 const SNAPSHOT_NON_BIN_WEIGHT_FILE_RE =
   /\.(safetensors|pt|pth|ckpt|h5|msgpack|npz)$/i;
 const SNAPSHOT_BIN_WEIGHT_PREFIX_RE = /^(model|pytorch_model|adapter_model).*\.bin$/i;
-// [0-9] rather than \d, to stay identical to the backend's SHARDED_SAFETENSORS_RE in
-// studio/backend/hub/utils/snapshot_filters.py, where \d would also match non-ASCII digits.
+// [0-9], not \d, to match the backend's SHARDED_SAFETENSORS_RE in snapshot_filters.py.
 const SHARDED_SAFETENSORS_RE = /^model[-_][0-9]+-of-[0-9]+\.safetensors$/;
 const SAFETENSORS_INDEX = "model.safetensors.index.json";
 const DUPLICATE_WEIGHT_FORMAT_RE =
   /^(?:(?:original|metal|coreml)\/|(?:tf_model.*\.h5|flax_model.*\.msgpack)$|(?:tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
-// Mirrors redundant_torch_bin_files in snapshot_filters.py. A dtype variant is redundant only
-// when the SAME variant ships as safetensors: model.safetensors does not satisfy a
-// variant="fp16" load, and a glob also kept whisper-large-v3's pytorch_model.bin.index.fp32.json
-// while dropping the shards it indexes.
-// Both shard layouts, because transformers writes the counter-first one and this codebase
-// already recognises both in unsloth/models/_utils.py.
+// Mirrors redundant_torch_bin_files in snapshot_filters.py: a dtype variant is redundant only when
+// the same variant ships as safetensors. Both shard layouts are recognised.
 const BIN_WEIGHT_RES = [
   /^pytorch_model(?:\.([A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin$/,
   /^pytorch_model[-_][0-9]+-of-[0-9]+\.([A-Za-z0-9_]+)\.bin$/,
@@ -296,12 +289,10 @@ const BIN_WEIGHT_RES = [
 const BIN_INDEX_RE =
   /^pytorch_model(?:\.([A-Za-z0-9_]+))?\.bin\.index(?:\.([A-Za-z0-9_]+))?\.json$/;
 
-// A sharded variant needs its index for the same reason the canonical checkpoint does.
 function variantShipsAsSafetensors(names: string[], variant: string | undefined): boolean {
   if (!variant) return true;
   if (names.includes(`model.${variant}.safetensors`)) return true;
-  // transformers' _add_variant puts the variant second-to-last, so this is the only index
-  // spelling a variant load can find.
+  // transformers' _add_variant puts the variant second-to-last.
   if (!names.includes(`model.safetensors.index.${variant}.json`)) return false;
   const v = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const sharded = new RegExp(
@@ -342,9 +333,7 @@ function shipsTransformersWeights(siblings: ModelSibling[]): boolean {
   });
 }
 
-// Numbered shards are not loadable on their own: transformers resolves them through
-// model.safetensors.index.json, so one shard is not evidence a checkpoint is there.
-// Mirrors repo_ships_root_safetensors in snapshot_filters.py.
+// One numbered shard is not a loadable checkpoint. Mirrors repo_ships_root_safetensors.
 function shipsRootSafetensors(siblings: ModelSibling[]): boolean {
   const names = siblings.map((s) => s.rfilename ?? "");
   if (names.some((n) => n === "model.safetensors")) return true;

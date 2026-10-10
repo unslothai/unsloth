@@ -37,14 +37,12 @@ export { browserPanelAvailable, setBrowserPanelAvailable } from "./panel-availab
 export { PinnedPageRow, usePinnedPages } from "./pinned-page-row";
 export type { PinnedPage } from "./pinned-pages-store";
 
-/** Open a link in the browser panel; false if unavailable or links go to the system browser. */
 export function openUrlInBrowser(url: string): boolean {
   if (!browserPanelAvailable() || !useBrowserPrefsStore.getState().openLinksInBrowser) return false;
   useBrowserStore.getState().openUrl(url);
   return true;
 }
 
-/** Open a link in the browser panel whatever the preference; false while the panel can't show. */
 export function openUrlInBrowserPanel(url: string): boolean {
   if (!browserPanelAvailable() || !/^https?:\/\//i.test(url)) return false;
   useBrowserStore.getState().openUrl(url);

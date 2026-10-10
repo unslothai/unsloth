@@ -79,9 +79,8 @@ function ToolRow({
   label: string;
   tool: SandboxToolStatus;
   shell?: SandboxStatus["terminalShell"];
-  /** The setup row below already says why and what to run; repeating it per tool is noise. */
   quiet?: boolean;
-  /** Off on Windows: the generic MXC remediation repeats what the Windows section offers. */
+  /** Off on Windows: the generic MXC remediation repeats the Windows section. */
   withRemediation?: boolean;
 }) {
   const t = useT();
@@ -375,17 +374,16 @@ function OsSandboxSections() {
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Save and prepare failures sit with the Windows controls, e.g. the remote-browser refusal.
   const [actionError, setActionError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
   const [absent, setAbsent] = useState(false);
-  // The Linux install and the Windows runtime install; the Windows prepare step keeps `job`.
+  // The Windows prepare step keeps `job`.
   const [setupJob, setSetupJob] = useState<SandboxSetupJob | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const mounted = useRef(true);
-  // Bumped by every read and save: an older status read must not overwrite a newer answer.
+  // Bumped by every read and save so an older read cannot overwrite a newer answer.
   const statusGeneration = useRef(0);
 
   useEffect(() => {
@@ -395,7 +393,7 @@ function OsSandboxSections() {
     };
   }, []);
 
-  // Callers set `loading`: a synchronous setState from the mount effect would cascade a render.
+  // Callers set `loading`: a synchronous setState in the mount effect would cascade a render.
   const refresh = useCallback(
     (force: boolean) => {
       const generation = ++statusGeneration.current;
@@ -428,7 +426,7 @@ function OsSandboxSections() {
 
   useEffect(() => {
     void refresh(false);
-    // A job started from another window, or before this tab was reopened, keeps reporting here.
+    // A job started elsewhere keeps reporting here.
     void loadHostPreparation(t("settings.sandbox.prepareError"))
       .then((current) => {
         if (!mounted.current || current.state === "idle") return;
@@ -469,7 +467,6 @@ function OsSandboxSections() {
     return () => window.clearTimeout(timer);
   }, [setupJob, refresh, t]);
 
-  // Poll while the elevated helper runs; the status is re-read once it finishes.
   useEffect(() => {
     if (!shouldPollJob(job)) return;
     const timer = window.setTimeout(() => {
@@ -584,7 +581,6 @@ function OsSandboxSections() {
 
   const windows = status?.windows ?? null;
   const view = windows ? windowsView(windows, job, saving) : null;
-  // The runtime-only install reports under its own row; the setup row keeps the other operations.
   const runtimeJob = setupJob?.operation === "windows-runtime" ? setupJob : null;
   const runtimeRunning = runtimeJob?.state === "running";
   const runtimeFailed = jobResult(runtimeJob) === "failed";

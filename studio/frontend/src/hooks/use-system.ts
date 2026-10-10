@@ -18,22 +18,18 @@ export interface GpuDevice {
   vram_used_gb?: number;
   vram_free_gb?: number;
   vram_utilization_pct?: number | null;
-  /** True when the reported GPU budget comes from shared system memory. */
   shared_memory?: boolean;
   /** A unified host pool (ROCm APU): a total, but not a VRAM ceiling. */
   unified_memory?: boolean;
-  /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
+  /** Host-backed part of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
 }
 
 export interface SystemGpuInfo {
   available: boolean;
   backend?: string;
-  /** Used VRAM across the visible GPUs when no single device's usage could be
-   * attributed. Windows ROCm only; null everywhere else. See #7452. */
+  /** Windows ROCm only, when no single device's usage could be attributed (#7452). */
   vram_used_gb_aggregate?: number | null;
-  /** Whether GGUF loads accept explicit gpu_ids in the device records'
-   * declared index space. */
   gguf_gpu_ids_supported?: boolean;
   backend_cuda_visible_devices?: string | null;
   parent_visible_gpu_ids?: number[];
@@ -41,29 +37,24 @@ export interface SystemGpuInfo {
   devices: GpuDevice[];
 }
 
-// Lives in gpu-vram.ts with the other VRAM rules, re-exported here for the
-// callers that already import it from this module.
 export { aggregateGpuMemoryTotalGb } from "./gpu-vram";
 
 export interface SystemInfoResponse {
-  /** The server bypassed its GPU cache for this snapshot. */
   memory_refreshed?: boolean;
-  /** Client-side, not sent by the backend. Readers rendering a host verdict -- "no GPU",
-   * "CPU only" -- must check it, or they state the placeholder below as fact. */
+  /** Client-side. Check before rendering a host verdict, or the placeholder reads as fact. */
   status: SystemInfoStatus;
   platform: string;
   python_version: string;
   device_backend: "cuda" | "rocm" | "cpu" | "mlx" | "xpu";
-  /** Backend-reported dense quant capability. Absent on older backends. */
+  /** Absent on older backends. */
   dense_quant_supported?: boolean;
-  /** The dense quant schemes this host can run, best first. Absent on older backends, where readers
-   * default to [] and name no precision. */
+  /** Best first. Absent on older backends, where readers default to []. */
   dense_quant_schemes?: string[];
   /** Absent on older backends, where readers treat it as off. */
   nvfp4_diffusion?: boolean;
-  /** Whether group offload can stream torchao weights. Absent on older backends. */
+  /** Absent on older backends. */
   quantised_streaming?: boolean;
-  /** Extra Diffusers offload fit tiers per lower-cased repo id, GiB VRAM / GiB available RAM. Absent on older backends. */
+  /** GiB VRAM / GiB available RAM per lower-cased repo id. Absent on older backends. */
   diffusers_offload_tiers?: Record<
     string,
     Array<{
@@ -90,14 +81,14 @@ export interface SystemInfoResponse {
     free_gb: number;
     percent_used: number;
   };
-  /** The models (HF cache) volume; null or absent when it is the system disk. */
+  /** null or absent when it is the system disk. */
   models_disk?: {
     total_gb: number;
     free_gb: number;
     percent_used: number;
   } | null;
   gpu: SystemGpuInfo;
-  /** Devices available to GGUF inference; differs when llama.cpp uses Vulkan. */
+  /** Differs from `gpu` when llama.cpp uses Vulkan. */
   inference_gpu?: SystemGpuInfo;
   ml_packages: {
     torch?: string;
@@ -157,8 +148,7 @@ function scheduleVulkanRetry(): void {
       vulkanRetrySubscribers,
     )
   ) {
-    // A cold subscription schedules before its first request settles. Cancel that pending retry as
-    // soon as discovery succeeds with a usable inventory or a non-Vulkan backend.
+    // Cancel the pending cold-start retry once discovery succeeds.
     if (vulkanRetryId !== null) {
       window.clearTimeout(vulkanRetryId);
       vulkanRetryId = null;
@@ -225,8 +215,7 @@ export function useSystemInfo({
     let cancelled = false;
     let timeoutId: number | null = null;
 
-    // A placeholder has nothing to retry it once its own request settled, so it takes any
-    // published read; a reading on screen is left to this hook's poll (the live-updates switch).
+    // A placeholder takes any published read; a real reading is left to this hook's poll.
     const unsubscribe = subscribeSystemInfo((info) => {
       if (cancelled) return;
       setSystemInfo((previous) => (previous.status === "ready" ? previous : info));

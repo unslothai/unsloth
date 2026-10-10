@@ -172,7 +172,6 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
-  // A finished run can be exported to GGUF: deep-link to Export with this run preselected.
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
@@ -222,7 +221,7 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  // Prefer the run's saved snapshot when present (#6853); History shows blanks, never form values.
+  // History shows blanks, never form values.
   const cfg = configOverride ?? (isHistorical ? undefined : config);
   const cfgEpochs = cfg?.epochs;
   const cfgBatchSize = cfg?.batchSize;
@@ -236,7 +235,7 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
-  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as AdamW.
+  // On Mac the MLX backend runs CUDA optimizers as AdamW.
   const effectiveOptimizer =
     platformDeviceType === "mac" &&
     OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)
@@ -483,8 +482,7 @@ function LiveGpuPanel({
             <select
               value={selectedGpuIndex}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              // At the 16px coarse-pointer floor a 24px box clips descenders, and a long
-              // device name widens the row past the viewport.
+              // At the 16px coarse-pointer floor a 24px box clips descenders.
               className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none pointer-coarse:h-auto pointer-coarse:min-w-0 pointer-coarse:max-w-full"
               title="Select GPU"
             >

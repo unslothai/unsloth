@@ -66,7 +66,6 @@ test("shared views count once and zero is a known reading", () => {
 
 test("missing or invalid shared free readings never fall back to capacity", () => {
   for (const free of [undefined, null, NaN, Infinity, -1]) {
-    // null is also possible on the wire despite the optional-number API type.
     const device = { ...integrated, vram_free_gb: free } as GpuDevice;
     assert.equal(gpuMemoryDisplay(gpu([device])).sharedAvailableGb, null);
     assert.equal(

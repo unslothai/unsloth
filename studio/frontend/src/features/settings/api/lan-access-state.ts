@@ -127,7 +127,6 @@ export function keylessLanAccessDescription(
   return `Inference is keyless on localhost; LAN callers require an active private listener.${tools}`;
 }
 
-// start and stop are synchronous socket work, so there is no transition to chase
 export const LAN_ACCESS_POLL_MS = 5000;
 
 export function lanAccessAutoStartReadOnly(
@@ -169,7 +168,6 @@ export function lanAccessStopDisconnectsOrigin(
   });
 }
 
-// the backend owns wildcard classification so the message follows its flag
 function launchManagedMessage(status: LanAccessStatus): string {
   if (status.wildcardBind) {
     const option = status.bindHost ? ` (--host ${status.bindHost})` : "";

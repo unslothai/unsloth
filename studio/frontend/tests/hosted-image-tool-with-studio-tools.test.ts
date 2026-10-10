@@ -6,15 +6,9 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// The request body is built deep inside the adapter's run closure, which needs
-// a live runtime, a provider store and an encryption key to reach. The property
-// that regressed is structural though: which names the Unsloth-tools branch puts
-// in enabled_tools. So this reads that branch out of the source, the same way
-// the backend's route tests read the gate out of routes/inference.py.
+// The body is built deep in the adapter's run closure, so this reads the branch out of the source.
 const SOURCE = readSrc("features/chat/api/chat-adapter.ts");
 
-// The branch taken when the provider runs Unsloth's tools. Bounded by the
-// hosted-only branch that follows it, so the two cannot be confused.
 function studioToolsBranch(): string {
   const start = SOURCE.indexOf('...(ragEnabled || projectRagEnabled\n');
   assert.ok(start > 0, "the Unsloth-tools enabled_tools list moved");
@@ -23,11 +17,7 @@ function studioToolsBranch(): string {
   return SOURCE.slice(start, end);
 }
 
-// Images and Fetch have their own toggles and no local implementation. Before
-// this PR an OpenAI or Gemini connection never took the Unsloth branch, so the
-// hosted branch below always carried them; now that Search, Code, MCP or a
-// project's automatic RAG selects the Unsloth branch instead, a list of purely
-// local names would leave a lit Images pill out of the request entirely.
+// Images and Fetch have no local implementation, so the Unsloth branch must still request them.
 test("the Unsloth-tools branch still asks for the hosted tools Unsloth cannot run", () => {
   const branch = studioToolsBranch();
 
@@ -37,12 +27,7 @@ test("the Unsloth-tools branch still asks for the hosted tools Unsloth cannot ru
   assert.match(branch, /"web_fetch"/);
 });
 
-// The other half of the same rule: Unsloth runs search itself on this path, so
-// asking the provider for its own would run both and bill for theirs. Code is
-// NOT in that set -- `code_execution` is the provider's sandbox and
-// python/terminal are this machine, so the two are never both requested and
-// which one a turn asks for is decided in code-tool-placement.ts (see
-// tests/code-tool-placement.test.ts).
+// Code is not in this set: code-tool-placement.ts decides between provider sandbox and local.
 test("it does not ask the provider for the tools Unsloth is running locally", () => {
   const branch = studioToolsBranch();
 

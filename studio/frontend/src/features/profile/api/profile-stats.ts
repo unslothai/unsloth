@@ -4,7 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/** One day of the activity series. Dense: every day in range is present. */
+/** Dense: every day in range is present. */
 export type ProfileStatsDay = {
   date: string;
   tokens: number;
@@ -92,10 +92,8 @@ export type ProfileStats = {
 export async function loadProfileStats(
   signal?: AbortSignal,
 ): Promise<ProfileStats> {
-  // Bucket days and hours in this browser's timezone, which is not the
-  // server's when Unsloth is reached over the network. The IANA name is what
-  // gives each historical date its own daylight-saving offset; the current
-  // offset only covers callers whose host cannot resolve the name.
+  // Bucket in the browser's timezone (may differ from the server's); the IANA name handles DST
+  // per date, the offset is a fallback.
   const query = new URLSearchParams({
     tz_offset_minutes: String(new Date().getTimezoneOffset()),
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "",

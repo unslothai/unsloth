@@ -23,7 +23,6 @@ test("anything else is a search on the chosen engine", () => {
     "https://html.duckduckgo.com/html/?q=unsloth%20fine-tuning",
   );
   assert.equal(resolveAddress("what is lora", "google"), "https://www.google.com/search?q=what%20is%20lora");
-  // A dotted word with spaces around it is a query, not a host.
   assert.match(resolveAddress("node.js tutorial", "bing") ?? "", /^https:\/\/www\.bing\.com\/search\?q=/);
 });
 
@@ -57,7 +56,6 @@ test("a saved page gets its base URL back", () => {
   );
   assert.equal(withBaseUrl("<!DOCTYPE html><p>x", "https://a.example/"), '<!DOCTYPE html><base href="https://a.example/"><p>x');
   assert.equal(withBaseUrl("<p>x", "https://a.example/"), '<base href="https://a.example/"><p>x');
-  // Unclosed tags were quadratic and froze the UI.
   const start = performance.now();
   withBaseUrl("<head<!doctype".repeat(10_000), "https://a.example/");
   assert.ok(performance.now() - start < 1000);

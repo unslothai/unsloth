@@ -62,15 +62,9 @@ const { issuedRunFrom } = await import(
 const PARTIAL =
   "There are three steps to proofing dough properly. First, warm the bowl and";
 
-/**
- * The runtime a claim belongs to. One Thread is one holder; compare mode has two, which is
- * what the two-pane test below stands up.
- */
 const PANE = "pane-1";
 
 test("a token-exact continuation is appended verbatim", () => {
-  // A local model's prompt ended inside the partial turn, so the continuation opens
-  // on the next word with nothing repeated.
   assert.equal(
     joinContinuation(PARTIAL, " cover it with a damp cloth."),
     `${PARTIAL} cover it with a damp cloth.`,
@@ -86,7 +80,6 @@ test("a repeated tail is dropped instead of stuttering", () => {
 });
 
 test("a short coincidental overlap is left alone", () => {
-  // "and" is below the minimum overlap: trimming it would eat real output.
   const continuation = "and then wait.";
   assert.equal(
     stripContinuationOverlap("...warm the bowl and", continuation),
@@ -97,7 +90,6 @@ test("a short coincidental overlap is left alone", () => {
 test("a provider that ignores prefill and restarts replaces the partial", () => {
   const restart = `${PARTIAL} cover it with a damp cloth. Second, wait.`;
   assert.ok(isRestart(PARTIAL, restart));
-  // Concatenating would render the opening sentence twice.
   assert.equal(joinContinuation(PARTIAL, restart), restart);
 });
 
@@ -110,15 +102,12 @@ test("mid-stream the restart check is deferred", () => {
 });
 
 test("a live yield is repaired like the terminal one, so Stop saves clean text", () => {
-  // Stop reaches no terminal yield: assistant-ui drops whatever the generator yields
-  // after the abort, so the last LIVE yield is what persists.
+  // assistant-ui drops yields after abort, so the last live yield is what persists on Stop.
   assert.equal(
     joinContinuation(PARTIAL, "warm the bowl and cover it with"),
     `${PARTIAL} cover it with`,
   );
 
-  // The two joins diverge past the overlap scan: only the restart check reaches back
-  // that far, so a live yield runs the same join as the terminal one.
   const long = `${PARTIAL} ${Array.from(
     { length: 12 },
     (_, i) => `Step ${i} is to knead it for ${i} minutes without adding flour.`,
@@ -126,7 +115,6 @@ test("a live yield is repaired like the terminal one, so Stop saves clean text",
   const restart = `${long} Second, shape the loaf.`;
   assert.ok(long.length > 400);
   assert.equal(joinContinuation(long, restart), restart);
-  // The streaming option would have kept both copies.
   assert.equal(
     joinContinuation(long, restart, { streaming: true }),
     `${long}${restart}`,
@@ -148,9 +136,7 @@ test("an empty partial yields the continuation alone", () => {
 test("an exhausted budget only implies truncation on the MLX route", () => {
   const capped = { maxTokens: 256, completionTokens: 256 };
   assert.equal(budgetImpliesTruncation({ isMlx: true, ...capped }), true);
-  // Everyone else reports "length" itself: llama-server's tool loop sums
-  // completion_tokens over passes max_tokens caps individually, and transformers tells
-  // an answer that ended on its stop token at the cap from one that ran out.
+  // Other providers report "length" themselves; only this one needs the inference.
   assert.equal(
     budgetImpliesTruncation({
       isMlx: false,
@@ -160,7 +146,6 @@ test("an exhausted budget only implies truncation on the MLX route", () => {
     false,
   );
   assert.equal(budgetImpliesTruncation({ isMlx: false, ...capped }), false);
-  // A route that sends no usage, and an answer inside the budget, stay complete.
   assert.equal(
     budgetImpliesTruncation({
       isMlx: true,
@@ -226,8 +211,6 @@ test("text-like parts have to carry weight for a turn to count as rendered", () 
 });
 
 test("an empty turn is reported, and offers a retry rather than a resume", () => {
-  // No partial means the bar's Resume button would resume nothing, so the remedy
-  // replaces it. Every other reason resumes, bar the one that cannot fit.
   assert.equal(incompleteRemedy("empty"), "Try again, or pick a different model");
   assert.equal(incompleteRemedy("cancelled"), null);
   assert.equal(incompleteRemedy("length"), null);
@@ -238,15 +221,11 @@ test("an empty turn is reported, and offers a retry rather than a resume", () =>
 });
 
 test("a reloaded empty turn keeps its reason instead of reading as a Stop", () => {
-  // The bar drops the stamped reason whenever the status says cancelled, so mapping
-  // `empty` there would restore as a bare "Cancelled": no label, no way out, and no
-  // partial to make it resumable either.
   const metadata = { custom: { incomplete: { reason: "empty" as const } } };
   const status = restoredAssistantStatus(metadata);
   const stamped = readIncompleteInfo(metadata);
   assert.notEqual(status.type === "incomplete" && status.reason, "cancelled");
 
-  // The bar's own precedence, run over the restored pair.
   const cancelled = status.type === "incomplete" && status.reason === "cancelled";
   const reason =
     cancelled && !isProviderReportedReason(stamped?.reason)
@@ -255,24 +234,19 @@ test("a reloaded empty turn keeps its reason instead of reading as a Stop", () =
   assert.equal(reason, "empty");
   assert.notEqual(incompleteRemedy(reason!), null);
 
-  // A Stop during an empty run is still a Stop: the abort stamps its own reason first.
   assert.equal(resolveIncompleteReason("cancelled", false), "cancelled");
 });
 
 test("the adapter marks a finish that rendered nothing", () => {
-  // The run can stop on its first token with nothing to show. Saved as complete that is a
-  // blank bubble, and a queue dispatching behind it moves straight on.
   const ending = CHAT_ADAPTER.slice(
     CHAT_ADAPTER.indexOf("const finalContent = ["),
   );
   const reason = ending.slice(0, ending.indexOf("yield {"));
   assert.match(reason, /hasRenderableContent\(finalContent\) \? null : "empty"/);
-  // Read off the parts that are actually yielded, not the raw stream text.
   assert.match(ending, /yield \{\s*content: finalContent,/);
 });
 
 test("a reply cut mid-quote is reported, and offers a retry rather than a resume", () => {
-  // A lone backtick or quote can be intentional, so the warning stays tentative.
   assert.equal(incompleteLabel("quote_cut"), "This response may have ended early");
   assert.match(incompleteRemedy("quote_cut") ?? "", /may have emitted a special token/);
   assert.match(incompleteRemedy("quote_cut") ?? "", /< \|im_end\|>/);
@@ -281,7 +255,6 @@ test("a reply cut mid-quote is reported, and offers a retry rather than a resume
     { reason: "quote_cut" },
   );
   assert.equal(shouldAutoContinue("quote_cut", "parent-1"), false);
-  // A cancelled status would hide the label.
   assert.deepEqual(
     restoredAssistantStatus({ custom: { incomplete: { reason: "quote_cut" } } }),
     { type: "incomplete", reason: "length" },
@@ -297,7 +270,6 @@ test("the adapter stamps a cut the backend reported on a clean finish", () => {
     CHAT_ADAPTER.indexOf("const finalIncompleteReason ="),
   );
   const reason = ending.slice(0, ending.indexOf("yield {"));
-  // After the reported finish (`length` wins) and before the empty-turn fallback.
   assert.match(
     reason,
     /resolveIncompleteReason\(incompleteReason, contextWindowExceeded\) \?\?\s*\(quoteCut \? "quote_cut" : null\) \?\?/,
@@ -305,8 +277,6 @@ test("the adapter stamps a cut the backend reported on a clean finish", () => {
 });
 
 test("the provider's own reason outranks every reason the client infers", () => {
-  // The event ends Anthropic's turn, so the model has already stopped. A null reason
-  // matters most: it reads as a completed answer.
   assert.equal(resolveIncompleteReason("length", true), "context_window");
   assert.equal(resolveIncompleteReason(null, true), "context_window");
   assert.equal(resolveIncompleteReason("cancelled", true), "context_window");
@@ -328,7 +298,6 @@ test("a provider-reported reason is the one a cancelled status cannot overrule",
 
 test("a window-exhausted turn is stamped apart from a Max Tokens cut", () => {
   resetAutoContinue();
-  // `length` either way; only the out-of-band signal separates budget from window.
   assert.equal(resolveIncompleteReason("length", false), "length");
   const reason = resolveIncompleteReason("length", true);
   assert.equal(reason, "context_window");
@@ -343,7 +312,6 @@ test("a window-exhausted turn is stamped apart from a Max Tokens cut", () => {
 
 test("a window-exhausted turn is never resumed automatically", () => {
   resetAutoContinue();
-  // The `fits` guard cannot catch this: that metadata is only emitted by local models.
   assert.equal(
     shouldAutoContinue(resolveIncompleteReason("length", true), "parent-1"),
     false,
@@ -360,7 +328,6 @@ test("a window-exhausted turn is never resumed automatically", () => {
 });
 
 test("the adapter latches the backend window-exhaustion event", () => {
-  // The mapping lives in the streaming loop, which cannot be imported here.
   const adapter = readFileSync(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
     "utf8",
@@ -385,15 +352,11 @@ test("the adapter latches the backend window-exhaustion event", () => {
     /reason: resolveIncompleteReason\([\s\S]{0,400}contextWindowExceeded,\s*\)/,
     "the error path decides a reason without asking what the provider reported",
   );
-  // The provisional reason on every streamed yield is the durability gate's call - a run with a server-side
-  // run to resume from reads as cancelled, a walk-away reads as interrupted - and either guess still goes
-  // through the resolver, so a window the provider reported outranks what the client inferred.
   assert.match(
     adapter,
     /incomplete: \{\s*reason: resolveIncompleteReason\(\s*(?:\/\/[^\n]*\n\s*)*incompleteReason \?\?\s*\(\s*generationDecision === "durable" \?\s*"cancelled"\s*:\s*"interrupted"\),\s*contextWindowExceeded,\s*\)/,
     "an abort saves a bare cancelled again, losing the gate that names a walk-away and what the provider reported",
   );
-  // The finish chunk carries no delta, so nothing between here and `[DONE]` need yield.
   const handler = adapter.slice(
     adapter.indexOf('toolEvent.type === "context_window_exceeded"'),
     adapter.indexOf('toolEvent.type === "tool_output"'),
@@ -404,7 +367,6 @@ test("the adapter latches the backend window-exhaustion event", () => {
     /yield \{[\s\S]*custom: liveCustom\(\),/,
     "the latched signal is no longer published when it arrives",
   );
-  // Redacted thinking renders as no text, so a length check would drop the reason.
   assert.doesNotMatch(
     handler,
     /\.length > 0/,
@@ -416,7 +378,6 @@ test("only the cut no continuation can undo carries a way out", () => {
   assert.equal(incompleteRemedy("length"), null);
   assert.equal(incompleteRemedy("cancelled"), null);
   assert.equal(incompleteRemedy("interrupted"), null);
-  // A hosted window is fixed, so not the "Context Length" lever local models point at.
   assert.equal(
     incompleteRemedy("context_window"),
     "Start a new chat, or shorten this one, to keep going",
@@ -424,8 +385,6 @@ test("only the cut no continuation can undo carries a way out", () => {
 });
 
 test("a tool-using turn that fills the window is the case the bar must not miss", () => {
-  // A continuation runs as a sibling, without the call or its result, so a tool-calling
-  // turn is never continuable -- and a big tool result is a likely way to fill the window.
   const content = [
     { type: "tool-call", toolName: "web_search", toolCallId: "t1", args: {} },
     { type: "text", text: "Based on those results, the three main causes are, first, the" },
@@ -451,7 +410,6 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
     /if \(!reason \|\| \(!remedy && !resumable\)\) \{\n\s*return null;/,
     "the way out is gated on the turn being resumable again",
   );
-  // Reading the cancelled status first shows "Response stopped" and offers Resume.
   assert.match(
     thread,
     /cancelled && !isProviderReportedReason\(stamped\?\.reason\)/,
@@ -533,8 +491,6 @@ test("a continuation carries a complete provider compaction tuple", () => {
 });
 
 test("a turn that called a tool cannot be continued", () => {
-  // The continuation runs as a sibling, so the call and its result are absent from
-  // the outbound history and the resumed text would have lost its evidence.
   assert.equal(
     isContinuableContent([
       { type: "text", text: "Looking that up." },
@@ -552,7 +508,6 @@ test("text and reasoning parts are continuable, empty text is not", () => {
     ]),
     true,
   );
-  // Reasoning alone leaves nothing to resume from: it is never replayed.
   assert.equal(
     isContinuableContent([{ type: "reasoning", text: "hmm" }]),
     false,
@@ -562,9 +517,7 @@ test("text and reasoning parts are continuable, empty text is not", () => {
 });
 
 test("providers that reject a trailing assistant turn get the instruction path", () => {
-  // Anthropic 400s on a trailing assistant message since Claude 4.6; Gemini requires a
-  // multiturn request to end in a user turn or a function response; Mistral needs the
-  // turn to carry `prefix: true`, which the outbound message type has no room for.
+  // Anthropic, Gemini and Mistral each reject or cannot express a trailing assistant prefill.
   assert.equal(rejectsAssistantPrefill("anthropic"), true);
   assert.equal(rejectsAssistantPrefill("gemini"), true);
   assert.equal(rejectsAssistantPrefill("mistral"), true);
@@ -582,8 +535,6 @@ test("modes that answer from scratch do not offer Continue", () => {
     modeAllowsContinuation({ ...plain, fromAudioInput: true }),
     false,
   );
-  // A stopped TTS turn keeps its "Generating audio..." text, which passes the content
-  // gates, but the resumed run regenerates the whole clip.
   assert.equal(
     modeAllowsContinuation({ ...plain, audioOutputModel: true }),
     false,
@@ -591,16 +542,13 @@ test("modes that answer from scratch do not offer Continue", () => {
 });
 
 test("the overlap repair can eat a legitimate repeat, so local output skips it", () => {
-  // A local backend resumes at the exact token boundary, so repairing its output would
-  // delete a phrase the model meant to write. Hence external providers only.
+  // Local backends resume at the exact token boundary, so only external providers get repair.
   const partial = "Ranking them, the clear winner is the second result";
   const continuation = "the second result held up best under load.";
-  // "the second result" is trimmed as a repeat even though the model wrote it.
   assert.equal(
     stripContinuationOverlap(partial, continuation),
     " held up best under load.",
   );
-  // Verbatim concatenation is what a token-exact backend needs.
   assert.equal(
     `${partial} ${continuation}`,
     "Ranking them, the clear winner is the second result the second result held up best under load.",
@@ -608,8 +556,6 @@ test("the overlap repair can eat a legitimate repeat, so local output skips it",
 });
 
 test("a continuation carries the Gemini signature of the turn it resumes", () => {
-  // The sibling run drops the original assistant message, so the signature travels
-  // with the partial or the history goes back to Gemini unsigned.
   assert.equal(
     readTextThoughtSignature([
       { type: "text", text: "first", _google_thought_signature: "SIG-A" },
@@ -660,12 +606,9 @@ test("a continuation carries the Gemini signature of the turn it resumes", () =>
 });
 
 test("only the servers sent the flags resume exactly", () => {
-  // The backend forwards the continuation flags to these two only, so only they skip
-  // the lossy overlap repair.
   for (const providerType of ["vllm", "llama_cpp"]) {
     assert.equal(resumesExactly(providerType), true, providerType);
   }
-  // Ollama and any user-supplied base_url get no flags, so they may still restart.
   for (const providerType of [
     "ollama",
     "custom",
@@ -678,7 +621,6 @@ test("only the servers sent the flags resume exactly", () => {
 });
 
 test("citations appended for display do not block Continue", () => {
-  // Sources are attached at finalization and never replayed, exactly like reasoning.
   assert.equal(
     isContinuableContent([
       { type: "text", text: "The answer begins" },
@@ -690,27 +632,21 @@ test("citations appended for display do not block Continue", () => {
 
 test("a Max Tokens cut resumes on its own", () => {
   resetAutoContinue();
-  // Not a decision the user made: the reply ran out of room mid-sentence, and asking
-  // whether to finish it is asking a question with one sensible answer.
   assert.equal(shouldAutoContinue("length", "parent-1"), true);
 });
 
 test("pressing Stop is never undone by an automatic resume", () => {
   resetAutoContinue();
-  // The one case where the user HAS decided. Resuming would restart what they stopped.
   assert.equal(shouldAutoContinue("cancelled", "parent-1"), false);
 });
 
 test("a dropped connection still asks, rather than retrying silently", () => {
   resetAutoContinue();
-  // A silent retry here hides a broken link behind what looks like a slow answer.
   assert.equal(shouldAutoContinue("interrupted", "parent-1"), false);
 });
 
 test("automatic resumes are bounded, then the bar comes back", () => {
   resetAutoContinue();
-  // A model that will not stop would otherwise loop forever, and every round grows the
-  // transcript and drives compaction harder.
   for (let round = 0; round < AUTO_CONTINUE_LIMIT; round += 1) {
     assert.equal(shouldAutoContinue("length", "parent-1"), true);
     recordAutoContinue("parent-1");
@@ -730,8 +666,7 @@ test("the budget is per turn, so a later turn is not punished for an earlier one
 
 test("the count is keyed on the parent, which every round of one turn shares", () => {
   resetAutoContinue();
-  // A continuation runs as a SIBLING, so each round has a new message id. Keying on that
-  // would reset the counter every round and the limit would never be reached.
+  // Continuations are siblings with new ids, so the budget is keyed on the parent.
   recordAutoContinue("parent-1");
   recordAutoContinue("parent-1");
   assert.equal(autoContinueCount("parent-1"), 2);
@@ -739,16 +674,11 @@ test("the count is keyed on the parent, which every round of one turn shares", (
 
 test("a turn with no parent is never resumed automatically", () => {
   resetAutoContinue();
-  // The very first message has nothing to hang a sibling off, so there is no stable key
-  // to count against and an unbounded loop is the failure mode.
   assert.equal(shouldAutoContinue("length", null), false);
 });
 
 test("a turn whose own fit was refused is never resumed automatically", () => {
   resetAutoContinue();
-  // Resuming replays the partial as the final assistant turn, which the fit protects, so
-  // the next round sends a partial that is only ever longer. Observed at a 4,864-token
-  // context: three automatic rounds, each refused identically.
   assert.equal(
     shouldAutoContinue("length", "parent-1", { fits: false }),
     false,
@@ -757,10 +687,6 @@ test("a turn whose own fit was refused is never resumed automatically", () => {
 
 test("a turn whose fit only missed the reply reserve is not resumed either", () => {
   resetAutoContinue();
-  // A rescue reports `fits: false` too and is just as unresumable: it is reached only
-  // once eviction ran out of eligible turns, so its prompt is already the floor, while
-  // the continuation replays the partial as the final assistant turn, which the fit
-  // protects. Measured on the 460-of-500-token rescue, a 10-character partial refuses.
   assert.equal(
     shouldAutoContinue("length", "parent-1", { fits: false }),
     false,
@@ -769,8 +695,6 @@ test("a turn whose fit only missed the reply reserve is not resumed either", () 
 
 test("a partial that already fills the budget is not resumed", () => {
   resetAutoContinue();
-  // 3,217 tokens of partial against a 3,648-token target left no room for the system turn
-  // and the carried-forward block, so the request was irreducible before it was sent.
   assert.equal(
     shouldAutoContinue("length", "parent-1", {
       partialTokens: 3648,
@@ -778,7 +702,6 @@ test("a partial that already fills the budget is not resumed", () => {
     }),
     false,
   );
-  // Comfortably inside the budget still resumes.
   assert.equal(
     shouldAutoContinue("length", "parent-1", {
       partialTokens: 400,
@@ -790,7 +713,6 @@ test("a partial that already fills the budget is not resumed", () => {
 
 test("an unknown fit does not block resuming", () => {
   resetAutoContinue();
-  // A turn that never truncated carries no metadata, and that is the ordinary case.
   assert.equal(shouldAutoContinue("length", "parent-1", {}), true);
   assert.equal(
     shouldAutoContinue("length", "parent-1", { fits: true }),
@@ -806,9 +728,6 @@ test("a message is claimed for automatic continuation exactly once", async () =>
 });
 
 test("the claim survives a remount, which a component ref did not", async () => {
-  // Leave the chat with a truncated branch selected and come back: a ref was fresh
-  // while the parent still had budget, so the effect fired again and created another
-  // sibling and another paid provider request.
   resetAutoContinue();
   assert.equal(await claimAutoContinue("m1", PANE), "started");
   assert.equal(shouldAutoContinue("length", "parent-1"), true);
@@ -842,14 +761,10 @@ test("a claim is reported and cleared by a full reset", async () => {
 test("a message already claimed stops reporting itself as continuing", async () => {
   resetAutoContinue();
   noteRunStartedThisSession("m1");
-  // The turn that fires it: nothing has claimed the message yet.
   assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
   await claimAutoContinue("m1", PANE);
   recordAutoContinue("parent-1");
 
-  // Back on the truncated branch, whether through the branch picker or by returning to
-  // the chat: `claimAutoContinue` refuses the run, so the turn's own budget still saying
-  // yes would leave a spinner nothing is answering, over a hidden manual Continue button.
   assert.equal(shouldAutoContinue("length", "parent-1"), true);
   assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), false);
 });
@@ -857,7 +772,6 @@ test("a message already claimed stops reporting itself as continuing", async () 
 test("a claim on one message does not silence another", async () => {
   resetAutoContinue();
   await claimAutoContinue("m1", PANE);
-  // The next round of the same turn is a new message with budget left, and continues.
   recordAutoContinue("parent-1");
   noteRunStartedThisSession("m2");
   assert.equal(shouldAutoContinueMessage("m2", "length", "parent-1"), true);
@@ -867,7 +781,6 @@ test("a claimed message still honours the gates the turn itself fails", () => {
   resetAutoContinue();
   noteRunStartedThisSession("m1");
   noteRunStartedThisSession("m2");
-  // Nothing about the claim resurrects a cut that was never automatic in the first place.
   assert.equal(shouldAutoContinueMessage("m1", "cancelled", "parent-1"), false);
   assert.equal(
     shouldAutoContinueMessage("m2", "length", "parent-1", { fits: false }),
@@ -875,14 +788,10 @@ test("a claimed message still honours the gates the turn itself fails", () => {
   );
 });
 
-// --- history ---------------------------------------------------------------------------
-// Opening a saved chat must not auto-continue its Max Tokens cut.
-
 test("a Max Tokens cut loaded from history is left to the Continue button", () => {
   resetAutoContinue();
   assert.equal(runStartedThisSession("saved-reply"), false);
   assert.equal(shouldAutoContinueMessage("saved-reply", "length", "parent-1"), false);
-  // The manual button still offers it.
   assert.equal(shouldAutoContinue("length", "parent-1"), true);
   assert.equal(autoContinueCount("parent-1"), 0);
 });
@@ -891,7 +800,6 @@ test("a Max Tokens cut from a run this page started still continues on its own",
   resetAutoContinue();
   noteRunStartedThisSession("live-reply");
   assert.equal(shouldAutoContinueMessage("live-reply", "length", "parent-1"), true);
-  // Each round is a new sibling, noted as it starts.
   recordAutoContinue("parent-1");
   noteRunStartedThisSession("round-2");
   assert.equal(shouldAutoContinueMessage("round-2", "length", "parent-1"), true);
@@ -921,20 +829,8 @@ test("every adapter run records its assistant message before it starts", () => {
   assert.ok(noted >= 0 && delegated >= 0 && noted < delegated);
 });
 
-// --- cross-tab claim ------------------------------------------------------------------
-// The module claim above is per TAB: each one loads its own copy of the module with its
-// own empty set. Open the same saved thread twice with a `length` reply last and both
-// tabs claim it, both start a run, and the user pays for two continuations and gets two
-// sibling branches. A tab here is a second `createAutoContinueTab` over one shared store
-// and one shared lock manager, which is what two browser tabs are.
+// Cross-tab claim: each tab has its own module scope, so two tabs could both claim one message.
 
-/**
- * An in-memory `localStorage`.
- *
- * `onSet` runs after a write and `onGet` after a read has taken its value, which is where
- * another tab is interleaved: both hooks land in the middle of a read-modify-write, which
- * is the sequence localStorage does not make atomic.
- */
 function storageFake(
   onSet?: (store: Map<string, string>) => void,
   onGet?: (store: Map<string, string>) => void,
@@ -945,9 +841,7 @@ function storageFake(
     storage: {
       getItem: (key: string) => {
         const value = store.get(key) ?? null;
-        // After the value is taken, so the caller carries on with the snapshot it read
-        // and whatever the other tab does next is invisible to it. That staleness is the
-        // whole bug.
+        // After the value is taken, so the caller keeps a stale snapshot; that staleness is the bug.
         onGet?.(store);
         return value;
       },
@@ -962,24 +856,16 @@ function storageFake(
   };
 }
 
-/** A win, in the pre-fix boolean shape as well as the current one. */
 function startedARun(outcome: unknown): boolean {
   return outcome === "started" || outcome === true;
 }
 
-/**
- * A `navigator.locks` stand-in: one queue per name, exclusive, FIFO.
- *
- * The property the real API gives and a bare read-modify-write does not: a second request
- * for a held name does not run until the first has returned.
- */
 function lockManagerFake() {
   const tails = new Map<string, Promise<unknown>>();
   return {
     request<T>(name: string, callback: () => T | Promise<T>): Promise<T> {
       const tail = tails.get(name) ?? Promise.resolve();
       const run = tail.then(() => callback());
-      // The queue advances on settle, so one throwing holder cannot wedge the name.
       tails.set(
         name,
         run.then(
@@ -1000,10 +886,7 @@ test("a second tab with the same thread open does not start its own continuation
   const now = 1_000;
 
   assert.equal(await first.claim("m1", { now }), "started");
-  // Fresh module scope, empty claim set, same truncated reply on screen. Before the lease
-  // this said yes and the second tab fired a second paid request.
   assert.equal(await second.claim("m1", { now }), "held-elsewhere");
-  // And it reports the message as being continued, so it shows no spinner of its own.
   assert.equal(second.claimed("m1", { now }), true);
 });
 
@@ -1015,20 +898,11 @@ test("a lease covers only the message it was taken for", async () => {
   const now = 1_000;
 
   assert.equal(await first.claim("m1", { now }), "started");
-  // The next round of the same turn is a different message and is nobody's yet.
   assert.equal(await second.claim("m2", { now }), "started");
 });
 
 test("two tabs claiming at once leave exactly one winner", async () => {
-  // ITEM A. Write-then-read-back is not a compare-and-swap: both tabs read the slot free,
-  // both write, and each verifies the token it just wrote if the two verifications happen
-  // before the two writes interleave -- so both start a run. Individual localStorage
-  // operations are atomic; a read-modify-write across statements is not, and the storage
-  // mutex that once serialized such sequences is no longer in the spec.
-  //
-  // Started together, with no await between them, which is what two tabs reaching the
-  // effect in the same instant are. The lock is what makes the second one wait for the
-  // first, see the lease it wrote, and stand down.
+  // Write-then-read-back is not a compare-and-swap; only the lock serializes the two tabs.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const first = createAutoContinueTab({ storage, locks });
@@ -1047,20 +921,12 @@ test("two tabs claiming at once leave exactly one winner", async () => {
 });
 
 test("a tab that reads the slot free does not win it behind another tab's back", async () => {
-  // ITEM A, at the exact interleaving that survives a write-then-read-back: the second
-  // tab claims in full between the first tab READING the slot free and writing to it. The
-  // first tab then writes over a lease it never saw and reads its own token back, so both
-  // tabs believe they won and the user pays twice. Nothing about the sequence is atomic;
-  // only holding a lock across it is.
   const now = 1_000;
   let intruder: (() => unknown) | null = null;
   let secondOutcome: unknown;
   let reads = 0;
   const { storage } = storageFake(undefined, () => {
     reads += 1;
-    // The second read is the one the write is about to be based on: a free check, then
-    // the read-modify-write itself. Slipping the other tab in there is what leaves the
-    // first tab holding a snapshot that is already out of date.
     if (reads !== 2) {
       return;
     }
@@ -1084,11 +950,7 @@ test("a tab that reads the slot free does not win it behind another tab's back",
 });
 
 test("a claim that loses says so, rather than just failing", async () => {
-  // ITEM B. The two ways of not starting a run need opposite things on screen, so they
-  // cannot both be a bare false. `held-elsewhere` is the loser, and is what puts this
-  // tab's manual Continue button back in place of a spinner for a run it never owned.
-  // `skipped` is this tab's own second call -- a StrictMode replay, or a claim already in
-  // flight -- where the run is coming and nothing should move.
+  // `held-elsewhere` and `skipped` need opposite UI, so they cannot both be a bare false.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const winner = createAutoContinueTab({ storage, locks });
@@ -1097,24 +959,17 @@ test("a claim that loses says so, rather than just failing", async () => {
 
   assert.equal(startedARun(await winner.claim("m1", { now })), true);
   const lost = await loser.claim("m1", { now });
-  // The winner's own replay is not a loss and must not repaint anything, so the two
-  // cannot be the same answer. One bare false for both is what left the losing tab
-  // spinning: its effect returned early, changed no state, and hid its own button.
   const replay = await winner.claim("m1", { now });
   assert.notEqual(lost, replay);
   assert.equal(lost, "held-elsewhere");
   assert.equal(replay, "skipped");
-  // Nor is a second call while the first is still inside the lock.
   const inFlight = winner.claim("m2", { now });
   assert.equal(await winner.claim("m2", { now }), "skipped");
   assert.equal(await inFlight, "started");
 });
 
 test("two tabs writing in the same tick leave exactly one winner", async () => {
-  // The same race with no lock manager to settle it, which is what an older browser or an
-  // embedded webview gets. The write-then-read-back is all that is left: a record that
-  // appears between this tab's write and its read-back means the tab does not find its
-  // own token, and stands down.
+  // No lock manager (older browsers, webviews): only write-then-read-back remains.
   const now = 1_000;
   let interleave = true;
   const { storage } = storageFake((store) => {
@@ -1132,7 +987,6 @@ test("two tabs writing in the same tick leave exactly one winner", async () => {
   const first = createAutoContinueTab({ storage, locks: null });
 
   assert.equal(await first.claim("m1", { now }), "held-elsewhere");
-  // Nothing recorded locally either, so once that lease lapses this tab can take over.
   assert.equal(
     await first.claim("m1", { now: now + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
     "started",
@@ -1154,7 +1008,6 @@ test("a lock manager that refuses the request does not block the claim", async (
     },
   };
   const tab = createAutoContinueTab({ storage, locks: angryLocks });
-  // Degraded to the read-back, not to a refusal: the user is waiting for this run.
   assert.equal(await tab.claim("m1"), "started");
   assert.equal(
     await createAutoContinueTab({ storage }).claim("m1"),
@@ -1163,9 +1016,7 @@ test("a lock manager that refuses the request does not block the claim", async (
 });
 
 test("a tab with no storage keeps the claim it always had", async () => {
-  // Private mode, an embedded webview, or the test runner: no seam to share. Falling back
-  // to module scope is what shipped before the lease, and it must never refuse a
-  // continuation the single tab in front of the user is waiting for.
+  // No storage seam: falls back to module scope and must never refuse the single tab.
   const only = createAutoContinueTab({ storage: null });
   assert.equal(await only.claim("m1"), "started");
   assert.equal(await only.claim("m1"), "skipped");
@@ -1173,7 +1024,6 @@ test("a tab with no storage keeps the claim it always had", async () => {
 });
 
 test("storage that throws is no worse than no storage", async () => {
-  // A quota-exceeded write, or a getItem that throws before it returns anything.
   const angry = {
     getItem(): string | null {
       throw new Error("SecurityError");
@@ -1188,8 +1038,6 @@ test("storage that throws is no worse than no storage", async () => {
   const tab = createAutoContinueTab({ storage: angry });
   assert.equal(await tab.claim("m1"), "started");
   assert.equal(await tab.claim("m1"), "skipped");
-  // A second tab cannot see through a broken seam either, so it behaves as it did before
-  // the lease: module-only. Duplicates are not made worse, and nothing crashes.
   assert.equal(
     await createAutoContinueTab({ storage: angry }).claim("m1"),
     "started",
@@ -1204,14 +1052,10 @@ test("a lease lapses, so a tab that died mid-run does not wedge the message", as
   const start = 1_000;
 
   assert.equal(await winner.claim("m1", { now: start }), "started");
-  // Still inside the lease: the holder is presumed alive and nobody else touches it.
   assert.equal(
     await later.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS - 1 }),
     "held-elsewhere",
   );
-  // Past it, with no renewal in between: a permanent flag would have left this message
-  // unresumable for the life of the profile, because the tab that owned it is gone and
-  // can never clear it.
   assert.equal(
     await later.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
     "started",
@@ -1219,9 +1063,7 @@ test("a lease lapses, so a tab that died mid-run does not wedge the message", as
 });
 
 test("a running continuation keeps its lease past the TTL", async () => {
-  // ITEM C. A local model on a large Max Tokens can generate for longer than the TTL, and
-  // an unrenewed lease would hand its message to the next tab to open, mid-stream. The
-  // holder renews for as long as its run is live, so the TTL only ever measures silence.
+  // The holder renews while its run is live, so the TTL only measures silence.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const running = createAutoContinueTab({ storage, locks });
@@ -1232,7 +1074,6 @@ test("a running continuation keeps its lease past the TTL", async () => {
     startedARun(await running.claim("m1", { now: start, holder: PANE })),
     true,
   );
-  // Three renewals at the interval the keeper uses, still inside the run.
   for (let tick = 1; tick <= 3; tick += 1) {
     await running.renew("m1", PANE, {
       now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
@@ -1244,10 +1085,7 @@ test("a running continuation keeps its lease past the TTL", async () => {
 });
 
 test("a finished run leaves the message continued, not free again", async () => {
-  // Released on any terminal state, so the full TTL is left to mean one thing: a crash.
-  // Marked done rather than handed back, because the tab that did not win never learns that
-  // the sibling was written -- no chat-history event crosses tabs -- so a record that simply
-  // lapsed handed the message to a stale tab and bought the same continuation twice.
+  // Marked done rather than released: other tabs never learn the sibling was written.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const running = createAutoContinueTab({ storage, locks });
@@ -1269,7 +1107,6 @@ test("a finished run leaves the message continued, not free again", async () => 
     }),
     "held-elsewhere",
   );
-  // And a release holds nothing, so a later renewal cannot resurrect it as a live lease.
   await running.renew("m1", PANE, { now: start + AUTO_CONTINUE_LEASE_TTL_MS });
   assert.equal(
     await createAutoContinueTab({ storage, locks }).claim("m1", {
@@ -1277,8 +1114,6 @@ test("a finished run leaves the message continued, not free again", async () => 
     }),
     "held-elsewhere",
   );
-  // Bounded, not permanent: the record is pruned like any other once it is old enough that
-  // no tab can still be holding the pre-continuation branch in memory.
   assert.equal(
     await createAutoContinueTab({ storage, locks }).claim("m1", {
       now: start + AUTO_CONTINUE_CONTINUED_TTL_MS + 1,
@@ -1288,14 +1123,7 @@ test("a finished run leaves the message continued, not free again", async () => 
 });
 
 test("a stale tab cannot take a message back once it has been continued", async () => {
-  // The case the settle window left open. The second tab's render-time check refuses before
-  // its effect ever runs, so it records nothing locally and holds no state saying it lost;
-  // its `continued` set stays empty. Remount that bar -- leaving the chat and coming back is
-  // enough, which is the same remount the module claim exists for -- and the only thing
-  // between it and a second paid request is what storage remembers. Nothing refreshes its
-  // in-memory history in the meantime: `notifyChatHistoryUpdated` dispatches a same-window
-  // event, no chat key has a `storage` listener, and stored messages are re-read only by
-  // `history.load`.
+  // A stale tab records nothing locally after a refusal, so storage alone must prevent a second run.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const winner = createAutoContinueTab({ storage, locks });
@@ -1303,12 +1131,8 @@ test("a stale tab cannot take a message back once it has been continued", async 
   const start = 1_000;
 
   assert.equal(await winner.claim("m1", { now: start, holder: PANE }), "started");
-  // The stale tab renders the truncated reply while the winner is running: refused, and
-  // nothing about that refusal is written down on its side.
   assert.equal(await stale.claim("m1", { now: start + 1 }), "held-elsewhere");
-  // The winner finishes and writes the sibling. The stale tab still shows the partial.
   await winner.release("m1", PANE, { now: start + 60_000 });
-  // Its bar remounts, long after any settle window would have passed.
   assert.equal(
     stale.claimed("m1", { now: start + 60_000 + AUTO_CONTINUE_LEASE_TTL_MS }),
     true,
@@ -1322,10 +1146,6 @@ test("a stale tab cannot take a message back once it has been continued", async 
 });
 
 test("a tab that died mid-run still hands the message back", async () => {
-  // The other half of the same rule, and the reason a permanent flag is wrong: a record is
-  // only marked done by a run that reached a terminal state. A tab killed without cleanup
-  // renews nothing and marks nothing, so its lease lapses and the message is claimable
-  // again. (Web Locks are released with the context too, so nothing is wedged there either.)
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const killed = createAutoContinueTab({ storage, locks });
@@ -1333,7 +1153,6 @@ test("a tab that died mid-run still hands the message back", async () => {
   const start = 1_000;
 
   assert.equal(await killed.claim("m1", { now: start, holder: PANE }), "started");
-  // No release, no renewal: the tab is gone.
   assert.equal(
     await survivor.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
     "started",
@@ -1341,13 +1160,8 @@ test("a tab that died mid-run still hands the message back", async () => {
 });
 
 /**
- * Two rounds of one turn, in the order the app produces them.
- *
- * A round ends on another Max Tokens cut, so the bar under the new reply claims the next
- * message while the thread is still winding the finished run down: React runs child
- * effects before parent ones, so the claim lands before the keeper observes `isRunning`
- * going false. `release` therefore has to name the message whose run ended, and nothing
- * wider: the same holder owns both.
+ * React runs child effects before parent ones, so the next claim lands before the keeper
+ * sees the run end; `release` must name only the message whose run ended.
  */
 async function sequentialRounds(
   locks: ReturnType<typeof lockManagerFake> | null,
@@ -1361,14 +1175,12 @@ async function sequentialRounds(
     startedARun(await tab.claim("round-1", { now: start, holder: PANE })),
     true,
   );
-  // The next round, claimed before the finished one is given back.
   assert.equal(
     startedARun(await tab.claim("round-2", { now: start, holder: PANE })),
     true,
   );
   await tab.release("round-1", PANE, { now: start });
 
-  // The second round is the live one, and its keeper is still renewing it.
   for (let tick = 1; tick <= 3; tick += 1) {
     await tab.renew("round-2", PANE, {
       now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
@@ -1381,7 +1193,6 @@ async function sequentialRounds(
     "held-elsewhere",
     "the round that just started keeps its lease",
   );
-  // The round that did finish is marked continued, and stays that way.
   assert.equal(
     await otherTab.claim("round-1", {
       now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1,
@@ -1391,22 +1202,13 @@ async function sequentialRounds(
 }
 
 test("the next round keeps its lease when the last one is released", async () => {
-  // No lock manager, where the claim resolves soonest and so lands earliest.
   await sequentialRounds(null);
 });
 
 test("the next round keeps its lease with a lock manager in the way", async () => {
-  // And with one, because the effect ordering is not guaranteed in our favour there
-  // either -- the fix must not depend on which path ran.
   await sequentialRounds(lockManagerFake());
 });
 
-/**
- * The per-thread run signal the keeper reads, with no notion of what is on screen.
- *
- * Selection is deliberately absent: it is not an input to a lease's lifetime, and the whole
- * point of the case below is that changing it changes nothing.
- */
 function runSignalFake(running: Set<string>) {
   const listeners = new Set<() => void>();
   return {
@@ -1417,7 +1219,6 @@ function runSignalFake(running: Set<string>) {
         return () => listeners.delete(onChange);
       },
     },
-    /** The store told everyone something changed. */
     change: () => {
       for (const listener of [...listeners]) {
         listener();
@@ -1427,11 +1228,7 @@ function runSignalFake(running: Set<string>) {
 }
 
 test("a run on a background thread keeps its lease while the user reads another chat", async () => {
-  // Switching chats does not stop a generation: the chat view is keyed by project, so the
-  // provider is not remounted and the run keeps streaming on the thread the user left. A
-  // lease whose lifetime was read off the SELECTED thread was released the moment they
-  // looked away, and one settle window later a second tab could claim a message that was
-  // still being written.
+  // Switching chats does not stop a generation, so the lease must not follow the selected thread.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const tab = createAutoContinueTab({ storage, locks });
@@ -1440,7 +1237,6 @@ test("a run on a background thread keeps its lease while the user reads another 
   let clock = start;
   const pending: Promise<void>[] = [];
 
-  // Thread A is generating; thread B, which the user is about to open, is idle.
   const running = new Set<string>();
   const runs = runSignalFake(running);
   const keeper = createAutoContinueLeaseKeeper({
@@ -1459,11 +1255,9 @@ test("a run on a background thread keeps its lease while the user reads another 
     true,
   );
   keeper.hold("a-m1", "thread-A");
-  // The continuation starts on thread A.
   running.add("thread-A");
   runs.change();
 
-  // The user opens idle thread B. Nothing about thread A changed, so nothing here does.
   for (let tick = 1; tick <= 5; tick += 1) {
     clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
     keeper.tick();
@@ -1478,7 +1272,6 @@ test("a run on a background thread keeps its lease while the user reads another 
     "the background run keeps the message it is still writing",
   );
 
-  // Thread A's own run ends. That, and only that, gives the lease back.
   clock = past;
   running.delete("thread-A");
   runs.change();
@@ -1494,9 +1287,6 @@ test("a run on a background thread keeps its lease while the user reads another 
 });
 
 test("a hold waits for its own run, not the one already in flight", async () => {
-  // The next round is claimed while the finished one is still winding down, so a hold that
-  // armed on "the thread is busy" would arm on its predecessor's run and be released the
-  // moment THAT one ended, mid-stream.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -1519,7 +1309,6 @@ test("a hold waits for its own run, not the one already in flight", async () => 
   await tab.claim("round-2", { now: start, holder: "thread-A" });
   keeper.hold("round-2", "thread-A");
 
-  // The previous round ends, and the next one starts.
   running.delete("thread-A");
   runs.change();
   running.add("thread-A");
@@ -1535,12 +1324,7 @@ test("a hold waits for its own run, not the one already in flight", async () => 
 });
 
 test("a hold keeps its lease while its run is still in preflight", async () => {
-  // The adapter does a lot before the run reaches `runningByThreadId`: it awaits this
-  // thread's own settings pairing, which alone waits up to 30 seconds, and then
-  // `waitForModelReady`, which polls every 500ms for as long as a model is loading -- so a
-  // tab opened on a truncated reply while a large local model loads can sit in preflight for
-  // minutes. A hold dropped on a fixed arming timeout stopped renewing in the middle of
-  // that, its lease lapsed, and another tab claimed a message that was about to stream.
+  // Preflight (settings pairing, waitForModelReady) is unbounded, so the hold has no arming deadline.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -1563,7 +1347,6 @@ test("a hold keeps its lease while its run is still in preflight", async () => {
   await tab.claim("a-m1", { now: start, holder: "thread-A" });
   keeper.hold("a-m1", "thread-A");
 
-  // Four minutes of preflight, renewed at the keeper's own interval throughout.
   for (let tick = 1; tick <= 8; tick += 1) {
     clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
     keeper.tick();
@@ -1576,7 +1359,6 @@ test("a hold keeps its lease while its run is still in preflight", async () => {
     "nobody else may take a message this tab is still about to continue",
   );
 
-  // The run finally starts, and the hold arms on it rather than on a predecessor.
   running.add("thread-A");
   runs.change();
   clock += AUTO_CONTINUE_LEASE_RENEW_MS;
@@ -1591,11 +1373,7 @@ test("a hold keeps its lease while its run is still in preflight", async () => {
 });
 
 test("one compare pane finishing does not release the other pane's lease", async () => {
-  // Compare mode mounts two Thread runtimes in ONE tab, each with its own thread and its
-  // own run, and either can be resuming a truncated reply while the other is idle. A
-  // release that restamped every lease the tab owns and then dropped the lot would end the
-  // hold on the pane still generating: its renewals would find nothing held, and one settle
-  // window later another tab could claim its message and pay for a second run.
+  // Compare mode runs two runtimes in one tab; release must only drop the finished pane's lease.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const compareTab = createAutoContinueTab({ storage, locks });
@@ -1617,10 +1395,8 @@ test("one compare pane finishing does not release the other pane's lease", async
     true,
   );
 
-  // The base pane finishes first. Only its own lease goes back.
   await compareTab.release("base-m1", base, { now: start });
 
-  // The lora pane is still generating, and its keeper is still renewing.
   for (let tick = 1; tick <= 3; tick += 1) {
     await compareTab.renew("lora-m1", lora, {
       now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
@@ -1633,7 +1409,6 @@ test("one compare pane finishing does not release the other pane's lease", async
     "held-elsewhere",
     "the still-running pane keeps its message",
   );
-  // And the pane that did finish leaves its message continued.
   assert.equal(
     await otherTab.claim("base-m1", {
       now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1,
@@ -1676,18 +1451,12 @@ test("lapsed leases are pruned rather than accumulating", async () => {
 });
 
 test("reloading one tab does not fire a second continuation", async () => {
-  // What stops this today is branch selection: the continuation runs as a sibling and
-  // becomes the selected branch, so the truncated reply is no longer last and the effect
-  // never asks. The lease is the belt to that pair of braces -- a reload lands on the
-  // truncated branch, its module scope is empty, and storage is the only thing that
-  // remembers. Nothing here changes what selection already refuses.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const before = createAutoContinueTab({ storage, locks });
   const start = 1_000;
   assert.equal(await before.claim("m1", { now: start }), "started");
 
-  // The reload: same tab, same profile, brand new module scope.
   const after = createAutoContinueTab({ storage, locks });
   assert.equal(
     await after.claim("m1", { now: start + 5_000 }),
@@ -1705,12 +1474,10 @@ test("a reset gives back this tab's lease and leaves other tabs alone", async ()
 
   assert.equal(await mine.claim("m1", { now }), "started");
   mine.reset();
-  // Cleared in both places, so "start from zero" means what it did before the lease.
   assert.equal(await mine.claim("m1", { now }), "started");
 
   assert.equal(await theirs.claim("m2", { now }), "started");
   mine.reset();
-  // Not mine to release: a run another tab is driving is still going.
   assert.equal(
     await createAutoContinueTab({ storage, locks }).claim("m2", { now }),
     "held-elsewhere",
@@ -1718,8 +1485,6 @@ test("a reset gives back this tab's lease and leaves other tabs alone", async ()
 });
 
 test("a stored lease survives a full reset by the module, being another tab's", async () => {
-  // `resetAutoContinue()` clears the module claim and the round budget. It cannot know
-  // about a lease it never wrote, and must not stamp on one.
   const { storage, store } = storageFake();
   const locks = lockManagerFake();
   await createAutoContinueTab({ storage, locks }).claim("m1", { now: 1_000 });
@@ -1745,13 +1510,6 @@ test("a malformed lease record is ignored rather than blocking", async () => {
 });
 
 test("a hold whose run never starts holds its lease for the life of the tab", async () => {
-  // Not a defect on its own: a hold that has not seen its run yet is deliberately renewed
-  // rather than timed out, because preflight has no upper bound and a deadline that fired
-  // during one lapsed the lease under a run that had since started streaming.
-  //
-  // It is the reason the bar must not take a hold for a run it never issued. This is what
-  // that mistake costs, so the guard in `ContinueMessageBarForLastMessage` below has
-  // something concrete to be measured against.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const tab = createAutoContinueTab({ storage, locks });
@@ -1779,7 +1537,6 @@ test("a hold whose run never starts holds its lease for the life of the tab", as
     "started",
   );
   keeper.hold("m1", "thread-A");
-  // `thread-A` never runs: the run this hold is waiting for was never issued.
   for (
     let day = 1;
     day <= (3 * 86_400_000) / AUTO_CONTINUE_LEASE_RENEW_MS;
@@ -1799,17 +1556,8 @@ test("a hold whose run never starts holds its lease for the life of the tab", as
 });
 
 test("a claim whose run was never issued is left to lapse, not held", async () => {
-  // The bar claims under a Web Lock, so the answer lands a tick or more after the render
-  // that asked for it, and `aui.thread()` follows the SELECTION rather than the thread the
-  // bar belongs to (`runningByThreadId` exists precisely because "detection survives
-  // navigation" and `aui.thread()` does not). Switch chats or branches inside that window
-  // and `startContinuation` searches a different thread's messages, finds nothing, and
-  // returns without calling `startRun`.
-  //
-  // Taking the hold anyway is the case above: renewed forever, and every other tab refused
-  // the message until this one closes. So the message has to still be there before anything
-  // is held. Pinned at the source, since there is no renderer here -- the same way
-  // composer-keystroke-subscription-budget.test.ts pins its seams.
+  // The claim resolves after the render and aui.thread() follows selection, so the bar must check
+  // the message still exists before holding. Pinned at the source since there is no renderer.
   const claimed = THREAD.indexOf(
     'claimAutoContinue(messageId, runThreadId ?? "")',
   );
@@ -1833,8 +1581,6 @@ test("a claim whose run was never issued is left to lapse, not held", async () =
     guard < hold && guard < record && guard < run,
     "the message has to be confirmed present before the lease is held or the round spent",
   );
-  // And the guard must leave the claim alone rather than reach for a timer: the lease
-  // lapsing on its own TTL is what a tab that closed mid-claim already produces.
   const between = branch.slice(guard, hold);
   assert.match(
     between,
@@ -1849,12 +1595,7 @@ test("a claim whose run was never issued is left to lapse, not held", async () =
 });
 
 test("a losing claim does not follow the row onto the next branch", () => {
-  // The bar's "another tab has this one" answer is state, because the claim resolves after
-  // the render that asked for it. A bare boolean is wrong state to keep it in: rows are
-  // mounted by INDEX, so selecting a different truncated branch at the same index
-  // re-renders this component rather than remounting it, and the flag set for the message
-  // that lost carried over onto a message nobody has claimed at all -- no automatic
-  // continuation for it, for as long as that row lives.
+  // Rows mount by index, so a lost-claim flag must be keyed by message, not a bare boolean.
   const rows = readSrc("components/assistant-ui/progressive-messages.tsx");
   assert.match(
     rows,
@@ -1889,9 +1630,6 @@ test("a losing claim does not follow the row onto the next branch", () => {
 });
 
 test("a claim taken for a run that was never issued is given back", async () => {
-  // The `stillThere` guard leaves the run unstarted, and the claim it took stays in this
-  // tab's continued set: every later claim of that message answers "skipped", so the
-  // automatic continuation never runs again for a request nobody ever made.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const tab = createAutoContinueTab({ storage, locks });
@@ -1902,17 +1640,12 @@ test("a claim taken for a run that was never issued is given back", async () => 
     await tab.claim("m1", { now: start, holder: "thread-A" }),
     "started",
   );
-  // The branch changed inside the lock's window, so nothing was issued. Roll it back.
   tab.forget("m1");
-  // The storage lease is deliberately kept: this tab may still be deciding, and handing
-  // the message over now is how two tabs pay for the same continuation.
   assert.equal(
     await otherTab.claim("m1", { now: start + 1 }),
     "held-elsewhere",
     "the rollback must not hand the message to a second tab",
   );
-  // Once that lease lapses -- the same record a tab that closed mid-claim leaves behind --
-  // the message is continuable again.
   assert.equal(
     await tab.claim("m1", {
       now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1,
@@ -1924,8 +1657,6 @@ test("a claim taken for a run that was never issued is given back", async () => 
 });
 
 test("the bar rolls its claim back when it issues no run", () => {
-  // The behaviour above, pinned where it has to be called from: the early return that
-  // decided no run would be issued.
   const claimed = THREAD.indexOf(
     'claimAutoContinue(messageId, runThreadId ?? "")',
   );
@@ -1945,11 +1676,7 @@ test("the bar rolls its claim back when it issues no run", () => {
 });
 
 test("a hold is settled when its run fails before it ever starts", async () => {
-  // A preflight failure -- this chat's settings pairing running out, a model that will not
-  // load, a connection the adapter refuses -- throws out of `adapter.run` before anything
-  // reaches `setThreadRunning(..., true)`, so no `runningByThreadId` transition can ever
-  // identify this run as terminal. Without a signal the hold renews its cross-tab lease
-  // every 30 seconds for the life of the tab, one leaked hold per failure.
+  // A preflight failure never reaches runningByThreadId, so only the failure signal ends the hold.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const tab = createAutoContinueTab({ storage, locks });
@@ -1981,7 +1708,6 @@ test("a hold is settled when its run fails before it ever starts", async () => {
   keeper.tick();
   assert.equal(keeper.held(), 1, "a slow preflight is still a live hold");
 
-  // The adapter threw. This is the run's own thread saying so.
   keeper.failed("thread-A");
   assert.equal(
     keeper.held(),
@@ -2001,10 +1727,6 @@ test("a hold is settled when its run fails before it ever starts", async () => {
 });
 
 test("a failure on a thread leaves a hold whose run is already streaming alone", async () => {
-  // The same event fires for a failure mid-stream, where the run DID reach
-  // `runningByThreadId` and the transition to idle is what settles the hold -- with the
-  // `done` marker that says the message has been continued, which a preflight failure has
-  // no right to write.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const tab = createAutoContinueTab({ storage, locks });
@@ -2033,8 +1755,6 @@ test("a failure on a thread leaves a hold whose run is already streaming alone",
   clock = start + AUTO_CONTINUE_LEASE_RENEW_MS;
   keeper.tick();
 
-  // The run failed after it had started streaming. Its hold is armed, and armed holds are
-  // settled by their own thread going idle, not here.
   keeper.failed("thread-A");
   assert.equal(keeper.held(), 1, "an armed hold is its run's to give back");
   assert.deepEqual(released, []);
@@ -2059,9 +1779,7 @@ test("a turn that fails before any text is still saved as interrupted", () => {
 });
 
 test("the keeper is wired to the failure the adapter already reports", () => {
-  // There is exactly one signal for a run that failed on its way out, and it is not a
-  // deadline: the adapter wrapper catches everything `adapter.run` throws and announces it
-  // per thread. Pinned at both ends, since neither side is exercised by a unit test.
+  // The adapter wrapper announces every adapter.run throw per thread; pinned at both ends.
   const wrapper = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("yield* adapter.run(args)"));
   assert.match(
     wrapper,
@@ -2086,11 +1804,6 @@ test("the keeper is wired to the failure the adapter already reports", () => {
   );
 });
 
-/**
- * The run a hold was taken for, as the keeper sees it: something that settles, once.
- * `runSignalFake` above is the STREAM, true only once tokens are on their way; this is the RUN,
- * pending for the whole preflight and settling however that one run ends.
- */
 function issuedRunFake() {
   const settlers = new Set<() => void>();
   return {
@@ -2099,7 +1812,6 @@ function issuedRunFake() {
         settlers.add(onSettled);
       },
     },
-    /** That run ended. */
     settle: () => {
       for (const onSettled of [...settlers]) {
         onSettled();
@@ -2109,10 +1821,7 @@ function issuedRunFake() {
 }
 
 test("a preflight the user stopped gives up its hold instead of keeping it for the tab", async () => {
-  // Stop during preflight. The adapter wrapper skips its per-thread failure notice ON PURPOSE
-  // (the abort was asked for, not a fault) and `runningByThreadId` never moved, since no token
-  // was ever on its way, so the hold had nothing to arm on and nothing to settle on and renewed
-  // its lease for the life of the tab. The run's own promise is the one thing that knows.
+  // Stop during preflight emits no failure notice and no running flag; only the run promise knows.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -2165,8 +1874,6 @@ test("a preflight the user stopped gives up its hold instead of keeping it for t
 });
 
 test("a hold whose run is merely slow is never settled by the clock", async () => {
-  // The preflight has no upper bound (settings pairing, then `waitForModelReady` polling while
-  // a large local GGUF loads) and a pending promise settles nothing.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -2212,9 +1919,7 @@ test("a hold whose run is merely slow is never settled by the clock", async () =
 });
 
 test("the run that ends is the one the hold was taken for, not the round before it", async () => {
-  // The adapter clears `runningByThreadId` from its own `finally`, strictly before the runtime
-  // announces that run ending, so anything per-thread would read the predecessor's ending as
-  // the successor's and lapse the lease under a live continuation.
+  // The adapter clears runningByThreadId before the runtime announces the run ending.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -2250,12 +1955,10 @@ test("the run that ends is the one the hold was taken for, not the round before 
     "round one is settled by its own stream ending",
   );
 
-  // Round two is claimed and issued while round one is STILL unwinding.
   await tab.claim("round-2", { now: clock, holder: "thread-A" });
   keeper.hold("round-2", "thread-A");
   keeper.settleOn("round-2", "thread-A", round2.issued);
 
-  // Round one's run finally reports itself over. It is not round two's.
   predecessor.settle();
   assert.equal(
     keeper.held(),
@@ -2278,13 +1981,6 @@ test("the run that ends is the one the hold was taken for, not the round before 
 });
 
 test("a settled hold is read before the thread is, not after it", async () => {
-  // The only pass where the settled check being ahead of the arming check is the whole answer:
-  // the hold owns an idle key, its own run ended without streaming, and the key reads busy by
-  // the time the keeper looks. Below the arming check that pass arms the hold on somebody
-  // else's run, whose end then writes a `done` marker for a message that produced not one
-  // token. An invariant of the keeper rather than a user-reachable sequence -- the signal it is
-  // wired to notifies on every store write -- but the keeper takes that signal as a parameter
-  // and promises nothing about delivery.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const start = 1_000;
@@ -2309,7 +2005,6 @@ test("a settled hold is read before the thread is, not after it", async () => {
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // The key turns busy without the keeper having been told, then this hold's own run settles.
   running.add("thread-A");
   issued.settle();
   assert.equal(
@@ -2329,12 +2024,7 @@ test("a settled hold is read before the thread is, not after it", async () => {
 });
 
 test("a hold on a key that was already busy is left alone, not guessed at", async () => {
-  // A hold taken while the key already reads busy -- `scheduleGenerationRecovery` follows a
-  // durable run on it -- has not seen the thread idle, so nothing it reads there is its own
-  // run and unarmed stops meaning "streamed nothing". The bar reaches this on its own: its
-  // `!isRunning` gate reads the SELECTED BRANCH, not `runningByThreadId`. Undecidable, so the
-  // hold is renewed; discarding it would hand a continuation that may well have streamed to
-  // the next tab to pay for again.
+  // A hold taken while the key is already busy cannot tell its own run apart, so it is renewed.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -2359,7 +2049,6 @@ test("a hold on a key that was already busy is left alone, not guessed at", asyn
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // Its own run ends while the other owner is still going: which of the two ways is unknowable.
   issued.settle();
   assert.equal(keeper.held(), 1, "an undecidable hold was dropped anyway");
 
@@ -2376,16 +2065,12 @@ test("a hold on a key that was already busy is left alone, not guessed at", asyn
 });
 
 test("a continuation that streamed under a second owner keeps its marker", async () => {
-  // The regression the guard above exists for: the key is busy when the hold is taken so it
-  // never arms, yet its own run streams the whole way through. Dropped there, the message
-  // reads as never continued and another tab pays for the same continuation again.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
   const start = 1_000;
   let clock = start;
   const pending: Promise<void>[] = [];
-  // A durable run followed from storage, holding the key before the continuation begins.
   const running = new Set<string>(["thread-A"]);
   const runs = runSignalFake(running);
   const issued = issuedRunFake();
@@ -2404,7 +2089,6 @@ test("a continuation that streamed under a second owner keeps its marker", async
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // It streams to the end, but the other owner keeps the key true so the flag never moves.
   runs.change();
   for (let tick = 1; tick <= 3; tick += 1) {
     clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
@@ -2426,10 +2110,7 @@ test("a continuation that streamed under a second owner keeps its marker", async
 });
 
 test("a second owner on the key does not cost an armed hold its marker", async () => {
-  // `runningByThreadId` has a LIST of owners behind it and the adapter clears only its own, so
-  // a durable run being followed keeps the key busy after this hold's stream is over and its
-  // run settles with the thread still reading busy. It streamed, so it is owed its `done`
-  // marker; discarding it there hands the message back for another tab to pay for again.
+  // runningByThreadId has multiple owners, so a key can stay busy after this hold's run settles.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -2455,11 +2136,9 @@ test("a second owner on the key does not cost an armed hold its marker", async (
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // Its own run streams, and the recovery follower takes the same key while it does.
   running.add("thread-A");
   runs.change();
 
-  // Its stream ends and its promise settles, but the follower still holds the key.
   issued.settle();
   assert.equal(keeper.held(), 1, "the hold was dropped on somebody else's run");
 
@@ -2475,8 +2154,6 @@ test("a second owner on the key does not cost an armed hold its marker", async (
 });
 
 test("a run that ends after its hold is gone reaches nothing", async () => {
-  // By the time a promise settles its hold may have been given back or the key claimed again:
-  // the callback is scoped to one hold, not to the message or the thread.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const start = 1_000;
@@ -2507,8 +2184,6 @@ test("a run that ends after its hold is gone reaches nothing", async () => {
   await Promise.all(pending);
   assert.deepEqual(released, ["m1"]);
 
-  // The same message is claimed again for the next round, and only THEN does the first run's
-  // promise settle.
   keeper.hold("m1", "thread-A");
   first.settle();
   assert.equal(
@@ -2519,8 +2194,6 @@ test("a run that ends after its hold is gone reaches nothing", async () => {
 });
 
 test("settling a hold that was never taken does nothing", () => {
-  // `settleOn` runs a line after `hold`, and the hold may have been refused: a thread with no
-  // remote id yet is not safe to watch, so nothing is held for it.
   const runs = runSignalFake(new Set<string>());
   const issued = issuedRunFake();
   let attached = 0;
@@ -2547,8 +2220,7 @@ test("settling a hold that was never taken does nothing", () => {
 });
 
 test("only what the runtime actually hands back is treated as the run", () => {
-  // Not thenable is assistant-ui no longer handing the run back, and the honest answer is no
-  // signal: the hold is kept and renewed as before this fix, never released early.
+  // A non-thenable run means no signal: keep renewing, never release early.
   for (const notARun of [undefined, null, 0, "", "pending", true, {}, []]) {
     assert.equal(
       issuedRunFrom(notARun),
@@ -2563,8 +2235,6 @@ test("only what the runtime actually hands back is treated as the run", () => {
     "a promise is a run",
   );
 
-  // A thenable, which is all the contract asks for. The handler is parked on an object rather
-  // than a local so it survives narrowing to `never`.
   const parked: { settle?: (ok: boolean) => void } = {};
   const thenable = {
     then: (onOk: () => void, onErr: () => void) => {
@@ -2587,8 +2257,6 @@ test("only what the runtime actually hands back is treated as the run", () => {
 });
 
 test("a rejected run settles its hold rather than escaping", async () => {
-  // Neither arm says whether the lease may be given back, only that the run is not coming.
-  // An unobserved rejection here would also be an unhandled one.
   const settled: string[] = [];
   const rejected = issuedRunFrom(Promise.reject(new Error("model refused")));
   rejected?.whenSettled(() => settled.push("rejected"));
@@ -2603,10 +2271,7 @@ test("a rejected run settles its hold rather than escaping", async () => {
 });
 
 test("the abort case is wired to the run, not to a clock", () => {
-  // The bar is the last place that has the run in hand -- the keeper lives in module scope and
-  // the runtime is only reachable through a hook -- so `startRun`'s own return value has to be
-  // handed over there. Pinned at both ends, since neither side is exercised by a unit test,
-  // and re-pinned against a deadline because a deadline here is the arming timeout coming back.
+  // The bar is the last place holding startRun's return value, so it must hand it to the keeper.
   const bar = readFileSync(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
     "utf8",
@@ -2641,8 +2306,7 @@ test("the abort case is wired to the run, not to a clock", () => {
     ),
     "utf8",
   );
-  // Every timer, not just `setTimeout(`: a deadline spelled `setInterval` counts its own elapsed
-  // time and passed unnoticed. The renewal interval is NAMED, so a second one cannot pose as it.
+  // Every timer kind counts as a deadline; the renewal interval is named so it cannot be confused.
   const TIMERS =
     /\b(?:setTimeout|setInterval|setImmediate|queueMicrotask|requestIdleCallback|requestAnimationFrame)\s*\(/g;
   for (const [name, source, allowed] of [
@@ -2667,15 +2331,6 @@ test("the abort case is wired to the run, not to a clock", () => {
   }
 });
 
-/**
- * The same field the keeper reads in the app, owners and all.
- *
- * `runSignalFake` above answers from a bare set of thread ids, which is every case where
- * what holds the flag does not matter. Here it does: the image gate flips the flag on and
- * off around a request it never issued, and the real signal in
- * `auto-continue-run-keeper.ts` is what tells that pair from a run. Built on the shipped
- * predicate rather than a copy of it, so a change to either side fails here.
- */
 function ownedRunSignalFake() {
   const running = new Map<string, { owner: () => void }[]>();
   const listeners = new Set<() => void>();
@@ -2695,12 +2350,10 @@ function ownedRunSignalFake() {
         return () => listeners.delete(onChange);
       },
     },
-    /** `setThreadRunning(threadId, true, { owner })`, and the notify it fires. */
     start: (threadId: string, owner: () => void) => {
       running.set(threadId, [...(running.get(threadId) ?? []), { owner }]);
       announce();
     },
-    /** `setThreadRunning(threadId, false, { owner })`, clearing that run only. */
     end: (threadId: string, owner: () => void) => {
       const rest = (running.get(threadId) ?? []).filter(
         (entry) => entry.owner !== owner,
@@ -2716,14 +2369,7 @@ function ownedRunSignalFake() {
 }
 
 test("a continuation refused by the image gate is not recorded as continued", async () => {
-  // Reopen a chat containing a picture with a text-only model loaded -- or switch Vision
-  // off for the one that wrote the truncated reply -- and the automatic continuation is
-  // refused before a request is made. The gate pulses the thread's running flag true and
-  // then false first, so compare mode's `waitForRunEnd` resolves rather than hanging. Read
-  // as a run, that pair arms the hold and settles it one call later with the `done` marker
-  // that tells every other tab for a day that the message HAS been continued -- for a
-  // provider request that was never sent. The failure that follows cannot take it back: a
-  // released hold is already gone.
+  // The image gate pulses the running flag without issuing a request; it must not mark done.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const tab = createAutoContinueTab({ storage, locks });
@@ -2751,7 +2397,6 @@ test("a continuation refused by the image gate is not recorded as continued", as
   );
   keeper.hold("m1", "thread-A");
 
-  // `chat-adapter.ts`: setThreadRunning(true, { owner: gateOwner }) then false, then throw.
   const gateOwner = createImageGateRunOwner();
   runs.start("thread-A", gateOwner);
   assert.equal(
@@ -2762,7 +2407,6 @@ test("a continuation refused by the image gate is not recorded as continued", as
   runs.end("thread-A", gateOwner);
   assert.equal(keeper.held(), 1, "and so cannot settle it either");
 
-  // The throw reaches the wrapper's catch, which is the signal that ends an unarmed hold.
   keeper.failed("thread-A");
   assert.equal(keeper.held(), 0);
 
@@ -2778,10 +2422,7 @@ test("a continuation refused by the image gate is not recorded as continued", as
 });
 
 test("a real run on the thread the gate refused still owns its lease", async () => {
-  // Compare mode puts two runtimes on one key, and an unresolved thread files its run under
-  // the shared "__default". A gate firing beside a run that is genuinely streaming must not
-  // make the keeper read the thread as idle: that hold would be released mid-stream, and one
-  // settle window later another tab could claim the message being written.
+  // Compare mode shares "__default"; a gate pulse beside a real run must not read as idle.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const tab = createAutoContinueTab({ storage, locks });
@@ -2811,14 +2452,12 @@ test("a real run on the thread the gate refused still owns its lease", async () 
   clock = start + AUTO_CONTINUE_LEASE_RENEW_MS;
   keeper.tick();
 
-  // The sibling's image turn is refused while this one streams.
   const gateOwner = createImageGateRunOwner();
   runs.start("__default", gateOwner);
   runs.end("__default", gateOwner);
   assert.deepEqual(released, [], "the run beside it is still generating");
   assert.equal(keeper.held(), 1);
 
-  // Its own run ending is what gives the lease back, marked continued.
   runs.end("__default", streamingRun);
   await Promise.all(pending);
   assert.deepEqual(released, ["m1"]);
@@ -2832,9 +2471,6 @@ test("a real run on the thread the gate refused still owns its lease", async () 
 });
 
 test("only the gate's own tokens are read as a refusal", () => {
-  // The predicate is asked about "is this thread generating", so anything it cannot prove
-  // is a gate pulse has to answer yes: a run from before per-run tracking carries no owner
-  // at all, and a key shared with a real run carries one of each.
   const gateOwner = createImageGateRunOwner();
   const runOwner = () => {};
   assert.equal(isImageGateRunOnly([{ owner: gateOwner }]), true);
@@ -2853,8 +2489,6 @@ test("only the gate's own tokens are read as a refusal", () => {
 });
 
 test("the gate's pulse is tagged where it is fired and read where it matters", () => {
-  // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
-  // the keeper's real signal reads a zustand store. Pinned at both ends instead.
   const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const blockAttachmentRun ="));
   assert.match(
     CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason =")),
@@ -2883,21 +2517,8 @@ test("the gate's pulse is tagged where it is fired and read where it matters", (
   );
 });
 
-// The live streaming publish path used to run the restart check on every arrival.
-//
-// `isRestart` cannot fire until the continuation reaches 48 characters, and the moment it
-// does it publishes the continuation ALONE. Over a 1602-character partial that took the
-// published value from 1649 characters to 48 in a single arrival.
-//
-// That is not just a visible collapse. Stop persists the last STREAMED yield, because
-// assistant-ui drops what a run yields after an abort and the terminal merge sits behind
-// `!abortSignal.aborted`. So stopping in that window SAVED the 48 characters and threw away
-// the whole partial the user was reading.
-//
-// `joinContinuation`'s `streaming` option exists precisely to suppress that check, and
-// production never passed it. These pin the property that actually matters here, which is not
-// monotonicity but TEXT PRESERVATION: no streamed publish may drop the partial, and none may
-// withhold what the model has generated.
+// Streaming publishes must never drop the partial: Stop persists the last streamed yield,
+// so the restart check must stay off while streaming.
 
 const { createContinuationMerger } = await import(
   "../src/features/chat/utils/continuation.ts"
@@ -2910,7 +2531,6 @@ const REASONING =
   "First I need to consider what the existing schema looks like, and " +
   "whether an online migration is even possible given the constraints. ";
 
-/** Replay a stream one character at a time, collecting what each arrival would publish. */
 function replay(partial: string, tail: string): string[] {
   const merge = createContinuationMerger(partial, true);
   const published: string[] = [];
@@ -2924,7 +2544,6 @@ function replay(partial: string, tail: string): string[] {
 }
 
 test("a restart mid-stream never discards the partial", () => {
-  // The original defect, and the one that loses data: Stop here persisted 48 characters.
   const partial = REASONING.repeat(6);
   const published = replay(partial, `${REASONING}and so on. `.repeat(2));
 
@@ -2938,8 +2557,6 @@ test("a restart mid-stream never discards the partial", () => {
 });
 
 test("no streamed publish withholds generated text", () => {
-  // The failure mode of holding the partial back until the repair settles: Stop inside that
-  // window saves the stale partial and every new character is lost.
   const partial = REASONING.repeat(6);
   const tail = "The second consideration is throughput, which matters here. ";
   const published = replay(partial, tail);
@@ -2954,7 +2571,6 @@ test("no streamed publish withholds generated text", () => {
 });
 
 test("what Stop would save mid-stream carries the overlap repair", () => {
-  // The failure mode of repairing only at the end: the duplicated tail reaches storage.
   const partial = REASONING.repeat(6);
   const repeated = partial.slice(-60);
   const published = replay(partial, `${repeated}and then it continues onward. `);
@@ -2969,9 +2585,6 @@ test("what Stop would save mid-stream carries the overlap repair", () => {
 });
 
 test("the join can shift by the overlap, and never by more", () => {
-  // Honest about what is NOT fixed. A longer overlap starting to match rewrites the join, so
-  // the published length can dip. It is bounded by MAX_OVERLAP and never loses text, which is
-  // why it is not worth holding output back to avoid.
   const partial = REASONING.repeat(6);
   const published = replay(
     partial,
@@ -2996,8 +2609,6 @@ test("the final merge still collapses a genuine restart", () => {
 });
 
 test("a short partial with a whitespace-led restart is not collapsed mid-stream", () => {
-  // `isRestart` calls trimStart(), so a leading newline shifts when it can fire. With the
-  // restart check off while streaming, that timing cannot produce a mid-stream collapse.
   const partial = "Sure, here is a plan for the migration you asked me about.";
   const merge = createContinuationMerger(partial, true);
   const restart = `\n${partial}`;
@@ -3010,7 +2621,6 @@ test("a short partial with a whitespace-led restart is not collapsed mid-stream"
 });
 
 test("a merger with repair off is the identity, streaming or final", () => {
-  // Local backends resume at the exact token boundary, so nothing may be trimmed.
   const partial = REASONING.repeat(2);
   const merge = createContinuationMerger(partial, false);
   const full = `${partial}${REASONING}`;
@@ -3022,28 +2632,23 @@ const ERROR_PATH_REASON =
   /incompleteReasonAfterError\(\s*incompleteReason,\s*err instanceof GenerationLengthError\s*\?\s*lengthIncompleteReason\(err\.stopCause\)/;
 
 test("a length error refines the length the terminal chunk latched", () => {
-  // The terminal chunk latches length before GenerationLengthError identifies the cause.
   assert.equal(
     incompleteReasonAfterError("length", "context_window"),
     "context_window",
   );
   assert.equal(incompleteReasonAfterError("length", "length"), "length");
-  // An explicit Stop still outranks whatever the error says.
   assert.equal(
     incompleteReasonAfterError("cancelled", "context_window"),
     "cancelled",
   );
-  // Nothing latched: the error decides, as before.
   assert.equal(
     incompleteReasonAfterError(null, "context_window"),
     "context_window",
   );
   assert.equal(incompleteReasonAfterError(null, "interrupted"), "interrupted");
-  // A latched reason is not overridden by an unrelated error.
   assert.equal(incompleteReasonAfterError("length", "interrupted"), "length");
 });
 
 test("the adapter's error path asks the length error which limit it was", () => {
-  // Check the wiring without initializing the adapter's stores.
   assert.match(CHAT_ADAPTER, ERROR_PATH_REASON);
 });

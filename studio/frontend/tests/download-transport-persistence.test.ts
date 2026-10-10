@@ -121,8 +121,6 @@ test("the active transport is written with the persisted job", () => {
 });
 
 test("a fallback run's cancel marker survives the reload too", () => {
-  // Without it the restored job reads as plain HTTP and offers Pause for a
-  // stop that leaves a restart-only partial.
   const jobs = getState().jobs;
   const job = jobs[jobKeyOf("model", "org/fallback-model", null)];
   assert.equal(job?.transport, "http");
@@ -271,7 +269,6 @@ test("the first known plan total stabilizes an adopted companion", () => {
 });
 
 test("a running job is the activity the desktop quit path asks about", () => {
-  // What set_renderer_activity mirrors into Rust, so the close button warns first.
   assert.equal(hasActiveDownloadJob(getState().jobs), true);
 });
 
@@ -299,7 +296,6 @@ test("an external job counts too, since a quit kills its transfer as well", () =
     }),
     true,
   );
-  // A settled job is not activity, whoever owns it.
   assert.equal(
     hasActiveDownloadJob({
       done: {

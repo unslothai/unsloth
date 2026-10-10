@@ -17,8 +17,7 @@ const MAX_CLIPBOARD_RGBA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CLIPBOARD_PNG_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
-// Mirrors MAX_NATIVE_VIDEO_BYTES in native_intents.rs: a pasted clip and a
-// dropped one are the same file, and the 20 MB source cap skipped most videos.
+// Mirrors MAX_NATIVE_VIDEO_BYTES in native_intents.rs.
 const MAX_CLIPBOARD_VIDEO_BYTES: u64 = 75_497_280;
 const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_VIDEO_BYTES;
 const MAX_CLIPBOARD_FILES: usize = 8;
@@ -125,9 +124,7 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "3gp" => "video/3gpp",
         "vtt" => "text/vtt",
         "srt" => "application/x-subrip",
-        // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and
-        // named here; the rest of the source and text formats come from the one
-        // list the composer and the drop path already share.
+        // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and named here.
         "txt" => "text/plain",
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => "text/plain",
         other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
@@ -195,11 +192,8 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             .extension()
             .and_then(|value| value.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("3gp"));
-        // A 3GP recording cannot use its final size limit until its BMFF
-        // handlers have been read and classified as audio-only or video. Read it
-        // under the larger of the two, as the drop path does; the audio cap is
-        // reapplied below once the track handlers say it is audio-only. A .ts or
-        // .mts path is likewise video or TypeScript only once its packets are read.
+        // 3GP and .ts/.mts are read under the larger limit until their bytes are classified;
+        // the audio cap is reapplied below.
         let provisional_limit = if is_3gp || has_transport_stream_extension(&path) {
             MAX_CLIPBOARD_VIDEO_BYTES
         } else {
@@ -641,8 +635,6 @@ mod tests {
             clipboard_file_max_bytes("audio/mpeg"),
             MAX_CLIPBOARD_AUDIO_BYTES
         );
-        // A video gets the video budget, not the 20 MB source cap, which skipped
-        // most clips the picker and the drop path both accept.
         assert_eq!(
             clipboard_file_max_bytes("video/3gpp"),
             MAX_CLIPBOARD_VIDEO_BYTES
@@ -652,7 +644,6 @@ mod tests {
             MAX_CLIPBOARD_VIDEO_BYTES
         );
         assert!(MAX_CLIPBOARD_TOTAL_BYTES >= MAX_CLIPBOARD_VIDEO_BYTES);
-        // The pasted and dropped limits are the same file's limit.
         let intents = include_str!("native_intents.rs");
         let native = intents
             .split("const MAX_NATIVE_VIDEO_BYTES: u64 = ")

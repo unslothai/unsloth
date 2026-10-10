@@ -153,7 +153,6 @@ test("the sent attachments options read as Standard and Compact", () => {
 });
 
 test("the composer always shows attachments as cards", () => {
-  // A record saved while compact tiles were an option is dropped on load.
   const saved = sanitizeCustomization({ composerAttachments: "compact" });
   assert.equal("composerAttachments" in saved, false);
   assert.match(

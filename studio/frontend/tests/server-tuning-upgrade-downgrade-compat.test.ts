@@ -1,18 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// S2 for the llama-server tuning group: no user setting may be lost on any upgrade
-// or downgrade path, and no client may destroy a record it cannot read. Hidden is
-// acceptable, lost is not.
-//
-// Two directions changed at once. The four fields (load mode, draft KV dtype,
-// checkpoints, cache RAM) stopped being judged default, so they reach storage at
-// all; and the server row became authoritative on panel open. Together they move
-// data across builds, across origins, and into a backfill that used to skip it.
-//
-// There is no migration step, so each direction holds on its own: the version stamp
-// is a downgrade LOCK, correct only while toStoredConfig stamps the OLDEST version
-// that understands the record.
+// No user setting may be lost on upgrade/downgrade; hidden is acceptable, lost is not.
+// The version stamp is a downgrade lock: toStoredConfig must stamp the oldest capable version.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -57,21 +47,17 @@ const BACKFILL_FLAG = "unsloth_model_overrides_backfilled_v3";
 const MODEL = "unsloth/Repo-GGUF";
 const VARIANT = "Q4_K_M";
 
-// Ceiling shipped by the last build BEFORE the group. A record stamped at or below
-// it is readable, and therefore erasable, by that build.
+// Ceiling of the last build before the tuning group; records at or below it are erasable there.
 const PRE_TUNING_CEILING = 4;
 
-// Each of the four on its own, at a value a user can actually choose. The falsy ones
-// are in here deliberately: 0 checkpoints and a 0 or -1 cache are decisions, and a
-// version stamp or a default check written against truth passes without them.
+// Falsy values are deliberate: 0 checkpoints and 0/-1 cache are real decisions.
 const TUNING_ONLY_PATCHES: Partial<PerModelConfig>[] = [
   { loadMode: "mmap" },
   { ctxCheckpoints: 0 },
   { ctxCheckpoints: 64 },
   { cacheRam: 0 },
   { cacheRam: -1 },
-  // The dtype is tied to a mode that loads a separate drafter, so it cannot be the
-  // sole difference from default; the mode travels with it.
+  // The dtype requires a separate-drafter mode, so the mode travels with it.
   { specDraftCacheDtype: "q8_0", speculativeType: "dspark" },
 ];
 
@@ -93,20 +79,13 @@ function onlyEntry(): Record<string, unknown> {
   return entries[0];
 }
 
-/** resolveInitialConfig is the public read path; loadPerModelConfig is module-private. */
 function load(): PerModelConfig | null {
   const initial = resolveInitialConfig(MODEL, VARIANT);
   return initial.remembered ? initial.config : null;
 }
 
-// ---------------------------------------------------------------------------
-// A. A NEW client reading OLD records. Nothing may be dropped.
-// ---------------------------------------------------------------------------
-
 test("a v0 record with no version key at all still loads the tuning it carried", () => {
   store.clear();
-  // Pre-versioning shape. No migration step exists, so the guards read
-  // storedConfigVersion() === 0 and normalizeV1 rebuilds the record as it stands.
   writeMap({
     [`${MODEL}::${VARIANT}`]: {
       loadMode: "mmap",
@@ -138,26 +117,18 @@ test("a v4 record loads unchanged and is re-stamped v4, not silently upgraded", 
   assert.ok(loaded);
   assert.equal(loaded.customContextLength, 4096);
   assert.equal(loaded.disableVision, true);
-  // The fields that did not exist yet read as unset, not as a bogus default: a
-  // fabricated 32 checkpoints would be pinned onto every load of this model.
+  // Missing fields read as unset, not a bogus default that would be pinned onto every load.
   assert.equal(loaded.loadMode, null);
   assert.equal(loaded.ctxCheckpoints, null);
   assert.equal(loaded.cacheRam, null);
 
-  // Re-saving without touching a tuning field must NOT poison the record for the
-  // build that wrote it: the stamp is a lock, and over-stamping locks that build out
-  // of a record it can still read in full.
+  // Over-stamping on re-save would lock out a build that can still read the record.
   assert.ok(savePerModelConfig(MODEL, VARIANT, loaded));
   assert.equal(onlyEntry().version, PRE_TUNING_CEILING);
 });
 
-// ---------------------------------------------------------------------------
-// B. The property the whole scheme rests on.
-// ---------------------------------------------------------------------------
-
 test("only a record that actually carries tuning is stamped v5", () => {
-  // Annotated rather than `as const`: the latter makes llamaExtraArgs a readonly
-  // tuple, which Partial<PerModelConfig> will not take.
+  // Annotated, not `as const`: a readonly tuple will not fit Partial<PerModelConfig>.
   const cases: [Partial<PerModelConfig>, number][] = [
     [{ kvCacheDtype: "q8_0" }, 1],
     [{ nBatch: 4096 }, 2],
@@ -180,22 +151,13 @@ test("only a record that actually carries tuning is stamped v5", () => {
 });
 
 test("a record with no tuning stays inside a pre-v5 build's reach", () => {
-  // The other half of the rule. Stamping every record v5 would quarantine the whole
-  // store from the build the user just downgraded to, which loses far more than it
-  // protects.
+  // Stamping every record v5 would quarantine the store from a downgraded build.
   store.clear();
   assert.ok(savePerModelConfig(MODEL, VARIANT, config({ nParallel: 8 })));
   assert.ok((onlyEntry().version as number) <= PRE_TUNING_CEILING);
 });
 
-// ---------------------------------------------------------------------------
-// C. A pre-v5 client meeting a v5 record. Hidden is fine; destroyed is not.
-// ---------------------------------------------------------------------------
-
 test("a v5 record is out of a pre-v5 build's reach in the first place", () => {
-  // Replay what that build actually does: read every record it is allowed to
-  // interpret, drop the keys it does not know, write the result back. It must find
-  // nothing to rewrite.
   store.clear();
   assert.ok(savePerModelConfig(MODEL, VARIANT, config({ cacheRam: -1 })));
 
@@ -224,9 +186,7 @@ test("a v5 record is out of a pre-v5 build's reach in the first place", () => {
 });
 
 test("every entry point declines a record stamped beyond this build", () => {
-  // The five guards, exercised together. Any one of them missing is an older client
-  // silently destroying a newer record, and the record is the only copy on origins
-  // the server row does not reach.
+  // Any missing guard lets an older client silently destroy a newer record.
   store.clear();
   assert.ok(savePerModelConfig(MODEL, VARIANT, config({ loadMode: "mmap" })));
   const map = readMap();
@@ -252,21 +212,13 @@ test("every entry point declines a record stamped beyond this build", () => {
   );
   assert.equal(store.get(STORAGE_KEY), untouched, "the stored bytes must be untouched");
 
-  // And once the client understands the schema again, the settings come back.
   const restored = readMap();
   restored[Object.keys(restored)[0]].version = 5;
   writeMap(restored);
   assert.equal(load()?.loadMode, "mmap");
 });
 
-// ---------------------------------------------------------------------------
-// D. What the change of default judgement moves.
-// ---------------------------------------------------------------------------
-
 test("a tuning-only config is stored rather than deleted on the way in", () => {
-  // savePerModelConfig DELETES an entry it judges default. Before the four were
-  // counted, a save whose only change was one of them reported success, wrote
-  // nothing, and came back unremembered on the next open.
   for (const patch of TUNING_ONLY_PATCHES) {
     store.clear();
     const normalized = normalizePerModelConfig(config(patch));
@@ -281,12 +233,7 @@ test("a tuning-only config is stored rather than deleted on the way in", () => {
 });
 
 test("the one-time backfill now uploads a tuning-only config", async () => {
-  // A behaviour change on the first launch after upgrade, and the reason it is
-  // pinned rather than merely noted: the backfill gates on isDefaultConfig, so
-  // counting the four made it start mirroring configs it used to filter out. It is
-  // the right answer -- an API auto-switch of this model would otherwise run without
-  // the tuning the picker shows -- but it happens once, unprompted, and only ever
-  // adds fields, so it has to be deliberate.
+  // Counting the four makes the backfill mirror configs it used to skip; deliberate, add-only.
   store.clear();
   assert.ok(savePerModelConfig(MODEL, VARIANT, config({ cacheRam: -1 })));
 
@@ -296,7 +243,6 @@ test("the one-time backfill now uploads a tuning-only config", async () => {
       puts.push(JSON.parse(String(init.body)));
       return new Response(JSON.stringify({ overrides: {} }), { status: 200 });
     }
-    // The pre-read: an install upgrading into this has a row with no tuning in it.
     return new Response(
       JSON.stringify({
         overrides: {
@@ -317,16 +263,13 @@ test("the one-time backfill now uploads a tuning-only config", async () => {
 
   assert.equal(puts.length, 1, "the tuning-only config must be offered to the server");
   assert.equal(puts[0].cache_ram, -1);
-  // Fill, never replace: the server copy is the newer authority, so the pass may add
-  // the field this browser holds and must not touch the max_seq_length already there.
+  // Fill, never replace: the server copy is the newer authority.
   assert.equal(puts[0].fill_absent_fields, true);
   assert.equal(puts[0].remove, false);
   assert.equal(store.get(BACKFILL_FLAG), "1", "a completed pass must not run again");
 });
 
 test("the backfill offers an Ollama tag's settings even after the v1 pass ran", async () => {
-  // The v1 filter dropped these, so the marker had to move with it, or an install past that pass
-  // would never mirror what it saved for an Ollama model.
   store.clear();
   store.set("unsloth_model_overrides_backfilled_v1", "1");
   const ref = "ollama-manifest:%2Fh%2F.ollama%2Fmanifests%2Fllama3%2Flatest";
@@ -348,8 +291,7 @@ test("the backfill offers an Ollama tag's settings even after the v1 pass ran", 
 });
 
 test("the backfill offers non-GGUF weights, keyed by repo id, after the v2 pass ran", async () => {
-  // A cached repo loads from its snapshot directory, which an older sidebar keyed it by. Uploaded
-  // under that path, the bare row would outrank the repo's and survive the picker's Forget.
+  // Uploaded under the snapshot path, the bare row would outrank the repo's and survive Forget.
   store.clear();
   store.set("unsloth_model_overrides_backfilled_v2", "1");
   const folder = "/Users/u/.lmstudio/models/mlx-community/Qwen3.5-4B-MLX-4bit";
@@ -357,7 +299,6 @@ test("the backfill offers non-GGUF weights, keyed by repo id, after the v2 pass 
   const template = { chatTemplateOverride: "{{ messages }}" };
   assert.ok(savePerModelConfig(folder, null, config(template)));
   assert.ok(savePerModelConfig(snapshot, null, config({ mlxKvQuant: "8" })));
-  // A newer build's record under the repo id makes adoption decline, and the path stays put.
   const declined = "/hf/models--org--Newer/snapshots/def";
   assert.ok(savePerModelConfig("org/Newer", null, config({ mlxKvQuant: "4" })));
   const map = readMap();
@@ -366,7 +307,6 @@ test("the backfill offers non-GGUF weights, keyed by repo id, after the v2 pass 
   map[newer].version = 99;
   writeMap(map);
   assert.ok(savePerModelConfig(declined, null, config({ mlxKvQuant: "4" })));
-  // Identities the resolver never keys.
   const link = "/home/u/.ollama/.studio_links/ab12/model-latest.gguf";
   assert.ok(savePerModelConfig(link, null, config(template)));
   assert.ok(savePerModelConfig("Model-Q4_K_M.gguf", null, config(template)));
@@ -392,8 +332,7 @@ test("the backfill offers non-GGUF weights, keyed by repo id, after the v2 pass 
 });
 
 test("an all-default config is still filtered out of the backfill", async () => {
-  // The gate the case above walks through has to stay shut for everything else, or
-  // every model the user ever opened is mirrored on first launch.
+  // Otherwise every model the user ever opened is mirrored on first launch.
   store.clear();
   assert.ok(savePerModelConfig(MODEL, VARIANT, config()));
   assert.deepEqual(readMap(), {}, "a default config must not be written");
@@ -409,17 +348,9 @@ test("an all-default config is still filtered out of the backfill", async () => 
   assert.equal(store.get(BACKFILL_FLAG), "1");
 });
 
-// ---------------------------------------------------------------------------
-// E. Storage that refuses, and storage that is full.
-// ---------------------------------------------------------------------------
-
 test("the eviction loop terminates when the budget needs a future record", () => {
-  // deleteOldestEvictableEntry skips a future-schema entry, so a map made entirely of
-  // them cannot be brought inside either cap. The loop has to give up rather than
-  // spin on a candidate it will never take: an infinite loop here hangs the tab on a
-  // save, on a browser profile that has merely been downgraded.
+  // Future-schema entries are never evicted, so the loop must give up instead of hanging.
   for (const overBudget of [
-    // The entry-count cap: 505 records against MAX_ENTRIES = 500.
     () => {
       const map: Record<string, unknown> = {};
       for (let index = 0; index < 505; index += 1) {
@@ -430,7 +361,6 @@ test("the eviction loop terminates when the budget needs a future record", () =>
       }
       return map;
     },
-    // The byte cap: 20 records of 60 KiB each against MAX_PER_MODEL_CONFIG_STORAGE_BYTES.
     () => {
       const map: Record<string, unknown> = {};
       for (let index = 0; index < 20; index += 1) {
@@ -447,8 +377,7 @@ test("the eviction loop terminates when the budget needs a future record", () =>
     writeMap(map);
     const untouched = store.get(STORAGE_KEY);
 
-    // Reached at all, which is the termination assertion: node:test kills the process
-    // on a hang rather than reporting one, so the failure mode is the run not ending.
+    // Reaching here is the termination assertion; node:test does not report a hang.
     assert.equal(
       savePerModelConfig("unsloth/New-GGUF", VARIANT, config({ cacheRam: 1 })),
       false,
@@ -463,8 +392,6 @@ test("the eviction loop terminates when the budget needs a future record", () =>
 });
 
 test("eviction takes the readable records and leaves the future ones", () => {
-  // The same cap with a way out. Only the records this build could rewrite anyway are
-  // candidates, and they go oldest first.
   store.clear();
   const map: Record<string, unknown> = {};
   map["unsloth/Old-A-GGUF::Q4_K_M"] = { version: 1, nParallel: 2 };
@@ -486,19 +413,13 @@ test("eviction takes the readable records and leaves the future ones", () => {
     version: 99,
     cacheRam: 7,
   });
-  // Reported back, because eviction is silent and still returns success: without the
-  // list the server override of a dropped model keeps applying with nothing in the UI
-  // able to forget it.
+  // Eviction is silent, so the list is needed to forget the evicted model's server override.
   assert.deepEqual(evicted, [
     { modelId: "unsloth/Old-A-GGUF", ggufVariant: "Q4_K_M" },
     { modelId: "unsloth/Old-B-GGUF", ggufVariant: "Q4_K_M" },
     { modelId: "unsloth/Filler-0-GGUF", ggufVariant: "Q4_K_M" },
   ]);
 });
-
-// ---------------------------------------------------------------------------
-// F. The server row as the authority, and what that costs the local copy.
-// ---------------------------------------------------------------------------
 
 test("a non-GGUF panel reads a row without its llama-server arguments", () => {
   const row = {
@@ -512,15 +433,12 @@ test("a non-GGUF panel reads a row without its llama-server arguments", () => {
     // biome-ignore lint/style/useNamingConvention: API schema
     chat_template_override: "{{ messages }}",
   });
-  // A row holding nothing else is no row at all.
   // biome-ignore lint/style/useNamingConvention: API schema
   assert.equal(panelOverrideRow({ llama_extra_args: [] }, false), null);
 });
 
 test("a row that carries no tuning leaves this browser's tuning standing", () => {
-  // The mirror is lossy in both directions: a PUT that never landed, a save from a
-  // build that did not forward the four, a row written before the route learned them.
-  // All three leave the same gap, and reading a gap as a choice deletes settings.
+  // The mirror is lossy both ways, so a missing server field is a gap, not a choice.
   const local = fromApiOverride({
     // biome-ignore lint/style/useNamingConvention: API schema
     load_mode: "mmap",
@@ -559,17 +477,12 @@ test("a row's tuning outranks this browser's for the fields it does carry", () =
   );
 
   assert.equal(hydrated.loadMode, "mlock");
-  // 0 is a value (the host prompt cache off), so it has to beat a local 4096 rather
-  // than read as absent and lose to it.
+  // 0 is a value (cache off), so it must beat a local 4096 rather than read as absent.
   assert.equal(hydrated.cacheRam, 0);
 });
 
 test("a server value this build refuses falls to the app default, not the local one", () => {
-  // The merge takes the server value first and normalizeV1 clamps afterwards, so a
-  // refusal is indistinguishable from a chosen default by the time the local value
-  // could have been used. The reachable case is not a corrupt row: it is a row
-  // carrying a speculative mode with no separate drafter, which invalidates a draft
-  // KV dtype this browser legitimately holds.
+  // normalizeV1 clamps after the merge, so a refused server value cannot fall back to local.
   const local = fromApiOverride({
     // biome-ignore lint/style/useNamingConvention: API schema
     speculative_type: "dspark",
@@ -587,8 +500,6 @@ test("a server value this build refuses falls to the app default, not the local 
     "the dtype belongs to a draft context this mode never creates",
   );
 
-  // Same shape for a load mode the two builds disagree about: the row wins, and
-  // losing means the app default rather than what this browser had.
   const pinned = fromApiOverride({
     // biome-ignore lint/style/useNamingConvention: API schema
     load_mode: "mmap",
@@ -599,9 +510,7 @@ test("a server value this build refuses falls to the app default, not the local 
 });
 
 test("an out-of-range server value clamps rather than falling through", () => {
-  // The other resolution, and the reason the case above is worth stating separately:
-  // a numeric knob is clamped into range instead of being refused, so the row still
-  // wins and the user gets the nearest legal value.
+  // Numeric knobs are clamped, not refused, so the row still wins.
   const local = fromApiOverride({
     // biome-ignore lint/style/useNamingConvention: API schema
     ctx_checkpoints: 64,
@@ -612,10 +521,7 @@ test("an out-of-range server value clamps rather than falling through", () => {
 });
 
 test("an empty server argument list clears a local list rather than being ignored", () => {
-  // [] is the tombstone that stops the server's fallback to a broader row, and
-  // normalizePerModelConfig collapses an empty list to null, so hydration has to
-  // reinstall it. Without that a cleared box comes back holding the legacy bare
-  // repository row's flags on the next open.
+  // [] is a tombstone blocking the server fallback; normalize collapses it to null, so reinstall.
   const local = fromApiOverride({
     // biome-ignore lint/style/useNamingConvention: API schema
     llama_extra_args: ["--numa", "distribute"],
@@ -625,15 +531,12 @@ test("an empty server argument list clears a local list rather than being ignore
   // biome-ignore lint/style/useNamingConvention: API schema
   const hydrated = fromApiOverride({ llama_extra_args: [] }, local);
   assert.deepEqual(hydrated.llamaExtraArgs, []);
-  // Distinct from "this copy never read the value", which must stay omitted so the
-  // route preserves whatever flags the server holds.
+  // Distinct from "never read", which must stay omitted so the route keeps server flags.
   assert.notEqual(hydrated.llamaExtraArgs, undefined);
 });
 
 test("an empty server GPU list does not clear a local pin", () => {
-  // Deliberate, and worth pinning next to the tombstone above so the two are not
-  // "fixed" into agreement: a row without ids says nothing about placement, so the
-  // local pin keeps both its ids and its namespace.
+  // Deliberately unlike the tombstone: a row without ids says nothing about placement.
   const local = fromApiOverride({});
   local.selectedGpuIds = [1];
   local.selectedGpuIndexKind = "vulkan";
@@ -642,22 +545,17 @@ test("an empty server GPU list does not clear a local pin", () => {
   const hydrated = fromApiOverride({ gpu_ids: [] }, local);
   assert.deepEqual(hydrated.selectedGpuIds, [1]);
   assert.equal(hydrated.selectedGpuIndexKind, "vulkan");
-  // The pin travels with its namespace, so a Vulkan ordinal is never silently reread as
-  // a physical index on the other side.
+  // The pin travels with its namespace so a Vulkan ordinal is never read as a physical index.
   const sent = toApiOverride(local);
   assert.deepEqual(sent.gpu_ids, [1]);
   assert.equal(sent.gpu_index_kind, "vulkan");
-  // A physical pin's payload is unchanged: the field is omitted at the legacy default.
   assert.equal(
     toApiOverride({ ...local, selectedGpuIndexKind: "physical" }).gpu_index_kind,
     undefined,
   );
 });
 
-// The identity table the panel's hydration now depends on, mirrored from
-// tests/test_model_override_schema_compatibility.py::OVERRIDE_KEY_FOLDS. The server
-// resolves the row and the browser has to agree on which model it belongs to, or the
-// panel hydrates from another model's settings.
+// Mirrors tests/test_model_override_schema_compatibility.py::OVERRIDE_KEY_FOLDS.
 const OVERRIDE_KEY_FOLDS: [string, string, boolean][] = [
   ["C:\\models\\Foo.gguf", "c:/models/foo.gguf", true],
   ["C:\\models\\Foo.gguf", "C:\\models\\Foo.gguf\\", true],
@@ -682,9 +580,7 @@ for (const [storedKey, lookupKey, sameModel] of OVERRIDE_KEY_FOLDS) {
   });
 }
 
-// The panel is a component this suite has no renderer for, so the one behaviour that
-// only exists inside its effect is read off the source, as the rest of its hydration
-// rules are in tests/llama-extra-args-panel-hydration.test.ts.
+// No renderer for the panel, so its effect is read off source.
 const PANEL = readFileSync(
   path.join(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -695,19 +591,13 @@ const PANEL = readFileSync(
 );
 
 test("opening the panel ticks Remember for any model with a resolvable row", () => {
-  // Nothing in the guard asks whether the user ever chose to remember this model:
-  // a row exists, the panel has not been edited since the request went out, and
-  // Remember goes on and is persisted. That is defensible -- a row IS a remembered
-  // setting, whichever origin wrote it -- but it is unconditional, so a later change
-  // that wants user intent in the decision has to come through here.
-  // Spelled out term by term rather than as one long pattern, so a guard that grows
-  // a fourth condition fails on the whole-block match below and names which one.
+  // Adoption is unconditional on user intent; a guard needing intent must change here.
+  // Spelled term by term so a new condition fails the whole-block match and names itself.
   const adoptGuard = [
     "if \\(",
     "resolvedRow &&",
     "serverConfig &&",
-    // Load-bearing once the editors share a draft: an edit the OTHER one made before this
-    // read started is already in configAtStart, so the comparison below reads as untouched.
+    // An edit the other editor made before this read is already in configAtStart.
     "!isModelConfigDraftEdited\\(draftKey\\) &&",
     "configRef\\.current === configAtStart &&",
     "rememberRef\\.current === rememberAtStart",
@@ -718,28 +608,19 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
     PANEL,
     /replaceModelConfigDraft\(draftKey, serverConfig, \{\s*remember: true,\s*savedRemember: true,\s*\}\);/,
   );
-  // The write is local only. An erased server field is therefore NOT restored by
-  // opening the panel, even though this browser still holds it: that takes a save.
-  // Unconditional, because savePerModelConfig expresses "no settings" by deleting
-  // the entry, so a merge that comes out default is a clear that has to travel.
+  // Local-only write; a default merge is a clear that must travel, so it is unconditional.
   assert.match(
     PANEL,
     /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\),/,
   );
-  // Whatever that write evicted is cleared before the block returns, or a dropped
-  // model keeps applying its server row with nothing able to forget it.
+  // Clear evicted models first, or their server rows keep applying unforgettably.
   assert.match(PANEL, /for \(const dropped of hydrationEvicted\)[\s\S]*?return;/);
 });
 
-// ---------------------------------------------------------------------------
-// G. Storage that refuses every call. Last, because it replaces the fake.
-// ---------------------------------------------------------------------------
+// Last, because it replaces the storage fake.
 
 test("a localStorage that throws degrades on every path instead of propagating", () => {
-  // Private mode, a disabled-storage policy, and a full quota all arrive as a throw
-  // from getItem or setItem. The hydration effect calls savePerModelConfig from a
-  // promise callback and ignores what it returns, so a throw here is an unhandled
-  // rejection in a panel the user has merely opened.
+  // Hydration ignores savePerModelConfig's result in a promise, so a throw is unhandled.
   const throwing: StorageFake = {
     getItem: () => {
       throw new Error("SecurityError");
@@ -761,8 +642,6 @@ test("a localStorage that throws degrades on every path instead of propagating",
       remembered: false,
     });
     assert.deepEqual(listPerModelConfigs(), []);
-    // Nothing was stored, so there is nothing to forget: a refusal here would leave
-    // the settings page unable to clear a model it can already not read.
     assert.equal(deletePerModelConfig(MODEL, VARIANT), true);
   } finally {
     Object.assign(globalThis, { localStorage: storage });

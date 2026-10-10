@@ -41,7 +41,6 @@ export interface EmotionValue {
   vector: number[];
   alpha: number;
   source: AudioSourceSelection | null;
-  /** Why the emotion clip cannot be sent yet (uploading, failed, expired); set by its input. */
   sourceProblem?: string | null;
 }
 

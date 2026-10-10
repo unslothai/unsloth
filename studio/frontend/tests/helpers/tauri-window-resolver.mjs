@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// bundler-resolver's two rules, plus "@tauri-apps/api/window" -> a local stub,
-// because the real package only resolves inside a Tauri webview.
+// bundler-resolver's rules plus "@tauri-apps/api/window" -> a local stub.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

@@ -17,7 +17,6 @@ type Options = {
   start: number;
 };
 
-/** Retain completed rows; only the bounded, unfinished row is revisited on append. */
 export class ReasoningCodeIndex {
   private rows: ReasoningFragment[] = [];
   private cursor: number;
@@ -41,8 +40,7 @@ export class ReasoningCodeIndex {
       return this.result;
     this.previousText = text;
     this.previousEnd = bodyEnd;
-    // A fence's terminal newline is not an extra blank code line. It becomes
-    // interior on the next append and is then consumed by the pending row.
+    // A fence's terminal newline is not an extra blank code line; the pending row consumes it.
     let end = bodyEnd;
     let trailingIndent = 0;
     while (

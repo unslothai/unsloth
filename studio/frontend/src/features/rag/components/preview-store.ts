@@ -3,8 +3,6 @@
 
 import { create } from "zustand";
 
-// Global store for the shared preview Sheet, so any citation drives the one viewer
-// without prop-drilling.
 interface DocumentPreviewState {
   open: boolean;
   documentId: string | null;

@@ -53,7 +53,6 @@ const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;
 
-// Canvas notices look like the app's toasts: same surface, shadow, type and pill actions.
 // The wrapper spans the canvas, so only the notice itself takes clicks.
 const NOTICE_WRAP = "pointer-events-none absolute inset-x-0 top-0 flex justify-center p-2";
 const NOTICE =
@@ -65,11 +64,9 @@ const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-foreground text-background hover:bg-
 const NOTICE_SECONDARY = `${NOTICE_BUTTON} border-transparent bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]`;
 const NOTICE_CLOSE =
   "size-5 rounded-full bg-popover text-popover-foreground hover:bg-muted hover:text-popover-foreground dark:bg-card dark:hover:bg-muted";
-// Entries are per URL, not per host, so a page pulling a whole CDN directory counts each file.
-// Still far above what a real one trips.
+// Per URL, not per host; still far above what a real page trips.
 const BLOCKED_URIS_TRACKED = 100;
-// A report carries the full URL, so this is generous next to a real one, and it bounds both
-// the stored string and the host derived from it.
+// Bounds both the stored string and the host derived from it.
 const BLOCKED_URI_MAX_CHARS = 2048;
 
 // The only directives the network CSP leaves at 'none'. Kept in step by
@@ -86,9 +83,7 @@ type BlockedState = { code: string; uris: string[]; hosts: string[] };
 const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
 const NO_OUTPUT: CanvasConsoleState = emptyCanvasConsole("");
 
-// Reports from before a swap belong to the old canvas, so start over rather than append. The
-// cap is checked BEFORE the duplicate scan, so past it a canvas posting unique URIs cannot
-// make the parent rescan every stored string; returning `current` also lets React bail out.
+// Reports from before a swap belong to the old canvas. The cap is checked before the duplicate scan.
 function appendBlocked(
   current: BlockedState,
   code: string,
@@ -106,8 +101,7 @@ function appendBlocked(
   };
 }
 
-// A non-HTTP(S) violation reports a bare token ("eval", "blob"), which the permissive CSP widens
-// too. Dropping those left the canvas blank with no prompt, so label them with the token itself.
+// Bare-token violations ("eval", "blob") are fixable too; label them with the token.
 const BLOCKED_KEYWORD = /^[a-z-]+$/;
 
 function blockedHost(uri: string): string | null {
@@ -134,8 +128,7 @@ export function buildArtifactSrcDoc(code: string): string {
   return `${code}\n${resizeScript}`;
 }
 
-// Preview iframes intentionally omit allow-downloads: generated canvases can offer their own
-// UI, but downloads must go through Unsloth's explicit controls outside the sandbox.
+// No allow-downloads: downloads go through Unsloth's controls outside the sandbox.
 export function ArtifactHtmlFrame({
   code,
   title = "HTML preview",
@@ -163,25 +156,20 @@ export function ArtifactHtmlFrame({
   const t = useT();
   const locale = useLocale();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // Every canvas honors this, fence or tool. Off by default; the standing half of the gate,
-  // alongside the per-canvas grant below.
+  // Global off-by-default switch; the standing half of the gate beside the per-canvas grant.
   const networkAccessEnabled = useChatRuntimeStore(
     (state) => state.allowArtifactNetworkAccess,
   );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
-  // Carries the code it was reported for, so a canvas swapped in place cannot inherit the
-  // previous one's banner. Clearing it from the [src] effect ran a render too late, and that
-  // stale render is the one carrying the button.
+  // Carries the code it was reported for, so a swapped canvas cannot inherit the old banner.
   const [blocked, setBlocked] = useState<BlockedState>({
     code,
     uris: [],
     hosts: [],
   });
   const blockedForCanvas = blocked.code === code ? blocked : NOTHING_BLOCKED;
-  // Granted by the banner button alone, and only for the code on screen when it was clicked;
-  // nothing the canvas sends may set it, or a blocked page could talk its way onto the
-  // network. Compared during render rather than reset in an effect, which runs after the DOM
-  // is updated and would let the first render carrying new code reuse allow_network=1.
+  // Granted only by the banner button for the code on screen; nothing the canvas sends may set it.
+  // Compared during render so new code never reuses allow_network=1.
   const [grantedCode, setGrantedCode] = useState<string | null>(null);
   const grantedForCanvas = grantedCode === code;
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
@@ -282,8 +270,7 @@ export function ArtifactHtmlFrame({
   const postArtifactHtml = useCallback(() => {
     if (!pendingPostRef.current) return;
     pendingPostRef.current = false;
-    // Sandboxed frame has an opaque origin ("null"), so a wildcard target is required; the payload
-    // only reaches this iframe's contentWindow.
+    // Sandboxed frame has an opaque origin, so a wildcard target is required.
     iframeRef.current?.contentWindow?.postMessage(
       { type: "unsloth:artifact-html", html: artifactHtml },
       "*",
@@ -295,21 +282,16 @@ export function ArtifactHtmlFrame({
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
       if (event.data?.type === "unsloth:artifact-blocked") {
-        // event.source survives the swap navigation, so without the frame's stamp a report from the
-        // outgoing canvas would be tagged with the incoming code and prompt a needless grant.
+        // event.source survives the swap, so drop reports from the outgoing canvas by version stamp.
         if (event.data.v !== loadVersion) return;
         const uri = event.data.blockedURI;
-        // A report carries the full URL, and the canvas can post these directly rather than going
-        // through the CSP. The entry cap bounds how many are kept but not their size, so a handful
-        // could park megabytes otherwise.
+        // The canvas can post these directly, so cap size too, not just entry count.
         if (typeof uri !== "string" || uri.length > BLOCKED_URI_MAX_CHARS) {
           return;
         }
-        // The grant cannot fix these three, and prompting anyway widens the policy for nothing, then
-        // hides the banner because the grant is on, leaving a broken canvas and no way back.
+        // The grant cannot fix these; prompting would widen policy and hide the banner for nothing.
         if (GRANT_CANNOT_FIX.has(event.data.effectiveDirective)) return;
-        // Same dead end one scheme down: the grant widens worker-src to blob: but not data:, so a
-        // data: Worker reports under both policies.
+        // The grant widens worker-src to blob: but not data:, so a data: Worker stays blocked.
         if (GRANT_CANNOT_FIX_SCHEME[event.data.effectiveDirective] === uri) {
           return;
         }
@@ -338,7 +320,6 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-    // rather than relying on postArtifactHtml changing.
   }, [postArtifactHtml, code, loadVersion, queueEntry]);
 
   const showBlockedBanner =

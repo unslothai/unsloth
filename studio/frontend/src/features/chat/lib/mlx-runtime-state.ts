@@ -17,9 +17,7 @@ type MlxRuntimeResponse = Pick<
   | "mlx_int8_prefill_requested"
 >;
 
-/** MLX runtime state a load response establishes (KV quantization, template verdict, int8 prefill). A
- *  non-MLX response retires the verdicts but omits mlxKvQuant and mlxInt8Prefill: the settings are
- *  dormant there, not wrong, and a preset carrying the width must survive the round-trip. */
+/** Non-MLX responses omit mlxKvQuant/mlxInt8Prefill so presets keep the width. */
 export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   mlxKvQuant?: MlxKvQuant | null;
   loadedMlxKvQuantRequested: MlxKvQuant | null;

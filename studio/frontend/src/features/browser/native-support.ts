@@ -5,8 +5,7 @@ import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { setNativeWebHistory } from "./store";
 
-/** Whether pages open in native views: in the desktop app where they can use its checking proxy
- *  (not macOS 13 and earlier), the proxied frame otherwise. */
+/** Native views need the desktop app's checking proxy (not macOS 13 and earlier). */
 export const useNativeBrowser = create(() => ({ enabled: false }));
 
 export async function callNative<T = void>(command: string, args?: Record<string, unknown>): Promise<T> {

@@ -8,9 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-// The shipped helper is lifted out of chat-adapter.ts rather than copied, so
-// these assert against the real source. Importing the module would drag in the
-// stores and the toast layer for one pure string function.
+// Lifted from chat-adapter.ts source; importing it would drag in the stores and toast layer.
 const adapterPath = fileURLToPath(
   new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
 );
@@ -27,8 +25,6 @@ const normalizeTarget = new Function(
 const sameKey = (a: string, b: string) => normalizeTarget(a) === normalizeTarget(b);
 
 test("one Windows file spelled with either separator is one candidate", () => {
-  // Two keys meant one spelling burned an attempt on the same file, and a
-  // remembered record written as C:\ never matched C:/.
   assert.ok(sameKey("C:\\Users\\a\\models\\M.gguf", "C:/Users/a/models/M.gguf"));
 });
 
@@ -38,7 +34,6 @@ test("Windows and UNC paths still fold case", () => {
 });
 
 test("WSL UNC paths keep their case, because they address ext4", () => {
-  // Folding merged two real files onto one key, so the second never loaded.
   assert.ok(
     !sameKey("\\\\wsl$\\Ubuntu\\home\\a\\M.gguf", "\\\\wsl$\\Ubuntu\\home\\a\\m.gguf"),
   );
@@ -50,7 +45,7 @@ test("POSIX paths keep their case", () => {
 });
 
 test("a decomposed filename is the same candidate as its composed form", () => {
-  // macOS hands back NFD, so a remembered model was never re-attempted.
+  // macOS returns NFD filenames.
   assert.ok(sameKey("/home/a/caf\u00e9.gguf", "/home/a/cafe\u0301.gguf"));
 });
 

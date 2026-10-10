@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Stands in for src/features/export/api/export-api.ts.
-//
-// The real module reaches authFetch -> features/auth/index.ts -> login-page.tsx, and
-// node --experimental-strip-types cannot parse JSX, so importing the export store for
-// a unit test would pull in the whole React tree. Cutting the chain here keeps the
-// state machine testable without touching the shared bundler-resolver. Calls are
-// recorded on `calls` and answered from `responses`, so a test can drive runExport
-// end to end without a server.
+// Stub for export-api.ts, whose import chain reaches JSX node cannot parse.
 
 export const calls = [];
 export const responses = new Map();

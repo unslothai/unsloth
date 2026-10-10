@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A loaded model only shows on the page that loaded it, so memory stays held with
-// nothing on screen saying so. This card lists what is resident from anywhere and
-// ejects it in place. It joins the shared bottom-right stack instead of pinning
-// itself, so the update banners and download panel never overlap it.
+// Joins the shared bottom-right stack so update banners and the download panel never overlap it.
 
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -50,8 +47,6 @@ import {
 import { useDragPosition } from "./use-drag-position";
 import { useLoadedModels } from "./use-loaded-models";
 
-// Collapsing to the pill is deliberate, so it survives reloads. Expanded by
-// default: a card you have to open first answers nothing.
 const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
 const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
@@ -62,8 +57,7 @@ const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   stt: Mic01Icon,
 };
 
-// Nothing to report on auth screens. Desktop auto-authenticates, so only the
-// browser needs the token check: polling before one exists is all 401s.
+// Desktop auto-authenticates; in the browser, polling before a token exists is all 401s.
 const HIDDEN_ROUTES = new Set(["/login", "/signup", "/change-password"]);
 
 function canShowIndicator(pathname: string): boolean {
@@ -126,8 +120,6 @@ function LoadedModelRow({
         </TooltipContent>
       </Tooltip>
       {entry.loading ? (
-        // Nothing resident to release yet, so the eject slot holds the spinner
-        // the toast is showing at the same moment.
         <span className="flex size-6 shrink-0 items-center justify-center">
           <Spinner className="size-3.5" label="Loading" />
         </span>
@@ -144,9 +136,7 @@ function LoadedModelRow({
               {ejecting ? (
                 <Spinner className="size-3.5" label="Ejecting" />
               ) : (
-                // Eject, not dismiss: this releases the weights, which the
-                // header's X does not. Same glyph the model picker's own eject
-                // shortcut uses, so the action reads the same in both places.
+                // Eject releases weights, unlike the header's X.
                 <HugeiconsIcon
                   icon={RemoveCircleIcon}
                   strokeWidth={1.75}
@@ -172,11 +162,8 @@ export function LoadedModelsIndicator({
   const dismissed = useLoadedModelsDismissed();
   const reachable = canShowIndicator(pathname);
   const enabled = showIndicator && !dismissed && reachable;
-  // Dismissal is not part of this: a card the user closed must still hear the
-  // load that brings it back. Reachability is, because it carries the auth gate
-  // -- tracking on /login polls four protected endpoints every 5s, and each 401
-  // runs authFetch's refresh-then-redirect ladder against a session that does
-  // not exist yet.
+  // Reachability carries the auth gate: polling on /login would trigger authFetch's refresh-redirect
+  // ladder. Dismissal is excluded so a closed card still hears the next load.
   const { entries, polledEntries, ejecting, eject } = useLoadedModels(
     enabled,
     showIndicator && reachable,
@@ -191,10 +178,7 @@ export function LoadedModelsIndicator({
         useAudioWorkspaceStore.getState().workflow,
       );
       if (target.open === "settings") {
-        // Read on click, not at render: the settings barrel reaches back here
-        // through the General tab, so the binding is only safe once both
-        // modules have finished evaluating. The /settings route is no use, it
-        // redirects home and would take the user off the page they are on.
+        // Read on click, not at render: the settings barrel imports back here (circular).
         useSettingsDialogStore.getState().openDialog(target.tab);
         return;
       }
@@ -206,10 +190,7 @@ export function LoadedModelsIndicator({
   const { position, panelRef, startDrag, dragging, justDragged } =
     useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
 
-  // A new load brings a closed card back: closing it means "not now", not "stop telling me", which
-  // is what the Settings toggle is for. Subscribed above the early return, so a dismissed card is
-  // still listening for the load that reopens it. On the start of the load, not the end, so it is
-  // up for the whole time the toast is.
+  // Subscribed above the early return so a dismissed card still hears the load that reopens it.
   useEffect(
     () =>
       subscribeModelLifecycle(({ loading }) => {
@@ -220,12 +201,8 @@ export function LoadedModelsIndicator({
     [],
   );
 
-  // A load started outside this tab raises no lifecycle event at all: the OpenAI-compatible API and
-  // auto-switch go nowhere near the frontend wrappers that announce one. The poll is the only
-  // witness, so a row appearing while the card is closed reopens it too, which is what the tooltip
-  // promises. The first poll after closing is the baseline, never a reopen: the ids are read fresh
-  // on mount, and a dismissal survives a reload, so treating what is already resident as new would
-  // make the card impossible to close.
+  // API loads raise no frontend event, so a new polled row reopens a closed card. The first
+  // poll after closing is the baseline, or the card could never be closed.
   const idsWhileClosedRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!dismissed) {
@@ -252,9 +229,6 @@ export function LoadedModelsIndicator({
     <div
       ref={panelRef}
       className={cn(
-        // Dragged: pinned where the user left it, out of the stack's flow.
-        // Otherwise anchored bottom-right, or flowing as a right-aligned row
-        // in the shared stack so overlays stack instead of overlapping.
         "pointer-events-none",
         position && "fixed z-[9999] w-fit",
         !position &&
@@ -272,8 +246,7 @@ export function LoadedModelsIndicator({
               type="button"
               aria-label={`${countLabel}. Show details, or drag to move`}
               onPointerDown={startDrag}
-              // The pill is its own drag handle, so a press that moved is a
-              // drag and must not also expand the card.
+              // The pill is its own drag handle, so a press that moved must not also expand the card.
               onClick={() => {
                 if (!justDragged()) setCollapsed(false);
               }}
@@ -308,8 +281,7 @@ export function LoadedModelsIndicator({
               <TooltipTrigger asChild={true}>
                 <div
                   aria-label="Drag to move"
-                  // Not a button, so no click follows to consume the drag sentinel: say so, or the
-                  // collapsed pill's next click reads this drag as its own and refuses to expand.
+                  // Not a button, so no click consumes the drag sentinel; without this the next click is refused.
                   onPointerDown={startDrag}
                   className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground active:cursor-grabbing"
                 >
@@ -366,7 +338,6 @@ export function LoadedModelsIndicator({
               </TooltipContent>
             </Tooltip>
           </div>
-          {/* Capped so four resident runtimes still leave the banners on screen. */}
           <div className="flex max-h-[min(272px,42dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto">
             {entries.map((entry) => (
               <LoadedModelRow

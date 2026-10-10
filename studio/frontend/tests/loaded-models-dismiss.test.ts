@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Closing the card and switching it off in Settings are two different wishes,
-// and they must not share a flag: the next model load reopens a card that was
-// waved away, and would otherwise also reopen one deliberately turned off.
+// Dismissal and the Settings toggle must use separate flags: a load reopens a dismissed card.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -33,9 +31,7 @@ test("the indicator is off until it is switched on", () => {
   assert.equal(getShowLoadedModels(), false);
 });
 
-// Written either way, never removed. A pre-update tab reads a missing key as
-// on, so removing it on disable would let the storage event flip the card back
-// on over there.
+// Never removed: a pre-update tab reads a missing key as on.
 test("both toggles store a value the older reader also honours", () => {
   reset();
   setShowLoadedModels(true);
@@ -45,14 +41,12 @@ test("both toggles store a value the older reader also honours", () => {
   assert.equal(getShowLoadedModels(), false);
 });
 
-// What the old build wrote when it was turned down. It must not now read as on.
 test("an older explicit false still reads as off", () => {
   reset();
   store.set(LOADED_MODELS_PREFERENCE_KEYS.show, "false");
   assert.equal(getShowLoadedModels(), false);
 });
 
-// Reset all local preferences removes the key, and the default must survive it.
 test("a cleared key falls back to off, not on", () => {
   reset();
   setShowLoadedModels(true);
@@ -72,11 +66,9 @@ test("closing it stores the dismissal, reopening removes the key", () => {
   assert.equal(store.get(LOADED_MODELS_PREFERENCE_KEYS.dismissed), "true");
   setLoadedModelsDismissed(false);
   assert.equal(getLoadedModelsDismissed(), false);
-  // Removed, not stored as "false", so the default stays open.
   assert.equal(store.has(LOADED_MODELS_PREFERENCE_KEYS.dismissed), false);
 });
 
-// The point of keeping them apart.
 test("closing the card does not switch the setting off", () => {
   reset();
   setShowLoadedModels(true);
@@ -95,8 +87,7 @@ test("switching the setting off is not a dismissal a load can undo", () => {
   );
 });
 
-// Every load start reopens the card, so a set to the value it already holds
-// must be inert: otherwise each load re-renders the whole overlay stack.
+// Every load start sets this, so a no-op set must not re-render.
 test("setting the dismissal to what it already is changes nothing", () => {
   reset();
   setLoadedModelsDismissed(false);
@@ -118,28 +109,23 @@ test("the card carries a close button, and a load brings it back", () => {
     LOADED_MODELS_INDICATOR,
     /onClick=\{\(\) => setLoadedModelsDismissed\(true\)\}/,
   );
-  // Reopened on the START of a load, so the card is up for as long as the toast.
   assert.match(
     LOADED_MODELS_INDICATOR,
     /subscribeModelLifecycle\(\(\{ loading \}\) => \{\s*if \(loading\) \{\s*setLoadedModelsDismissed\(false\);/,
   );
-  // And the gate reads it. Reachability is hoisted so tracking can share it.
   assert.match(
     LOADED_MODELS_INDICATOR,
     /const enabled = showIndicator && !dismissed && reachable;/,
   );
 });
 
-// Requested by name: hugeicons.com/icon/sparkle. Singular, so NOT the free
-// set's SparklesIcon (two stars) nor lib/sparkles-icon, which is a shield.
+// Requested icon: hugeicons sparkle (single), not SparklesIcon or lib/sparkles-icon.
 test("the card is badged with the single sparkle, not the brain", () => {
   assert.match(LOADED_MODELS_INDICATOR, /icon=\{SparkleIcon\}/);
   assert.match(LOADED_MODELS_INDICATOR, /from "@\/lib\/sparkle-icon"/);
   assert.doesNotMatch(LOADED_MODELS_INDICATOR, /AiBrain01Icon|SparklesIcon/);
 });
 
-// Releasing the weights is not the same act as closing the card, so it must not
-// wear the same X.
 test("a row ejects with the eject glyph, the header closes with an X", () => {
   const row = LOADED_MODELS_INDICATOR.slice(
     LOADED_MODELS_INDICATOR.indexOf("function LoadedModelRow"),
@@ -147,21 +133,14 @@ test("a row ejects with the eject glyph, the header closes with an X", () => {
   );
   assert.match(row, /icon=\{RemoveCircleIcon\}/);
   assert.doesNotMatch(row, /icon=\{Cancel01Icon\}/);
-  // The close button keeps the X, as the Live monitor's does.
   const header = LOADED_MODELS_INDICATOR.slice(
     LOADED_MODELS_INDICATOR.indexOf('aria-label="Close loaded models"'),
   );
   assert.match(header, /icon=\{Cancel01Icon\}/);
 });
 
-// Recording had to widen past `enabled` so a card the user closed still hears
-// the load that reopens it. It widened one step too far: `canShowIndicator`
-// carries the auth gate as well as the hidden routes, so tracking on the
-// preference alone polled four protected endpoints every 5s on /login, and each
-// 401 ran authFetch's refresh-then-redirect ladder against no session at all.
-// Asserted by reading the source, since the node suite has no DOM to mount in.
+// Tracking must respect the auth gate, or /login polls protected endpoints every 5s.
 test("recording follows the route and auth gate, but not the dismissal", () => {
-  // The auth gate lives in canShowIndicator, so `reachable` is what carries it.
   assert.match(
     LOADED_MODELS_INDICATOR,
     /const reachable = canShowIndicator\(pathname\);/,
@@ -181,6 +160,6 @@ test("recording follows the route and auth gate, but not the dismissal", () => {
     /\n\s*showIndicator,\n/,
     "the preference alone is what polled /login",
   );
-  // And dismissal stays out of it, or a closed card could never reopen itself.
+  // Dismissal stays out, or a closed card could never reopen.
   assert.doesNotMatch(call, /dismissed/);
 });

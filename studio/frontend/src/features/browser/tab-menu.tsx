@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A tab's menu, shared by its right-click in the tab strip and by a pinned page in the sidebar
-// (its 3-dot menu and its right-click), which offer the same actions.
-
 import {
   ContextMenuItem,
   ContextMenuSeparator,
@@ -80,13 +77,11 @@ export const DROPDOWN_TAB_MENU: TabMenuParts = {
   SubContent: DropdownMenuSubContent,
 };
 
-/** The address a tab shows, for a web page; null for files, new tabs and internal pages. */
 export function tabAddress(tab: BrowserTab | undefined): string | null {
   const entry = tab ? currentEntry(tab) : null;
   return entry?.kind === "web" ? (tab?.displayUrl ?? entry.url) : null;
 }
 
-/** The tab showing a pinned page, if one is open. */
 export function usePinnedTab(pinnedId: string | undefined): BrowserTab | undefined {
   return useBrowserStore((state) =>
     pinnedId ? state.tabs.find((tab) => tab.pinnedId === pinnedId) : undefined,
@@ -122,7 +117,6 @@ export function unpinPage(pinnedId: string): void {
   for (const tab of store.tabs) if (tab.pinnedId === pinnedId) store.setTabPinned(tab.id, null);
 }
 
-/** Names the tab, and the sidebar pin it shows; empty gives both back their page's title. */
 export function renameTabTo(tab: BrowserTab | undefined, pinned: PinnedPage | undefined, title: string): void {
   if (tab) useBrowserStore.getState().renameTab(tab.id, title);
   const pinnedId = pinned?.id ?? tab?.pinnedId;
@@ -140,7 +134,6 @@ export function focusRenameField(selector: string): void {
 
 type Navigate = ReturnType<typeof useNavigate>;
 
-/** A new chat (temporary or not) with a copy of the tab, or the page, open beside it. */
 function forkToChat(navigate: Navigate, source: { tab?: BrowserTab; url: string }, temporary: boolean): void {
   resetToNewChat();
   if (temporary) useChatRuntimeStore.getState().setIncognito(true);
@@ -175,8 +168,7 @@ function Row({
   );
 }
 
-/** Menu rows. `strip` adds tab strip actions; `pinned` acts on the pinned page's open tab. Rows that
- *  don't apply are omitted, not disabled. */
+/** `strip` adds strip actions; `pinned` acts on the pinned tab. Inapplicable rows are omitted. */
 export function TabMenuItems({
   P,
   tab,

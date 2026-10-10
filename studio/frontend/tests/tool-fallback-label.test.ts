@@ -45,7 +45,6 @@ test("cancellation outranks the in-flight wording", () => {
     isToolCallCancelled({ type: "incomplete", reason: "cancelled" }),
     true,
   );
-  // The other incomplete reasons are failures, which keep the plain label.
   assert.equal(
     isToolCallCancelled({ type: "incomplete", reason: "error" }),
     false,

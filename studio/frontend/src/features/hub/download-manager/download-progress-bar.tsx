@@ -20,11 +20,7 @@ export function DownloadProgressBar({
   progress: DownloadProgress;
   bytesPerSec: number;
   cancelling?: boolean;
-  /**
-   * Seconds remaining, from the estimator that produced ``bytesPerSec``.
-   * Deriving it here gave every caller its own ETA semantics and left the
-   * shared estimator's ``etaSeconds`` unused on this path.
-   */
+  /** Seconds remaining, from the same estimator that produced `bytesPerSec`. */
   etaSeconds?: number;
   activity?: string;
 }) {

@@ -80,8 +80,7 @@ impl TrayAppearanceObserver {
             return;
         }
 
-        // Mark the classification before replacing the image so a synchronous duplicate KVO
-        // delivery cannot recursively attempt the same update.
+        // Set before replacing the image so a synchronous duplicate KVO delivery cannot recurse.
         self.ivars().last_dark.set(Some(is_dark));
         if let Err(error) = self
             .ivars()
@@ -106,8 +105,7 @@ impl Drop for TrayAppearanceObserver {
 }
 
 thread_local! {
-    // AppKit view objects are main-thread-only, so retain the observer in main-thread storage
-    // instead of Tauri State (which requires Send + Sync).
+    // AppKit objects are main-thread-only, so this cannot live in Tauri State (Send + Sync).
     static TRAY_APPEARANCE_OBSERVER: RefCell<Option<Retained<TrayAppearanceObserver>>> =
         const { RefCell::new(None) };
 }
@@ -151,10 +149,8 @@ pub fn remove_appearance_observer() {
 
 fn tray_icon(is_dark: bool) -> tauri::image::Image<'static> {
     if is_dark {
-        // Light artwork contrasts with a dark menu-bar background.
         tauri::include_image!("./icons/tray-icon-dark.png")
     } else {
-        // Dark artwork contrasts with a light menu-bar background.
         tauri::include_image!("./icons/tray-icon-light.png")
     }
 }

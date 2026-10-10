@@ -26,8 +26,6 @@ function modelDisplayName(modelName: string | null): string {
   return modelName.split("/").pop() || modelName;
 }
 
-/** Root-mounted consent dialog for models needing a newer transformers;
- *  Install runs the sidecar install and resumes the paused load on success. */
 export function TransformersUpgradeDialog() {
   const open = useTransformersUpgradeDialogStore((s) => s.open);
   const modelName = useTransformersUpgradeDialogStore((s) => s.modelName);
@@ -140,10 +138,8 @@ export function TransformersUpgradeDialog() {
           {installable ? (
             <>
               {customCode ? (
-                // The model ships custom code, so the caller's trust_remote_code gate
-                // loads it on the installed transformers. Offered next to Install, not
-                // only after one fails: installing activates the 16-bit sidecar, so this
-                // is the only way a 4-bit run on this model can start.
+                // Offered beside Install: installing activates the 16-bit sidecar, so this is
+                // the only way a 4-bit run on this model can start.
                 <AlertDialogAction
                   className="bg-transparent text-foreground hover:bg-accent"
                   onClick={() => resolve(true)}
@@ -173,8 +169,6 @@ export function TransformersUpgradeDialog() {
               </AlertDialogAction>
             </>
           ) : customCode ? (
-            // No installable release but the model ships custom code: continue
-            // into the caller's trust_remote_code gate as the last resort.
             <AlertDialogAction onClick={() => resolve(true)}>
               Continue with custom code
             </AlertDialogAction>

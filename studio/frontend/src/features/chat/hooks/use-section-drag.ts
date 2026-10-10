@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Reordering the sidebar's sections by their headers. The grabbed header lifts and follows the
-// pointer, the section it came from dims, and one line glides to the gap it would land in. All
-// of that is drawn straight onto the DOM: the sidebar is one large component, and redrawing it
-// on every pointer move is what made the drag lag. React only hears about the drop.
-//
-// Pointer events, for the same reason as the row drag: the desktop webview never forwards the
-// HTML5 drag API to the page.
+// Section header drag: DOM-only updates during the move (re-rendering the sidebar lagged);
+// pointer events because the desktop webview never forwards the HTML5 drag API.
 
 import { useCallback, useEffect, useRef } from "react";
 
@@ -23,26 +18,16 @@ import {
   sidebarOf,
 } from "./use-sidebar-drag.ts";
 
-/** Marks a draggable section's box with its key. */
 export const SECTION_ATTR = "data-sidebar-section";
-/** Set on the section being carried, which the stylesheet dims. */
 export const SECTION_DRAGGING_ATTR = "data-section-dragging";
 const HEADER_SELECTOR = '[data-sidebar="group-label"]';
-/** The header's own buttons ("+", "..."), which keep their press. */
 const HEADER_ACTION_SELECTOR = ".sidebar-header-action";
-/** How long a dropped section takes to slide from where it was let go into its slot. */
 const SETTLE_MS = 180;
 
 export type SectionLanding = { target: string; edge: DropEdge };
 
-/** A drawn section, top to bottom, as the landing reads it. */
 export type SectionBlock = { key: string; top: number; bottom: number };
 
-/**
- * Where a section carried to `y` lands among `blocks` (the carried one left out): against the
- * top of the first block whose middle is below the pointer, or under the last block. Null with
- * nowhere to go.
- */
 export function sectionLandingAt(
   blocks: readonly SectionBlock[],
   y: number,
@@ -54,8 +39,7 @@ export function sectionLandingAt(
   return last ? { target: last.key, edge: "bottom" } : null;
 }
 
-/** Whether landing `key` there changes the order `drawn` shows. A landing that leaves it as it
- *  is draws no line, so a line always means the drop will do something. */
+/** Whether landing `key` changes the drawn order; a no-op landing draws no line. */
 export function landingMoves(
   drawn: readonly string[],
   key: string,
@@ -65,15 +49,12 @@ export function landingMoves(
   return next.some((id, index) => id !== drawn[index]);
 }
 
-/** The height of the gap above a header's text, where its line is drawn: the header carries the
- *  space between sections as its own top padding. */
 function lineYAbove(header: Element): number {
   const box = header.getBoundingClientRect();
   const text = (header.querySelector("button") ?? header).getBoundingClientRect();
   return Math.round(box.top + (text.top - box.top) / 2);
 }
 
-/** The next drawn element after `element` that has a header of its own. */
 function headedSiblingAfter(element: Element | undefined): Element | null {
   for (let next = element?.nextElementSibling; next; next = next.nextElementSibling) {
     if (next instanceof HTMLElement && next.offsetHeight > 0 && next.querySelector(HEADER_SELECTOR)) {
@@ -83,11 +64,6 @@ function headedSiblingAfter(element: Element | undefined): Element | null {
   return null;
 }
 
-/**
- * Where Alt + Up or Down on a section's header moves the section: past the drawn section above or
- * below it. The keyboard's way to the reorder a drag does, as alt + arrow is for a row. Null for
- * any other key, a press outside the header or on its buttons, and at either end of the list.
- */
 export function sectionKeyLanding(
   event: React.KeyboardEvent<HTMLElement>,
   key: string,
@@ -109,13 +85,10 @@ export function sectionKeyLanding(
 }
 
 export interface UseSectionDragOptions {
-  /** Commits a drop that changes the order. */
   onDrop: (key: string, landing: SectionLanding) => void;
-  /** Read on drop: whether the section may slide into place or should just appear there. */
   reducedMotion?: () => boolean;
 }
 
-/** Returns the header's pointerdown handler; spread it on the box marked with SECTION_ATTR. */
 export function useSectionDrag(
   options: UseSectionDragOptions,
 ): (event: React.PointerEvent<HTMLElement>, key: string) => void {
@@ -123,12 +96,10 @@ export function useSectionDrag(
   useEffect(() => {
     optionsRef.current = options;
   });
-  /** The gesture in flight, so a second press cannot start another over it. */
   const gesture = useRef<{ end: () => void } | null>(null);
   useEffect(() => () => gesture.current?.end(), []);
 
   return useCallback((event: React.PointerEvent<HTMLElement>, key: string) => {
-    // Touch scrolls the sidebar, the right button opens a menu, and "+" or "..." keep their press.
     if (event.button !== 0 || event.pointerType === "touch" || !event.isPrimary) return;
     const pressed = event.target as Element;
     const header = pressed.closest(HEADER_SELECTOR);
@@ -137,7 +108,7 @@ export function useSectionDrag(
     const block = event.currentTarget;
     const parent = block.parentElement;
     if (!parent) return;
-    // Typed here, not narrowed: the handlers below are hoisted and would lose the narrowing.
+    // Typed here, not narrowed: the hoisted handlers below would lose the narrowing.
     const list: HTMLElement = parent;
     gesture.current?.end();
 
@@ -151,10 +122,8 @@ export function useSectionDrag(
     let landing: SectionLanding | null = null;
     let scroller: HTMLElement = list;
     let ghost: HTMLElement | null = null;
-    /** Where the copy was put when it lifted; it moves by a transform from there. */
     let ghostTop = 0;
     let line: HTMLElement | null = null;
-    // Where on the header text the press landed, so the lifted copy does not jump.
     const text = header.querySelector("button") ?? header;
     const grab = startY - text.getBoundingClientRect().top;
 
@@ -163,7 +132,6 @@ export function useSectionDrag(
         (element) => element.offsetHeight > 0,
       );
 
-    /** A copy of the header's text on a raised pill, over the header it came from. */
     const lift = () => {
       const textRect = text.getBoundingClientRect();
       const headerRect = header.getBoundingClientRect();
@@ -176,8 +144,7 @@ export function useSectionDrag(
       copy.tabIndex = -1;
       ghost.append(copy);
       const inset = 10;
-      // Lifted where the header is, raised as place() raises it, so a frame drawn before its
-      // first transform lands shows it there, not at the top of the window.
+      // Lifted where the header is, so a frame before the first transform is not at the top.
       ghostTop = textRect.top - 6;
       Object.assign(ghost.style, {
         top: `${ghostTop}px`,
@@ -223,7 +190,6 @@ export function useSectionDrag(
       if (landing) {
         const { target: targetKey, edge } = landing;
         const target = others.find((element) => element.getAttribute(SECTION_ATTR) === targetKey);
-        // Under the last section is the gap above whatever follows it: Recents' header.
         const below = edge === "top" ? target : headedSiblingAfter(target);
         const belowHeader = below?.querySelector(HEADER_SELECTOR);
         if (belowHeader) y = lineYAbove(belowHeader);
@@ -234,8 +200,7 @@ export function useSectionDrag(
         return;
       }
       const shown = line.style.opacity === "1";
-      // Glides between gaps once it is up; the first placement is instant. Shown and placed in
-      // one change, by `top`, so it is never drawn a frame early at the top of the window.
+      // Shown and placed in one change, so it is never drawn a frame early.
       line.style.transition = shown ? "" : "none";
       Object.assign(line.style, {
         left: `${view.left + 8}px`,
@@ -245,8 +210,7 @@ export function useSectionDrag(
       });
     };
 
-    /** One step of the edge scroll, from the frame loop: a pointer resting at the edge sends no
-     *  moves, and the list must keep going. */
+    /** Edge-scroll step from the frame loop: a resting pointer sends no moves. */
     const edgeScroll = () => {
       const view = scroller.getBoundingClientRect();
       if (pointerY < view.top + EDGE_PX) scroller.scrollTop -= EDGE_STEP_PX;
@@ -263,7 +227,6 @@ export function useSectionDrag(
       place();
     };
 
-    /** Takes down everything the drag drew. Returns where the lifted copy was, for the settle. */
     const putDown = (): number | null => {
       const ghostTop = ghost ? ghost.getBoundingClientRect().top + 6 : null;
       ghost?.remove();
@@ -288,7 +251,6 @@ export function useSectionDrag(
       }
     };
 
-    // Abandons the gesture whole: an unmount, or a new press that never saw this one's release.
     const self = {
       end: () => {
         detach();
@@ -307,10 +269,9 @@ export function useSectionDrag(
       window.setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 0);
     };
 
-    /** Slides the dropped section from where it was let go into its new slot. */
     const settle = (from: number) => {
       if (optionsRef.current.reducedMotion?.()) return;
-      // Two frames: the drop re-renders the list, and the section is measured once it has moved.
+      // Two frames: the drop re-renders the list before the section can be measured.
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           const moved = list.querySelector<HTMLElement>(
@@ -356,12 +317,10 @@ export function useSectionDrag(
         }
         block.setAttribute(SECTION_DRAGGING_ATTR, "");
         lift();
-        // Placed now, so the copy and line are right in the frame that first shows them.
         place();
         frame = requestAnimationFrame(onFrame);
       }
-      // The frame loop places everything, once a frame: moves come faster than frames on many
-      // mice, and each placement reads every section's box.
+      // Place once a frame: moves outpace frames, and each placement reads every box.
       moved.preventDefault();
     }
 
@@ -389,13 +348,12 @@ export function useSectionDrag(
     function onKey(keyEvent: KeyboardEvent) {
       if (keyEvent.key !== "Escape" || escaped) return;
       if (!started) {
-        // Nothing was lifted, so a click after this is still the header's.
         detach();
         return;
       }
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
-      // The button is still down: keep listening, so its release does not fold the section.
+      // The button is still down: keep listening so its release does not fold the section.
       escaped = true;
       putDown();
     }

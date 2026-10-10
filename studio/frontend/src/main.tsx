@@ -35,8 +35,8 @@ if (isTauri) {
   document.documentElement.classList.add("tauri");
 }
 
-// Rasterization follows the browser OS, not the potentially remote server.
-// This adjustment is calibrated for desktop Linux, so exclude Android.
+// Rasterization follows the browser OS, not the possibly remote server.
+// Calibrated for desktop Linux, so Android is excluded.
 const uaLower = navigator.userAgent.toLowerCase();
 if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
@@ -47,17 +47,11 @@ if (uaLower.includes("windows")) {
   document.documentElement.classList.add("client-windows");
 }
 
-// Whether off-screen maths takes containment. ON by default, subject to a feature detect for the
-// engine's find-in-page, so on a recent engine this normally SETS the attribute and arms the rule;
-// on an older one it removes an attribute that was never there. Before the first render, because
-// the rule it arms is a rendering rule and arming it late would relayout the first thread that
-// mounts.
+// Must run before the first render: arming the containment rule late relayouts the first thread.
 applyMathBlockContainment();
-// And keep watching, so a devtools flip of `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` reapplies instead of
-// leaving the session measuring the arm it was already in.
+// Reapply when the devtools override `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` flips.
 watchMathBlockContainmentOverride();
 
-// Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
 watchInputModality(window);
 

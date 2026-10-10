@@ -74,7 +74,6 @@ export function SafetensorsDownloadCard({
   modelFormat?: ModelInventoryFormat | null;
   isActive: boolean;
   isLoadingThisModel: boolean;
-  /** Owning cache dir, threaded into delete so it targets this copy. */
   cachePath?: string | null;
   knownBytes?: number | null;
   onRun?: () => void;
@@ -183,9 +182,7 @@ export function SafetensorsDownloadCard({
     !isLoadingThisModel &&
     !runPending;
 
-  // Same preview the On Device and picker rows run: without it this card kept an enabled Delete
-  // for a companion base an installed image GGUF still needs, and the refusal arrived as a 400
-  // after the user confirmed.
+  // Without the preview, Delete stayed enabled for a base an installed image GGUF needs.
   const deleteImpact = useDeleteImpact(
     deleteRepoOpen && Boolean(repoId),
     repoId ?? "",
@@ -236,7 +233,6 @@ export function SafetensorsDownloadCard({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={4}>
-                  {/* The badge is a status dot, not a control. */}
                   {downloadAction.partialHint}
                 </TooltipContent>
               </Tooltip>

@@ -56,19 +56,14 @@ function DropdownMenuContent({
         collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         className={cn(
-          // Width in whole pixels: Firefox draws a row's hover pill a device pixel off centre in a
-          // menu of fractional width (padding and margin are rounded as it mounts).
-          // The 3px alignment nudge must be margin, not translate: a transform
-          // here makes this scroll container the containing block for nested
-          // position:fixed submenu wrappers, clipping every submenu.
+          // Whole-pixel width (Firefox offsets hover pills otherwise). The 3px nudge must be margin, not
+          // translate: a transform here would clip every position:fixed submenu.
           "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-48 max-w-[calc(100vw-32px)] rounded-lg p-1 duration-100 z-50 max-h-(--radix-dropdown-menu-content-available-height) w-[round(calc(var(--radix-dropdown-menu-trigger-width)_+_6px*var(--ui-space-scale,1)),1px)] data-[align=start]:-ml-[calc(3px*var(--ui-space-scale,1))] data-[align=end]:ml-[calc(3px*var(--ui-space-scale,1))] origin-(--radix-dropdown-menu-content-transform-origin) flex flex-col overflow-hidden",
           className,
         )}
         {...props}
       >
-        {/* Scroll an inner viewport, not the rounded surface: a scrollbar on
-            the surface squares its corners in WebKit. The surface padding
-            insets the scrollbar clear of the curve. */}
+        {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners in WebKit. */}
         <div
           data-slot="dropdown-menu-viewport"
           className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
@@ -285,7 +280,6 @@ function DropdownMenuSubContent({
 }) {
   const isMobile = useIsMobile();
   const [contentWidth, setContentWidth] = React.useState(0);
-  // Offset that brings the bottom edge level with the trigger.
   const [endShift, setEndShift] = React.useState<number | null>(null);
   const resizeObserverRef = React.useRef<ResizeObserver | null>(null);
   const composedRef = React.useCallback(
@@ -337,9 +331,7 @@ function DropdownMenuSubContent({
   // Transparent, not hidden, while measuring: hidden content misses Radix's keyboard autofocus.
   const measuring = endAligned && endShift === null;
   return (
-    // Portaled like DropdownMenuContent: rendered inline, the fixed popper
-    // wrapper is a descendant of the parent menu's scroll container, so any
-    // transform there turns on overflow clipping and hides the submenu.
+    // Portaled: inline, a transform in the parent menu's scroll container clips the submenu.
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.SubContent
         ref={composedRef}

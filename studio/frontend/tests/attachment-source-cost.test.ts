@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// useAuiState reads through useSyncExternalStore, so its selector runs on every
-// store notification and on every render, and useShallow gates the re-render,
-// not the selector. Building a "data:audio/wav;base64,..." string in there
-// therefore copies the whole clip per token of a streamed reply, twice over:
-// the composer card and AttachmentPreviewDialog each mount the hook.
+// useAuiState selectors run on every store notification, so building a data URL there copies
+// the whole clip per streamed token.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -41,9 +38,6 @@ function audioAttachment(payload: string) {
   };
 }
 
-// The selected value is what useShallow compares with Object.is. A fresh string
-// each run makes that comparison walk the payload; the part itself is a stable
-// reference off the store, so it compares in constant time.
 test("the attachment selector does not rebuild the audio payload per run", () => {
   const state = audioAttachment("A".repeat(4 * 1024 * 1024));
 
@@ -61,14 +55,7 @@ test("the attachment selector does not rebuild the audio payload per run", () =>
   assert.equal(Object.is(first.audio, state.attachment.content[0].audio), true);
 });
 
-/**
- * The selector hands the part through, so the hook must not join it either.
- *
- * Every tile in a transcript mounts `useAttachmentSource`, and the dialog
- * mounts it again, so a data URL built there copies MAX_AUDIO_SIZE of base64
- * twice per sent clip with the dialog still closed. Radix only renders
- * DialogContent once the dialog opens, which is where the join belongs.
- */
+/** Radix renders DialogContent only once open, so the audio data URL is built there. */
 test("the audio data URL is built in the dialog, not on every attachment tile", () => {
   const hook = readSrc("components/assistant-ui/use-attachment-source.ts");
   assert.doesNotMatch(
@@ -130,8 +117,6 @@ test("the video data URL is built in the viewer, not on every attachment tile", 
   assert.match(preview, /source\.kind === "video"[\s\S]*?<AttachmentVideoDialog/);
 });
 
-// A plain text/document attachment must keep working: the control that has to
-// pass with and without the fix.
 test("the attachment selector still resolves text and image attachments", () => {
   const text = selectAttachmentSource({
     attachment: {
@@ -156,10 +141,7 @@ test("the attachment selector still resolves text and image attachments", () => 
   assert.equal(image.audio, undefined);
 });
 
-// ComposerPrimitive.Attachments keys its providers by list index. Removing the
-// first attachment therefore reuses ComposerAttachmentCard for the next attachment, so
-// every stateful preview/source branch needs the attachment identity as its own
-// reset boundary.
+// ComposerPrimitive.Attachments keys providers by index, so previews must reset on identity.
 test("attachment previews reset when an index is reused for another attachment", () => {
   const attachment = readSrc("components/assistant-ui/attachment.tsx");
   const ui = attachment.slice(
@@ -180,17 +162,11 @@ test("attachment previews reset when an index is reused for another attachment",
   );
 });
 
-// The composer runs _emptyTextAndAttachments() before it awaits adapter.send(),
-// so a ceiling that only fires at send drops the typed message with the file.
-// The refusal also has to be visible: the file picker calls addAttachment
-// without awaiting it and nothing subscribes to attachmentAddError, so a bare
-// throw leaves the user with no file and no reason, as the audio adapter's
-// toast avoids.
+// The composer clears itself before awaiting send(), and nothing surfaces attachmentAddError,
+// so refusal must happen at add with a toast.
 test("the pdf and docx adapters refuse an oversized file at add, with a toast", () => {
   const provider = readSrc("features/chat/runtime-provider.tsx");
 
-  // DOCX also has to clear its per-part bound at add: a small archive can
-  // still declare a part mammoth would inflate past the cap.
   for (const [adapter, call, toast] of [
     [
       "PDFAttachmentAdapter",

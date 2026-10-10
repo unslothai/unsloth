@@ -134,12 +134,9 @@ export function OnDeviceFoldersDialog({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    // The dialog stays mounted between opens, so re-arm the flag or a reopen
-    // shows the previous answer as if it were fresh.
+    // The dialog stays mounted, so re-arm the flag or a reopen shows stale data.
     setDownloadCacheLoaded(false);
     loadHuggingFaceCacheSettings()
-      // Indexed locations do not depend on this. Null drops the stale path
-      // rather than offer Change against a location we could not confirm.
       .catch(() => null)
       .then((settings) => {
         if (cancelled) return;
@@ -155,9 +152,7 @@ export function OnDeviceFoldersDialog({
     onInventoryChange?.();
   }, [onInventoryChange]);
 
-  // Relocating the cache changes which repos are on disk, but updateHuggingFaceCacheSettings
-  // already bumps the inventory version, which re-fetches every source. Refreshing here too would
-  // scan twice, since the two rounds carry different version keys and cannot be deduplicated.
+  // No refresh here: updateHuggingFaceCacheSettings already bumps the inventory version.
   const saveDownloadLocation = useCallback(async (nextPath: string | null) => {
     setDownloadSaving(true);
     try {
@@ -221,8 +216,6 @@ export function OnDeviceFoldersDialog({
     [handleInventoryChanged, pending, recursive],
   );
 
-  // Scan folders are arbitrary paths that may be moved or deleted after they
-  // were registered, so surface the command's failure as a toast.
   const handleOpen = useCallback(async (folder: ScanFolderInfo) => {
     try {
       await openModelsDir(folder.path);

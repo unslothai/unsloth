@@ -4,7 +4,7 @@
 import { type ChatsSection, validateChatsSection } from "./chats/model";
 import { LIBRARY_URL_SORTS, type LibraryUrlSort } from "./settings-store";
 
-// Kept apart from the page so the route can validate its URL without loading the page chunk.
+// Kept apart so the route can validate its URL without loading the page chunk.
 export const LIBRARY_TABS = [
   "suggested",
   "favorites",
@@ -26,7 +26,7 @@ export interface LibrarySearch {
   sort?: LibraryUrlSort;
   filter?: "files";
   chatView?: ChatsSection;
-  /** Section page id. Not `section`: the Hub route already uses that name. */
+  /** Not `section`: the Hub route already uses that name. */
   chatSection?: string;
 }
 

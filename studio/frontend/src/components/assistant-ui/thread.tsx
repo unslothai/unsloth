@@ -425,11 +425,8 @@ import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 
-// True while a file is dragged anywhere over the chat page, so the composer
-// can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
 
-/** The follow-up each of the two chords names. */
 const FOLLOW_UP_SHORTCUTS = {
   queueMessage: "queue",
   steerMessage: "steer",
@@ -439,7 +436,6 @@ const FOLLOW_UP_SHORTCUT_IDS = Object.keys(
   FOLLOW_UP_SHORTCUTS,
 ) as (keyof typeof FOLLOW_UP_SHORTCUTS)[];
 
-/** The behaviour a bound queue or steer chord names, if this event fires one. */
 function followUpShortcutBehavior(event: {
   code: string;
   key?: string;
@@ -626,8 +622,7 @@ function consumePromptQueueDeepResearch(
   run: PromptQueueRun,
   item: PromptQueueItem,
 ) {
-  // The model decides whether an armed prompt becomes research, so the queue's one research
-  // is spent only once a run actually started, not on the first prompt that was merely armed.
+  // The queue's one research is spent only once a run actually started, not when merely armed.
   if (
     run.deepResearchConsumed ||
     !item.target.usesDeepResearch ||
@@ -677,19 +672,12 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
         return true;
       }
     }
-    // Unless a knowledge base is active: the adapter sends kb_id alone, so the
-    // project's sources cannot reach this run and waiting on them only delays it.
+    // The adapter sends kb_id alone, so project sources cannot reach this run.
     if (item.target.usesKnowledgeBase) {
       return false;
     }
-    // Project sources are retrieved whatever the Docs pill says (chat-adapter's
-    // rag_scope), and isIndexing() above only answers while the bar that watches
-    // them is mounted, which a background queue has not. So ask directly, and
-    // for a chat with no row yet use the project the queue was started in.
-    // Rethrowing: a row this probe could not read is not a chat with no project,
-    // and the catch below is what holds the prompt and asks again. The queue's
-    // own project is the fallback wherever the row is still missing, so a poll
-    // landing mid-navigation cannot probe the project the user moved to.
+    // Project sources are retrieved regardless of the Docs pill, and isIndexing() only answers while
+    // its bar is mounted, so probe directly using the queue's own project as the fallback.
     const queueProjectId = item.target.getQueueProjectId();
     const projectId = threadId
       ? await resolveProjectId(threadId, undefined, {
@@ -707,22 +695,15 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
       const projectDocuments = await listProjectDocuments(projectId);
       return projectDocuments.some(indexingDocument);
     } catch (error) {
-      // A project the server will not list (deleted, or a server predating the
-      // route) is not one to wait for: the retry below never ends.
+      // A project the server will not list is not one to wait for: the retry would never end.
       if (isRagClientError(error)) {
         return false;
       }
       throw error;
     }
   } catch {
-    // A failed status probe cannot prove that this thread's documents are
-    // ready. Keep the queued send pending and retry instead of dispatching
-    // without the RAG documents it was explicitly waiting for.
-    //
-    // Unless RAG cannot run on this host at all: the probe can never succeed
-    // there, and dispatchQueuedPrompt reschedules on every "still indexing",
-    // so waiting it out means the queued prompt is never sent. There are no
-    // documents to wait for, so send it.
+    // A failed status probe cannot prove documents are ready, so retry, unless RAG is unavailable
+    // on this host, where waiting would never send the prompt.
     return !useRagAvailabilityStore.getState().isUnavailable();
   }
 }
@@ -802,9 +783,7 @@ function requestPromptQueuePump(delay = 0) {
 
 function pumpPromptQueues() {
   ensurePromptQueueSubscription();
-  // A queue is sequential within its own thread, but independent threads may
-  // dispatch together. The inference backend owns its actual concurrency cap
-  // and queues excess local generations.
+  // Sequential within a thread; independent threads may dispatch together (backend caps concurrency).
   while (true) {
     const run = getNextReadyPromptQueueRun();
     if (!run) {
@@ -1135,12 +1114,7 @@ function removePromptQueueItem(itemId: string) {
   return true;
 }
 
-/**
- * Move a queued prompt into another's slot. Both must still be pending: a
- * dispatched item is already on its way out, and a run mid-dispatch would race
- * the pump. Insert index is read off the pre-splice array, so a downward drag
- * lands after the target and an upward drag lands before it.
- */
+/** Both must still be pending; the insert index is read off the pre-splice array. */
 function movePromptQueueItem(itemId: string, targetItemId: string) {
   if (itemId === targetItemId) {
     return false;
@@ -1172,8 +1146,7 @@ function movePromptQueueItem(itemId: string, targetItemId: string) {
   run.items = after;
   syncPromptQueueUI();
 
-  // A move across the active slot changes what dispatches next, so retarget the
-  // pending send the way a removal does.
+  // A move across the active slot changes what dispatches next, so retarget like a removal.
   const nowActive = run.items[run.index];
   if (run.index >= 0 && !run.waitingForTargetIdle && nowActive && activeChanged) {
     clearPromptQueueRetryTimer(run);
@@ -1187,10 +1160,8 @@ function isPromptQueueTargetRunning(
   target: PromptQueueTarget,
   runningByThreadId: Record<string, boolean>,
 ) {
-  // assistant-ui marks a run synchronously when append starts, while the
-  // shared store is set later after model loading and request validation.
-  // Reading the target closes the rapid-submit window where another append
-  // would otherwise cancel the run that just started.
+  // assistant-ui marks a run synchronously while the shared store is set later; reading the target
+  // closes the rapid-submit window where another append would cancel the new run.
   try {
     if (target.isRunning()) {
       return true;
@@ -1205,8 +1176,7 @@ function isPromptQueueTargetRunning(
 
   const targetIds = target.getRunningThreadIds();
   if (targetIds.length === 0) {
-    // Never borrow another chat's running state. A queue without a resolved
-    // target should retry its own dispatch instead of becoming globally gated.
+    // Never borrow another chat's running state; retry this queue's own dispatch instead.
     return false;
   }
 
@@ -1319,8 +1289,6 @@ function ensurePromptQueueSubscription() {
   if (promptQueueStoreUnsub) {
     return;
   }
-  // runningByThreadId tracks the actual thread (not aui.thread()), so detection
-  // survives navigation.
   let previousRunningCount = getRunningThreadCount(
     useChatRuntimeStore.getState().runningByThreadId,
   );
@@ -1357,7 +1325,6 @@ function steerPromptQueueTarget(target: PromptQueueTarget) {
       description: "The current response could not be interrupted.",
     });
   }
-  // Dispatch waits for cancellation to finish.
   resumePromptQueueRun(targetIds);
 }
 
@@ -1677,8 +1644,7 @@ function cancelPendingPromptQueueFactoriesForStop<
 ) {
   const { threadIds, temporaryOnly, localOnly } = detail;
   if (localOnly) {
-    // Advancing the model boundary invalidates local factories once hydrated.
-    // External factories must remain intact.
+    // Hydrated local factories are invalidated by the boundary advance; keep external ones.
     return;
   }
   if (
@@ -1725,7 +1691,6 @@ function handlePromptQueueRunFailed(threadId?: string | null, localOnly = false)
         }
       }
       if (getActivePromptQueueItem(run)?.blockedByModelFailure) {
-        // Invalidate the failed local attempt without disturbing external work.
         run.generation += 1;
         clearPromptQueueRetryTimer(run);
         promptQueueDispatchingRunIds.delete(run.id);
@@ -1747,8 +1712,7 @@ function handlePromptQueueRunFailed(threadId?: string | null, localOnly = false)
       discardQueuedChatRunSettingsForThread(threadId);
     }
   }
-  // A queued adapter can fail validation before its running flag turns on.
-  // Pump every other ready queue even when no active run matches the event.
+  // A queued adapter can fail before running is set, so pump other ready queues regardless.
   requestPromptQueuePumpIfReady();
 }
 
@@ -1792,19 +1756,13 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
   stopQueue: noopStopPromptQueue,
 });
 
-// Gap (px) between last message and floating composer; bottom spacer tracks
-// composer height plus this gap so chat can scroll fully above the composer.
+// Gap between last message and floating composer, added to the bottom spacer height.
 const COMPOSER_SCROLL_GAP_PX = 24;
-// The scroll-to-bottom footer sits 10px below the spacer top.
 const FOOTER_GAP_BELOW_SPACER_PX = 10;
-// Window after a run start during which composer shrinks apply immediately:
-// the run-start pin owns the bottom, so the clamp is the intended glide.
-// Covers instant responses where isRunning is already false by resize time.
+// After a run start, composer shrinks apply immediately: the run-start pin owns the bottom.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
-// One message, picked from its role and edit state rather than from a `components` map. See
-// thread-message-slot.ts for why the map form costs a full-thread re-render on every delete.
-// The selectors are ThreadMessageComponent's own, so what a message subscribes to is unchanged.
+// Picked from role and edit state, not a `components` map; see thread-message-slot.ts.
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
   const isEditing = useAuiState(({ message }) => message.composer.isEditing);
@@ -1830,16 +1788,7 @@ const ThreadMessage: FC = () => {
   );
 };
 
-/**
- * Resolves the divider against the branch on screen, once for the thread.
- *
- * Which inherited message closes the history depends on the branch: editing an inherited turn
- * starts a sibling and leaves the fork's anchor off screen with earlier inherited messages
- * still above it. Selecting the message array in each ROW is what the delete render budget
- * forbids, so it is selected here, in one component, and the rows read the id it publishes.
- * The walk stops at the first message the fork did not inherit, so it costs the inherited
- * count rather than the thread length.
- */
+/** Resolved once per thread: selecting the message array in each row breaks the delete budget. */
 const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   const inherited = useForkBoundaryStore((s) =>
     threadId === null
@@ -1854,13 +1803,10 @@ const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   }, [threadId, anchor]);
 };
 
-// Closes the history a fork inherited. Rendered by the message it follows, since the row slot
-// is propless and the boundary arrives through the store.
 const ForkContinuationRule: FC = () => {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const messageId = useAuiState(({ message }) => message.id);
-  // Two plain values rather than the record: both stay identical between renders, so a row
-  // subscribed to them does not re-render when an unrelated thread publishes.
+  // Two plain values so rows do not re-render when an unrelated thread publishes.
   const anchor = useForkBoundaryStore((s) =>
     threadId === null ? undefined : s.anchorByThreadId[threadId],
   );
@@ -1882,8 +1828,6 @@ const ForkContinuationRule: FC = () => {
   return (
     <div
       data-slot="fork-continuation-rule"
-      // Same column as the messages it sits between: it is their sibling, not their child,
-      // so it takes the width constraint every message root applies to itself.
       className="mx-auto mt-6 mb-2 flex w-full max-w-(--thread-content-max-width) items-center gap-3 text-muted-foreground text-sm"
     >
       <span aria-hidden={true} className="h-px flex-1 bg-border" />
@@ -1892,9 +1836,7 @@ const ForkContinuationRule: FC = () => {
           type="button"
           data-slot="fork-continuation-link"
           title="Open the chat this was forked from"
-          // Checked on the way out, not on render: the tombstone set is this tab's own, so a
-          // source deleted on another device still looks openable until something asks for it.
-          // Only a definite "no" stops the trip; an unreachable backend is not a deletion.
+          // Checked on click (tombstones are per tab); only a definite "no" stops it.
           onClick={async () => {
             const source = await readBackendChatThread(sourceThreadId);
             if (source === null) {
@@ -1903,10 +1845,7 @@ const ForkContinuationRule: FC = () => {
             }
             navigate({
               to: "/chat",
-              // A paired source is one half of a comparison, and the fork button is offered
-              // inside those panes. Opening it as a single chat would show one model's side
-              // rather than the view it was forked from. Same shape the sidebar opens a pair
-              // with. An unreachable backend has no record to ask, so it falls through.
+              // A paired source opens as its comparison, matching the sidebar.
               search: source?.pairId
                 ? { compare: source.pairId }
                 : { thread: sourceThreadId },
@@ -1915,14 +1854,12 @@ const ForkContinuationRule: FC = () => {
           }}
           className={cn(
             labelClass,
-            // An answer link's colour, underlined on hover only.
             "cursor-pointer rounded-sm text-primary underline decoration-transparent underline-offset-2 transition-colors hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
           )}
         >
           {label}
         </button>
       ) : (
-        // The source is gone, so the text stays but leads nowhere.
         <span className={labelClass}>{label}</span>
       )}
       <span aria-hidden={true} className="h-px flex-1 bg-border" />
@@ -1930,21 +1867,16 @@ const ForkContinuationRule: FC = () => {
   );
 };
 
-// Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
-// inline arrow changes identity each time, invalidating the memo that keeps the message array from
-// being rebuilt, and the bail-out below it would never get to run.
+// Hoisted so the children function keeps its identity and the message array memo holds.
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
-// Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
-// would otherwise reconcile the whole message list.
+// Memoized: chat-page renders this inside a store-subscribing component.
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
 }> = memo(({ hideComposer, hideWelcome, targetThreadId }) => {
-  // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
-  // prevent the streaming-mutation race that snaps the viewport back to the
-  // bottom while the user scrolls up (see the hook for the full explanation).
+  // Replaces assistant-ui's autoscroll, which snaps back to the bottom while the user scrolls up.
   const { ref: viewportRef, context: autoScrollContext } =
     useIntentAwareAutoScroll();
 
@@ -1960,21 +1892,15 @@ export const Thread: FC<{
   useThreadForkCounts();
   useTrackForkBoundaryAnchor(threadId);
 
-  // Measured height of the floating composer dock (null until measured).
-  // Drives the bottom spacer and the scroll-to-bottom footer offset.
   const [composerHeight, setComposerHeight] = useState<number | null>(null);
   const footerBottomPx =
     composerHeight == null
       ? null
       : composerHeight + COMPOSER_SCROLL_GAP_PX - FOOTER_GAP_BELOW_SPACER_PX;
 
-  // Viewport element is owned by the autoscroll hook; mirror it locally for
-  // the spacer clamp math. State, not a ref: the keyed provider remounts the
-  // viewport on thread switches and the scroll listener must re-attach.
+  // State, not a ref: the keyed provider remounts the viewport and the listener must re-attach.
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
-  // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
-  // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
-  // because the Compare panes each mount their own Thread.
+  // Identity-stable ref for ProgressiveMessages; per Thread because Compare mounts several.
   const viewportElRef = useRef<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
@@ -2012,8 +1938,7 @@ export const Thread: FC<{
     }
   }, []);
 
-  // Release any deferred shrink; used at moments that pin to the bottom
-  // anyway, where the clamp is the intended motion.
+  // Release any deferred shrink, used where the view pins to the bottom anyway.
   const releaseSpacerExcess = useCallback(() => {
     const desired = desiredSpacerPxRef.current;
     const applied = appliedSpacerPxRef.current;
@@ -2025,8 +1950,6 @@ export const Thread: FC<{
   const spacerRef = useCallback(
     (node: HTMLDivElement | null) => {
       spacerElRef.current = node;
-      // Fresh mounts (thread switch, first message) start at desired size;
-      // deferral state from a previous mount is moot.
       const desired = desiredSpacerPxRef.current;
       if (node && desired != null) {
         applySpacerPx(desired);
@@ -2036,7 +1959,6 @@ export const Thread: FC<{
   );
 
   const prevComposerHeightRef = useRef<number | null>(null);
-  // Set on thread.runStart; see RUN_SHRINK_WINDOW_MS.
   const runStartAtRef = useRef(0);
   useLayoutEffect(() => {
     const prev = prevComposerHeightRef.current;
@@ -2059,8 +1981,7 @@ export const Thread: FC<{
       const runOwnsBottom =
         aui.thread().getState().isRunning ||
         performance.now() - runStartAtRef.current < RUN_SHRINK_WINDOW_MS;
-      // At the bottom the shrink only drops blank spacer, so apply it now
-      // rather than strand dead space until the next pin.
+      // At the bottom the shrink only drops blank spacer, so apply it now.
       if (
         runOwnsBottom ||
         distance >= applied - desired ||
@@ -2068,23 +1989,16 @@ export const Thread: FC<{
       ) {
         applySpacerPx(desired);
       }
-      // else: deferred; released on scroll or a bottom-pinning event.
     }
     if (prev != null && composerHeight > prev) {
-      // Chat is now above the new bottom. Detach as if the user scrolled up
-      // so no later signal re-pins and shoves the chat up (scrolling back
-      // down re-attaches; explicit pins still work). Skip mid-run: that
-      // growth is tool-status rows, not the user, and detaching would break
-      // streaming autoscroll.
+      // Detach as if the user scrolled up so nothing re-pins; not mid-run, where growth is tool rows.
       if (!aui.thread().getState().isRunning) {
         autoScrollContext.detachFromBottom();
       }
     }
   }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx, viewportEl]);
 
-  // Drop deferred spacer excess once the user has scrolled far enough above
-  // the bottom that the shrink cannot clamp scrollTop. Keyed on viewportEl
-  // so the listener follows viewport remounts.
+  // Drop deferred excess once far enough above the bottom that the shrink cannot clamp.
   useEffect(() => {
     const el = viewportEl;
     if (!el) {
@@ -2105,8 +2019,7 @@ export const Thread: FC<{
     return () => el.removeEventListener("scroll", onScroll);
   }, [viewportEl, applySpacerPx]);
 
-  // These pin to the bottom, so releasing the excess here is invisible.
-  // runStart also opens the shrink window for the send-clears-chips case.
+  // These pin to the bottom; runStart also opens the shrink window for send-clears-chips.
   useAuiEvent("thread.runStart", () => {
     runStartAtRef.current = performance.now();
     releaseSpacerExcess();
@@ -2114,10 +2027,7 @@ export const Thread: FC<{
   useAuiEvent("thread.initialize", releaseSpacerExcess);
   useAuiEvent("threadListItem.switchedTo", releaseSpacerExcess);
 
-  // Page-wide drag-and-drop: dropping a file anywhere on the chat page
-  // attaches it and shows the composer drop affordance. The composer's own
-  // dropzone handles drops on the box and calls preventDefault, so the page
-  // handler skips them (no double-add).
+  // Page-wide drop; the composer's own dropzone calls preventDefault, so those are skipped here.
   const [pageDragging, setPageDragging] = useState(false);
   const dragDepth = useRef(0);
   const hasFiles = (e: ReactDragEvent) =>
@@ -2140,11 +2050,8 @@ export const Thread: FC<{
     if (isTauri) return;
     dragDepth.current = 0;
     setPageDragging(false);
-    // Compare panes hide this composer and use the shared composer's own
-    // dropzone, so don't capture drops into a hidden composer here.
+    // Compare panes hide this composer and use the shared composer's dropzone.
     if (hideComposer) return;
-    // Drops on the composer box are handled by its dropzone (preventDefault);
-    // skip those here so the file isn't added twice.
     if (e.defaultPrevented) return;
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
@@ -2185,9 +2092,7 @@ export const Thread: FC<{
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : // + the chat-model notice, which is an opaque absolute bar
-                  // directly under the header. 0px whenever it is not showing,
-                  // so every other surface keeps the padding it had.
+                : // + the chat-model notice bar under the header; 0px when hidden.
                   "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] pt-[var(--thread-header-offset)]",
             )}
           >
@@ -2199,21 +2104,14 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
-            the tail and mounts the rest over the following frames. Nothing unmounts and the
-            document converges to the tree this rendered before; consumers that cannot wait call
-            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
-            reason: React's bail-out needs one shared element per row. See
-            progressive-mount-controller.ts. */}
+            {/* Bounds a long thread's first commit; see progressive-mount-controller.ts. */}
             <ProgressiveMessages
               renderMessage={renderThreadMessage}
               resetKey={runtimeThreadId}
               viewportRef={viewportElRef}
             />
 
-            {/* Bottom slack so the last message has room above the sticky
-            scroll-to-bottom button (and floating composer in single mode),
-            instead of butting against the footer. */}
+            {/* Room above the sticky scroll-to-bottom button and floating composer. */}
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
                 ref={spacerRef}
@@ -2233,7 +2131,6 @@ export const Thread: FC<{
               <ThreadPrimitive.ViewportFooter
                 className={cn(
                   "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
-                  // 150px (was 140px) to add a small gap above the composer
                   hideComposer
                     ? "bottom-3"
                     : footerBottomPx == null
@@ -2267,7 +2164,6 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
-      {/* Document preview, opened by citation badges. */}
       <DocumentPreviewMount />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
@@ -2410,8 +2306,6 @@ const ThreadComposerDock: FC<{
     (s) => s.showModelDisclaimer,
   );
 
-  // Report dock height so the viewport reserves matching scroll space when
-  // attachments or multiline input grow the composer.
   const dockRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = dockRef.current;
@@ -2430,8 +2324,7 @@ const ThreadComposerDock: FC<{
     <div
       ref={dockRef}
       className={cn(
-        // Inset both sides, not just the right: the offset keeps the bottom
-        // fade off the scrollbar, and a one-sided one also moves the centre.
+        // Inset both sides: keeps the bottom fade off the scrollbar without shifting the centre.
         "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[var(--thread-scrollbar-gutter,10px)] md:right-[var(--thread-scrollbar-gutter,10px)]",
         overlay ? "z-40" : "z-20",
       )}
@@ -2446,8 +2339,7 @@ const ThreadComposerDock: FC<{
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
-      {/* Narrow panes spend the gutter on the composer instead; index.css
-          trims it off the pane's width, not the window's. */}
+      {/* Narrow panes spend the gutter on the composer; index.css trims it off the pane width. */}
       <div className="unsloth-composer-dock-inner relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
@@ -2467,12 +2359,8 @@ const ThreadComposerDock: FC<{
 };
 
 const ThreadScrollToBottom: FC = () => {
-  // State and action both come from our IntentAwareScrollProvider (per-Thread
-  // scope, so compare panes are independent). We avoid
-  // `ThreadPrimitive.ScrollToBottom` + `useThreadViewport` to stay off
-  // assistant-ui's internal autoscroll path (see the hook). The button stays
-  // mounted and toggles via CSS; unmounting would trip the hook's
-  // MutationObserver as a content change.
+  // Our own scroll provider, not ThreadPrimitive.ScrollToBottom. The button toggles via CSS:
+  // unmounting would trip the hook's MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
   const enabled = useChatPreferencesStore(
@@ -2484,7 +2372,6 @@ const ThreadScrollToBottom: FC = () => {
       variant="outline"
       onClick={() => scrollToBottom("auto")}
       className={cn(
-        // Muted in dark mode: the page background made it disappear.
         "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background hover:bg-accent dark:bg-muted dark:hover:bg-accent",
         (isAtBottom || !enabled) && "invisible pointer-events-none",
       )}
@@ -2500,9 +2387,6 @@ const ThreadScrollToBottom: FC = () => {
 const pickRandom = <T,>(arr: T[]): T =>
   arr[Math.floor(Math.random() * arr.length)];
 
-// Each greeting carries its matching sloth picture so a line always shows the
-// same mascot. Greeting varies by local time; name-bearing lines drop the
-// name when none is set.
 type Welcome = { text: string; sloth: string };
 const DEFAULT_WELCOME: Welcome = {
   text: "What’s on your mind today?",
@@ -2511,8 +2395,6 @@ const DEFAULT_WELCOME: Welcome = {
 
 function buildWelcome(hour: number, name: string): Welcome {
   const g = (text: string, sloth: string): Welcome => ({ text, sloth });
-  // Use the name on ~a third of lines (only direct salutations where it reads
-  // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
     g(name ? `Good to see you, ${name}` : "Good to see you", "large sloth wave.png"),
     g("Ready when you are", "large sloth thumbs.png"),
@@ -2528,7 +2410,6 @@ function buildWelcome(hour: number, name: string): Welcome {
       g(name ? `Good evening, ${name}` : "Good evening", "sloth shy large.png"),
       g("What’s on for tonight?", "large sloth glasses.png"),
     ];
-    // Lean toward an evening line, but a base greeting can still appear.
     return pickRandom(Math.random() < 0.75 ? evening : base);
   }
   if (hour >= 23 || hour < 4) {
@@ -2553,9 +2434,7 @@ const ThreadWelcome: FC<{
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
 
   useEffect(() => {
-    // Prefer the nickname; otherwise first name only. Blank falls back to none.
     const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
-    // Cap very long names so the greeting stays on one line.
     const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName, nickname]);
@@ -2565,11 +2444,8 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
-        {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
-          {/* Center the greeting (sloth + title) over the composer. */}
           <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
-            {/* Temporary chat keeps the title on its own, no mascot. */}
             {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
@@ -2599,8 +2475,7 @@ export const ProjectComposer: FC<{
 }> = ({ disabled, placeholder }) => {
   return (
     <GeneratedImageOverlayProvider>
-      {/* New chat in a project: queuing follow-ups here misbinds the thread,
-          so the queue only runs once the user is inside a chat session. */}
+      {/* Queuing in a new project chat misbinds the thread, so the queue waits for a session. */}
       <ComposerAnimated
         disabled={disabled}
         placeholder={placeholder}
@@ -2618,11 +2493,6 @@ const ComposerAnimated: FC<{
   disableQueue?: boolean;
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
-    // unsloth-composer-shell is the size container the tight (mobile) layout
-    // in index.css queries. It sits outside the surface so those rules can
-    // trim the surface's own padding.
-    // Same width as the message column. Full chat width sets its own variable, since
-    // its percentage would otherwise resolve against this narrower parent.
     <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,var(--thread-content-max-width,46rem))]">
       <div className="relative z-10 w-full">
         <Composer
@@ -2660,9 +2530,7 @@ const PendingAudioChip: FC = () => {
   );
 };
 
-/** Keep a drop on a portaled child, such as a dialog or its overlay, from also
- * attaching to the composer. React routes portal events through the composer,
- * whose dropzone attaches in the capture phase before the dialog sees them. */
+/** React routes portal events through the composer, whose dropzone captures them first. */
 function claimPortaledDrop(event: ReactDragEvent): void {
   const target = event.target as Element | null;
   if (!target?.closest?.(".aui-composer-attachment-dropzone")) {
@@ -2705,8 +2573,7 @@ const Composer: FC<{
   const liveResearchRunId = useResearchRunStore((state) =>
     researchThreadId ? state.latestRunByThreadId[researchThreadId] : undefined,
   );
-  // Derive in the selector, as useThreadResearchActive does: a bare run selector re-renders the
-  // composer on every streamed research delta.
+  // Derive in the selector: a bare run selector re-renders on every streamed research delta.
   const isResearchActive = useResearchRunStore((state) => {
     const runId = researchThreadId
       ? state.latestRunByThreadId[researchThreadId]
@@ -2742,9 +2609,7 @@ const Composer: FC<{
     (supportsBuiltinImageGeneration ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0) +
     (effectiveDeepResearchEnabled ? 1 : 0);
-  // Under the count threshold the row still overflows on long labels ("Run
-  // automatically" next to "Deep research"), which dropped the dictate and
-  // send buttons onto a second line. Measuring collapses just enough.
+  // Long labels can still overflow under the count threshold; measuring collapses just enough.
   const { pillRowRef, pillCompact } = useComposerPillFit(
     isMobile || pillCount > 4,
   );
@@ -2760,9 +2625,7 @@ const Composer: FC<{
     (event: KeyboardEvent<HTMLTextAreaElement>, intent: ComposerSubmitIntent) => {
       const form = event.currentTarget.form;
       if (typeof form?.requestSubmit !== "function") return;
-      // A queue or steer chord bound onto an Enter combination lands here
-      // first, and preventDefault keeps it from ever reaching useShortcut. Run
-      // the behaviour it names, rather than the one the send chord implies.
+      // preventDefault here keeps a queue/steer chord bound to Enter from reaching useShortcut.
       const named = followUpShortcutBehavior(event);
       submitIntentRef.current = named
         ? followUpSubmitIntent(
@@ -2778,11 +2641,8 @@ const Composer: FC<{
     },
     [],
   );
-  // Read by both writers that could put the sent text back, the input handlers
-  // and the draft restore. Armed by every path that clears the composer.
+  // Read by both writers that could put sent text back; armed by every path that clears the composer.
   const justSentRef = useRef<SentTextGuard | null>(null);
-  // Thread on screen, so the guard can tell whether a write belongs to the
-  // thread that sent. Kept in step by the effect alongside pasteDraftKeyRef.
   const draftKeyRef = useRef<string | null>(null);
   // True while the @skill picker has a row to pick, so Enter selects it instead of sending.
   const mentionConsumesEnterRef = useRef(false);
@@ -2803,35 +2663,25 @@ const Composer: FC<{
       justSentRef,
       draftKeyRef,
     });
-  // A pasted YouTube link offers a transcript attachment above the composer.
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
-  // Paste without formatting asks for the clipboard in the field, so the paste
-  // it makes stays inline however long it is. A paste event carries no
-  // modifiers, so the chord is read from the keydown before it, and the flag
-  // lasts only as long as the keys are down: the paste is the keydown's own
-  // default action, while a menu the user might reach for instead cannot be
-  // opened without letting go first.
+  // Plain paste: a paste event carries no modifiers, so the chord is read from the keydown before it.
   const plainPasteAtRef = useRef(0);
   const notePlainPasteChord = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       plainPasteAtRef.current = isPlainPasteChord(event)
         ? performance.now()
         : 0;
-      // A fresh @ re-reads the skill folders, so a skill written since page load is offered.
       if (event.key === "@") refreshSkillsCatalog();
     },
     [],
   );
-  // Any release ends it, whichever key of the chord goes first, as does losing
-  // the field. The time cap behind them is for a release that never lands,
-  // which is what tabbing away mid-chord used to leave behind.
+  // Any key release or blur ends it; the time cap covers a release that never lands.
   const endPlainPasteChord = useCallback(() => {
     plainPasteAtRef.current = 0;
   }, []);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
-      // Read once and cleared here, so a paste with no chord before it, from
-      // the menu or a script, is never taken for the plain one.
+      // Read once and cleared, so a menu or scripted paste is never taken for the plain one.
       const plainPaste = plainPasteStillCounts(
         plainPasteAtRef.current,
         performance.now(),
@@ -2841,17 +2691,12 @@ const Composer: FC<{
       const pastedYoutubeUrl = extractYoutubeVideoUrlFromClipboard(
         event.clipboardData,
       );
-      // Bulk text pastes attach as a file instead of filling the input, except
-      // in image-edit mode, whose submit path takes an inline instruction only.
+      // Bulk pastes attach as a file, except image-edit mode, which takes inline text only.
       const input = event.currentTarget;
       const { selectionStart, selectionEnd, value } = input;
-      // An attachment is serialised after all inline text, so only a paste that
-      // was already heading to the end can become one. Mid-text pastes stay
-      // inline, where the order the user typed them in survives.
+      // Attachments serialise after all inline text, so only an end-of-text paste can become one.
       const pasteGoesLast = input.selectionEnd === input.value.length;
-      // Swallowing the paste also swallowed the replacement the browser would
-      // have made. Only once the attachment is in, and only if the composer is
-      // still the one that was pasted into, or a failed paste eats the text.
+      // Swallowing the paste dropped the browser's replacement; apply it once the attachment lands.
       const dropReplacedSelection = () => {
         if (selectionStart === selectionEnd) return;
         const composer = aui.composer();
@@ -2911,10 +2756,7 @@ const Composer: FC<{
           return;
         }
       }
-      // A paste is a gesture, so it retires the guard and re-pasting the sent
-      // prompt goes through. Last, and only when the browser will really insert
-      // the text: a payload carrying files is preventDefaulted above, so
-      // retiring for it would just free the next queued write to refill.
+      // A paste retires the sent-text guard, but only when the browser will really insert the text.
       if (
         pastedText.length > 0 &&
         !event.defaultPrevented &&
@@ -2927,18 +2769,15 @@ const Composer: FC<{
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
-  // Derived, not cleared in an effect: the offer retracts as soon as the link
-  // leaves the draft, which also covers sending.
+  // Derived, not cleared in an effect: the offer retracts when the link leaves the draft.
   const youtubeOfferUrl =
     youtubeLink !== null && composerText.includes(youtubeLink)
       ? youtubeLink
       : null;
-  // Expand only once the input wraps to a second line, not on first keystroke.
-  // Latch until cleared so it can't flip-flop at the wrap boundary.
+  // Expand only once the input wraps, latched so it cannot flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
-  // One empty row, at whatever the UI font size makes a row.
   const uiSpaceScale = useUiSpaceScale();
   const oneRowHeight = Math.round(40 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
@@ -2958,7 +2797,6 @@ const Composer: FC<{
       lineMetricsRef.current = null;
       return;
     }
-    // Latched on: stays until the text clears, so skip re-measuring.
     if (isMultiline) return;
     const el = inputRef.current;
     if (!el) {
@@ -2975,8 +2813,7 @@ const Composer: FC<{
     const contentHeight = el.scrollHeight - padding;
     if (contentHeight > lineHeight * 1.5) setIsMultiline(true);
   }, [composerText, isMultiline]);
-  // Autosize's own count: it measures a detached clone, so the expanded
-  // editor's min/max-height can't inflate it the way scrollHeight would.
+  // Autosize measures a detached clone, so the expanded editor's min/max-height cannot inflate it.
   const [editorRows, setEditorRows] = useState(1);
   const handleEditorHeightChange = useCallback(
     (height: number, meta: { rowHeight: number }) => {
@@ -3119,17 +2956,14 @@ const Composer: FC<{
   );
   const [materializingDroppedVideo, setMaterializingDroppedVideo] =
     useState(false);
-  // A parked send must not fire on a failed drop: the user is owed the toast and
-  // their text, not a send of the text alone. Assigned below, once the callback exists.
+  // A parked send must not fire on a failed drop. Assigned below once the callback exists.
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
-  // Which composer is mounted, for deciding where a drain puts work back.
   const composerIdentityRef = useRef("");
   const imageDropFailures = useNativeIntentStore(
     (s) => (nativeAttachmentTargetKey ? s.imageDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
   );
   const seenImageDropFailuresRef = useRef(imageDropFailures);
-  // Registration fails before an intent exists, so the drain never sees it.
-  // Cancel here or the parked send goes out with the text alone.
+  // Registration fails before an intent exists, so cancel the parked send here.
   useEffect(() => {
     if (seenImageDropFailuresRef.current === imageDropFailures) return;
     seenImageDropFailuresRef.current = imageDropFailures;
@@ -3155,8 +2989,7 @@ const Composer: FC<{
     seenVideoDropFailuresRef.current = videoDropFailures;
     cancelQueuedSendRef.current?.();
   }, [videoDropFailures]);
-  // Registering and reading a dropped clip is async, so hold the send gate:
-  // the composer sees nothing until `addAttachment` lands.
+  // Hold the send gate while the dropped clip is registered and read.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) {
       return;
@@ -3205,7 +3038,6 @@ const Composer: FC<{
                 description:
                   error instanceof Error ? error.message : String(error),
               });
-              // Do not let a send parked on this clip go out as bare text.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
               continue;
             }
@@ -3228,16 +3060,13 @@ const Composer: FC<{
         }
       } finally {
         draining = false;
-        // A drain for a target already left must not touch the flag; cleanup
-        // cleared it, and the live target may have set it again.
+        // A drain for an abandoned target must not touch the flag; the live target may own it.
         if (!disposed) {
-          // The early returns requeue mid-batch, and a drop can land while
-          // `draining` gated the subscription.
+          // Early returns requeue mid-batch, and drops can land while `draining` gated the subscription.
           const pending =
             useNativeIntentStore.getState().pendingAudioAttachments[targetKey]
               ?.length ?? 0;
-          // Only the instance still owning this composer re-drains; otherwise
-          // the batch stays parked rather than looping here forever.
+          // Only the owning instance re-drains; otherwise the batch stays parked instead of looping.
           if (pending > 0 && stillThisComposer()) {
             void drainPendingAudio();
           } else {
@@ -3271,8 +3100,7 @@ const Composer: FC<{
     };
   }, [nativeAttachmentTargetKey, aui]);
 
-  // Same drain as audio, one queue over: video is one clip per message, and the
-  // send gate has to hold across the read either way.
+  // Same drain as audio: one clip per message, and the send gate holds across the read.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) {
       return;
@@ -3285,10 +3113,8 @@ const Composer: FC<{
     let disposed = false;
     let draining = false;
 
-    // A re-key follows the same composer; a thread switch parks the clip back.
     const stillThisComposer = () =>
       composerIdentityRef.current === identityAtSetup;
-    // A remount hides the new key, so tag the batch; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3321,11 +3147,9 @@ const Composer: FC<{
                 description:
                   error instanceof Error ? error.message : String(error),
               });
-              // Do not let a send parked on this clip go out as bare text.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
               continue;
             }
-            // The read is async; a chat switch in that window must not steal the clip.
             if (
               disposed ||
               nativeAttachmentTargetKeyRef.current !== targetKey
@@ -3336,8 +3160,7 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
             } catch {
-              // Chat-wide, not per file (no video mmproj, no ffmpeg, too large,
-              // already attached), and every adapter path toasted: stop quietly.
+              // Chat-wide failure and the adapter already toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
               return;
             }
@@ -3345,16 +3168,10 @@ const Composer: FC<{
         }
       } finally {
         draining = false;
-        // A drain for a target already left must not touch the flag; cleanup
-        // cleared it, and the live target may have set it again.
         if (!disposed) {
-          // The early returns requeue mid-batch, and a drop can land while
-          // `draining` gated the subscription.
           const pending =
             useNativeIntentStore.getState().pendingVideoAttachments[targetKey]
               ?.length ?? 0;
-          // Only the instance still owning this composer re-drains; otherwise
-          // the batch stays parked rather than looping here forever.
           if (pending > 0 && stillThisComposer()) {
             void drainPendingVideo();
           } else {
@@ -3365,7 +3182,6 @@ const Composer: FC<{
     };
 
     const unsubscribe = useNativeIntentStore.subscribe((state) => {
-      // A predecessor's requeue can land after setup, so keep watching.
       const orphaned = Object.entries(state.videoDropOwners).some(
         ([key, owner]) => owner === identityAtSetup && key !== targetKey,
       );
@@ -3400,16 +3216,14 @@ const Composer: FC<{
     let disposed = false;
     let draining = false;
 
-    // A fresh chat re-keys from "single:new" to its thread id under the same
-    // composer, so follow it; a real thread switch keeps the original target.
+    // A fresh chat re-keys from "single:new" to its thread id under the same composer, so follow it.
     const stillThisComposer = () =>
       composerIdentityRef.current === identityAtSetup;
     const requeueKey = () =>
       stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
         : targetKey;
-    // A fresh chat persisting remounts this composer, so the key it moves to is
-    // not visible here. Tag the batch instead; the next instance claims it.
+    // Persisting remounts this composer, so tag the batch; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = requeueKey();
       const store = useNativeIntentStore.getState();
@@ -3461,8 +3275,7 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
             } catch {
-              // Chat-wide, not per file (no vision model, or none loaded). The
-              // adapter toasted, and the rest would fail alike: stop quietly.
+              // Chat-wide failure and the adapter already toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
               return;
             }
@@ -3477,11 +3290,8 @@ const Composer: FC<{
                 ? lastReadError.message
                 : String(lastReadError),
           });
-          // A re-key still owns the parked send; a real thread switch does not.
           if (stillThisComposer()) cancelQueuedSendRef.current?.();
         }
-        // A drain for a target the composer has already left must not touch the
-        // flag: cleanup cleared it, and the live target may have set it again.
         if (disposed) {
           return;
         }
@@ -3497,8 +3307,7 @@ const Composer: FC<{
     };
 
     const unsubscribe = useNativeIntentStore.subscribe((state) => {
-      // The predecessor's requeue can land after the claim at setup, so keep
-      // watching rather than claiming once.
+      // The predecessor's requeue can land after the setup claim, so keep watching.
       const orphaned = Object.entries(state.imageDropOwners).some(
         ([key, owner]) => owner === identityAtSetup && key !== targetKey,
       );
@@ -3673,8 +3482,7 @@ const Composer: FC<{
     focusDraft: focusAudioUploadDraft,
   });
   const cancelAudioUpload = audioUpload.cancel;
-  // Read at Send time, so a send that materializes after a project switch is still filed
-  // where it was made.
+  // Read at Send time so a send materializing after a project switch is filed where made.
   const projectScope = useChatProjectScope();
   const promptQueueThreadIds = compactIds([
     threadListItemId,
@@ -3698,9 +3506,8 @@ const Composer: FC<{
       return;
     }
     adoptPreStreamRunReservation(token, preStreamThreadIds);
-    // Keep the reservation until the adapter consumes or fails it. React can
-    // expose isRunning before persistence and model preflight finish; releasing
-    // here would hide that accepted send from a concurrent model-change gate.
+    // Keep the reservation until the adapter consumes or fails it: isRunning can show before
+    // preflight finishes, and releasing early hides the send from a model-change gate.
   }, [preStreamThreadIds]);
   const promptQueueActive = usePromptQueueUI((s) =>
     Boolean(findPromptQueueEntry(s, promptQueueThreadIds)),
@@ -3740,13 +3547,10 @@ const Composer: FC<{
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
-    // A save that raced the send still holds the sent text, so restoring it
-    // would undo the clear. Keyed on the sending thread, so another thread's
-    // identical draft still restores. Clear rather than return early, which
-    // would leave the previous thread's text on screen under this one.
+    // A save that raced the send still holds the sent text. Clear rather than return early, or the
+    // previous thread's text stays on screen.
     if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
-      // Written inline rather than via clearStoredDraft, which is declared
-      // below this effect. Cancel the pending save too, or it rewrites the key.
+      // Inline because clearStoredDraft is declared below; cancel the pending save too.
       if (draftSaveTimerRef.current !== null) {
         clearTimeout(draftSaveTimerRef.current);
         draftSaveTimerRef.current = null;
@@ -3757,44 +3561,34 @@ const Composer: FC<{
     }
     composer.setText(draft);
   }, [draftKey, aui]);
-  // The saved-prompt menu and the prompt storage dialog fill the composer
-  // directly, bypassing the guard. Text appearing while the sending thread is
-  // on screen was put there deliberately, so retire; the draftKey check keeps
-  // another thread's restored draft from doing the same. Read live, or a
-  // pending render retires it on stale text. Must stay after the restore
-  // above, which clears the raced draft this would otherwise retire on.
+  // Saved prompts fill the composer directly, bypassing the guard, so retire it on visible text.
+  // Must stay after the restore above.
   useEffect(() => {
     const guard = justSentRef.current;
     if (guard === null || guard.draftKey !== draftKey) return;
     if (aui.composer().getState().text.length === 0) return;
     justSentRef.current = null;
   }, [composerText, draftKey, aui]);
-  // Separate from the text restore above, which must stay keyed on the draft
-  // alone: this one retries on attachment changes, and rewriting the composer
-  // text on those would drop whatever had been typed since the last autosave.
+  // Separate from the text restore, which must stay keyed on the draft alone.
   useEffect(() => {
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     if (restoredPasteKeyRef.current === pasteDraftKey) return;
-    // The composer outlives a thread switch, so restore only into an empty one
-    // rather than mixing this thread's draft with whatever the last one left.
-    // Changing attachments re-runs this effect, which is how the retry happens.
+    // Restore only into an empty composer; attachment changes re-run this effect as the retry.
     if (composer.getState().attachments.length > 0) return;
     const stored = pasteDraftKey ? readPasteDraft(pasteDraftKey) : [];
     if (stored.length === 0) {
       restoredPasteKeyRef.current = pasteDraftKey;
       return;
     }
-    // Claim the key only once the attachments are in, so the save effect
-    // cannot write an empty composer over the draft still being restored.
+    // Claim the key only after the attachments are in, so a save cannot overwrite the draft.
     void Promise.all(
       stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
     ).finally(() => {
       restoredPasteKeyRef.current = pasteDraftKey;
     });
   }, [pasteDraftKey, composerAttachmentSignature, aui]);
-  // Keyed on the paste identities, never their bodies, so typing beside a
-  // megabyte paste does not rewrite it to localStorage every 300ms.
+  // Keyed on paste identities, never bodies, so typing does not rewrite megabytes every 300ms.
   useEffect(() => {
     if (!pasteDraftKey || restoredPasteKeyRef.current !== pasteDraftKey) return;
     const pastes = aui
@@ -3807,8 +3601,7 @@ const Composer: FC<{
     writePasteDraft(pasteDraftKey, pastes);
   }, [composerAttachmentSignature, pasteDraftKey, aui]);
   useEffect(() => {
-    // After a thread switch composerText can still hold the previous
-    // thread's text; skip that cycle so it isn't saved under the new key.
+    // After a switch composerText can still hold the previous thread's text; skip that cycle.
     if (lastDraftKeyRef.current !== draftKey) {
       lastDraftKeyRef.current = draftKey;
       return;
@@ -3825,7 +3618,6 @@ const Composer: FC<{
     draftKeyRef.current = draftKey;
     pasteDraftKeyRef.current = pasteDraftKey;
   }, [draftKey, pasteDraftKey]);
-  // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(
       texts,
@@ -3850,9 +3642,7 @@ const Composer: FC<{
       writePasteDraft(pasteKey, []);
     }
   }, []);
-  // react-textarea-autosize re-measures only on value change or window resize,
-  // not on the width swap from expanding, so it keeps the taller height and
-  // leaves a stray blank row. Nudge a resize whenever input width changes.
+  // react-textarea-autosize ignores width changes and leaves a stray blank row; nudge a resize.
   useEffect(() => {
     const el = inputRef.current;
     if (!el || typeof ResizeObserver === "undefined") {
@@ -3867,8 +3657,7 @@ const Composer: FC<{
         return;
       }
       lastWidth = width;
-      // Re-measure after layout settles. An immediate dispatch races
-      // autosize's own measurement (stale pre-expand width); 0ms + 64ms wins.
+      // An immediate dispatch races autosize's own measurement; 0ms + 64ms wins.
       while (pending.length) {
         clearTimeout(pending.pop());
       }
@@ -3888,12 +3677,9 @@ const Composer: FC<{
       observer.disconnect();
     };
   }, []);
-  // Docked composer opens upward; the welcome composer opens downward by
-  // default and only flips up via collision detection when it won't fit.
   const effectiveMenuSide = menuSide ?? "bottom";
 
-  // While this thread's docs index, hold the send and fire it once they finish so
-  // retrieval covers all of them.
+  // While this thread's docs index, hold the send so retrieval covers all of them.
   const [indexingActive, setIndexingActive] = useState(false);
   const indexingActiveRef = useRef(false);
   const promptQueueTargetMountedRef = useRef(true);
@@ -3911,10 +3697,8 @@ const Composer: FC<{
       }
     >(),
   );
-  // Reading a pasted-text attachment happens before the queue start is
-  // registered, so the intent is recorded here for the length of the read.
-  // Keyed like a reservation so a submit during the read cannot start a second
-  // read of the same attachment, and carrying the boundaries the read predates.
+  // The pasted-text read precedes queue registration, so record the intent here, keyed like a
+  // reservation so a second submit cannot start a second read.
   const pastedTextQueuePendingRef = useRef(
     new Map<
       string,
@@ -3945,8 +3729,7 @@ const Composer: FC<{
         aliases,
         detail,
       );
-      // A read in flight has no reservation yet, so it needs cancelling here
-      // too or Clear all lets it queue a prompt and recreate the chat.
+      // A read in flight has no reservation yet; cancel it or Clear all lets it recreate the chat.
       cancelPendingPromptQueueFactoriesForStop(
         pastedTextQueuePendingRef.current,
         aliases,
@@ -3966,11 +3749,9 @@ const Composer: FC<{
   }, [aui, referenceThreadId]);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
-  // Retain follow-up behavior across preflight waits.
   const pendingFollowUpBehaviorRef = useRef<ComposerFollowUpBehavior>("queue");
   const waitToastRef = useRef<string | number | null>(null);
-  // This chat's own settings are still on their way; a send now would run on the
-  // installation defaults showing in their place.
+  // This chat's settings have not arrived; a send now would use installation defaults.
   const threadScopedSettingsPending = useChatRuntimeStore(
     (s) => s.threadScopedSettingsPending,
   );
@@ -4008,8 +3789,7 @@ const Composer: FC<{
     }
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
     const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
-    // A chat with no row yet has no project to look up, and the store holds
-    // whichever project is on screen when the queue polls. Read it here.
+    // A chat with no row has no project yet, and the store tracks the on-screen one; read it now.
     const projectIdAtQueueStart = incognitoAtQueueStart
       ? null
       : (chatStateAtQueueStart.activeProjectId ?? null);
@@ -4093,11 +3873,9 @@ const Composer: FC<{
       ) {
         return false;
       }
-      // Tombstone synchronously so a late initializer cannot leave an empty
-      // record visible while backend cleanup completes.
+      // Tombstone synchronously so a late initializer cannot show an empty record during cleanup.
       markChatThreadDeleted(initializedFreshThreadId);
-      // the tombstone is never rolled back: a failed DELETE may still have committed, and the
-      // backend tombstones on commit, so resurrecting the id would leave it 410 on every write
+      // Never roll the tombstone back: a failed DELETE may have committed, leaving the id 410.
       void deleteStoredChatThreads([initializedFreshThreadId]).catch(
         () => undefined,
       );
@@ -4158,9 +3936,7 @@ const Composer: FC<{
           }
           shouldCorrectPersistedModel ??= !state.remoteId;
           const initializingFreshThread = !state.remoteId;
-          // Stamp it with what the queue was STARTED under. This path initializes without
-          // going through the composer, and by dispatch time the adapter may be showing a
-          // different project, so the chat was filed wherever the user is now.
+          // Stamp with the project the queue was started under; the adapter may show another by now.
           if (initializingFreshThread) {
             claimThreadCreation([state.id, state.remoteId], {
               projectId: projectIdAtQueueStart,
@@ -4170,9 +3946,7 @@ const Composer: FC<{
               createdAt: Date.now(),
             });
           }
-          // A fresh chat receives its remote id during initialization. Await it
-          // before append so the adapter can match the queued settings using
-          // unstable_threadId on its first invocation.
+          // Await the remote id so the adapter matches the queued settings on its first invocation.
           const { remoteId } = await runtime.threads
             .getItemById(state.id)
             .initialize();
@@ -4192,9 +3966,7 @@ const Composer: FC<{
             remoteId,
           ]);
           if (shouldCorrectPersistedModel) {
-            // initialize() persists a fresh thread using the live global model.
-            // Correct that metadata to the model captured for this queued run
-            // before any later navigation or compatibility check can observe it.
+            // initialize() persisted the live global model; correct it to this run's captured model.
             await updateStoredChatThread(remoteId, {
               modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
               modelGgufVariant: runSettingsAtQueueStart.activeGgufVariant,
@@ -4303,12 +4075,8 @@ const Composer: FC<{
     };
   }, [aui, referenceThreadId]);
 
-  // Whether a pending start is already going to be refused when it resolves,
-  // so a retry replaces it rather than being turned away as a duplicate and
-  // leaving neither gesture to queue anything. Only the checks that need no
-  // queue target are here; the model boundary stays with the reservation,
-  // where usesLocalModel is known, so this can never be the stricter of the
-  // two and start a second queue for the same prompt.
+  // Whether a pending start will be refused, so a retry replaces it instead of being deduped.
+  // Never stricter than the reservation, or the same prompt queues twice.
   const pendingQueueStartIsStale = useCallback(
     (pending: {
       cancelled: boolean;
@@ -4409,8 +4177,7 @@ const Composer: FC<{
             promptQueueStartPendingRef.current.get(reservationKey) ===
             reservation
           ) {
-            // Superseded reservations stay quiet: the one that replaced this
-            // is still going, so nothing has been lost to report.
+            // Superseded reservations stay quiet: their replacement is still going.
             onAborted?.();
           }
         })
@@ -4492,7 +4259,6 @@ const Composer: FC<{
       const textAtQueue = composer.getState().text.trim();
       const queueTexts = (
         texts: string[],
-        // Captured before an awaited read, when there was one.
         capturedAt?: {
           localModelBoundaryGeneration: number;
           queuedSettingsEpoch: number;
@@ -4508,7 +4274,6 @@ const Composer: FC<{
           waitForCurrentRun,
           () => {
             const state = composer.getState();
-            // Only clear the composer this prompt was queued from.
             if (
               state.text.trim() !== textAtQueue ||
               state.attachments.length !== attachmentIds.length ||
@@ -4535,9 +4300,7 @@ const Composer: FC<{
         );
       };
 
-      // createPastedTextFile records the body under the File identity matched
-      // above, so read it from there: a gesture that awaits the File joins the
-      // queue behind any later one that does not, reversing the two.
+      // Read the cached body: awaiting the File would reorder this behind a later gesture.
       const cachedTexts: string[] = [];
       for (const file of files) {
         const text = pastedTextOf(file);
@@ -4549,40 +4312,30 @@ const Composer: FC<{
         return true;
       }
 
-      // Registered before the read, or a submit during it takes the send path
-      // and this queues the same text again once the read finishes.
+      // Register before the read, or a submit during it would queue the same text twice.
       const pendingKey = pastedTextQueueKey(
         referenceThreadId,
         textAtQueue,
         attachmentIds,
       );
-      // The same intent as a read already running: report it handled rather
-      // than queue a duplicate. A read whose baselines have gone stale will
-      // abort, so it must not absorb the retry either.
+      // Same intent as a running read: report handled. A stale read will abort, so not that one.
       const inFlight = pastedTextQueuePendingRef.current.get(pendingKey);
       if (inFlight && !pendingQueueStartIsStale(inFlight)) return true;
-      // Every baseline the reservation would otherwise take after the read, so
-      // a setting or boundary changed during it still aborts the queue.
       const chatState = useChatRuntimeStore.getState();
       const pendingRead = {
         temporary: chatState.incognito,
         cancelled: false,
         threadId: referenceThreadId,
-        // The chat the read began in. The target is anchored after the read,
-        // so a switch mid-read would otherwise dispatch into the new chat.
+        // The chat the read began in, so a mid-read switch cannot dispatch into the new chat.
         composerIdentity: composerIdentityRef.current,
         localModelBoundaryGeneration: localPromptQueueModelBoundary.capture(),
         queuedSettingsEpoch: chatState.queuedSettingsEpoch,
         historyClearGeneration: chatHistoryClearBoundary.capture(),
       };
-      // Replaces a stale read under the same key. That read still resolves, but
-      // it no longer owns the key, so its own start is skipped and only this
-      // one can queue.
+      // Replaces a stale read; it still resolves but no longer owns the key, so it skips its start.
       pastedTextQueuePendingRef.current.set(pendingKey, pendingRead);
       void Promise.all(files.map((file) => file.text()))
         .then((texts) => {
-          // Stopped, cleared, replaced, or aimed at another chat while the
-          // read was in flight.
           if (
             pendingQueueStartIsStale(pendingRead) ||
             composerIdentityRef.current !== pendingRead.composerIdentity ||
@@ -4614,10 +4367,7 @@ const Composer: FC<{
     ],
   );
 
-  // Queue whatever the composer holds. Hoisted out of handleSubmit because the
-  // parked-send release needs it too and cannot reach that closure. Reads the
-  // live composer, not the rendered text, which at release time can be a commit
-  // behind.
+  // Hoisted so the parked-send release can use it; reads the live composer, not rendered text.
   const queueComposerText = useCallback(
     (waitForCurrentRun: boolean, behavior: ComposerFollowUpBehavior = "queue") => {
       const queuedPrompt = aui.composer().getState().text.trim();
@@ -4656,14 +4406,12 @@ const Composer: FC<{
 
   // Declared here because cancelQueuedSend has to clear the dictation hold too.
   const sendAfterDictationRef = useRef(false);
-  // Composer text while a send waits on dictationBlocked, so an edit can drop it.
   const heldTextRef = useRef<string | null>(null);
 
   const cancelQueuedSend = useCallback(() => {
     pendingSendRef.current = false;
     pendingFollowUpBehaviorRef.current = "queue";
     setPendingSend(false);
-    // A dictation send held behind the same block would otherwise fire alone.
     sendAfterDictationRef.current = false;
     heldTextRef.current = null;
     dismissWaitToast();
@@ -4704,8 +4452,7 @@ const Composer: FC<{
     [cancelQueuedSend],
   );
 
-  // A materializing image or clip is a wait, not a refusal: park the send.
-  // Both gates share this so they cannot disagree on what is recoverable.
+  // A materializing image or clip parks the send; both gates share this to agree.
   const parkIfWaitingOnAttachments = useCallback(() => {
     if (
       disabled ||
@@ -4719,8 +4466,7 @@ const Composer: FC<{
     ) {
       return;
     }
-    // Name what is actually being waited on, or a parked video drop reports
-    // itself as audio.
+    // Name what is awaited, or a parked video drop reports itself as audio.
     enqueueSend(
       hasMaterializingImageAttachments
         ? "images"
@@ -4758,8 +4504,7 @@ const Composer: FC<{
     ],
   );
 
-  // alsoGuard: text the composer showed before this path rewrote it, so a late
-  // write carrying what the user actually typed is refused too.
+  // alsoGuard: prior composer text, so a late write of what the user typed is refused too.
   const sendReservedComposer = useCallback((...alsoGuard: string[]) => {
     const assistantRuntime =
       aui.threads().__internal_getAssistantRuntime?.();
@@ -4792,9 +4537,7 @@ const Composer: FC<{
       // Only after reservation succeeds: a refused send keeps the in-flight transcript.
       cancelAudioUpload();
       const sentText = aui.composer().getState().text;
-      // Stamp the send BEFORE send() starts awaiting every incomplete attachment: a document
-      // send reaches initialize() seconds later, by which time navigation may have moved the
-      // project and cleared the temporary flag. See utils/chat-thread-creation-claim.ts.
+      // Stamp before send() awaits attachments; see utils/chat-thread-creation-claim.ts.
       const chatStateAtSend = useChatRuntimeStore.getState();
       claimThreadCreation(preStreamThreadIds, {
         projectId: projectScope,
@@ -4825,8 +4568,6 @@ const Composer: FC<{
     referenceThreadId,
   ]);
 
-  // Gate for both form submit and the Send button. Returns true when it handled
-  // the event (blocked or queued) so callers stop.
   const interceptSend = useCallback(
     (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
@@ -4839,10 +4580,8 @@ const Composer: FC<{
         enqueueSend();
         return true;
       }
-      // This chat's own settings have been asked for and have not arrived, so the store
-      // is showing the installation defaults and the run would be captured with them:
-      // a chat stored as "ask" could run tools without asking. Park it like any other
-      // wait, so the click still counts and the send fires once the snapshot lands.
+      // Settings still loading means installation defaults would be captured (a chat stored as
+      // "ask" could run tools without asking); park the send until the snapshot lands.
       if (threadScopedSettingsPending && !overlay) {
         event.preventDefault();
         enqueueSend("settings");
@@ -4861,10 +4600,8 @@ const Composer: FC<{
     ],
   );
 
-  // Fire the parked send once all waits clear, unless the user emptied the
-  // composer while waiting (then drop it quietly). An image dropped after the
-  // send was parked has to land first, or indexing finishing early sends the
-  // text without it and the image attaches to the next draft.
+  // Fire the parked send once all waits clear, unless the composer was emptied. A late-dropped
+  // image must land first or it attaches to the next draft.
   useEffect(() => {
     const liveThreadIsRunning =
       threadIsRunning || aui.thread().getState().isRunning;
@@ -4897,21 +4634,12 @@ const Composer: FC<{
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
-      // Wait mode read now, not carried from the parked submit: a run can
-      // start while the settings load, and ignoring it would dispatch on top
-      // of the response already streaming.
+      // Read wait mode now: a run may start while settings load, and must not be dispatched over.
       const waitForCurrentRun =
         aui.thread().getState().isRunning ||
         hasPreStreamRunReservation(preStreamThreadIds);
-      // A parked send is a submit arriving late, so mirror handleSubmit's
-      // branches. Sending regardless is how a message vanished: on a throttled
-      // browser a follow-up parked 786 ms in was released 236 ms later with
-      // the first turn still streaming, went to sendReservedComposer(), and
-      // was refused by the runtime -- neither queued nor sent, and the wait
-      // toast already dismissed above, so nothing on screen said so.
-      //
-      // Research refuses every submit and swaps Send for Stop research, so a
-      // release here would start a turn from a state where input is disabled.
+      // A parked send is a late submit, so mirror handleSubmit's branches; sending regardless while
+      // a turn streams is refused silently. Research disables input, so never release here.
       if (isResearchActive) {
         return;
       }
@@ -4987,29 +4715,23 @@ const Composer: FC<{
     [],
   );
 
-  // Recording bar's send: stop dictating, then submit once the transcript
-  // lands. Going through the form keeps queueing, indexing holds and draft
-  // clearing identical to a typed send.
+  // Submitting through the form keeps queueing, indexing holds and draft clearing identical.
   const formRef = useRef<HTMLFormElement | null>(null);
-  // Mirrored into state so the publish effect re-runs when the node mounts: a
-  // ref mutation does not re-render. See usePublishedFrame.
+  // Mirrored into state so the publish effect re-runs on mount; see usePublishedFrame.
   const [composerEl, setComposerEl] = useState<HTMLFormElement | null>(null);
   const attachComposer = useCallback((node: HTMLFormElement | null) => {
     formRef.current = node;
     setComposerEl(node);
   }, []);
-  // Docked under a thread, the composer sits in the corner the API monitor
-  // panel opens in. Published so that panel opens clear of Send. The
-  // notification rail does not read this; it is anchored in CSS.
+  // Published so the API monitor panel opens clear of Send.
   usePublishedFrame(composerEl);
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
   useEffect(() => {
     setIsWritingExpanded(false);
   }, [composerIdentity]);
-  // Window capture runs before the document listeners where the @-mention popover
-  // closes and cancelOnEscape preventDefaults every Escape (canCancel is a runtime
-  // capability, not a live run), so defaultPrevented cannot tell them apart.
+  // Window capture runs before the document listeners, where cancelOnEscape preventDefaults
+  // every Escape, so defaultPrevented cannot tell them apart.
   useEffect(() => {
     const collapseOnEscape = (event: globalThis.KeyboardEvent) => {
       if (
@@ -5025,8 +4747,7 @@ const Composer: FC<{
     window.addEventListener("keydown", collapseOnEscape, true);
     return () => window.removeEventListener("keydown", collapseOnEscape, true);
   }, []);
-  // Keep the mic clickable: if the engine can't run here, explain and point to
-  // the local model instead of disabling the button.
+  // Keep the mic clickable: if the engine cannot run, explain and point to the local model.
   const startDictation = useCallback(() => {
     if (audioUpload.busy || dictationEntryDisabled) return;
     if (currentDictationEntryMode() === "recording-file") {
@@ -5049,8 +4770,7 @@ const Composer: FC<{
     aui.composer().stopDictation();
   }, [aui, composerIdentity]);
 
-  // One gate for the recording bar's send: it greys the button out, and holds
-  // a pending send when the composer changes under it after the press.
+  // One gate: greys the bar's send and holds a pending send if the composer changes after.
   const dictationBlocked = dictationSendBlocked({
     composerDisabled: Boolean(disabled),
     uploading:
@@ -5065,21 +4785,17 @@ const Composer: FC<{
     hasAttachments,
     hasPendingAudio,
   });
-  // Both chords live here, not with the controls below: the recording bar
-  // replaces those while dictation runs, so a chord registered there could
-  // start dictation and never stop it.
+  // Both chords live here: the recording bar replaces the controls below, so one registered there
+  // could start dictation and never stop it.
   useShortcut(
     "startDictation",
     () => {
-      // Stopping first and ungated: the recording bar replaces the input, so
-      // the gate's selector is gone for exactly as long as there is something
-      // to stop.
+      // Stop first and ungated: the gate's selector is gone while recording.
       if (isDictating) {
         aui.composer().stopDictation();
         return;
       }
-      // A dialog over Chat leaves this registered, and a microphone opened
-      // behind one is neither visible nor stoppable from where the user is.
+      // A dialog over Chat keeps this registered; a hidden microphone could not be stopped.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       startDictation();
     },
@@ -5088,37 +4804,27 @@ const Composer: FC<{
   useShortcut(
     "sendMessage",
     () => {
-      // While recording, the bar's own send: it stops dictation first and lets
-      // the final transcript land, where submitting here would send the text
-      // so far and leave the rest of the sentence in an empty composer.
+      // While recording, stop dictation first so the final transcript lands before sending.
       if (isDictating) {
         if (!dictationBlocked) sendAfterDictation();
         return;
       }
-      // A dialog over Chat leaves this registered, and the draft behind it is
-      // not what the user is typing. Sending is not undoable, so it asks here.
+      // A dialog over Chat keeps this registered, and sending is not undoable.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
-      // requestSubmit, not the runtime's send: it runs handleSubmit first,
-      // which parks a send behind indexing, queues it behind a run, or
-      // refuses it.
+      // requestSubmit, not the runtime's send: handleSubmit parks, queues or refuses first.
       formRef.current?.requestSubmit();
     },
     {
       enabled: chatActive && !disabled,
-      // The model picker is a non-modal popover, so the composer stays the
-      // foreground while its search box has focus. Every text field but the
-      // composer keeps this chord.
+      // The model picker popover keeps the composer foreground; other text fields keep this chord.
       skipInTextFields: true,
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
   );
-  // Same send as above, with the follow-up named rather than left to the
-  // preference. handleSubmit reads the intent ref, so ask it for the opposite
-  // whenever the preference is not already the behaviour wanted here.
+  // handleSubmit reads the intent ref, so request the opposite when the preference differs.
   const submitWithFollowUp = useCallback(
     (behavior: ComposerFollowUpBehavior) => {
-      // No dictation branch: the recording bar replaces the composer, so the
-      // foreground gate below already turns these into a no-op there.
+      // No dictation branch: the bar replaces the composer, so the foreground gate no-ops it.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       submitIntentRef.current = followUpSubmitIntent(
         useChatPreferencesStore.getState().followUpBehavior,
@@ -5155,19 +4861,14 @@ const Composer: FC<{
       // A new recording supersedes a send still held for an upload.
       sendAfterDictationRef.current = false;
       heldTextRef.current = null;
-      // Text at session start is the dictation base. Anchor on it, not on the
-      // text when send was pressed: the browser engine streams interim results
-      // into the composer, so a final matching its interim would look unchanged.
+      // Anchor on the text at session start: interim results stream into the composer.
       dictationBaseTextRef.current = aui.composer().getState().text;
       return;
     }
     wasDictatingRef.current = false;
     if (!sendAfterDictationRef.current) return;
-    // A partial transcript (a failed chunk, or an engine error after one
-    // landed) belongs in the composer, but must not send half a message.
-    // Silence, a thread switch mid-transcription, or a plus-menu insertion
-    // with no speech: keep the draft, submit nothing. Settled before the hold
-    // below, so nothing to send never leaves an intent pending.
+    // A partial transcript stays in the composer but must not send half a message. Settled before
+    // the hold below.
     const text = composerText;
     const sendable =
       !dictationFailed() &&
@@ -5183,13 +4884,9 @@ const Composer: FC<{
       heldTextRef.current = null;
       return;
     }
-    // The plus stays live while transcribing, so an upload or an attachment
-    // can appear after the press. Keep the intent until the composer accepts
-    // a submit again, rather than spending it on one that would bounce.
+    // Uploads can appear after the press; keep the intent until the composer accepts a submit.
     if (dictationBlocked) {
-      // The bar is gone by now, so the hold is invisible. It lasts only as
-      // long as the transcript it was pressed for: editing hands control
-      // back, rather than sending that edit when the block clears.
+      // The hold lasts only for the transcript it was pressed for; an edit hands control back.
       if (heldTextRef.current === null) {
         heldTextRef.current = text;
       } else if (heldTextRef.current !== text) {
@@ -5223,18 +4920,14 @@ const Composer: FC<{
         parkIfWaitingOnAttachments();
         return;
       }
-      // Before the queue branch below, not after it: a prompt queued while this chat's
-      // own settings are still on their way is snapshotted from the installation
-      // defaults on screen, so a chat stored as "ask" would queue as "off".
+      // Before the queue branch: a prompt queued now would snapshot installation defaults.
       if (threadScopedSettingsPending && !overlay) {
         event.preventDefault();
         enqueueSend("settings");
         return;
       }
 
-      // React may not have rendered threadIsRunning yet when several submits
-      // arrive immediately after a send. The imperative runtime is already
-      // current, so use it (and the live queue store) for this decision.
+      // React may lag several rapid submits; the imperative runtime and queue store are current.
       const liveThreadIsRunning =
         threadIsRunning || aui.thread().getState().isRunning;
       const livePromptQueueActive =
@@ -5336,8 +5029,7 @@ const Composer: FC<{
             : {}),
           openaiReasoningItem: overlay.openaiReasoningItem,
         });
-        // Live, not composerText: a late DOM write carries exactly what the
-        // textarea held, whitespace and all, and that is what must be armed.
+        // Live text, not composerText: a late DOM write carries exactly what the textarea held.
         const visibleBeforeWrap = aui.composer().getState().text;
         flushResourcesSync(() => {
           aui
@@ -5429,8 +5121,7 @@ const Composer: FC<{
           <PendingAudioChip />
         </>
       ) : null}
-      {/* Keep indexing state subscribed while dictating, but hide its chips so
-          the waveform stays the composer's only status indicator. */}
+      {/* Stays subscribed while dictating but hidden, so the waveform is the only status. */}
       <div className={isDictating ? "hidden" : "contents"}>
         <ThreadDocumentsBar
           threadId={referenceThreadId}
@@ -5441,8 +5132,7 @@ const Composer: FC<{
       {!isDictating ? <ToolStatusDisplay /> : null}
       <div
         className="unsloth-composer-line"
-        // The permission pill is always visible, so keep the two-row layout
-        // expanded whenever not dictating; dictation collapses to the bar.
+        // The permission pill is always visible, so stay two-row unless dictating.
         data-expanded={!isDictating ? "true" : "false"}
         data-dictating={isDictating ? "true" : undefined}
       >
@@ -5456,11 +5146,8 @@ const Composer: FC<{
             researchAvailable={!researchUsed}
             audioUploadBusy={audioUpload.busy}
           />
-          {/* While dictating, show only the "+"; hide the pill and tool toggles
-              so the waveform is the sole status indicator. */}
           {!isDictating ? (
             <>
-              {/* Permission-level pill: always visible, opens the level dropdown. */}
               <PermissionModeComposerPill side={effectiveMenuSide} />
               {effectiveDeepResearchEnabled ? (
                 <DeepResearchComposerButton
@@ -5479,13 +5166,9 @@ const Composer: FC<{
           ) : null}
         </div>
         {isDictating ? (
-          // The recording UI replaces the input and send controls; only the
-          // left plus stays visible alongside it.
           <ChatDictationBar
             onSend={sendAfterDictation}
-            // Every state handleSubmit rejects, since it would reject after
-            // transcription with the send intent already spent. Text presence
-            // is left out: the transcript supplies it.
+            // Every state handleSubmit would reject after transcription; text comes from the transcript.
             sendDisabled={dictationBlocked}
           />
         ) : (
@@ -5514,8 +5197,6 @@ const Composer: FC<{
                 autoFocus={!disabled}
                 disabled={disabled}
                 aria-label={overlay ? "Image edit instructions" : "Message input"}
-                // dir="auto": browser picks LTR/RTL from the first strong char;
-                // no effect on Latin / CJK / Devanagari.
                 dir="auto"
                 {...inputProps}
                 // Capture, so inputProps keeps the handlers it already owns.
@@ -5627,9 +5308,7 @@ const Composer: FC<{
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
       {youtubeOfferUrl && !isDictating && !disabled ? (
-        // Keyed by URL: pasting a second link while the first is still fetching
-        // remounts the prompt, so its cleanup aborts the request that is no
-        // longer the one on offer.
+        // Keyed by URL so a second paste remounts and aborts the stale request.
         <YoutubeTranscriptPrompt
           key={youtubeOfferUrl}
           url={youtubeOfferUrl}
@@ -5637,8 +5316,7 @@ const Composer: FC<{
         />
       ) : null}
       {isTauri ? (
-        // Phase 1 native model owns Tauri local-path drops. Restore browser
-        // attachment drops in Tauri once Phase 1d adds token bridging.
+        // Phase 1 native model owns Tauri local-path drops; restore browser drops once Phase 1d lands.
         <div className="aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
           {composerContent}
         </div>
@@ -5650,9 +5328,7 @@ const Composer: FC<{
           onDropCapture={claimPortaledDrop}
         >
           {composerContent}
-          {/* Gemini-style drop affordance, shown while a file is dragged over
-              the composer. Absolute + pointer-events-none so the outline adds
-              no layout shift and the drop still lands. */}
+          {/* Absolute and pointer-events-none: no layout shift, and the drop still lands. */}
           <div
             className={cn(
               "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
@@ -5680,17 +5356,13 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// An autocorrect commit, never a keystroke, a paste or an undo. Its value can
-// differ from what was sent, so equality alone would let it through.
+// An autocorrect commit; its value can differ from what was sent, so equality is not enough.
 function isTextReplacement(event: Event | undefined) {
   return inputTypeOf(event) === "insertReplacementText";
 }
 
-// An IME composition write. Finalisation converts the text, so equality never
-// matches it, and it is stale only when the composition began before the send:
-// one begun after raises compositionstart, which records user input.
-// compositionend counts because onCompositionEnd applies that value itself and
-// the browser raises no input event for it.
+// An IME composition write: stale only when the composition began before the send.
+// compositionend counts: onCompositionEnd applies its value and no input event follows.
 function isCompositionWrite(event: Event | undefined) {
   return (
     inputTypeOf(event) === "insertCompositionText" ||
@@ -5699,8 +5371,7 @@ function isCompositionWrite(event: Event | undefined) {
   );
 }
 
-// Input types only a gesture produces, so they apply even when they carry the
-// sent text. Drag and drop and yank have no event to hook the way paste does.
+// Gesture-only input types apply even with the sent text; drag-drop and yank have no hook.
 const DELIBERATE_INPUT_TYPES = new Set([
   "historyUndo",
   "historyRedo",
@@ -5718,12 +5389,8 @@ function inputTypeOf(event: Event | undefined): string | undefined {
   return (event as InputEvent).inputType;
 }
 
-// Fallback timeout for stuck IME composition. With Chrome on Windows against
-// a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
-// candidate commits, so `composingRef` stays true and Send stays disabled.
-// Every compositionupdate / non-composing input resets the timer; only a true
-// gap-after-commit lets it fire. 2500ms is above a normal candidate-window
-// pause but short enough to recover before the user notices Send is stuck.
+// Stuck IME fallback: Chrome on Windows against WSL never fires compositionend (#5546). Every
+// compositionupdate or input resets the timer.
 const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
@@ -5737,7 +5404,6 @@ function useImeComposerInputHandlers({
   submitOnEnter?: boolean;
   /** Set while a composer popover will consume plain Enter itself. */
   skipEnterRef?: RefObject<boolean>;
-  /** The selected send chord, carrying the one-message follow-up override. */
   onSubmitKey?: (
     event: KeyboardEvent<HTMLTextAreaElement>,
     intent: ComposerSubmitIntent,
@@ -5745,8 +5411,7 @@ function useImeComposerInputHandlers({
   sendShortcut?: ComposerSendShortcut;
   // Guard armed by the last send or queue. See setComposerText below.
   justSentRef?: RefObject<SentTextGuard | null>;
-  // Thread on screen. The composer outlives a thread switch, so this is what
-  // says whether the armed guard belongs to the thread being typed into.
+  // The composer outlives a thread switch; this says whether the guard belongs to this thread.
   draftKeyRef?: RefObject<string | null>;
 } = {}) {
   const aui = useAui();
@@ -5793,17 +5458,14 @@ function useImeComposerInputHandlers({
 
   useEffect(() => clearStuckTimer, [clearStuckTimer]);
 
-  // False when refused, so the caller can preventDefault and stop
-  // ComposerPrimitive.Input's own handler applying the same value.
+  // False when refused, so the caller can preventDefault the Input's own handler.
   const setComposerText = useCallback(
     (value: string, nativeEvent?: Event): boolean => {
       const composer = aui.composer();
       if (!composer.getState().isEditing) {
         return false;
       }
-      // Refuse a write that is the sent message coming back, but only for the
-      // thread that sent: typing in another thread must not retire a guard it
-      // does not own, or its raced draft returns.
+      // Refuse the sent message coming back, but only in the thread that sent it.
       const guardOwnsThread =
         justSentRef?.current == null ||
         draftKeyRef === undefined ||
@@ -5830,8 +5492,7 @@ function useImeComposerInputHandlers({
   );
 
   const onCompositionStart = useCallback(() => {
-    // Dictation and handwriting insert without a keydown, and a composition
-    // starting after the send cannot be a write the send queued.
+    // Dictation and handwriting insert without keydown; a post-send composition is not queued.
     if (justSentRef) {
       justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
     }
@@ -5865,13 +5526,8 @@ function useImeComposerInputHandlers({
     [setComposerText, setCompositionState],
   );
 
-  // If the watchdog cleared the composing flags during a long candidate-window
-  // pause, a later IME keypress (isComposing=true / keyCode 229) would reach
-  // handleSubmit with composingRef=false and submit the preedit text. Re-arm
-  // composingRef synchronously from the native event so the submit gate keeps
-  // blocking until compositionend. Re-arm the watchdog too, or the WSL+Chrome
-  // path (no compositionend, no follow-up input) would pin composingRef true
-  // forever and block Send again.
+  // Re-arm composingRef from the native event (isComposing / keyCode 229) so a cleared watchdog
+  // cannot let preedit text submit; re-arm the watchdog too or it pins true forever.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       const msSinceCompositionEnd = e.timeStamp - compositionEndedAtRef.current;
@@ -5885,9 +5541,7 @@ function useImeComposerInputHandlers({
             msSinceCompositionEnd,
           )
         ) {
-          // Deliberately NOT user input: picking a candidate in a composition the
-          // send left open is that composition continuing. One begun after the
-          // send is marked by compositionstart instead.
+          // Not user input: a candidate pick continues a composition the send left open.
           composingRef.current = true;
           refreshStuckTimer();
           return;
@@ -5906,11 +5560,7 @@ function useImeComposerInputHandlers({
           refreshStuckTimer();
           return;
         }
-        // Non-IME key while composingRef is stuck; the input method was likely
-        // switched away on macOS without firing compositionend (issue #5546
-        // pattern, but triggered by input-method switch rather than WSL).
-        // Clear immediately so Send is unblocked on the first non-IME keystroke
-        // rather than waiting for the 2500ms watchdog.
+        // A non-IME key while composingRef is stuck (macOS input-method switch): clear immediately.
         setCompositionState(false);
       }
       if (submitOnEnter && !skipEnterRef?.current) {
@@ -5937,11 +5587,7 @@ function useImeComposerInputHandlers({
     ],
   );
 
-  // On macOS, switching input methods (e.g. ABC → Pinyin) while the textarea
-  // is focused can fire compositionstart without a matching compositionend,
-  // leaving composingRef pinned and Send permanently blocked. The OS always
-  // commits or cancels any in-progress composition before surrendering focus,
-  // so blur is a safe unconditional reset point.
+  // macOS input-method switches can leave composition open; the OS commits it before blur.
   const onBlur = useCallback(() => {
     imeSessionOpenRef.current = false;
     setCompositionState(false);
@@ -5962,8 +5608,6 @@ function useImeComposerInputHandlers({
   };
 }
 
-// HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
-// svgrepo.com lightbulb (filled, with base).
 const BulbIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
     className={className}
@@ -5978,7 +5622,6 @@ const BulbIcon: FC<{ className?: string }> = ({ className }) => (
   </svg>
 );
 
-// Same bulb in every state; greyed by the pill's muted color when off.
 const ThinkIcon: FC = () => <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />;
 
 const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
@@ -6050,8 +5693,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
-  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
-  // drops the stored level is shown truthfully without overwriting the choice.
+  // Show the stored effort clamped to the current ladder without overwriting the choice.
   const displayedEffort =
     effectiveReasoningEffortLevels.length > 0
       ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
@@ -6079,12 +5721,10 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     return null;
   }
 
-  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
-  // dropdown; it just also carries an Off row via supportsReasoningOff.
+  // enable_thinking_effort reuses the effort dropdown, adding an Off row.
   const isEffort =
     effectiveReasoningStyle === "reasoning_effort" ||
     effectiveReasoningStyle === "enable_thinking_effort";
-  // Dropdown when there are effort levels or preserve-thinking; else a toggle.
   const useDropdown = isEffort || supportsPreserveThinking;
   const activeLook = !effectiveSupportsReasoning
     ? preserveThinking && !disabled
@@ -6146,9 +5786,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               </DropdownMenuItem>
             )}
             {effectiveReasoningEffortLevels
-              // 'none' is a real template level for models like Inkling
-              // (effort 0 = thinking off); show it as a pick unless the
-              // dedicated off item above already covers it.
+              // 'none' is a real template level for some models; skip it only if the off item covers it.
               .filter(
                 (level) =>
                   level !== "none" || !effectiveSupportsReasoningOff,
@@ -6160,8 +5798,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                     setReasoningEffort(level);
                     setReasoningEnabled(true);
                     applyQwenThinkingParams(true);
-                    // Kimi's $web_search builtin forbids thinking, so
-                    // enabling thinking flips the Search pill off.
+                    // Kimi's $web_search forbids thinking, so enabling thinking turns Search off.
                     if (isKimiExternal && toolsEnabled) {
                       setToolsEnabled(false, { persist: false });
                     }
@@ -6191,7 +5828,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 const next = !reasoningEnabled;
                 setReasoningEnabled(next);
                 applyQwenThinkingParams(next);
-                // Preserve thinking cannot run without thinking.
                 if (!next) setPreserveThinking(false);
                 if (isKimiExternal && next && toolsEnabled) {
                   setToolsEnabled(false, { persist: false });
@@ -6279,7 +5915,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   );
 };
 
-// Tool icon plus an X overlay the CSS reveals on hover when the pill is active.
 const PillGlyph: FC<{ children: ReactNode }> = ({ children }) => (
   <span className="composer-pill-glyph">
     {children}
@@ -6293,9 +5928,7 @@ const WebSearchToggle: FC = () => {
   );
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  // External providers (OpenAI today) expose a server-side web_search tool
-  // even without the local tool runtime; gate the pill on either source so it
-  // lights up on external models too. Mirror of shared-composer's searchDisabled.
+  // External providers can expose a server-side web_search tool; mirrors shared-composer.
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -6313,8 +5946,7 @@ const WebSearchToggle: FC = () => {
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
-  // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected, matching the + menu.
+  // With no model the tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
 
   return (
@@ -6324,9 +5956,7 @@ const WebSearchToggle: FC = () => {
       onClick={() => {
         const next = !toolsEnabled;
         setToolsEnabled(next);
-        // Kimi's $web_search builtin requires thinking=disabled (see
-        // https://platform.kimi.ai/docs/guide/use-web-search). Keep the two
-        // pills mutually exclusive so visible state matches what's sent.
+        // Kimi's $web_search requires thinking disabled; keep the pills mutually exclusive.
         if (isKimiExternal) {
           setReasoningEnabled(!next, { persist: false });
           applyQwenThinkingParams(!next);
@@ -6350,17 +5980,12 @@ const CodeToolsToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  // External providers have no local tool runtime, but Anthropic's Claude 4.x
-  // dispatches code_execution_20250825 server-side; the chat-page resolver
-  // stashes that capability in the runtime store (next to
-  // supportsBuiltinWebSearch). Mirror of shared-composer's codeDisabled.
+  // Claude 4.x runs code_execution server-side; mirrors shared-composer's codeDisabled.
   const supportsBuiltinCodeExecution = useChatRuntimeStore(
     (s) => s.supportsBuiltinCodeExecution,
   );
   const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
@@ -6391,9 +6016,7 @@ const ImagesToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
-  // OpenAI cloud Responses-API models advertise image_generation as a
-  // server-side tool; no local runtime fallback. Mirror of shared-composer's
-  // imageDisabled / showImagePill so this composer matches the empty state.
+  // Server-side image_generation only; mirrors shared-composer's imageDisabled / showImagePill.
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
@@ -6428,23 +6051,18 @@ const ImagesToggle: FC = () => {
 };
 
 const ToolStatusDisplay: FC = () => {
-  // This conversation's tool call only: a global status would put one chat's "Running
-  // Python..." above every composer. remoteId, not id: the adapter keys this map by
-  // unstable_threadId, so reading id lost the status of every restored chat.
+  // This conversation's status only. remoteId, not id: the adapter keys the map by unstable_threadId.
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const entry = useChatRuntimeStore((s) => {
-    // A first turn starts before its id is persisted, so the adapter files it under
-    // "__default"; only this thread's own run may claim it. Two first turns share that key
-    // with nothing to tell them apart, so claim it only when it holds one run.
+    // A first turn files under "__default" before its id persists; claim it only when it holds one run.
     const unresolved = s.toolStatusByThreadId.__default;
     const own =
       s.toolStatusByThreadId[threadListItemId ?? ""] ??
       (isThreadRunning && unresolved?.length === 1 ? unresolved : undefined);
-    // Newest of the runs behind this key: separate entries, so one finishing cannot blank
-    // a sibling still running a tool.
+    // Newest run for this key, so one finishing cannot blank a sibling still running a tool.
     return own?.[own.length - 1];
   });
   const toolStatus = entry?.status ?? null;
@@ -6467,9 +6085,7 @@ const ToolStatusDisplay: FC = () => {
 
     setNow(Date.now());
 
-    // Debounce visibility by 300ms when the badge isn't already on screen.
-    // Once visible from a prior tool, later tools show immediately so it
-    // doesn't flicker; tool calls under 300ms never show the badge.
+    // 300ms debounce unless already visible, so short tool calls never flash the badge.
     let showTimer: ReturnType<typeof setTimeout> | undefined;
     if (!visibleRef.current) {
       showTimer = setTimeout(() => setVisible(true), 300);
@@ -6505,8 +6121,7 @@ const ToolStatusDisplay: FC = () => {
         )}
       >
         {isNudging ? (
-          // label, not the default "Loading": the spinner is the badge's only
-          // role="status" region, so its name is what gets announced.
+          // The spinner is the only role="status" region, so its label is what gets announced.
           <Spinner className="size-3.5" label={toolStatus} />
         ) : (
           <StatusIcon className="size-3.5" />
@@ -6517,8 +6132,6 @@ const ToolStatusDisplay: FC = () => {
     </div>
   );
 };
-// Plus menu: attachment and workflow actions. Opens downward in the welcome
-// composer; the docked composer passes side="top" to open upward.
 const AUDIO_ACCEPT_TOKEN_RE =
   /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr)$)/i;
 
@@ -6558,8 +6171,7 @@ const ComposerToolsMenu: FC<{
   const ragDisabled = useRagToolDisabled();
   // The permission pill is hidden while recording, so the menu carries it then.
   const isDictating = useAuiState((s) => s.composer.dictation != null);
-  // Capability gating mirrors the visible pills so menu and pills agree on
-  // what a loaded model supports (a tool the backend drops must not look on).
+  // Gate like the visible pills so menu and pills agree on what the loaded model supports.
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -6599,16 +6211,12 @@ const ComposerToolsMenu: FC<{
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
-  // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected, matching the pill logic above.
   const searchDisabled =
     modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
   const codeDisabled =
     modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
   const imageDisabled = !modelLoaded;
-  // Like Search/Code: disabled only when a loaded model lacks tool support.
   const mcpDisabled = modelLoaded && !supportsTools;
-  // Match Search and Code: allow pre-selection before a local model loads.
   const researchDisabled =
     !researchAvailable ||
     (Boolean(externalSelection) &&
@@ -6617,7 +6225,6 @@ const ComposerToolsMenu: FC<{
         externalSelection?.modelId,
       ) !== true) ||
     incognito;
-  // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -6678,16 +6285,12 @@ const ComposerToolsMenu: FC<{
     };
     input.click();
   }, [aui, audioAttachmentsEnabled]);
-  // Straight to the picker, skipping the "+" menu the item lives in. Off-route
-  // the chat pane is hidden rather than unmounted, so the chords gate on it
-  // being the visible tab; a window listener does not care about `inert`.
+  // Off-route the chat pane is hidden, not unmounted, so the chords gate on the visible tab.
   const chatActive = useChatActive();
   useShortcut(
     "attachFiles",
     () => {
-      // `chatActive` is the visible tab, not the foreground, so a dialog over
-      // Chat left this live, and the OS file chooser is the least dismissable
-      // thing a chord can raise.
+      // A dialog over Chat leaves this live, and the OS file chooser is hard to dismiss.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       pickAttachment();
     },
@@ -6712,8 +6315,6 @@ const ComposerToolsMenu: FC<{
       const rows = await listPromptEntries();
       if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
-      // Pinned prompts take over the submenu; fall back to the 3 most recent
-      // when nothing is pinned.
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
@@ -6768,10 +6369,7 @@ const ComposerToolsMenu: FC<{
     [startQueue, generatedImageOverlay, menuIsDictating, audioUploadBusy, setPromptStorageOpen],
   );
 
-  // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
-  // level; the rest fall into the "More" overflow submenu. The core items
-  // (photos, web search, code) and "More" itself are always shown and live
-  // outside this map.
+  // Adjustable "+" menu items: pinned ones render top level, the rest go under "More".
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
     chatWithFiles: (
       <DropdownMenuItem
@@ -7262,8 +6860,6 @@ const ComposerRightControls: FC<{
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
-      {/* Starts dictation; the recording bar then covers the input row and owns
-          the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
         {audioUpload.busy ? (
           <Button
@@ -7309,8 +6905,7 @@ const ComposerRightControls: FC<{
             type="submit"
             variant="default"
             size="icon"
-            // Stay clickable while docs index so a click can queue the send;
-            // disabled only once a send is parked.
+            // Stay clickable while docs index so a click can queue; disable once a send is parked.
             disabled={disabled || pendingSend}
             onClick={(event) => onSendClick?.(event)}
             className="aui-composer-send ml-1.5 size-9 rounded-full"
@@ -7337,7 +6932,6 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              {/* Solid glyph, so it is smaller than the stroked send arrow. */}
               <QueueResumeIcon className="size-4" />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
@@ -7386,8 +6980,7 @@ const ComposerRightControls: FC<{
         </Button>
       ) : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
-          {/* Classed so the narrow-screen rules can treat this like the
-              sibling send/stop buttons; it is the flex item, not the button. */}
+          {/* Classed for the narrow-screen send/stop rules; it is the flex item, not the button. */}
           <div className="aui-composer-run-controls ml-1.5 flex items-center gap-1.5">
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
@@ -7396,8 +6989,7 @@ const ComposerRightControls: FC<{
                 size="icon"
                 className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
-                // Cancel only ends the reply; handlePromptQueueRunState then
-                // dispatches the next queued prompt. stop() ends the run.
+                // Cancel only ends the reply; handlePromptQueueRunState then dispatches the next prompt.
                 onClick={stop}
               >
                 <SquareIcon className="size-3 fill-current" />
@@ -7431,7 +7023,6 @@ const MessageError: FC = () => {
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
-        {/* Recovery path for interrupted/failed turns: regenerate in place. */}
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <button
@@ -7459,7 +7050,6 @@ const GeneratingIndicator: FC = () => {
   return <span className="text-sm text-muted-foreground">Generating...</span>;
 };
 
-// Placeholder when stop fires before any visible content (e.g. mid-think).
 const CancelledIndicator: FC = () => {
   const show = useAuiState(
     ({ message }) =>
@@ -7485,7 +7075,6 @@ function readThoughtDuration(metadata: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-/** Shared eligibility and run setup for Resume and Continue response. */
 function useContinuation() {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
@@ -7555,9 +7144,7 @@ function useContinuation() {
     const activeModel = s.models.find((m) => m.id === s.params.checkpoint);
     return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
   });
-  // Cancelled comes through status (the adapter yields nothing after an abort); the
-  // other two are stamped on metadata so they survive a reload. A provider-reported reason
-  // is on the metadata either way, and outranks a cancelled status.
+  // Cancelled comes through status; other reasons are on metadata (survive reload) and outrank it.
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";
@@ -7650,57 +7237,31 @@ const ContinueMessageBarForLastMessage: FC = () => {
   // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
   const remedy = reason ? incompleteRemedy(reason) : null;
 
-  // The parent is what every round of one logical turn shares; the message id changes
-  // each round, because a continuation runs as a sibling.
+  // The parent is shared by every round of one logical turn; continuations are siblings.
   const parentId = useAuiState(({ thread, message }) => {
     const index = thread.messages.findIndex((m) => m.id === message.id);
     return index > 0 ? thread.messages[index - 1].id : null;
   });
 
-  // The resumed turn's own fit. Resuming replays the partial as the final assistant turn,
-  // which the fit protects, so a partial too big to sit beside the system turn makes the
-  // request irreducible and every further round fails identically.
+  // A partial too big to fit beside the system turn makes every further round fail identically.
   const truncation = useAuiState(({ message }) => {
     const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)
       ?.custom;
     return (custom?.contextTruncation ?? null) as ContextTruncation | null;
   });
 
-  // Hitting Max Tokens is the reply running out of room mid-sentence, not a decision the
-  // user made, so it resumes on its own and the bar never appears. Bounded, and only for
-  // `length`: see `shouldAutoContinue`. Asked per MESSAGE, not just per turn: the round
-  // budget belongs to the turn and one spent round out of three still says yes, so
-  // arriving at a message the claim below has already taken -- the branch picker back to
-  // the truncated sibling, or returning to the chat -- would otherwise show a spinner for
-  // a run `claimAutoContinue` refuses to start, on top of the Continue button it hides.
-  //
-  // Another tab won the message. The claim resolves after this component has already
-  // rendered off `shouldAutoContinueMessage`, which cannot see a race the lock decides,
-  // so the answer has to come back as state: without it this tab keeps a spinner for a
-  // run it never started, with the manual Continue button hidden behind it.
-  //
-  // Remembered as the message the answer was decided for, not as a bare flag: rows are
-  // mounted by INDEX (`<MessageByIndexProvider key={index}>` in progressive-messages.tsx),
-  // so selecting a different truncated branch at the same index re-renders THIS component
-  // instead of remounting it. A boolean survived that and suppressed the automatic
-  // continuation of a message no other tab had claimed, for as long as the row lived.
-  // Comparing ids re-answers per message while still refusing the one that really lost.
+  // Max Tokens auto-continues (bounded; see `shouldAutoContinue`). Remember WHICH message another
+  // tab claimed: rows mount by index, so a boolean would leak across branches at the same index.
   const [heldElsewhereFor, setHeldElsewhereFor] = useState<string | null>(null);
   const claimHeldElsewhere = heldElsewhereFor === messageId;
-  // The runtime this bar belongs to, so its keeper renews and releases this claim and no
-  // other pane's.
-  // The thread this run will file itself under, which is what the lease belongs to and
-  // what its lifetime is read from. `remoteId`, not `id`: it is the value assistant-ui
-  // passes the adapter as `unstable_threadId` and the key the run appears under in
-  // `runningByThreadId`, and an uninitialized thread has an `id` but no `remoteId`.
+  // `remoteId`, not `id`: the key the run appears under in `runningByThreadId`.
   const runThreadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const autoContinuing =
     !claimHeldElsewhere &&
     resumable &&
     shouldAutoContinueMessage(messageId, reason, parentId, {
       fits: truncation?.fits,
-      // The same cheap estimator the backend fit uses, which is all that is needed to
-      // spot a partial that has already eaten the whole budget.
+      // Same chars/4 estimator as the backend fit, enough to spot a partial that ate the budget.
       partialTokens: Math.ceil(resumedChars / 4),
       promptTarget: truncation?.prompt_target,
     });
@@ -7709,65 +7270,30 @@ const ContinueMessageBarForLastMessage: FC = () => {
       return;
     }
     let mounted = true;
-    // Claimed in module scope, not a ref, and under a cross-tab lock. `<StrictMode>` in
-    // src/main.tsx replays this effect on the same fiber with the same `autoContinuing`,
-    // so nothing inside would have differed, and rechecking the round budget would not
-    // help either: one recorded round still leaves the limit unspent. A ref fixed the
-    // replay but not a real remount, so leaving the chat with a truncated branch selected
-    // and returning fired it again, creating another sibling and another paid request.
-    // A module claim survived both but not a second TAB, which has its own module scope
-    // and its own empty claim; the lease behind this one is shared and settles that.
+    // Claimed in module scope under a cross-tab lock: a ref survives StrictMode replay but not a
+    // remount, and module scope alone does not cover a second tab.
     void claimAutoContinue(messageId, runThreadId ?? "").then((claim) => {
       if (claim === "started") {
-        // Is there still a message to resume? `aui.thread()` follows the SELECTION, not
-        // the thread this bar belongs to, so a chat or branch switch inside the window the
-        // Web Lock is pending leaves `startContinuation` looking at a different list, where
-        // it finds nothing and issues no run at all.
-        //
-        // Asked BEFORE anything is held, because a hold whose run never appears is renewed
-        // forever on purpose -- preflight has no upper bound, so no deadline can separate
-        // "never coming" from "still on its way". A hold taken for a run that was never
-        // issued therefore renews its lease for the life of the tab, and every other tab
-        // reads that lease as live and refuses the message for just as long.
-        //
-        // Not the preflight case, and it cannot become it: this is `startRun` never having
-        // been called, decided synchronously off the same store `startContinuation` reads a
-        // line later in the same tick. A run that HAS been issued and is merely slow to
-        // begin passes here and keeps its hold and its renewals.
+        // `aui.thread()` follows the selection, so check the message still exists BEFORE holding:
+        // a hold whose run never appears renews forever and blocks other tabs.
         const stillThere = aui
           .thread()
           .getState()
           .messages.some((message) => message.id === messageId);
         if (!stillThere) {
-          // Nothing held and nothing recorded, so the lease this claim took runs out its
-          // own TTL -- the same thing a tab that closed mid-claim leaves behind -- and the
-          // turn keeps the round no request was ever made for.
-          //
-          // The claim itself is given back, and only inside this tab: it is what makes
-          // `claimAutoContinue` answer "skipped" for a message it has already continued,
-          // and a message nothing was issued for has not been continued at all. Left in,
-          // returning to this branch found the message skipped for the life of the tab.
-          // The lease stays, so no second tab may start while this one is still deciding.
+          // Give the claim back in this tab only; the lease runs out its own TTL.
           forgetAutoContinue(messageId);
           return;
         }
-        // Held for as long as THIS thread's run generates, wherever the user navigates
-        // to meanwhile. The bar cannot hold it itself: the continuation's sibling becomes
-        // the selected branch and unmounts this component almost at once.
+        // Held for as long as this thread's run generates; the bar unmounts almost at once.
         holdAutoContinueRun(messageId, runThreadId);
-        // Started whether or not this component is still mounted: the run belongs to the
-        // thread, not to the bar, and a claim taken and then dropped would leave the
-        // message continued by nobody.
-        //
-        // Recorded BEFORE the run, so a round that produces nothing still spends its
-        // budget instead of re-firing this effect forever.
+        // Started even if unmounted, and recorded BEFORE the run so an empty round spends its budget.
         recordAutoContinue(parentId);
         // The run's own promise is what ends the hold if this preflight is stopped.
         watchAutoContinueRun(messageId, runThreadId, startContinuation());
         return;
       }
-      // `skipped` is this tab's own duplicate call, where the run is coming from the
-      // other one and nothing on screen should move.
+      // `skipped` is this tab's duplicate call; the run comes from the other tab.
       if (claim === "held-elsewhere" && mounted) {
         setHeldElsewhereFor(messageId);
       }
@@ -7784,17 +7310,13 @@ const ContinueMessageBarForLastMessage: FC = () => {
     runThreadId,
   ]);
 
-  // Newest turn only: appending to an older one would strand the replies after it.
-  // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
-  // `reason` is repeated rather than left to `resumable`, which is a boolean and so
-  // narrows nothing: the label below needs it proven non-undefined.
-  // The remedy is owed even when nothing can be resumed: a tool-calling turn never can be.
+  // Newest turn only. `reason` is repeated because `resumable` is a boolean and narrows nothing.
+  // A remedy is owed even when nothing can be resumed.
   if (!reason || (!remedy && !resumable)) {
     return null;
   }
   if (autoContinuing) {
-    // The run is starting this tick; showing the bar first would flash a question that is
-    // already being answered.
+    // The run starts this tick; showing the bar would flash an already-answered question.
     return (
       <div className="aui-continue-bar mt-2 flex items-center gap-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm text-muted-foreground">
         <Loader2Icon className="size-3.5 animate-spin" strokeWidth={1.75} />
@@ -7844,13 +7366,8 @@ const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
 /**
- * At module scope on purpose. The memo comparator in
- * `MessagePrimitivePartByIndex` checks `components.tools` by identity, so an
- * inline literal handed it a fresh object every render, failed the comparator
- * and rebuilt every already-finished part of a streaming reply on each chunk.
- *
- * Anything added here must stay referentially stable; an entry that really
- * depends on props or state belongs in a `useMemo`, not inline in the JSX.
+ * Module scope on purpose: `MessagePrimitivePartByIndex` compares `components.tools` by
+ * identity, so entries here must stay referentially stable.
  */
 const ASSISTANT_PART_COMPONENTS = {
   Text: MarkdownText,
@@ -7875,20 +7392,15 @@ const ASSISTANT_PART_COMPONENTS = {
 } as const;
 
 
-// Live in-place denoising canvas for DiffusionGemma: while generating, render the
-// latest per-step canvas snapshot in the bubble so the user watches the answer resolve
-// out of noise. Transient (store-only, cleared on run end), so the finished message
-// keeps only the committed markdown.
+// DiffusionGemma's live canvas; store-only, so the finished message keeps only the markdown.
 const DiffusionCanvas: FC = () => {
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // Only this conversation's own frames render here; a first turn has no id yet, so it reads
-  // "__default", which is where its run files them until the thread persists.
+  // A first turn has no id, so it reads "__default", where its run files frames until persisted.
   const threadKey =
     useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
-  // A canvas is set only by diffusion_frame events, so its presence is a sufficient gate;
-  // loadedIsDiffusion can lag the first frame on a fresh load.
+  // Canvas exists only after diffusion_frame events; loadedIsDiffusion can lag the first frame.
   const canvas = useChatRuntimeStore(
     (s) => s.activeDiffusionCanvasByThreadId[threadKey],
   );
@@ -7915,13 +7427,7 @@ const DiffusionCanvas: FC = () => {
 
 const ResearchMessageRunIdContext = createContext<string | null>(null);
 
-/**
- * AssistantMessage handles the display and inline-editing of AI responses.
- *
- * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users
- * to edit structured reasoning and tool outputs within a plain-text textarea
- * while preserving the underlying data schema and tool-call metadata.
- */
+/** Edits use <THINK> and <TOOL> tags in a plain textarea while preserving tool-call metadata. */
 const AssistantMessage: FC = () => {
   const aui = useAui();
   const focusReveal = useActionBarFocusReveal();
@@ -7962,14 +7468,12 @@ const AssistantMessage: FC = () => {
   );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
-  // Use global store for editing state to ensure a single source of truth
   const editingId = useChatRuntimeStore((s) => s.editingMessageId);
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
   const isEditing = editingId === messageId;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-grow textarea height based on content
   const adjustHeight = () => {
     const el = textareaRef.current;
     if (el) {
@@ -7985,7 +7489,6 @@ const AssistantMessage: FC = () => {
   const handleSave = async () => {
     const finalText = textareaRef.current?.value || "";
 
-    // Prioritize the specific thread item ID, then fallback to the global active thread ID
     const remoteId = aui.threadListItem().getState().remoteId
                   || useChatRuntimeStore.getState().activeThreadId;
 
@@ -8019,16 +7522,8 @@ const AssistantMessage: FC = () => {
       <MessagePrimitive.Root
       className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
-      // The message itself is the tab stop that lets the reveal below fire. Without it, a reply
-      // whose body is plain prose -- no link, no image, no code fence and so not even
-      // Streamdown's per-fence Copy button -- contains nothing focusable once `autohide` has
-      // unmounted its action bar, and Tab has no way into the message at all: Copy, Edit,
-      // Delete and More are unreachable for the whole thread except its newest reply.
-      // A tabIndex rather than a visually hidden button on purpose: it adds no DOM node (this
-      // PR exists to cut per-message weight) and it draws nothing at rest. The app's own
-      // `:focus-visible` rule in index.css gives it the same soft 1px keyboard indicator every
-      // other focusable container gets, and `:focus-visible` means a mouse click on a reply
-      // still draws nothing.
+      // The message is the tab stop that lets the action bar reveal fire; a tabIndex adds no DOM node,
+      // and :focus-visible keeps mouse clicks unringed.
       tabIndex={0}
       ref={focusReveal.ref}
       onFocus={focusReveal.onFocus}
@@ -8040,7 +7535,6 @@ const AssistantMessage: FC = () => {
         )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
-            {/* Borderless textarea, so auto-grow fits with no scrollbar; the wrapper keeps corners round. */}
             <div className="overflow-hidden rounded-xl border-[0.5px] border-border bg-muted focus-within:border-ring">
               <textarea
                 ref={textareaRef}
@@ -8054,7 +7548,7 @@ const AssistantMessage: FC = () => {
                     handleSave();
                   }
                   if (e.key === 'Escape') {
-                    setEditingId(null); // UX: Close editor on Escape
+                    setEditingId(null);
                   }
                 }}
               />
@@ -8077,11 +7571,6 @@ const AssistantMessage: FC = () => {
                 <CancelledIndicator />
                 <DiffusionCanvas />
 
-            {/*
-                We use the standard MessagePrimitive.Parts. This ensures that
-                edited messages maintain the same professional styling,
-                Markdown rendering, and tool-call components as original responses.
-            */}
                 <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
                 <SourcesGroup />
                 <RagSourcesGroup />
@@ -8103,31 +7592,7 @@ const AssistantMessage: FC = () => {
         <ForkChatShortcut />
       </MessagePrimitive.If>
 
-      {/*
-        The same reveal, for the other traversal direction.
-
-        The tabIndex on the root above only works going FORWARD. A container is reached before its
-        own descendants, so Shift+Tab arriving from the message below lands on the last tabbable
-        thing in this message -- and with the bar unmounted that is the root, which sits BEFORE
-        the bar in DOM order. Focusing it mounts the controls and then the next Shift+Tab steps
-        past them to the previous message, so Copy, Edit, Delete and More are reachable going
-        forward and unreachable going backward.
-
-        A sentinel AFTER the bar is what makes the backward pass land inside the message: focus
-        stops here, the bar mounts, and the next Shift+Tab goes into the last control rather than
-        out of the message. Deliberately not a focus redirect to that control, which would trap
-        the forward pass in a loop between the last button and this element.
-
-        A span with no content rather than a visually hidden button: it is one node with no text,
-        which matters in a PR whose point is per-message weight, and it draws nothing at rest for
-        the same :focus-visible reason as the root.
-
-        No onFocus/onBlur of its own: React's onFocus is focusin and bubbles, so focus landing
-        here already reaches the root's handler and mounts the bar. Duplicating them would run
-        the same handler twice per focus change for no effect. No role either -- it performs no
-        action, so labelling it as a button would misdescribe it; the aria-label is what stops it
-        being an unannounced stop for a screen reader.
-      */}
+      {/* Trailing stop so Shift+Tab enters the action bar; the root's onFocus mounts it. */}
       <span
         className="aui-assistant-reveal-sentinel"
         tabIndex={0}
@@ -8140,15 +7605,7 @@ const AssistantMessage: FC = () => {
 
 const COPY_RESET_MS = 2000;
 
-/**
- * One fork-count subscription for as long as the thread is on screen.
- *
- * The badges below sit inside action bars that autohide, so at rest at most the newest reply
- * has one, and none at all while the thread is running or while its last message is a prompt.
- * Left to them, the last badge leaving would drop the thread's counts and the next hover would
- * fetch them all again -- one whole-thread request per message the pointer crosses, with the
- * badge arriving a round trip after the bar it sits in.
- */
+/** One subscription per thread: the autohiding badges would otherwise refetch on every hover. */
 const useThreadForkCounts = (): void => {
   const remoteId =
     useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
@@ -8194,8 +7651,7 @@ const useForkMessageAction = () => {
   const setPending = useForkInFlight((s) => s.setForking);
 
   const handleFork = async () => {
-    // Read, do not trust the render: two handlers can run in one tick, before
-    // either sees the other's state.
+    // Read the store, not the render: two handlers can run in one tick.
     if (useForkInFlight.getState().forking) return;
     const remoteId = aui.threadListItem().getState().remoteId;
     if (!remoteId) {
@@ -8204,16 +7660,11 @@ const useForkMessageAction = () => {
     }
     setPending(true);
     try {
-      // The fork copies settings_json inside its own transaction, so anything not yet
-      // in the row is not in the copy: a pill toggled moments ago and still in the
-      // 400ms debounce, or one held because this chat's own read has not landed. The
-      // fork would otherwise open on the modes the chat had before, not the ones on
-      // screen when it was made.
+      // The fork copies settings_json from the row, so flush pending setting saves first.
       try {
         await settleThreadScopedSettingsForCopy(remoteId);
       } catch {
-        // The row does not hold what is on screen, so a fork made now would carry the
-        // pre-edit modes and look like it had lost the change. Better to say so.
+        // The row lacks on-screen edits, so a fork now would drop them; say so instead.
         toast.error("Could not fork this chat", {
           description:
             "Its settings could not be saved, so the fork would not match. Please retry.",
@@ -8248,29 +7699,16 @@ const useForkMessageAction = () => {
   };
 };
 
-/**
- * The chord's registration, which no action bar can hold.
- *
- * The button below is the user bar's, and that bar is `autohide="always"`, so
- * ActionBarPrimitive.Root returns null and takes the registration with it on
- * every message that is not hovered. The assistant bar has its own fork call
- * and never mounts the button at all, so on a thread that ended the ordinary
- * way, with a reply, no message carried the chord.
- *
- * Mounted from both message roots under `If last`, so it exists once, for
- * whichever message is last, whatever its role and wherever the pointer is.
- */
+/** The fork chord's registration, mounted once under `If last`: autohidden action bars drop it. */
 const ForkChatShortcut: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const chatActive = useChatActive();
-  // Compare mounts a thread in each pane, and the chord would go to whichever
-  // registered first. Fork from the button there.
+  // Compare mounts a thread per pane and the chord goes to whichever registered first.
   const inComparePane = useInComparePane();
   useShortcut(
     "forkChat",
     () => {
-      // `chatActive` is the visible tab, not the foreground, so a dialog over
-      // Chat would otherwise fork the conversation behind it.
+      // `chatActive` is the visible tab, not the foreground; a dialog over Chat must not fork.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       void forkMessage();
     },
@@ -8312,18 +7750,14 @@ const useResearchMessageRunId = () => {
   return useContext(ResearchMessageRunIdContext);
 };
 
-// Boolean(), not `!== null`: getResearchRunId returns whatever string it found, and an empty one
-// counted as "no research reply" before. Keeping that stops an empty id hiding a message's edit
-// and delete controls.
+// Boolean(), not `!== null`: an empty id must not hide a message's edit and delete controls.
 const hasResearchRunId = (metadata: unknown): boolean =>
   Boolean(getResearchRunId(metadata));
 
 const useOwnsResearchMessage = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
-  // The ANSWER is selected, not the message array: selecting the array subscribed every user
-  // message's action bar (and its tooltips) to every thread change, so one delete re-rendered all
-  // of them even when the answer had not moved. The export is shared across one revision.
+  // Select the ANSWER, not the message array, or every action bar re-renders on each change.
   return useAuiState(({ thread }) => {
     if (thread.messages.length === 0) {
       return false;
@@ -8336,10 +7770,7 @@ const useOwnsResearchMessage = () => {
   });
 };
 
-// Whether the active thread has a non-terminal durable research run. After a reload the
-// research store follows the run instead of an assistant-ui run, so `thread.isRunning` is
-// false while research is active; edit/reload/branch must also gate on this to keep
-// one run per chat.
+// After a reload `thread.isRunning` is false while durable research runs; gate on this too.
 const useThreadResearchActive = (): boolean => {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   return useResearchRunStore((state) => {
@@ -8353,7 +7784,6 @@ const useThreadResearchActive = (): boolean => {
   });
 };
 
-/** Deletes this message (a prompt with its replies); `hidden` for research messages. */
 function useDeleteMessage() {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
@@ -8363,10 +7793,7 @@ function useDeleteMessage() {
 
   const handleDelete = async () => {
     const thread = aui.thread();
-    // Deleting a message, and for a user prompt its cascaded assistant replies,
-    // unmounts their only Stop reading control. Stop read-aloud first when the
-    // spoken message is among those removed. Read speech state at click time and
-    // guard the call, which throws if playback already ended.
+    // Deleting unmounts the only Stop reading control; stop read-aloud first (guarded, it may throw).
     const speakingId = thread.getState().speech?.messageId;
     if (speakingId) {
       const { messages } = thread.export();
@@ -8407,7 +7834,6 @@ function useDeleteMessage() {
   return { handleDelete, isRunning, hidden: Boolean(researchRunId || ownsResearchMessage) };
 }
 
-// The More menu's Delete, last and in red.
 const DeleteMessageMenuItem: FC = () => {
   const { handleDelete, isRunning, hidden } = useDeleteMessage();
   if (hidden) {
@@ -8442,7 +7868,6 @@ const ForkMessageMenuItem: FC = () => {
   );
 };
 
-// A prompt's More menu: Fork, then Delete.
 const UserMoreMenu: FC = () => {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const collisionPadding = useWindowChromeCollisionPadding(undefined);
@@ -8478,8 +7903,7 @@ const CopyButton: FC = () => {
   const handleCopy = async () => {
     // getCopyText reads content only, and a long paste sits in an attachment.
     const pasted = attachmentsPastedText(aui.message().getState().attachments);
-    // The image tokens are renderer markup, not prose: strip them or the clipboard
-    // gets `[[img:0123456789ab]]` where the picture was.
+    // Strip image tokens or the clipboard gets `[[img:0123456789ab]]` where the picture was.
     const text = [stripSearchImageTokens(aui.message().getCopyText()), pasted]
       .filter((part) => part.length > 0)
       .join("\n\n");
@@ -8530,8 +7954,6 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
-/** The More menu's Continue response, for the newest finished reply; incomplete replies use the
- *  Resume bar. */
 const ContinueResponseMenuItem: FC = () => {
   const isLast = useAuiState(({ message }) => message.isLast);
   if (!isLast) {
@@ -8564,7 +7986,6 @@ const ContinueResponseMenuItemForLastMessage: FC = () => {
   );
 };
 
-// The More menu's Edit response, shown when the button is not pinned to the bar.
 const EditAssistantMessageMenuItem: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
   const researchRunId = useResearchMessageRunId();
@@ -8589,8 +8010,7 @@ const EditAssistantMessageMenuItem: FC = () => {
 async function exportMessageMarkdown(content: string): Promise<void> {
   try {
     await downloadFile(
-      // Same rule as the copy button and the whole-chat export: the tokens are
-      // renderer markup, so a saved answer must not carry them as prose.
+      // The tokens are renderer markup, so a saved answer must not carry them (as copy/export).
       stripSearchImageTokens(content),
       `message-${Date.now()}.md`,
       "text/markdown",
@@ -8615,28 +8035,15 @@ const AssistantActionBar: FC = () => {
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // Off by default: Edit response lives in the More menu.
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
-  // hideWhenRunning is thread-level, so a new run would hide this bar and its
-  // only Stop reading control while read-aloud keeps playing; keep it shown.
+  // hideWhenRunning is thread-level; keep the bar while speaking, it holds the only Stop control.
   const speaking = useAuiState(({ message }) => message.speech != null);
 
   return (
     <>
       <ActionBarPrimitive.Root
         hideWhenRunning={!speaking}
-        // Unmounts the bar on every message that is not hovered, as the user bar already does.
-        // Mounted, each one holds ~8 tooltips subscribed to the global modal-layer store, so
-        // every menu open fanned out across the whole thread.
-        //
-        // "not-last", not "always": an unmounted bar is out of the tab order too, and these are
-        // the only Copy, Refresh, Read aloud and More controls a message has. The newest reply
-        // keeps its bar, so a keyboard user still reaches the message they are acting on, and
-        // the other N-1 still go: 8 tooltip subscriptions on a 500-message thread instead of
-        // ~250. "never" while speaking because this bar carries the only Stop reading control,
-        // which neither hover nor a later reply must take away.
-        //
-        // The older N-1 are deferred, not lost: useActionBarFocusReveal on the message root
-        // remounts a bar when focus enters that message, so tabbing brings back what hovering
-        // brings back and the controls return to the accessibility tree with it.
+        // Autohide drops each bar's ~8 tooltip subscriptions; "not-last" keeps the newest reply's bar
+        // tabbable, useActionBarFocusReveal remounts others on focus, "never" while speaking.
         autohide={speaking ? "never" : "not-last"}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
@@ -8653,8 +8060,7 @@ const AssistantActionBar: FC = () => {
             </ActionBarPrimitive.Speak>
           </MessagePrimitive.If>
         )}
-        {/* Not gated on ttsEnabled: turning the setting off while a message
-            is being read aloud must not remove the only stop control. */}
+        {/* Not gated on ttsEnabled: disabling it mid-read must not remove the only stop control. */}
         <MessagePrimitive.If speaking={true}>
           <ActionBarPrimitive.StopSpeaking asChild={true}>
             <TooltipIconButton
@@ -8673,9 +8079,7 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.Reload>
         )}
-        {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
-            that is an INHERITED property, so every open invalidates style for the whole
-            document. On a long thread that recalc is the bulk of the open+close cost. */}
+        {/* Non-modal: a modal menu sets inherited pointer-events on body, restyling everything. */}
         <ActionBarMorePrimitive.Root modal={false}>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton
@@ -8693,8 +8097,7 @@ const AssistantActionBar: FC = () => {
             onCloseAutoFocus={(e) => e.preventDefault()}
             className={MORE_MENU_CONTENT_CLASS}
           >
-            {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners.
-                The surface padding insets it clear of the curve. */}
+            {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners. */}
             <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
               {/* Keep the click that dismisses the menu off the bar's buttons. */}
               <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
@@ -8717,12 +8120,8 @@ const AssistantActionBar: FC = () => {
               {activeProjectId && (
                 <ActionBarMorePrimitive.Item
                   onSelect={() => {
-                    // Not getCopyText: it joins text parts alone, so a reply's
-                    // reasoning, tool calls and citations would be dropped and a
-                    // tool-only reply would read as empty. Same conversion the
-                    // whole-chat save runs.
-                    // Stripped: a project source is retrieved back into context, so
-                    // saved tokens would teach the model ids that resolve to nothing.
+                    // Not getCopyText, which drops reasoning, tools and citations. Stripped: saved
+                    // tokens would teach the model ids that resolve to nothing.
                     const text = stripSearchImageTokens(
                       replySourceMarkdown(
                         aui.message().getState().content,
@@ -8734,11 +8133,9 @@ const AssistantActionBar: FC = () => {
                       return;
                     }
                     const state = aui.threadListItem().getState();
-                    // The list item's title belongs to the whole chat, so mark the
-                    // reply apart or saving both lists two identical names.
+                    // The title is the whole chat's, so mark the reply apart.
                     const title = state.title ? `${state.title} - reply` : "reply";
-                    // activeProjectId can lag a thread switch while the stored
-                    // thread loads; resolve the destination from this thread.
+                    // activeProjectId can lag a thread switch; resolve the destination from this thread.
                     const remoteId =
                       state.remoteId ||
                       useChatRuntimeStore.getState().activeThreadId;
@@ -8825,14 +8222,10 @@ const UserMessage: FC = () => {
           <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
         </UserMessageFooter>
       </div>
-      {/* The other half of the pair: last is a user message while a reply is
-          still to come, or once one has been deleted. */}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>
-      {/* Reverse traversal reaches a trailing stop before the root. Focusing it
-          mounts the autohidden controls, so the next Shift+Tab enters More
-          instead of skipping the action bar and leaving the message. */}
+      {/* Trailing stop so reverse traversal mounts the autohidden controls and enters More. */}
       <span
         className="aui-user-reveal-sentinel"
         tabIndex={0}
@@ -8883,8 +8276,7 @@ const EditComposer: FC = () => {
     aui.composer().send({ startRun: true });
   });
 
-  // The one submit path. ComposerPrimitive.Root is a form and its Enter handler sends
-  // without startRun, which drops an unchanged edit, so preventDefault here and take over.
+  // ComposerPrimitive.Root's Enter handler sends without startRun, dropping an unchanged edit.
   const submitEdit = useCallback(() => {
     if (isComposingRef.current) return;
     if (aui.thread().getState().isRunning) {
@@ -8892,8 +8284,6 @@ const EditComposer: FC = () => {
       aui.thread().cancelRun();
       return;
     }
-    // startRun forces a run when nothing was typed: the edit composer's send
-    // drops a message whose text and attachments are unchanged.
     aui.composer().send({ startRun: true });
   }, [aui, isComposingRef]);
 
@@ -8915,7 +8305,6 @@ const EditComposer: FC = () => {
           }
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
-          // See main composer above for the dir="auto" rationale.
           dir="auto"
           {...inputProps}
         />

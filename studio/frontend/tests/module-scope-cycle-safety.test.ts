@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * `general-tab.tsx` reads `SIDEBAR_ORGANIZATION_STORAGE_KEY` at module scope.
- * While that key lived in `sidebar-organization-store.ts`, which sits in an
- * import cycle through the chat barrel, the read could hit the temporal dead
- * zone and throw, unmounting the app: a white screen on launch. Import order
- * hid it by accident, so the fix (a keys module importing nothing, hence always
- * evaluated first) is asserted here rather than left to convention.
- */
+/** Keys live in an import-free module, so module-scope reads cannot hit the TDZ in a cycle. */
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -44,7 +37,6 @@ const parse = (file: string, text: string) =>
     file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
 
-/** Module specifiers of `import`/`export ... from` declarations. */
 const staticSpecifiers = (file: string, text: string): string[] => {
   const specifiers: string[] = [];
   const visit = (node: ts.Node): void => {
@@ -102,8 +94,6 @@ test("general-tab reads the key from the keys module, not the store or the barre
 });
 
 test("the key is still read at module scope, so the guard above is load-bearing", async () => {
-  // If this stops being a module-scope read, the two tests above are pointless
-  // and should go.
   const text = await readFile(GENERAL_TAB, "utf8");
   const source = parse(GENERAL_TAB, text);
 
@@ -131,24 +121,8 @@ test("the key is still read at module scope, so the guard above is load-bearing"
 });
 
 /**
- * The same white screen, reached a second way.
- *
- * `use-model-memory.ts` read `CHAT_GPU_MEMORY_MODE_KEY` and friends from the
- * chat runtime store, which reaches this file back:
- *
- *   chat -> apply-inference-status-to-store -> model-picker -> model-selector
- *        -> pickers -> use-model-memory -> chat
- *
- * Under dev's unbundled ESM that ring evaluated `use-model-memory` before the chat
- * store had finished, and the module-scope const read threw "Cannot access
- * 'CHAT_GPU_MEMORY_MODE_KEY' before initialization". Measured on main: the page threw,
- * `#root` had 0 children and the body was empty. Reading the keys from an import-free
- * leaf module lets the app render regardless of entry-module order.
- *
- * Production builds never showed it. The bundler hoists these declarations into one
- * module, so the ordering the dev server exposes stops existing, which is exactly the
- * kind of defect that survives review and CI and only ever bites whoever runs the dev
- * server next.
+ * Dev's unbundled ESM evaluated use-model-memory before the chat store (an import cycle),
+ * so module-scope key reads threw; production bundling hides it.
  */
 const MODEL_MEMORY = path.join(SRC, "hooks/use-model-memory.ts");
 const CHAT_RUNTIME_KEYS = path.join(

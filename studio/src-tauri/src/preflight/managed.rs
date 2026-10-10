@@ -10,9 +10,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 
-// 3: the cached capability gained studio_install_ok / studio_install_reason.
-// 4: the fingerprint gained the llama.cpp runtime, so a quarantined file
-//    invalidates the entry instead of being served a stale Ready.
+// 4: fingerprint includes the llama.cpp runtime so quarantine invalidates the cache.
 const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 4;
 
 /// The install is fine; the directory its children must run from is not reachable.
@@ -21,10 +19,7 @@ pub(super) const WORKING_DIRECTORY_UNAVAILABLE: &str = "working_directory_unavai
 /// so reinstalling hits the same wall. Mirrored in the frontend message map.
 pub(super) const PATH_SETTING_UNRESOLVABLE: &str = "path_setting_unresolvable";
 
-/// The reason a managed context failure is reported under, with the setting that
-/// caused it where there is one: "one of Unsloth's folder settings" is not
-/// something a user can act on, and every pin failure names the setting it could
-/// not preserve. The name only, never the value, since this reaches the window.
+/// Names the offending setting (name only, never the value, since this reaches the window).
 pub(super) fn context_reason(error: &crate::process::ManagedContextError) -> String {
     match error {
         crate::process::ManagedContextError::WorkingDirectory(_) => {
@@ -84,9 +79,7 @@ const FNV64_PRIME: u64 = 0x100000001b3;
 const HASHED_MARKER_MAX_BYTES: u64 = 64 * 1024;
 
 const FALLBACK_MARKER_NAMES: &[&str] = &[
-    // In the fingerprint, not just the cached answer: a repair touching only
-    // studio.txt leaves every other marker alone, so a cache entry written
-    // while healthy would outlive the dropped manifest. Mirrors MANIFEST_NAME.
+    // Fingerprinted so a repair dropping the manifest invalidates the cache. Mirrors MANIFEST_NAME.
     "unsloth_install_manifest.json",
     "pyvenv.cfg",
     "uv.lock",
@@ -103,14 +96,10 @@ struct DesktopCapability {
     supports_provision_desktop_auth: Option<bool>,
     supports_desktop_backend_ownership: Option<bool>,
     desktop_auth_stale_reason: Option<String>,
-    // A part-way install leaves a CLI that answers `-h` and a backend that dies
-    // on `import structlog`, so a running CLI does not mean ready.
+    // A partial install answers `-h` but its backend dies on import, so a running CLI is not ready.
     studio_install_ok: Option<bool>,
     studio_install_reason: Option<String>,
-    // Quarantine takes files out of an otherwise present llama.cpp tree, which
-    // staleness on the managed Python alone missed: the desktop launched and the
-    // model load failed later looking like a bad GGUF. None when the CLI is too
-    // old to answer or nothing is installed yet.
+    // Quarantine can remove runtime files. None when the CLI is too old or nothing is installed.
     llama_runtime_ok: Option<bool>,
     llama_runtime_reason: Option<String>,
     version: Option<String>,
@@ -192,10 +181,7 @@ fn site_packages_dirs(venv_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Hash of the .dist-info / .egg-info names present, version included.
-///
-/// pip uninstall rewrites nothing else that is fingerprinted, so a venv that
-/// lost a studio.txt dependency would keep serving the healthy verdict.
+/// Hash of installed .dist-info/.egg-info names; pip uninstall changes nothing else fingerprinted.
 fn installed_distributions_hash(site_packages: &Path) -> Option<u64> {
     let mut names: Vec<String> = fs::read_dir(site_packages)
         .ok()?
@@ -235,17 +221,7 @@ fn marker_candidates_for_bin(bin: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The file whose size and mtime stand for "this CLI", which is the launcher when there
-/// is one.
-///
-/// On Windows there may not be. Antivirus quarantine deletes the generated unsloth.exe
-/// and leaves a venv that still runs through its interpreter, and since that is now a
-/// supported layout, find_unsloth_binary_in_studio_dir hands back a launcher path that
-/// does not exist. Keying the fingerprint on it would fail fs::metadata, so the
-/// capability cache could be neither read nor written, and every preflight would pay
-/// both the -h and the desktop-capabilities subprocess with their own 10s ceilings.
-/// python.exe is the right stand-in: it is what actually starts the CLI there, and an
-/// update replaces the whole venv, so it moves when the launcher would have.
+/// The file standing for "this CLI": the launcher, or python.exe on Windows when quarantine removed it.
 fn fingerprint_identity_file(bin: &Path) -> Option<PathBuf> {
     if bin.exists() {
         return Some(bin.to_path_buf());
@@ -327,17 +303,8 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
     })
 }
 
-/// The folder a leading `~` names, resolved the way the CLI child resolves it.
-///
-/// `ntpath.expanduser` answers USERPROFILE, while `dirs::home_dir()` reads the
-/// known folder, which a portable or overridden profile moves. Taking the latter
-/// would fingerprint a tree the child never looks at.
-///
-/// process.rs calls this rather than keeping its own order: it used to pass
-/// `dirs::home_dir()` straight into `expand_windows_user`, so on a Windows box with
-/// an overridden USERPROFILE the child was pinned to the known folder while this
-/// fingerprinted the profile, and quarantine in the tree actually in use never
-/// invalidated a cached healthy result.
+/// `~` resolved like the CLI child: ntpath uses USERPROFILE, not dirs::home_dir()'s known folder.
+/// process.rs uses this too so pinning and fingerprinting agree.
 pub(crate) fn tilde_home() -> Option<PathBuf> {
     if cfg!(windows) {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
@@ -349,16 +316,8 @@ pub(crate) fn tilde_home() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
-/// `UNSLOTH_LLAMA_CPP_PATH` resolved the way the CLI child sees it: trimmed, `~`
-/// expanded (`default_managed_llama_dir` calls expanduser), and a relative value
-/// anchored to this process's working directory (`relative_override_pins` pins it
-/// from exactly there before the spawn).
-///
-/// `~name` is left alone, since nothing here can resolve another user's home; it
-/// is then relative, so it is anchored like any other relative value.
-///
-/// UNSLOTH_STUDIO_HOME is deliberately not consulted: managed spawns scrub it
-/// (MANAGED_CHILD_SCRUBBED_ENV), so the CLI falls through to the legacy root too.
+/// UNSLOTH_LLAMA_CPP_PATH as the CLI child sees it: trimmed, `~` expanded, relative anchored to cwd.
+/// UNSLOTH_STUDIO_HOME is ignored: managed spawns scrub it.
 #[cfg_attr(test, allow(dead_code))]
 fn llama_runtime_override() -> Option<PathBuf> {
     llama_runtime_override_from(
@@ -394,22 +353,11 @@ pub(crate) fn llama_runtime_override_from(
     if path.is_absolute() {
         return Some(path);
     }
-    // Anchored, not discarded: dropping it makes both halves of a launch pair
-    // report None, so the cache keeps hitting while the real runtime rots. The
-    // child joins this value to this same directory, so joining it here watches
-    // the tree the child was told about.
+    // Anchored, not dropped: the child joins it to this same directory.
     Some(cwd?.join(path))
 }
 
-/// `~alice/llama.cpp` resolved to Alice's home, the way `Path.expanduser()` does.
-///
-/// posixpath.expanduser answers this out of the password database, so leaving it
-/// alone made the value relative, anchored it under the desktop's own directory,
-/// and fingerprinted a tree the child never opens. getpwnam is the same lookup
-/// Python makes, so the two agree for LDAP and SSSD users as well as local ones.
-/// None when the name is unknown, which leaves the value to be anchored like any
-/// other relative path rather than guessed at. Windows has its own rule and its
-/// own arm below.
+/// `~alice/...` via the password database, as Path.expanduser() does; None for unknown names.
 #[cfg(unix)]
 pub(crate) fn named_user_home(value: &str, _home: Option<&Path>) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
@@ -426,12 +374,7 @@ pub(crate) fn named_user_home(value: &str, _home: Option<&Path>) -> Option<PathB
         return None;
     }
     let c_name = std::ffi::CString::new(name).ok()?;
-    // getpwnam_r, not getpwnam: this runs on a Tauri worker thread, and getpwnam
-    // hands back a pointer into storage shared by the whole process, so a
-    // concurrent passwd lookup anywhere else could overwrite pw_dir while it was
-    // being copied. Copying promptly narrows that window, it does not close it,
-    // and a torn read here fingerprints an unrelated tree. The _r form writes
-    // into a buffer this call owns.
+    // getpwnam_r, not getpwnam: getpwnam returns process-shared storage another thread can overwrite.
     let mut buffer = vec![0i8; 1024];
     let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
     let home = loop {
@@ -446,14 +389,10 @@ pub(crate) fn named_user_home(value: &str, _home: Option<&Path>) -> Option<PathB
             )
         };
         if code == libc::ERANGE && buffer.len() < 1 << 20 {
-            // The name resolves, the buffer was too small for its record. Only
-            // grow so far, so a hostile or broken passwd source cannot make this
-            // allocate without end.
+            // Buffer too small; growth is capped so a broken passwd source cannot allocate without end.
             buffer.resize(buffer.len() * 2, 0);
             continue;
         }
-        // A nonzero code is a lookup error and a null found is "no such user".
-        // Both leave the value to be anchored like any other relative path.
         if code != 0 || found.is_null() {
             return None;
         }
@@ -478,19 +417,8 @@ pub(crate) fn named_user_home(_value: &str, _home: Option<&Path>) -> Option<Path
     None
 }
 
-/// `~name` on Windows, the way ntpath.expanduser resolves it: the sibling of this
-/// profile, and only where ntpath is willing to guess at all.
-///
-/// Leaving it alone made the value relative, so the fingerprint watched
-/// `<cwd>\~other\llama.cpp` while process.rs pins the variable for the child
-/// through its own `expand_windows_user` and the CLI's `Path.expanduser()` reads
-/// it the same way, both landing on the real profile. Quarantine under that
-/// profile then never invalidated a cached healthy result.
-///
-/// Compiled on every platform so the rule is testable off Windows; only the
-/// Windows arm above calls it. None when ntpath would decline (a profile folder
-/// not named after the current user, an unknown USERNAME), which leaves the value
-/// anchored like any other relative path rather than guessed at.
+/// `~name` on Windows as ntpath.expanduser resolves it (sibling profile), matching process.rs.
+/// None where ntpath declines, e.g. a profile not named after the current user.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn named_windows_user_home(value: &str, home: &Path, username: Option<&str>) -> Option<PathBuf> {
     let rest = value.strip_prefix('~')?;
@@ -514,19 +442,13 @@ fn named_windows_user_home(value: &str, home: &Path, username: Option<&str>) -> 
     Some(PathBuf::from(format!("{base}{tail}")))
 }
 
-/// The markers install.ps1 writes into its generated `unsloth.cmd`, and the size
-/// past which the file is not that shim. Same pair `_is_managed_cmd_shim` reads,
-/// so a hand rolled wrapper that happens to call the CLI is not mistaken for one.
+/// Markers and max size of install.ps1's unsloth.cmd shim; same pair as `_is_managed_cmd_shim`.
 #[cfg(any(windows, test))]
 const CMD_SHIM_MARKERS: [&[u8]; 2] = [b"unsloth-studio-managed-launcher", b"from unsloth_cli import app"];
 #[cfg(any(windows, test))]
 const CMD_SHIM_MAX_BYTES: u64 = 8192;
 
-/// Whether a directory carries the sentinel an installer-managed Studio root has,
-/// mirroring `_looks_like_installer_managed_studio_home` in the CLI.
-///
-/// Compiled on every platform so the rule is testable off Windows; the runtime
-/// answer follows the platform this is built for, as it does in Python.
+/// Mirrors `_looks_like_installer_managed_studio_home` in the CLI.
 fn looks_like_installer_managed_studio_home(candidate: &Path) -> bool {
     if candidate.join("share").join("studio.conf").is_file() {
         return true;
@@ -561,28 +483,15 @@ fn is_managed_cmd_shim(path: &Path) -> bool {
         .all(|marker| body.windows(marker.len()).any(|window| window == *marker))
 }
 
-/// The llama.cpp root an installer-managed venv implies, with no ambient
-/// override to say so.
-///
-/// The desktop strips UNSLOTH_STUDIO_HOME before spawning the CLI, but the CLI
-/// puts it back: `_resolve_studio_home` re-infers the root from `sys.prefix` when
-/// the venv is named `unsloth_studio` and the root carries an installer sentinel,
-/// and `_ensure_studio_env_exported` then points UNSLOTH_LLAMA_CPP_PATH at that
-/// root's llama.cpp. Reading only the ambient environment here fingerprinted the
-/// legacy ~/.unsloth/llama.cpp instead, so quarantine inside the custom runtime
-/// never moved the fingerprint and a cached Ready kept being served for a tree
-/// the new health check never got to grade.
-///
-/// `bin` is the launcher file inside the venv, so its grandparent is `sys.prefix`.
+/// The CLI re-infers the studio root from sys.prefix and repoints UNSLOTH_LLAMA_CPP_PATH there,
+/// so the fingerprint must follow it. `bin`'s grandparent is `sys.prefix`.
 fn inferred_studio_llama_root(bin: &Path) -> Option<PathBuf> {
     let prefix = bin.parent()?.parent()?;
     if prefix.file_name()? != "unsloth_studio" {
         return None;
     }
     let root = prefix.parent()?;
-    // Python resolves both sides before comparing, so a symlinked or relative
-    // path to the legacy root is still the legacy root, and the answer there is
-    // the legacy llama.cpp rather than <root>/llama.cpp.
+    // Python resolves both sides, so a symlinked legacy root is still the legacy root.
     let legacy = dirs::home_dir()?.join(".unsloth").join("studio");
     let same = match (root.canonicalize(), legacy.canonicalize()) {
         (Ok(left), Ok(right)) => left == right,
@@ -594,22 +503,14 @@ fn inferred_studio_llama_root(bin: &Path) -> Option<PathBuf> {
     if !looks_like_installer_managed_studio_home(root) {
         return None;
     }
-    // A master root puts the runtimes BESIDE studio/, and the CLI recovers that note
-    // and grades <master>/llama.cpp. Fingerprinting <root>/llama.cpp here would watch a
-    // tree nothing loads, so one healthy cached result would survive quarantine in the
-    // runtime actually in use.
+    // A master root puts runtimes beside studio/; the CLI grades <master>/llama.cpp.
     if let Some(master) = recorded_master_root(root) {
         return Some(master.join("llama.cpp"));
     }
     Some(root.join("llama.cpp"))
 }
 
-/// The master root `<studio home>/share/.unsloth-master-root` records, or None.
-///
-/// Same rule as `_recorded_master_root` in unsloth_cli/commands/studio.py: the
-/// recorded root must exist and must CONTAIN this Studio tree, so a tree copied from
-/// one master root to another does not point the fingerprint back at the original.
-/// The legacy shape is declined by the caller before this runs, as it is there.
+/// Same rule as `_recorded_master_root` in unsloth_cli/commands/studio.py: must exist and contain this tree.
 fn recorded_master_root(studio_home: &Path) -> Option<PathBuf> {
     let note = studio_home.join("share").join(".unsloth-master-root");
     let recorded = std::fs::read_to_string(note).ok()?;
@@ -631,14 +532,7 @@ fn recorded_master_root(studio_home: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Whether a folder holds a llama-server in one of the layouts the backend
-/// accepts, which is the question that decides whether discovery stops there.
-///
-/// Presence, not usability, and the CLI half agrees: `_scan_pinned` returns a hit
-/// for an executable candidate and an unavailable path for one that is merely
-/// present, and both end the search. Only a layout holding no server at all is
-/// walked past, so asking for the execute bit here would fingerprint a different
-/// tree than the CLI grades in exactly the case where the pinned one is damaged.
+/// Presence, not executability, matching `_scan_pinned`, which also stops at a non-executable server.
 fn holds_a_llama_server(root: &Path) -> bool {
     let name = if cfg!(windows) {
         "llama-server.exe"
@@ -653,42 +547,25 @@ fn holds_a_llama_server(root: &Path) -> bool {
         let Ok(metadata) = fs::metadata(candidate) else {
             return false;
         };
-        // Presence, not usability. _scan_pinned answers "non_executable" for a
-        // candidate without the bit and the caller turns that into _unavailable,
-        // which ends the search rather than falling through, so a server the
-        // loader could not run still stops discovery at this folder.
         metadata.is_file()
     })
 }
 
-/// The managed llama.cpp install root, the same one default_managed_llama_dir
-/// picks in Python.
+/// The managed llama.cpp root, as default_managed_llama_dir picks it in Python.
 fn llama_runtime_root(bin: &Path) -> Option<PathBuf> {
-    // Hermetic under test: this walks a real directory, so otherwise a developer
-    // with a runtime installed and a CI runner without one run different tests.
-    // Unset means no runtime at all. Mirrors capability_cache_path()'s hook.
+    // Hermetic under test; unset means no runtime.
     #[cfg(test)]
     {
         let _ = bin;
         return std::env::var_os("UNSLOTH_TEST_LLAMA_RUNTIME_ROOT").map(PathBuf::from);
     }
-    // The override is asked first and its answer is final: falling back to the
-    // legacy tree when it is set but unresolvable would fingerprint a directory
-    // the CLI is not reporting on.
-    // Trimmed before deciding, because default_managed_llama_dir strips the value
-    // and a whitespace-only one therefore sends the child to the legacy tree. A
-    // raw is_empty test called that an override, took this branch, resolved to
-    // None, and left the tree the child actually grades with no fingerprint at
-    // all, so a library removed after a healthy result never invalidated Ready.
+    // The override's answer is final. Trimmed first: whitespace-only means no override, as in Python.
     #[cfg(not(test))]
     if std::env::var("UNSLOTH_LLAMA_CPP_PATH")
         .is_ok_and(|value| !value.trim().is_empty())
     {
-        // An override the desktop wrote points at the managed tree and the CLI
-        // grades it whatever it holds, so it is taken as given. A user-written one
-        // only stops _scan_pinned when it actually holds a server; when it does
-        // not, the CLI walks past it and grades the tree behind it, so stopping
-        // here would fingerprint a folder nobody loads.
+        // A desktop-written override is taken as given; a user one only if it holds a server,
+        // as in _scan_pinned.
         let desktop_wrote_it =
             std::env::var("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH").as_deref() == Ok("1");
         let override_root = llama_runtime_override();
@@ -701,8 +578,6 @@ fn llama_runtime_root(bin: &Path) -> Option<PathBuf> {
             }
         }
     }
-    // No ambient override, so ask the venv the same question the CLI asks itself
-    // before falling back to the legacy tree.
     #[cfg(not(test))]
     if let Some(inferred) = inferred_studio_llama_root(bin) {
         return Some(inferred);
@@ -711,18 +586,11 @@ fn llama_runtime_root(bin: &Path) -> Option<PathBuf> {
     return Some(dirs::home_dir()?.join(".unsloth").join("llama.cpp"));
 }
 
-/// A cheap stand-in for "the llama.cpp runtime tree is unchanged": how many files
-/// sit in its binary directory and how many bytes they total.
-///
-/// The rest of this fingerprint covers the managed venv only, so a quarantined
-/// runtime file left it identical and preflight answered Ready from the cache
-/// without ever asking the CLI. None when no runtime is installed, which is
-/// NotInstalled rather than broken.
+/// File count and byte total of the runtime bin dir; None when no runtime is installed.
 fn llama_runtime_fingerprint(bin: &Path) -> Option<String> {
     llama_runtime_fingerprint_at(&llama_runtime_root(bin)?)
 }
 
-/// The walk itself, against a given root, so the tests need no shared state.
 fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
     let mut bin = root.join("build").join("bin");
     if cfg!(windows) {
@@ -731,25 +599,14 @@ fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
     let root_part = root_entrypoints(root);
     match fs::read_dir(&bin) {
         Ok(entries) => Some(format!("bin:{}|root:{root_part}", counted(entries))),
-        // build/bin is gone but something is still there. Answering None would
-        // make that identical to "nothing was ever installed", so a Ready cached
-        // while no runtime existed kept matching once a marker appeared over a
-        // missing build/bin, and the CLI never got to say llama_runtime_dir_missing.
-        // Fingerprinting the root's own entries makes the marker's arrival move it.
+        // Missing build/bin is distinct from nothing installed, so fingerprint the root's entries.
         Err(_) => fs::read_dir(root)
             .ok()
             .map(|entries| format!("nobin:{}|root:{root_part}", counted(entries))),
     }
 }
 
-/// The two entrypoints at the install root, which the walk above cannot see.
-///
-/// `_find_llama_server_binary` reaches `<root>/llama-server` before `build/bin`, and
-/// `create_exec_entrypoint` writes a real wrapper there when it cannot make a symlink, so
-/// its mode can move while `build/bin` stays byte for byte identical. That is what
-/// `installed_runtime_health` now grades, and without it here the cached Ready survived the
-/// damage and the CLI was never asked. Following links deliberately: the CLI follows them
-/// too, and a dangling one is absent to both.
+/// Root entrypoints, which `_find_llama_server_binary` checks before build/bin. Follows links like the CLI.
 fn root_entrypoints(root: &Path) -> String {
     let ext = if cfg!(windows) { ".exe" } else { "" };
     let mut out = String::new();
@@ -768,27 +625,14 @@ fn root_entrypoints(root: &Path) -> String {
                 let mode = 0u64;
                 out.push_str(&format!("{}:{}:{mode}", u64::from(meta.is_file()), meta.len()));
             }
-            // Absent, or a link whose target went. Not a pin either way, which is
-            // what installed_runtime_health does with it.
             Err(_) => out.push('-'),
         }
     }
     out
 }
 
-/// How many files a directory holds, how many bytes they total, how many links
-/// sit beside them and what their permission bits add up to. A subdirectory is
-/// not a file, so it cannot read as a binary.
-///
-/// The last two counters are here because the first two answered the same for
-/// trees the CLI grades differently. DirEntry::metadata does not follow a link,
-/// so a link is not a file and neither its presence nor its loss moved a count
-/// or a byte total, yet losing the install-name link (libggml.0.dylib, and the
-/// SONAME link on Linux) is exactly what installed_runtime_health calls a broken
-/// payload. Clearing the execute bit on llama-server moves neither the count nor
-/// the length either, and that is the other thing health rejects. Either state
-/// used to leave a cached Ready matching, so the repair was never offered and
-/// the launch failed instead.
+/// Files, bytes, links and summed mode bits; links and exec bits are tracked because
+/// installed_runtime_health rejects their loss.
 fn counted(entries: fs::ReadDir) -> String {
     let mut count: u64 = 0;
     let mut bytes: u64 = 0;
@@ -799,8 +643,6 @@ fn counted(entries: fs::ReadDir) -> String {
         let Ok(meta) = entry.metadata() else {
             continue;
         };
-        // Every entry this walk counts, link or file, contributes its name. A
-        // subdirectory still does not, matching the counters.
         if meta.is_symlink() {
             links += 1;
             names = names.wrapping_add(name_hash(&entry.file_name()));
@@ -813,14 +655,7 @@ fn counted(entries: fs::ReadDir) -> String {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                // The permission bits themselves, not a count of "has some execute
-                // bit". os.access(X_OK) asks whether THIS user may run the file,
-                // and the owner's bits decide that on their own: 0755 -> 0655
-                // leaves group and other executable while the owner can no longer
-                // run it, so a counter of any-bit-set never moved for the state
-                // health rejects. Summed rather than folded, since read_dir order
-                // is unspecified. Windows has no bits to read and stays at zero,
-                // where the other three carry the tree.
+                // Sum of full mode bits: the owner's bits alone decide os.access(X_OK). Zero on Windows.
                 modes += u64::from(meta.permissions().mode() & 0o7777);
             }
         }
@@ -828,25 +663,8 @@ fn counted(entries: fs::ReadDir) -> String {
     format!("{count}:{bytes}:{links}:{modes}:{names}")
 }
 
-/// FNV-1a over one entry's name, summed into the fingerprint by the caller.
-///
-/// Names are here because the four counters are all aggregates, and a rename in
-/// place moves none of them: security software that renames ggml-base.dll to a
-/// quarantine suffix beside itself leaves the count, the byte total, the link
-/// count and the mode sum identical, so installed_runtime_health rejected the
-/// tree while the cached Ready still matched and preflight answered Ready without
-/// ever running the capability probe. The launch then failed with no repair
-/// offered, which is the exact hole the runtime half of this fingerprint exists
-/// to close.
-///
-/// Summed rather than folded in sequence, because read_dir order is unspecified
-/// and the counters beside it are order-independent for that reason; sorting
-/// would cost an allocation per entry on a walk that runs before the window
-/// opens. FNV-1a rather than DefaultHasher so the value is stable across Rust
-/// releases: a hash that moved on a toolchain bump would invalidate every cached
-/// verdict on the first launch after an upgrade. A sum admits collisions in
-/// principle, but the thing being detected is a rename, and a renamed file has to
-/// collide with the name it replaced, not with any name.
+/// FNV-1a (stable across Rust releases) of an entry name, summed since read_dir order is unspecified.
+/// Names catch quarantine renames that leave every counter unchanged.
 fn name_hash(name: &std::ffi::OsStr) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in name.to_string_lossy().as_bytes() {
@@ -856,14 +674,8 @@ fn name_hash(name: &std::ffi::OsStr) -> u64 {
     hash
 }
 
-/// The fingerprint an answer may be stored under, or None when it may not be stored.
-///
-/// The one taken before the probe, and only while the tree still matches it. Reading
-/// the fingerprint afresh afterwards instead meant a file quarantined while
-/// desktop-capabilities was running was cached as healthy under its own damaged
-/// fingerprint, which then matched on every later launch, so the CLI was never asked
-/// again and the repair was never offered. A mismatch describes a tree that no longer
-/// exists; there is nothing worth keeping and the next launch asks again.
+/// Only the pre-probe fingerprint, and only if the tree still matches, so a mid-probe quarantine
+/// is not cached.
 fn fingerprint_to_cache_under<'a>(
     before: Option<&'a ManagedBinFingerprint>,
     after: Option<ManagedBinFingerprint>,
@@ -923,12 +735,7 @@ const LLAMA_RUNTIME_NOT_MANAGED: &str = "llama_runtime_not_managed";
 /// And its word for "the probe itself raised", which is about one attempt.
 const LLAMA_RUNTIME_PROBE_FAILED: &str = "llama_runtime_probe_failed";
 
-/// Whether the runtime verdict in this answer was skipped rather than reached.
-///
-/// Both reasons mean no verdict was reached, and neither is a fact this fingerprint
-/// watches: the selection lives in the settings database and the environment, and a
-/// probe that raised shares the damaged tree's fingerprint exactly. The third null,
-/// nothing installed at all, is a fact about the tree and stays cacheable.
+/// Skipped verdicts are not cacheable: their cause is outside this fingerprint.
 fn llama_runtime_verdict_was_skipped(capability: &DesktopCapability) -> bool {
     capability.llama_runtime_ok.is_none()
         && matches!(
@@ -939,13 +746,6 @@ fn llama_runtime_verdict_was_skipped(capability: &DesktopCapability) -> bool {
 
 fn write_cached_capability(fingerprint: &ManagedBinFingerprint, capability: &DesktopCapability) {
     if llama_runtime_verdict_was_skipped(capability) {
-        // Nothing in this fingerprint watches which runtime is selected: the
-        // stored custom folder lives in the settings database and LLAMA_SERVER_PATH
-        // in the environment. Caching the skip meant that clearing the selection
-        // made a damaged managed tree active with its fingerprint unchanged, so
-        // the cache kept serving the Ready it was never graded for and repair was
-        // never offered. Re-probing costs one CLI call, and only for the users who
-        // run their own build.
         return;
     }
     let Some(path) = capability_cache_path() else {
@@ -988,16 +788,12 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
             "Managed preflight probe {:?} has no managed interpreter to run",
             args
         );
-        // Ok, not Err: main's Err arm means "the probe could not be set up and the
-        // install is untested". A venv with no interpreter beside the launcher IS a
-        // result, and the same one this arm always gave.
+        // Ok, not Err: a venv with no interpreter is a result, not a failed setup.
         return Ok(false);
     };
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
-    // Reported, not folded into `false`: the CLI never ran, so calling it broken
-    // would start a repair needing the same context. Re-checking afterwards is not
-    // enough: a context that recovers in between makes an untested install look bad.
+    // Reported, not `false`: the CLI never ran, so calling it broken would trigger a pointless repair.
     if let Err(error) = crate::process::apply_managed_cli_context_tokio(&mut cmd) {
         info!(
             "Managed preflight probe {:?} has no usable working directory: {}",
@@ -1180,9 +976,7 @@ fn desktop_capability_stale_reason(capability: &DesktopCapability) -> Option<Str
                 .unwrap_or_else(|| "studio_install_incomplete".to_string()),
         );
     }
-    // Only an explicit false. None means the CLI predates the field or nothing is
-    // installed yet, and calling either stale would put every older install into
-    // repair on its first launch after an upgrade.
+    // Only explicit false: None (old CLI or nothing installed) must not force a repair.
     if capability.llama_runtime_ok == Some(false) {
         return Some(
             capability
@@ -1202,8 +996,6 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 /// The reason an unbuildable context is reported under, if that is what went
 /// wrong. Checked after a probe that did run and failed anyway.
 fn working_directory_reason() -> Option<String> {
-    // The whole context: an unresolvable override fails the same spawn, and is a
-    // different thing to fix.
     let error = crate::process::managed_cli_context_error()?;
     info!("Managed preflight: managed context unavailable: {error}");
     Some(context_reason(&error))
@@ -1212,8 +1004,7 @@ fn working_directory_reason() -> Option<String> {
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
 
-    // An unmounted roaming profile fails every probe below, which is not a broken
-    // install: "cli_unusable" would start a repair needing the same directory.
+    // An unmounted profile is not a broken install; repair would need the same directory.
     if let Some(error) = crate::process::managed_cli_context_error() {
         info!(
             "Managed preflight: no usable managed context for {:?}: {}",
@@ -1225,12 +1016,7 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         };
     }
 
-    // Always verify the managed CLI actually launches before trusting the cache.
-    // A matching capability fingerprint does not prove the binary can still run:
-    // its venv interpreter or a runtime dependency can be broken while the
-    // path/size/mtime/markers are unchanged, so the -h probe runs first and a
-    // non-launchable install is reported Stale for repair. The capability cache
-    // below still skips the heavier desktop-capabilities probe on a hit.
+    // Always run `-h` first: a matching fingerprint does not prove the CLI still launches.
     match run_cli_probe(&bin, &["-h"]).await {
         // The CLI was never asked, so do not report a broken install.
         Err(error) => {
@@ -1259,10 +1045,7 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         Ok(true) => {}
     }
 
-    // Taken before the probe and kept, so the answer is stored against the tree the
-    // CLI actually read. Re-reading it afterwards instead let a file quarantined
-    // during the probe be cached as healthy under its own damaged fingerprint, which
-    // then matched on every later launch and the CLI was never asked again.
+    // Fingerprint taken before the probe, so the answer is cached against the tree the CLI read.
     let fingerprint_before = managed_bin_fingerprint(&bin);
     if let Some(fingerprint) = fingerprint_before.as_ref() {
         if read_cached_capability(fingerprint).is_some() {
@@ -1332,8 +1115,7 @@ pub(super) async fn probe_managed_install() -> ManagedProbe {
     let started = Instant::now();
     let result = match crate::process::find_unsloth_binary() {
         Some(bin) => probe_managed_bin(bin).await,
-        // The managed install lives under the profile, so an unreachable one looks
-        // like no install. Say which, or a late network profile sends them to reinstall.
+        // An unreachable profile looks like no install; say which.
         None => match crate::process::home_dir_available() {
             Ok(()) => ManagedProbe::Missing,
             Err(error) => {
@@ -1385,8 +1167,6 @@ mod tests {
 
     #[test]
     fn a_venv_behind_the_desktop_backend_version_is_stale() {
-        // The CLI installer shares this venv, so its package version is the only
-        // thing that pulls an old-but-launchable install forward via repair.
         let mut capability = healthy_capability();
         capability.version = Some("2026.5.2".to_string());
         assert_eq!(
@@ -1398,8 +1178,6 @@ mod tests {
 
     #[test]
     fn incomplete_install_is_stale_with_the_cli_reason() {
-        // The venv has the CLI but not structlog, so preflight must repair
-        // rather than spawn a backend that cannot import.
         let mut capability = healthy_capability();
         capability.studio_install_ok = Some(false);
         capability.studio_install_reason = Some("studio_install_incomplete".to_string());
@@ -1434,8 +1212,6 @@ mod tests {
 
     #[test]
     fn a_quarantined_llama_runtime_is_stale() {
-        // The venv is fine and the marker says installed; quarantine took a DLL out
-        // of the tree. Repairing here stops it surfacing as a model load failure.
         let mut capability = healthy_capability();
         capability.llama_runtime_ok = Some(false);
         capability.llama_runtime_reason = Some("llama_runtime_payload_incomplete".to_string());
@@ -1459,8 +1235,6 @@ mod tests {
 
     #[test]
     fn an_unknown_llama_runtime_is_not_stale() {
-        // None is both "no runtime yet" and "this CLI predates the field", and
-        // calling either stale would send every install through repair.
         let mut capability = healthy_capability();
         capability.llama_runtime_ok = None;
         capability.llama_runtime_reason = None;
@@ -1468,8 +1242,7 @@ mod tests {
         assert!(desktop_capability_ready(&capability));
     }
 
-    /// The payload a CLI without this PR prints. JSON, not a struct literal, which
-    /// cannot show that a missing key deserializes.
+    /// JSON, not a struct literal, to show a missing key deserializes.
     fn pre_pr_capability_json() -> String {
         format!(
             r#"{{
@@ -1491,9 +1264,7 @@ mod tests {
 
     #[test]
     fn a_capability_payload_without_the_new_keys_still_parses_and_is_ready() {
-        // Every install whose CLI predates this prints a payload with neither key.
-        // Failing to parse, or parsing to something stale, would send every
-        // existing user into repair on their next launch.
+        // Old CLIs print neither key; failing here would send every user into repair.
         let capability: DesktopCapability =
             serde_json::from_str(&pre_pr_capability_json()).expect("pre-PR payload must parse");
         assert_eq!(capability.llama_runtime_ok, None);
@@ -1504,8 +1275,7 @@ mod tests {
 
     #[test]
     fn a_payload_from_a_newer_cli_ignores_keys_this_desktop_does_not_know() {
-        // The CLI and the desktop shell update separately, so a newer CLI can answer
-        // an older desktop. An unknown key must be ignored, not fatal.
+        // The CLI and shell update separately: unknown keys must be ignored.
         let json = pre_pr_capability_json().replace(
             "\"studio_install_ok\": true,",
             "\"studio_install_ok\": true, \"a_field_from_the_future\": {\"nested\": [1]},",
@@ -1517,8 +1287,7 @@ mod tests {
 
     #[test]
     fn a_null_llama_runtime_ok_is_not_a_broken_runtime() {
-        // What the CLI prints when the probe itself failed, which is not a verdict.
-        // Explicit nulls, not absent keys, since the CLI seeds both before trying.
+        // Explicit nulls, since the CLI seeds both before trying.
         let json = pre_pr_capability_json().replace(
             "\"studio_install_ok\": true,",
             "\"llama_runtime_ok\": null, \"llama_runtime_reason\": \"\", \"studio_install_ok\": true,",
@@ -1543,9 +1312,6 @@ mod tests {
 
     #[test]
     fn a_cache_file_written_before_this_field_is_ignored_rather_than_fatal() {
-        // On disk in every existing install. Schema 3 predates the runtime
-        // fingerprint, so its Ready was reached without looking at the runtime: it
-        // must miss and be rewritten, not panic and not be served.
         let old = format!(
             r#"{{
               "schema": 3,
@@ -1587,8 +1353,6 @@ mod tests {
 
     #[test]
     fn a_quarantined_runtime_file_changes_the_fingerprint() {
-        // Without the runtime in the fingerprint the cache hits, preflight answers
-        // Ready from it, and the CLI is never asked whether the runtime is intact.
         let root = std::env::temp_dir().join(format!(
             "unsloth-llama-fingerprint-{}-{:?}",
             std::process::id(),
@@ -1615,17 +1379,12 @@ mod tests {
         let quarantined = llama_runtime_fingerprint_at(&root).unwrap();
         assert_ne!(intact, quarantined);
 
-        // A directory is not a file: a stray subfolder must not read as a binary.
         fs::create_dir(bin.join("some-subdir")).unwrap();
         assert_eq!(quarantined, llama_runtime_fingerprint_at(&root).unwrap());
 
-        // A file replaced by one of a different size is caught by the byte total
-        // even though the count is unchanged.
         fs::write(bin.join("llama.dll"), vec![0u8; 4096]).unwrap();
         assert_ne!(quarantined, llama_runtime_fingerprint_at(&root).unwrap());
 
-        // The whole tree going is distinct from an empty one: only one of the two
-        // means nothing was ever installed.
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(llama_runtime_fingerprint_at(&root), None);
         fs::create_dir_all(&bin).unwrap();
@@ -1639,10 +1398,6 @@ mod tests {
 
     #[test]
     fn a_marker_left_over_a_missing_build_dir_changes_the_fingerprint() {
-        // The transition a read_dir(bin).ok()? alone cannot see: nothing installed
-        // and a marker over a tree with no build/bin both fail that read, so both
-        // fingerprinted as None, while the CLI's verdict moves from null (not
-        // stale) to llama_runtime_dir_missing. The cached Ready outlived it.
         let root = std::env::temp_dir().join(format!(
             "unsloth-llama-nobin-{}-{:?}",
             std::process::id(),
@@ -1670,7 +1425,6 @@ mod tests {
             "a marker arriving over a missing build/bin must invalidate the cached Ready"
         );
 
-        // Still distinct from a tree whose build/bin exists and is empty.
         let mut bin = root.join("build").join("bin");
         if cfg!(windows) {
             bin = bin.join("Release");
@@ -1687,9 +1441,6 @@ mod tests {
 
     #[test]
     fn the_runtime_override_is_resolved_the_way_python_resolves_it() {
-        // default_managed_llama_dir() strips the value and calls expanduser. Reading
-        // it raw would fingerprint a folder literally named "~" and silently drop the
-        // runtime out for every user who wrote the override that way.
         let home = PathBuf::from(if cfg!(windows) {
             "C:\\Users\\me"
         } else {
@@ -1709,14 +1460,10 @@ mod tests {
             (Some("~/llama.cpp"), Some(home.join("llama.cpp"))),
             (Some("  ~/llama.cpp  "), Some(home.join("llama.cpp"))),
             (Some(absolute), Some(PathBuf::from(absolute))),
-            // Not expanded, since nothing here can resolve another user's home, so
-            // it is anchored like any other relative value.
             (
                 Some("~someone/llama.cpp"),
                 Some(cwd.join("~someone/llama.cpp")),
             ),
-            // Anchored to this process's directory, the one
-            // relative_override_pins joins the child's copy against.
             (Some("llama.cpp"), Some(cwd.join("llama.cpp"))),
             (Some("./llama.cpp"), Some(cwd.join("./llama.cpp"))),
             (Some("../llama.cpp"), Some(cwd.join("../llama.cpp"))),
@@ -1732,11 +1479,8 @@ mod tests {
 
     #[test]
     fn an_override_that_cannot_be_anchored_is_dropped_rather_than_guessed() {
-        // No home to expand against and no directory to anchor to. Guessing would
-        // make the cached verdict track a folder the child was never pointed at.
         assert_eq!(llama_runtime_override_from(Some("~/x"), None, None), None);
         assert_eq!(llama_runtime_override_from(Some("x"), None, None), None);
-        // An absolute value needs neither, so it still resolves.
         let absolute = if cfg!(windows) {
             "C:\\opt\\llama.cpp"
         } else {
@@ -1751,10 +1495,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_windows_tilde_resolves_through_the_same_profile_the_child_uses() {
-        // ntpath.expanduser answers USERPROFILE, while dirs::home_dir() reads the
-        // known folder, which a portable or overridden profile moves. Taking the
-        // known folder would fingerprint a tree the child never looks at.
-        // process.rs carries the same note at its own read.
         let _guard = crate::native_path_policy::PROCESS_ENV_LOCK.lock();
         let previous = std::env::var_os("USERPROFILE");
         std::env::set_var("USERPROFILE", "C:\\Portable\\Profile");
@@ -1768,8 +1508,6 @@ mod tests {
 
     #[test]
     fn older_cli_is_rejected_on_manageability_before_the_install_check() {
-        // A CLI predating this feature cannot answer studio_install_ok, so the
-        // more specific manageability reason must win in the diagnostics.
         let mut capability = healthy_capability();
         capability.desktop_manageability_version = Some(1);
         capability.studio_install_ok = None;
@@ -1781,8 +1519,7 @@ mod tests {
 
     #[test]
     fn a_stale_capability_is_never_served_from_cache() {
-        // write_cached_capability runs before the ready check, so an incomplete
-        // install does get cached; reusing it would outlive the repair.
+        // write_cached_capability runs before the ready check, so incomplete installs do get cached.
         let mut capability = healthy_capability();
         capability.studio_install_ok = Some(false);
         let cache = ManagedCapabilityCache {
@@ -1812,10 +1549,6 @@ mod tests {
         assert!(!cache_matches(&cache, &fingerprint));
     }
 
-    // Quarantine deletes the generated unsloth.exe, so the supported stubless layout
-    // hands back a launcher path that is not on disk. Without a stand-in the
-    // fingerprint is None, the capability cache can be neither read nor written, and
-    // every preflight pays both probe subprocesses again.
     #[cfg(windows)]
     #[test]
     fn a_quarantined_launcher_is_fingerprinted_through_its_interpreter() {
@@ -1833,15 +1566,11 @@ mod tests {
 
         let fingerprint = managed_bin_fingerprint(&bin)
             .expect("a stubless venv must still fingerprint, through python.exe");
-        // The identity stays the launcher path, so the two layouts of one install
-        // cannot share a cache entry.
         assert!(fingerprint.bin_path.ends_with("unsloth.exe"));
-        // And it tracks the interpreter, so a venv replaced by an update invalidates.
         fs::write(&interpreter, "python-after-an-update").unwrap();
         let after = managed_bin_fingerprint(&bin).unwrap();
         assert_ne!(fingerprint.bin_size, after.bin_size);
 
-        // With no interpreter either there is nothing to stand in, and None is right.
         fs::remove_file(&interpreter).unwrap();
         assert!(managed_bin_fingerprint(&bin).is_none());
 
@@ -1850,8 +1579,6 @@ mod tests {
 
     #[test]
     fn dropping_the_manifest_changes_the_fingerprint() {
-        // Otherwise a cache entry written while healthy outlives the manifest,
-        // and the probe returns Ready on the very venv this is meant to catch.
         let venv = std::env::temp_dir().join(format!(
             "unsloth-fingerprint-{}-{:?}",
             std::process::id(),
@@ -1891,9 +1618,6 @@ mod tests {
 
     #[test]
     fn losing_a_studio_package_changes_the_fingerprint() {
-        // pip uninstall rewrites no fingerprinted file: the manifest, pyvenv.cfg
-        // and the launcher survive and `unsloth -h` still exits 0. Without the
-        // installed distributions in the fingerprint the healthy answer sticks.
         let venv = std::env::temp_dir().join(format!(
             "unsloth-fingerprint-deps-{}-{:?}",
             std::process::id(),
@@ -1907,10 +1631,7 @@ mod tests {
         fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin\n").unwrap();
         fs::write(venv.join("unsloth_install_manifest.json"), "{}").unwrap();
 
-        // site_packages_dirs() only walks lib/<pyver>/site-packages on unix; on
-        // Windows it looks at Lib/site-packages. Building the posix layout
-        // everywhere left the dist-info invisible to the fingerprint on Windows,
-        // so removing it changed nothing and the assert_ne below could not hold.
+        // site_packages_dirs() uses Lib/site-packages on Windows.
         let site_packages = if cfg!(windows) {
             venv.join("Lib").join("site-packages")
         } else {
@@ -1931,8 +1652,6 @@ mod tests {
 
         let with_dep = managed_bin_fingerprint(&bin).unwrap();
         let healthy_cache = cache_for(&with_dep);
-        // read_dir order is unspecified, so an unsorted walk would miss its own
-        // cache every launch and the entry would never be worth writing.
         assert_eq!(with_dep, managed_bin_fingerprint(&bin).unwrap());
         assert!(cache_matches(&healthy_cache, &with_dep));
 
@@ -1964,16 +1683,12 @@ mod tests {
     #[test]
     fn a_context_reason_names_the_setting_it_could_not_preserve() {
         use crate::process::ManagedContextError;
-        // Every pin failure names the setting first, and the window needs that
-        // name: "one of Unsloth's folder settings" is not something to act on.
         let reason = context_reason(&ManagedContextError::PathSetting(
             "HF_HOME names a path this machine cannot resolve".to_string(),
         ));
         assert_eq!(reason, "path_setting_unresolvable:HF_HOME");
         assert!(is_context_reason(&reason));
-        // The name is carried, never the value or the sentence around it.
         assert!(!reason.contains("cannot resolve"));
-        // A failure that does not start with a setting name still classifies.
         let bare = context_reason(&ManagedContextError::PathSetting(
             "the environment block is too long".to_string(),
         ));
@@ -1983,11 +1698,7 @@ mod tests {
         assert!(!is_context_reason("cli_unusable"));
     }
 
-    /// A scratch directory of this test's own, emptied before it is handed back.
-    ///
-    /// These tests walk real files on parallel threads, so two sharing one path
-    /// would delete each other's tree mid-walk. Process id plus thread id keys it,
-    /// as above, and keeps a leaked directory from being reused.
+    /// Per process+thread: tests walk real files in parallel and would delete each other's trees.
     fn scratch_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "unsloth-managed-{name}-{}-{:?}",
@@ -2010,17 +1721,13 @@ mod tests {
         }
     }
 
-    /// A tree shaped like a prebuilt install: a server binary and one shared
-    /// library, the smallest thing quarantine can take a file out of.
-    /// The names half of an expected fingerprint, so the counters beside it stay
-    /// readable as literals.
+    /// The names half of an expected fingerprint.
     fn names_sum(names: &[&str]) -> u64 {
         names.iter().fold(0u64, |acc, name| {
             acc.wrapping_add(name_hash(std::ffi::OsStr::new(name)))
         })
     }
 
-    /// The entrypoint name `holds_a_llama_server` looks for on this platform.
     fn server_file_name() -> &'static str {
         if cfg!(windows) {
             "llama-server.exe"
@@ -2034,8 +1741,6 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         let server = bin.join("llama-server");
         fs::write(&server, vec![0u8; 4096]).unwrap();
-        // Executable, as the installer leaves it, so the counter that watches the
-        // bit starts where a real install starts.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2045,9 +1750,7 @@ mod tests {
         }
         let library = bin.join("libggml-base.so");
         fs::write(&library, vec![0u8; 2048]).unwrap();
-        // Explicit, not umask-dependent: the permission bits are part of the
-        // fingerprint now, so a runner with a different umask would otherwise
-        // read a different string for the same tree.
+        // Explicit mode: permission bits are fingerprinted, so umask must not matter.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2058,10 +1761,7 @@ mod tests {
         bin
     }
 
-    /// A fingerprint whose venv half is fixed and whose runtime half is read off
-    /// disk now, which is what each launch does. Built here rather than through
-    /// managed_bin_fingerprint to keep the process-wide
-    /// UNSLOTH_TEST_LLAMA_RUNTIME_ROOT out of tests running beside these.
+    /// Built directly to keep UNSLOTH_TEST_LLAMA_RUNTIME_ROOT out of parallel tests.
     fn fingerprint_for_runtime(runtime_root: &Path) -> ManagedBinFingerprint {
         ManagedBinFingerprint {
             bin_path: "/managed/unsloth".to_string(),
@@ -2075,13 +1775,8 @@ mod tests {
         }
     }
 
-    /// Points capability_cache_path() at a directory of this test's own for as long
-    /// as the guard lives.
-    ///
-    /// The hook is a process-wide variable, so the guard holds PROCESS_ENV_LOCK for
-    /// the whole test: the same lock preflight.rs takes around its own
-    /// capability-cache tests and main.rs around XDG_DATA_HOME. The per-test
-    /// directory means a file left by a panicking test cannot be read by another.
+    /// Points capability_cache_path() at a per-test dir; holds PROCESS_ENV_LOCK since the hook is
+    /// process-wide.
     struct CapabilityCacheHome {
         home: PathBuf,
         previous: Option<std::ffi::OsString>,
@@ -2110,8 +1805,6 @@ mod tests {
             }
         }
 
-        /// Resolved through the hook rather than rebuilt here, so a layout change
-        /// cannot leave these tests asserting against a path nothing writes.
         fn cache_file(&self) -> PathBuf {
             let path = capability_cache_path().expect("the test hook must resolve a cache path");
             assert!(
@@ -2136,8 +1829,6 @@ mod tests {
 
     #[test]
     fn an_unchanged_runtime_serves_the_cached_capability_back_from_disk() {
-        // A healthy install must hit on its second launch, or the desktop pays both
-        // probe subprocesses and their 10s ceilings every time the window opens.
         let home = CapabilityCacheHome::new("hit");
         let root = scratch_dir("runtime-hit");
         install_fake_runtime(&root);
@@ -2153,7 +1844,6 @@ mod tests {
             "the cache must reach disk, not just the struct"
         );
 
-        // The next launch recomputes the fingerprint against the same tree.
         let relaunch = fingerprint_for_runtime(&root);
         let cached = read_cached_capability(&relaunch)
             .expect("an install nothing touched must hit its own cache");
@@ -2165,10 +1855,6 @@ mod tests {
 
     #[test]
     fn a_file_quarantined_out_of_the_runtime_misses_the_cache() {
-        // Quarantine takes one file out of an otherwise present tree, leaving the
-        // venv, markers and launcher untouched. If this hit, preflight would answer
-        // Ready from a cache written while the tree was intact, and the user would
-        // meet the damage as a model load failure.
         let home = CapabilityCacheHome::new("quarantine");
         let root = scratch_dir("runtime-quarantine");
         let bin = install_fake_runtime(&root);
@@ -2184,7 +1870,6 @@ mod tests {
             read_cached_capability(&quarantined).is_none(),
             "a quarantined runtime file must not keep serving a cached Ready"
         );
-        // The stale entry is still on disk, so the miss came from the fingerprint.
         assert!(home.cache_file().exists());
 
         let _ = fs::remove_dir_all(&root);
@@ -2192,8 +1877,6 @@ mod tests {
 
     #[test]
     fn a_file_added_to_the_runtime_misses_the_cache() {
-        // What a half-finished repair or partial download leaves behind: a tree that
-        // gained a file is not the tree the CLI was asked about.
         let _home = CapabilityCacheHome::new("added");
         let root = scratch_dir("runtime-added");
         let bin = install_fake_runtime(&root);
@@ -2213,8 +1896,6 @@ mod tests {
 
     #[test]
     fn a_runtime_directory_that_is_gone_entirely_misses_the_cache() {
-        // An uninstall between launches. The fingerprint drops to None, which must
-        // not compare equal to the string written while the tree was there.
         let _home = CapabilityCacheHome::new("removed");
         let root = scratch_dir("runtime-removed");
         install_fake_runtime(&root);
@@ -2233,13 +1914,7 @@ mod tests {
 
     #[test]
     fn an_install_with_no_runtime_at_all_still_hits_its_cache() {
-        // A user who never installed a runtime has None on both sides, and treating
-        // that as a change would make every launch pay both subprocesses forever.
-        // The runtime appearing later is a real change and must miss.
         let _home = CapabilityCacheHome::new("no-runtime");
-        // A path that does not exist, not merely an empty one: a root present
-        // without a build/bin is now its own state, so "no runtime at all" is the
-        // absence of the tree itself.
         let parent = scratch_dir("runtime-absent");
         let root = parent.join("never-installed");
 
@@ -2264,9 +1939,6 @@ mod tests {
 
     #[test]
     fn a_cached_capability_that_is_itself_broken_is_never_served() {
-        // write_cached_capability runs before the ready check, so a broken runtime's
-        // entry does reach disk. Reading it back must refuse it even though the
-        // fingerprint matches, or the next launch undoes the repair.
         let home = CapabilityCacheHome::new("broken");
         let root = scratch_dir("runtime-broken");
         install_fake_runtime(&root);
@@ -2290,12 +1962,6 @@ mod tests {
 
     #[test]
     fn a_runtime_verdict_the_cli_skipped_is_never_cached() {
-        // Codex 3959620616, P2. The CLI declines to grade the managed tree while a
-        // custom runtime is selected, and nothing in this fingerprint watches that
-        // selection: it lives in the settings database and in LLAMA_SERVER_PATH.
-        // Caching the skip meant that clearing the selection made a damaged managed
-        // tree active with its fingerprint unchanged, so the cache kept answering
-        // Ready for a tree nobody had graded.
         let home = CapabilityCacheHome::new("skipped-verdict");
         let root = scratch_dir("runtime-skipped-verdict");
         install_fake_runtime(&root);
@@ -2304,7 +1970,6 @@ mod tests {
         let mut skipped = healthy_capability();
         skipped.llama_runtime_ok = None;
         skipped.llama_runtime_reason = Some(LLAMA_RUNTIME_NOT_MANAGED.to_string());
-        // Still Ready, so this is about the cache and not about the verdict.
         assert!(desktop_capability_ready(&skipped));
         write_cached_capability(&fingerprint, &skipped);
         assert!(
@@ -2313,8 +1978,6 @@ mod tests {
         );
         assert!(read_cached_capability(&fingerprint).is_none());
 
-        // The other null, "nothing is installed", is a fact about the tree that the
-        // fingerprint does watch, so it still caches.
         let mut not_installed = healthy_capability();
         not_installed.llama_runtime_ok = None;
         not_installed.llama_runtime_reason = Some(String::new());
@@ -2329,11 +1992,6 @@ mod tests {
 
     #[test]
     fn a_verdict_is_only_cached_against_the_tree_the_probe_read() {
-        // Codex 3973890115, P2. The fingerprint used to be re-read after the probe, so
-        // a file quarantined while desktop-capabilities was running was stored as
-        // healthy under its own damaged fingerprint. That entry then matched on every
-        // later launch, the CLI was never asked again, and the repair was never
-        // offered, which is worse than the race it came from.
         let parent = scratch_dir("verdict-snapshot");
         let root = parent.join("llama.cpp");
         install_fake_runtime(&root);
@@ -2345,7 +2003,6 @@ mod tests {
             "an unchanged tree is what the answer describes, so it is cacheable"
         );
 
-        // Quarantine lands mid-probe.
         fs::remove_file(runtime_bin_dir(&root).join("libggml-base.so")).unwrap();
         assert_eq!(
             fingerprint_to_cache_under(Some(&before), Some(fingerprint_for_runtime(&root))),
@@ -2360,10 +2017,6 @@ mod tests {
 
     #[test]
     fn a_runtime_probe_that_raised_is_never_cached_either() {
-        // Codex 3973660789, P2. A probe that throws leaves a null verdict, which is
-        // Ready, and it carries the damaged tree's own fingerprint, so caching it
-        // froze a Ready that was never reached and every later launch skipped the
-        // probe. Its reason tells it apart from the two nulls that are facts.
         let home = CapabilityCacheHome::new("probe-failed-verdict");
         let root = scratch_dir("runtime-probe-failed");
         install_fake_runtime(&root);
@@ -2385,12 +2038,7 @@ mod tests {
 
     #[test]
     fn a_named_windows_profile_resolves_where_the_child_will_look() {
-        // Codex 3959620595, P2. process.rs pins UNSLOTH_LLAMA_CPP_PATH for the child
-        // through expand_windows_user, and the CLI reads it with ntpath.expanduser,
-        // so both land on the sibling profile while this fingerprinted
-        // <cwd>\~other\llama.cpp. Quarantine under the real profile then never
-        // invalidated a cached healthy result. Same cases as process.rs's own test,
-        // so the two readers cannot drift apart.
+        // Same cases as process.rs's own test, so the two readers cannot drift.
         let home = Path::new("C:\\Users\\me");
         assert_eq!(
             named_windows_user_home("~other\\llama.cpp", home, Some("me")),
@@ -2408,24 +2056,17 @@ mod tests {
             named_windows_user_home("~other", home, Some("me")),
             Some(PathBuf::from("C:\\Users\\other")),
         );
-        // ntpath declines to guess when this profile is not named after the current
-        // user, since C:\Users\me.DOMAIN is not other's sibling. None here leaves the
-        // value anchored as a relative path, which is what happened before.
         assert_eq!(
             named_windows_user_home("~other\\llama.cpp", Path::new("C:\\Users\\me.DOMAIN"), Some("me")),
             None,
         );
         assert_eq!(named_windows_user_home("~other\\llama.cpp", home, None), None);
-        // A bare tilde is the current profile and is handled before this is reached.
         assert_eq!(named_windows_user_home("~", home, Some("me")), None);
         assert_eq!(named_windows_user_home("~\\llama.cpp", home, Some("me")), None);
     }
 
     #[test]
     fn a_schema_three_cache_file_on_disk_misses_and_is_rewritten_as_schema_four() {
-        // Byte for byte what the previous release wrote. Everything but the schema
-        // and the new key matches, so the miss can only come from the version bump.
-        // It must not panic, must not be served, and must be replaced.
         let home = CapabilityCacheHome::new("schema-three");
         let root = scratch_dir("runtime-schema-three");
         install_fake_runtime(&root);
@@ -2482,9 +2123,6 @@ mod tests {
 
     #[test]
     fn files_below_the_binary_directory_are_not_walked() {
-        // The walk is one level deep because it runs on the launch path. A nested
-        // directory must contribute nothing, or a model cache parked under build/bin
-        // would make the fingerprint cost grow without bound.
         let root = scratch_dir("runtime-nested");
         let bin = install_fake_runtime(&root);
         let flat = llama_runtime_fingerprint_at(&root).unwrap();
@@ -2503,9 +2141,7 @@ mod tests {
 
     #[test]
     fn a_replacement_of_the_same_size_is_a_collision_this_fingerprint_does_not_catch() {
-        // The fingerprint is a count and a byte total, no mtime and no hash, so a
-        // file rewritten in place at its old length is invisible. Accepted because
-        // quarantine and partial extraction always change one of the two.
+        // Count and byte total only: an in-place same-length rewrite is invisible, accepted.
         let root = scratch_dir("runtime-collision");
         let bin = install_fake_runtime(&root);
         let original = llama_runtime_fingerprint_at(&root).unwrap();
@@ -2529,11 +2165,6 @@ mod tests {
 
     #[test]
     fn a_root_entrypoint_is_part_of_the_fingerprint() {
-        // Codex 3971674487, P2. _find_llama_server_binary reaches <root>/llama-server
-        // before build/bin, and create_exec_entrypoint writes a real wrapper there when
-        // it cannot make a symlink, so it rots on its own. installed_runtime_health
-        // grades it; the walk above only reads build/bin, so without this the cached
-        // Ready outlived the damage and the CLI was never asked.
         let root = scratch_dir("runtime-root-entrypoint");
         install_fake_runtime(&root);
         let without = llama_runtime_fingerprint_at(&root).unwrap();
@@ -2578,12 +2209,6 @@ mod tests {
 
     #[test]
     fn renaming_a_runtime_file_in_place_moves_the_fingerprint() {
-        // Codex 3962938547, P2. Quarantine does not always delete: some products
-        // rename the file beside itself. The count, the byte total, the link count
-        // and the mode sum are all aggregates and none of them moves for that, so
-        // the cached Ready kept matching a tree installed_runtime_health rejects
-        // and preflight answered Ready without running the capability probe. The
-        // launch then failed with no repair offered.
         let root = scratch_dir("runtime-renamed-in-place");
         let bin = install_fake_runtime(&root);
 
@@ -2598,15 +2223,12 @@ mod tests {
             intact, renamed,
             "a required library renamed in place must not fingerprint as the healthy tree"
         );
-        // And the counters really are blind to it, which is why the names are here.
         // The root segment is dropped first: it carries its own colons.
         let counters = |value: &str| {
             value.split_once('|').unwrap().0.rsplit_once(':').unwrap().0.to_string()
         };
         assert_eq!(counters(&intact), counters(&renamed));
 
-        // Renaming it back restores the original exactly, so the sum is a property
-        // of the tree rather than of the order the names arrived in.
         fs::rename(
             bin.join("libggml-base.so.quarantine"),
             bin.join("libggml-base.so"),
@@ -2619,8 +2241,6 @@ mod tests {
 
     #[test]
     fn a_runtime_root_that_is_a_file_fingerprints_as_no_runtime() {
-        // UNSLOTH_LLAMA_CPP_PATH can point at anything a user typed. Joining
-        // build/bin onto a regular file must degrade rather than panic.
         let parent = scratch_dir("runtime-is-a-file");
         let root = parent.join("llama.cpp");
         fs::write(&root, "not a directory").unwrap();
@@ -2630,8 +2250,6 @@ mod tests {
 
     #[test]
     fn a_runtime_path_with_spaces_and_non_ascii_fingerprints_normally() {
-        // Home directories are named after people, and a path this walk could not
-        // handle would silently drop the runtime out for those users only.
         let parent = scratch_dir("runtime-unicode");
         let root = parent.join("Мой каталог ünïcode llama.cpp");
         install_fake_runtime(&root);
@@ -2651,9 +2269,6 @@ mod tests {
 
     #[test]
     fn the_runtime_fingerprint_does_not_depend_on_directory_order() {
-        // read_dir order is unspecified, and the venv half sorts for that reason.
-        // Two trees with the same files in opposite orders must agree, or an install
-        // misses its own cache on some launches and not others.
         let parent = scratch_dir("runtime-order");
         let names = ["llama-server", "libggml.so", "llama-cli", "libmtmd.so"];
 
@@ -2680,18 +2295,13 @@ mod tests {
 
     #[test]
     fn a_large_runtime_directory_fingerprints_fast_enough_for_the_launch_path() {
-        // This runs on every launch ahead of the probes it saves, so a build
-        // directory's worth of files must cost milliseconds. The bound is loose
-        // enough not to flake and tight enough to catch a walk that reads contents
-        // or recurses.
+        // Loose bound: catches a walk that reads contents or recurses, without flaking.
         let root = scratch_dir("runtime-large");
         let bin = runtime_bin_dir(&root);
         fs::create_dir_all(&bin).unwrap();
         for index in 0..5000 {
             let artifact = bin.join(format!("artifact-{index:05}.o"));
             fs::write(&artifact, [0u8; 1]).unwrap();
-            // Same reason as install_fake_runtime: the mode is fingerprinted, so
-            // it is set here rather than left to the runner's umask.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -2730,9 +2340,6 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    // Symlinks are what a developer checkout and a hand-placed
-    // UNSLOTH_LLAMA_CPP_PATH look like, and the one input that can make this walk
-    // answer about a tree other than the one it was given.
     #[cfg(unix)]
     #[test]
     fn a_symlinked_runtime_root_fingerprints_the_tree_it_points_at() {
@@ -2747,7 +2354,6 @@ mod tests {
             llama_runtime_fingerprint_at(&linked),
             "a symlinked root must see the same tree, or an override written that way is not covered"
         );
-        // And it must keep tracking it: a quarantine through the link counts.
         fs::remove_file(bin.join("libggml-base.so")).unwrap();
         assert_eq!(
             llama_runtime_fingerprint_at(&linked).as_deref(),
@@ -2767,13 +2373,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_file_inside_the_runtime_is_counted_and_its_loss_is_seen() {
-        // Codex 3960069958, P1. DirEntry::metadata does not follow a link, so a link
-        // was neither a file nor a byte and no count could move when one appeared or
-        // went. That is not a bound worth keeping: on macOS the install name
-        // llama-server loads is the middle link of libggml.dylib -> libggml.0.dylib
-        // -> libggml.0.23.0.dylib, and on Linux the SONAME can be a link too, so
-        // losing exactly the entry installed_runtime_health calls fatal left a
-        // cached Ready matching.
         let parent = scratch_dir("runtime-symlinked-file");
         let root = parent.join("llama.cpp");
         let bin = install_fake_runtime(&root);
@@ -2785,7 +2384,6 @@ mod tests {
             before, with_link,
             "a link beside the binaries has to move the fingerprint"
         );
-        // And losing it again is seen, which is the case that matters.
         fs::remove_file(bin.join("llama-cli")).unwrap();
         assert_eq!(before, llama_runtime_fingerprint_at(&root).unwrap());
 
@@ -2794,19 +2392,11 @@ mod tests {
 
     #[test]
     fn an_installer_managed_venv_names_its_own_runtime() {
-        // Codex 3960069972, P1. The desktop strips UNSLOTH_STUDIO_HOME before
-        // spawning the CLI, but the CLI puts it back: _resolve_studio_home re-infers
-        // the root from sys.prefix and _ensure_studio_env_exported points
-        // UNSLOTH_LLAMA_CPP_PATH at that root's llama.cpp. Reading only the ambient
-        // environment fingerprinted the legacy tree, so quarantine inside the custom
-        // runtime never moved it and a cached Ready outlived the damage.
         let root = scratch_dir("inferred-studio-home");
         let bin = root.join("unsloth_studio").join("bin").join("unsloth");
         fs::create_dir_all(bin.parent().unwrap()).unwrap();
         fs::write(&bin, b"launcher").unwrap();
 
-        // No sentinel yet, so this is a developer venv that happens to be named
-        // unsloth_studio and the legacy tree is still the answer.
         assert_eq!(inferred_studio_llama_root(&bin), None);
 
         fs::create_dir_all(root.join("share")).unwrap();
@@ -2817,7 +2407,6 @@ mod tests {
             "an installer-managed root names the runtime beside it"
         );
 
-        // A venv that is not the one the installer builds says nothing either.
         let loose = root.join("some_venv").join("bin").join("unsloth");
         fs::create_dir_all(loose.parent().unwrap()).unwrap();
         fs::write(&loose, b"launcher").unwrap();
@@ -2828,10 +2417,6 @@ mod tests {
 
     #[test]
     fn a_recorded_master_root_names_the_runtime_beside_studio() {
-        // Codex 4063549060, P1. `UNSLOTH_HOME=<master>` puts llama.cpp beside studio/,
-        // and the CLI recovers that note and grades <master>/llama.cpp. Fingerprinting
-        // <master>/studio/llama.cpp here watched a tree nothing loads, so one cached
-        // Ready survived quarantine in the runtime the backend actually opens.
         let master = scratch_dir("master-root-runtime");
         let studio = master.join("studio");
         let bin = studio.join("unsloth_studio").join("bin").join("unsloth");
@@ -2840,7 +2425,6 @@ mod tests {
         fs::create_dir_all(studio.join("share")).unwrap();
         fs::write(studio.join("share").join("studio.conf"), b"managed").unwrap();
 
-        // Without the note this is an ordinary custom root and the runtime is under it.
         assert_eq!(
             inferred_studio_llama_root(&bin),
             Some(studio.join("llama.cpp"))
@@ -2858,8 +2442,6 @@ mod tests {
             "the recorded master root names the runtime beside studio/"
         );
 
-        // A note naming a root this tree does not live under is somebody else's
-        // install, exactly as the CLI reads it, so the tree under studio/ stands.
         let elsewhere = scratch_dir("master-root-elsewhere");
         fs::write(
             studio.join("share").join(".unsloth-master-root"),
@@ -2871,7 +2453,6 @@ mod tests {
             Some(studio.join("llama.cpp"))
         );
 
-        // An empty note, and one naming a directory that is not there, say nothing.
         for body in ["", "/nonexistent-master-root-9d3f"] {
             fs::write(studio.join("share").join(".unsloth-master-root"), body).unwrap();
             assert_eq!(
@@ -2898,8 +2479,6 @@ mod tests {
 
     #[test]
     fn the_cmd_shim_has_to_be_the_one_the_installer_generated() {
-        // The directory is on PATH, so any file of that name would otherwise be
-        // enough to point a custom root at itself. Same markers Python reads.
         let root = scratch_dir("cmd-shim");
         let shim = root.join("unsloth.cmd");
         fs::create_dir_all(&root).unwrap();
@@ -2918,7 +2497,6 @@ mod tests {
         .unwrap();
         assert!(is_managed_cmd_shim(&shim));
 
-        // Too big to be the generated shim, whatever it contains.
         let mut oversized = b"unsloth-studio-managed-launcher from unsloth_cli import app".to_vec();
         oversized.resize((CMD_SHIM_MAX_BYTES + 1) as usize, b' ');
         fs::write(&shim, &oversized).unwrap();
@@ -2929,36 +2507,25 @@ mod tests {
 
     #[test]
     fn an_override_with_no_server_in_it_does_not_stop_the_search() {
-        // Codex 3960069962, P2. _scan_pinned finds no candidate under an empty or
-        // missing UNSLOTH_LLAMA_CPP_PATH and walks on to the tree behind it, so
-        // treating the override as final fingerprinted a folder nobody loads while
-        // the runtime the backend really opens went unwatched.
         let root = scratch_dir("override-empty");
         fs::create_dir_all(&root).unwrap();
         assert!(!holds_a_llama_server(&root));
         assert!(!holds_a_llama_server(&root.join("not-there")));
 
         let bin = install_fake_runtime(&root);
-        // The name the finder looks for, which is not the name that fixture writes:
-        // it exists to be counted, and the counters do not care what a file is
-        // called. On Windows the entrypoint carries .exe, so writing it here is what
-        // makes this a tree the backend would actually stop at.
+        // On Windows the entrypoint carries .exe; the counting fixture's name is not the finder's.
         fs::write(bin.join(server_file_name()), b"binary").unwrap();
         assert!(
             holds_a_llama_server(&root),
             "build/bin/llama-server is one of the layouts the backend accepts"
         );
 
-        // The flat layout counts too, and so does a server without the execute
-        // bit: _scan_pinned calls that one non_executable and the caller turns it
-        // into _unavailable, which ends the search here rather than walking on.
         let flat = scratch_dir("override-flat");
         fs::create_dir_all(&flat).unwrap();
         let server = flat.join(server_file_name());
         fs::write(&server, b"binary").unwrap();
         assert!(holds_a_llama_server(&flat));
 
-        // A directory of that name is not a server, and neither is an empty tree.
         let decoy = scratch_dir("override-decoy");
         fs::create_dir_all(decoy.join(server_file_name())).unwrap();
         assert!(!holds_a_llama_server(&decoy));
@@ -2972,9 +2539,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_named_user_resolves_through_the_reentrant_lookup() {
-        // Codex 3960069965, P2. getpwnam hands back process-global storage and this
-        // runs on a Tauri worker thread, so the lookup is the _r form now. root is
-        // the one account every unix box has, which makes this checkable anywhere.
+        // root exists on every unix box, so this is checkable anywhere.
         let home = Path::new("/home/whoever");
         let resolved = named_user_home("~root/llama.cpp", Some(home));
         assert!(
@@ -2992,10 +2557,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn clearing_the_execute_bit_moves_the_fingerprint() {
-        // The other half of the same catch: taking the execute bit off llama-server
-        // changes neither the count nor the byte total, and it is the state
-        // installed_runtime_health answers llama_runtime_binaries_missing for, so a
-        // cached Ready went on matching a tree that could no longer launch.
         use std::os::unix::fs::PermissionsExt;
 
         let parent = scratch_dir("runtime-exec-bit");
@@ -3024,12 +2585,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn losing_only_the_owners_execute_bit_moves_the_fingerprint() {
-        // Codex 3960401504, P2. os.access(X_OK) asks whether THIS user may run the
-        // file, and the owner's bits answer that on their own: 0755 -> 0655 leaves
-        // group and other executable, so a counter of "has some execute bit" never
-        // moved while installed_runtime_health flipped to
-        // llama_runtime_binaries_missing. The permission bits themselves are in the
-        // fingerprint now, so the cached Ready cannot outlive the change.
         use std::os::unix::fs::PermissionsExt;
 
         let parent = scratch_dir("runtime-owner-bit");
@@ -3044,7 +2599,6 @@ mod tests {
         let mut owner_only = fs::metadata(&server).unwrap().permissions();
         owner_only.set_mode(0o655);
         fs::set_permissions(&server, owner_only).unwrap();
-        // Still executable to somebody, which is what the old counter measured.
         assert_eq!(fs::metadata(&server).unwrap().permissions().mode() & 0o111, 0o011);
         assert_ne!(
             before,
@@ -3058,8 +2612,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_dangling_symlink_does_not_break_the_walk() {
-        // What a quarantine that removed a link target leaves behind. The walk must
-        // finish and answer about the real files, not report the runtime missing.
         let parent = scratch_dir("runtime-dangling");
         let root = parent.join("llama.cpp");
         let bin = install_fake_runtime(&root);
@@ -3071,8 +2623,6 @@ mod tests {
             dangling.is_some(),
             "a broken link must not make the walk fail or report the runtime missing"
         );
-        // It counts as a link rather than as a file, so the real files behind it are
-        // still reported unchanged and only the link counter moves.
         assert_ne!(before, dangling.clone().unwrap());
         fs::remove_file(bin.join("libggml.so")).unwrap();
         assert_eq!(before, llama_runtime_fingerprint_at(&root).unwrap());
@@ -3083,11 +2633,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_runtime_directory_that_cannot_be_read_is_a_broken_install_not_an_absent_one() {
-        // A tightened-down or half-owned install directory. read_dir fails, and the
-        // answer must be neither a panic nor None: the tree is there, so this is the
-        // broken-install state, and sharing None with a machine that never installed
-        // a runtime let a cache written before the install keep matching after it
-        // broke.
         use std::os::unix::fs::PermissionsExt;
 
         let root = scratch_dir("runtime-denied");
@@ -3096,8 +2641,7 @@ mod tests {
         denied.set_mode(0o000);
         fs::set_permissions(&bin, denied).unwrap();
 
-        // Mode bits do not apply to root, and some CI images run as root, so assert
-        // only where the denial is real.
+        // Mode bits do not apply to root (some CI runs as root).
         if fs::read_dir(&bin).is_err() {
             let denied_fingerprint = llama_runtime_fingerprint_at(&root);
             assert!(

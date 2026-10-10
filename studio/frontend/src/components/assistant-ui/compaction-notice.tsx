@@ -10,16 +10,8 @@ import {
 } from "@/features/chat/utils/context-truncation";
 
 /**
- * Tells the user their conversation was compacted, on the turn where it STARTED.
- *
- * Deliberately NOT a message: it renders inside the assistant message's container from
- * `metadata.custom.contextTruncation`, so it is never sent to the model, editable, or
- * exported as content, yet unlike a toast it survives a reload and stays attached to the
- * turn it describes.
- *
- * Rendered once per COMPACTION, gated by the caller, not once per compacted turn: a
- * thread past its window refits on every request, so per-turn would mean a notice on
- * every reply forever. The caller shows this when the boundary moved or a checkpoint started.
+ * Compaction notice, rendered from message metadata so it is never sent to the model but survives
+ * reload. Once per compaction, gated by the caller, not per compacted turn.
  */
 export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
   truncation,

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Production chrome and overlays; deterministic media, no inference or desktop backend.
 import { useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import { WindowTitlebar } from "@/components/tauri/window-titlebar";
@@ -176,7 +175,6 @@ function Scene() {
     </TooltipProvider>
   );
 }
-// App provider normally publishes these for dialogs portaled to document.body.
 document.documentElement.style.setProperty(
   "--studio-custom-titlebar-height",
   "40px",

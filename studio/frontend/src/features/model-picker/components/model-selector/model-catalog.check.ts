@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Assertions over the model catalog: keys, aliases, integrity, quant ladders, search.
-// `--network` adds an OPT-IN Hub reachability/gated-flag pass, kept out of `npm run catalog:check`
-// so a Hub hiccup cannot fail an unrelated PR. Run it on a schedule
-// (.github/workflows/model-catalog-network-check.yml) or by hand with `npm run catalog:check:network`.
+// `--network` adds an opt-in Hub reachability pass, kept out of `npm run catalog:check`
+// so a Hub hiccup cannot fail an unrelated PR.
 
 import assert from "node:assert/strict";
 
@@ -53,7 +51,6 @@ assert.equal(
 );
 assert.equal(canonicalKeyFor("Wan-AI/Wan2.2-TI2V-5B-Diffusers"), "wan-ai/wan2.2-ti2v-5b");
 assert.equal(canonicalKeyFor("lightricks/ltx-2.3-fp8"), "lightricks/ltx-2.3");
-// Prequant suffixes strip regardless of case: -GGUF/-FP8/-int8/-nvfp4 all route to the base name.
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-int8"), "unsloth/qwen-image-2512");
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-INT8"), "unsloth/qwen-image-2512");
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-nvfp4"), "unsloth/qwen-image-2512");
@@ -82,44 +79,34 @@ assert.equal(
   stripArtifactSuffixesForDisplay("unsloth/Some-Model-NVFP4"),
   "unsloth/Some-Model",
 );
-// Non-suffixed names and suffix-only names come back unchanged, casing intact.
 assert.equal(
   stripArtifactSuffixesForDisplay("krea/Krea-2-Turbo"),
   "krea/Krea-2-Turbo",
 );
 assert.equal(stripArtifactSuffixesForDisplay("someone/FP8"), "someone/FP8");
-// Non-suffixed ids come back unchanged (lowercased).
 assert.equal(canonicalKeyFor("krea/Krea-2-Turbo"), "krea/krea-2-turbo");
-// Stripping never merges owners.
 assert.notEqual(
   canonicalKeyFor("Qwen/Qwen-Image-2512"),
   canonicalKeyFor("unsloth/Qwen-Image-2512"),
 );
-// Stripping never empties a name that IS a suffix-looking token.
 assert.equal(canonicalKeyFor("someone/fp8"), "someone/fp8");
 
 
 const qwen2512 = groupForRepoId("unsloth/Qwen-Image-2512-GGUF", IMAGE_CATALOG);
 assert.ok(qwen2512);
 assert.equal(qwen2512.canonicalId, "unsloth/Qwen-Image-2512");
-// Every artifact of the group resolves to the same group.
 for (const artifact of qwen2512.artifacts) {
   assert.equal(groupForRepoId(artifact.repoId, IMAGE_CATALOG), qwen2512);
 }
-// Cross-owner aliases resolve only because they are declared.
 assert.equal(groupForRepoId("Qwen/Qwen-Image-2512", IMAGE_CATALOG), qwen2512);
-// Undeclared prequant variants (any case) route to the base group via the stripped key.
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2512-INT8", IMAGE_CATALOG), qwen2512);
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2512-NVFP4", IMAGE_CATALOG), qwen2512);
 assert.equal(
   groupForRepoId("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG)?.canonicalId,
   "unsloth/Z-Image-Turbo",
 );
-// A sibling artifact of an aliased owner groups via the alias' stripped key.
 assert.equal(groupForRepoId("Qwen/Qwen-Image-2512-FP8", IMAGE_CATALOG), qwen2512);
-// A dotted version is a DIFFERENT model, not a variant of the undotted one: every 2.1 repo has to
-// land on the 2.1 group, and none of them may fall back to plain Qwen-Image, whose key is a prefix
-// of theirs.
+// A dotted version is a different model and must not fall back to the undotted group.
 const qwen21 = groupForRepoId("Qwen/Qwen-Image-2.1", IMAGE_CATALOG);
 assert.ok(qwen21);
 assert.equal(qwen21.canonicalId, "unsloth/Qwen-Image-2.1");
@@ -165,22 +152,17 @@ assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
   "unsloth/Qwen-Image",
 );
-// Unknown repos pass through ungrouped.
 assert.equal(groupForRepoId("someone/some-model-GGUF", IMAGE_CATALOG), null);
 assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", VIDEO_CATALOG), null);
-// Video: the Lightricks 2.3 checkpoints group under the unsloth 2.3 release.
 const ltx23 = groupForRepoId("unsloth/LTX-2.3-GGUF", VIDEO_CATALOG);
 assert.ok(ltx23);
 assert.equal(groupForRepoId("lightricks/ltx-2.3", VIDEO_CATALOG), ltx23);
 assert.equal(groupForRepoId("lightricks/ltx-2.3-fp8", VIDEO_CATALOG), ltx23);
-// ...but the LTX-2.0 base stays its own group (different model).
 assert.notEqual(groupForRepoId("Lightricks/LTX-2", VIDEO_CATALOG), ltx23);
-// SDXL Turbo and Base stay separate groups (different checkpoints).
 assert.notEqual(
   groupForRepoId("stabilityai/sdxl-turbo", IMAGE_CATALOG),
   groupForRepoId("stabilityai/stable-diffusion-xl-base-1.0", IMAGE_CATALOG),
 );
-// Both HunyuanVideo resolutions land in one group.
 assert.equal(
   groupForRepoId(
     "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -250,11 +232,9 @@ for (const id of OLD_PIPELINE_MODELS) {
   assert.ok(got, `missing video load spec for ${id}`);
   assert.equal(got.kind, "pipeline", id);
 }
-// GGUF artifacts report the gguf kind; unknown ids report null.
 assert.equal(loadSpecFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
 assert.equal(loadSpecFor("someone/unknown", IMAGE_CATALOG), null);
 
-// Every old curated id is still present as an option (backwards compat).
 const imageOptionIds = new Set(catalogToModelOptions(IMAGE_CATALOG).map((o) => o.id));
 for (const id of [
   "unsloth/Z-Image-Turbo-GGUF",
@@ -269,7 +249,6 @@ for (const id of [
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),
 ]) {
-  // A vendor id now resolves to the unsloth mirror that replaced its row.
   const offered = artifactForRepoId(id, IMAGE_CATALOG)?.artifact.repoId ?? id;
   assert.ok(imageOptionIds.has(offered), `image option missing: ${id}`);
 }
@@ -282,8 +261,6 @@ for (const id of [
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
 
-// H3 publishes both denoiser partitions officially. One artifact lets the lister's
-// partition-aware labels expose both without a community mirror.
 const h3Group = groupForRepoId("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG);
 assert.ok(h3Group);
 assert.deepEqual(
@@ -297,14 +274,10 @@ assert.equal(
   "MiniMax H3 (GGUF)",
 );
 
-// Row form: format (plus resolution when that is the only difference) becomes chips, and
-// only what names the variant stays in brackets.
-
 assert.deepEqual(curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG), {
   name: "MiniMax H3",
   tags: ["BF16"],
 });
-// GGUF is spelled by the repo name, like a text model's row, so no chip repeats it.
 assert.deepEqual(curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG), {
   name: "MiniMax-H3-GGUF",
   tags: [],
@@ -314,8 +287,6 @@ assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)
   tags: [],
 });
 
-// On a host that can place a diffusion pipeline the two H3 rows say which is which: the
-// gap is roughly 10x and the names alone gave nothing to choose on.
 assert.deepEqual(curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"), {
   name: "MiniMax H3 (Fast)",
   tags: ["BF16"],
@@ -324,7 +295,6 @@ assert.deepEqual(
   curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "accelerated"),
   { name: "MiniMax-H3-GGUF (Slow)", tags: [] },
 );
-// A host that can only run the native engine has nothing to compare against, so the GGUF row keeps its plain name.
 assert.deepEqual(
   curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "gguf-only"),
   { name: "MiniMax-H3-GGUF", tags: [] },
@@ -338,18 +308,15 @@ assert.equal(
   curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "accelerated"),
   "MiniMax-H3-GGUF (Slow)",
 );
-// No other model claims a speed nobody measured.
 assert.deepEqual(
   curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG, "accelerated"),
   curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG),
 );
-// H3's measured qualifier applies to every accelerated host.
 assert.deepEqual(
   curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "dense-quant"),
   curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"),
 );
 
-// A dense-quant row earns the qualifier; its chip stays the stored precision.
 assert.deepEqual(curatedRowLabelFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, "dense-quant"), {
   name: "Z-Image-Turbo (Fast)",
   tags: ["BF16"],
@@ -358,18 +325,15 @@ assert.equal(
   curatedDisplayNameFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, "dense-quant"),
   "Z-Image-Turbo (Fast)",
 );
-// Pre-quantised and GGUF siblings keep their artifact labels.
 assert.deepEqual(
   curatedRowLabelFor("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", IMAGE_CATALOG, "dense-quant"),
   { name: "Z-Image-Turbo", tags: ["bnb-4bit"] },
 );
-// Every diffusion GGUF is the slow row on a host that can also place the dense pipeline, not just
-// H3's: the native engine has no low-precision tensor-core path.
+// The native engine has no low-precision tensor-core path, so every diffusion GGUF is slow.
 assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG, "dense-quant"), {
   name: "Z-Image-Turbo-GGUF (Slow)",
   tags: [],
 });
-// Hosts without dense quant read exactly the same, minus the qualifier.
 for (const host of ["accelerated", "gguf-only", "unknown"] as const) {
   assert.deepEqual(
     curatedRowLabelFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, host),
@@ -377,13 +341,11 @@ for (const host of ["accelerated", "gguf-only", "unknown"] as const) {
     host,
   );
 }
-// SDXL uses a UNet and never receives the transformer-quant label.
 for (const id of ["stabilityai/sdxl-turbo", "stabilityai/stable-diffusion-xl-base-1.0"]) {
   const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant");
   assert.ok(row && !row.name.includes("(Fast)"), `${id} reads "${row?.name}"`);
 }
 
-// Only eligible bf16 image pipelines claim the path.
 for (const [label, catalog] of [
   ["image", IMAGE_CATALOG],
   ["audio", AUDIO_CATALOG],
@@ -392,8 +354,7 @@ for (const [label, catalog] of [
     for (const artifact of group.artifacts) {
       if (artifact.format !== "bf16" || artifact.loadKind !== "pipeline") continue;
       const row = curatedRowLabelFor(artifact.repoId, catalog, "dense-quant");
-      // Word boundary, not "(Fast)": `qualify` skips the bracket when the variant name already
-      // carries the word, as HiDream I1 (Fast (distilled)) does.
+      // Word boundary: `qualify` skips the bracket when the variant name already says Fast.
       const claims = /\bFast\b/.test(row?.name ?? "");
       assert.equal(
         Boolean(claims),
@@ -404,7 +365,6 @@ for (const [label, catalog] of [
   }
 }
 
-// Only compatible artifacts may receive a precision request.
 for (const [id, expected] of [
   ["unsloth/Z-Image-Turbo-GGUF", true],
   ["Tongyi-MAI/Z-Image-Turbo", true],
@@ -417,10 +377,8 @@ for (const [id, expected] of [
 ] as const) {
   assert.equal(curatedArtifactTakesDenseQuant(id, IMAGE_CATALOG), expected, id);
 }
-// Unknown ids defer to the loader.
 assert.equal(curatedArtifactTakesDenseQuant("someone/pasted", IMAGE_CATALOG), undefined);
 
-// A row that claims the fast path must be one the load request may actually send a precision for.
 for (const group of IMAGE_CATALOG) {
   for (const artifact of group.artifacts) {
     const row = curatedRowLabelFor(artifact.repoId, IMAGE_CATALOG, "dense-quant");
@@ -433,7 +391,6 @@ for (const group of IMAGE_CATALOG) {
   }
 }
 
-// Single-artifact groups have nothing to tell apart, so they stay bare; only the qualifier moves.
 for (const id of [
   "krea/Krea-2-Turbo",
   "Alpha-VLLM/Lumina-Image-2.0",
@@ -448,13 +405,9 @@ for (const id of [
   assert.equal(curatedRowLabelFor(id, IMAGE_CATALOG, "accelerated")?.name.includes("(Fast)"), false, id);
 }
 
-// The row states a CAPABILITY of the artifact on this host, nothing about the request. Which
-// precision a load lands on also depends on Precision/Speed/Memory, the family deny list and a
-// per-card kernel probe; `resolved` reports that after the load. Predicting it here would mean
-// mirroring the backend selector's inputs, which is unbounded.
+// The row states a host capability only; the actual precision depends on many inputs reported after load.
 {
   const id = "unsloth/Z-Image-Turbo";
-  // The chip is the STORED precision, exactly as on a host without the fast path.
   assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant"), {
     name: "Z-Image-Turbo (Fast)",
     tags: ["BF16"],
@@ -463,9 +416,6 @@ for (const id of [
     name: "Z-Image-Turbo",
     tags: ["BF16"],
   });
-  // The host capability never rewrites a chip: chips describe the artifact, so they are identical on
-  // every host and the invented "FP8 / INT8" runtime pair appears nowhere. A stored-fp8 row shows
-  // FP8 as its own label, not as a claim about what will run.
   for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
     for (const group of catalog) {
       for (const artifact of group.artifacts) {
@@ -476,7 +426,6 @@ for (const id of [
       }
     }
   }
-  // Closed and open agree, which is the invariant the qualifier has to keep.
   assert.equal(
     curatedDisplayNameFor(id, IMAGE_CATALOG, "dense-quant"),
     curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant")?.name,
@@ -485,13 +434,11 @@ for (const id of [
   assert.equal(rows.find((o) => o.id === id)?.name, "Z-Image-Turbo (Fast)");
 }
 
-// Do not duplicate a qualifier already present in the variant name.
 assert.deepEqual(
   curatedRowLabelFor("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG, "dense-quant"),
   { name: "HiDream I1 (Fast (distilled))", tags: ["BF16"] },
 );
 
-// Pre-quantised pipelines never claim dense quantisation.
 for (const id of [
   "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
   "ideogram-ai/ideogram-4-fp8",
@@ -500,8 +447,7 @@ for (const id of [
   assert.ok(row && !row.name.includes("(Fast)"), `${id} reads "${row?.name}"`);
 }
 
-// A gguf-only host loses exactly the artifacts the backend refuses there. Non-GGUF is NOT
-// the test: diffusion runs on MPS and audio STT runs through the whisper.cpp sidecar.
+// Non-GGUF is not the test: diffusion runs on MPS and STT via the whisper.cpp sidecar.
 for (const [label, catalog, refused] of [
   ["video", VIDEO_CATALOG, ["MiniMaxAI/MiniMax-H3"]],
   ["image", IMAGE_CATALOG, []],
@@ -515,8 +461,7 @@ for (const [label, catalog, refused] of [
     `${label}: a gguf-only host lost a row it can load`,
   );
 }
-// Every group keeps a row on a gguf-only host: a Mac must never open the picker with a
-// whole model family missing.
+// A Mac must never open the picker with a whole model family missing.
 for (const [label, catalog] of [
   ["video", VIDEO_CATALOG],
   ["image", IMAGE_CATALOG],
@@ -530,12 +475,10 @@ for (const [label, catalog] of [
     );
   }
 }
-// An undiscovered host keeps today's rows, so the picker does not blink on first open.
 assert.deepEqual(
   catalogToModelOptions(VIDEO_CATALOG, "unknown").map((o) => o.id),
   catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id),
 );
-// Every GGUF row ends in the suffix, whoever published it.
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
@@ -546,7 +489,6 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
     }
   }
 }
-// A label part that is not a format or a resolution names the variant, so it stays in the name.
 assert.deepEqual(
   curatedRowLabelFor("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG),
   { name: "HiDream I1 (Dev (distilled))", tags: ["BF16"] },
@@ -565,14 +507,12 @@ assert.deepEqual(
   ),
   { name: "HunyuanVideo 1.5", tags: ["BF16", "480p"] },
 );
-// One artifact means nothing to tell apart, so the row stays bare.
 assert.deepEqual(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG), {
   name: "LTX 2 (base)",
   tags: [],
 });
 assert.equal(curatedRowLabelFor("someone/not-in-the-catalog", VIDEO_CATALOG), null);
 
-// No two rows of a group may render identically, or the picker offers the same thing twice.
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
   for (const group of catalog) {
     const seen = new Set<string>();
@@ -586,7 +526,6 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
   }
 }
 
-// Publication source is not part of a precision label.
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
@@ -607,9 +546,7 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// A non-GGUF artifact stating a parameter count must state its size, or the VRAM badge falls back
-// to the QLoRA estimator, which reads a pipeline as a language model (5B says 5.9 GB where Wan 2.2
-// TI2V is 30).
+// Otherwise the VRAM badge falls back to the QLoRA estimator, which misreads pipelines.
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
@@ -628,26 +565,20 @@ const H3 = "MiniMaxAI/MiniMax-H3";  // 145 GB, tiers at 74/140 and 123/80
 const fitsCurated = (id: string, gpuGb: number, systemRamGb: number) =>
   curatedArtifactFitsDevice(id, VIDEO_CATALOG, { gpuGb, systemRamGb });
 
-// The resident 70% rule on the card alone. RAM is not a discrete GPU's budget: a pipeline with no
-// measured tier goes wholly on the card, so 64 GB of RAM does not rescue a 12 GB one.
+// RAM is not a discrete GPU's budget: an untiered pipeline goes wholly on the card.
 assert.equal(fitsCurated(WAN, 48, 0), true);
 assert.equal(fitsCurated(WAN, 40, 0), false);
 assert.equal(fitsCurated(WAN, 12, 64), false);
 // A unified-memory host reports RAM and no GPU, and there the RAM is the card.
 assert.equal(fitsCurated(WAN, 0, 64), true);
-// Nothing to judge against: no verdict rather than a scary one.
 assert.equal(fitsCurated(WAN, 0, 0), undefined);
-// Measured offload tiers override the 70% rule both ways. 123/80 is the case the generic
-// size test gets wrong: 0.7 * 203 is 142, under 145, yet the tier was measured.
+// Measured offload tiers override the 70% rule both ways.
 assert.equal(fitsCurated(H3, 74, 140), true);
 assert.equal(fitsCurated(H3, 123, 80), true);
 assert.equal(fitsCurated(H3, 74, 100), false);
-// A GGUF ladder self-fits via pickDefaultQuant, and an unknown id is not ours to judge.
 assert.equal(fitsCurated("unsloth/MiniMax-H3-GGUF", 12, 64), undefined);
 assert.equal(fitsCurated("someone/not-in-the-catalog", 12, 64), undefined);
-// Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget for
-// stt: Whisper Large runs on a card too small to hold it. A tts load rejects CPU offload
-// (inference.py raise_if_offloaded), so Orpheus is judged on the card.
+// STT retries on CPU (stt_sidecar.py) so RAM counts; TTS rejects CPU offload, judged on the card.
 assert.equal(
   curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
     gpuGb: 4,
@@ -662,8 +593,7 @@ assert.equal(
   }),
   false,
 );
-// The whole model goes to whichever device takes it, so the budget is the LARGER of the
-// two and never their sum: 3 GB card + 3 GB RAM hold a 4 GB checkpoint on neither.
+// The budget is the larger of card and RAM, never their sum.
 assert.equal(
   curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
     gpuGb: 3,
@@ -688,20 +618,14 @@ assert.equal(
 
 
 const GB = 1024 ** 3;
-// Delegated to lib/gguf-fit, the Hub badge formula: 0.97 of the card (or saved VRAM budget) against
-// weights + KV, then RAM offload at 0.5. The old 0.7-of-each rule on raw file size matched neither.
+// Delegated to lib/gguf-fit, the Hub badge formula.
 assert.equal(classifyGgufFit(10 * GB, { gpuGb: 24, systemRamGb: 64 }), "fits");
-// 20 GiB needs 24.0: past the 23.28 budget, still inside the 24 GiB card.
 assert.equal(classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 64 }), "marginal");
-// 40 GiB needs 47.0: past the card, inside card + RAM offload.
 assert.equal(classifyGgufFit(40 * GB, { gpuGb: 24, systemRamGb: 64 }), "partial");
 assert.equal(classifyGgufFit(100 * GB, { gpuGb: 24, systemRamGb: 64 }), "oom");
-// Unknown device: never scare with OOM.
 assert.equal(classifyGgufFit(100 * GB, { gpuGb: 0, systemRamGb: 0 }), "fits");
-// No GPU at all: RAM alone, at the 0.5 offload share.
 assert.equal(classifyGgufFit(20 * GB, { gpuGb: 0, systemRamGb: 64 }), "ram");
 assert.equal(classifyGgufFit(60 * GB, { gpuGb: 0, systemRamGb: 64 }), "oom");
-// The saved VRAM Budget moves the line. The old rule ignored the setting entirely.
 assert.equal(
   classifyGgufFit(16 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.97 }),
   "fits",
@@ -710,19 +634,16 @@ assert.equal(
   classifyGgufFit(16 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.8 }),
   "marginal",
 );
-// At the top of the slider the loader keeps its 512 MiB floor, so a 20 GiB quant needing
-// 24.0 GiB goes to --fit rather than being admitted. `gpuGb * fraction` said otherwise.
+// At the top of the slider the loader keeps its 512 MiB floor.
 assert.equal(
   classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 1 }),
   "marginal",
 );
-// The floor never exceeds the default budget's own reserve, so 0.97 is unchanged by it.
 assert.equal(
   classifyGgufFit(19 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.97 }),
   "fits",
 );
-// The floor is charged once per CARD: _select_gpus sums per-device usable MiB, so two
-// 24 GiB cards at 1.0 offer 47.0 GiB, not 47.5. A 40.2 GiB file needs 47.23.
+// The floor is charged once per card (_select_gpus sums per-device usable MiB).
 assert.equal(
   classifyGgufFit(40.2 * GB, {
     gpuGb: 48,
@@ -732,12 +653,10 @@ assert.equal(
   }),
   "marginal",
 );
-// Same file, same cards, counted as one box: the verdict this correction exists to remove.
 assert.equal(
   classifyGgufFit(40.2 * GB, { gpuGb: 48, systemRamGb: 0, budgetFraction: 1 }),
   "fits",
 );
-// Below the default the percentage term still wins on either count, so nothing moves.
 for (const gpuCount of [1, 2, 4]) {
   assert.equal(
     classifyGgufFit(39 * GB, {
@@ -750,22 +669,15 @@ for (const gpuCount of [1, 2, 4]) {
   );
 }
 
-// Images / Video place a GGUF through the diffusion backend, whose 64 GiB unified budget is
-// (total - 20% reserve) * 0.85 = 43.5 GiB (diffusion_memory.py). classifyMediaGgufFit allows 44.8;
-// the llama.cpp rule allows 62.1 and would promise loads the planner refuses.
+// Media GGUFs use the diffusion planner budget (diffusion_memory.py), not the llama.cpp rule.
 assert.equal(classifyMediaGgufFit(40 * GB, 64, 0), "fits");  // 40 <= 44.8
 assert.equal(classifyMediaGgufFit(50 * GB, 64, 0), "oom");  // past 44.8, no RAM tier
-// The same 50 GiB file reads as fitting under the llama.cpp rule, the regression this guard
-// prevents: 50 * 1.15 + 1 = 58.5 <= 64 * 0.97.
 assert.equal(classifyGgufFit(50 * GB, { gpuGb: 64, systemRamGb: 0 }), "fits");
-// A discrete card with RAM keeps the offload tier the rule always had.
 assert.equal(classifyMediaGgufFit(20 * GB, 24, 64), "partial");
 assert.equal(classifyMediaGgufFit(100 * GB, 24, 64), "oom");
-// No GPU: RAM alone, fit or not.
 assert.equal(classifyMediaGgufFit(30 * GB, 0, 64), "fits");
 assert.equal(classifyMediaGgufFit(60 * GB, 0, 64), "oom");
 
-// Only oom fails to load; marginal and partial both run.
 assert.equal(ggufFitRuns("partial"), true);
 assert.equal(ggufFitRuns("oom"), false);
 
@@ -776,9 +688,7 @@ const variants = [
   { quant: "BF16", filename: "m-BF16.gguf", size_bytes: 40 * GB },
 ];
 const budget24 = { gpuGb: 24, systemRamGb: 64 };
-// Repo default kept when it is not OOM.
 assert.equal(pickDefaultQuant(variants, "Q4_K_M", budget24)?.quant, "Q4_K_M");
-// Downloaded non-OOM quant beats the undownloaded default.
 assert.equal(
   pickDefaultQuant(
     [variants[0], { ...variants[1], downloaded: true }, variants[2]],
@@ -787,22 +697,18 @@ assert.equal(
   )?.quant,
   "Q8_0",
 );
-// OOM default falls to the largest non-OOM quant (Q8_0 runs tight via RAM offload).
 assert.equal(
   pickDefaultQuant(variants, "BF16", { gpuGb: 24, systemRamGb: 16 })?.quant,
   "Q8_0",
 );
-// Without RAM to offload into, the tight tier disappears and Q4_K_M wins.
 assert.equal(
   pickDefaultQuant(variants, "BF16", { gpuGb: 24, systemRamGb: 0 })?.quant,
   "Q4_K_M",
 );
-// All OOM: smallest wins (closest to running).
 assert.equal(
   pickDefaultQuant(variants, "BF16", { gpuGb: 4, systemRamGb: 4 })?.quant,
   "Q4_K_M",
 );
-// No budget knowledge: trust the repo default (expander parity).
 assert.equal(
   pickDefaultQuant(variants, "Q8_0", { gpuGb: 0, systemRamGb: 0 })?.quant,
   "Q8_0",
@@ -812,32 +718,27 @@ assert.equal(pickDefaultQuant([], "Q4_K_M", budget24), null);
 
 const notDownloaded = () => false;
 const qwenGroup = qwen2512;
-// 8 GB consumer GPU: nothing prequant fits (fp8 24 GB, bnb 14 GB) -> GGUF.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 8, systemRamGb: 32, isDownloaded: notDownloaded })
     .format,
   "gguf",
 );
-// 24 GB: bnb-4bit (14 GB) fits the 16.8 GB budget.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
     .format,
   "bnb-4bit",
 );
-// 48 GB: still bnb-4bit. fp8 is family-denied for qwen-image (renders black) and the -FP8 repo ships
-// prequant .pt rather than single-file safetensors, so the old winner auto-routed to a 404.
+// fp8 is family-denied for qwen-image (renders black) and its repo ships .pt, not safetensors.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
     .format,
   "bnb-4bit",
 );
-// Unknown device: GGUF (the backend plans offload itself).
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 0, systemRamGb: 0, isDownloaded: notDownloaded })
     .format,
   "gguf",
 );
-// Downloaded-first: a downloaded bnb-4bit beats everything undownloaded.
 assert.equal(
   pickDefaultArtifact(qwenGroup, {
     gpuGb: 48,
@@ -846,7 +747,6 @@ assert.equal(
   }).format,
   "bnb-4bit",
 );
-// A downloaded GGUF wins over undownloaded prequants even on a big GPU.
 assert.equal(
   pickDefaultArtifact(qwenGroup, {
     gpuGb: 80,
@@ -855,7 +755,6 @@ assert.equal(
   }).format,
   "gguf",
 );
-// Ideogram on 24 GB: fp8 (46 GB) too big -> bnb-4bit (11 GB).
 const ideogram = groupForRepoId("ideogram-ai/ideogram-4-fp8", IMAGE_CATALOG);
 assert.ok(ideogram);
 assert.equal(
@@ -863,7 +762,6 @@ assert.equal(
     .repoId,
   "ideogram-ai/ideogram-4-nf4-diffusers",
 );
-// FLUX.1-dev BF16 is the open unsloth mirror, so a big GPU auto-routes to it.
 const fluxDevRoute = groupForRepoId("unsloth/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDevRoute);
 assert.equal(
@@ -871,7 +769,6 @@ assert.equal(
     .repoId,
   "unsloth/FLUX.1-dev",
 );
-// FLUX.1 Krea dev: the open mirror wins on a big GPU; the vendor id still resolves to the group.
 const kreaDevRoute = groupForRepoId("black-forest-labs/FLUX.1-Krea-dev", IMAGE_CATALOG);
 assert.ok(kreaDevRoute);
 assert.equal(
@@ -883,7 +780,6 @@ assert.equal(
   groupForRepoId("QuantStack/FLUX.1-Krea-dev-GGUF", IMAGE_CATALOG),
   kreaDevRoute,
 );
-// Lumina Image 2.0: one ungated bf16 pipeline (11 GB), auto-routed on a 24 GB GPU (11 <= 0.7 * 24).
 const lumina = groupForRepoId("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG);
 assert.ok(lumina);
 assert.equal(
@@ -892,15 +788,12 @@ assert.equal(
   "unsloth/Lumina-Image-2.0",
 );
 assert.equal(loadSpecFor("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG)?.kind, "pipeline");
-// HunyuanImage 2.1: the 50 GB bf16 pipeline misses a 24 GB card so a bare click routes to
-// the QuantStack GGUF; on a large GPU bf16 wins. Both ids share one group.
 const hyimage = groupForRepoId(
   "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
   IMAGE_CATALOG,
 );
 assert.ok(hyimage);
-// bf16 at both ends now: the QuantStack GGUF was unpublished, so no quant ladder is left. 50 GB
-// still fits a 24 GB card's 61.6 GB budget, so this asserts the group did not vanish with it.
+// The QuantStack GGUF was unpublished; assert the group did not vanish with it.
 assert.equal(
   pickDefaultArtifact(hyimage, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
     .repoId,
@@ -911,8 +804,6 @@ assert.equal(
     .format,
   "bf16",
 );
-// HiDream I1: all three variants group together, a datacenter GPU auto-routes to Full bf16
-// (catalog order wins among equal sizes), and 24 GB hides the group.
 const hidream = groupForRepoId("HiDream-ai/HiDream-I1-Full", IMAGE_CATALOG);
 assert.ok(hidream);
 assert.equal(groupForRepoId("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG), hidream);
@@ -926,7 +817,6 @@ assert.equal(
   catalogGroupFitsDevice(hidream, { gpuGb: 24, systemRamGb: 32 }, notDownloaded),
   false,
 );
-// FLUX.1-schnell BF16 is the open unsloth mirror, so a GPU that fits the pipeline takes it.
 const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
 assert.ok(fluxSchnellRoute);
 assert.equal(
@@ -934,7 +824,6 @@ assert.equal(
     .format,
   "bf16",
 );
-// HunyuanVideo on 80 GB: the highest-quality artifact that FITS (720p, 52 GB <= budget 56) wins.
 const hunyuan = groupForRepoId(
   "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
   VIDEO_CATALOG,
@@ -945,15 +834,13 @@ assert.equal(
     .label,
   "BF16 - 720p",
 );
-// Same-format artifacts keep declaration order, so 720p is listed first; a budget of 42
-// skips it and falls back to 480p (40).
+// Same-format artifacts keep declaration order.
 assert.equal(
   pickDefaultArtifact(hunyuan, { gpuGb: 60, systemRamGb: 128, isDownloaded: notDownloaded })
     .label,
   "BF16 - 480p",
 );
 
-// MiniMax-H3 uses measured component-offload tiers instead of the resident 70% rule.
 const h3 = groupForRepoId("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG);
 assert.ok(h3);
 assert.equal(
@@ -981,16 +868,13 @@ assert.equal(
     .format,
   "bf16",
 );
-// The upper tier in the picker's units: 132 GiB VRAM is 141.7 decimal GB, past the 132 GB where the
-// estimator drops its host-RAM floor to 85 GB, and 85 GiB RAM is 91.3 GB. A decimal-GB tier table
-// would wrongly send this host to GGUF.
+// Tiers are GiB while the estimator is decimal GB; a decimal tier table would misroute this host.
 assert.equal(
   pickDefaultArtifact(h3, { gpuGb: 132, systemRamGb: 85, isDownloaded: notDownloaded })
     .format,
   "bf16",
 );
-// The 30 GiB tier streams an int8 denoiser, which needs group offload that swaps torchao weights
-// (diffusers >= 0.40). Unknown or unsupported keeps the host on the runnable GGUF row.
+// The 30 GiB tier streams an int8 denoiser, which needs torchao group offload (diffusers >= 0.40).
 for (const quantisedStreaming of [undefined, false]) {
   assert.equal(
     pickDefaultArtifact(h3, {
@@ -1027,7 +911,6 @@ assert.equal(
   }),
   true,
 );
-// The resident tiers need no streaming.
 assert.equal(
   curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
     gpuGb: 74,
@@ -1037,8 +920,6 @@ assert.equal(
   true,
 );
 
-// Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget but fits an 80 GB GPU (budget 56)
-// and wins there.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .format,
@@ -1049,7 +930,6 @@ assert.equal(
     .repoId,
   "unsloth/Qwen-Image-2512",
 );
-// Z-Image-Turbo BF16 (30 GB) misses 24 GB (bnb-4bit wins) but fits a 48 GB GPU (budget 33.6) and wins.
 const zturbo = groupForRepoId("unsloth/Z-Image-Turbo", IMAGE_CATALOG);
 assert.ok(zturbo);
 assert.equal(
@@ -1062,8 +942,6 @@ assert.equal(
     .format,
   "bf16",
 );
-// FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU and its mirror is open, so a bare click takes it.
-// Small GPU goes to GGUF.
 const fluxDev = groupForRepoId("black-forest-labs/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDev);
 assert.equal(fluxDev.canonicalId, "unsloth/FLUX.1-dev");
@@ -1077,14 +955,11 @@ assert.equal(
     .format,
   "gguf",
 );
-// LTX-2.3 video carries the official BF16 single file (no FP8: the loader refuses its scaled-fp8
-// one), keeping the ~50 GB Gemma3 encoder resident, so B200-class only. Looked up by the retired
-// unsloth/LTX-2.3 id on purpose: a pasted copy must still land here via the suffix-stripped key.
+// Looked up by the retired unsloth/LTX-2.3 id on purpose: a pasted copy must still resolve.
 const ltxGroup = groupForRepoId("unsloth/LTX-2.3", VIDEO_CATALOG);
 assert.ok(ltxGroup);
 assert.equal(ltxGroup.canonicalId, "Lightricks/LTX-2.3");
 assert.equal(groupForRepoId("Lightricks/LTX-2.3", VIDEO_CATALOG), ltxGroup);
-// The retired id is not an artifact, so it can never be handed to a load as a repo to fetch.
 assert.equal(loadSpecFor("unsloth/LTX-2.3", VIDEO_CATALOG), null);
 assert.equal(
   pickDefaultArtifact(ltxGroup, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
@@ -1101,13 +976,11 @@ assert.equal(
     .format,
   "bf16",
 );
-// The LTX-2.3 official checkpoints load as single-file against the family base.
 assert.equal(loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.kind, "single_file");
 assert.equal(
   loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.filename,
   "ltx-2.3-22b-distilled.safetensors",
 );
-// The official image BF16 pipelines load via from_pretrained (pipeline kind).
 assert.equal(loadSpecFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG)?.kind, "pipeline");
 assert.equal(loadSpecFor("Qwen/Qwen-Image-2512", IMAGE_CATALOG)?.kind, "pipeline");
 
@@ -1120,22 +993,17 @@ const hunyuanFit = groupForRepoId(
 );
 assert.ok(wanA14b && ltxBase && hunyuanFit && ltxGroup);
 const consumer = { gpuGb: 24, systemRamGb: 64 };  // budget 61.6 GB
-// A bare-bf16 group over budget is hidden: this is the OOM the toggle must catch.
 assert.equal(catalogGroupFitsDevice(wanA14b, consumer, notDownloaded), false);  // 114 GB
 assert.equal(catalogGroupFitsDevice(ltxBase, consumer, notDownloaded), false);  // 90 GB
-// A sized bf16 group that fits the budget stays visible (Hunyuan 40/52 GB <= 61.6).
 assert.equal(catalogGroupFitsDevice(hunyuanFit, consumer, notDownloaded), true);
-// But on a tiny device even those are hidden.
 assert.equal(
   catalogGroupFitsDevice(hunyuanFit, { gpuGb: 8, systemRamGb: 8 }, notDownloaded),
   false,
 );
-// A GGUF in the group is always runnable, so LTX-2.3 stays visible on a tiny card despite its 90 GB BF16 sibling.
 assert.equal(
   catalogGroupFitsDevice(ltxGroup, { gpuGb: 4, systemRamGb: 4 }, notDownloaded),
   true,
 );
-// An already-downloaded artifact keeps its group visible regardless of budget.
 assert.equal(
   catalogGroupFitsDevice(
     wanA14b,
@@ -1144,16 +1012,13 @@ assert.equal(
   ),
   true,
 );
-// Unknown device budget keeps everything, even a 114 GB group.
 assert.equal(catalogGroupFitsDevice(wanA14b, { gpuGb: 0, systemRamGb: 0 }, notDownloaded), true);
-// On a B200-class budget the large bf16 groups fit and stay visible.
 assert.equal(
   catalogGroupFitsDevice(wanA14b, { gpuGb: 192, systemRamGb: 256 }, notDownloaded),
   true,
 );
 
 
-// Every audio group carries a task tag; the other catalogs carry none.
 for (const group of AUDIO_CATALOG) {
   assert.ok(group.task === "tts" || group.task === "stt", `audio group ${group.canonicalId} needs a task`);
   assert.equal(group.scope, "audio");
@@ -1163,20 +1028,16 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
     assert.equal(group.task, undefined, `non-audio group ${group.canonicalId} must not carry a task`);
   }
 }
-// The Orpheus GGUF groups with its safetensors base and reports the gguf load kind.
 const orpheus = groupForRepoId("unsloth/orpheus-3b-0.1-ft-GGUF", AUDIO_CATALOG);
 assert.ok(orpheus);
 assert.equal(orpheus.canonicalId, "unsloth/orpheus-3b-0.1-ft");
 assert.equal(orpheus.task, "tts");
 assert.equal(loadSpecFor("unsloth/orpheus-3b-0.1-ft-GGUF", AUDIO_CATALOG)?.kind, "gguf");
 assert.equal(loadSpecFor("unsloth/csm-1b", AUDIO_CATALOG)?.kind, "pipeline");
-// The whisper sidecar repos resolve as stt groups.
 assert.equal(groupForRepoId("unsloth/whisper-large-v3-turbo", AUDIO_CATALOG)?.task, "stt");
 assert.equal(groupForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG)?.task, "stt");
-// A chat model stays unknown to the audio catalog.
 assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", AUDIO_CATALOG), null);
-// MiniMax Music3 publishes a 67 GB repository, but its official BF16 modular loader fits a
-// 24 GB CUDA card, so download bytes must not become a false OOM badge.
+// 67 GB is the download size; the BF16 modular loader fits a 24 GB card.
 const minimaxMusic = groupForRepoId("MiniMaxAI/MiniMax-Music3", AUDIO_CATALOG);
 assert.ok(minimaxMusic);
 assert.equal(
@@ -1200,7 +1061,6 @@ assert.equal(
 assert.ok(groupMatchesQuery(qwenGroup, "qwen"));
 assert.ok(groupMatchesQuery(qwenGroup, "2512"));
 assert.ok(groupMatchesQuery(qwenGroup, "gguf"));
-// Still reachable by "fp8" and by the full prequant repo id, now through the group alias rather than an artifact row.
 assert.ok(groupMatchesQuery(qwenGroup, "fp8"));
 assert.ok(groupMatchesQuery(qwenGroup, "4bit"));
 assert.ok(groupMatchesQuery(qwenGroup, "q4_k_m"));
@@ -1224,8 +1084,7 @@ for (const [id, repo] of PREQUANT_ROWS) {
   const hit = artifactForRepoId(id, IMAGE_CATALOG);
   assert.ok(hit, id);
   assert.equal(hit.artifact.prequantRepo, repo, id);
-  // Only a row the quantiser can take may name a checkpoint, else the fit rule sizes a load by an
-  // artifact the backend never fetches.
+  // Else the fit rule sizes a load by an artifact the backend never fetches.
   assert.equal(curatedArtifactTakesDenseQuant(id, IMAGE_CATALOG), true, id);
   for (const scheme of ["fp8", "int8"] as const) {
     const size = hit.artifact.prequantSizeGb?.[scheme];
@@ -1250,7 +1109,6 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// Z-Image-Turbo: 27.3 GB card dense (bf16, not the fp32 download), 19.3 GB pre-quantised, under the 70% rule.
 const zTurboId = "unsloth/Z-Image-Turbo";
 assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 128 }),
@@ -1295,9 +1153,7 @@ assert.equal(
   }),
   false,
 );
-// The reported schemes are a LADDER. `_pipeline_planned_denoiser_scheme` walks past an int8 rung
-// whose artifact-sized plan still offloads and seeds fp8 instead, so sizing by schemes[0] alone
-// refuses a card the pipeline really runs on (Qwen-Image int8 is 25.4 GB against fp8's 19.06).
+// The reported schemes are a ladder; sizing by schemes[0] alone refuses cards the pipeline runs on.
 const qwenImageGroup = groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG);
 assert.ok(qwenImageGroup);
 assert.equal(
@@ -1317,7 +1173,6 @@ assert.equal(
   }).repoId,
   "unsloth/Qwen-Image",
 );
-// A ladder no rung of which fits is still refused, and still routes to the bnb row.
 assert.equal(
   curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
     gpuGb: 24,
@@ -1338,9 +1193,7 @@ for (const id of ["black-forest-labs/FLUX.1-dev", "stabilityai/sdxl-turbo"]) {
   );
 }
 
-// The "Fits on device" group filter sizes a row like the badge and the router do: Krea-2-Turbo is
-// 18 GB dense and ~12 GB as its hosted int8 / fp8 artifact, with no GGUF fallback row, so the dense
-// figure hid the whole group on a card the backend loads it on.
+// The group filter must size rows like the badge and router, by the hosted quantised artifact.
 const kreaTurboGroup = groupForRepoId("krea/Krea-2-Turbo", IMAGE_CATALOG);
 assert.ok(kreaTurboGroup);
 assert.equal(
@@ -1355,7 +1208,6 @@ assert.equal(
   ),
   true,
 );
-// A card too small for the quantised artifact too is still refused.
 assert.equal(
   catalogGroupFitsDevice(
     kreaTurboGroup,
@@ -1365,7 +1217,6 @@ assert.equal(
   false,
 );
 
-// The router follows the same rule as the fit verdict.
 const zTurboGroup = groupForRepoId(zTurboId, IMAGE_CATALOG);
 assert.ok(zTurboGroup);
 assert.equal(
@@ -1466,20 +1317,15 @@ for (const schemes of [[], ["fp8"], ["int8"]]) {
 
 console.log("model-catalog check: all assertions passed");
 
-// Opt-in `--network` pass: every failure it catches was reported by hand, a link that 401s on an
-// undeclared gated repo or 404s after a rename. Anonymous on purpose, since that is what a fresh
-// install sees; only a definitive verdict fails the run.
+// Opt-in `--network` pass; anonymous on purpose (what a fresh install sees). Only definitive verdicts fail.
 
 const HF_API = "https://huggingface.co/api/models";
 const HF_RESOLVE = "https://huggingface.co";
 const NETWORK_ATTEMPTS = 3;
 /** Per-attempt wall clock, headers and body together. */
 const NETWORK_TIMEOUT_MS = 20_000;
-/** Wall clock for the whole network pass, under the workflow's 10-minute timeout. Bounding each
- *  attempt is not enough: ~53 repos at NETWORK_BATCH 4 is 14 serial batches, so a stalling peer
- *  would be killed at 10 as a red run. Past the deadline requests are "no opinion" and we exit 0. */
+/** Whole-pass wall clock, under the workflow's 10-minute timeout; past it requests are no opinion. */
 const NETWORK_DEADLINE_MS = 7 * 60 * 1000;
-/** Set when the network pass starts; Infinity keeps the offline assertions unbounded. */
 let networkDeadlineAt = Number.POSITIVE_INFINITY;
 const NETWORK_BATCH = 4;
 
@@ -1491,9 +1337,7 @@ interface HubRepo {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Fetch with retries. Never throws and never rejects: an answer the Hub could not give is
- *  `{ response: null }`, treated as "no opinion". A rate limit or DNS blip must not
- *  turn into a red nightly. */
+/** Never throws: an unanswered request is `{ response: null }` (no opinion), so blips stay green. */
 async function fetchWithRetry(
   url: string,
   init?: RequestInit,
@@ -1504,12 +1348,9 @@ async function fetchWithRetry(
       return { response: null, body: "", why: "the network check ran out of its overall budget" };
     }
     try {
-      // A per-attempt deadline, or a peer that accepts the connection and then stalls has no
-      // retry and no fail-open: fetch never settles and the job dies as a RED run.
+      // Per-attempt deadline, or a stalled peer leaves fetch unsettled and the job dies red.
       const response = await fetch(url, { ...init, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
-      // Read the body HERE, under the same deadline: headers can arrive while the body stalls, and
-      // the caller parses outside this function where an abort looks like unreadable JSON.
-      // It also drains the 429/5xx responses being retried.
+      // Read the body under the same deadline: headers can arrive while the body stalls.
       const body = init?.method === "HEAD" ? "" : await response.text();
       if (response.status !== 429 && response.status < 500) return { response, body, why: "" };
       why = `HTTP ${response.status}`;
@@ -1521,7 +1362,7 @@ async function fetchWithRetry(
   return { response: null, body: "", why };
 }
 
-/** Run `work` over `items`, a few at a time: ~35 repos, and the Hub does not need a thundering herd. */
+/** Run `work` over `items` a few at a time to avoid hammering the Hub. */
 async function inBatches<T>(items: T[], work: (item: T) => Promise<void>): Promise<void> {
   for (let i = 0; i < items.length; i += NETWORK_BATCH) {
     await Promise.all(items.slice(i, i + NETWORK_BATCH).map(work));
@@ -1532,8 +1373,7 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
   networkDeadlineAt = Date.now() + NETWORK_DEADLINE_MS;
   const failures: string[] = [];
   const groups = catalogs.flat();
-  // One metadata call per repo id, however many artifacts share it. A package folder id names a folder
-  // of one shared repo, so every one of them is checked against that repo.
+  // One metadata call per repo id; a package folder id is checked against its shared repo.
   const artifactsByRepo = new Map<string, ModelArtifact[]>();
   for (const group of groups) {
     for (const artifact of group.artifacts) {
@@ -1553,8 +1393,7 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
       return;
     }
     if (!response.ok) {
-      // 401 on the METADATA endpoint means private-or-absent (the Hub will not say which); a
-      // gated-but-public repo answers 200 with gated set, so this is never just "needs a licence".
+      // 401 on the metadata endpoint means private-or-absent; gated-but-public repos answer 200.
       failures.push(
         `${repoId}: HTTP ${response.status} from ${HF_API}/${repoId} -- the repo is missing, renamed or private, so no user can download it`,
       );
@@ -1564,8 +1403,7 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
     try {
       repo = JSON.parse(body) as HubRepo;
     } catch (err) {
-      // A 200 that is not JSON is a captive portal or proxy, not a catalog problem. Reject the
-      // run rather than throwing out of Promise.all with a raw stack.
+      // A 200 that is not JSON is a captive portal or proxy.
       failures.push(`${repoId}: the Hub answered 200 with unreadable JSON (${err})`);
       return;
     }
@@ -1585,7 +1423,6 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
     for (const artifact of artifacts) {
       if (!isAudioCppFolderId(artifact.repoId)) continue;
-      // The package folder is the id's first segment past the repo.
       const folder = artifact.repoId.slice(AUDIO_CPP_REPO.length + 1).split("/")[0];
       if (!(repo.siblings ?? []).some((s) => s.rfilename.startsWith(`${folder}/`))) {
         failures.push(`${artifact.repoId}: ${repoId} has no '${folder}/' folder`);
@@ -1628,7 +1465,7 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
         continue;
       }
       if (hubGated) continue;  // resolve/ 401s without a token; the sibling list is the check.
-      // Listed is not the same as fetchable: resolve/ is the endpoint the download hits.
+      // Listed is not fetchable: resolve/ is the endpoint downloads hit.
       const head = await fetchWithRetry(`${HF_RESOLVE}/${repoId}/resolve/main/${filename}`, {
         method: "HEAD",
       });
@@ -1644,8 +1481,7 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
     }
   });
 
-  // Advisory only. A canonicalId is a display/grouping key and 15 are deliberately not repos;
-  // but one that is both `unsloth/*`-shaped and dead clears every owner guard in the app.
+  // Advisory only: some canonicalIds are deliberately not repos.
   const artifactIds = new Set(
     groups.flatMap((g) => g.artifacts.map((a) => a.repoId.toLowerCase())),
   );
@@ -1654,7 +1490,6 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
     .filter((id) => !artifactIds.has(id.toLowerCase()));
   await inBatches(orphans, async (canonicalId) => {
     const { response } = await fetchWithRetry(`${HF_API}/${canonicalId}`);
-    // A null response is an unreachable Hub, which is simply no advice.
     if (response !== null && !response.ok) {
       console.warn(
         `::warning::canonicalId '${canonicalId}' is not a real repo (HTTP ${response.status}). Harmless as a grouping key, but it must never reach a load.`,

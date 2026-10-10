@@ -119,7 +119,7 @@ export function modelLabelKey(item: LibraryItem): ModelLabelKey | null {
     : "library.modelKind.model";
 }
 
-/** The extension the file itself has. A rename changes only the name shown, never what it is. */
+/** A rename changes only the name shown, never the file's type. */
 function ownExtension(item: Pick<LibraryItem, "name" | "fileName">): string {
   return fileExtension(item.fileName ?? item.name);
 }
@@ -143,7 +143,7 @@ export function fileKind(
   return "document";
 }
 
-/** Raster images only: an svg is served as an opaque download and never rendered inline. */
+/** svg is served as an opaque download and never rendered inline. */
 export function hasImagePreview(item: LibraryItem): boolean {
   return (
     !item.textOnly &&

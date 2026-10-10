@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Type filter for the On Device list. Mirrors the hub Discover capability
-// options and shares its detection, so both dropdowns behave the same.
+// Shares detection with the Discover capability options so both dropdowns agree.
 
 import type {
   CachedInventoryRow,
@@ -41,7 +40,6 @@ export function matchesModelType(
   filter: ModelTypeFilter,
 ): boolean {
   if (filter === "all") return true;
-  // Honor the row's own vision flag before falling back to tag detection.
   if (filter === "vision" && row.capabilities.supportsVision) return true;
   const caps = detectCapabilities(
     row.tags ?? undefined,
