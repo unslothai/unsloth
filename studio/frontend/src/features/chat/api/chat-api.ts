@@ -1506,15 +1506,17 @@ export async function fetchModelIni(
   const params = new URLSearchParams({ repo_id: repoId });
   if (ggufVariant) params.set("gguf_variant", ggufVariant);
   if (isHuggingFaceOffline()) params.set("offline", "true");
+  // A header, not the query: the lease carries the local path, and URLs end up in access logs.
+  const headers: Record<string, string> = { ...hubTokenHeader(options?.hfToken) };
   if (options?.nativePathToken) {
     const { nativePathLease } = await consumeNativePathToken(
       options.nativePathToken,
       "validate-model",
     );
-    params.set("native_path_lease", nativePathLease);
+    headers["X-Native-Path-Lease"] = nativePathLease;
   }
   const response = await authFetch(`/api/models/model-ini?${params}`, {
-    headers: hubTokenHeader(options?.hfToken),
+    headers,
     signal: options?.signal,
   });
   return parseJsonOrThrow<ModelIniResponse>(response);

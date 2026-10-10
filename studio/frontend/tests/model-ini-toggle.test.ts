@@ -276,9 +276,10 @@ test("a file-picked GGUF's INI lookup carries a native lease", () => {
   const fetcher = api.slice(api.indexOf("export async function fetchModelIni"));
   assert.match(
     fetcher.slice(0, 1200),
-    /consumeNativePathToken\(\s*options\.nativePathToken,\s*"validate-model",?\s*\)[\s\S]*params\.set\("native_path_lease", nativePathLease\)/,
+    /consumeNativePathToken\(\s*options\.nativePathToken,\s*"validate-model",?\s*\)[\s\S]*headers\["X-Native-Path-Lease"\] = nativePathLease/,
   );
   assert.match(fetcher.slice(0, 1200), /params\.set\("offline", "true"\)/);
+  assert.doesNotMatch(fetcher.slice(0, 1400), /params\.set\("native_path_lease"/);
   const page = readSrc("features/model-picker/components/model-config-page.tsx");
   assert.match(page, /const modelIniKey = [^;]*nativePathToken \?\? ""/);
   assert.match(page, /fetchModelIni\(target\.id, target\.ggufVariant, \{[^}]*nativePathToken,/);

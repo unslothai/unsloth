@@ -293,6 +293,19 @@ const MODEL_INI_SAMPLING_PARAMS = {
   presence_penalty: "presencePenalty",
 } as const satisfies Record<string, keyof InferenceParams>;
 
+/** ``params`` without the sliders the applied unsloth.ini owns, so the Think toggle keeps them. */
+export function withoutModelIniOwnedParams<T extends Partial<InferenceParams>>(
+  params: T,
+  ownedKeys: readonly string[],
+): T {
+  const kept: Partial<InferenceParams> = { ...params };
+  for (const key of ownedKeys) {
+    const param = MODEL_INI_SAMPLING_PARAMS[key as keyof typeof MODEL_INI_SAMPLING_PARAMS];
+    if (param) delete kept[param];
+  }
+  return kept as T;
+}
+
 /** The unsloth.ini outranks the Qwen3 thinking table, but only for the keys it sets. */
 export function qwenThinkingParamsWithModelIni<T extends Partial<InferenceParams>>(
   qwenParams: T,

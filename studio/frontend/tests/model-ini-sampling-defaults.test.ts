@@ -167,3 +167,18 @@ test("both merge sites pass the previous INI keys and record the new ones", () =
     /modelIniSamplingKeys: modelIniSamplingKeysAfterMerge\(\s*state\.activePresetSource,\s*state\.modelIniSamplingKeys,\s*status,\s*\)/,
   );
 });
+
+test("the Think toggle keeps the sliders the INI owns", async () => {
+  const { withoutModelIniOwnedParams } = await import(
+    "../src/features/chat/presets/preset-policy.ts"
+  );
+  const table = { temperature: 0.6, topP: 0.95, topK: 20, minP: 0 };
+  assert.deepEqual(withoutModelIniOwnedParams(table, ["temperature"]), {
+    topP: 0.95,
+    topK: 20,
+    minP: 0,
+  });
+  assert.deepEqual(withoutModelIniOwnedParams(table, []), table);
+  const src = readSrc("features/chat/utils/qwen-params.ts");
+  assert.match(src, /withoutModelIniOwnedParams\(table, store\.modelIniSamplingKeys \?\? \[\]\)/);
+});

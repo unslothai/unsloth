@@ -8511,6 +8511,15 @@ def _apply_model_ini_to_request(request, model_identifier: str, label: str):
         )
     if compiled.n_parallel is not None:
         request = request.model_copy(update = {"n_parallel": compiled.n_parallel})
+    # The parser only knows the INI's own np; the load's slot count can be higher, and
+    # check_batch_floor would then refuse the whole load over this one key.
+    from core.inference.llama_server_args import clamp_parallel_slots
+
+    if "--batch-size" in args:
+        i = args.index("--batch-size")
+        if int(args[i + 1]) < max(2, clamp_parallel_slots(getattr(request, "n_parallel", None))):
+            logger.info("%s: ignored batch-size below the slot count", MODEL_INI_FILENAME)
+            args = args[:i] + args[i + 2 :]
     request._model_ini_args = tuple(args)
     request._model_ini_applied = True
     request._model_ini_sampling = any(token in _MODEL_INI_SAMPLING for token in args)

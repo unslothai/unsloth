@@ -904,3 +904,30 @@ def test_batch_below_the_serving_floor_is_ignored(text):
 def test_gpu_layers_past_int32_are_ignored():
     compiled = parse_model_ini("ngl = 4294967296\n", quant = None, gguf_filename = None)
     assert compiled.args == [] and [i["key"] for i in compiled.ignored] == ["ngl"]
+
+
+def test_ini_batch_below_the_requests_slot_count_is_dropped(monkeypatch):
+    from core.inference.llama_server_args import check_batch_floor
+    from routes.inference import _apply_model_ini_to_request, _model_ini_tokens
+
+    _patch_locate(monkeypatch, "b = 2\nc = 4096\n")
+    request = _apply_model_ini_to_request(
+        _load_request(use_model_ini = True, n_parallel = 4), "u/M-GGUF", "M"
+    )
+    assert _model_ini_tokens(request) == ["--ctx-size", "4096"]
+    check_batch_floor(_model_ini_tokens(request), 4)
+    # Within the floor the INI batch stays.
+    _patch_locate(monkeypatch, "b = 8\n")
+    request = _apply_model_ini_to_request(
+        _load_request(use_model_ini = True, n_parallel = 4), "u/M-GGUF", "M"
+    )
+    assert _model_ini_tokens(request) == ["--batch-size", "8"]
+
+
+def test_native_lease_is_read_from_a_header_not_the_query():
+    import inspect
+
+    import routes.models as models_routes
+
+    default = inspect.signature(models_routes.get_model_ini).parameters["native_path_lease"].default
+    assert type(default).__name__ == "Header" and default.alias == "X-Native-Path-Lease"

@@ -4855,8 +4855,10 @@ async def get_model_ini(
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     offline: bool = False,
-    native_path_lease: Optional[str] = Query(
-        None, description = "Grant for a GGUF picked in the native file dialog"
+    native_path_lease: Optional[str] = Header(
+        None,
+        alias = "X-Native-Path-Lease",
+        description = "Grant for a GGUF picked in the native file dialog (a header: it names the path)",
     ),
     hf_token_header: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
