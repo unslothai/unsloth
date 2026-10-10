@@ -1245,6 +1245,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     }
     if (!value.trim()) return;
     budget -= value.length;
+    if (budget < 0) return;
     const run = doc.createElementNS(w, tag("r"));
     const t = doc.createElementNS(w, tag("t"));
     t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
@@ -1267,10 +1268,11 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   for (const p of paragraphs) {
     const pPr = childElements(p, w, "pPr")[0];
     label(p, pPr);
+    if (budget < 0) return archive;
     // A section break restarts the lists that opt in (Word's "restart numbering after break").
     if (pPr && childElements(pPr, w, "sectPr").length) for (const id of restartsAfterBreak) counters.delete(id);
   }
-  if (!found || budget < 0) return archive;
+  if (!found) return archive;
   return zipSync({ ...unzipSync(archive), [main]: strToU8(new XMLSerializer().serializeToString(doc)) }, { level: 0 });
 }
 
