@@ -74,3 +74,40 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
     /id: "unsloth-trending",[\s\S]*?format: "recommended"/,
   );
 });
+
+test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their size", async () => {
+  const { isCapableCheckpointQuant } = await import(
+    "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+  );
+  assert.equal(isCapableCheckpointQuant(fp8.id, undefined, ["fp8"]), true);
+  assert.equal(isCapableCheckpointQuant(fp8.id, undefined, []), false);
+  assert.equal(isCapableCheckpointQuant(nvfp4.id, undefined, ["fp8"]), false);
+  assert.equal(
+    isCapableCheckpointQuant("unsloth/X-FP8-GGUF", undefined, ["fp8"]),
+    false,
+  );
+
+  const picker = await readSrcAsync(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  // Past the runtime gate, the GGUF-only rule, the FP8 name filter and the fit filter.
+  assert.match(picker, /matchesTask: chatSupportedCheckpointQuant\(r\)/);
+  // Only the quant-method check is waived: an FP8 image model is still not a chat model.
+  assert.match(
+    picker,
+    /runsCheckpointQuant\(r\) &&\s*isChatSupported\(\{ \.\.\.r, quantMethod: undefined \}\)/,
+  );
+  assert.match(
+    picker,
+    /cachedIdFor\(r\.id\) !== null \|\|\s*runsCheckpointQuant\(r\) \|\|/,
+  );
+  assert.equal(
+    picker.match(/runsCheckpointQuant\(\{ id \}\) \|\| !\/-FP8/g)?.length,
+    2,
+  );
+  // Task pages (images, audio) keep their own formats.
+  assert.match(
+    picker,
+    /\(r: \{ id: string; quantMethod\?: string \}\) =>\s*!task &&/,
+  );
+});
