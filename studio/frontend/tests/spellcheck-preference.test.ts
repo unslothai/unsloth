@@ -78,6 +78,13 @@ test("the app applies it before the first render", () => {
   assert.match(readSrc("main.tsx"), /watchSpellCheck\(window\);/);
 });
 
+test("an account switch keeps the choice, like the display language", async () => {
+  const { ACCOUNT_CHROME_KEYS } = await import(
+    "../src/lib/account-transition.ts"
+  );
+  assert.ok(ACCOUNT_CHROME_KEYS.has(SPELLCHECK_STORAGE_KEY));
+});
+
 test("Reset all preferences turns spell check back on", () => {
   const prefsKeys = readSrc("features/settings/tabs/general-tab.tsx").match(
     /const PREFS_KEYS: string\[\] = \[([\s\S]*?)\n\];/,
