@@ -406,6 +406,25 @@ class TestExactParksAreCountedAcrossModels:
             "if self._server_launched_parking else None )"
         ) in source
 
+    def test_an_unlimited_neighbour_leaves_nothing_certifiable(self, monkeypatch):
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        unlimited = self._backend(exact.EXACT_STATE_OFF, None)
+        unlimited._server_launched_parking = True
+        unlimited._launched_parking_mib = -1
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, unlimited])
+        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        assert llama_mod._exact_host_free_mib(me) == 0
+
+    def test_the_host_readings_are_the_containers(self, monkeypatch):
+        # A cgroup limit below the host's RAM: parking may only plan against what it can charge.
+        monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 3_000))
+        monkeypatch.setattr(LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 8_000))
+        assert llama_mod._available_host_memory_mib() == 3_000
+        assert llama_mod._total_host_memory_mib() == 8_000
+
     def test_every_exact_host_check_asks_for_this_backends_share(self):
         import inspect
         source = inspect.getsource(LlamaCppBackend.load_model)

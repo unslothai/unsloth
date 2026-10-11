@@ -2472,10 +2472,10 @@ def _exact_parking_need_mib(
 
 
 def _available_host_memory_mib() -> Optional[int]:
-    """Host RAM free right now, in MiB, or None where it cannot be read."""
+    """Host RAM this process can still charge, in MiB, or None where it cannot be read. Capped by
+    an enforcing cgroup: inside a container the host-wide reading approves parks the limit kills."""
     try:
-        import psutil
-        return int(psutil.virtual_memory().available // (1024 * 1024))
+        return LlamaCppBackend._available_system_memory_mib()
     except Exception:
         return None
 
@@ -2512,9 +2512,9 @@ _PARKING_HOST_AVAILABLE_FRACTION = 0.25
 
 
 def _total_host_memory_mib() -> Optional[int]:
+    """Host RAM this process may ever charge: total narrowed by an enforcing cgroup's limit."""
     try:
-        import psutil
-        return int(psutil.virtual_memory().total // (1024 * 1024))
+        return LlamaCppBackend._host_memory_capacity_mib()
     except Exception:
         return None
 
@@ -2671,9 +2671,12 @@ def _exact_host_free_mib(backend) -> Optional[int]:
         else:
             continue
         try:
-            commitment = max(0, int(commitment or 0))
+            commitment = int(commitment or 0)
         except (TypeError, ValueError):
             continue
+        if commitment < 0:
+            # `--preempt-ram -1` is unlimited: it may park into all of it, so none is certifiable.
+            return 0
         if commitment:
             held += max(0, commitment - _parked_host_mib(other))
     return max(0, int(free) - held)

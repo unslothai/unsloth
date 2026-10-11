@@ -4927,14 +4927,14 @@ async def _aiter_llama_stream_items(
             and not own_parks.parked
         ):
             park_since = None
-            first_token_deadline = max(first_token_deadline, now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+            first_token_deadline = max(first_token_deadline, now + _first_token_timeout_s())
             return
         if park_since is None:
             park_since = now
         if now - park_since < _RAW_PARK_STALL_CAP_S:
             first_token_deadline = max(
                 first_token_deadline,
-                min(now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S, park_since + _RAW_PARK_STALL_CAP_S),
+                min(now + _first_token_timeout_s(), park_since + _RAW_PARK_STALL_CAP_S),
             )
 
     def _post_first_timeout_s() -> Optional[float]:

@@ -308,3 +308,15 @@ class TestALineSourceAndABatch:
         source = inspect.getsource(inference.openai_completions)
         assert "_cmpl_parks = ServerParkNotices()" in source
         assert "if _park == _OPENAI_PREEMPT_SSE_RESUMED and _cmpl_parks.parked:" in source
+
+
+def test_a_resume_renews_the_configured_first_token_window(monkeypatch):
+    """An operator who raised the first-token timeout for a slow model keeps it across a park:
+    the resume used to hand the prefill the 20-minute default instead."""
+    import routes.inference as inference
+
+    source = inspect.getsource(inference._aiter_llama_stream_items)
+    start = source.index("def _park_renews_first_window(")
+    window = source[start : source.index("\n    def ", start + 10)]
+    assert "_DEFAULT_FIRST_TOKEN_TIMEOUT_S" not in window
+    assert window.count("_first_token_timeout_s()") == 2
