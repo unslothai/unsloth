@@ -1433,6 +1433,12 @@ class UnslothTrainer:
                     **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded text model")
+                # The config probe misses a Hub LoRA (no config.json), but core loads a diffusion base through
+                # its diffusion path: train it with its own objective, never next-token SFT.
+                loaded = loaded_diffusion_profile(self.model)
+                if loaded:
+                    self.diffusion_lm_profile = loaded
+                    logger.info(f"Loaded text-diffusion model (profile: {loaded})")
 
             raise_if_offloaded(self.model, device_map, "Unsloth training")
 

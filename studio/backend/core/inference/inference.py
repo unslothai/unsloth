@@ -982,6 +982,11 @@ class InferenceBackend:
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
+                # A Hub LoRA has no config.json for the probe above, but core still loads a diffusion base
+                # through its diffusion path: decode it with its sampler, never left-to-right.
+                loaded_profile = loaded_diffusion_profile(model)
+                if loaded_profile:
+                    self.models[model_name]["diffusion_lm_profile"] = loaded_profile
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
             self.models[model_name]["context_length"] = runtime_context_length(

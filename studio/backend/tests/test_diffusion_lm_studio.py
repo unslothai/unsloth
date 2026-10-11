@@ -120,7 +120,7 @@ def test_export_refusals():
         assert "GGUF" in export_refusal(profile, "gguf")
         assert export_refusal(profile, "lora") is None
     assert "DiffusionGemma" in export_refusal("diffusion_gemma", "merged")
-    assert export_refusal("llada", "merged") is None
+    assert "LoRA adapter" in export_refusal("llada", "merged")
 
 
 def test_export_limits_for_a_checkpoint_folder(tmp_path):
@@ -128,7 +128,7 @@ def test_export_limits_for_a_checkpoint_folder(tmp_path):
     assert diffusion_lm_export_limits(str(gemma))["disabled_methods"] == ["merged", "gguf"]
     llada = _write_config(tmp_path / "llada", DIFFUSION_CONFIGS["llada"])
     limits = diffusion_lm_export_limits(str(llada))
-    assert limits["profile"] == "llada" and limits["disabled_methods"] == ["gguf"]
+    assert limits["profile"] == "llada" and limits["disabled_methods"] == ["merged", "gguf"]
     assert (
         diffusion_lm_export_limits(str(_write_config(tmp_path / "q", AUTOREGRESSIVE_CONFIGS[1])))
         is None
@@ -471,3 +471,41 @@ def test_older_core_without_sampler_fails_clearly(monkeypatch):
     monkeypatch.setattr(diffusion_lm, "require_diffusion_api", lambda name: SimpleNamespace())
     with pytest.raises(RuntimeError, match = "generate_text"):
         list(backend.generate_stream("x"))
+
+
+def test_sampler_cancellation_error_ends_the_chat_quietly(monkeypatch):
+    import sys
+    import types
+
+    class Cancelled(RuntimeError):
+        pass
+
+    class _Cancelling(_Sampler):
+        @staticmethod
+        def generate_text(*args, **kwargs):
+            raise Cancelled("cancelled")
+
+    backend, _ = _inference_backend(monkeypatch)
+    monkeypatch.setattr(diffusion_lm, "require_diffusion_api", lambda name: _Cancelling)
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth.models.diffusion",
+        types.SimpleNamespace(DiffusionGenerationCancelled = Cancelled),
+    )
+    assert list(backend.generate_stream("x", cancel_event = threading.Event())) == []
+    lock_free = backend._generation_lock.acquire(blocking = False)
+    assert lock_free
+    backend._generation_lock.release()
+
+
+def test_text_path_load_still_catches_a_diffusion_model():
+    # A Hub LoRA has no config.json for the probe; core loads its diffusion base anyway.
+    from core.inference import inference as inference_mod
+    from core.training import trainer as trainer_mod
+
+    train_src = inspect.getsource(trainer_mod.UnslothTrainer.load_model)
+    text_branch = train_src[train_src.index('logger.info("Loaded text model")') :]
+    assert "loaded_diffusion_profile(self.model)" in text_branch.split("raise_if_offloaded")[0]
+    chat_src = inspect.getsource(inference_mod.InferenceBackend.load_model)
+    tail = chat_src[chat_src.rindex("FastLanguageModel.for_inference(model)") :]
+    assert "loaded_diffusion_profile(model)" in tail.split("raise_if_offloaded")[0]

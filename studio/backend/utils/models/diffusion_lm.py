@@ -127,11 +127,16 @@ def _config_dict(config) -> Optional[dict]:
 
 GGUF_REFUSAL = (
     "GGUF export is not available for text-diffusion models ({profile}): llama.cpp would serve them as "
-    "ordinary left-to-right models. Export the LoRA adapter or a merged 16-bit model instead."
+    "ordinary left-to-right models. Export the LoRA adapter instead."
 )
 MERGE_REFUSAL = (
     "Merged export is not available for DiffusionGemma: its encoder and decoder share base weights but "
     "train separate adapters, so merging would add both deltas to both. Export the LoRA adapter instead."
+)
+# The diffusion loader keeps the plain transformers model, which has no Unsloth merged-save path.
+MERGE_REFUSAL_GENERIC = (
+    "Merged export is not available for text-diffusion models ({profile}) yet. Export the LoRA adapter "
+    "instead; it loads on top of the base model with Unsloth or PEFT."
 )
 
 
@@ -141,8 +146,10 @@ def export_refusal(profile: Optional[str], method: str) -> Optional[str]:
         return None
     if method == "gguf":
         return GGUF_REFUSAL.format(profile = profile)
-    if method == "merged" and profile in NO_MERGE_PROFILES:
-        return MERGE_REFUSAL
+    if method == "merged":
+        if profile in NO_MERGE_PROFILES:
+            return MERGE_REFUSAL
+        return MERGE_REFUSAL_GENERIC.format(profile = profile)
     return None
 
 
