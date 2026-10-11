@@ -110,7 +110,7 @@ def MistralAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
-    # The cache passed in, before past_key_value becomes the one returned (eval keeps use_cache on).
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
     had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
@@ -216,8 +216,7 @@ def MistralForCausalLM_fast_forward(
         elif self.training or kwargs.get("packed_seq_lengths", None) is not None:
             # LlamaModel_fast_forward's DPO embed-masking block needs the 2D attention_mask; it nulls the mask
             # before attention anyway, so leaving it 2D avoids a 4D conversion that crashes DPO.
-            # Packed rows (padding-free eval too) need no mask: attention keeps documents apart from
-            # packed_seq_lengths, where a causal mask over the whole row would let them attend across.
+            # Packed rows need no mask: a row-wide causal mask would let documents attend across.
             pass
 
         else:

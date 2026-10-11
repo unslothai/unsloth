@@ -16,7 +16,6 @@ LENGTHS = [7, 9, 5]
 
 
 def _reference(q, k, v, causal, window_size, softmax_scale):
-    # q [T, H, D], k / v [T, Hk, D]: flash-attn's semantics, computed in float32.
     T, H, D = q.shape
     k = k.repeat_interleave(H // k.shape[1], dim = 1)
     v = v.repeat_interleave(H // v.shape[1], dim = 1)
@@ -90,7 +89,6 @@ def model():
     model.config.sliding_window = WINDOW
     for layer in model.model.layers:
         layer.self_attn.config.sliding_window = WINDOW
-    # Training mode: Unsloth builds no 4D mask there, so the flash / SDPA backends run.
     model.train()
     return model
 
