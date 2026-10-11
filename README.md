@@ -177,7 +177,7 @@ For Windows instructions and more information, read our [Unsloth Docker Guide](h
 
 **Linux / WSL (Bash):**
 ```bash
-# use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000 for a public Cloudflare HTTPS link
+# for a public Cloudflare HTTPS link: use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000, and  -p 127.0.0.1:8888:8888  for JupyterLab
 docker run -d --name unsloth --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -v "$PWD":/workspace/host \
