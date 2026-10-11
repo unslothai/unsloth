@@ -102,7 +102,14 @@ def _as_the_loader_reads_it(config: dict) -> dict:
             patched = _mlx_vlm_config_override_data(config)
     except Exception:
         return config
-    return patched if isinstance(patched, dict) else config
+    config = patched if isinstance(patched, dict) else config
+    try:
+        # The keys the zoo loader hands mlx-lm for a transformers 5 re-saved config (unsloth#7306).
+        from unsloth_zoo.mlx.loader import _mlx_lm_config_backfill
+        backfill = _mlx_lm_config_backfill(config)
+    except Exception:
+        return config
+    return {**config, **backfill} if backfill else config
 
 
 def _escapes_snapshot(shard: str) -> bool:

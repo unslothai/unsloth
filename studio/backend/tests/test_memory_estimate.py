@@ -4427,6 +4427,32 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert mm._dequantized_row_bytes((3584, 18944, 32, 0, 0, 0), 2, 4, 64, 2048) is None
 
 
+class TestConfigReadWithTheZooBackfill:
+    """unsloth#7306: a transformers 5 re-save drops lfm2's block_ff_dim; size it as the zoo loader loads it."""
+
+    RESAVED = {"model_type": "lfm2", "intermediate_size": 2560}
+
+    def _zoo(self, monkeypatch, **names):
+        zoo = _types.ModuleType("unsloth_zoo.mlx.loader")
+        zoo._mlx_vlm_config_override_data = lambda config: None
+        for name, value in names.items():
+            setattr(zoo, name, value)
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", zoo)
+
+    def test_the_zoo_backfill_reaches_the_estimate(self, tmp_path, monkeypatch):
+        self._zoo(
+            monkeypatch,
+            _mlx_lm_config_backfill = lambda config: {"block_ff_dim": config["intermediate_size"]},
+        )
+        (tmp_path / "config.json").write_text(json.dumps(self.RESAVED))
+        assert mm._snapshot_config(str(tmp_path)) == {**self.RESAVED, "block_ff_dim": 2560}
+
+    def test_an_older_zoo_without_the_backfill_reads_the_config_as_is(self, tmp_path, monkeypatch):
+        self._zoo(monkeypatch)
+        (tmp_path / "config.json").write_text(json.dumps(self.RESAVED))
+        assert mm._snapshot_config(str(tmp_path)) == self.RESAVED
+
+
 @pytest.mark.skipif(not _HAVE_MLX, reason = "imports architecture modules")
 class TestProbeFollowsTheLoadersRoute:
     """The estimator must not price a load path that cannot be taken."""
