@@ -108,7 +108,7 @@ _DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 # Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
-# A DSpark drafter named after its model, <model>-dspark-<quant>.gguf (prism-ml Bonsai, and third-party DSpark GGUFs). Only the quant and a shard suffix may follow the kind: a family name carrying the word goes on past it (DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16.gguf) and is the model.
+# <model>-dspark-<quant>.gguf drafters (prism-ml Bonsai, third-party DSpark GGUFs); a name going on past the quant (DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16.gguf) is the model.
 _DSPARK_BEFORE_QUANT_RE = re.compile(
     rf"-dspark-(?:{_GGUF_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
     re.IGNORECASE,
