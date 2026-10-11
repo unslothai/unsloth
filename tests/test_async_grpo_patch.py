@@ -41,6 +41,8 @@ NAMES = (
     "_dataset_has_images",
     "_start_async_grpo_vllm_server",
     "_check_async_grpo_fast_inference",
+    "_text_prepended_position_ids",
+    "_packing_honored",
     "patch_trl_async_grpo",
 )
 
@@ -61,6 +63,8 @@ def _load(fast_backbone_types = ()):
         "warnings": warnings,
         "weakref": __import__("weakref"),
         "logger": _Logger(),
+        "Version": __import__("packaging.version", fromlist = ["Version"]).Version,
+        "importlib_version": __import__("importlib.metadata", fromlist = ["version"]).version,
     }
     for node in ast.parse(src).body:
         if isinstance(node, ast.FunctionDef) and node.name in NAMES:
@@ -189,6 +193,8 @@ def test_unsloth_model_passes_through_and_gets_boundaries(fake_trl):
     assert "packed_seq_lengths" not in lm.forward(position_ids = pos)
     mod.AsyncGRPOTrainer(Peft(CausalLM(FastBackbone())), None, None)
     assert calls["init"][1][1].output_dir == "Tiny-Model-AsyncGRPO"
+    # TRL-built models (from a string id) have real backbones that pass the packing self-test.
+    ns["_packing_honored"] = lambda backbone, transform = None: True
     mod.AsyncGRPOTrainer("org/x", None, args = mod.AsyncGRPOConfig("o"))
     assert calls["create"] == ["org/x"]
 
@@ -201,7 +207,8 @@ def test_non_unsloth_sdpa_model_is_refused(fake_trl):
         mod.AsyncGRPOTrainer(
             CausalLM(torch.nn.Module(), attn = "sdpa"), None, args = mod.AsyncGRPOConfig("o")
         )
-    # flash attention reads position_ids resets itself: left to TRL, no boundaries injected.
+    # A backbone that honors position_ids resets (flash attention, transformers' packed mask) is left to TRL.
+    ns["_packing_honored"] = lambda backbone, transform = None: True
     lm = CausalLM(torch.nn.Module(), attn = "flash_attention_2")
     mod.AsyncGRPOTrainer(lm, None, args = mod.AsyncGRPOConfig("o"))
     assert "packed_seq_lengths" not in lm.forward(
