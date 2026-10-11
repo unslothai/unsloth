@@ -176,3 +176,66 @@ def test_remote_prefix_rejects_truncation(tmp_path):
     data = Path(path).read_bytes()
     assert classify_gguf_tts_audio_prefix(data) == ("dac", True)
     assert classify_gguf_tts_audio_prefix(data[:-1]) == (None, False)
+
+
+class _ProbeServer:
+    """Stands in for llama-server's /detokenize and /tokenize: an id past the vocab
+    answers 500 with the range-check error, as llama.cpp does."""
+
+    def __init__(self, vocab):
+        self.vocab = vocab
+        self.detokenized = []
+
+    def __call__(self, *_a, **_kw):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def post(self, url, json):
+        if url.endswith("/detokenize"):
+            (tid,) = json["tokens"]
+            self.detokenized.append(tid)
+            if tid >= len(self.vocab):
+                return SimpleNamespace(status_code = 500, json = lambda: {})
+            return SimpleNamespace(status_code = 200, json = lambda: {"content": self.vocab[tid]})
+        return SimpleNamespace(status_code = 200, json = lambda: {"tokens": [1, 2]})
+
+
+def _probe(monkeypatch, vocab, vocab_size):
+    from core.inference import llama_cpp
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    server = _ProbeServer(vocab)
+    monkeypatch.setattr(llama_cpp.httpx, "Client", server)
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._process = object()
+    backend._healthy = True
+    backend._port = 1
+    backend._api_key = None
+    backend._vocab_size = vocab_size
+    return backend._detect_audio_type_strict(), server.detokenized
+
+
+def test_snac_probe_skips_ids_past_a_smaller_vocab(monkeypatch):
+    # Laguna-S-2.1: 100352 tokens; detokenizing 128258 logged a range-check 500 (#10336).
+    vocab = [f"t{i}" for i in range(100352)]
+    detected, detokenized = _probe(monkeypatch, vocab, len(vocab))
+    assert detected is None
+    assert detokenized == []
+
+
+def test_snac_probe_still_detects_orpheus(monkeypatch):
+    vocab = _snac_vocab()
+    detected, detokenized = _probe(monkeypatch, vocab, len(vocab))
+    assert detected == "snac"
+    assert detokenized == list(SNAC_PROBE_TOKEN_IDS)
+
+
+def test_snac_probe_runs_when_the_vocab_size_is_unknown(monkeypatch):
+    detected, detokenized = _probe(monkeypatch, _snac_vocab(), None)
+    assert detected == "snac"
+    assert detokenized == list(SNAC_PROBE_TOKEN_IDS)
