@@ -580,6 +580,14 @@ export const he = {
     queueingOnHint: "הודעות חדשות ממתינות לתורן.",
     queueingHintShared: "התור נשמר.",
   },
+  turns: {
+    label: "תור {number}",
+    bookmarkedLabel: "תור {number}, עם סימנייה",
+    bookmarked: "עם סימנייה",
+    bookmark: "הוסף סימנייה לתור",
+    removeBookmark: "הסר סימנייה",
+    navigator: "תורות",
+  },
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",
@@ -2579,6 +2587,9 @@ export const he = {
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
+      turnNavigation: "ניווט בין תורות",
+      turnNavigationDescription:
+        "מספור של כל תור, סימניות לתורות וקפיצה ביניהם דרך פס לצד צ'אטים ארוכים.",
       modelDisclaimer: "הבהרה לגבי המודל",
       modelDisclaimerDescription:
         'הצג את הכיתוב "מודלי שפה עלולים לטעות" מתחת לתיבת הצ\'אט.',
