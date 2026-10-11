@@ -29,7 +29,7 @@ foreach ($text in (Get-FunctionAsts $installPath @(
         "ConvertTo-TorchNumericRelease", "Test-TorchReleaseInWindow",
         "Get-PreviousTorchPin", "Get-TorchIndexLeafName", "Test-Cu130Torch213Platform",
         "Resolve-Cu130TorchRoute", "Get-UpgradeKeptTorchPin", "Test-RequiresDistAdmitsTorch",
-        "Test-PypiUnslothAdmitsTorch", "Get-TorchVersionFromDisk"))) {
+        "Test-PypiUnslothAdmitsTorch", "Get-TorchVersionFromDisk", "Test-UvEnvFlag"))) {
     Invoke-Expression $text
 }
 foreach ($text in (Get-FunctionAsts $setupPath @("Get-TritonWindowsSpec"))) { Invoke-Expression $text }
@@ -218,7 +218,11 @@ try {
     Check "every earlier layout counts as an existing install" (
         ([regex]::Matches($install, '\$script:ExistingInstall = \$true')).Count -eq 3)
     Check "an occupied venv whose interpreter cannot answer keeps its torch from disk" ($install -match '(?s)\$script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$VenvPython\s*#[^\n]*\n\s*#[^\n]*\n\s*if \(-not \$script:PrevTorchVer\) \{ \$script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot \$VenvDir \}')
-    Check "the CWD-relative legacy venv records its torch before it is migrated" ($install -match '(?s)\(Test-Path -LiteralPath \$_cwdVenvPy\)\) \{\s*\$script:ExistingInstall = \$true.*?\$script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$_cwdVenvPy\s*if \(-not \$script:PrevTorchVer\) \{ \$script:PrevTorchVer = Get-TorchVersionFromDisk')
+    Check "the CWD-relative legacy venv records its torch before it is migrated" ($install -match '(?s)\$_cwdVenvPy -and \(\s*\(Test-Path -LiteralPath \$_cwdVenvPy\) -or\s*\(Test-Path -LiteralPath \(Join-Path [^\n]*"pyvenv\.cfg"\) -PathType Leaf\)\)\) \{.*?\$script:ExistingInstall = \$true.*?\$script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$_cwdVenvPy \}\s*if \(-not \$script:PrevTorchVer\) \{ \$script:PrevTorchVer = Get-TorchVersionFromDisk')
+    Check "a migrated venv freezes its trio for the core install" ($install -match '(?s)\$script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe \$VenvPython\s*\$_migOverrides = @\(\)\s*if \(\$script:TorchOverridesFile\) \{ \$_migOverrides = @\("--overrides", \$script:TorchOverridesFile\) \}.*?-Label "install unsloth \(migrated\)" \{ & \$script:UvExe pip install --python \$VenvPython @_migOverrides ')
+    Check "a migrated CUDA venv keeps its release for the flavor repair" ($install -match '(?s)\$_migTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$VenvPython.*?\$script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion \$_migTorchVer -Constraint \$_migWindow.*?\$env:UNSLOTH_KEPT_TORCH = \$script:PrevTorchPin\.Release\.PublicBase')
+    Check "setup.ps1 keeps the resident release on a forced reinstall with no handoff" ($setup -match '(?s)-not \$_cudaKeptRelease -and \$cudaForce\.Count -gt 0 -and \$env:UNSLOTH_TORCH_UPGRADE -ne "1"\) \{\s*\$_residentProbe = Invoke-BoundedPythonProbe .*?print\(m\.version\(.torch.\)\).*?\$_cudaKeptRelease = \$Matches\[1\]')
+    Check "setup.ps1 falls back to the bounded trio, never a bare torch" ($setup -match '(?s)not installable from this CUDA index -- using the supported release" "Yellow"\s*#[^\n]*\n\s*\$cudaTorchSpec = "torch>=2\.4,<2\.12\.0"; \$cudaVisionSpec = "torchvision>=0\.19,<0\.27\.0"; \$cudaAudioSpec = "torchaudio>=2\.4,<2\.12\.0"')
     Check "setup.ps1 re-reads torch before installing triton" ($setup -match '(?s)\$_tritonTorchProbe = Invoke-BoundedPythonProbe.*?\$_tritonSpec = Get-TritonWindowsSpec -TorchVersion.*?substep "installing Triton for Windows\.\.\."')
     Check "setup.ps1 pairs every kept torch 2.12+ with torchaudio 2.11" (
         ([regex]::Matches($setup, 'torchaudio==2\.\$\(\[Math\]::Min\(\$_keptMinor, 11\)\)\.\*')).Count -eq 3 -and

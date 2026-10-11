@@ -8167,10 +8167,13 @@ exit 0
     } elseif ($studioUsesLegacyLayout -and (Test-DirectoryHasEntries -Path $_legacyVenvDir)) {
         $script:ExistingInstall = $true
         if (-not $SkipTorch) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot $_legacyVenvDir }
-    } elseif ($studioUsesLegacyLayout -and $_cwdVenvPy -and (Test-Path -LiteralPath $_cwdVenvPy)) {
+    } elseif ($studioUsesLegacyLayout -and $_cwdVenvPy -and (
+            (Test-Path -LiteralPath $_cwdVenvPy) -or
+            (Test-Path -LiteralPath (Join-Path (Split-Path (Split-Path $_cwdVenvPy -Parent) -Parent) "pyvenv.cfg") -PathType Leaf))) {
+        # A CWD-relative venv whose interpreter is gone is still an earlier install.
         $script:ExistingInstall = $true
         if (-not $SkipTorch) {
-            $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $_cwdVenvPy
+            if (Test-Path -LiteralPath $_cwdVenvPy) { $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $_cwdVenvPy }
             if (-not $script:PrevTorchVer) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot (Split-Path (Split-Path $_cwdVenvPy -Parent) -Parent) }
         }
     }
@@ -10757,8 +10760,7 @@ main()
     # opens the route. Any failure, offline mode, upload cutoff or other index answers no.
     function Test-PypiUnslothAdmitsTorch {
         param([Parameter(Mandatory = $true)][string]$Want)
-        $offline = ([string]$env:UV_OFFLINE).Trim().ToLowerInvariant()
-        if (@("1", "t", "true", "y", "yes", "on") -contains $offline) { return $false }
+        if (Test-UvEnvFlag -Name "UV_OFFLINE") { return $false }
         if ($env:UV_EXCLUDE_NEWER -or $env:UV_EXCLUDE_NEWER_PACKAGE) { return $false }
         if (Test-MirrorConfigured -Tool uv) { return $false }
         $url = if ($env:UNSLOTH_PYPI_JSON_URL) { $env:UNSLOTH_PYPI_JSON_URL } else { "https://pypi.org/pypi/unsloth/json" }
@@ -11131,7 +11133,23 @@ main()
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+            # As install.sh: freeze the trio for this with-deps resolve, then keep the release for the
+            # flavor repair below, which would otherwise reinstall the default range.
+            $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
+            $_migOverrides = @()
+            if ($script:TorchOverridesFile) { $_migOverrides = @("--overrides", $script:TorchOverridesFile) }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+            if ($script:TorchOverridesFile) {
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
+                $script:TorchOverridesFile = $null
+            }
+            Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+            $_migTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
+            if ($_migTorchVer -and -not $ROCmIndexUrl -and ((Get-TorchIndexLeafName $TorchIndexUrl) -match '^cu\d+$')) {
+                $_migWindow = if (Test-Cu130Torch213Platform -IndexUrl $TorchIndexUrl -PythonExe $VenvPython) { "torch>=2.4,<$($script:Cu130TorchCeiling)" } else { "torch>=2.4,<2.12.0" }
+                $script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion $_migTorchVer -Constraint $_migWindow
+                if ($script:PrevTorchPin) { $env:UNSLOTH_KEPT_TORCH = $script:PrevTorchPin.Release.PublicBase }
+            }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
