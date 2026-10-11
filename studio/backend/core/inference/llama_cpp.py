@@ -2637,10 +2637,25 @@ _EXACT_HOST_SHORT_AFTER_LOAD = (
 )
 
 
+def _parked_host_mib(backend) -> int:
+    """Host RAM ``backend``'s server holds in parked sequences now (`preempt_ram_bytes`), 0 when
+    the reading is missing, which counts its whole commitment as still to come."""
+    try:
+        from core.inference.llama_stats import scrape_llama_metrics
+
+        metrics = scrape_llama_metrics(
+            backend.base_url, timeout_s = 3.0, headers = getattr(backend, "_auth_headers", None)
+        )
+        return max(0, int(float((metrics or {}).get("preempt_ram_bytes", 0) or 0)) // (1024 * 1024))
+    except Exception:
+        return 0
+
+
 def _exact_host_free_mib(backend) -> Optional[int]:
     """Host RAM free for this backend's exact parks: what the others certified as `on` is theirs.
     A park budget is only a cap, allocated when a slot parks, so two exact models measured
-    against the same free reading could both pass and then exhaust it together."""
+    against the same free reading could both pass and then exhaust it together. What a neighbour
+    has already parked is gone from the free reading, so only the rest of its budget is held."""
     free = _available_host_memory_mib()
     if free is None:
         return None
@@ -2649,9 +2664,10 @@ def _exact_host_free_mib(backend) -> Optional[int]:
         if other is backend or getattr(other, "_exact_concurrency", None) != _exact.EXACT_STATE_ON:
             continue
         try:
-            held += max(0, int(getattr(other, "_exact_parking_writes", 0) or 0))
+            writes = max(0, int(getattr(other, "_exact_parking_writes", 0) or 0))
         except (TypeError, ValueError):
             continue
+        held += max(0, writes - _parked_host_mib(other))
     return max(0, int(free) - held)
 
 

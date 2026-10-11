@@ -347,11 +347,38 @@ class TestExactParksAreCountedAcrossModels:
         neighbour = self._backend(exact.EXACT_STATE_ON, 8_000)
         stock = self._backend(exact.EXACT_STATE_OFF, 4_000)
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, neighbour, stock])
+        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
         assert llama_mod._exact_host_free_mib(me) == 2_000
         assert llama_mod._exact_host_shortfall_after_load(8_000, 2_000) == (8_000, 2_000)
         # Alone, the same model fits.
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, stock])
         assert llama_mod._exact_host_free_mib(me) == 10_000
+
+    def test_what_a_neighbour_already_parked_is_not_counted_twice(self, monkeypatch):
+        # 6 GiB of the neighbour's 8 GiB is parked, so the free reading already lacks it: only
+        # the 2 GiB still to come is held back from this model.
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        neighbour = self._backend(exact.EXACT_STATE_ON, 8_000)
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, neighbour])
+        monkeypatch.setattr(
+            llama_mod, "_parked_host_mib", lambda backend: 6_000 if backend is neighbour else 0
+        )
+        assert llama_mod._exact_host_free_mib(me) == 8_000
+
+    def test_the_parked_reading_comes_off_the_servers_metrics(self, monkeypatch):
+        import core.inference.llama_stats as stats
+
+        backend = self._backend("on", 8_000)
+        backend._port = 1
+        monkeypatch.setattr(
+            stats, "scrape_llama_metrics", lambda *a, **k: {"preempt_ram_bytes": 3 * 1024 * 1024 * 1024}
+        )
+        assert llama_mod._parked_host_mib(backend) == 3 * 1024
+        monkeypatch.setattr(stats, "scrape_llama_metrics", lambda *a, **k: None)
+        assert llama_mod._parked_host_mib(backend) == 0
 
     def test_every_exact_host_check_asks_for_this_backends_share(self):
         import inspect
