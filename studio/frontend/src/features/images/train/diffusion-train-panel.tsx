@@ -79,10 +79,7 @@ import {
   stopDiffusionTraining,
   uploadDiffusionDataset,
 } from "../api";
-import {
-  DatasetLabelingGrid,
-  LabelingGridToggle,
-} from "./dataset-labeling-grid";
+import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid";
 import {
   DATASET_CLIP_EXTS,
   DATASET_FILE_ACCEPT,
@@ -115,10 +112,7 @@ import {
   resolveDiffusionTrainingBase,
 } from "./diffusion-train-deploy";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
-import {
-  type LrScheduler,
-  lrSchedulePreset,
-} from "./diffusion-train-lr-schedule";
+import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 
 // Families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
@@ -181,10 +175,7 @@ const FAMILY_PRESETS: FamilyPreset[] = [
   {
     name: "sdxl",
     label: "SDXL (U-Net)",
-    base_repos: [
-      "stabilityai/stable-diffusion-xl-base-1.0",
-      "stabilityai/sdxl-turbo",
-    ],
+    base_repos: ["stabilityai/stable-diffusion-xl-base-1.0", "stabilityai/sdxl-turbo"],
     defaults: { rank: 16, lr: 0.0001, resolution: 1024 },
     vram_note: "The classic. Fine at 1024px.",
     qlora_vram_gb: 12,
@@ -212,10 +203,7 @@ const EXAMPLE_PREFIX = "example:";
 
 /** "12 images", "12 clips", or "12 items" for a mixed folder: a clip folder reading "0 images"
  *  is the bug this labels away. */
-function datasetItemLabel(d: {
-  image_count: number;
-  clip_count?: number;
-}): string {
+function datasetItemLabel(d: { image_count: number; clip_count?: number }): string {
   const clips = d.clip_count ?? 0;
   const total = d.image_count + clips;
   const noun = clips === 0 ? "image" : d.image_count === 0 ? "clip" : "item";
@@ -278,13 +266,7 @@ function FieldLabel({
 
 /** The family's training facts as chips: size, QLoRA VRAM floor, access. What a chip cannot carry
  *  stays as a line below. */
-function FamilyFacts({
-  family,
-  baseModel,
-}: {
-  family?: FamilyPreset;
-  baseModel?: string;
-}) {
+function FamilyFacts({ family, baseModel }: { family?: FamilyPreset; baseModel?: string }) {
   if (!family) return null;
   const facts = resolveDiffusionTrainingFacts(family, baseModel);
   const hasChips = Boolean(facts.params || facts.qlora_vram_gb || facts.gated);
@@ -425,10 +407,7 @@ export function DiffusionTrainPanel({
   const [infoLoadState, setInfoLoadState] = useState<
     "idle" | "loading" | "loaded" | "failed"
   >("idle");
-  const families = useMemo(
-    () => mergeFamilies(info?.families),
-    [info?.families],
-  );
+  const families = useMemo(() => mergeFamilies(info?.families), [info?.families]);
 
   const setFamilyName = onFamilyNameChange;
   useEffect(() => {
@@ -461,11 +440,7 @@ export function DiffusionTrainPanel({
     if (familyUntrainable) return [];
     const reported = reportedFamily?.precision_modes?.filter(
       (m): m is "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" =>
-        m === "nf4" ||
-        m === "bf16" ||
-        m === "int8" ||
-        m === "fp8" ||
-        m === "mxfp8",
+        m === "nf4" || m === "bf16" || m === "int8" || m === "fp8" || m === "mxfp8",
     );
     if (reported && reported.length > 0) return ["auto", ...reported];
     // Fallback without a backend report: the GPU-independent modes only (mxfp8 needs a Blackwell probe).
@@ -487,9 +462,7 @@ export function DiffusionTrainPanel({
 
   const [dataset, setDataset] = useState<string>(UPLOAD_DATASET);
   const [uploadName, setUploadName] = useState("my-images");
-  const [continuationDatasetName, setContinuationDatasetName] = useState<
-    string | null
-  >(null);
+  const [continuationDatasetName, setContinuationDatasetName] = useState<string | null>(null);
   // a typed name is the user's: a taken one shows the note instead of being replaced.
   const uploadNameEdited = useRef(false);
   const [uploading, setUploading] = useState(false);
@@ -515,16 +488,11 @@ export function DiffusionTrainPanel({
   // Run length is set in either steps or epochs; the trainer resolves epochs -> steps once the dataset size is known.
   const [durationUnit, setDurationUnit] = useState<"steps" | "epochs">("steps");
   const [epochs, setEpochs] = useState(10);
-  const [learningRate, setLearningRate] = useState(
-    family?.defaults.lr ?? 0.0001,
-  );
+  const [learningRate, setLearningRate] = useState(family?.defaults.lr ?? 0.0001);
   const [rank, setRank] = useState(family?.defaults.rank ?? 16);
-  const [resolution, setResolution] = useState(
-    family?.defaults.resolution ?? 768,
-  );
+  const [resolution, setResolution] = useState(family?.defaults.resolution ?? 768);
   const [batchSize, setBatchSize] = useState(1);
-  const effectiveBatchSize =
-    maxBatchSize == null ? batchSize : Math.min(batchSize, maxBatchSize);
+  const effectiveBatchSize = maxBatchSize == null ? batchSize : Math.min(batchSize, maxBatchSize);
   const [gradAccum, setGradAccum] = useState(1);
   const [seed, setSeed] = useState(42);
   // Periodic resume points. 0 (off) keeps the default: only a stop-and-save writes one, so nothing
@@ -545,9 +513,9 @@ export function DiffusionTrainPanel({
     "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto"
   >("auto");
   // Whether to torch.compile the DiT transformer. "auto" defers to the backend.
-  const [compileTransformer, setCompileTransformer] = useState<
-    "off" | "on" | "auto"
-  >("auto");
+  const [compileTransformer, setCompileTransformer] = useState<"off" | "on" | "auto">(
+    "auto",
+  );
   // Track whether the user hand-edited the numeric settings; if not, a family change re-seeds them
   // from that family's defaults.
   const settingsDirty = useRef(false);
@@ -572,9 +540,7 @@ export function DiffusionTrainPanel({
   const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
   // Persisted previous runs (terminal), listed on the idle view; selecting one re-plots its logs read-only.
   const [prevRuns, setPrevRuns] = useState<DiffusionTrainingRunSummary[]>([]);
-  const [viewRun, setViewRun] = useState<DiffusionTrainingRunDetail | null>(
-    null,
-  );
+  const [viewRun, setViewRun] = useState<DiffusionTrainingRunDetail | null>(null);
   // The confirm-stop dialog (mirrors the LLM Train tab): Continue / Stop / Stop and save.
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   // Set when the user confirms a stop. Clamped to the running state at read time so a fresh run never inherits it.
@@ -584,22 +550,21 @@ export function DiffusionTrainPanel({
 
   // only the newest request may set state: an older one settling late must not undo it.
   const infoRequestId = useRef(0);
-  const refreshInfo =
-    useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
-      const requestId = ++infoRequestId.current;
-      setInfoLoadState("loading");
-      try {
-        const i = await getDiffusionTrainingInfo();
-        if (requestId === infoRequestId.current) {
-          setInfo(i);
-          setInfoLoadState("loaded");
-        }
-        return i;
-      } catch {
-        if (requestId === infoRequestId.current) setInfoLoadState("failed");
-        return null;
+  const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
+    const requestId = ++infoRequestId.current;
+    setInfoLoadState("loading");
+    try {
+      const i = await getDiffusionTrainingInfo();
+      if (requestId === infoRequestId.current) {
+        setInfo(i);
+        setInfoLoadState("loaded");
       }
-    }, []);
+      return i;
+    } catch {
+      if (requestId === infoRequestId.current) setInfoLoadState("failed");
+      return null;
+    }
+  }, []);
 
   // On first activation, load the dataset list and preselect a base matching the loaded generation
   // model when it is trainable.
@@ -607,8 +572,7 @@ export function DiffusionTrainPanel({
     if (!active) return;
     void refreshInfo().then((i) => {
       setDataset((cur) => {
-        if (cur !== UPLOAD_DATASET && i?.datasets.some((d) => d.name === cur))
-          return cur;
+        if (cur !== UPLOAD_DATASET && i?.datasets.some((d) => d.name === cur)) return cur;
         return i && i.datasets.length > 0 ? i.datasets[0].name : UPLOAD_DATASET;
       });
     });
@@ -652,11 +616,7 @@ export function DiffusionTrainPanel({
         setDataset(res.name);
         setGridOpen(false);
         setGridRefresh((k) => k + 1);
-        if (
-          ex.suggested_trigger &&
-          res.caption_count === 0 &&
-          !instancePrompt.trim()
-        ) {
+        if (ex.suggested_trigger && res.caption_count === 0 && !instancePrompt.trim()) {
           setInstancePrompt(ex.suggested_trigger);
         }
       } catch (e) {
@@ -734,16 +694,13 @@ export function DiffusionTrainPanel({
   // The base actually used everywhere. baseChoice can briefly hold another family's repo, where a raw <select
   // value> would DISPLAY the first option while the request carried the stale repo, so clamp to the current family.
   const effectiveBase =
-    baseChoice === CUSTOM_BASE ||
-    (family?.base_repos ?? []).includes(baseChoice)
+    baseChoice === CUSTOM_BASE || (family?.base_repos ?? []).includes(baseChoice)
       ? baseChoice
-      : (family?.base_repos[0] ?? CUSTOM_BASE);
+      : family?.base_repos[0] ?? CUSTOM_BASE;
 
   // The resolved base repo/path the request will carry, and whether it looks prequantized. The
   // dense precisions are invalid for such a repo.
-  const resolvedBase = (
-    effectiveBase === CUSTOM_BASE ? customBase : effectiveBase
-  ).trim();
+  const resolvedBase = (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase).trim();
   const basePrequantized = isDiT && repoIsPrequantized(resolvedBase);
 
   // A prequantized base cannot serve the dense precisions; auto-flip a dense selection back to "auto" (nf4) so
@@ -802,11 +759,8 @@ export function DiffusionTrainPanel({
   const terminalStatuses = ["completed", "stopped", "error"];
   const hasRun = Boolean(
     status &&
-    status.status !== "idle" &&
-    !(
-      terminalStatuses.includes(status.status) &&
-      status.job_id === dismissedJobId
-    ),
+      status.status !== "idle" &&
+      !(terminalStatuses.includes(status.status) && status.job_id === dismissedJobId),
   );
 
   // Notify the parent once per run that produced an adapter so it rescans the LoRA picker. Re-armed
@@ -825,29 +779,20 @@ export function DiffusionTrainPanel({
   }, [status?.status, status?.lora_path, onTrainingComplete]);
 
   const selectedDataset =
-    dataset !== UPLOAD_DATASET
-      ? info?.datasets.find((d) => d.name === dataset)
-      : undefined;
+    dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
   // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
-  const uploadMode =
-    dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
+  const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
   const namesLoading =
     uploadMode && (infoLoadState === "idle" || infoLoadState === "loading");
   const namesUnavailable = uploadMode && infoLoadState === "failed";
   const occupiedDatasets = useMemo(() => datasetNamesForCreation(info), [info]);
-  const continuingUploadName = isDatasetContinuation(
-    uploadName,
-    continuationDatasetName,
-  );
+  const continuingUploadName = isDatasetContinuation(uploadName, continuationDatasetName);
   const createsDataset = uploadMode && !continuingUploadName;
-  const takenName = createsDataset
-    ? existingDatasetName(uploadName, occupiedDatasets)
-    : null;
+  const takenName = createsDataset ? existingDatasetName(uploadName, occupiedDatasets) : null;
   // A captions-only folder is not in the picker, so the backend explicitly marks safe continuations.
   // Other unlisted names include Studio's internal dataset storage and must stay blocked.
   const takenNameUnlisted =
-    takenName !== null &&
-    (info?.continuation_dataset_names ?? []).includes(takenName);
+    takenName !== null && (info?.continuation_dataset_names ?? []).includes(takenName);
   const takenNameMessage = takenNameUnlisted
     ? `A folder named "${takenName}" already exists but holds no images or clips yet, so it is not in the list. Add to it, or choose another name.`
     : `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
@@ -861,22 +806,18 @@ export function DiffusionTrainPanel({
   }, [uploadMode, continuingUploadName, occupiedDatasets]);
   // Trainable items in the picked dataset, images and clips alike. caption_count is the folder
   // total over both kinds, so every ratio must be against this and not image_count.
-  const selectedItemCount = selectedDataset
-    ? datasetItemCount(selectedDataset)
-    : 0;
+  const selectedItemCount = selectedDataset ? datasetItemCount(selectedDataset) : 0;
   // A dataset where every item already ships a caption needs no trigger prompt; hide the field and explain why.
   const fullyCaptioned = Boolean(
     selectedDataset &&
-    selectedItemCount > 0 &&
-    selectedDataset.caption_count >= selectedItemCount,
+      selectedItemCount > 0 &&
+      selectedDataset.caption_count >= selectedItemCount,
   );
 
   const lossHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = status?.metric_history;
     if (!h) return [];
-    return h.steps
-      .map((step, i) => ({ step, value: h.loss[i] }))
-      .filter((p) => p.value != null);
+    return h.steps.map((step, i) => ({ step, value: h.loss[i] })).filter((p) => p.value != null);
   }, [status?.metric_history]);
   const gradNormHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = status?.metric_history;
@@ -902,11 +843,7 @@ export function DiffusionTrainPanel({
     // The service exposes a terminal status before the pump has necessarily written the run JSON, so
     // a short delayed second refetch lets the record land.
     let delayed: ReturnType<typeof setTimeout> | undefined;
-    if (
-      status?.status === "completed" ||
-      status?.status === "stopped" ||
-      status?.status === "error"
-    ) {
+    if (status?.status === "completed" || status?.status === "stopped" || status?.status === "error") {
       delayed = setTimeout(refetch, 1500);
     }
     return () => {
@@ -926,9 +863,7 @@ export function DiffusionTrainPanel({
   const viewLossHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = viewRun?.metric_history;
     if (!h) return [];
-    return h.steps
-      .map((step, i) => ({ step, value: h.loss[i] }))
-      .filter((p) => p.value != null);
+    return h.steps.map((step, i) => ({ step, value: h.loss[i] })).filter((p) => p.value != null);
   }, [viewRun?.metric_history]);
   const viewGradNormHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = viewRun?.metric_history;
@@ -942,7 +877,7 @@ export function DiffusionTrainPanel({
   // `picked` can come from a file pick, a folder pick or a drop, so it is filtered here.
   const uploadTo = useCallback(
     async (name: string, picked: File[], createOnly = false) => {
-      if (picked.length === 0) return; // the picker was cancelled
+      if (picked.length === 0) return;  // the picker was cancelled
       if (!name) {
         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
         return;
@@ -972,9 +907,7 @@ export function DiffusionTrainPanel({
         return;
       }
       if (uploadInFlight.current) {
-        toast.error(
-          "An upload is already running. Wait for it to finish, then try again.",
-        );
+        toast.error("An upload is already running. Wait for it to finish, then try again.");
         return;
       }
       uploadInFlight.current = true;
@@ -986,8 +919,7 @@ export function DiffusionTrainPanel({
         // read stops the upload.
         let maxBytes: number;
         try {
-          maxBytes = (await loadUploadLimitSettings({ force: true }))
-            .maxUploadSizeBytes;
+          maxBytes = (await loadUploadLimitSettings({ force: true })).maxUploadSizeBytes;
         } catch (e) {
           toast.error(
             "Could not read the upload size limit, so nothing was uploaded: " +
@@ -1021,9 +953,7 @@ export function DiffusionTrainPanel({
           // would call that folder new and skip the check. Fall back to a folded match.
           const folder =
             known.datasets.find((d) => d.name === name) ??
-            known.datasets.find(
-              (d) => d.name.toLowerCase() === name.toLowerCase(),
-            );
+            known.datasets.find((d) => d.name.toLowerCase() === name.toLowerCase());
           if (folder) {
             // no listing, no guarantee: skipping the check would upload the slices it exists to hold back, so
             // a failure here stops the upload.
@@ -1037,10 +967,7 @@ export function DiffusionTrainPanel({
               );
               return;
             }
-            const clash = existingStemClash(
-              files,
-              held.images.map((i) => i.filename),
-            );
+            const clash = existingStemClash(files, held.images.map((i) => i.filename));
             if (clash) {
               toast.error(
                 `"${clash.second}" and "${clash.first}", already in "${folder.name}", differ only by ` +
@@ -1082,8 +1009,7 @@ export function DiffusionTrainPanel({
               `${skipped === 1 ? "was" : "were"} neither an image, a clip, nor a caption.`,
           );
         }
-        const resultCaptionsOnly =
-          res.image_count === 0 && (res.clip_count ?? 0) === 0;
+        const resultCaptionsOnly = res.image_count === 0 && (res.clip_count ?? 0) === 0;
         if (resultCaptionsOnly) {
           setContinuationDatasetName(res.name);
           toast.info(
@@ -1128,15 +1054,11 @@ export function DiffusionTrainPanel({
       event.preventDefault();
       setDropActive(false);
       if (namesLoading) {
-        toast.error(
-          "Your image sets are still loading. Drop again in a moment.",
-        );
+        toast.error("Your image sets are still loading. Drop again in a moment.");
         return;
       }
       if (namesUnavailable) {
-        toast.error(
-          "Could not load your image sets. Retry before dropping files.",
-        );
+        toast.error("Could not load your image sets. Retry before dropping files.");
         return;
       }
       if (takenName) {
@@ -1144,9 +1066,7 @@ export function DiffusionTrainPanel({
         return;
       }
       if (uploadInFlight.current) {
-        toast.error(
-          "An upload is already running. Wait for it to finish, then drop again.",
-        );
+        toast.error("An upload is already running. Wait for it to finish, then drop again.");
         return;
       }
       let dropped: File[];
@@ -1184,23 +1104,17 @@ export function DiffusionTrainPanel({
   );
 
   const onStart = useCallback(async () => {
-    const baseModel = (
-      effectiveBase === CUSTOM_BASE ? customBase : effectiveBase
-    ).trim();
+    const baseModel = (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase).trim();
     if (!baseModel) {
       toast.error("Pick a base model (or fill in the custom repo/path).");
       return;
     }
     if (dataset === UPLOAD_DATASET) {
-      toast.error(
-        "Upload your training images first (or pick an existing dataset).",
-      );
+      toast.error("Upload your training images first (or pick an existing dataset).");
       return;
     }
     if (!outputDir.trim()) {
-      toast.error(
-        "Name the adapter (this becomes its folder under Unsloth outputs).",
-      );
+      toast.error("Name the adapter (this becomes its folder under Unsloth outputs).");
       return;
     }
     // Require a trigger prompt whenever ANY image lacks a caption: without an instance_prompt the
@@ -1230,12 +1144,9 @@ export function DiffusionTrainPanel({
       return toast.error("Resolution must be a multiple of 8 and at least 64.");
     }
     if (batchSize < 1) return toast.error("Batch size must be at least 1.");
-    if (gradAccum < 1)
-      return toast.error("Gradient accumulation must be at least 1.");
-    if (learningRate <= 0)
-      return toast.error("Learning rate must be greater than 0.");
-    if (lrWarmupSteps < 0)
-      return toast.error("Warmup steps cannot be negative.");
+    if (gradAccum < 1) return toast.error("Gradient accumulation must be at least 1.");
+    if (learningRate <= 0) return toast.error("Learning rate must be greater than 0.");
+    if (lrWarmupSteps < 0) return toast.error("Warmup steps cannot be negative.");
     setStarting(true);
     // A previous run's confirmed stop must not leak into this run: the read-time clamp would re-arm a
     // permanently disabled "Stopping..." button.
@@ -1267,9 +1178,7 @@ export function DiffusionTrainPanel({
         lora_rank: rank,
         // Zero rather than the field's value when the family has none: the field is only hidden, not
         // reset, so a value typed for one family would otherwise still be sent and refused.
-        save_steps: supportsCheckpoints
-          ? Math.max(0, Math.floor(saveSteps))
-          : 0,
+        save_steps: supportsCheckpoints ? Math.max(0, Math.floor(saveSteps)) : 0,
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only
         // send compile where supported.
@@ -1341,9 +1250,7 @@ export function DiffusionTrainPanel({
         );
         void poll();
       } catch (e) {
-        toast.error(
-          e instanceof Error ? e.message : "Failed to resume training",
-        );
+        toast.error(e instanceof Error ? e.message : "Failed to resume training");
       } finally {
         setResumingJobId(null);
       }
@@ -1384,11 +1291,7 @@ export function DiffusionTrainPanel({
 
   const navigate = useNavigate();
   const exportAdapter = useCallback(
-    (catalogPath: string) =>
-      void navigate({
-        to: "/export",
-        search: { imageLora: catalogFileName(catalogPath) },
-      }),
+    (catalogPath: string) => void navigate({ to: "/export", search: { imageLora: catalogFileName(catalogPath) } }),
     [navigate],
   );
   const onDeployClick = useCallback(() => {
@@ -1396,13 +1299,9 @@ export function DiffusionTrainPanel({
       toast.error("The trained adapter is not available yet.");
       return;
     }
-    const trainedBase =
-      status.base_model ||
-      (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase);
+    const trainedBase = status.base_model || (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase);
     if (!trainedBase) {
-      toast.error(
-        "Could not determine the base model to load for this adapter.",
-      );
+      toast.error("Could not determine the base model to load for this adapter.");
       return;
     }
     const famName = status.family || family?.name || "";
@@ -1412,15 +1311,7 @@ export function DiffusionTrainPanel({
       catalogPath: status.catalog_path,
       trigger: instancePrompt.trim(),
     });
-  }, [
-    status,
-    effectiveBase,
-    customBase,
-    family,
-    instancePrompt,
-    onDeploy,
-    deployBaseFor,
-  ]);
+  }, [status, effectiveBase, customBase, family, instancePrompt, onDeploy, deployBaseFor]);
 
   const numberField = (
     label: string,
@@ -1430,12 +1321,7 @@ export function DiffusionTrainPanel({
     // markDirty overrides which dirty flag an edit claims. Only "Warmup steps" passes one: it is seeded from the
     // family like rank/LR/resolution but tracked by lrScheduleDirty, so charging it to the shared flag would
     // freeze the other three at the previous family's values.
-    extra?: {
-      min?: number;
-      step?: number;
-      hint?: ReactNode;
-      markDirty?: () => void;
-    },
+    extra?: { min?: number; step?: number; hint?: ReactNode; markDirty?: () => void },
   ) => (
     <div className={fieldClass}>
       <FieldLabel hint={extra?.hint}>{label}</FieldLabel>
@@ -1464,9 +1350,8 @@ export function DiffusionTrainPanel({
       <FieldLabel
         hint={
           <>
-            How long the run trains. Steps count optimizer updates; epochs count
-            full passes over your images. 500&ndash;1500 steps suits most small
-            sets.
+            How long the run trains. Steps count optimizer updates; epochs count full
+            passes over your images. 500&ndash;1500 steps suits most small sets.
           </>
         }
       >
@@ -1578,9 +1463,7 @@ export function DiffusionTrainPanel({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="constant">Constant</SelectItem>
-              <SelectItem value="constant_with_warmup">
-                Constant + warmup
-              </SelectItem>
+              <SelectItem value="constant_with_warmup">Constant + warmup</SelectItem>
               <SelectItem value="cosine">Cosine decay</SelectItem>
               <SelectItem value="linear">Linear decay</SelectItem>
             </SelectContent>
@@ -1607,10 +1490,7 @@ export function DiffusionTrainPanel({
             value={gradCheckpoint ? "on" : "off"}
             onValueChange={(v) => setGradCheckpoint(v === "on")}
           >
-            <SelectTrigger
-              className={selectClass}
-              aria-label="Gradient checkpointing"
-            >
+            <SelectTrigger className={selectClass} aria-label="Gradient checkpointing">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -1633,10 +1513,7 @@ export function DiffusionTrainPanel({
               }}
               disabled={familyUntrainable}
             >
-              <SelectTrigger
-                className={selectClass}
-                aria-label="Base precision"
-              >
+              <SelectTrigger className={selectClass} aria-label="Base precision">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1656,7 +1533,7 @@ export function DiffusionTrainPanel({
             {(familyUntrainable || basePrequantized) && (
               <p className="text-ui-11 leading-snug text-muted-foreground">
                 {familyUntrainable
-                  ? // The reason itself already shows in the family picker note above.
+                  ?  // The reason itself already shows in the family picker note above.
                     "This GPU cannot train this model family."
                   : "This base is already 4-bit, so only nf4/auto apply."}
               </p>
@@ -1693,10 +1570,7 @@ export function DiffusionTrainPanel({
                 setCompileTransformer(v as typeof compileTransformer)
               }
             >
-              <SelectTrigger
-                className={selectClass}
-                aria-label="Compile transformer"
-              >
+              <SelectTrigger className={selectClass} aria-label="Compile transformer">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1769,7 +1643,7 @@ export function DiffusionTrainPanel({
             <Select
               value={effectiveBase}
               onValueChange={(v) => {
-                baseDirty.current = true; // an explicit pick survives later info refreshes
+                baseDirty.current = true;  // an explicit pick survives later info refreshes
                 setBaseChoice(v);
               }}
             >
@@ -1782,9 +1656,7 @@ export function DiffusionTrainPanel({
                     {repo}
                   </SelectItem>
                 ))}
-                <SelectItem value={CUSTOM_BASE}>
-                  Custom repo or local path...
-                </SelectItem>
+                <SelectItem value={CUSTOM_BASE}>Custom repo or local path...</SelectItem>
               </SelectContent>
             </Select>
             {effectiveBase === CUSTOM_BASE && (
@@ -1806,8 +1678,7 @@ export function DiffusionTrainPanel({
             className={cn(
               fieldClass,
               "rounded-lg transition-colors",
-              dropActive &&
-                "outline-2 outline-dashed outline-offset-4 outline-primary/60",
+              dropActive && "outline-2 outline-dashed outline-offset-4 outline-primary/60",
             )}
             onDragOver={(e) => {
               // tauri consumes os drags before the webview, as the chat composer notes.
@@ -1833,18 +1704,13 @@ export function DiffusionTrainPanel({
                 value={uploadMode ? UPLOAD_DATASET : dataset}
                 onValueChange={(v) => {
                   if (v.startsWith(EXAMPLE_PREFIX)) {
-                    const ex = pendingExamples.find(
-                      (x) => x.id === v.slice(EXAMPLE_PREFIX.length),
-                    );
+                    const ex = pendingExamples.find((x) => x.id === v.slice(EXAMPLE_PREFIX.length));
                     if (ex) void importExample(ex);
-                    return; // the controlled value stays put while the import runs
+                    return;  // the controlled value stays put while the import runs
                   }
                   // any explicit pick ends a continuation; "Add to it" is the way back in.
                   setContinuationDatasetName(null);
-                  if (
-                    v === UPLOAD_DATASET &&
-                    existingDatasetName(uploadName, occupiedDatasets)
-                  ) {
+                  if (v === UPLOAD_DATASET && existingDatasetName(uploadName, occupiedDatasets)) {
                     uploadNameEdited.current = false;
                     setUploadName(freeDatasetName(occupiedDatasets));
                   }
@@ -1853,10 +1719,7 @@ export function DiffusionTrainPanel({
                 }}
                 disabled={importingId !== null}
               >
-                <SelectTrigger
-                  className={cn(selectClass, "flex-1")}
-                  aria-label="Training images"
-                >
+                <SelectTrigger className={cn(selectClass, "flex-1")} aria-label="Training images">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1870,18 +1733,13 @@ export function DiffusionTrainPanel({
                     <SelectGroup>
                       <SelectLabel>Examples</SelectLabel>
                       {pendingExamples.map((ex) => (
-                        <SelectItem
-                          key={ex.id}
-                          value={`${EXAMPLE_PREFIX}${ex.id}`}
-                        >
+                        <SelectItem key={ex.id} value={`${EXAMPLE_PREFIX}${ex.id}`}>
                           {shortExampleLabel(ex.label)} - {ex.image_cap} images
                         </SelectItem>
                       ))}
                     </SelectGroup>
                   )}
-                  <SelectItem value={UPLOAD_DATASET}>
-                    Upload new images...
-                  </SelectItem>
+                  <SelectItem value={UPLOAD_DATASET}>Upload new images...</SelectItem>
                 </SelectContent>
               </Select>
               {!uploadMode && selectedDataset && (
@@ -1911,10 +1769,7 @@ export function DiffusionTrainPanel({
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Add"}
                   </Button>
-                  <FolderPickButton
-                    disabled={uploading}
-                    onPick={() => pickFolder(dataset)}
-                  />
+                  <FolderPickButton disabled={uploading} onPick={() => pickFolder(dataset)} />
                 </>
               )}
             </div>
@@ -1929,18 +1784,12 @@ export function DiffusionTrainPanel({
               onChange={(e) => {
                 const files = Array.from(e.target.files ?? []);
                 e.target.value = "";
-                void uploadTo(
-                  folderTarget.current,
-                  files,
-                  folderCreatesDataset.current,
-                );
+                void uploadTo(folderTarget.current, files, folderCreatesDataset.current);
               }}
             />
             {importingId && (
               <p className="text-ui-11 text-muted-foreground">
-                Importing{" "}
-                {examples.find((e) => e.id === importingId)?.label ?? "example"}
-                ...
+                Importing {examples.find((e) => e.id === importingId)?.label ?? "example"}...
               </p>
             )}
 
@@ -1984,35 +1833,21 @@ export function DiffusionTrainPanel({
                     className="h-8 shrink-0 gap-1.5 px-3 text-xs"
                     onClick={() => {
                       if (!uploadName.trim()) {
-                        toast.error(
-                          "Give the dataset a folder name, e.g. my-style-photos.",
-                        );
+                        toast.error("Give the dataset a folder name, e.g. my-style-photos.");
                         return;
                       }
                       fileInputRef.current?.click();
                     }}
-                    disabled={
-                      uploading ||
-                      namesLoading ||
-                      namesUnavailable ||
-                      takenName !== null
-                    }
+                    disabled={uploading || namesLoading || namesUnavailable || takenName !== null}
                   >
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Upload"}
                   </Button>
                   <FolderPickButton
-                    disabled={
-                      uploading ||
-                      namesLoading ||
-                      namesUnavailable ||
-                      takenName !== null
-                    }
+                    disabled={uploading || namesLoading || namesUnavailable || takenName !== null}
                     onPick={() => {
                       if (!uploadName.trim()) {
-                        toast.error(
-                          "Give the dataset a folder name, e.g. my-style-photos.",
-                        );
+                        toast.error("Give the dataset a folder name, e.g. my-style-photos.");
                         return;
                       }
                       pickFolder(uploadName.trim(), createsDataset);
@@ -2053,12 +1888,9 @@ export function DiffusionTrainPanel({
                   </div>
                 )}
                 <p className="text-ui-11 leading-snug text-muted-foreground">
-                  {isTauri
-                    ? "Pick files or a folder."
-                    : "Pick files or a folder, or drop them here."}{" "}
-                  Images, or clips for the video families. A caption file beside
-                  one (cat.png and cat.txt, or cat.mp4 and cat.txt) is read as
-                  that item's caption.
+                  {isTauri ? "Pick files or a folder." : "Pick files or a folder, or drop them here."}{" "}
+                  Images, or clips for the video families. A caption file beside one (cat.png and
+                  cat.txt, or cat.mp4 and cat.txt) is read as that item's caption.
                 </p>
               </div>
             ) : (
@@ -2094,8 +1926,7 @@ export function DiffusionTrainPanel({
                   )}
                   {selectedDataset.caption_count === 0 && !gridOpen && (
                     <p className="text-ui-11 leading-snug text-muted-foreground">
-                      No captions yet, so the trigger prompt describes every
-                      item.
+                      No captions yet, so the trigger prompt describes every item.
                     </p>
                   )}
                 </>
@@ -2114,8 +1945,8 @@ export function DiffusionTrainPanel({
           {/* Trigger first: it describes the dataset, the name just labels the output. */}
           {fullyCaptioned ? (
             <p className="text-ui-11 leading-snug text-muted-foreground">
-              Every item in {selectedDataset?.name} has a caption, so no trigger
-              prompt is needed.
+              Every item in {selectedDataset?.name} has a caption, so no trigger prompt
+              is needed.
             </p>
           ) : (
             <div className={fieldClass}>
@@ -2142,6 +1973,7 @@ export function DiffusionTrainPanel({
               className="h-8 text-xs"
             />
           </div>
+
         </div>
         {/* In its own footer, as Create's Generate is. The scroll mask provides the fade, so the footer
             stays unpainted to avoid dark-mode banding. */}
@@ -2190,15 +2022,10 @@ export function DiffusionTrainPanel({
               </div>
               <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat label="Status" value={viewRun.status} />
-                <Stat
-                  label="Steps"
-                  value={`${viewRun.step}/${viewRun.total_steps}`}
-                />
+                <Stat label="Steps" value={`${viewRun.step}/${viewRun.total_steps}`} />
                 <Stat
                   label="Avg loss"
-                  value={
-                    viewRun.avg_loss != null ? viewRun.avg_loss.toFixed(4) : "-"
-                  }
+                  value={viewRun.avg_loss != null ? viewRun.avg_loss.toFixed(4) : "-"}
                 />
                 <Stat
                   label="Peak VRAM"
@@ -2225,10 +2052,7 @@ export function DiffusionTrainPanel({
                     size="sm"
                     onClick={() =>
                       onDeploy?.({
-                        baseRepo: deployBaseFor(
-                          viewRun.base_model || "",
-                          viewRun.family || "",
-                        ),
+                        baseRepo: deployBaseFor(viewRun.base_model || "", viewRun.family || ""),
                         family: viewRun.family || "",
                         catalogPath: viewRun.catalog_path || "",
                         trigger: viewRun.instance_prompt || "",
@@ -2243,9 +2067,7 @@ export function DiffusionTrainPanel({
                     type="button"
                     size="sm"
                     variant="outline"
-                    onClick={() =>
-                      exportAdapter(viewRun.catalog_path as string)
-                    }
+                    onClick={() => exportAdapter(viewRun.catalog_path as string)}
                   >
                     Export
                   </Button>
@@ -2256,9 +2078,7 @@ export function DiffusionTrainPanel({
                   variant="outline"
                   onClick={() => void onResume(viewRun.job_id)}
                   disabled={
-                    !viewRun.can_resume ||
-                    running ||
-                    resumingJobId === viewRun.job_id
+                    !viewRun.can_resume || running || resumingJobId === viewRun.job_id
                   }
                   title={
                     viewRun.can_resume
@@ -2321,11 +2141,8 @@ export function DiffusionTrainPanel({
                           {r.adapter || r.job_id.slice(0, 8)}
                         </span>
                         <span className="text-muted-foreground">
-                          {r.family ? ` ${r.family}` : ""} - {r.step}/
-                          {r.total_steps} steps
-                          {r.avg_loss != null
-                            ? `, avg loss ${r.avg_loss.toFixed(3)}`
-                            : ""}
+                          {r.family ? ` ${r.family}` : ""} - {r.step}/{r.total_steps} steps
+                          {r.avg_loss != null ? `, avg loss ${r.avg_loss.toFixed(3)}` : ""}
                         </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
@@ -2338,9 +2155,7 @@ export function DiffusionTrainPanel({
                           {r.status}
                         </span>
                         <span className="text-ui-10 text-muted-foreground">
-                          {r.ended_at
-                            ? new Date(r.ended_at * 1000).toLocaleString()
-                            : ""}
+                          {r.ended_at ? new Date(r.ended_at * 1000).toLocaleString() : ""}
                         </span>
                       </span>
                     </button>
@@ -2354,9 +2169,7 @@ export function DiffusionTrainPanel({
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold capitalize">
-                  {status?.status === "completed"
-                    ? "Training complete \u{1F389}"
-                    : status?.status}
+                  {status?.status === "completed" ? "Training complete \u{1F389}" : status?.status}
                 </span>
                 <span className="text-xs text-muted-foreground">
                   {(status?.total_steps ?? 0) > 0
@@ -2377,9 +2190,7 @@ export function DiffusionTrainPanel({
                 />
                 <Stat
                   label="Avg loss"
-                  value={
-                    status?.avg_loss != null ? status.avg_loss.toFixed(4) : "-"
-                  }
+                  value={status?.avg_loss != null ? status.avg_loss.toFixed(4) : "-"}
                 />
                 <Stat
                   label="Speed"
@@ -2399,9 +2210,7 @@ export function DiffusionTrainPanel({
                 />
               </div>
               {status?.message && (
-                <p className="text-ui-11 text-muted-foreground">
-                  {status.message}
-                </p>
+                <p className="text-ui-11 text-muted-foreground">{status.message}</p>
               )}
               {running && (
                 <Button
@@ -2463,14 +2272,10 @@ export function DiffusionTrainPanel({
                     ? " and added to the LoRA picker."
                     : ". Load it from the path below."}
                   {status?.lora_path && (
-                    <span className="mt-1 block break-all">
-                      Saved: {status.lora_path}
-                    </span>
+                    <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
                   )}
                   {status?.ema_path && (
-                    <span className="mt-1 block break-all">
-                      EMA adapter: {status.ema_path}
-                    </span>
+                    <span className="mt-1 block break-all">EMA adapter: {status.ema_path}</span>
                   )}
                 </p>
                 <div className="mt-1 flex flex-wrap gap-2">
@@ -2485,9 +2290,7 @@ export function DiffusionTrainPanel({
                       type="button"
                       size="sm"
                       variant="outline"
-                      onClick={() =>
-                        exportAdapter(status.catalog_path as string)
-                      }
+                      onClick={() => exportAdapter(status.catalog_path as string)}
                     >
                       Export
                     </Button>
@@ -2516,9 +2319,7 @@ export function DiffusionTrainPanel({
                       {resumingJobId === status.job_id
                         ? "Resuming..."
                         : resumeActionLabel(
-                            liveRunSummary ?? {
-                              checkpoint_step: status.checkpoint_step,
-                            },
+                            liveRunSummary ?? { checkpoint_step: status.checkpoint_step },
                           )}
                     </Button>
                   )}
@@ -2534,10 +2335,7 @@ export function DiffusionTrainPanel({
               </div>
             )}
 
-            <DiffusionCharts
-              lossHistory={lossHistory}
-              gradNormHistory={gradNormHistory}
-            />
+            <DiffusionCharts lossHistory={lossHistory} gradNormHistory={gradNormHistory} />
           </>
         )}
       </div>
@@ -2548,18 +2346,15 @@ export function DiffusionTrainPanel({
           <AlertDialogHeader>
             <AlertDialogTitle>Stop training?</AlertDialogTitle>
             <AlertDialogDescription>
-              Save the adapter trained so far, or discard this run? Either way
-              the current step finishes first.
+              Save the adapter trained so far, or discard this run? Either way the current step
+              finishes first.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {/* flex-wrap keeps all three buttons visible at narrow widths; a real label on the destructive
               action, since a bare "Stop" read as misaligned. */}
           <AlertDialogFooter className="flex-wrap items-center">
             <AlertDialogCancel>Continue training</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => void onStop(false)}
-            >
+            <AlertDialogAction variant="destructive" onClick={() => void onStop(false)}>
               Stop without saving
             </AlertDialogAction>
             <AlertDialogAction onClick={() => void onStop(true)}>
@@ -2574,14 +2369,8 @@ export function DiffusionTrainPanel({
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div
-      className={cn(
-        "rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5",
-      )}
-    >
-      <div className="text-ui-10 uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
+    <div className={cn("rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5")}>
+      <div className="text-ui-10 uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="text-sm font-medium tabular-nums">{value}</div>
     </div>
   );

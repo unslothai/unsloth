@@ -25,7 +25,8 @@ export const Route = createRoute({
   beforeLoad: () => requireAuth(),
   validateSearch: (search: Record<string, unknown>): ExportSearch => ({
     run: typeof search.run === "string" ? search.run : undefined,
-    imageLora: typeof search.imageLora === "string" ? search.imageLora : undefined,
+    imageLora:
+      typeof search.imageLora === "string" ? search.imageLora : undefined,
   }),
   component: ExportPage,
 });
