@@ -3696,17 +3696,22 @@ function ThreadContextUsageRecount({
       ?.custom?.contextUsage as
       | (NonNullable<typeof shown> & { modelId?: string })
       | undefined;
-    // As the history loader: a count past a local window is stale.
-    const savedFits =
-      localWindow == null || (saved?.contextTokens ?? saved?.totalTokens ?? 0) <= localWindow;
+    // The history loader's rules: llama.cpp stops at its window (MLX runs past it), and legacy
+    // usage without a modelId is trusted only under a known local window.
+    const store = useChatRuntimeStore.getState();
+    const ggufWindow = store.loadedIsGguf ? loadedContextLength : null;
+    const withinWindow =
+      !ggufWindow || (saved?.contextTokens ?? saved?.totalTokens ?? 0) <= ggufWindow;
+    const modelMatches = saved?.modelId
+      ? saved.modelId === checkpoint
+      : typeof loadedContextLength === "number" && loadedContextLength > 0;
     const usage =
-      saved?.modelId && saved.modelId === checkpoint && savedFits
+      saved && withinWindow && modelMatches
         ? saved
         : estimateContextUsage(
             messages.map((m, index) => ({ ...m, createdAt: index })) as unknown as MessageRecord[],
           );
     if (!usage) return;
-    const store = useChatRuntimeStore.getState();
     store.setThreadContextUsage(activeThreadId, usage);
     store.setContextUsage(usage);
   }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, runActive]);

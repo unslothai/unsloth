@@ -2245,50 +2245,74 @@ def test_the_cloud_refill_prices_the_mounted_branch_without_reading_storage(thre
     assert (out["contextUsage"] or {}).get("totalTokens") == 6
 
 
+IMAGE_ONLY = '[{ type: "image", image: "data:image/png;base64,iVBORw0KGgo=" }]'
+
+
 @pytest.mark.parametrize(
-    ("parts", "saved", "expected"),
+    ("parts", "saved", "gguf", "expected"),
     [
         # The recount prices a text-only branch exactly; the estimate must stay out of its way.
         (
             '[{ type: "text", text: "describe this please" }]',
             "undefined",
+            True,
             {"total": 62, "estimated": None, "counts": 1},
         ),
         # It declines an image branch, which left the bar blank after a local model switch.
         (
             '[{ type: "text", text: "describe this please" }, { type: "image", image: "data:image/png;base64,iVBORw0KGgo=" }]',
             "undefined",
+            True,
             {"total": 9, "estimated": True, "counts": 0},
         ),
         # That model's own saved count is restored, as the history loader would ...
         (
-            '[{ type: "image", image: "data:image/png;base64,iVBORw0KGgo=" }]',
+            IMAGE_ONLY,
             '{ promptTokens: 700, completionTokens: 9, totalTokens: 709, cachedTokens: 0, modelId: "unsloth/other-gguf" }',
+            True,
             {"total": 709, "estimated": None, "counts": 0},
         ),
-        # ... unless it no longer fits the loaded window.
+        # ... unless it no longer fits a llama.cpp window ...
         (
-            '[{ type: "image", image: "data:image/png;base64,iVBORw0KGgo=" }]',
+            IMAGE_ONLY,
             '{ promptTokens: 9000, completionTokens: 9, totalTokens: 9009, cachedTokens: 0, modelId: "unsloth/other-gguf" }',
+            True,
             {"total": 4, "estimated": True, "counts": 0},
+        ),
+        # ... which MLX runs past, so there the count stands ...
+        (
+            IMAGE_ONLY,
+            '{ promptTokens: 9000, completionTokens: 9, totalTokens: 9009, cachedTokens: 0, modelId: "unsloth/other-gguf" }',
+            False,
+            {"total": 9009, "estimated": None, "counts": 0},
+        ),
+        # ... and legacy usage with no modelId is trusted under a known local window.
+        (
+            IMAGE_ONLY,
+            "{ promptTokens: 300, completionTokens: 9, totalTokens: 309, cachedTokens: 0 }",
+            True,
+            {"total": 309, "estimated": None, "counts": 0},
         ),
     ],
     ids = [
         "text_only_is_counted",
         "image_is_estimated",
         "image_restores_its_saved_count",
-        "image_saved_count_past_window",
+        "image_saved_count_past_gguf_window",
+        "image_saved_count_past_mlx_window",
+        "image_restores_legacy_usage",
     ],
 )
-def test_a_media_chat_keeps_a_value_after_a_local_model_switch(parts, saved, expected):
+def test_a_media_chat_keeps_a_value_after_a_local_model_switch(parts, saved, gguf, expected):
     """The recount refuses images, audio and video, so a chat carrying one showed a blank bar once
-    another local GGUF loaded under it; the mounted branch fills it like a cloud model's."""
+    another local model loaded under it; the mounted branch fills it by the history loader's rules."""
     out = _run(
         textwrap.dedent(
             f"""
             // @ts-nocheck
             import {{ renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
             {LOADED_MODEL}
+            seed({{ loadedIsGguf: {"true" if gguf else "false"} }});
             world.storedMessages["thread-a"] = [
               {{ id: "m1", role: "user", createdAt: 1, content: {parts}, metadata: {{}} }},
               {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "a cat on a sofa" }}],
