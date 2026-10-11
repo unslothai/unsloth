@@ -30,6 +30,7 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
+  Undo02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -39,6 +40,11 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  forgetRunSettings,
+  useHasSavedRunSettings,
+} from "../../model-config/saved-run-settings";
+import type { ModelPickTarget } from "./types";
 
 /** A caller-supplied entry. Rendered under the pin and above cache/update, so delete stays last. */
 export interface ModelRowMenuItem {
@@ -94,6 +100,7 @@ export function ModelRowMenu({
   onReveal,
   pin,
   items,
+  runSettings,
   update,
   del,
 }: {
@@ -107,6 +114,7 @@ export function ModelRowMenu({
   pin?: ModelRowMenuPin;
   /** Extra entries for actions this menu has no shape of its own for. */
   items?: readonly ModelRowMenuItem[];
+  runSettings?: ModelPickTarget;
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
@@ -190,8 +198,37 @@ export function ModelRowMenu({
     });
   }, [onReveal, cachePathRepoId, cachePathVariant]);
 
+  const hasSavedRunSettings = useHasSavedRunSettings(runSettings ?? null);
+  const handleResetRunSettings = useCallback(() => {
+    if (!runSettings) return;
+    const undo = forgetRunSettings(runSettings);
+    if (!undo) {
+      toast.error("Could not reset run settings");
+      return;
+    }
+    toast.success(`Run settings reset for ${runSettings.displayName}`, {
+      description: "Takes effect the next time it loads.",
+      // Longer than a status toast: this one carries the only way back.
+      duration: 10000,
+      action: {
+        label: "Undo",
+        onClick: () => {
+          if (!undo()) toast.error("Could not restore run settings");
+        },
+      },
+    });
+  }, [runSettings]);
+
   const canReveal = Boolean(revealLabel && (cachePath || onReveal));
-  if (!pin && !update && !del && !canReveal && !items?.length) return null;
+  if (
+    !pin &&
+    !update &&
+    !del &&
+    !canReveal &&
+    !items?.length &&
+    !hasSavedRunSettings
+  )
+    return null;
 
   return (
     <>
@@ -248,6 +285,21 @@ export function ModelRowMenu({
               <span>{item.label}</span>
             </DropdownMenuItem>
           ))}
+          {hasSavedRunSettings && (
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.stopPropagation();
+                handleResetRunSettings();
+              }}
+            >
+              <HugeiconsIcon
+                icon={Undo02Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              <span>Reset run settings</span>
+            </DropdownMenuItem>
+          )}
           {canReveal && (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -277,7 +329,11 @@ export function ModelRowMenu({
           )}
           {del && (
             <>
-              {(canReveal || pin || update || items?.length) && (
+              {(canReveal ||
+                pin ||
+                update ||
+                items?.length ||
+                hasSavedRunSettings) && (
                 <DropdownMenuSeparator />
               )}
               <DropdownMenuItem

@@ -164,15 +164,21 @@ export function currentRuntimePerModelConfig(
 }
 
 /** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
- *  Stored configs and presets keep null distinct from an explicit mode equal to today's global. */
+ *  Stored configs and presets keep null distinct from an explicit mode equal to today's global.
+ *  `unsetIsAuto`: a draft against its saved record, where null and "auto" both follow the global. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,
-  { followGlobal = false }: { followGlobal?: boolean } = {},
+  {
+    followGlobal = false,
+    unsetIsAuto = false,
+  }: { followGlobal?: boolean; unsetIsAuto?: boolean } = {},
 ): boolean {
   const speculative = followGlobal
     ? resolvedSpeculativeType
-    : normalizeSpeculativeType;
+    : unsetIsAuto
+      ? (v: string | null | undefined) => normalizeSpeculativeType(v) ?? "auto"
+      : normalizeSpeculativeType;
   return (
     (a.engine ?? "auto") === (b.engine ?? "auto") &&
     (a.enginePrecision ?? "auto") === (b.enginePrecision ?? "auto") &&

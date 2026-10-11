@@ -1437,6 +1437,9 @@ export function savePerModelConfig(
     return false;
   }
   const written = writeMap(map);
+  if (written) {
+    stampWrite(key, map);
+  }
   if (written && evicted) {
     for (const evictedKey of evictedKeys) {
       const id = modelIdFromStorageKey(evictedKey);
@@ -1499,10 +1502,14 @@ export function deletePerModelConfig(
  * can spell one key. */
 function findModelOverrideKeyOwners(
   overrideKey: string,
-): { modelId: string; ggufVariant: string | null }[] {
+): { modelId: string; ggufVariant: string | null; storageKey: string }[] {
   const key = overrideKey.trim();
   const foldedKey = normalizeModelIdentity(key);
-  const owners: { modelId: string; ggufVariant: string | null }[] = [];
+  const owners: {
+    modelId: string;
+    ggufVariant: string | null;
+    storageKey: string;
+  }[] = [];
   for (const storageKey of Object.keys(readMap())) {
     const modelId = modelIdFromStorageKey(storageKey);
     if (!modelId) {
@@ -1514,7 +1521,7 @@ function findModelOverrideKeyOwners(
     );
     if (!variant) {
       if (foldedKey === normalizeModelIdentity(modelId)) {
-        owners.push({ modelId, ggufVariant: null });
+        owners.push({ modelId, ggufVariant: null, storageKey });
       }
       continue;
     }
@@ -1526,19 +1533,71 @@ function findModelOverrideKeyOwners(
       normalizeModelIdentity(key.slice(0, cut)) ===
         normalizeModelIdentity(modelId)
     ) {
-      owners.push({ modelId, ggufVariant: variant });
+      owners.push({ modelId, ggufVariant: variant, storageKey });
     }
   }
   return owners;
 }
 
-/** Delete the records the server keys name; false when one was left behind. */
+// A unique mark per save, beside the records, so another tab's identical re-save still reads as new.
+const WRITE_STAMPS_KEY = "unsloth_model_config_stamps";
+
+function readStamps(): Record<string, string> {
+  if (!canUseStorage()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WRITE_STAMPS_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function stampWrite(key: string, map: StoredMap): void {
+  const stamps: Record<string, string> = {};
+  for (const [k, v] of Object.entries(readStamps())) {
+    if (k in map) {
+      stamps[k] = v;
+    }
+  }
+  stamps[key] = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  try {
+    localStorage.setItem(WRITE_STAMPS_KEY, JSON.stringify(stamps));
+  } catch {
+    // Best-effort: without it a forget's cleanup falls back to comparing contents.
+  }
+}
+
+export type PerModelConfigSnapshot = {
+  readonly records: Readonly<Record<string, unknown>>;
+  readonly stamps: Readonly<Record<string, string>>;
+};
+
+export function perModelConfigSnapshot(): PerModelConfigSnapshot {
+  return { records: readMapRaw(), stamps: readStamps() };
+}
+
+/** Delete the records the server keys name; false when one was left behind. With
+ *  `unchangedSince`, a record written after that snapshot (in any tab) is kept. */
 export function deletePerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
+  unchangedSince?: PerModelConfigSnapshot,
 ): boolean {
   let deleted = true;
+  const current = unchangedSince ? perModelConfigSnapshot() : null;
   for (const overrideKey of overrideKeys) {
     for (const owner of findModelOverrideKeyOwners(overrideKey)) {
+      const key = owner.storageKey;
+      if (
+        unchangedSince &&
+        current &&
+        (current.stamps[key] !== unchangedSince.stamps[key] ||
+          JSON.stringify(current.records[key]) !==
+            JSON.stringify(unchangedSince.records[key]))
+      ) {
+        continue;
+      }
       if (!deletePerModelConfig(owner.modelId, owner.ggufVariant)) {
         deleted = false;
       }
