@@ -80,7 +80,7 @@ _GGUF_QUANT_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
     re.IGNORECASE,
@@ -284,17 +284,37 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
             continue
         if quant in _FLOAT_PRECISION_QUANTS:
             # The list leaves out quants such as Q4_0, Q3_K and TQ1_0; the first listed of them still beats full precision.
-            filename = next(
-                (
-                    name
-                    for name in by_quant.values()
-                    if (token := extract_quant_token(name))
-                    and token.upper() not in _FLOAT_PRECISION_QUANTS
-                ),
-                filename,
-            )
+            quantized = [
+                name
+                for name in by_quant.values()
+                if (token := extract_quant_token(name))
+                and token.upper() not in _FLOAT_PRECISION_QUANTS
+            ]
+            filename = _first_mainline_loadable(quantized) or filename
         return filename
-    return gguf_files[0]
+    return _first_mainline_loadable(gguf_files)
+
+
+def _first_mainline_loadable(names: list[str]) -> Optional[str]:
+    """First of *names*, skipping packs mainline llama.cpp cannot read while anything else is left."""
+    tokens = {name: (extract_quant_token(name) or "").upper() for name in names}
+
+    def _checkpoint(name: str) -> str:
+        return (gguf_checkpoint_family(name) or "").upper()
+
+    # A plain Q2_0 published beside the same checkpoint's grouped Q2_g64 / Q2_0_g64 is the fork's group-128 pack.
+    shadowed = {
+        (_checkpoint(name), f"{match.group(1)}_0")
+        for name, token in tokens.items()
+        if (match := _GROUPED_QUANT_RE.match(token))
+    }
+    loadable = [
+        name
+        for name in names
+        if not _FORK_ONLY_QUANT_RE.match(tokens[name])
+        and (_checkpoint(name), tokens[name]) not in shadowed
+    ]
+    return next(iter(loadable or names), None)
 
 
 def _gguf_stem(filename: str) -> str:
@@ -303,6 +323,10 @@ def _gguf_stem(filename: str) -> str:
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
+# prism-ml's PQ2_0 / PTQ1_0 are ggml types only its llama.cpp fork defines; the bundled build rejects them (#11259).
+_FORK_ONLY_QUANT_RE = re.compile(r"PT?Q[0-9]", re.IGNORECASE)
+# Q2 only: prism-ml's group-128 Q2_0 is the plain pack a grouped sibling marks as fork-only.
+_GROUPED_QUANT_RE = re.compile(r"(Q2)(?:_0)?_G[0-9]+$", re.IGNORECASE)
 
 
 def _select_quant_match(text: str) -> Optional[re.Match]:
