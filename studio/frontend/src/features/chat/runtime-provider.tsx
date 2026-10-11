@@ -3692,19 +3692,21 @@ function ThreadContextUsageRecount({
     ) {
       return;
     }
-    const saved = [...messages].reverse().find((m) => m.role === "assistant")?.metadata
-      ?.custom?.contextUsage as
+    // Only the tip's count describes the branch: a later turn whose run never answered is unpriced.
+    const tip = messages.at(-1);
+    const saved = (tip?.role === "assistant" ? tip.metadata?.custom?.contextUsage : undefined) as
       | (NonNullable<typeof shown> & { modelId?: string })
       | undefined;
-    // The history loader's rules: llama.cpp stops at its window (MLX runs past it), and legacy
-    // usage without a modelId is trusted only under a known local window.
+    // The history loader's rules, keyed on the SELECTED model (a resident GGUF stays loaded under a
+    // cloud pick): llama.cpp stops at its window (MLX runs past it), and legacy usage without a
+    // modelId is trusted only under a local window.
     const store = useChatRuntimeStore.getState();
-    const ggufWindow = store.loadedIsGguf ? loadedContextLength : null;
+    const ggufWindow = store.loadedIsGguf ? localWindow : null;
     const withinWindow =
       !ggufWindow || (saved?.contextTokens ?? saved?.totalTokens ?? 0) <= ggufWindow;
     const modelMatches = saved?.modelId
       ? saved.modelId === checkpoint
-      : typeof loadedContextLength === "number" && loadedContextLength > 0;
+      : localWindow != null && localWindow > 0;
     const usage =
       saved && withinWindow && modelMatches
         ? saved
