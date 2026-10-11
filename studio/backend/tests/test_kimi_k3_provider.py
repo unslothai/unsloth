@@ -140,3 +140,31 @@ def test_kimi_k2_6_web_search_still_turns_thinking_off(monkeypatch):
     assert first["thinking"] == {"type": "disabled"}
     assert first["max_tokens"] == 64
     assert "reasoning_effort" not in first
+
+
+def test_kimi_k3_history_keeps_prior_reasoning():
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
+    calls = [
+        {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+    ]
+    history = [
+        ChatMessage(role = "user", content = "hi"),
+        ChatMessage(role = "assistant", content = "", reasoning_content = "plan", tool_calls = calls),
+        ChatMessage(role = "tool", content = "42", tool_call_id = "call_1"),
+        ChatMessage(role = "assistant", content = "answer", reasoning_content = "done"),
+    ]
+    k3 = _build_external_messages(history, True, provider_type = "kimi", model = "kimi-k3")
+    assert [m.get("reasoning_content") for m in k3 if m["role"] == "assistant"] == ["plan", "done"]
+    k26 = _build_external_messages(history, True, provider_type = "kimi", model = "kimi-k2.6")
+    assert all("reasoning_content" not in m for m in k26)
+
+
+@pytest.mark.parametrize(("model", "keeps"), [("kimi-k3", True), ("kimi-k2.6", False)])
+def test_studio_tool_loop_replays_kimi_k3_reasoning(model, keeps):
+    from core.inference.external_tool_transport import OAICompatTransport
+    client = ExternalProviderClient(
+        provider_type = "kimi", base_url = "http://kimi.example/v1", api_key = "sk-test"
+    )
+    assert OAICompatTransport(client, model = model).preserves_reasoning is keeps

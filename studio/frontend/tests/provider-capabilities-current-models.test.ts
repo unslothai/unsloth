@@ -18,12 +18,14 @@ const {
   getProviderCapabilities,
   kimiSearchExcludesThinking,
   providerHostsCodeExecution,
+  providerModelReplaysReasoning,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
   providerSupportsPreserveThinking,
+  resolveExternalReasoningEffort,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
 const {
@@ -570,6 +572,12 @@ test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they wer
   assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k3"), 1048576);
   assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k3")?.presencePenalty, false);
   assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k3"), false);
+  // A fresh chat's medium would clamp down to low; K3's own default is max.
+  assert.equal(
+    resolveExternalReasoningEffort({ caps: k3, providerType: "kimi", current: "medium" }),
+    "max",
+  );
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k3"), true);
 
   const k26 = getExternalReasoningCapabilities("kimi", "kimi-k2.6");
   assert.equal(k26.reasoningStyle, "enable_thinking");
@@ -578,4 +586,5 @@ test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they wer
   assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6"), 32768);
   assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k2.6"), true);
   assert.equal(kimiSearchExcludesThinking("openai", "kimi-k3"), false);
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k2.6"), false);
 });

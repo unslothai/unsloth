@@ -1040,11 +1040,15 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
   // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}. k3 always reasons
   // and takes reasoning_effort low|high|max instead.
   if (modelId === "kimi-k3") {
-    return withReasoningEffortStyle({
-      supportsReasoning: true,
-      supportsReasoningOff: false,
-      reasoningEffortLevels: ["low", "high", "max"],
-    });
+    return {
+      ...withReasoningEffortStyle({
+        supportsReasoning: true,
+        supportsReasoningOff: false,
+        reasoningEffortLevels: ["low", "high", "max"],
+      }),
+      // The API's own default; the chat's medium would otherwise clamp down to low.
+      defaultEffort: "max",
+    };
   }
   if (modelId === "kimi-k2-thinking") {
     return withEnableThinkingStyle({
@@ -1478,6 +1482,15 @@ export function reasoningFieldsAfterCatalogRefresh(
     reasoningEnabled:
       caps.supportsReasoning && !caps.supportsReasoningOff ? true : current.reasoningEnabled,
   };
+}
+
+/** kimi-k3 keeps prior reasoning on every turn and wants each assistant message back whole,
+ *  reasoning_content included (https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model). */
+export function providerModelReplaysReasoning(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3";
 }
 
 /** Sent as a llama-server template kwarg, so the model's template must still read it. */
