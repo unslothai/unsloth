@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The ChatGPT subscription and NPU routes must not hang on a disconnect watcher that survives cancel().
-
-Same failure as #7617 (see test_disconnect_watcher_teardown.py): Request.is_disconnected() can
-swallow a cancel(), so awaiting the watcher outright holds a finished reply open until the
-client itself disconnects.
-"""
+"""ChatGPT subscription and NPU replies must end when their disconnect watcher survives cancel() (#7617)."""
 
 import asyncio
 from types import SimpleNamespace
