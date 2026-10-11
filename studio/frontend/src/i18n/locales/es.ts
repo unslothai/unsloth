@@ -507,7 +507,6 @@ export const es = {
   turns: {
     label: "Turno {number}",
     bookmarkedLabel: "Turno {number}, en marcadores",
-    bookmarked: "En marcadores",
     bookmark: "Añadir turno a marcadores",
     removeBookmark: "Quitar marcador",
     navigator: "Turnos",

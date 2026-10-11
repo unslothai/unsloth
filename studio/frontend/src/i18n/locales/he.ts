@@ -583,7 +583,6 @@ export const he = {
   turns: {
     label: "תור {number}",
     bookmarkedLabel: "תור {number}, עם סימנייה",
-    bookmarked: "עם סימנייה",
     bookmark: "הוסף סימנייה לתור",
     removeBookmark: "הסר סימנייה",
     navigator: "תורות",

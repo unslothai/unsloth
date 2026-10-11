@@ -507,7 +507,6 @@ export const ko = {
   turns: {
     label: "턴 {number}",
     bookmarkedLabel: "턴 {number}, 북마크됨",
-    bookmarked: "북마크됨",
     bookmark: "턴 북마크",
     removeBookmark: "북마크 해제",
     navigator: "턴",

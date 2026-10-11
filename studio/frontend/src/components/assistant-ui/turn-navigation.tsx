@@ -164,45 +164,6 @@ const BookmarkTurnMenuItemInner: FC<{ className?: string }> = ({
   );
 };
 
-export const UserTurnLabel: FC = () => {
-  const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
-  return enabled ? <UserTurnLabelText /> : null;
-};
-
-const UserTurnLabelText: FC = () => {
-  const t = useT();
-  // constant per message, so it never rescans thread.messages
-  const key = useAuiState(
-    ({ message, threadListItem }) =>
-      `${threadListItem.id}\n${threadListItem.remoteId ?? ""}\n${message.id}`,
-  );
-  const [threadKey, threadId, messageId] = key.split("\n");
-  const turn = useTurnIndexStore((state) =>
-    state[threadKey]?.settled
-      ? (state[threadKey].turns.get(messageId) ?? 0)
-      : 0,
-  );
-  const bookmarked = useIsTurnBookmarked(threadId, messageId);
-  // the box mounts with the message and fills in on settle: a late box would restyle the document
-  return (
-    <div
-      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
-      className="aui-user-turn-label flex select-none items-center gap-1 font-medium text-muted-foreground/80 text-ui-11"
-    >
-      {bookmarked && (
-        <HugeiconsIcon
-          icon={Bookmark02Icon}
-          strokeWidth={2}
-          className="size-3 fill-current"
-          role="img"
-          aria-label={t("turns.bookmarked")}
-        />
-      )}
-      <span>{turn ? t("turns.label", { number: turn }) : "\u00a0"}</span>
-    </div>
-  );
-};
-
 // memoized: the thread re-renders on composer resizes
 export const TurnNavigator: FC<{
   viewportRef: RefObject<HTMLElement | null>;

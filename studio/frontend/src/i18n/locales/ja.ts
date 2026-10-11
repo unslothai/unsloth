@@ -508,7 +508,6 @@ export const ja = {
   turns: {
     label: "ターン {number}",
     bookmarkedLabel: "ターン {number}（ブックマーク済み）",
-    bookmarked: "ブックマーク済み",
     bookmark: "ターンをブックマーク",
     removeBookmark: "ブックマークを解除",
     navigator: "ターン",

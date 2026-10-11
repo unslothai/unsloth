@@ -507,7 +507,6 @@ export const zhCN = {
   turns: {
     label: "第 {number} 轮",
     bookmarkedLabel: "第 {number} 轮，已加书签",
-    bookmarked: "已加书签",
     bookmark: "为此轮添加书签",
     removeBookmark: "移除书签",
     navigator: "对话轮次",

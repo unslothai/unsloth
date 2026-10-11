@@ -507,7 +507,6 @@ export const fr = {
   turns: {
     label: "Tour {number}",
     bookmarkedLabel: "Tour {number}, en signet",
-    bookmarked: "En signet",
     bookmark: "Ajouter le tour aux signets",
     removeBookmark: "Retirer le signet",
     navigator: "Tours",

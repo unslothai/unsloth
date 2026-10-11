@@ -598,7 +598,6 @@ export const sv = {
   turns: {
     label: "Tur {number}",
     bookmarkedLabel: "Tur {number}, bokmärkt",
-    bookmarked: "Bokmärkt",
     bookmark: "Bokmärk turen",
     removeBookmark: "Ta bort bokmärke",
     navigator: "Turer",

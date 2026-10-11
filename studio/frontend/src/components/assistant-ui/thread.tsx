@@ -110,7 +110,6 @@ import {
   BookmarkTurnButton,
   BookmarkTurnMenuItem,
   TurnNavigator,
-  UserTurnLabel,
 } from "@/components/assistant-ui/turn-navigation";
 import {
   IntentAwareScrollProvider,
@@ -8822,7 +8821,6 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
-      <UserTurnLabel />
       <UserMessageAttachments />
       <UserMessageAudio />
 

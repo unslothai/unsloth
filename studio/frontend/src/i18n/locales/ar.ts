@@ -507,7 +507,6 @@ export const ar = {
   turns: {
     label: "الدور {number}",
     bookmarkedLabel: "الدور {number}، عليه إشارة مرجعية",
-    bookmarked: "عليه إشارة مرجعية",
     bookmark: "إضافة إشارة مرجعية للدور",
     removeBookmark: "إزالة الإشارة المرجعية",
     navigator: "الأدوار",

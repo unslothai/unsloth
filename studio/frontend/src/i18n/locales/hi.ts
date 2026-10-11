@@ -507,7 +507,6 @@ export const hi = {
   turns: {
     label: "टर्न {number}",
     bookmarkedLabel: "टर्न {number}, बुकमार्क किया गया",
-    bookmarked: "बुकमार्क किया गया",
     bookmark: "टर्न बुकमार्क करें",
     removeBookmark: "बुकमार्क हटाएँ",
     navigator: "टर्न",

@@ -549,7 +549,6 @@ export const en = {
   turns: {
     label: "Turn {number}",
     bookmarkedLabel: "Turn {number}, bookmarked",
-    bookmarked: "Bookmarked",
     bookmark: "Bookmark turn",
     removeBookmark: "Remove bookmark",
     navigator: "Turns",

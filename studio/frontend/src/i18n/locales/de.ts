@@ -507,7 +507,6 @@ export const de = {
   turns: {
     label: "Runde {number}",
     bookmarkedLabel: "Runde {number}, mit Lesezeichen",
-    bookmarked: "Mit Lesezeichen",
     bookmark: "Lesezeichen für Runde setzen",
     removeBookmark: "Lesezeichen entfernen",
     navigator: "Runden",

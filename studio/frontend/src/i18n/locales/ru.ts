@@ -507,7 +507,6 @@ export const ru = {
   turns: {
     label: "Ход {number}",
     bookmarkedLabel: "Ход {number}, в закладках",
-    bookmarked: "В закладках",
     bookmark: "Добавить ход в закладки",
     removeBookmark: "Удалить закладку",
     navigator: "Ходы",

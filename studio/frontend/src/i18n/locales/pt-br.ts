@@ -507,7 +507,6 @@ export const ptBR = {
   turns: {
     label: "Turno {number}",
     bookmarkedLabel: "Turno {number}, nos favoritos",
-    bookmarked: "Nos favoritos",
     bookmark: "Adicionar turno aos favoritos",
     removeBookmark: "Remover dos favoritos",
     navigator: "Turnos",

@@ -3034,7 +3034,6 @@ export const it = {
   turns: {
     label: "Turno {number}",
     bookmarkedLabel: "Turno {number}, nei segnalibri",
-    bookmarked: "Nei segnalibri",
     bookmark: "Aggiungi il turno ai segnalibri",
     removeBookmark: "Rimuovi segnalibro",
     navigator: "Turni",
