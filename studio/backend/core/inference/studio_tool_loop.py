@@ -2142,17 +2142,19 @@ async def stream_with_studio_tools(
                     decision = controller.reprepare_call(decision)
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
+                _noop_message = None
                 if getattr(transport, "tool_result_only_continuation", False):
                     assistant_tool_calls.append(
                         signed_provider_call or decision.as_assistant_tool_call()
                     )
-                    tool_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": decision.tool_call_id,
-                            "content": completion.model_message()["content"],
-                        }
-                    )
+                    # Written in call order: in a parallel round the calls above it settle later.
+                    _noop_message = {
+                        "role": "tool",
+                        "tool_call_id": decision.tool_call_id,
+                        "content": completion.model_message()["content"],
+                    }
+                    if not parallel_round:
+                        tool_messages.append(_noop_message)
                 else:
                     noop_messages.append(completion.model_message())
                 # The provider's own tool_calls delta for this call was relayed verbatim while it streamed and the
@@ -2163,6 +2165,8 @@ async def stream_with_studio_tools(
                 # to run, it is a name this install never offered, and giving it a card would advertise a tool the
                 # user switched off. That one is answered in the conversation only.
                 if decision.action == "disabled":
+                    if parallel_round and _noop_message is not None:
+                        pending_calls.append(("lines", [], _noop_message))
                     continue
                 _noop_lines = list(
                     _unrun_call_card(
@@ -2176,7 +2180,7 @@ async def stream_with_studio_tools(
                     )
                 )
                 if parallel_round:
-                    pending_calls.append(("lines", _noop_lines, None))
+                    pending_calls.append(("lines", _noop_lines, _noop_message))
                 else:
                     for card_line in _noop_lines:
                         yield card_line

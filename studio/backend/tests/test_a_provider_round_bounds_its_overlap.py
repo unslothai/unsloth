@@ -134,3 +134,41 @@ class TestARoundAtTheCapStillOverlaps:
         ends = _events(_run(_round_of(2), tools = [WEB], max_calls = _UNLIMITED), "tool_end")
         assert len(ends) == 2
         assert all("TOGETHER" in (end.get("result") or "") for end in ends)
+
+
+class TestAProviderThatReadsOnlyResultsGetsThemInCallOrder:
+    """Anthropic continues from tool results alone, matched to the calls by position."""
+
+    @staticmethod
+    def _call(index, query):
+        return {
+            "index": index,
+            "id": f"r2_{index}",
+            "function": {"name": "web_search", "arguments": json.dumps({"query": query})},
+        }
+
+    def test_a_repeated_call_behind_a_running_one_answers_after_it(self, rendezvous, monkeypatch):
+        monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kw: f"R<{arguments['query']}>")
+        first = {"index": 0, "id": "r1_0", "function": {"name": "web_search", "arguments": json.dumps({"query": "seen"})}}
+        transport = FakeTransport(
+            [
+                [_sse({"tool_calls": [first]}), _sse(finish = "tool_calls"), _DONE],
+                [
+                    _sse({"tool_calls": [self._call(0, "fresh"), self._call(1, "seen")]}),
+                    _sse(finish = "tool_calls"),
+                    _DONE,
+                ],
+                [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            ],
+            heals = False,
+        )
+        transport.tool_result_only_continuation = True
+        _run(transport, tools = [WEB], max_calls = _UNLIMITED)
+        calls, results = [], []
+        for row in transport.requests[2]["messages"]:
+            if row.get("role") == "assistant":
+                calls += [c.get("id") for c in row.get("tool_calls") or []]
+            if row.get("role") == "tool":
+                results.append(row.get("tool_call_id"))
+        round_two = [c for c in calls if str(c).startswith("r2_")]
+        assert [r for r in results if str(r).startswith("r2_")] == round_two, (calls, results)
