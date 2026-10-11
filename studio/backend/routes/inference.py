@@ -16919,11 +16919,26 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
                 else hf_hub_download(config.identifier, "config.json", token = hf_token)
             )
         metadata = json.loads(path.read_text(encoding = "utf-8"))
-        from core.inference.engine_install import _driver_rows, support_reason
+        from core.inference.engine_install import (
+            _driver_rows,
+            gpu_platform,
+            rocm_loads_quantization,
+            support_reason,
+        )
 
         def supported(name, method):
             if support_reason(name) is not None:
                 return False
+            if gpu_platform() == "rocm":
+                text_config = metadata.get("text_config")
+                return rocm_loads_quantization(
+                    metadata.get("quantization_config")
+                    or (
+                        text_config.get("quantization_config")
+                        if isinstance(text_config, dict)
+                        else None
+                    )
+                )
             if name != "sglang" or method != "compressed-tensors":
                 return True
             # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0; vLLM falls back to Marlin from 7.5.
@@ -28846,8 +28861,7 @@ async def _proxy_to_external_provider(
                 yield "data: [DONE]\n\n"
             finally:
                 await client.close()
-                disconnect_task.cancel()
-                await asyncio.gather(disconnect_task, return_exceptions = True)
+                await _stop_local_disconnect_cancel_watcher(disconnect_task)
 
                 with _CANCEL_LOCK:
                     for key in cancel_keys:
@@ -29349,12 +29363,8 @@ async def _proxy_to_external_provider(
         finally:
             cancel_event.set()
             if disconnect_task is not None:
-                # Joined, not just cancelled. A bare cancel() leaves the task's
-                # result unretrieved, so asyncio logs "Task exception was never
-                # retrieved" when it is collected, and the poll can still be
-                # mid-await on request.is_disconnected() while the response is
-                # torn down. Same pairing as the Codex branch and the local
-                # watchers.
+                # Joined so its outcome is retrieved. No bounded stop needed: cancel_event is
+                # set above, so the loop exits even if is_disconnected() eats the cancel (#7617).
                 disconnect_task.cancel()
                 await asyncio.gather(disconnect_task, return_exceptions = True)
             try:
@@ -29745,8 +29755,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             if relay.stopped or relay.error is not None:
                 break
     finally:
-        watcher.cancel()
-        await asyncio.gather(watcher, return_exceptions = True)
+        await _stop_local_disconnect_cancel_watcher(watcher)
         await lines.aclose()
     if disconnected.is_set():
         return Response(status_code = 499)
@@ -32127,7 +32136,7 @@ async def produce_openai_chat_completions(
                 except Exception as e:
                     logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
                     api_monitor.fail(monitor_id, _friendly_error(e))
-                    # Recover if an MTP+tensor crash killed the server mid-stream.
+                    # Recover if an MTP crash killed the server mid-stream.
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse(error_chunk)
@@ -32507,7 +32516,7 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                # Recover if an MTP+tensor crash killed the server.
+                # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
@@ -33195,7 +33204,7 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                # Recover if an MTP+tensor crash killed the server.
+                # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
@@ -43340,7 +43349,7 @@ async def _passthrough_retry_url(llama_backend, exc):
 
     A crashed server relaunches on a NEW ephemeral port, so a passthrough still
     holding the old base_url keeps failing until the next load. Mirrors the
-    respawn-and-retry in generate_chat_completion. None when an MTP+tensor crash
+    respawn-and-retry in generate_chat_completion. None when an MTP crash
     already scheduled its own recovery, or when nothing needed respawning.
 
     Shared by both passthrough surfaces: /v1/messages and /v1/chat/completions post

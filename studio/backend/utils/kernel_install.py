@@ -209,8 +209,7 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
         return None
     if name == "xformers":
         return xformers_wheel_url(env)
-    # flash-attn, causal-conv1d and mamba-ssm publish Linux wheels only.
-    if not str(env.get("platform_tag") or "").startswith("linux"):
+    if not str(env.get("platform_tag") or "").startswith(("linux", "win_")):
         return None
     if name == "flash_attn":
         return flash_attn_wheel_url(env)
@@ -349,6 +348,13 @@ def install_kernel(
     # Only a 404 proves nothing is published; an unreachable check falls through to the install.
     if url is None or exists(url) is False:
         print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
+        return 0
+    # mamba_ssm imports triton at load; on Windows that is triton-windows, which its metadata cannot name.
+    if name == "mamba_ssm" and sys.platform == "win32" and not _loads("import triton", run):
+        print(
+            "Unsloth: skipping mamba_ssm, which needs Triton on Windows; "
+            "install triton-windows first (Studio setup does), then re-run."
+        )
         return 0
     # UNSLOTH_PYTORCH_MIRROR may carry credentials, and notebook output gets shared.
     shown = redact_url_credentials(url)

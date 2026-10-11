@@ -198,6 +198,8 @@ function FloatingMonitorPanel({
           layout ? "top-0 left-0 resize" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
+        // Takes its own clicks over a macOS browser page (native-view.ts).
+        data-native-clickable=""
         style={
           layout
             ? {
