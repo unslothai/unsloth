@@ -2109,6 +2109,10 @@ export const ko = {
           "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
         mismatchUnavailable:
           "PyTorch({version})가 아래 GPU를 초기화하지 못해 사용할 수 없습니다. GPU 드라이버를 확인하거나 설치를 복구하세요.",
+        driverIdleEvict:
+          "AMD 드라이버 {version}에는 AMD GPU가 유휴 상태일 때 Windows가 멈출 수 있는 알려진 버그가 있으며, GPU가 두 개 이상일 때 주로 발생합니다. Adrenalin 26.9.2 이상으로 업데이트하세요.",
+        driverIdleEvictDetails: "자세히",
+        dismissNotice: "닫기",
         unusableDevice: "사용 불가",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
@@ -2478,6 +2482,15 @@ export const ko = {
         "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       autoCompactKeywords:
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "도구 출력 길이",
+      toolResultLimitDescription: "모델이 읽는 Python 또는 터미널 결과 하나의 문자 수입니다. 기본값은 {count}입니다.",
+      toolResultLimitHint: "더 긴 출력은 모델이 나눠서 읽을 수 있는 파일에 저장됩니다. 더 높은 제한은 Unsloth에서 실행되는 모델에 적용되며, 컨텍스트 창이 작으면 여전히 더 적게 받습니다. API 모델은 낮추지 않는 한 기본값을 유지합니다.",
+      toolResultLimitDefault: "{count} (기본값)",
+      toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS로 설정됨",
+      toolResultLimitLoadError: "도구 출력 길이를 불러오지 못했습니다.",
+      toolResultLimitSaveError: "도구 출력 길이를 저장하지 못했습니다.",
+      toolResultLimitKeywords:
+        "출력 결과 잘림 제한 문자 길이 tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "접힘",
         auto: "실행 중 펼치기",
@@ -2891,9 +2904,9 @@ export const ko = {
       },
       mcp: {
         title: "에이전트 액세스 (MCP)",
-        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth Studio를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
+        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
         enable: "에이전트 연결 허용",
-        enableDescription: "Unsloth Studio 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
+        enableDescription: "Unsloth 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         loadError: "에이전트 액세스 설정을 불러오지 못했습니다.",
         saveError: "에이전트 액세스 설정을 저장하지 못했습니다.",
@@ -3982,6 +3995,8 @@ export const ko = {
     selection: {
       startChat: "채팅 시작",
       move: "이동",
+      selectAll: "모두 선택",
+      countOfTotal: "{total}개 중 {count}개 선택됨",
       clear: "선택 해제",
     },
     menu: {

@@ -5417,6 +5417,63 @@ def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
     ]
 
 
+def test_write_openclaw_config_points_a_legacy_agent_list_at_openclaw_doctor(tmp_path, capsys):
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"agents": {"list": [{"id": "main"}]}}))
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    captured = capsys.readouterr()
+    # stderr, so the copy-paste launch recipe on stdout stays clean.
+    assert "legacy agents.list" in captured.err
+    assert "openclaw doctor --fix" in captured.err
+    assert "legacy agents.list" not in captured.out
+
+
+def test_openclaw_doctor_command_matches_the_shell(tmp_path):
+    path = tmp_path / "with space" / "openclaw.json"
+    posix = start._openclaw_doctor_command(path, windows = False)
+    assert posix.startswith("OPENCLAW_CONFIG_PATH=")
+    assert shlex.split(posix)[:2] == [
+        f"OPENCLAW_CONFIG_PATH={path}",
+        f"OPENCLAW_STATE_DIR={path.parent}",
+    ]
+    assert posix.endswith(" openclaw doctor --fix")
+    windows = start._openclaw_doctor_command(path, windows = True)
+    assert windows.startswith(f'$env:OPENCLAW_CONFIG_PATH = "{path}"; ')
+    assert f'$env:OPENCLAW_STATE_DIR = "{path.parent}"; openclaw doctor --fix' in windows
+    assert "OPENCLAW_CONFIG_PATH=" not in windows
+
+
+def test_write_openclaw_config_clears_per_agent_path_overrides_in_keyed_entries(tmp_path):
+    # OpenClaw 2026.10.1 moved agents.list to agents.entries keyed by agent id.
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"workspace": "/old/default"},
+                    "entries": {
+                        "main": {
+                            "workspace": "/old/main-workspace",
+                            "agentDir": "/old/main-agent",
+                            "model": "keep/me",
+                        },
+                        "reviewer": {"workspace": "/old/reviewer-workspace"},
+                    },
+                }
+            }
+        )
+    )
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    agents = json.loads(path.read_text())["agents"]
+    assert agents["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert agents["entries"] == {"main": {"model": "keep/me"}, "reviewer": {}}
+    assert "list" not in agents
+
+
 def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "openclaw.json"
     path.write_text(

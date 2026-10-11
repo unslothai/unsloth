@@ -2120,6 +2120,10 @@ export const ru = {
           "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) не может инициализировать GPU ниже, поэтому использовать их нельзя. Проверьте драйвер видеокарты или восстановите установку.",
+        driverIdleEvict:
+          "В драйвере AMD {version} есть известная ошибка, из-за которой Windows может зависнуть, когда GPU AMD простаивает, чаще всего при нескольких GPU. Обновитесь до Adrenalin 26.9.2 или новее.",
+        driverIdleEvictDetails: "Подробнее",
+        dismissNotice: "Скрыть",
         unusableDevice: "недоступен",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",
@@ -2497,6 +2501,15 @@ export const ru = {
         "Старые ходы уходят в доступный для поиска архив, когда чат заполняет контекст.",
       autoCompactKeywords:
         "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас архив поиск извлечение compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "Длина вывода инструментов",
+      toolResultLimitDescription: "Сколько символов одного результата Python или Терминала читает модель. По умолчанию {count}.",
+      toolResultLimitHint: "Более длинный вывод сохраняется в файл, который модель может читать по частям. Более высокий лимит действует для моделей, запущенных в Unsloth, а маленькие окна контекста по-прежнему получают меньше. API-модели сохраняют значение по умолчанию, если вы его не уменьшите.",
+      toolResultLimitDefault: "{count} (по умолчанию)",
+      toolResultLimitLocked: "Задано через UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Не удалось загрузить длину вывода инструментов.",
+      toolResultLimitSaveError: "Не удалось сохранить длину вывода инструментов.",
+      toolResultLimitKeywords:
+        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Свёрнуто",
         auto: "Разворачивать во время работы",
@@ -2912,9 +2925,9 @@ export const ru = {
       },
       mcp: {
         title: "Доступ агентов (MCP)",
-        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth Studio через MCP. Агенты входят с токеном доступа с этой страницы.",
+        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth через MCP. Агенты входят с токеном доступа с этой страницы.",
         enable: "Разрешить подключения агентов",
-        enableDescription: "Обслуживает /mcp/ для запросов с токеном доступа Unsloth Studio.",
+        enableDescription: "Обслуживает /mcp/ для запросов с токеном доступа Unsloth.",
         lockedByEnv: "Задано через {name}.",
         loadError: "Не удалось загрузить настройки доступа агентов.",
         saveError: "Не удалось сохранить настройку доступа агентов.",
@@ -4018,6 +4031,8 @@ export const ru = {
     selection: {
       startChat: "Начать чат",
       move: "Переместить",
+      selectAll: "Выбрать все",
+      countOfTotal: "Выбрано: {count} из {total}",
       clear: "Снять выделение",
     },
     menu: {

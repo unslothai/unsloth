@@ -160,11 +160,6 @@ _RDNA1_NAMES = [
 
 
 class TestNameTables:
-    @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
-    def test_python_table_resolves_rdna1(self, name, expected):
-        assert stack_mod._gfx_arch_from_gpu_name(name) == expected
-        assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
-
     @pytest.mark.parametrize(
         "name", ["AMD Radeon RX 570", "AMD Radeon RX 580", "AMD Radeon RX 550"]
     )

@@ -2194,6 +2194,10 @@ export const he = {
           "גרסת PyTorch מותאמת ל-CPU בלבד ({version}), ולכן לא ניתן להשתמש ב-GPUs שלמטה. תקן את ההתקנה כדי לשחזר תמיכה ב-GPU.",
         mismatchUnavailable:
           "גרסת PyTorch ({version}) אינה יכולה לאתחל את ה-GPUs שלמטה, ולכן לא ניתן להשתמש בהם. בדוק את מנהל ההתקן (Driver), או תקן את ההתקנה.",
+        driverIdleEvict:
+          "במנהל ההתקן של AMD {version} יש באג ידוע שעלול להקפיא את Windows כשמעבד גרפי של AMD במצב סרק, בעיקר כשיש יותר ממעבד גרפי אחד. עדכנו ל-Adrenalin 26.9.2 ומעלה.",
+        driverIdleEvictDetails: "פרטים",
+        dismissNotice: "סגירה",
         unusableDevice: "אינו שמיש",
         unknownDevice: "GPU לא ידוע",
         deviceWithIndex: "GPU {index}",
@@ -2589,6 +2593,15 @@ export const he = {
         "סבבים ישנים יותר עוברים לארכיון הניתן לחיפוש כאשר צ'אט ממלא את ההקשר שלו.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
+      toolResultLimit: "אורך פלט הכלים",
+      toolResultLimitDescription: "מספר התווים מתוצאה אחת של Python או Terminal שהמודל קורא. ברירת המחדל היא {count}.",
+      toolResultLimitHint: "פלט ארוך יותר נשמר בקובץ שהמודל יכול לקרוא בחלקים. מגבלה גבוהה יותר חלה על מודלים שרצים ב-Unsloth, וחלונות הקשר קטנים עדיין מקבלים פחות. מודלי API נשארים בברירת המחדל אלא אם תוריד אותה.",
+      toolResultLimitDefault: "{count} (ברירת מחדל)",
+      toolResultLimitLocked: "מוגדר על ידי UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "טעינת אורך פלט הכלים נכשלה.",
+      toolResultLimitSaveError: "שמירת אורך פלט הכלים נכשלה.",
+      toolResultLimitKeywords:
+        "פלט תוצאה קיצוץ מגבלה תווים אורך tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "מכווץ",
         auto: "מורחב בזמן ריצה",
@@ -3012,9 +3025,9 @@ export const he = {
       },
       mcp: {
         title: "גישת סוכנים (MCP)",
-        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth Studio דרך MCP. סוכנים מתחברים עם טוקן גישה מהדף הזה.",
+        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth דרך MCP. סוכנים מתחברים עם טוקן גישה מהדף הזה.",
         enable: "אפשר חיבורי סוכנים",
-        enableDescription: "מגיש את /mcp/ לבקשות שנושאות טוקן גישה של Unsloth Studio.",
+        enableDescription: "מגיש את /mcp/ לבקשות שנושאות טוקן גישה של Unsloth.",
         lockedByEnv: "נקבע על ידי {name}.",
         loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
         saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",
@@ -4104,6 +4117,8 @@ export const he = {
     selection: {
       startChat: "התחל צ'אט",
       move: "העברה",
+      selectAll: "בחר הכל",
+      countOfTotal: "{count} מתוך {total} נבחרו",
       clear: "ניקוי הבחירה",
     },
     menu: {

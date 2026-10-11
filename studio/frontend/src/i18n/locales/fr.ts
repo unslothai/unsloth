@@ -2141,6 +2141,10 @@ export const fr = {
           "PyTorch est une version CPU uniquement ({version}), les GPU ci-dessous ne peuvent donc pas être utilisés. Réparez l'installation pour rétablir la prise en charge du GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) ne parvient pas à initialiser les GPU ci-dessous, ils ne peuvent donc pas être utilisés. Vérifiez le pilote graphique ou réparez l'installation.",
+        driverIdleEvict:
+          "Le pilote AMD {version} présente un bug connu qui peut figer Windows lorsqu'un GPU AMD reste inactif, le plus souvent avec plusieurs GPU. Mettez à jour vers Adrenalin 26.9.2 ou une version ultérieure.",
+        driverIdleEvictDetails: "Détails",
+        dismissNotice: "Ignorer",
         unusableDevice: "inutilisable",
         unknownDevice: "GPU inconnu",
         deviceWithIndex: "GPU {index}",
@@ -2520,6 +2524,15 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      toolResultLimit: "Longueur de la sortie des outils",
+      toolResultLimitDescription: "Caractères d'un résultat Python ou Terminal que le modèle lit. Par défaut : {count}.",
+      toolResultLimitHint: "Une sortie plus longue est enregistrée dans un fichier que le modèle peut lire par parties. Une limite plus élevée s'applique aux modèles exécutés dans Unsloth, et les petites fenêtres de contexte reçoivent toujours moins. Les modèles d'API gardent la valeur par défaut sauf si vous la baissez.",
+      toolResultLimitDefault: "{count} (par défaut)",
+      toolResultLimitLocked: "Défini par UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Impossible de charger la longueur de la sortie des outils.",
+      toolResultLimitSaveError: "Impossible d'enregistrer la longueur de la sortie des outils.",
+      toolResultLimitKeywords:
+        "sortie résultat tronquer tronqué limite caractères longueur tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Replié",
         auto: "Déplier pendant l’exécution",
@@ -2946,9 +2959,9 @@ export const fr = {
       },
       mcp: {
         title: "Accès des agents (MCP)",
-        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth Studio via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
+        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
         enable: "Autoriser les connexions des agents",
-        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Unsloth Studio.",
+        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Unsloth.",
         lockedByEnv: "Défini par {name}.",
         loadError: "Impossible de charger les paramètres d’accès des agents.",
         saveError: "Impossible d’enregistrer le paramètre d’accès des agents.",
@@ -4074,6 +4087,8 @@ export const fr = {
     selection: {
       startChat: "Démarrer une discussion",
       move: "Déplacer",
+      selectAll: "Tout sélectionner",
+      countOfTotal: "{count} sur {total} sélectionnés",
       clear: "Effacer la sélection",
     },
     menu: {

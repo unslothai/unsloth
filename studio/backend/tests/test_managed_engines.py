@@ -1524,7 +1524,7 @@ def test_tensor_parallel_launch_stays_on_selected_local_devices(engine, size):
         assert ("--enable-p2p-check" in args) == (size > 1)
     from core.inference.engine_adapters import ADAPTERS
 
-    assert ADAPTERS[engine].environment(size) == (
+    multi_gpu = (
         {
             "vllm": {"VLLM_HOST_IP": "127.0.0.1"},
             "sglang": {
@@ -1535,6 +1535,8 @@ def test_tensor_parallel_launch_stays_on_selected_local_devices(engine, size):
         if size > 1
         else {}
     )
+    always = {"TRITON_ALLOW_NON_CONSTEXPR_GLOBALS": "1"} if engine == "vllm" else {}
+    assert ADAPTERS[engine].environment(size) == {**always, **multi_gpu}
 
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])

@@ -3950,6 +3950,14 @@ async def fake_send(*_args, **_kwargs):
     return httpx.Response(200, content = b"")
 
 
+# Upper bounds only: the route reaches the hanging client and notices the disconnect (it polls
+# is_disconnected every 0.1 s) in milliseconds here. 0.2 s / 0.5 s timed out on loaded xdist
+# workers (the first embeddings call on a cold worker does extra setup), so allow seconds; a real
+# hang or a missed disconnect still fails, just later.
+_HANGING_CLIENT_START_TIMEOUT_S = 10.0
+_DISCONNECT_TO_499_TIMEOUT_S = 5.0
+
+
 class HangingCancelableClient:
     def __init__(self):
         self.started = asyncio.Event()
@@ -8604,11 +8612,11 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
 
             task = asyncio.create_task(route(request, current_subject = "test"))
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             request.disconnected = True
 
             with pytest.raises(HTTPException) as exc:
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
 
             assert exc.value.status_code == 499
             assert client.closed.is_set()
@@ -9400,7 +9408,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = threading.Event(),
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             task.cancel()
 
             with pytest.raises(asyncio.CancelledError):
@@ -9442,11 +9450,11 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = cancel_event,
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             cancel_event.set()
 
             with pytest.raises(HTTPException) as exc:
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
 
             assert exc.value.status_code == 499
             assert client.closed.is_set()
@@ -9559,11 +9567,11 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = cancel_event,
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             request.disconnected = True
 
             with pytest.raises(HTTPException) as exc:
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
 
             assert exc.value.status_code == 499
             assert client.closed.is_set()

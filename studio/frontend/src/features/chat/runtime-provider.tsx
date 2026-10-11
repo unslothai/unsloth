@@ -97,6 +97,7 @@ import {
   loadExternalProviders,
   parseExternalModelId,
   externalModelSupportsStudioTools,
+  isExternalModelId,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
@@ -2225,19 +2226,20 @@ function createPersistedRunAdapter(
       let adoptedThreadId: string | undefined;
       try {
         adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
-        throwIfReservationCancelled();
       } catch (error) {
         if (reservationToken) {
           releasePreStreamRunReservation(reservationToken);
         }
-        // Queued runs carry no direct-send reservation and their persisted preflight can still fail
-        // before the model adapter consumes the queued settings, so match pending/waiting work too.
+        // The history write ignores abortSignal, so a rejection here is a real failure (or clear-all)
+        // even after a steer. Queued runs carry no reservation, so this also stops pending work.
         requestPromptQueueStop(persistedRunThreadIds);
         notifyPromptQueueRunFailed(
           options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
         );
         throw error;
       }
+      // Outside the catch: steering's reservation cancel is not a history write failure.
+      throwIfReservationCancelled();
       if (reservationToken && adoptedThreadId) {
         adoptPreStreamRunReservation(reservationToken, [
           ...reservationThreadIds,
@@ -3627,6 +3629,7 @@ function BranchHeadRecorder(): ReactElement | null {
 function ThreadContextUsageRecount({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
+  const aui = useAui();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
@@ -3659,6 +3662,37 @@ function ThreadContextUsageRecount({
     runActive,
     modelLoading,
   ]);
+
+  // Cloud model or none: no exact count follows, and a mounted chat never reruns the history loader,
+  // so estimate from the branch it shows. No storage read: a just-sent chat has no server row yet.
+  useEffect(() => {
+    if (!enabled || !activeThreadId || runActive || modelLoading) return;
+    if (checkpoint && !isExternalModelId(checkpoint) && loadedContextLength != null) return;
+    // An estimate is replaced, so a run that ends without usage still re-prices the new turn.
+    const shown = useChatRuntimeStore.getState().contextUsage;
+    if (shown != null && !shown.estimated) return;
+    let messages: readonly ThreadMessage[];
+    try {
+      if (aui.threads().getState().mainThreadId !== activeThreadId) return;
+      messages = aui.thread().getState().messages;
+    } catch {
+      return;
+    }
+    const saved = [...messages].reverse().find((m) => m.role === "assistant")?.metadata
+      ?.custom?.contextUsage as
+      | (NonNullable<typeof shown> & { modelId?: string })
+      | undefined;
+    const usage =
+      saved?.modelId && saved.modelId === checkpoint
+        ? saved
+        : estimateContextUsage(
+            messages.map((m, index) => ({ ...m, createdAt: index })) as unknown as MessageRecord[],
+          );
+    if (!usage) return;
+    const store = useChatRuntimeStore.getState();
+    store.setThreadContextUsage(activeThreadId, usage);
+    store.setContextUsage(usage);
+  }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, runActive]);
 
   return null;
 }
