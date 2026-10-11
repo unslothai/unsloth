@@ -2591,7 +2591,11 @@ def _host_bounded_parking_mib(need_mib: int, backend = None) -> int:
     return max(0, min(int(need_mib), cap))
 
 
-def _rebound_named_parking_budget(cmd: list, budget_mib: int, backend = None) -> Optional[int]:
+def _rebound_named_parking_budget(
+    cmd: list,
+    budget_mib: int,
+    backend = None,
+) -> Optional[int]:
     """Replace the ``--preempt-ram budget_mib`` pair Studio appended to ``cmd`` with the host-bounded
     figure, dropping the pair when that is zero. Returns the budget now in force."""
     bounded = _host_bounded_parking_mib(budget_mib, backend)

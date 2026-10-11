@@ -1202,7 +1202,9 @@ class PreemptionController:
                 participant.measured_at_seq = None
             return self._last_sample_seq
 
-    def note_erased_since(self, recorded_seq: Optional[int], resident: int, reclaimable: int) -> bool:
+    def note_erased_since(
+        self, recorded_seq: Optional[int], resident: int, reclaimable: int
+    ) -> bool:
         """The reading `note_resident` recorded at ``recorded_seq``, less what an erase it
         planned has since freed.
 

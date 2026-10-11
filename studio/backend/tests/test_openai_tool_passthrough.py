@@ -9096,7 +9096,12 @@ class TestApiMonitorProviderAndCompletionStreams:
             '"choices":[{"index":0,"delta":{"role":"assistant","content":null},'
             '"finish_reason":null}]}'
         )
-        lines = [progress % 1024, progress % 2048, 'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}', "data: [DONE]"]
+        lines = [
+            progress % 1024,
+            progress % 2048,
+            'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+            "data: [DONE]",
+        ]
         seen = []
 
         class _Lines(list):
