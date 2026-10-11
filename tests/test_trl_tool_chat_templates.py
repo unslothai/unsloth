@@ -235,8 +235,18 @@ def test_rollout_copy_without_tools_needs_no_family(patched):
     with pytest.raises(ValueError, match = "Unrecognized chat template"):
         _child_accepts(tokenizer, originals)
     handed = module.with_response_parser(tokenizer, False)
-    assert _child_accepts(handed, originals).chat_template == PLAIN
+    child = _child_accepts(handed, originals)
+    assert child.chat_template == PLAIN
     assert _parser(tokenizer) == (None, None)
+    # The worker parses every completion, tools or not.
+    prompt = child.apply_chat_template(
+        [{"role": "user", "content": "hi"}], add_generation_prompt = True, return_dict = False
+    )
+    ids = child("The answer is 12.", add_special_tokens = False)["input_ids"]
+    assert trl_utils.parse_response(child, ids, prefix = prompt) == {
+        "role": "assistant",
+        "content": "The answer is 12.",
+    }
 
 
 def test_rollout_processor_gets_its_tokenizers_parser(patched):

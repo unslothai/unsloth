@@ -374,6 +374,13 @@ def patch_trl_tool_chat_templates():
     return patched
 
 
+_PLAIN_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {"role": {"const": "assistant"}, "content": {"type": "string"}},
+    "x-regex": r"^(?P<content>[\s\S]*)$",
+}
+
+
 def with_response_parser(processing_class, uses_tools):
     """A copy carrying the tool-call parser resolved here, for processes that run TRL without Unsloth: AsyncGRPO's
     rollout worker calls add_response_schema on every run, tools or not, and skips it only when a parser is set."""
@@ -398,13 +405,12 @@ def with_response_parser(processing_class, uses_tools):
     except ValueError:
         if uses_tools:
             return processing_class
-        # Without tools the worker never parses a completion, so any parser satisfies it.
-        attribute = (
-            "response_template"
-            if getattr(trl_module, "_SUPPORTS_RESPONSE_TEMPLATE", False)
-            else "response_schema"
-        )
-        setattr(clone_tokenizer, attribute, {})
+        # Without tools a completion is plain assistant text. The new-style parser falls back to decoding it; the
+        # legacy one needs a schema mapping the whole text to content.
+        if getattr(trl_module, "_SUPPORTS_RESPONSE_TEMPLATE", False):
+            clone_tokenizer.response_template = {}
+        else:
+            clone_tokenizer.response_schema = _PLAIN_RESPONSE_SCHEMA
     # The worker checks the processor itself, while add_response_schema sets the inner tokenizer.
     if clone is not clone_tokenizer:
         for attribute in _PARSER_ATTRIBUTES:
