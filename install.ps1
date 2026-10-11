@@ -3462,7 +3462,7 @@ function Install-UnslothStudio {
 
     function Enable-StudioVirtualTerminal {
         if ($env:NO_COLOR) { return $false }
-        # Redirected stdout (the desktop app's pipe) has no virtual terminal.
+        # A redirected stdout is not a console: the desktop app's pipe has no virtual terminal.
         if ($script:StudioStdoutRedirected) { return $false }
 
         # The console host already enables VT at startup and verifies it, so this property cannot
