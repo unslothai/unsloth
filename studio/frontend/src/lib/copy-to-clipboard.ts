@@ -128,7 +128,6 @@ export async function copyToClipboardFrom(
   }
 }
 
-/** As PNG: the one image type every browser's clipboard takes. */
 export async function asPng(blob: Blob): Promise<Blob> {
   if (blob.type === "image/png") return blob;
   const bitmap = await createImageBitmap(blob);

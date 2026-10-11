@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Desktop only: a file tab opened in another app, as ChatGPT's Open menu does. The app writes the
-// tab's bytes to a local copy first (browser_open_with.rs) and hands back an id for it.
 
 import { NATIVE_FILE_NAME_HEADER, encodeNativeFilename } from "@/lib/native-files";
 
@@ -29,12 +27,10 @@ export function localCopy(blob: Blob, name: string): Promise<LocalCopy> {
     });
   });
   byName.set(name, pending);
-  // A failure is not kept, so the next try writes it again.
   pending.catch(() => byName.delete(name));
   return pending;
 }
 
-/** Run `use` on the copy; one moved or deleted since (say from Finder) is written again and retried. */
 export async function withLocalCopy<T>(blob: Blob, name: string, use: (copy: LocalCopy) => Promise<T>): Promise<T> {
   const pending = localCopy(blob, name);
   try {
@@ -49,12 +45,10 @@ export function openWithApps(id: string): Promise<OpenWithApp[]> {
   return invoke<OpenWithApp[]>("browser_file_apps", { id });
 }
 
-/** With its default app when `app` is omitted. */
 export function openLocalCopy(id: string, app?: string): Promise<void> {
   return invoke<void>("browser_file_open", { id, with: app ?? null });
 }
 
-/** The copy's path, refused once the file is gone so withLocalCopy writes it again. */
 export function localCopyPath(id: string): Promise<string> {
   return invoke<string>("browser_file_path", { id });
 }

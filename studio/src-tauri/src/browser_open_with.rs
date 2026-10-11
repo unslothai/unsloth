@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Url};
 
 const OPEN_DIR: &str = "open-with";
-// Finder's Open With lists a dozen or so; past that the menu stops being a choice.
 #[cfg(target_os = "macos")]
 const MAX_APPS: usize = 12;
 
@@ -53,7 +52,6 @@ pub struct LocalCopy {
 pub struct OpenWithApp {
     path: String,
     name: String,
-    /// A PNG data URL of the app's icon.
     icon: Option<String>,
     default: bool,
 }
@@ -69,8 +67,7 @@ fn copy_path(id: &str) -> Result<PathBuf, String> {
     recall(id).ok_or_else(|| "The file is no longer there.".to_string())
 }
 
-/// Write a tab's file to the app cache and return its id and path. The same bytes and name reuse
-/// one copy; copies from an earlier run are cleared on the first use after launch.
+/// Same bytes and name reuse one copy; an earlier run's copies are cleared on first use.
 #[tauri::command]
 pub async fn browser_file_local_copy(
     webview: tauri::Webview,
@@ -118,7 +115,6 @@ pub async fn browser_file_local_copy(
     })
 }
 
-/// The apps that can open a copy, its default first. Empty where the system can't list them.
 #[tauri::command]
 pub fn browser_file_apps(webview: tauri::Webview, id: String) -> Result<Vec<OpenWithApp>, String> {
     crate::native_intents::ensure_main_window(&webview)?;
@@ -129,7 +125,6 @@ pub fn browser_file_apps(webview: tauri::Webview, id: String) -> Result<Vec<Open
     Ok(platform_apps(&path))
 }
 
-/// Open a copy with its default app, or with `with`, one of the apps listed for it.
 #[tauri::command]
 pub fn browser_file_open(
     webview: tauri::Webview,
@@ -138,7 +133,6 @@ pub fn browser_file_open(
 ) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&webview)?;
     let path = copy_path(&id)?;
-    // As for downloads: programs and scripts stay a Show in folder away.
     if crate::browser_downloads::runs_code(&path) {
         return Err("Programs and scripts open from their folder.".to_string());
     }
@@ -190,7 +184,6 @@ fn platform_apps(path: &Path) -> Vec<OpenWithApp> {
     use objc2_app_kit::NSWorkspace;
 
     let (mut apps, default) = app_paths(path);
-    // The default first, as Finder's Open With lists it.
     if let Some(default) = &default {
         if let Some(at) = apps.iter().position(|app| app == default) {
             let app = apps.remove(at);
@@ -215,7 +208,6 @@ fn platform_apps(path: &Path) -> Vec<OpenWithApp> {
         .collect()
 }
 
-/// The app's icon drawn at menu size, as a PNG data URL.
 #[cfg(target_os = "macos")]
 fn app_icon(workspace: &objc2_app_kit::NSWorkspace, app: &str) -> Option<String> {
     use base64::Engine;
@@ -228,7 +220,6 @@ fn app_icon(workspace: &objc2_app_kit::NSWorkspace, app: &str) -> Option<String>
     let icon = workspace.iconForFile(&NSString::from_str(app));
     let size = NSSize::new(32.0, 32.0);
     let image = NSImage::initWithSize(NSImage::alloc(), size);
-    // An icon holds every size up to 1024 px; drawing one at 32 pt keeps just that (2x on Retina).
     #[allow(deprecated)]
     image.lockFocus();
     icon.drawInRect_fromRect_operation_fraction(
@@ -271,7 +262,6 @@ fn open_with(path: &Path, with: &str) -> Result<(), String> {
         .map_err(|error| format!("Couldn't open the file: {error}"))
 }
 
-// Windows and Linux open with the default app only for now.
 #[cfg(not(target_os = "macos"))]
 fn platform_apps(_path: &Path) -> Vec<OpenWithApp> {
     Vec::new()

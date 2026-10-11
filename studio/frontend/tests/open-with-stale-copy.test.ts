@@ -8,8 +8,6 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-// The desktop side as browser_open_with.rs has it: each call writes the copy, and an id whose file
-// was moved away (dragged out of Finder) answers "The file is no longer there."
 const onDisk = new Set<string>();
 const calls: string[] = [];
 (globalThis as { window?: unknown }).window = {

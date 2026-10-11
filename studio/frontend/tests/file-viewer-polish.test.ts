@@ -25,7 +25,6 @@ test("audio reads as ai-speech everywhere and Text to Speech as text-to-speech",
 
 test("a picture sits where fit puts it before it is measured, so opening it never jumps", () => {
   const zoom = read("components/media-zoom.tsx");
-  // `inset` would be cleared after `left` is set once measured, dropping the picture to the left edge.
   assert.doesNotMatch(zoom, /\{ inset: 0 \}/);
   assert.match(zoom, /left: inset\.left,\s*top: inset\.top,\s*width: `calc\(100% - \$\{inset\.left \+ inset\.right\}px\)`/);
 });
@@ -57,7 +56,6 @@ test("video tabs share the document bar: Copy and Open splits and a download ico
   assert.match(panel, /return kind === "html" \|\| kind === "code";\n\}/);
   assert.match(panel, /<CopySplit tab=\{tab\} entry=\{entry\} blob=\{blob\}/);
   assert.match(panel, /<OpenSplit key=\{entry\.fileId\} entry=\{entry\} blob=\{blob\} \/>/);
-  // A clip or a track has no zoom and nothing to mark.
   assert.match(panel, /const timed = media === "video" \|\| media === "audio";/);
   assert.match(panel, /\{timed \? null : \(\s*<ScaleMenu/);
 });
@@ -68,7 +66,6 @@ test("the desktop Open lists apps, opens a local copy, and never opens programs"
   assert.match(openWith, /"browser_file_local_copy"/);
   const panel = read("features/browser/browser-panel.tsx");
   assert.match(panel, /const runsCode = isDangerousDownload\(entry\.name\);/);
-  // Copy path revalidates the copy like Open does, so a moved or deleted one is written again.
   assert.match(panel, /withLocalCopy\(blob, entry\.name, \(copy\) => localCopyPath\(copy\.id\)\)/);
   const rust = readFileSync(new URL("../../src-tauri/src/browser_open_with.rs", import.meta.url), "utf8");
   assert.match(rust, /if crate::browser_downloads::runs_code\(&path\) \{\s*return Err/);

@@ -76,8 +76,7 @@ export const StarPointedIcon: IconSvgElement = [
   ],
 ];
 
-// Hugeicons "ai-speech" and "text-to-speach" (MIT), only in core-free-icons 4.3+, newer than the
-// pinned 4.1.1. Audio anywhere is ai-speech; Text to Speech is text-to-speach.
+// Hugeicons "ai-speech" and "text-to-speach" (MIT), only in core-free-icons 4.3+, newer than the pinned 4.1.1.
 const speechStroke = {
   stroke: "currentColor",
   strokeLinecap: "round",

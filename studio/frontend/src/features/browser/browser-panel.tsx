@@ -2081,7 +2081,6 @@ function FloatingFileToolbar({
   );
 }
 
-// The pill shades as one on hover and while its menu is open; its halves add no shade of their own.
 const SPLIT_PILL = cn(
   PILL,
   "flex h-9 shrink-0 items-center rounded-full",
@@ -2102,7 +2101,6 @@ function SplitChevron() {
 
 type FileEntry = Extract<BrowserEntry, { kind: "file" }>;
 
-/** Copy, with the other ways to copy the file behind its chevron, as ChatGPT has it. */
 function CopySplit({
   tab,
   entry,
@@ -2203,8 +2201,6 @@ function AppIcon({ app }: { app: OpenWithApp }) {
   );
 }
 
-/** Open, as ChatGPT has it: the desktop app opens the file in its default app, with every app that
- *  can open it, its folder and a new chat behind the chevron; the web opens a browser tab. */
 function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }) {
   const t = useT();
   const navigate = useNavigate();
@@ -2214,7 +2210,6 @@ function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }
   const runsCode = isDangerousDownload(entry.name);
   const tabType = isTauri ? null : browserTabType(entry.name, entry.contentType || blob?.type || "");
   const failed = () => toast.error(t("browser.file.openFailed", { name: entry.name }));
-  // Fetched as the pointer nears the button, so the default app's icon is there by the click.
   const listApps = () => {
     if (!isTauri || !blob || runsCode || listing.current) return;
     listing.current = true;
