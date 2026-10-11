@@ -560,9 +560,9 @@ class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
 
     @pytest.fixture(autouse = True)
     def _reset_probe_rate_limit(self):
-        runs._park_probe_at[0] = None
+        runs._park_probe_last.clear()
         yield
-        runs._park_probe_at[0] = None
+        runs._park_probe_last.clear()
 
     class _Backend:
         """A swap build that parks in silence and has never been asked, so it has no stamp."""
@@ -609,12 +609,23 @@ class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
         backend = self._Backend()
         monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
         assert runs._server_park_excused_recently() is True
-        # A short lease drives the renewal cadence to 0.25s; the floor keeps that off /metrics.
-        assert runs._server_park_excused_recently() is False
+        # A short lease drives the renewal cadence to 0.25s; the floor keeps that off /metrics,
+        # and a run inside it gets the answer just read, not a refusal that lets its lease lapse.
+        assert runs._server_park_excused_recently() is True
         assert backend.asked == 1
-        runs._park_probe_at[0] = time.monotonic() - runs._PARK_PROBE_MIN_INTERVAL_S - 0.1
+        at, answer = runs._park_probe_last[backend]
+        runs._park_probe_last[backend] = (at - runs._PARK_PROBE_MIN_INTERVAL_S - 0.1, answer)
         assert runs._server_park_excused_recently() is True
         assert backend.asked == 2
+
+    def test_a_probe_on_one_server_does_not_starve_another(self, monkeypatch):
+        first, second = self._Backend(), self._Backend()
+        routed = [first]
+        monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: routed[0])
+        assert runs._server_park_excused_recently() is True
+        routed[0] = second
+        assert runs._server_park_excused_recently() is True
+        assert (first.asked, second.asked) == (1, 1)
 
     def test_the_probe_stays_off_the_event_loop(self):
         """It blocks on one HTTP GET, so the silent branch must keep reaching it via to_thread."""

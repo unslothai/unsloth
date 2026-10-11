@@ -3,6 +3,7 @@
 
 """A park before the first token is waited out on its keepalives, but only up to the park cap."""
 
+import asyncio
 import itertools
 import time
 
@@ -48,3 +49,40 @@ def test_a_park_that_resumes_inside_the_cap_still_answers():
     data = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
     chunks = [": preempted 1\n\n"] + [": preempt-keepalive\n\n"] * 5 + [": resumed 1\n\n", data]
     assert "".join(_read(chunks)).endswith(data)
+
+
+class TestARawRelayParkedAfterItsFirstToken:
+    """The async relay sees each keepalive as an item; only the park cap may renew on them."""
+
+    @staticmethod
+    async def _relay(items, monkeypatch, cap):
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", cap)
+
+        async def upstream():
+            for item in items:
+                await asyncio.sleep(0.01)
+                yield item
+
+        seen = []
+        async for item in inference._aiter_llama_stream_items(
+            upstream(),
+            first_token_deadline = time.monotonic() + 30.0,
+            post_first_item_read_timeout_s = 0.1,
+        ):
+            seen.append(item)
+        return seen
+
+    def test_a_wedged_park_times_out(self, monkeypatch):
+        items = ['data: {"choices":[{"delta":{"content":"a"}}]}', ": preempted"]
+        items += [": preempt-keepalive"] * 300 + ["never sent"]
+
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(self._relay(items, monkeypatch, cap = 0.3))
+
+    def test_a_park_inside_the_cap_still_answers(self, monkeypatch):
+        items = ['data: {"choices":[{"delta":{"content":"a"}}]}', ": preempted"]
+        items += [": preempt-keepalive"] * 5 + [": resumed", 'data: {"choices":[{"delta":{"content":"b"}}]}']
+        seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0))
+        assert seen[-1].endswith('"b"}}]}')

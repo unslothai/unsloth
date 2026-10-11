@@ -12,6 +12,7 @@ import math
 import os
 import threading
 import time
+import weakref
 from typing import Any, AsyncIterator
 
 from starlette.requests import Request
@@ -512,13 +513,15 @@ def _renew_interval_seconds() -> float:
 # The floor between two live `/metrics` probes. The renewal cadence derives from the lease and
 # reaches 0.25s for a very short one, which would turn a silent park into four scrapes a second.
 _PARK_PROBE_MIN_INTERVAL_S = 5.0
-# Last live probe, monotonic. Module level rather than per run: the answer is server wide, so one
-# scrape serves every silent run, and a mutable holder keeps this importable from a worker thread.
-_park_probe_at: list = [None]
+# Last live probe per backend: (monotonic time, answer). One scrape serves every silent run on
+# that server, and each run inside the interval gets the answer rather than a refusal; keyed by
+# backend, so a run on another model's server is never starved of its own reading.
+_park_probe_last: "weakref.WeakKeyDictionary[Any, tuple]" = weakref.WeakKeyDictionary()
+_park_probe_lock = threading.Lock()
 
 
 def _server_park_probe_now(backend: Any) -> bool:
-    """Ask `/metrics` ourselves whether a slot is parked right now, rate limited across runs.
+    """Ask `/metrics` ourselves whether a slot is parked right now, rate limited per backend.
 
     The read wrapper only asks at its read deadline, and before the first token that deadline IS the
     20 minute first-token budget, so waiting for its stamp lets the sweeper cancel a healthy
@@ -532,11 +535,14 @@ def _server_park_probe_now(backend: Any) -> bool:
     if not callable(probe):
         return False
     now = time.monotonic()
-    last = _park_probe_at[0]
-    if last is not None and now - last < _PARK_PROBE_MIN_INTERVAL_S:
-        return False
-    _park_probe_at[0] = now
-    return bool(probe())
+    with _park_probe_lock:
+        last = _park_probe_last.get(backend)
+        if last is not None and now - last[0] < _PARK_PROBE_MIN_INTERVAL_S:
+            return last[1]
+    answer = bool(probe())
+    with _park_probe_lock:
+        _park_probe_last[backend] = (now, answer)
+    return answer
 
 
 def _server_park_excused_recently() -> bool:

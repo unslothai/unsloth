@@ -5065,8 +5065,18 @@ async def _aiter_llama_stream_items(
                 # Before yielding, not before the next read: the consumer may sit
                 # on this item while the first-token deadline is still armed.
                 _set_stream_response_read_timeout(response, _post_first_timeout_s())
-            last_item_at = time.monotonic()
-            park_since = None
+            notice = None if last_item_at is None else _server_park_sse(item)
+            now = time.monotonic()
+            if notice in (_OPENAI_PREEMPT_SSE_PAUSED, _OPENAI_PREEMPT_SSE_KEEPALIVE):
+                # Parked after its first token: the keepalives say it is alive, but only up to
+                # the park cap, or a wedged park would hold the relay open for ever.
+                if park_since is None:
+                    park_since = now
+                if now - park_since < _RAW_PARK_STALL_CAP_S:
+                    last_item_at = now
+            else:
+                last_item_at = now
+                park_since = None
             if park_above is not None:
                 # `aiter_lines` strips the newline the notices are matched on.
                 park_above.feed_line(item)

@@ -449,6 +449,8 @@ export type ContinuationRequest = {
   providerCompactionProviderType?: string;
   providerCompactionModelId?: string;
   providerCompactionConnectionKey?: string;
+  /** The answer being continued was re-prefilled after a park, so the joined answer was too. */
+  preemptRecomputed?: boolean;
 };
 
 type ProviderCompactionContinuationFields = Pick<
@@ -526,6 +528,7 @@ export function readContinuationRequest(
         providerCompactionProviderType?: unknown;
         providerCompactionModelId?: unknown;
         providerCompactionConnectionKey?: unknown;
+        preemptRecomputed?: unknown;
       }
     | undefined;
   const partial = typeof request?.partial === "string" ? request.partial : "";
@@ -565,7 +568,20 @@ export function readContinuationRequest(
     ...(answerParts.length > 0 ? { answerParts } : {}),
     ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
     ...providerCompactionFields(request),
+    ...preemptRecomputedField(request),
   };
+}
+
+function preemptRecomputedField(value: unknown): { preemptRecomputed?: true } {
+  return (value as { preemptRecomputed?: unknown } | undefined)?.preemptRecomputed === true
+    ? { preemptRecomputed: true }
+    : {};
+}
+
+/** Whether a message's answer was re-prefilled after a park, as its metadata records it. */
+export function readPreemptRecomputed(metadata: unknown): boolean {
+  return preemptRecomputedField((metadata as { custom?: unknown } | undefined)?.custom)
+    .preemptRecomputed === true;
 }
 
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.

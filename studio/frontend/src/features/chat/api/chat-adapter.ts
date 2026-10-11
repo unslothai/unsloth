@@ -5898,7 +5898,9 @@ export function createOpenAIStreamAdapter(
       let contextTruncation: OpenAIChatChunk["context_truncated"];
       // The server re-prefilled this answer after a park it could not hold: persisted with the
       // message, so the chip's note survives a reload and follows the thread's last answer.
-      let sawPreemptRecompute = false;
+      // Seeded from the answer this continues, so a later round that was not recomputed does
+      // not clear it off the joined answer.
+      let sawPreemptRecompute = continuation?.preemptRecomputed === true;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
