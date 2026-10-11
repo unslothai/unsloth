@@ -110,6 +110,8 @@ def MistralAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # The cache passed in, before past_key_value becomes the one returned (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
     sw_cfg = getattr(self.config, "sliding_window", None)
@@ -124,7 +126,7 @@ def MistralAttention_fast_forward(
     window_size = (-1, -1) if (kv_seq_len <= sw) else (sw - 1, sw - 1)
 
     # Packed rows always take varlen: dense flash would let a document attend into the one before it.
-    use_varlen = seq_info is not None and past_key_value is None
+    use_varlen = seq_info is not None and not had_cache
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
         backend = backend,

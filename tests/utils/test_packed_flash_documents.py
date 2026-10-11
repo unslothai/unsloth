@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Mistral with a sliding window on the flash-attn path: packed documents stay apart, and the window
-matches transformers' (k > q - sliding_window) on every backend."""
+"""Packed rows on Unsloth's own models keep their documents apart on the flash-attn path, in training and
+in eval (where use_cache stays on), and Mistral's window matches transformers' (k > q - sliding_window)."""
 
 import pytest
 import torch
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 pytestmark = pytest.mark.skipif(
-    not has_real_cuda(), reason = "Unsloth's Mistral forward needs a CUDA device"
+    not has_real_cuda(), reason = "Unsloth's model forwards need a CUDA device"
 )
 
 WINDOW = 4
@@ -100,13 +100,17 @@ def _logits(model, ids, **kwargs):
         return model(input_ids = ids, **kwargs).logits.float()
 
 
-@pytest.fixture
-def fake_flash(monkeypatch):
+def _use_fake_flash(monkeypatch):
     from unsloth.utils import attention_dispatch as ad
 
     monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", True)
     monkeypatch.setattr(ad, "flash_attn_func", _flash_attn_func)
     monkeypatch.setattr(ad, "flash_attn_varlen_func", _flash_attn_varlen_func)
+
+
+@pytest.fixture
+def fake_flash(monkeypatch):
+    _use_fake_flash(monkeypatch)
 
 
 def test_packed_documents_do_not_attend_across_each_other(model, fake_flash):
@@ -138,12 +142,15 @@ def test_flash_window_matches_sdpa(model, monkeypatch):
 
 
 @pytest.mark.parametrize("window", [WINDOW, None])
-def test_packed_eval_keeps_documents_apart(model, window):
+@pytest.mark.parametrize("flash", [False, True])
+def test_packed_eval_keeps_documents_apart(model, monkeypatch, window, flash):
     # Eval builds a causal mask over the whole row unless the row is packed (padding-free eval batches are).
     torch.manual_seed(2)
     docs = [torch.randint(5, 100, (n,), device = "cuda") for n in LENGTHS]
     packed = torch.cat(docs)[None]
     position_ids = torch.cat([torch.arange(n, device = "cuda") for n in LENGTHS])[None]
+    if flash:
+        _use_fake_flash(monkeypatch)
     model.config.sliding_window = window
     model.eval()
     try:
@@ -151,10 +158,44 @@ def test_packed_eval_keeps_documents_apart(model, window):
             model,
             packed,
             position_ids = position_ids,
+            use_cache = True,
             packed_seq_lengths = torch.tensor(LENGTHS, dtype = torch.int32),
         )
         alone = torch.cat([_logits(model, d[None]) for d in docs], dim = 1)
     finally:
         model.config.sliding_window = WINDOW
         model.train()
+    torch.testing.assert_close(out, alone, atol = 2e-2, rtol = 2e-2)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        "trl-internal-testing/tiny-Qwen3ForCausalLM",
+    ],
+)
+def test_packed_eval_with_cache_keeps_documents_apart_on_flash(name, monkeypatch):
+    # Eval returns a cache, which must not turn a packed row into one dense flash call.
+    from unsloth import FastLanguageModel
+
+    try:
+        other, _ = FastLanguageModel.from_pretrained(
+            model_name = name, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16
+        )
+    except OSError as exc:  # pragma: no cover - offline CI
+        pytest.skip(f"Requires access to {name}: {exc}")
+    _use_fake_flash(monkeypatch)
+    other.eval()
+    torch.manual_seed(3)
+    vocab = other.config.vocab_size
+    docs = [torch.randint(5, min(vocab, 100), (n,), device = "cuda") for n in LENGTHS]
+    out = _logits(
+        other,
+        torch.cat(docs)[None],
+        position_ids = torch.cat([torch.arange(n, device = "cuda") for n in LENGTHS])[None],
+        use_cache = True,
+        packed_seq_lengths = torch.tensor(LENGTHS, dtype = torch.int32),
+    )
+    alone = torch.cat([_logits(other, d[None], use_cache = True) for d in docs], dim = 1)
     torch.testing.assert_close(out, alone, atol = 2e-2, rtol = 2e-2)
