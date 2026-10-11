@@ -91,9 +91,7 @@ DRAFTER_CASES = [
     ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
     ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
     ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
-    # DSpark drafters named <model>-dspark-<quant>.gguf (prism-ml Bonsai, and the
-    # third-party DSpark GGUFs such as Anbeeld/Qwen3.6-27B-DSpark-GGUF). Only a quant
-    # may follow the kind: a family name that carries it goes on, and is the model.
+    # <model>-dspark-<quant>.gguf drafters; a name going on past the kind is the model.
     ("Ternary-Bonsai-27B-dspark-Q4_1.gguf", True),
     ("Bonsai-27B-dspark-bf16.gguf", True),
     ("Qwen3.6-27B-DSpark-Q4_K_M.gguf", True),
@@ -198,8 +196,7 @@ BONSAI_FILES = [
 
 
 def test_bonsai_dspark_drafter_is_not_a_variant():
-    # prism-ml/Bonsai-27B-gguf ships its DSpark drafter beside the model. Offered as
-    # a Q4_1 quant it was the smallest row, and llama-server cannot load it as a model.
+    # #11259: the drafter was the smallest row, and llama-server cannot load it as a model.
     plans = build_gguf_variant_plans(
         [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(BONSAI_FILES)]
     )
