@@ -204,9 +204,7 @@ export const MERGED_FORMATS: MergedFormatOption[] = [
 ];
 
 /** Look up a merged format option by its stable value. */
-export function findMergedFormat(
-  value: string,
-): MergedFormatOption | undefined {
+export function findMergedFormat(value: string): MergedFormatOption | undefined {
   return MERGED_FORMATS.find((f) => f.value === value);
 }
 
@@ -352,6 +350,7 @@ export const GUIDE_STEPS = [
   "Click Export and choose your destination",
   "Test your model and compare outputs in Chat",
 ];
+
 
 /** A null value means unverified (e.g. full_state without a weight probe). */
 export interface AdapterFeatures {
