@@ -284,9 +284,12 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
                 for name in quantized
                 if not _FORK_ONLY_QUANT_RE.match(extract_quant_token(name))
             ]
-            # An explicit group size (Q2_g64) is the pack mainline reads; the plain Q2_0 beside it is the fork's group-128 one.
+            # Beside a fork-only pack, an explicit group size (Q2_g64) is the pack mainline reads; the plain Q2_0 is the fork's group-128 one.
             grouped = [
-                name for name in loadable if _GROUPED_QUANT_RE.search(extract_quant_token(name))
+                name
+                for name in loadable
+                if len(loadable) < len(quantized)
+                and _GROUPED_QUANT_RE.search(extract_quant_token(name))
             ]
             filename = next(iter(grouped or loadable or quantized), filename)
         return filename

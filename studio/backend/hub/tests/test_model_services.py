@@ -548,6 +548,8 @@ def test_pick_best_gguf_skips_fork_only_packs_when_a_loadable_quant_exists():
         )
         == "Ternary-Bonsai-27B-Q2_g64.gguf"
     )
+    # Without a fork-only pack the first-listed fallback stands.
+    assert gguf.pick_best_gguf(["m-Q4_0.gguf", "m-Q2_g64.gguf", "m-F16.gguf"]) == "m-Q4_0.gguf"
     # Ternary-Bonsai-2-27B has nothing else quantized; its F16 needs the fork too, so keep the pack.
     assert (
         gguf.pick_best_gguf(
