@@ -85,8 +85,24 @@ def test_a_quota_caps_the_default(monkeypatch):
 
 def test_other_platforms_never_read_cgroups(monkeypatch):
     _host(monkeypatch, cpus = 10, platform = "darwin")
+    monkeypatch.setattr(bk, "_apple_performance_cores", lambda: None)
     monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda: pytest.fail("no cgroups off Linux"))
     assert bk._default_threads() == 5
+
+
+@pytest.mark.parametrize("cpus, p_cores", [(3, 3), (10, 8), (16, 12), (10, 4)])
+def test_macos_uses_the_performance_core_count_not_half_the_cores(monkeypatch, cpus, p_cores):
+    # Apple Silicon has no SMT: halving os.cpu_count() gave 1 thread on a 3-core VM and 5 on an 8P+2E M1 Pro.
+    _host(monkeypatch, cpus = cpus, platform = "darwin")
+    monkeypatch.setattr(bk, "_apple_performance_cores", lambda: p_cores)
+    assert bk._default_threads() == p_cores
+    monkeypatch.setenv("UNSLOTH_CPU_THREADS", "2")
+    assert bk._default_threads() == 2
+
+
+def test_apple_performance_cores_is_none_off_macos(monkeypatch):
+    monkeypatch.setattr(bk.sys, "platform", "linux")
+    assert bk._apple_performance_cores() is None
 
 
 @pytest.mark.parametrize("value, expected", [("12", 12), ("0", 4), ("x", 4), ("", 4), ("-3", 4)])

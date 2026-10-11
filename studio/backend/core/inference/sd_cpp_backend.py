@@ -279,14 +279,39 @@ def _cgroup_cpu_limit(
         path = os.path.dirname(path)
 
 
+def _apple_performance_cores() -> Optional[int]:
+    """Performance-core count on macOS (``hw.perflevel0.physicalcpu``, else ``hw.physicalcpu``), None elsewhere
+    or when sysctl cannot answer. Apple Silicon has no SMT, so ``os.cpu_count() // 2`` undercounts it: 1 thread
+    on a 3-core VM, 5 on a 10-core M1 Pro with 8 performance cores. sd.cpp's own default reads the same sysctl."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib")
+        for name in (b"hw.perflevel0.physicalcpu", b"hw.physicalcpu"):
+            value = ctypes.c_int(0)
+            size = ctypes.c_size_t(ctypes.sizeof(value))
+            if libc.sysctlbyname(name, ctypes.byref(value), ctypes.byref(size), None, ctypes.c_size_t(0)) == 0 and value.value > 0:
+                return int(value.value)
+    except Exception:  # noqa: BLE001 -- fall back to the generic default
+        return None
+    return None
+
+
 def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else ``os.cpu_count() // 2`` capped by the cgroup quota ``os.cpu_count()`` ignores."""
+    """``UNSLOTH_CPU_THREADS``, else the performance-core count on macOS, else ``os.cpu_count() // 2`` capped by
+    the cgroup quota ``os.cpu_count()`` ignores."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
         configured = 0
     if configured > 0:
         return configured
+    performance_cores = _apple_performance_cores()
+    if performance_cores:
+        return performance_cores
     cpu = os.cpu_count()
     threads = cpu // 2 if cpu else 8
     limit = _cgroup_cpu_limit() if sys.platform.startswith("linux") else None
