@@ -160,8 +160,12 @@ def test_a_managed_accounts_load_cannot_override_exact_concurrency():
         token = bind_account(account)
         try:
             return inference._gguf_request_intent(
-                source, request, chat_template_override = None, extra_args = None,
-                gpu_ids = None, n_parallel = 1,
+                source,
+                request,
+                chat_template_override = None,
+                extra_args = None,
+                gpu_ids = None,
+                n_parallel = 1,
             )
         finally:
             reset_account(token)
