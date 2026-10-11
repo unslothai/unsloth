@@ -3202,9 +3202,26 @@ def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None
             tokens = int(getattr(lease, "tokens", 0) or 0),
             state = ParticipantState.STREAMING_RAW,
         )
+        _plan_for_unpausable_holder(controller, gen_id)
     except Exception:
         # Bookkeeping must never fail a request that is otherwise fine.
         logger.debug("could not count the raw holder", exc_info = True)
+
+
+def _plan_for_unpausable_holder(controller, gen_id: str) -> None:
+    """Make room for a holder that cannot be paused, before its request goes upstream.
+
+    Registering it only adds its charge: a chat that has outgrown its optimistic lease is
+    still booked at the stale figure until its next token report, 32 tokens away, and the raw
+    prefill can fill the cache in between. Read afresh and plan now, as arming a chat does."""
+    _refresh_residency_before_planning(controller)
+    victims = controller.plan_preemptions(needed = 0)
+    if victims:
+        _llama_preemption_log(
+            "raw-holder-plan",
+            gen_id = gen_id,
+            preempted = ",".join(v.gen_id for v in victims),
+        )
 
 
 def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Optional[str]:
@@ -3221,11 +3238,13 @@ def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Option
         ):
             return None
         gen_id = f"cmpl-holder-{uuid.uuid4().hex}"
-        get_preemption_controller(_preempt_key(llama_backend)).register(
+        controller = get_preemption_controller(_preempt_key(llama_backend))
+        controller.register(
             gen_id,
             tokens = max(1, len(str(prompt_text or "")) // 4),
             state = ParticipantState.STREAMING_RAW,
         )
+        _plan_for_unpausable_holder(controller, gen_id)
         return gen_id
     except Exception:
         logger.debug("could not count the completions holder", exc_info = True)
