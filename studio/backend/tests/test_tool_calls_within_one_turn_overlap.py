@@ -245,6 +245,42 @@ class TestOrderIsStillTheModelsOrder:
         assert [row.get("content") for row in tool_rows] == ["RESULT<alpha>", "RESULT<beta>"]
 
 
+    def test_a_repeated_call_behind_a_running_one_answers_after_it_on_a_results_only_transport(
+        self, rendezvous, monkeypatch
+    ):
+        """Anthropic continues from tool results matched to the calls by position."""
+        monkeypatch.setattr(
+            loop_mod, "execute_tool", lambda name, arguments, **kw: f"R<{arguments['query']}>"
+        )
+
+        def call(index, ident, query):
+            args = json.dumps({"query": query})
+            return {"index": index, "id": ident, "function": {"name": "web_search", "arguments": args}}
+
+        transport = FakeTransport(
+            [
+                [_sse({"tool_calls": [call(0, "r1_0", "seen")]}), _sse(finish = "tool_calls"), _DONE],
+                [
+                    _sse({"tool_calls": [call(0, "r2_0", "fresh"), call(1, "r2_1", "seen")]}),
+                    _sse(finish = "tool_calls"),
+                    _DONE,
+                ],
+                [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            ],
+            heals = False,
+        )
+        transport.tool_result_only_continuation = True
+        _run(transport, tools = [WEB], max_calls = _UNLIMITED)
+        calls, results = [], []
+        for row in transport.requests[2]["messages"]:
+            if row.get("role") == "assistant":
+                calls += [c.get("id") for c in row.get("tool_calls") or []]
+            if row.get("role") == "tool":
+                results.append(row.get("tool_call_id"))
+        second = [c for c in calls if str(c).startswith("r2_")]
+        assert [r for r in results if str(r).startswith("r2_")] == second, (calls, results)
+
+
 def _fast_sizing(monkeypatch):
     monkeypatch.setattr(
         llama_mod.LlamaCppBackend,
