@@ -509,3 +509,37 @@ def test_text_path_load_still_catches_a_diffusion_model():
     chat_src = inspect.getsource(inference_mod.InferenceBackend.load_model)
     tail = chat_src[chat_src.rindex("FastLanguageModel.for_inference(model)") :]
     assert "loaded_diffusion_profile(model)" in tail.split("raise_if_offloaded")[0]
+
+
+@pytest.mark.parametrize(
+    "architecture",
+    [
+        "LLaDAModelLM",
+        "LLaDAMoEModelLM",
+        "DreamModel",
+        "NemotronLabsDiffusionModel",
+        "LLaDA2MoeModelLM",
+        "SDARForCausalLM",
+        "DiffusionGemmaForBlockDiffusion",
+    ],
+)
+def test_text_diffusion_checkpoints_use_the_550_transformers_tier(tmp_path, architecture):
+    from utils.transformers_version import get_transformers_tier
+
+    folder = tmp_path / architecture
+    folder.mkdir()
+    (folder / "config.json").write_text(
+        json.dumps({"architectures": [architecture], "model_type": "x"})
+    )
+    assert get_transformers_tier(str(folder), probe = False) == "550"
+
+
+def test_autoregressive_nemotron_keeps_its_tier(tmp_path):
+    from utils.transformers_version import get_transformers_tier
+
+    folder = tmp_path / "nemotron"
+    folder.mkdir()
+    (folder / "config.json").write_text(
+        json.dumps({"architectures": ["NemotronForCausalLM"], "model_type": "nemotron"})
+    )
+    assert get_transformers_tier(str(folder), probe = False) != "550"

@@ -353,6 +353,15 @@ _TRANSFORMERS_510_MODEL_TYPES: set[str] = {
 # Architecture classes / model_type values requiring transformers 5.5.0 (via config.json).
 _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "DiffusionGemmaForBlockDiffusion",
+    # Remote-code text-diffusion LMs: their tokenizers are 5.x-only, and 5.3.0 lacks helpers their code imports
+    # (Nemotron-Labs-Diffusion needs transformers.utils.generic.check_model_inputs). Matched by architecture,
+    # since Nemotron-Labs-Diffusion shares model_type "nemotron" with the autoregressive Nemotron models.
+    "LLaDAModelLM",
+    "LLaDAMoEModelLM",
+    "DreamModel",
+    "NemotronLabsDiffusionModel",
+    "LLaDA2MoeModelLM",
+    "SDARForCausalLM",
     "Gemma4ForConditionalGeneration",
     "KimiK3ForConditionalGeneration",
     "LocateAnythingForConditionalGeneration",
