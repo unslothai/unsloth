@@ -299,6 +299,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/FLUX.2-klein-4B-FP8"),
         ),
         aliases = ("flux2-klein",),
+        # A local ComfyUI file has no card tag, so without these a 9B pick got the 4B base and was refused.
+        named_variant_bases = (
+            "black-forest-labs/FLUX.2-klein-9B",
+            "black-forest-labs/FLUX.2-klein-base-9B",
+            "black-forest-labs/FLUX.2-klein-base-4B",
+        ),
         # Train the undistilled bases, then preview their adapters on the matching 4-step models. Both vendor ids
         # resolve through the ungated mirrors at fetch time.
         trainable = True,

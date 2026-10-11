@@ -764,7 +764,7 @@
 
 /* Lift the dark composer slightly; flavor cards sit close to the page. */
 :root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette].dark
-	:is(.chat-composer-surface, .unsloth-composer-surface) {
+	:is(.chat-composer-surface, .unsloth-composer-surface, .unsloth-files-panel) {
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
@@ -1876,6 +1876,11 @@ html.force-reduced-motion *::after {
 	animation-iteration-count: 1 !important;
 	transition-duration: 0.01ms !important;
 	scroll-behavior: auto !important;
+}
+
+/* Same popup exemption as the OS-level media block below. */
+html.force-reduced-motion [data-radix-popper-content-wrapper] {
+	transition-property: none !important;
 }
 
 /* Same loader exceptions as the OS-level media block below: freezing
@@ -5068,6 +5073,14 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	display: none;
 }
 
+.media-lightbox-overlay {
+	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 7%) 64%, transparent);
+}
+
+.dark .media-lightbox-overlay {
+	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 45%) 78%, transparent);
+}
+
 /* Video tabs: the clip sits on a soft brand-tinted band. */
 .browser-video-band {
 	background:
@@ -5566,6 +5579,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		scroll-behavior: auto !important;
 	}
 
+	/* The duration above turns on transitions everywhere (transition-property defaults to all), so
+	   Radix moving a popup from its parking spot to its anchor became a one-frame slide in WebKit. */
+	html:not(.force-motion) [data-radix-popper-content-wrapper] {
+		transition-property: none !important;
+	}
+
 	html:not(.force-motion) .animate-spin {
 		animation-duration: 1.5s !important;
 		animation-iteration-count: infinite !important;
@@ -6031,6 +6050,15 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	padding-top: var(--browser-file-toolbar-inset);
 }
 
+.browser-file-page .browser-video {
+	padding-top: var(--browser-file-toolbar-inset);
+}
+
+/* Full screen leaves the bar behind, and the UA sheet keeps padding, so drop the inset there. */
+.browser-file-page .browser-video:fullscreen {
+	padding-top: 0;
+}
+
 /* Dark mode: the browser's tabs and controls a step lighter than the panel, their text brighter. */
 .dark .browser-chrome {
 	--accent: color-mix(in oklab, var(--accent-base), white 7%);
@@ -6050,4 +6078,126 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 .browser-annotating,
 .browser-annotating *:not([data-annotate-ui], [data-annotate-ui] *) {
   cursor: none !important;
+}
+
+/* macOS: backgrounds around a browser page skip its rect (`--native-hole-*`, viewport px), so the
+   native page under the app's webview shows through. Not inherited: moving the hole restyles only
+   the holed nodes. */
+@property --native-hole-x {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-y {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-w {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-h {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-bg {
+	syntax: "*";
+	inherits: false;
+}
+
+[data-native-hole] {
+	--native-hole-fill: linear-gradient(var(--native-hole-bg), var(--native-hole-bg));
+	background-color: transparent !important;
+	background-image: var(--native-hole-fill), var(--native-hole-fill), var(--native-hole-fill), var(--native-hole-fill) !important;
+	background-attachment: fixed !important;
+	background-repeat: no-repeat !important;
+	background-position:
+		0 0,
+		0 calc(var(--native-hole-y) + var(--native-hole-h)),
+		0 var(--native-hole-y),
+		calc(var(--native-hole-x) + var(--native-hole-w)) var(--native-hole-y) !important;
+	background-size:
+		100% var(--native-hole-y),
+		100% max(0px, calc(100% - var(--native-hole-y) - var(--native-hole-h))),
+		var(--native-hole-x) var(--native-hole-h),
+		max(0px, calc(100% - var(--native-hole-x) - var(--native-hole-w))) var(--native-hole-h) !important;
+}
+
+.unsloth-files-panel {
+	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-4 pb-6;
+	container: files-panel / inline-size;
+	font-family: var(--font-sans);
+	background-color: #ffffff;
+	/* Light mode: a flat 1px edge, about #dbdbdb on white, no shadow. */
+	border: 1px solid rgb(0 0 0 / calc(0.14 * var(--contrast-edge-gain, 1)));
+	transition: box-shadow 0.1s, border-color 0.1s;
+}
+.dark .unsloth-files-panel {
+	background-color: var(--card);
+	border-color: transparent;
+	box-shadow: var(--composer-shadow);
+}
+.unsloth-files-panel[data-dragging="true"] {
+	border-color: var(--primary);
+}
+.dark .unsloth-files-panel[data-dragging="true"] {
+	box-shadow:
+		0 0 0 1.5px var(--primary),
+		var(--composer-shadow);
+}
+.unsloth-files-panel-count {
+	@apply inline-flex h-6 shrink-0 items-center rounded-full px-2.5 text-ui-12 font-medium tabular-nums text-foreground/75;
+	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+.dark .unsloth-files-panel-count {
+	background-color: color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+.unsloth-files-panel-drop-overlay {
+	@apply pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2 rounded-[inherit] bg-background/90 text-sm font-medium text-primary opacity-0 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90;
+}
+.unsloth-files-panel[data-dragging="true"] .unsloth-files-panel-drop-overlay {
+	opacity: 1;
+}
+/* One target at a time: over the panel, the composer's "Drop files here" would mislead. */
+.aui-composer-root:has(.unsloth-files-panel[data-dragging="true"]) .aui-composer-drop-overlay {
+	opacity: 0 !important;
+}
+/* Inset at rest; cards scroll under the panel edges. */
+.unsloth-files-panel-strip {
+	@apply -mx-4 flex flex-row flex-nowrap gap-2 overflow-x-auto overscroll-x-contain px-4;
+	scroll-padding-inline: 1rem;
+	scrollbar-width: none;
+}
+.unsloth-files-panel-strip::-webkit-scrollbar {
+	display: none;
+}
+.unsloth-files-panel-action {
+	@apply inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-ui-13 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
+	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
+}
+.unsloth-files-panel-action:hover {
+	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+.unsloth-files-add-card:disabled {
+	@apply pointer-events-none opacity-50;
+}
+/* Dark mode: Add files is a fill, not an outline. */
+.dark .unsloth-files-panel-action,
+.dark .unsloth-files-add-card {
+	border-color: transparent;
+	background-color: color-mix(in oklab, var(--foreground) 8%, transparent);
+}
+.dark .unsloth-files-panel-action:hover,
+.dark .unsloth-files-add-card:hover {
+	border-color: transparent;
+	background-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+.unsloth-files-panel-icon-btn {
+	@apply inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-35;
+}
+.unsloth-files-panel-icon-btn:hover {
+	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
 }

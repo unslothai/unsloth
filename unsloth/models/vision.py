@@ -891,6 +891,12 @@ def _offload_embedding_unsupported_platform():
         return "WSL"
     if os.name == "nt":
         return "Windows"
+    # Docker on WSL2 has no WSL_* variables but shares the *-microsoft-standard-WSL2 kernel (unslothai/unsloth#3511).
+    try:
+        if "microsoft" in os.uname().release.lower():
+            return "WSL"
+    except Exception:
+        pass
     return None
 
 
@@ -1797,7 +1803,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if kwargs.get("past_key_values") is None:
             kwargs["cache_implementation"] = "dynamic"
         try:
-            with torch.inference_mode(), autocaster:
+            with _get_inference_mode_context_manager(self), autocaster:
                 return self._old_generate(*args, **kwargs)
         finally:
             _clear_generation_caches(self)
@@ -1883,7 +1889,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with decode_scope, eager_scope, torch.inference_mode(), autocaster:
+        with decode_scope, eager_scope, _get_inference_mode_context_manager(self), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)

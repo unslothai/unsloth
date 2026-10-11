@@ -292,15 +292,13 @@ export const ru = {
       loop: "Повтор",
       pictureInPicture: "Картинка в картинке",
       fullscreen: "Полноэкранный режим",
+      exitFullscreen: "Выйти из полноэкранного режима",
       copyFrame: "Копировать кадр",
       frameCopied: "Кадр скопирован",
       copyFrameFailed: "Не удалось скопировать кадр.",
-      copyName: "Копировать имя файла",
-      nameCopied: "Имя файла скопировано",
       copyOptions: "Параметры копирования",
       open: "Открыть",
       openOptions: "Параметры открытия",
-      saveAs: "Сохранить как…",
     },
     file: {
       openIn: "Открыть в",
@@ -316,6 +314,9 @@ export const ru = {
       copy: "Копировать содержимое",
       copied: "Скопировано",
       copyFailed: "Не удалось скопировать файл.",
+      copyPath: "Копировать путь",
+      pathCopied: "Путь скопирован",
+      openFailed: "Не удалось открыть {name}.",
       wrap: "Переносить строки",
     },
     pages: {
@@ -2501,6 +2502,15 @@ export const ru = {
         "Старые ходы уходят в доступный для поиска архив, когда чат заполняет контекст.",
       autoCompactKeywords:
         "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас архив поиск извлечение compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "Длина вывода инструментов",
+      toolResultLimitDescription: "Сколько символов одного результата Python или Терминала читает модель. По умолчанию {count}.",
+      toolResultLimitHint: "Более длинный вывод сохраняется в файл, который модель может читать по частям. Более высокий лимит действует для моделей, запущенных в Unsloth, а маленькие окна контекста по-прежнему получают меньше. API-модели сохраняют значение по умолчанию, если вы его не уменьшите.",
+      toolResultLimitDefault: "{count} (по умолчанию)",
+      toolResultLimitLocked: "Задано через UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Не удалось загрузить длину вывода инструментов.",
+      toolResultLimitSaveError: "Не удалось сохранить длину вывода инструментов.",
+      toolResultLimitKeywords:
+        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Свёрнуто",
         auto: "Разворачивать во время работы",
@@ -4022,6 +4032,8 @@ export const ru = {
     selection: {
       startChat: "Начать чат",
       move: "Переместить",
+      selectAll: "Выбрать все",
+      countOfTotal: "Выбрано: {count} из {total}",
       clear: "Снять выделение",
     },
     menu: {

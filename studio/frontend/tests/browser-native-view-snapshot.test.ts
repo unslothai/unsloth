@@ -11,8 +11,9 @@ const mutations: (() => void)[] = [];
 const overlays: {
   getBoundingClientRect: () => DOMRect;
   closest: () => null;
-  querySelector: () => null;
+  querySelector: (selector: string) => object | null;
 }[] = [];
+const documentListeners = new Map<string, (event: { target: unknown }) => void>();
 const rect = (x: number, y: number, width: number, height: number) =>
   ({
     left: x,
@@ -53,6 +54,9 @@ Object.assign(globalThis, {
   document: {
     documentElement: { style: rootStyle },
     body: {},
+    addEventListener: (type: string, listener: (event: { target: unknown }) => void) =>
+      documentListeners.set(type, listener),
+    removeEventListener: (type: string) => documentListeners.delete(type),
     querySelector: (selector: string) =>
       selector.startsWith("[data-native-page") ? placeholder : null,
     querySelectorAll: (selector: string) =>
@@ -63,6 +67,12 @@ Object.assign(globalThis, {
     constructor(x: number, y: number, width: number, height: number) {
       // biome-ignore lint/correctness/noConstructorReturn: a plain rect stands in for DOMRect
       return rect(x, y, width, height);
+    }
+  },
+  Image: class {
+    src = "";
+    decode() {
+      return Promise.resolve();
     }
   },
   requestAnimationFrame: (callback: () => void) => frames.push(callback),
@@ -97,7 +107,7 @@ let captureDone: ((bytes: ArrayBuffer) => void) | null = null;
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 register("./helpers/native-view-resolver.mjs", import.meta.url);
 const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
-const { startNativeViews } = await import(
+const { refreshCoveredPage, startNativeViews } = await import(
   "../src/features/browser/native-view.ts"
 );
 
@@ -118,6 +128,8 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
   useBrowserStore.getState().openUrl("https://example.com/");
   const stop = startNativeViews();
   try {
+    // the first frame waits for whether pages layer under the app (not here)
+    await frame();
     await frame();
     const tabId = useBrowserStore.getState().activeTabId;
     assert.ok(
@@ -143,10 +155,27 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
     const shows = calls.filter(
       ({ command }) => command === "browser_view_show",
     );
+    assert.deepEqual(
+      [shows.at(-1)?.args?.tabId, shows.at(-1)?.args?.parked],
+      [tabId, true],
+      "the page is parked off the window under the menu, not hidden",
+    );
+
+    // zoom from the menu reaches the parked page, and the snapshot follows it
+    const captures = calls.filter(({ command }) => command === "browser_capture").length;
+    const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+    if (tab) useBrowserStore.getState().setZoom(tab.id, 1.25);
+    await frame();
+    assert.ok(
+      calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.25),
+      "the zoom applies while the menu is open",
+    );
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
     assert.equal(
-      shows.at(-1)?.args?.tabId,
-      null,
-      "the page stays hidden under the menu",
+      calls.filter(({ command }) => command === "browser_capture").length,
+      captures + 1,
+      "the covered page is captured again at its new zoom",
     );
 
     overlays.length = 0;
@@ -158,6 +187,157 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
     );
   } finally {
     stop();
+  }
+});
+
+test("tooltips along the toolbar capture the page once, and it returns when the pointer reaches it", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.net/", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const tooltip = (x: number) => ({
+      getBoundingClientRect: () => rect(x, 90, 120, 30),
+      closest: () => null,
+      querySelector: (selector: string) => (selector.includes("tooltip") ? {} : null),
+    });
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const lastShow = () => calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args;
+    const before = captures();
+    overlays.push(tooltip(600));
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(captures(), before + 1);
+    assert.deepEqual([lastShow()?.tabId, lastShow()?.parked], [tabId, true]);
+
+    // the next button's tooltip reuses the snapshot
+    overlays.length = 0;
+    await frame();
+    overlays.push(tooltip(700));
+    await frame();
+    overlays.length = 0;
+    await frame();
+    assert.equal(captures(), before + 1, "no capture per button");
+    assert.equal(lastShow()?.parked, true, "still parked just after the tooltip closes");
+
+    documentListeners.get("pointerover")?.({
+      target: { closest: (selector: string) => (selector === "[data-native-page]" ? {} : null) },
+    });
+    await frame();
+    assert.deepEqual([lastShow()?.tabId, lastShow()?.parked], [tabId, undefined], "the page is back");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
+test("a capture that never lands keeps the page on screen instead of parking it blank, and tries again", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.edu/", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const parked = () =>
+      calls.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId && args?.parked);
+    const before = captures();
+    overlays.push(menu);
+    await frame();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(parked(), false, "no snapshot, so the page stays where it is");
+    await frame();
+    assert.equal(captures(), before + 2, "the next sync captures again");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(parked(), true, "parked once a snapshot shows");
+
+    // a zoom whose capture misses is captured again, though nothing else changes
+    const zoomed = captures();
+    if (tabId) useBrowserStore.getState().setZoom(tabId, 1.5);
+    await frame();
+    assert.equal(captures(), zoomed + 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    const retried = captures();
+    assert.ok(retried >= zoomed + 2, "the stale snapshot is retried");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    assert.equal(captures(), retried + 1, "and again while captures keep missing");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    await frame();
+    assert.equal(captures(), retried + 1, "and left alone once it lands");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
+test("a tab opened under a lasting cover is shown and captured, not left blank, and find misses retry", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/a", { newTab: true });
+    await frame();
+    await frame();
+    overlays.push(menu);
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+
+    // switch tabs while the cover stays
+    useBrowserStore.getState().openUrl("https://example.org/b", { newTab: true });
+    const next = useBrowserStore.getState().activeTabId;
+    await frame();
+    const shows = () => calls.filter(({ command, args }) => command === "browser_view_show" && args?.tabId === next);
+    assert.ok(shows().some(({ args }) => args?.url && !args?.parked), "the new tab is shown first");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(shows().at(-1)?.args?.parked, true, "then parked under its snapshot");
+    assert.notEqual(calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args?.tabId, null);
+
+    // a find step whose capture misses is captured again
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const before = captures();
+    if (next) refreshCoveredPage(next);
+    assert.equal(captures(), before + 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    assert.equal(captures(), before + 2, "the missed refresh is retried");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
+test("a resize under a lasting cover parks the page at its new size and captures it again", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/resize", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    overlays.push(menu);
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const before = captures();
+    pageBox = rect(500, 100, 450, 600);
+    await frame();
+    const parked = calls.filter(({ command, args }) => command === "browser_view_show" && args?.parked).at(-1)?.args;
+    assert.deepEqual([parked?.tabId, (parked?.bounds as { width: number }).width], [tabId, 450]);
+    assert.equal(captures(), before + 1, "the snapshot is taken again at the new size");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+  } finally {
+    stop();
+    overlays.length = 0;
+    pageBox = rect(500, 100, 500, 600);
   }
 });
 

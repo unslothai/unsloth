@@ -103,7 +103,6 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
-  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -140,10 +139,7 @@ import {
   LayerIcon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  MessageCircleIcon,
-  TestTubeOutlineIcon,
-} from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -2868,7 +2864,7 @@ export function AppSidebar() {
       },
     },
     audio: {
-      icon: AudioWave01Icon,
+      icon: AiSpeechIcon,
       label: t("shell.navigation.audio"),
       badge: t("shell.navigation.newBadge"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),

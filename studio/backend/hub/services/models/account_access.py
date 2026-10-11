@@ -1006,7 +1006,9 @@ def media_adapter_references(request) -> list[str]:
     groups = []
     if loras:
         from core.inference import diffusion_lora
-        groups.append((loras, diffusion_lora.list_loras()))
+
+        # Copies are hidden from the listing but resolve by id, so they must authorize by their path.
+        groups.append((loras, diffusion_lora.list_loras(include_copies = True)))
     if controlnet:
         from core.inference import diffusion_controlnet
         groups.append(([controlnet], diffusion_controlnet.list_controlnets()))
