@@ -2516,6 +2516,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "if locals().get('compute_metrics', None) is not None: _output_logits = True\n"
             "if locals().get('preprocess_logits_for_metrics', None) is not None: _output_logits = True\n"
             "if _output_logits:\n"
+            # Recorded like for_inference()'s "1" so for_training() undoes it and only a user's "1" persists (#3071).
+            "    _unsloth_rl = os.environ.get('UNSLOTH_RETURN_LOGITS', '0')\n"
+            "    if _unsloth_rl != '1': os.environ['_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE'] = _unsloth_rl\n"
             "    os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"
         )
         extra_args += logits_check

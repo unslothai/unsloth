@@ -193,3 +193,25 @@ def test_flag_set_between_two_train_calls_is_kept(fbm):
     os.environ[FLAG] = "1"
     train(trainer)
     assert seen == ["0", "1"]
+
+
+def _logits_check():
+    tree = ast.parse((MODELS / "rl.py").read_text(encoding = "utf-8"))
+    return next(
+        n.value.value
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "logits_check" for t in n.targets)
+    )
+
+
+@pytest.mark.parametrize("user_flag", [None, "1"])
+def test_compute_metrics_auto_flag_does_not_outlive_the_trainer_init(fbm, monkeypatch, user_flag):
+    # compute_metrics forces "1" while building the trainer; training (and the next trainer's
+    # padding-free gate) must see the user's value, not a leaked "1".
+    if user_flag is not None:
+        monkeypatch.setenv(FLAG, user_flag)
+    exec(_logits_check(), {"os": os, "compute_metrics": object()})
+    assert os.environ[FLAG] == "1"
+    fbm.for_training(_Model())
+    assert os.environ[FLAG] == (user_flag or "0")
