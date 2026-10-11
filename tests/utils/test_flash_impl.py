@@ -291,6 +291,10 @@ def real_fa4(monkeypatch):
     yield
     fi.deactivate_flash_attention_impl()
     assert fi._current_impl() is None
+    # Restored for real: the dispatcher no longer reaches torch's FA4 runner.
+    with fi._count_impl_calls("FA4") as calls:
+        _varlen(64, torch.bfloat16, None, lengths = (64, 32))
+    assert calls == {"fwd": 0, "bwd": 0}, calls
 
 
 def _varlen(head_dim, dtype, window, lengths = (300, 17, 1000, 1, 731), hq = 16, hk = 4, seed = 0):
