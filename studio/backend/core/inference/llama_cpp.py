@@ -27711,6 +27711,17 @@ class LlamaCppBackend:
                                 <= _fit_wired_mib
                                 else None
                             )
+                            # Auto launches a fixed -c, so llama.cpp's fitter could only move
+                            # layers to CPU; give up context first, down to the Auto floor,
+                            # so every layer stays on Metal.
+                            if (
+                                not explicit_ctx
+                                and _vram_fit_ctx
+                                and min(_FIT_MIN_CTX, effective_ctx)
+                                <= _vram_fit_ctx
+                                < effective_ctx
+                            ):
+                                effective_ctx = max_available_ctx = _vram_fit_ctx
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
                             _apple_host_embd and _apple_measured_ceiling is not None

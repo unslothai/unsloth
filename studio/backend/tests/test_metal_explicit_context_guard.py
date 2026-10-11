@@ -1894,3 +1894,50 @@ class TestFitterKeepsTheWiredHeadroom:
         assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
             1, True, False, 0, 8192, {"supports_fit_target": False}, fit_target_floor_mib = 4096
         )
+
+
+class TestAutoGivesUpContextBeforeLayers:
+    """Auto launches a fixed -c, so past the wired headroom llama.cpp's fitter can only
+    move layers to CPU. The context the headroom holds is already measured; Auto launches
+    at it while that stays at or above the Auto floor."""
+
+    GiB = 1024**3
+    # Footprint here is 6 GiB plus 64 KiB per token: the 9 GiB budget holds 49,152,
+    # 7.5 GiB of headroom 24,576, and 6.4 GiB less than the 8,192 floor.
+    FITS = dict(
+        real_fit = True,
+        budget_bytes = 9 * 1024**3,
+        weights_bytes = 1024**3,
+        kv_per_token = 64 * 1024,
+        native = 131072,
+    )
+
+    def _ctx(
+        self,
+        tmp_path,
+        monkeypatch,
+        wired_gib,
+        n_ctx = 0,
+    ):
+        cap = _launch(
+            tmp_path, monkeypatch, n_ctx = n_ctx, wired_bytes = int(wired_gib * self.GiB), **self.FITS
+        )
+        return int(_ctx_values(cap["cmd"])[-1]), cap["backend"]
+
+    def test_auto_launches_at_the_wired_ceiling(self, tmp_path, monkeypatch):
+        budget_ctx, _ = self._ctx(tmp_path, monkeypatch, 0)
+        ctx, backend = self._ctx(tmp_path, monkeypatch, 7.5)
+        assert _FIT_MIN_CTX <= ctx <= 24576 < budget_ctx
+        assert backend._max_context_length == ctx
+
+    def test_ample_headroom_keeps_the_budget_context(self, tmp_path, monkeypatch):
+        assert self._ctx(tmp_path, monkeypatch, 20)[0] == self._ctx(tmp_path, monkeypatch, 0)[0]
+
+    def test_a_ceiling_under_the_auto_floor_leaves_it_to_the_fitter(self, tmp_path, monkeypatch):
+        """Under 8,192 the context is worth more than the layers the fitter would move."""
+        assert self._ctx(tmp_path, monkeypatch, 6.4)[0] == self._ctx(tmp_path, monkeypatch, 0)[0]
+
+    def test_a_hand_set_context_is_not_lowered(self, tmp_path, monkeypatch):
+        """The explicit path refuses against the wired limit instead (#10804)."""
+        with pytest.raises(RuntimeError, match = "24,576"):
+            self._ctx(tmp_path, monkeypatch, 7.5, n_ctx = 32768)
