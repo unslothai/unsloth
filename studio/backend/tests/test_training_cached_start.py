@@ -626,6 +626,31 @@ def test_offline_start_refuses_an_uncached_adapter_base(tmp_path):
     assert exc_info.value.detail["code"] == "hf_model_not_cached_offline"
 
 
+@pytest.mark.parametrize("cached", [False, True])
+def test_managed_adapter_base_needs_a_grant_only_for_a_cached_read(tmp_path, cached):
+    route = _load_route_module(f"training_route_managed_adapter_base_{cached}")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "me/private-base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter", hf_token = "hf_own")
+
+    with (
+        patch.object(route, "managed_account", return_value = True),
+        patch("hub.services.models.account_access.managed_account", return_value = True),
+        patch("hub.services.models.account_access.model_grants", return_value = set()),
+        patch("hub.services.models.account_access.repo_is_public", return_value = False),
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = cached),
+        patch.object(route, "cached_read_refused", return_value = False),
+        patch.object(route, "hf_env_offline", return_value = False),
+    ):
+        if cached:
+            with pytest.raises(HTTPException):
+                route._reject_untrainable_model_request(request, None, "hf_own")
+        else:
+            route._reject_untrainable_model_request(request, None, "hf_own")
+
+
 def test_adapter_trains_embeddings_reads_saved_modules():
     from core.training import worker
 

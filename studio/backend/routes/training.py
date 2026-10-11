@@ -978,9 +978,11 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
         repo_id, repo_type = cached_ref
         is_cached = lambda: True  # noqa: E731 -- the path itself is the evidence
     else:
-        _authorize_cache_fallback(base)
         repo_id, repo_type = canonical_model_repo_id(base), "model"
         is_cached = lambda: repo_cache_has_usable_snapshot("model", repo_id)  # noqa: E731
+        # Like the selected model: a grant is needed only to read the shared cache, not the Hub.
+        if is_cached():
+            _authorize_cache_fallback(base)
         if hf_env_offline() and not is_cached():
             raise _hf_preflight_error(
                 409,
