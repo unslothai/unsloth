@@ -279,108 +279,31 @@ function alignTurnTop(
   }
 }
 
-// keep the core wider than one frame of travel, or a thin line strobes
-const SHINE_MS = 1100;
-const SHINE_FRAMES = 24;
-const SHINE_SLANT = Math.tan((32 * Math.PI) / 180);
-// nested bands, outer to inner: half-width as a share of the bubble width, and the opacity reached inside it
-const SHINE_LAYERS = [0.25, 0.17, 0.11, 0.07, 0.0375, 0.018];
-const SHINE_ALPHA = {
-  light: [0.04, 0.12, 0.3, 0.55, 0.8, 1],
-  dark: [0.015, 0.04, 0.1, 0.18, 0.28, 0.36],
+const SHINE_GRADIENT = {
+  light:
+    "linear-gradient(110deg, transparent 36%, rgb(0 0 0 / 0.07) 44%, rgb(255 255 255 / 0.95) 50%, rgb(0 0 0 / 0.07) 56%, transparent 64%)",
+  dark: "linear-gradient(110deg, transparent 36%, rgb(255 255 255 / 0.03) 44%, rgb(255 255 255 / 0.24) 50%, rgb(255 255 255 / 0.03) 56%, transparent 64%)",
 };
-let shineNonce = 0;
-const shineOwner = new WeakMap<HTMLElement, number>();
 
-// cubic-bezier(0.4, 0, 0.2, 1) at time t
-function shineEase(t: number): number {
-  const bez = (s: number, a: number, b: number) =>
-    3 * a * s * (1 - s) ** 2 + 3 * b * s * s * (1 - s) + s ** 3;
-  let lo = 0;
-  let hi = 1;
-  for (let i = 0; i < 20; i++) {
-    const mid = (lo + hi) / 2;
-    if (bez(mid, 0.4, 0.2) < t) lo = mid;
-    else hi = mid;
-  }
-  return bez((lo + hi) / 2, 0, 1);
-}
-
-// the band is drawn flat on the bubble "unrolled", then wrapped onto a rounded glass surface: the rounded
-// rim (radius r) unrolls to a quarter circle's arc, so near the edges the band bends and thins as it turns away
 function shineTurn(target: HTMLElement): void {
   const bubble = target.querySelector<HTMLElement>(".aui-user-message-content");
   if (!bubble || prefersReducedMotion()) {
     return;
   }
-  const w = bubble.offsetWidth;
-  const h = bubble.offsetHeight;
-  const r = Math.min(
-    Number.parseFloat(getComputedStyle(bubble).borderTopLeftRadius) || 0,
-    w / 2,
-    h / 2,
+  const shine = {
+    backgroundImage: document.documentElement.classList.contains("dark")
+      ? SHINE_GRADIENT.dark
+      : SHINE_GRADIENT.light,
+    backgroundSize: "250% 100%",
+    backgroundRepeat: "no-repeat",
+  };
+  bubble.animate(
+    [
+      { ...shine, backgroundPosition: "100% 0" },
+      { ...shine, backgroundPosition: "0% 0" },
+    ],
+    { duration: 900, easing: "cubic-bezier(0.4, 0, 0.2, 1)" },
   );
-  // each axis unrolls on its own: the full height curves like a cylinder (a flat face plus a thin rim kinks
-  // the band on tall bubbles), and the ends wrap over their radius. Unrolled deeper than a true quarter
-  // circle on pills, so the bend reads at chat-bubble sizes
-  const half = h / 2;
-  const depth = r >= half - 1 ? Math.PI : Math.PI * 0.6;
-  const reachY = half * depth;
-  const arc = r * Math.PI;
-  const ease = (d: number, span: number) =>
-    Math.sin((Math.min(Math.max(d, -span), span) / span) * (Math.PI / 2));
-  const wrap = (x: number, y: number): string => {
-    let sx = x;
-    if (x < r) sx = r - r * ease(r - x, arc);
-    else if (x > w - r) sx = w - r + r * ease(x - (w - r), arc);
-    const sy = half + half * ease(y - half, reachY);
-    return `${sx.toFixed(1)},${sy.toFixed(1)}`;
-  };
-  const top = half - reachY;
-  const bottom = half + reachY;
-  // band sized off a capped width, so a long prompt gets the same streak as a short one
-  const size = Math.min(w, 240);
-  const rows = 14;
-  const band = (centre: number, half: number): string => {
-    const left: string[] = [];
-    const right: string[] = [];
-    for (let i = 0; i <= rows; i++) {
-      const y = top + ((bottom - top) * i) / rows;
-      const x = centre + ((top + bottom) / 2 - y) * SHINE_SLANT;
-      left.push(wrap(x - half, y));
-      right.unshift(wrap(x + half, y));
-    }
-    return [...left, ...right].join(" ");
-  };
-  const reach = SHINE_LAYERS[0] * size + (bottom - top) * SHINE_SLANT;
-  const from = r - arc - reach;
-  const to = w - r + arc + reach;
-  const alphas = document.documentElement.classList.contains("dark")
-    ? SHINE_ALPHA.dark
-    : SHINE_ALPHA.light;
-  let under = 0;
-  const polygons = SHINE_LAYERS.map((share, index) => {
-    const opacity = 1 - (1 - alphas[index]) / (1 - under);
-    under = alphas[index];
-    const frames = Array.from({ length: SHINE_FRAMES + 1 }, (_, f) =>
-      band(from + (to - from) * shineEase(f / SHINE_FRAMES), share * size),
-    );
-    return `<polygon fill="#fff" fill-opacity="${opacity.toFixed(3)}" points="${frames[0]}"><animate attributeName="points" dur="${SHINE_MS}ms" fill="freeze" values="${frames.join(";")}"/></polygon>`;
-  }).join("");
-  // a fresh nonce restarts the image's timeline on a repeat jump; still a background, so no box is added
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" data-n="${++shineNonce}"><filter id="s"><feGaussianBlur stdDeviation="1.6"/></filter><g id="b" filter="url(#s)">${polygons}</g><mask id="m"><use href="#b"/><use href="#b"/></mask><rect x="0.75" y="0.75" width="${w - 1.5}" height="${h - 1.5}" rx="${Math.max(0, r - 0.75)}" fill="none" stroke="#fff" stroke-width="1.5" mask="url(#m)"/></svg>`;
-  const nonce = shineNonce;
-  shineOwner.set(bubble, nonce);
-  bubble.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-  bubble.style.backgroundSize = "100% 100%";
-  bubble.style.backgroundRepeat = "no-repeat";
-  window.setTimeout(() => {
-    if (shineOwner.get(bubble) === nonce) {
-      bubble.style.removeProperty("background-image");
-      bubble.style.removeProperty("background-size");
-      bubble.style.removeProperty("background-repeat");
-    }
-  }, SHINE_MS + 50);
 }
 
 type PreviewPart = { type: string; text?: string };
