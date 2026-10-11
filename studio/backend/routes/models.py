@@ -936,7 +936,9 @@ def _with_comfy_compat_rows(
 
 
 def _merge_scan_folder_row(
-    m: LocalModelInfo, configured_cache_roots: tuple[Path, ...]
+    m: LocalModelInfo,
+    configured_cache_roots: tuple[Path, ...],
+    claimed_repo_ids: Optional[set[str]] = None,
 ) -> LocalModelInfo:
     """Source attribution for a row a registered scan folder contributed.
 
@@ -947,9 +949,11 @@ def _merge_scan_folder_row(
     weightless skeleton of an aborted download while the parked copy is the loadable one -- the
     same cached-plus-parked listing the Hub inventory side keeps (#12258).
 
-    ``model_id`` is cleared with the relabel: the media index maps names to picks, and two rows
-    of one repo both answering to the repo id would read as ambiguous and resolve for nobody.
-    The cache row keeps the repo id; a parked-only copy answers to its display name.
+    ``model_id`` is cleared with the relabel only when another row already answers to the repo
+    id (``claimed_repo_ids``, casefolded): the media index maps names to picks, and two rows of
+    one repo both answering to it would read as ambiguous and resolve for nobody. The cache row
+    keeps the repo id then; a parked-only copy keeps it and claims it, so a media request by repo
+    id still finds it.
     ``active_cache`` is cleared too, like the Hub promotion: the row is not a cache entry
     anymore.
     """
@@ -959,7 +963,18 @@ def _merge_scan_folder_row(
         if m.source == "hf_cache" and not any(
             path_is_same_or_child(Path(m.path), root) for root in configured_cache_roots
         ):
-            return m.model_copy(update = {"source": "custom", "model_id": None, "active_cache": None})
+            repo_key = m.model_id.casefold() if m.model_id else None
+            claimed = claimed_repo_ids if claimed_repo_ids is not None else set()
+            shadowed = repo_key is not None and repo_key in claimed
+            if repo_key is not None:
+                claimed.add(repo_key)
+            return m.model_copy(
+                update = {
+                    "source": "custom",
+                    "model_id": None if shadowed else m.model_id,
+                    "active_cache": None,
+                }
+            )
         return m
     return m.model_copy(update = {"source": "custom"})
 
@@ -1085,6 +1100,9 @@ def collect_local_models(
     from hub.services.models.local_inventory import _local_model_path_is_symlink
 
     custom_identities: set[str] = set()
+    # Repo ids the configured caches (and the other built-in sources) already answer to; a parked
+    # scan-folder copy of one of those gives its repo id up (see _merge_scan_folder_row).
+    claimed_repo_ids = {m.model_id.casefold() for m in local_models if m.model_id}
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -1173,7 +1191,10 @@ def collect_local_models(
         # Keep an already-attributed source (a registered ~/.ollama/models, or a folder shadowing
         # the HF cache) unless it is a cache-layout copy parked outside every configured cache
         # root -- that one becomes the custom row the picker lists (see _merge_scan_folder_row).
-        local_models += [_merge_scan_folder_row(m, configured_cache_roots) for m in custom_models]
+        local_models += [
+            _merge_scan_folder_row(m, configured_cache_roots, claimed_repo_ids)
+            for m in custom_models
+        ]
 
     # A registered oMLX root (the pre-scan workaround) lists its models as custom rows too; keep
     # those (the train picker refuses oMLX rows).

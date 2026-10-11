@@ -305,10 +305,10 @@ def test_compat_inventory_lists_a_registered_hf_home_as_custom(tmp_path, registe
     )
 
     # A cache-layout copy parked in a scan folder outside the configured caches becomes the
-    # user's custom row, so the same-repo cache entry cannot collapse it away. The repo id moves
-    # off the relabeled row (see _merge_scan_folder_row). A folder registered over a CONFIGURED
-    # cache keeps the hf_cache label: test_cached_gguf_routes.py covers that side.
-    assert [(row.source, row.model_id) for row in rows] == [("custom", None)]
+    # user's custom row, so the same-repo cache entry cannot collapse it away. No configured cache
+    # lists this repo, so it keeps its repo id (see _merge_scan_folder_row). A folder registered
+    # over a CONFIGURED cache keeps the hf_cache label: test_cached_gguf_routes.py covers that side.
+    assert [(row.source, row.model_id) for row in rows] == [("custom", "Org/Model-GGUF")]
 
 
 def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):

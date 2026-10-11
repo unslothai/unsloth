@@ -372,7 +372,10 @@ def _local_gguf_entry(
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         cache_repo_dir = None
-        if getattr(info, "source", None) == "hf_cache":
+        # A cache-layout copy parked in a scan folder lists as a custom row (routes.models.
+        # _merge_scan_folder_row) but still needs the newest complete snapshot and its complete
+        # quants, or /v1/models would advertise a quant missing a shard the loader cannot serve.
+        if getattr(info, "source", None) in ("hf_cache", "custom"):
             try:
                 if p.name.startswith("models--") and (p / "snapshots").is_dir():
                     cache_repo_dir = p

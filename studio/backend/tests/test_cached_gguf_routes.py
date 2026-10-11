@@ -324,16 +324,12 @@ def test_collect_local_models_keeps_the_cache_label_for_a_folder_over_a_known_ca
     assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
 
 
-def test_collect_local_models_lists_a_parked_copy_whose_newest_snapshot_holds_no_quant(
+def test_collect_local_models_serves_a_parked_copy_from_its_newest_complete_snapshot(
     monkeypatch, tmp_path
 ):
-    # Pinned limitation of the parked-copy promotion (#12803): the relabeled row keeps the newest
-    # snapshot's path, and a custom row serves from that one directory alone, so a parked copy
-    # whose newest snapshot holds no quant (an aborted re-download; the complete revision is the
-    # older snapshot) stays in the picker but drops out of /v1/models. An hf_cache row instead
-    # resolves its repo dir to the newest snapshot holding a whole quant, and the resolver keys
-    # that on the row's source -- the relabel loses it. Keying that resolution on the cache
-    # layout (the path) instead would serve the older revision; flip this test when that happens.
+    # A parked copy whose newest snapshot holds no quant (an aborted re-download; the complete
+    # revision is the older snapshot) stays in /v1/models: the relabeled custom row still resolves
+    # its cache layout to the newest snapshot holding a whole quant, as the hf_cache row did.
     active = tmp_path / "active"
     active.mkdir()
     parked = tmp_path / "parked"
@@ -349,13 +345,88 @@ def test_collect_local_models_lists_a_parked_copy_whose_newest_snapshot_holds_no
 
     rows = models_route.collect_local_models(tmp_path / "models")
 
-    assert [(row.source, row.model_id) for row in rows] == [("custom", None)]
+    # No configured cache lists the repo, so the parked row keeps answering to its repo id.
+    assert [(row.source, row.model_id) for row in rows] == [("custom", "Org/Model-GGUF")]
     [parked_row] = rows
     assert Path(parked_row.path) == incomplete.resolve()
 
     from core.inference.local_model_resolver import local_servable_model
 
-    assert local_servable_model(parked_row) is None
+    assert local_servable_model(parked_row) == (True, ("Q4_K_M",))
+
+
+def test_collect_local_models_advertises_only_complete_quants_of_a_parked_copy(
+    monkeypatch, tmp_path
+):
+    # An aborted multi-shard download leaves one shard of a split quant next to a whole one. The
+    # parked copy must advertise only the whole quant, the one the loader can serve; listing the
+    # split one made /v1/models name a quant that is not on disk.
+    active = tmp_path / "active"
+    active.mkdir()
+    parked = tmp_path / "parked"
+    snapshot = _complete_gguf_repo(parked, "Org/Model-GGUF")
+    (snapshot / "Model-Q4_K_M.gguf").rename(snapshot / "Model-Q8_0.gguf")
+    (snapshot / "Q4_K_M").mkdir()
+    (snapshot / "Q4_K_M" / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(
+        b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64)
+    )
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    [parked_row] = rows
+    assert parked_row.source == "custom"
+
+    from core.inference.local_model_resolver import local_servable_model
+
+    assert local_servable_model(parked_row) == (True, ("Q8_0",))
+
+
+def test_collect_local_models_keeps_the_repo_id_media_key_of_a_parked_only_copy(
+    monkeypatch, tmp_path
+):
+    # The repo id moves off a parked row only when a configured cache answers to it too; a
+    # parked-only copy keeps it, so a media request by repo id still finds the local copy.
+    active = tmp_path / "active"
+    active.mkdir()
+    parked = tmp_path / "parked"
+    _complete_gguf_repo(parked, "Org/Image-GGUF")
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
+
+    [parked_row] = models_route.collect_local_models(tmp_path / "models")
+
+    from core.inference.media_model_index import _name_keys
+
+    assert parked_row.source == "custom"
+    assert "Org/Image-GGUF" in _name_keys(parked_row)
+
+
+def test_collect_local_models_gives_one_parked_copy_the_repo_id(monkeypatch, tmp_path):
+    # The same repo parked in two scan folders: only the first copy answers to the repo id, or the
+    # media index would read the id as ambiguous and resolve it for neither copy.
+    active = tmp_path / "active"
+    active.mkdir()
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _complete_gguf_repo(first, "Org/Model-GGUF")
+    _complete_gguf_repo(second, "Org/Model-GGUF")
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders",
+        lambda: [{"path": str(first)}, {"path": str(second)}],
+    )
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    assert sorted((row.source, row.model_id or "") for row in rows) == [
+        ("custom", ""),
+        ("custom", "Org/Model-GGUF"),
+    ]
 
 
 def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
