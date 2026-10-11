@@ -63,7 +63,8 @@ foreach ($label in @("install unsloth (no-torch)", "install unsloth (migrated no
 
 Write-Host "the generated temp file never outlives the run"
 $removals = [regex]::Matches($installText, 'Remove-UnslothTempFileQuietly -Path \$script:TorchOverridesFile')
-Check "in-flow removal after each with-deps install, plus a final sweep" ($removals.Count -eq 3)
+# One in-flow removal per with-deps install (local, release, migrated), plus the outer-finally sweep.
+Check "in-flow removal after each with-deps install, plus a final sweep" ($removals.Count -eq 4)
 Check "no unguarded Remove-Item on the tracked overrides path survives" (
     $installText -notmatch 'Remove-Item -LiteralPath \$script:TorchOverridesFile')
 $outer = @($ast.FindAll({ param($n)

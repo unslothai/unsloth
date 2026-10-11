@@ -2084,7 +2084,7 @@ def test_installing_a_flash_attn_wheel_counts_as_an_install_action(monkeypatch) 
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "_flash_attn_install_disabled", lambda: False)
     monkeypatch.setattr(stack, "_flash_attn_importable", lambda: False)
-    monkeypatch.setattr(stack, "probe_torch_wheel_env", lambda: {"torch": "2.8.0"})
+    monkeypatch.setattr(stack, "probe_torch_wheel_env", lambda **_k: {"torch": "2.8.0"})
     monkeypatch.setattr(stack, "_build_flash_attn_wheel_url", lambda env: "https://x.invalid/w")
     monkeypatch.setattr(stack, "url_exists", lambda url, **k: True)
     monkeypatch.setattr(
