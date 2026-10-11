@@ -292,13 +292,10 @@ _CUDA_SPLIT = [
         ("Linux", "x86_64", "12", "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip"),
         ("Windows", "AMD64", "13", "sd-x-bin-win-cuda13-x64.zip"),
         ("Windows", "AMD64", "12", "sd-x-bin-win-cuda12-x64.zip"),
-        # Unknown host runtime on Windows keeps the old cuda12 choice.
         ("Windows", "AMD64", None, "sd-x-bin-win-cuda12-x64.zip"),
     ],
 )
 def test_cuda_bundles_follow_the_host_runtime_major(system, machine, major, want):
-    # The mirror's CUDA bundles load the host's cudart, so a cuda12 bundle on a cuda13-only host
-    # would not start.
     assert (
         resolve_release_asset(
             _CUDA_SPLIT, system = system, machine = machine, accelerator = "cuda", cuda_major = major
@@ -308,7 +305,6 @@ def test_cuda_bundles_follow_the_host_runtime_major(system, machine, major, want
 
 
 def test_a_release_without_the_hosts_cuda_major_still_offers_its_cuda_build():
-    # Older releases and upstream ship one self-contained cuda12 build (Windows pairs cudart).
     for system, machine in (("Linux", "x86_64"), ("Windows", "AMD64")):
         got = resolve_release_asset(
             [n for n in _CUDA_SPLIT if "cuda13" not in n],

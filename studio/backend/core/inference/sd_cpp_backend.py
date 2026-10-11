@@ -2015,7 +2015,6 @@ def note_unlaunchable_accelerator_build(
 
 
 def _install_kwargs(accelerator: str) -> dict[str, Any]:
-    """``install`` arguments; a CUDA install also names the CUDA line the host runtime provides."""
     kwargs: dict[str, Any] = {"accelerator": accelerator}
     if _accelerator_class_of(accelerator) == "cuda":
         from core.inference.sd_cpp_engine import host_cuda_runtime_major

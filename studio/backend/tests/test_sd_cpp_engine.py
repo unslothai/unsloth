@@ -515,7 +515,6 @@ _CUDART = "cudart64_13.dll" if sys.platform == "win32" else "libcudart.so.13"
 def test_runtime_env_adds_llama_cuda_runtime_dirs_for_a_runtime_less_cuda_bundle(
     monkeypatch, tmp_path
 ):
-    # The mirror's CUDA bundles carry no cudart / cublas; they load the ones llama-server gets.
     var = eng._lib_path_var()
     monkeypatch.setattr(eng, "host_cuda_runtime_dirs", lambda: ["/venv/nvidia/cu13/lib"])
     binary = _bundle(tmp_path, _CUDA_LIB)
@@ -525,7 +524,6 @@ def test_runtime_env_adds_llama_cuda_runtime_dirs_for_a_runtime_less_cuda_bundle
 
 @pytest.mark.parametrize("names", [(), (_CUDA_LIB, _CUDART)])
 def test_runtime_env_leaves_other_bundles_alone(monkeypatch, tmp_path, names):
-    # CPU / Vulkan bundles, and older CUDA bundles that ship their own runtime.
     var = eng._lib_path_var()
     monkeypatch.setattr(
         eng, "host_cuda_runtime_dirs", lambda: pytest.fail("no host CUDA dirs for this bundle")

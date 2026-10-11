@@ -496,7 +496,6 @@ def native_binary_installed(
 
 
 def _resident_build_upgrades_on_load(gpu_ordinal: Optional[int]) -> bool:
-    """Whether a load's ensure_* replaces the resident managed build because the pin moved."""
     backend = resolve_diffusion_device_target().backend
     if off_torch_sd_cpp_device(backend) is not None:
         gpu_ordinal = None
@@ -550,9 +549,8 @@ def predict_engine(
     # A permitted install counts as available only where selection would actually perform one.
     # ``ensure_*_binary`` keeps a runnable build of the right accelerator untouched, so a resident
     # build that cannot run this family is never upgraded away, and predicting native for it would
-    # stage sd-cli's companions for a load the router sends to diffusers. With nothing resident, or
-    # a resident build the load replaces for a moved pin, the install happens and lands on the
-    # pinned prebuilt, which is current by definition.
+    # stage sd-cli's companions for a load the router sends to diffusers. With nothing resident (or
+    # a moved pin) the install lands on the pinned prebuilt, which is current by definition.
     native_available = native_binary_installed(gpu_ordinal = gpu_ordinal, fam = fam) or (
         _install_allowed()
         and (

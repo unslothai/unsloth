@@ -44,7 +44,7 @@ UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # the architecture (upstream 137f7409bb, 2026-09-20). The u13b9d92 build this replaces is from
 # 2026-08-09 and cannot load it at all, so the native route for that family is only real from here.
 DEFAULT_TAG = "master-813-bfbef5b-u1d02858"
-# Upstream fallback for hosts the mirror does not build at DEFAULT_TAG (Windows CUDA / ROCm, Linux ROCm): the pin's base, master-813, predates Qwen-Image-2.1 (master-883) and its reference-alpha fix (master-896). Must carry every sd_cpp_arch_marker / sd_cpp_edit_marker the families declare.
+# Not master-813 (the pin's base): it predates Qwen-Image-2.1 (master-883) and its reference-alpha fix (master-896). Must carry every family's sd_cpp_arch_marker / sd_cpp_edit_marker.
 UPSTREAM_FALLBACK_TAG = "master-929-3f8527a"
 
 REPO = DEFAULT_REPO
@@ -198,14 +198,13 @@ def upstream_tag_for(tag: Optional[str]) -> Optional[str]:
 
 
 def upstream_fallback_tag(tag: Optional[str]) -> Optional[str]:
-    """The upstream release to ask for when the mirror has no asset for this host at ``tag``: ``UPSTREAM_FALLBACK_TAG`` for the shipped pin, else the release ``tag`` was built from."""
     if tag == DEFAULT_TAG:
         return UPSTREAM_FALLBACK_TAG
     return upstream_tag_for(tag)
 
 
 def _outdated_upstream_fallback(rec: dict, want: str) -> bool:
-    """True for an install an older Studio fell back to upstream for: the pin's base release, since replaced by ``upstream_fallback_tag``."""
+    """An older Studio's upstream fallback install of the pin's base release."""
     if rec.get("repo") != UPSTREAM_FALLBACK_REPO:
         return False
     old = upstream_tag_for(want)
@@ -236,7 +235,7 @@ def _arch_tokens(machine: str) -> tuple[str, ...]:
 
 
 def _prefer_cuda_major(names: list[str], cuda_major: Optional[str]) -> list[str]:
-    """``names`` with the ``cuda<major>`` builds first. The mirror's CUDA bundles carry no runtime and load the host's (the one llama.cpp uses), so the major has to match it; any other CUDA asset stays as the fallback older self-contained releases need."""
+    """The mirror's CUDA bundles load the host's cudart, so the major must match; others stay as fallback for older self-contained releases."""
     if not cuda_major:
         return names
     want = f"cuda{cuda_major}"

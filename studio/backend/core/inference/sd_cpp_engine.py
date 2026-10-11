@@ -331,7 +331,6 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
 
 
 def _needs_host_cuda_runtime(bindir: str) -> bool:
-    """A CUDA bundle that ships ggml-cuda but no cudart, so it loads the host's CUDA runtime."""
     try:
         names = [n.lower() for n in os.listdir(bindir)]
     except OSError:
@@ -350,9 +349,8 @@ def _llama_server_binary() -> Optional[str]:
 
 
 def host_cuda_runtime_dirs() -> list[str]:
-    """The CUDA runtime directories llama-server gets on this host, so a runtime-less sd.cpp CUDA
-    bundle loads the same cudart / cublas. llama.cpp's own build dir is left out off Windows: its
-    libggml*.so share sonames with the bundle's (Windows searches the executable's dir first)."""
+    """llama-server's CUDA runtime dirs. Its build dir is dropped off Windows: its libggml*.so share
+    sonames with the bundle's (Windows searches the executable's dir first)."""
     binary = _llama_server_binary()
     if not binary:
         return []
@@ -378,8 +376,7 @@ def host_cuda_runtime_dirs() -> list[str]:
 
 
 def host_cuda_runtime_major() -> Optional[str]:
-    """The CUDA major ("12" / "13") the installed llama.cpp build links, i.e. the runtime this host
-    already resolves; torch's when llama.cpp is not a CUDA build."""
+    """CUDA major the installed llama.cpp links, else torch's."""
     binary = _llama_server_binary()
     if binary:
         try:
