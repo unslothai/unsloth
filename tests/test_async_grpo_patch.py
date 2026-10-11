@@ -36,6 +36,11 @@ NAMES = (
     "_packed_seq_lengths_from_position_ids",
     "_is_unsloth_fast_backbone",
     "_unsloth_async_grpo_lm_head",
+    "_fast_inference_engine",
+    "_async_grpo_uses_fast_inference",
+    "_dataset_has_images",
+    "_start_async_grpo_vllm_server",
+    "_check_async_grpo_fast_inference",
     "patch_trl_async_grpo",
 )
 
@@ -54,6 +59,7 @@ def _load(fast_backbone_types = ()):
         "functools": functools,
         "importlib": importlib,
         "warnings": warnings,
+        "weakref": __import__("weakref"),
         "logger": _Logger(),
     }
     for node in ast.parse(src).body:
@@ -312,3 +318,126 @@ def test_trl_113_chunked_head_gets_boundaries(fake_trl):
     out = lm.forward(position_ids = torch.tensor([[0, 1, 2, 0, 1]]))
     assert out["chunked"] and out["packed_seq_lengths"].tolist() == [3, 2]
     assert chunked is not mod.patch_chunked_lm_head
+
+
+class _FakeServer:
+    started = []
+
+    def __init__(self, model):
+        self.url = "http://127.0.0.1:1"
+        self.stopped = 0
+        self.aborted = 0
+        _FakeServer.started.append(self)
+
+    def stop(self):
+        self.stopped += 1
+
+    def abort_all(self):
+        self.aborted += 1
+
+
+def _fast_inference_peft(lm):
+    peft = Peft(lm)
+    peft.peft_config = {"default": object()}
+    peft.vllm_engine = object()
+    peft.load_lora = lambda *a, **k: None
+    peft.lora = torch.nn.Parameter(torch.zeros(2))
+    peft.frozen = torch.nn.Parameter(torch.zeros(2), requires_grad = False)
+    return peft
+
+
+@pytest.fixture
+def fast_inference_trl(fake_trl):
+    mod, calls = fake_trl
+    mod.select_adapter_sync = lambda *a, **k: True
+
+    class AsyncGRPOConfig:
+        def __init__(
+            self,
+            output_dir,
+            vllm_server_base_url = "http://localhost:8000",
+        ):
+            self.output_dir = output_dir
+            self.vllm_server_base_url = vllm_server_base_url
+
+    class AsyncGRPOTrainer:
+        lora_sync = True
+
+        def __init__(
+            self,
+            model,
+            reward_funcs = None,
+            args = None,
+            train_dataset = None,
+            **kw,
+        ):
+            calls["init"].append((model, args))
+            self.url_seen = args.vllm_server_base_url
+            # What TRL does for a VLM: unfreeze the text model.
+            model.frozen.requires_grad_(True)
+            self._lora_sync = AsyncGRPOTrainer.lora_sync
+
+        def train(self):
+            return "trained"
+
+    mod.AsyncGRPOConfig = AsyncGRPOConfig
+    mod.AsyncGRPOTrainer = AsyncGRPOTrainer
+    _FakeServer.started = []
+    ns = _load(fast_backbone_types = (FastBackbone,))
+    ns["_start_async_grpo_vllm_server"] = _FakeServer
+    ns["patch_trl_async_grpo"]()
+    return mod, ns
+
+
+def test_fast_inference_model_gets_the_in_process_server(fast_inference_trl):
+    mod, _ = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(
+        peft, None, args = mod.AsyncGRPOConfig("o"), train_dataset = [{"prompt": "hi"}]
+    )
+    (server,) = _FakeServer.started
+    assert trainer.url_seen == server.url
+    assert not peft.frozen.requires_grad and peft.lora.requires_grad
+    assert trainer.train() == "trained" and server.aborted == 1
+
+
+def test_explicit_server_url_keeps_the_external_server(fast_inference_trl):
+    mod, _ = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    cfg = mod.AsyncGRPOConfig("o", vllm_server_base_url = "http://gpu-box:8000")
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = cfg)
+    assert _FakeServer.started == [] and trainer.url_seen == "http://gpu-box:8000"
+
+
+def test_fast_inference_refusals(fast_inference_trl):
+    mod, _ = fast_inference_trl
+    lm = CausalLM(FastBackbone())
+    lm.vllm_engine = object()
+    with pytest.raises(ValueError, match = "get_peft_model"):
+        mod.AsyncGRPOTrainer(lm, None, args = mod.AsyncGRPOConfig("o"))
+    images = [
+        {
+            "prompt": [
+                {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "?"}]}
+            ]
+        }
+    ]
+    with pytest.raises(ValueError, match = "image prompts"):
+        mod.AsyncGRPOTrainer(
+            _fast_inference_peft(CausalLM(FastBackbone())),
+            None,
+            args = mod.AsyncGRPOConfig("o"),
+            train_dataset = images,
+        )
+    mod.AsyncGRPOTrainer.lora_sync = False
+    with pytest.raises(ValueError, match = "plain LoRA adapter"):
+        mod.AsyncGRPOTrainer(
+            _fast_inference_peft(CausalLM(FastBackbone())), None, args = mod.AsyncGRPOConfig("o")
+        )
+    assert _FakeServer.started[-1].stopped == 1
+    assert _FakeServer.started == [_FakeServer.started[0]] or len(_FakeServer.started) == 1
+    del mod.select_adapter_sync
+    with pytest.raises(ValueError, match = "TRL >= 1.14"):
+        mod.AsyncGRPOTrainer(
+            _fast_inference_peft(CausalLM(FastBackbone())), None, args = mod.AsyncGRPOConfig("o")
+        )

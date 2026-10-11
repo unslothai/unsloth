@@ -28,6 +28,7 @@ import os
 import re
 import sys
 import warnings
+import weakref
 from contextlib import contextmanager
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
@@ -4255,6 +4256,74 @@ def _unsloth_async_grpo_lm_head(original, flag):
     return patch_lm_head
 
 
+def _fast_inference_engine(model):
+    for candidate in (model, getattr(model, "get_base_model", lambda: None)()):
+        engine = getattr(candidate, "vllm_engine", None)
+        if engine is not None:
+            return engine
+    return None
+
+
+def _async_grpo_uses_fast_inference(model, config, kwargs):
+    if isinstance(model, str) or _fast_inference_engine(model) is None:
+        return False
+    if kwargs.get("weight_transfer") is not None or kwargs.get("rollout_worker") is not None:
+        return False
+    url = getattr(config, "vllm_server_base_url", None)
+    if url not in (None, "http://localhost:8000"):
+        logger.info(
+            f"Unsloth: AsyncGRPOTrainer uses the vLLM server at {url}, not the model's fast_inference engine."
+        )
+        return False
+    return True
+
+
+def _dataset_has_images(dataset):
+    try:
+        row = next(iter(dataset))
+    except Exception:
+        return False
+    if not isinstance(row, dict):
+        return False
+    if any(row.get(key) is not None for key in ("image", "images")):
+        return True
+    prompt = row.get("prompt")
+    if isinstance(prompt, list):
+        for message in prompt:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list) and any(
+                isinstance(part, dict) and part.get("type") in ("image", "image_url")
+                for part in content
+            ):
+                return True
+    return False
+
+
+def _start_async_grpo_vllm_server(model):
+    from ._async_grpo_vllm import UnslothAsyncVLLMServer
+    return UnslothAsyncVLLMServer(model)
+
+
+def _check_async_grpo_fast_inference(async_module, model, train_dataset):
+    if not hasattr(async_module, "select_adapter_sync"):
+        raise ValueError(
+            "Unsloth: AsyncGRPOTrainer with fast_inference=True syncs a LoRA adapter, which needs TRL >= 1.14. "
+            "Upgrade TRL, or load with fast_inference=False and run a separate vLLM server."
+        )
+    if not hasattr(model, "peft_config") or getattr(model, "load_lora", None) is None:
+        raise ValueError(
+            "Unsloth: with fast_inference=True, vLLM generates from the same base weights the trainer holds, so "
+            "AsyncGRPOTrainer can only train a LoRA adapter on top of them. Call FastLanguageModel.get_peft_model "
+            "(or FastVisionModel.get_peft_model) first; for full fine-tuning load with fast_inference=False and "
+            "run a separate vLLM server."
+        )
+    if _dataset_has_images(train_dataset):
+        raise ValueError(
+            "Unsloth: TRL's AsyncGRPOTrainer sends token ids only to vLLM, so image prompts are not supported. "
+            "Use GRPOTrainer for image prompts."
+        )
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
@@ -4294,6 +4363,7 @@ def patch_trl_async_grpo():
 
     trainer_class = async_module.AsyncGRPOTrainer
     original_init = trainer_class.__init__
+    original_train = getattr(trainer_class, "train", None)
 
     @functools.wraps(original_init)
     def __init__(self, model, *args, **kwargs):
@@ -4305,9 +4375,48 @@ def patch_trl_async_grpo():
                 args = (args[0], config, *args[2:])
             else:
                 kwargs["args"] = config
-        original_init(self, model, *args, **kwargs)
+        server = None
+        if _async_grpo_uses_fast_inference(model, config, kwargs):
+            train_dataset = args[2] if len(args) >= 3 else kwargs.get("train_dataset")
+            _check_async_grpo_fast_inference(async_module, model, train_dataset)
+            server = _start_async_grpo_vllm_server(model)
+            config.vllm_server_base_url = server.url
+            trainable = {id(p) for p in model.parameters() if p.requires_grad}
+        try:
+            original_init(self, model, *args, **kwargs)
+            if server is not None:
+                # TRL unfreezes a VLM's text model and LM head; those are the weights vLLM serves from.
+                for p in model.parameters():
+                    if p.requires_grad and id(p) not in trainable:
+                        p.requires_grad_(False)
+                if not getattr(self, "_lora_sync", False):
+                    raise ValueError(
+                        "Unsloth: with fast_inference=True, vLLM and the trainer share the base weights, so "
+                        "AsyncGRPOTrainer can only sync a plain LoRA adapter. Drop modules_to_save, DoRA and "
+                        "bias training, or load with fast_inference=False and run a separate vLLM server."
+                    )
+        except BaseException:
+            if server is not None:
+                server.stop()
+            raise
+        if server is not None:
+            self._unsloth_vllm_server = server
+            weakref.finalize(self, server.stop)
 
     trainer_class.__init__ = __init__
+    if original_train is not None:
+
+        @functools.wraps(original_train)
+        def train(self, *args, **kwargs):
+            try:
+                return original_train(self, *args, **kwargs)
+            finally:
+                server = getattr(self, "_unsloth_vllm_server", None)
+                if server is not None:
+                    # The rollout process is gone; drop the requests it left in flight.
+                    server.abort_all()
+
+        trainer_class.train = train
 
     if hasattr(async_module, "AsyncRolloutWorker"):
 
