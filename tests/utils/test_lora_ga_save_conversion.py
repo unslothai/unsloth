@@ -139,11 +139,18 @@ def test_native_checkpoint_still_loads(trained, tmp_path):
     torch.testing.assert_close(_logits(model), reference, atol = 1e-5, rtol = 1e-5)
 
 
-def test_wrapping_is_idempotent():
+def test_wrapping_is_idempotent(tmp_path):
+    import types
+
     model = _lora_ga_model(seed = 3407)
-    save = model.save_pretrained
+    inner = model.save_pretrained
+    # patch_saving_functions rebinds save_pretrained around the wrapper with types.MethodType.
+    model.save_pretrained = types.MethodType(lambda self, *a, **k: inner(*a, **k), model)
+    outer = model.save_pretrained
     snapshot_residual_lora_init(model, "lora_ga")
-    assert model.save_pretrained is save
+    assert model.save_pretrained is outer
+    model.save_pretrained(tmp_path)
+    assert json.load(open(tmp_path / "adapter_config.json"))["r"] == 2 * R
 
 
 def test_trainer_checkpoints_resume_and_reload(tmp_path):

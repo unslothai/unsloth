@@ -6792,9 +6792,10 @@ def save_lora_relative_to_original_base(model):
     import json
     import os
 
-    original_save = model.save_pretrained
-    if getattr(original_save, "_unsloth_residual_save", False):
+    # On the model: patch_saving_functions later rebinds save_pretrained around this wrapper.
+    if getattr(model, "_unsloth_residual_save", False):
         return
+    original_save = model.save_pretrained
     original_load = model.load_adapter
     save_signature = inspect.signature(original_save)
 
@@ -6868,7 +6869,7 @@ def save_lora_relative_to_original_base(model):
             kwargs.pop("subfolder", None)
             return original_load(tmp, adapter_name, *args, **kwargs)
 
-    save_pretrained._unsloth_residual_save = True
+    model._unsloth_residual_save = True
     model.save_pretrained = save_pretrained
     model.load_adapter = load_adapter
 
