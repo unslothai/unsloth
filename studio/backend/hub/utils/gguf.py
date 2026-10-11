@@ -284,7 +284,11 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
                 for name in quantized
                 if not _FORK_ONLY_QUANT_RE.match(extract_quant_token(name))
             ]
-            filename = next(iter(loadable or quantized), filename)
+            # An explicit group size (Q2_g64) is the pack mainline reads; the plain Q2_0 beside it is the fork's group-128 one.
+            grouped = [
+                name for name in loadable if _GROUPED_QUANT_RE.search(extract_quant_token(name))
+            ]
+            filename = next(iter(grouped or loadable or quantized), filename)
         return filename
     return gguf_files[0]
 
@@ -297,6 +301,7 @@ def _gguf_stem(filename: str) -> str:
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
 # prism-ml's PQ2_0 / PTQ1_0 are ggml types only its llama.cpp fork defines; the bundled build rejects them (#11259).
 _FORK_ONLY_QUANT_RE = re.compile(r"PT?Q[0-9]", re.IGNORECASE)
+_GROUPED_QUANT_RE = re.compile(r"_G[0-9]+$", re.IGNORECASE)
 
 
 def _select_quant_match(text: str) -> Optional[re.Match]:

@@ -535,6 +535,19 @@ def test_pick_best_gguf_skips_fork_only_packs_when_a_loadable_quant_exists():
         )
         == "Ternary-Bonsai-27B-Q2_g64.gguf"
     )
+    # A bare repo id hands over the Hub's alphabetical order, where the group-128 Q2_0 comes first.
+    assert (
+        gguf.pick_best_gguf(
+            [
+                "Ternary-Bonsai-27B-F16.gguf",
+                "Ternary-Bonsai-27B-PQ2_0.gguf",
+                "Ternary-Bonsai-27B-Q2_0.gguf",
+                "Ternary-Bonsai-27B-Q2_g64.gguf",
+                "Ternary-Bonsai-27B-dspark-Q4_1.gguf",
+            ]
+        )
+        == "Ternary-Bonsai-27B-Q2_g64.gguf"
+    )
     # Ternary-Bonsai-2-27B has nothing else quantized; its F16 needs the fork too, so keep the pack.
     assert (
         gguf.pick_best_gguf(
