@@ -451,8 +451,7 @@ class _SecurityAttributes(ctypes.Structure):
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows named mutexes are required")
 def test_runtime_gate_reads_a_holder_it_cannot_fully_open_as_busy(tmp_path):
-    # What a non-elevated opener gets for an elevated holder's mutex: SYNCHRONIZE and
-    # MUTEX_MODIFY_STATE, not MUTEX_ALL_ACCESS (#9928).
+    # The access an elevated holder's mutex grants a non-elevated opener (#9928).
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
     advapi32 = ctypes.WinDLL("advapi32", use_last_error = True)
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]

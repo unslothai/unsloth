@@ -831,8 +831,7 @@ mod studio_runtime_launch_guard_tests {
         acquire_named_studio_runtime_launch_guard(&name).unwrap();
     }
 
-    // An elevated holder's mutex grants a non-elevated opener SYNCHRONIZE and
-    // MUTEX_MODIFY_STATE but not MUTEX_ALL_ACCESS (#9928).
+    // The access an elevated holder's mutex grants a non-elevated opener (#9928).
     #[test]
     fn a_holder_that_denies_full_access_reads_as_busy() {
         use windows_sys::Win32::Security::{
