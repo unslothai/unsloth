@@ -407,3 +407,31 @@ def test_tiny_family_routes_and_generates(name):
     )
     assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-4000:]
     assert "SAMPLER_OK" in out.stdout
+
+
+def test_diffusion_lora_init_follows_random_state():
+    import torch.nn as nn
+
+    from unsloth.models.diffusion import FastDiffusionModel
+
+    class Toy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(model_type = "toy", to_dict = lambda: {})
+            self.q_proj = nn.Linear(8, 8)
+
+        def forward(self, x):
+            return self.q_proj(x)
+
+    def lora_a(seed):
+        torch.manual_seed(seed + 1)  # perturb the global RNG: only random_state may decide the init
+        model = FastDiffusionModel.get_peft_model(
+            Toy(),
+            r = 4,
+            target_modules = ["q_proj"],
+            use_gradient_checkpointing = False,
+            random_state = 3407,
+        )
+        return next(p for n, p in model.named_parameters() if "lora_A" in n).detach().clone()
+
+    assert torch.equal(lora_a(0), lora_a(1))

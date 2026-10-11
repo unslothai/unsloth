@@ -20,7 +20,7 @@ bit-identical to transformers), keeping only the safe conveniences: 4bit/8bit lo
 import os
 import re
 import torch
-from transformers import AutoConfig, AutoProcessor, AutoTokenizer
+from transformers import AutoConfig, AutoProcessor, AutoTokenizer, set_seed
 from unsloth_zoo.hf_utils import add_dtype_kwargs
 
 from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
@@ -536,7 +536,25 @@ class FastDiffusionModel:
                 profile.lora_target_modules if profile is not None else DIFFUSION_LORA_TARGETS
             )
 
-        # Other Unsloth-only kwargs (offload_layers, finetune_* flags, ...) do not apply to this path.
+        # Unsloth-only layer / offload options do not apply to this path: say so rather than drop them silently.
+        ignored = sorted(
+            k
+            for k in (
+                "layers_to_transform",
+                "layers_pattern",
+                "finetune_last_n_layers",
+                "target_parameters",
+                "qat_scheme",
+                "offload_layers",
+                "checkpoint_skip_layers",
+            )
+            if kwargs.get(k) not in (None, 0, False, [], ())
+        )
+        if ignored:
+            logger.warning(
+                f"Unsloth: {', '.join(ignored)} {'is' if len(ignored) == 1 else 'are'} not supported for "
+                "text-diffusion models and will be ignored."
+            )
         lora_kwargs = dict(
             r = r,
             lora_alpha = lora_alpha,
@@ -571,6 +589,8 @@ class FastDiffusionModel:
             if hasattr(model, "enable_input_require_grads"):
                 model.enable_input_require_grads()
 
+        if random_state is not None:
+            set_seed(random_state)
         model = peft_get_peft_model(model, lora_config)
         model = _refuse_tied_lora_merge(model)
         model._unsloth_slow_diffusion = True
