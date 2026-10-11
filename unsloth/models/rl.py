@@ -4628,8 +4628,15 @@ def patch_trl_async_grpo():
                     processing_class = _without_instance_bound_methods(kwargs["processing_class"])
                     # That process imports TRL without Unsloth, so it matches chat templates by exact string.
                     try:
-                        from ._trl_tool_templates import with_trl_known_chat_template
+                        from ._trl_tool_templates import (
+                            with_response_parser,
+                            with_trl_known_chat_template,
+                        )
                         processing_class = with_trl_known_chat_template(processing_class)
+                        processing_class = with_response_parser(
+                            processing_class,
+                            bool(kwargs.get("tools") or kwargs.get("environment_factory")),
+                        )
                     except Exception as e:
                         logger.info(
                             f"Unsloth: Could not map the chat template for the rollout process: {e}"

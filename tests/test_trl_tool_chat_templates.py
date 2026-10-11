@@ -12,6 +12,7 @@ other outcome of TRL unchanged.
 from __future__ import annotations
 
 import copy
+import pickle
 import importlib.util
 import pathlib
 import sys
@@ -206,3 +207,33 @@ def test_typed_tool_arguments_pick_the_right_training_family(patched):
         edited = "{#- Chat template fixes by Unsloth #}\n" + getattr(trl_utils, name)
         found = [n for n, _ in module._matching_families(trl_utils, tokenizer, edited, "conversation")]
         assert found == [name]
+
+
+def _child_accepts(processing_class, originals):
+    # What AsyncGRPO's rollout worker does without Unsloth: skip TRL's match only when a parser is already set.
+    processing_class = pickle.loads(pickle.dumps(processing_class))
+    if all(getattr(processing_class, name, None) is None for name in ("response_template", "response_schema")):
+        originals["add_response_schema"](processing_class)
+    return processing_class
+
+
+def test_rollout_copy_carries_the_resolved_parser(patched):
+    module, originals = patched
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    for uses_tools in (True, False):
+        handed = module.with_response_parser(tokenizer, uses_tools)
+        assert handed is not tokenizer and _parser(tokenizer) == (None, None)
+        reference = originals["add_response_schema"](_tokenizer(trl_utils.qwen3_chat_template))
+        assert _parser(_child_accepts(handed, originals)) == _parser(reference)
+        assert handed.chat_template == UNSLOTH_QWEN3
+
+
+def test_rollout_copy_without_tools_needs_no_family(patched):
+    module, originals = patched
+    tokenizer = _tokenizer(PLAIN)
+    assert module.with_response_parser(tokenizer, True) is tokenizer
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        _child_accepts(tokenizer, originals)
+    handed = module.with_response_parser(tokenizer, False)
+    assert _child_accepts(handed, originals).chat_template == PLAIN
+    assert _parser(tokenizer) == (None, None)

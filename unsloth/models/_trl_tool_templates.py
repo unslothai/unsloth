@@ -8,6 +8,7 @@
 __all__ = [
     "patch_trl_tool_chat_templates",
     "with_trl_known_chat_template",
+    "with_response_parser",
 ]
 
 import copy
@@ -371,3 +372,42 @@ def patch_trl_tool_chat_templates():
         _rebind(name, original, wrap(original, trl_module))
         patched = True
     return patched
+
+
+def with_response_parser(processing_class, uses_tools):
+    """A copy carrying the tool-call parser resolved here, for processes that run TRL without Unsloth: AsyncGRPO's
+    rollout worker calls add_response_schema on every run, tools or not, and skips it only when a parser is set."""
+    try:
+        import trl.chat_template_utils as trl_module
+    except Exception:
+        return processing_class
+    tokenizer = _tokenizer_of(processing_class)
+    if any(
+        getattr(holder, attribute, None) is not None
+        for holder in (processing_class, tokenizer)
+        for attribute in _PARSER_ATTRIBUTES
+    ):
+        return processing_class
+    clone = copy.copy(processing_class)
+    clone_tokenizer = clone
+    if processing_class is not tokenizer:
+        clone.tokenizer = clone_tokenizer = copy.copy(tokenizer)
+    try:
+        trl_module.add_response_schema(clone)
+    except ValueError:
+        if uses_tools:
+            return processing_class
+        # Without tools the worker never parses a completion, so any parser satisfies it.
+        attribute = (
+            "response_template"
+            if getattr(trl_module, "_SUPPORTS_RESPONSE_TEMPLATE", False)
+            else "response_schema"
+        )
+        setattr(clone_tokenizer, attribute, {})
+    # The worker checks the processor itself, while add_response_schema sets the inner tokenizer.
+    if clone is not clone_tokenizer:
+        for attribute in _PARSER_ATTRIBUTES:
+            value = getattr(clone_tokenizer, attribute, None)
+            if value is not None:
+                setattr(clone, attribute, value)
+    return clone
