@@ -3058,6 +3058,8 @@ def _claude_local_env(
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+        # claude sets aside min(max output, 20k) plus 13k of the window before compacting; with its 32k default output a 32k window leaves nothing, so it compacts every turn until it aborts.
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(opencode_output_limit(int(window)))
     if extra_body:
         env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(extra_body)
     return env
