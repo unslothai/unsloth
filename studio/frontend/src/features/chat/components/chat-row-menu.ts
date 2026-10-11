@@ -204,10 +204,12 @@ export async function regenerateChatTitle(
       : raw;
     const excerpt = titleRefreshExcerpt(branch);
     if (!excerpt) return "empty";
-    // The newest answer only: an unstamped one (stopped, interrupted) must not fall back to an
-    // older answer's provider, which never saw the later turns.
-    const latestAnswer = [...branch].reverse().find((m) => m.role === "assistant");
-    const answeredWith = answeringCheckpoint(latestAnswer?.metadata?.custom);
+    // Only a branch that ends in a stamped answer names a recipient: an unstamped one (stopped,
+    // interrupted) or a trailing user turn (its answer deleted) must not fall back to an older
+    // answer's provider, which never saw the later turns.
+    const lastMessage = branch.at(-1);
+    const answeredWith =
+      lastMessage?.role === "assistant" ? answeringCheckpoint(lastMessage.metadata?.custom) : "";
     const checkpoint = titleCheckpoint(answeredWith, selected);
     const serving = checkpoint ? await titleModelServing(checkpoint) : false;
     const title =
