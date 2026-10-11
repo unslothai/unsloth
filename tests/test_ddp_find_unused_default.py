@@ -128,6 +128,8 @@ def test_skippable_models_keep_transformers_default(ddp_env, make):
         {"encoder_layerdrop": 0.1},
         {"decoder_layerdrop": 0.1},
         {"add_cross_attention": True},
+        {"speech_encoder_layerdrop": 0.1},
+        {"is_encoder_decoder": True},
     ],
 )
 def test_moe_and_layerdrop_config_keys_keep_default(ddp_env, extra):
@@ -216,6 +218,13 @@ def test_layerdrop_in_a_composite_encoder_config_keeps_default(ddp_env):
     model = _lora(_llama())
     model.get_base_model().config.encoder = types.SimpleNamespace(layerdrop = 0.1)
     assert _helper()(_args(), model) is None
+
+
+def test_non_causal_lm_keeps_default(ddp_env):
+    # SeamlessM4T-style models carry generation-only submodules (t2u_model) a training forward never runs.
+    model = _llama()
+    model.__class__ = type("TinyForSpeechToSpeech", (type(model),), {})
+    assert _helper()(_args(), _lora(model)) is None
 
 
 def test_lora_on_an_output_head_alias_keeps_default(ddp_env):

@@ -83,9 +83,9 @@ def _config_may_skip(config):
         # Optional cross-attention (GPT-2 style) only runs when encoder states are passed.
         if getattr(c, "add_cross_attention", False) and not getattr(c, "is_encoder_decoder", False):
             return True
-        for key in ("layerdrop", "encoder_layerdrop", "decoder_layerdrop"):
-            value = getattr(c, key, 0)
-            if isinstance(value, (int, float)) and value > 0:
+        # layerdrop, encoder_layerdrop, decoder_layerdrop, speech_encoder_layerdrop, ...
+        for key, value in getattr(c, "__dict__", {}).items():
+            if "layerdrop" in key and isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
                 return True
     return False
 
@@ -120,7 +120,11 @@ def _lora_uses_every_trainable_param(model):
         if getattr(cfg, attr, None):
             return False
     base = getattr(model, "get_base_model", lambda: None)()
-    if _config_may_skip(getattr(base, "config", None) or getattr(model, "config", None)):
+    config = getattr(base, "config", None) or getattr(model, "config", None)
+    # Decoder-only causal LMs only: encoder-decoder and speech models can leave adapters idle (t2u_model).
+    if getattr(config, "is_encoder_decoder", False) or not type(base).__name__.endswith(("ForCausalLM", "LMHeadModel")):
+        return False
+    if _config_may_skip(config):
         return False
     # The output head under any name (output, output_layer, embed_out): fused losses read its weight.
     try:
