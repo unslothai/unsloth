@@ -17,8 +17,10 @@ error placeholders, session banners, cookie prompts) from the result.
 from __future__ import annotations
 
 import html
+import itertools
 import re
 import secrets
+import unicodedata
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
@@ -207,6 +209,125 @@ _MAX_REPEATED_CELL_CHARS = 200
 # floor per scope candidate once the page-wide total is spent, so an earlier decoy cannot starve a later article
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
+
+# after a word, digits joined by commas / en dashes are citations (claim<sup>1,3–5</sup>); one separator per
+# step keeps the match linear. Hyphen / minus stay exponents (10<sup>-3</sup>), and so do thousands (1,000)
+_CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
+_THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
+_PLAIN_SUFFIXES = frozenset(
+    {"st", "nd", "rd", "th", "tm", "sm", "mc", "md", "(tm)", "(sm)", "(r)", "(c)", "mr", "m.r."}
+)
+# French / Romance ordinals after a digit (1er, 2e, 1º, 2ª); after a letter "e" can be Euler's number
+# XVe siècle, François Ier: a Roman numeral takes ordinals like a digit
+_ROMAN_NUMERAL_TAIL = re.compile(r"(?<![^\W\d_])[IVXLCDM]+$")
+# French superior abbreviations: Mme, Mlle, Mgr, Dr, Pr, no, St, Cie; keyed on the whole base word
+_SUPERIOR_ABBREVIATIONS = {
+    "M": frozenset({"me", "mes", "lle", "lles", "gr", "e", "r", "rs", "s"}),
+    "D": frozenset({"r", "rs", "re", "res"}),
+    "P": frozenset({"r", "rs", "re", "res"}),
+    "n": frozenset({"o", "os"}),
+    "N": frozenset({"o", "os"}),
+    "S": frozenset({"t", "te", "ts", "tes", "r"}),
+    "J": frozenset({"r"}),
+    "C": frozenset({"ie", "ies"}),
+}
+_LAST_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_]+$")
+
+
+def _last_word(text: str) -> str:
+    match = _LAST_WORD.search(text)
+    return match.group() if match else ""
+
+
+# French second / seconde (2d, 2de, 2ds, 2des) only after a 2: 10<sup>d</sup> stays a power
+_SECOND_SUFFIXES = frozenset({"d", "de", "ds", "des"})
+_DIGIT_ORDINAL_SUFFIXES = frozenset(
+    {
+        "e",
+        "es",
+        "er",
+        "ers",
+        "re",
+        "res",
+        "ère",
+        "ères",
+        "ème",
+        "èmes",
+        "eme",
+        "emes",
+        "nd",
+        "nde",
+        "bis",
+        "ter",
+        "quater",
+        "quinquies",
+        "am",
+        "pm",
+        "a.m.",
+        "p.m.",
+        "ndes",
+        "nds",
+        "º",
+        "ª",
+        "o",
+        "a",
+    }
+)
+_MD_DELIMITERS = "*_`"
+_STRIP_MD_DELIMITERS = str.maketrans("", "", _MD_DELIMITERS)
+# SiteLinks wraps same-site links in invisible \x00 markers; the base is the text before them
+_SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
+# parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
+_SUP_BASE_SCAN_PARTS = 8
+_SUP_BASE_SCAN_CHARS = 128
+# a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
+_BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
+# split cents: $19<sup>99</sup> is a price, not an exponent
+_PRICE_TAIL = re.compile(r"(\S)\s?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
+# ISO 4217 codes: CHF 19<sup>95</sup> is a price like $19<sup>99</sup>
+_CURRENCY_CODES = frozenset(
+    (
+        "AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN "
+        "BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD "
+        "FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY "
+        "KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP "
+        "MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR "
+        "RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP SVC STN SYP SZL THB TJS TMT TND "
+        "TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VED VES VND VUV WST XAF XCD XCG XOF XPF YER ZAR ZMW "
+        "ZWG ZWL"
+    ).split()
+)
+_THREE_DECIMAL_CURRENCIES = frozenset({"BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"})
+# no minor unit: JPY 10<sup>12</sup> is a power, never cents
+_ZERO_DECIMAL_CURRENCIES = frozenset(
+    "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF".split()
+)
+_CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
+# note markers that keep their plain-text form, like Wikipedia's class="reference"
+_FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
+# class token parts (split on - and _) starting with these mark a note too: footnote-reference, citation
+_FOOTNOTE_CLASS_PREFIXES = (
+    "footnote",
+    "noteref",
+    "cite",
+    "citation",
+    "endnote",
+    "fnref",
+    "reference",
+)
+_CLASS_PART_SPLIT = re.compile(r"[-_]")
+# deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
+_MAX_SUP_DEPTH = 8
+
+
+def _visible_tail(text: str) -> str:
+    """*text* without the emphasis/code delimiters and link markers the renderer appended."""
+    while True:
+        trimmed = _SITE_LINK_MARKER_TAIL.sub("", text.rstrip(_MD_DELIMITERS))
+        if trimmed == text:
+            return text
+        text = trimmed
+
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
 _HEADER_LINK_DENSITY = 0.93
@@ -399,6 +520,106 @@ class _TableFrame:
         self.parts: list[str] = []
 
 
+class _TitleButtonScan:
+    """Find buttons that hold their heading's whole title (``<h3><button>Question</button></h3>``, an accordion
+    trigger): the heading's first visible button with text, with no visible heading text outside it. Fed the
+    renderer's own tokens, so it parses exactly as the renderer does; the kept buttons render on a second pass."""
+
+    def __init__(self) -> None:
+        self.keep: set[tuple[int, int]] = set()  # HTMLParser.getpos() of each kept <button>
+        self._open: list[str] = []
+        self._closable_open = (
+            0  # open tags with an optional end tag, as _MarkdownRenderer counts them
+        )
+        self._muted: list[int] = []  # open-tag indices of hidden / skipped subtrees
+        self._button_at: int | None = None
+        self._button_frame: list | None = None  # heading whose candidate is the open button
+        # visible text outside any button, counted so a heading reads "text since I opened" in O(1)
+        self._text_seq = 0
+        # per open heading: [open-tag index, candidate position or None, candidate has text, _text_seq at open]
+        self._headings: list[list] = []
+
+    def starttag(self, tag: str, attrs: list[tuple[str, str | None]], pos: tuple[int, int]) -> None:
+        self._close_implicit(tag)
+        if tag in _VOID_TAGS:
+            return
+        attr_dict = dict(attrs)
+        self._open.append(tag)
+        if tag in _IMPLICIT_CLOSERS:
+            self._closable_open += 1
+        index = len(self._open) - 1
+        if _is_hidden_element(attr_dict) or (tag in _SKIP_TAGS and tag != "button"):
+            self._muted.append(index)
+        if tag in _HEADING_TAGS or _is_aria_heading(attr_dict):
+            self._headings.append([index, None, False, self._text_seq])
+        elif tag == "button" and self._button_at is None:
+            self._button_at = index
+            frame = self._headings[-1] if self._headings else None
+            if frame is not None and frame[1] is None and not self._muted:
+                frame[1] = pos
+                self._button_frame = frame
+
+    def endtag(self, tag: str) -> None:
+        for i in range(len(self._open) - 1, -1, -1):
+            if self._open[i] == tag:
+                self._pop_to(i)
+                return
+
+    def data(self, data: str) -> None:
+        if self._muted or not data.strip():
+            return
+        if self._button_at is None:
+            self._text_seq += 1
+        elif self._button_frame is not None:
+            self._button_frame[2] = True
+
+    def finish(self) -> None:
+        # a page cut inside a heading (the fetch cap) still keeps its title
+        self._close_headings(0)
+
+    def _close_implicit(self, tag: str) -> None:
+        """The renderer's optional-end-tag recovery (``_MarkdownRenderer._close_implicit``), so both see one tree."""
+        if not self._closable_open:
+            return
+        barriers = _CLOSE_BARRIERS.get(tag, ())
+        while True:
+            close_at = None
+            for i in range(len(self._open) - 1, -1, -1):
+                name = self._open[i]
+                if tag in _IMPLICIT_CLOSERS.get(name, ()):
+                    close_at = i
+                    break
+                if name in barriers:
+                    break
+            if close_at is None:
+                return
+            self._pop_to(close_at)
+
+    def _pop_to(self, i: int) -> None:
+        if self._button_at is not None and self._button_at >= i:
+            self._button_at = None
+            # an icon-only control releases the slot for the trigger after it
+            if self._button_frame is not None and not self._button_frame[2]:
+                self._button_frame[1] = None
+            self._button_frame = None
+        while self._muted and self._muted[-1] >= i:
+            self._muted.pop()
+        self._close_headings(i)
+        self._closable_open -= sum(1 for name in self._open[i:] if name in _IMPLICIT_CLOSERS)
+        del self._open[i:]
+
+    def _close_headings(self, i: int) -> None:
+        while self._headings and self._headings[-1][0] >= i:
+            _, button, has_text, seq = self._headings.pop()
+            if button is not None and has_text and self._text_seq == seq:
+                self.keep.add(button)
+
+
+# (len, hash) of recent pages -> their title buttons, so main-content passes over one page scan it once
+_TITLE_BUTTON_CACHE: dict[tuple[int, int], frozenset[tuple[int, int]]] = {}
+_TITLE_BUTTON_CACHE_SIZE = 4
+
+
 class _MarkdownRenderer(HTMLParser):
     """HTMLParser subclass that emits Markdown tokens into a list.
 
@@ -417,6 +638,9 @@ class _MarkdownRenderer(HTMLParser):
         page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
+        # getpos() of buttons that carry their heading's title, found by _TitleButtonScan
+        self.title_buttons: frozenset[tuple[int, int]] = frozenset()
+        self._title_scan: _TitleButtonScan | None = None
         self._site_links = site_links
         self._out: list[str] = []
         self._skip_depth: int = 0
@@ -496,6 +720,12 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
+        # per open <sup>: its _open_tags index, then (output list, start), the (copy, start) pairs that tee the
+        # same text, the base text and whether a currency amount precedes it
+        self._sup_starts: list[
+            tuple[int, tuple[list[str], int, list[tuple[list[str], int]], str, int] | None]
+        ] = []
+
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
 
@@ -538,22 +768,106 @@ class _MarkdownRenderer(HTMLParser):
         # Tally once, on the emit reaching the frame; counting again on flush doubled it.
         if frame is not None and not nested_open:
             frame.rendered_chars += len(measured.strip())
-            frame.parts.append(text)
-            return
+        elif self._in_link and self._heading_marks:
+            self._link_heading_parts.append(text)
+        self._emit_target().append(text)
+
+    def _emit_target(self) -> list[str]:
+        frame = self._header_stack[-1] if self._header_stack else None
+        if frame is not None and not self._nested_buffer_open(frame):
+            return frame.parts
         if self._in_link:
-            self._link_text_parts.append(text)
-            if self._heading_marks:
-                self._link_heading_parts.append(text)
-        elif self._in_cell:
-            self._cell_parts.append(text)
-        elif self._in_pre:
-            self._pre_parts.append(text)
-        elif self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
-            self._table_stack[-1].parts.append(text)
-        elif self._bq_stack:
-            self._bq_stack[-1].append(text)
-        else:
-            self._out.append(text)
+            return self._link_text_parts
+        if self._in_cell:
+            return self._cell_parts
+        if self._in_pre:
+            return self._pre_parts
+        if self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
+            return self._table_stack[-1].parts
+        if self._bq_stack:
+            return self._bq_stack[-1]
+        return self._out
+
+    def _sup_base(self, target: list[str]) -> str:
+        """The visible text a <sup> raises (base = its last character), or "" when none: after whitespace or
+        sentence punctuation it is a footnote marker (``fact.<sup>1</sup>``,
+        ``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
+        for part in itertools.islice(reversed(target), _SUP_BASE_SCAN_PARTS):
+            part = part[-_SUP_BASE_SCAN_CHARS:]
+            part = _visible_tail(part)
+            if part:
+                base = part[-1]
+                return part if base.isalnum() or base in ")]}|）］｝" else ""
+        return ""
+
+    @staticmethod
+    def _after_price(target: list[str]) -> int:
+        """Digits of the minor unit when *target* ends in a currency amount ($19 -> 2, KWD 19 -> 3), else 0."""
+        context = _visible_tail("".join(p[-40:] for p in target[-8:])[-40:])
+        context = context.translate(_STRIP_MD_DELIMITERS)
+        price = _PRICE_TAIL.search(context)
+        # any Unicode currency sign (Sc): $, €, ₺, ₱, ...; or an ISO code: CHF 19
+        if price and unicodedata.category(price.group(1)) == "Sc":
+            # ₫ ₲ ₩ have no minor unit (¥ is shared with two-decimal CNY, so it stays 2)
+            return 0 if price.group(1) in "₫₲₩" else 2
+        code = _CODE_PRICE_TAIL.search(context)
+        if (
+            not code
+            or code.group(1) not in _CURRENCY_CODES
+            or code.group(1) in _ZERO_DECIMAL_CURRENCIES
+        ):
+            return 0
+        return 3 if code.group(1) in _THREE_DECIMAL_CURRENCIES else 2
+
+    def _sup_copies(self) -> list[tuple[list[str], int]]:
+        copies = [self._link_heading_parts, self._seg_heading_texts]
+        if self._header_stack:
+            copies.append(self._header_stack[-1].heading_parts)
+        return [(copy, len(copy)) for copy in copies]
+
+    def _finish_sup(self, opened) -> None:
+        if opened is None or opened[0] is not self._emit_target():
+            return
+        target, start, copies, base, after_price = opened
+        joined = "".join(target[start:])
+        raw = joined.strip()
+        shown = self._site_links.clean(raw) if self._site_links is not None else raw
+        visible = shown.strip(_MD_DELIMITERS)
+        if (
+            not visible
+            or "\n" in visible
+            or visible[0] == "["
+            # $19<sup>.99</sup> / €19<sup>,99</sup> are split cents; 10<sup>.5</sup> with no currency is a power
+            or (visible[0] in ".," and after_price)
+            or not any(c.isalnum() for c in visible)
+            or visible.lower() in _PLAIN_SUFFIXES
+            or (
+                len(_last_word(base)) > 1
+                and _CITATION_LIST.fullmatch(visible)
+                and ("–" in visible or not _THOUSANDS.fullmatch(visible))
+            )
+            or (base[-1] == "2" and visible.lower() in _SECOND_SUFFIXES)
+            or (
+                (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
+                and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
+            )
+            or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
+            # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
+            or (len(visible) == after_price and visible.isdigit())
+        ):
+            return
+        # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
+        token = shown.strip(_MD_DELIMITERS)
+        bare = _BARE_EXPONENT.fullmatch(token) or (
+            token.startswith("(") and token.endswith(")") and token.count("(") == 1
+        )
+        exponent = f"^{raw}" if bare else f"^({raw})"
+        exponent += joined[len(joined.rstrip()) :]
+        target[start:] = [exponent]
+        # headings are teed into these copies; a stale one renders "E=mc2" or skews the prose gate
+        for copy, copy_start in copies:
+            if "".join(copy[copy_start:]) == joined:
+                copy[copy_start:] = [exponent]
 
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
@@ -776,6 +1090,9 @@ class _MarkdownRenderer(HTMLParser):
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
         del self._open_tags[index:]
+        # a <sup> an ancestor closed (<p>x<sup>2</p>) is gone; a kept frame would fill the depth cap
+        while self._sup_starts and self._sup_starts[-1][0] >= index:
+            self._sup_starts.pop()
 
     def _close_implicit(self, tag: str) -> None:
         """HTML5 optional-end-tag recovery for a start tag about to open.
@@ -972,6 +1289,11 @@ class _MarkdownRenderer(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if self._title_scan is not None:
+            self._title_scan.starttag(tag, attrs, self.getpos())
+        title_button = (
+            tag == "button" and bool(self.title_buttons) and self.getpos() in self.title_buttons
+        )
 
         if self._skip_depth:
             if tag in _SKIP_TAGS:
@@ -982,7 +1304,7 @@ class _MarkdownRenderer(HTMLParser):
         # <p>, releasing its hidden mark so following siblings render.
         self._close_implicit(tag)
 
-        if tag in _SKIP_TAGS:
+        if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             self._skip_depth += 1
             return
 
@@ -1007,6 +1329,36 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "br":
             self._emit("\n")
+
+        elif tag == "sup":
+            target = self._emit_target()
+            reference = (
+                any(
+                    token in _FOOTNOTE_CLASSES
+                    or any(
+                        part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
+                        for part in _CLASS_PART_SPLIT.split(token)
+                    )
+                    for token in (attr_dict.get("class") or "").lower().split()
+                )
+                or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+            )
+            # past the cap nothing is tracked, so the stack stays bounded on hostile pages
+            if len(self._sup_starts) < _MAX_SUP_DEPTH:
+                self._sup_starts.append(
+                    (
+                        len(self._open_tags) - 1,
+                        None
+                        if reference or not (base := self._sup_base(target))
+                        else (
+                            target,
+                            len(target),
+                            self._sup_copies(),
+                            base,
+                            self._after_price(target) if base[-1].isdigit() else 0,
+                        ),
+                    )
+                )
 
         elif tag in _BLOCK_TAGS:
             if not self._li_marker_pending:
@@ -1083,12 +1435,26 @@ class _MarkdownRenderer(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if self._title_scan is not None:
+            self._title_scan.endtag(tag)
 
-        if tag in _SKIP_TAGS:
+        # a kept title button closes through _exit_tag; skipped ones always raised _skip_depth
+        if tag in _SKIP_TAGS and (self._skip_depth or tag != "button"):
             self._skip_depth = max(0, self._skip_depth - 1)
             return
         if self._skip_depth:
             return
+
+        closing_sup = None
+        # O(1): only a <sup> that is still the innermost open tag converts; malformed nesting drops on unwind
+        if (
+            tag == "sup"
+            and self._sup_starts
+            and self._open_tags
+            and self._open_tags[-1] == "sup"
+            and self._sup_starts[-1][0] == len(self._open_tags) - 1
+        ):
+            closing_sup = self._sup_starts.pop()[1]
 
         if not self._exit_tag(tag):
             return
@@ -1106,6 +1472,9 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
+
+        elif tag == "sup":
+            self._finish_sup(closing_sup)
 
         elif tag in _BLOCK_TAGS:
             self._emit("\n\n")
@@ -1155,6 +1524,8 @@ class _MarkdownRenderer(HTMLParser):
         return self._scope_tags is not None and self._scope_depth == 0
 
     def handle_data(self, data: str) -> None:
+        if self._title_scan is not None:
+            self._title_scan.data(data)
         if self._text_suppressed():
             return
         if self._in_pre:
@@ -1180,16 +1551,20 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_entityref(self, name: str) -> None:
+        text = html.unescape(f"&{name};")
+        if self._title_scan is not None:
+            self._title_scan.data(text)
         if self._text_suppressed():
             return
-        text = html.unescape(f"&{name};")
         self._count_header_text(text)
         self._emit(text)
 
     def handle_charref(self, name: str) -> None:
+        text = html.unescape(f"&#{name};")
+        if self._title_scan is not None:
+            self._title_scan.data(text)
         if self._text_suppressed():
             return
-        text = html.unescape(f"&#{name};")
         self._count_header_text(text)
         self._emit(text)
 
@@ -1356,18 +1731,37 @@ def _new_renderer(
     span_char_limit: int | None = None,
     header_decisions: list[bool] | None = None,
 ) -> _MarkdownRenderer:
-    renderer = _MarkdownRenderer(
-        scope_tags = scope_tags,
-        strip_header = strip_header,
-        site_links = site_links,
-        span_char_limit = 2 * len(source_html) if span_char_limit is None else span_char_limit,
-        header_decisions = header_decisions,
-        page_span_limit = 2 * len(source_html),
-    )
-    renderer.feed(source_html)
-    renderer.close()
-    renderer.flush_pending()
-    return renderer
+    def build(
+        title_buttons: frozenset[tuple[int, int]], scan: _TitleButtonScan | None
+    ) -> _MarkdownRenderer:
+        renderer = _MarkdownRenderer(
+            scope_tags = scope_tags,
+            strip_header = strip_header,
+            site_links = site_links,
+            span_char_limit = 2 * len(source_html) if span_char_limit is None else span_char_limit,
+            header_decisions = header_decisions,
+            page_span_limit = 2 * len(source_html),
+        )
+        renderer.title_buttons = title_buttons
+        renderer._title_scan = scan
+        renderer.feed(source_html)
+        renderer.close()
+        renderer.flush_pending()
+        return renderer
+
+    key = (len(source_html), hash(source_html))
+    known = _TITLE_BUTTON_CACHE.get(key)
+    if known is not None:
+        return build(known, None)
+    scan = _TitleButtonScan()
+    renderer = build(frozenset(), scan)
+    scan.finish()
+    keep = frozenset(scan.keep)
+    if len(_TITLE_BUTTON_CACHE) >= _TITLE_BUTTON_CACHE_SIZE:
+        _TITLE_BUTTON_CACHE.clear()  # safe under concurrent fetches, unlike evicting one by one
+    _TITLE_BUTTON_CACHE[key] = keep
+    # only a page that has accordion titles pays a second pass
+    return build(keep, None) if keep else renderer
 
 
 def _render(
@@ -1386,20 +1780,8 @@ def _select_main_scope_render(
     tag: str,
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
-) -> tuple[int, str]:
-    """Length and boilerplate-stripped render of the largest single ``<tag>``
-    subtree. Sizing candidates one at a time stops many tiny sibling cards from
-    clearing the threshold together, and returning that one subtree keeps
-    unrelated siblings (related cards, comment threads) out of the output.
-
-    A candidate earns its place on the prose it RETAINED, then gets its dropped
-    header furniture added back to rank against siblings. Furniture must not buy
-    eligibility: a card whose header was the only bulk would otherwise clear the
-    gate on deleted bytes and suppress the ``<main>`` holding the real page.
-
-    Nor may it dominate: the credit is capped at the retained render, so removed
-    furniture can never be the majority of a score. Uncapped, a teaser with a
-    1000 link header outranked a sibling holding five times its real text."""
+) -> tuple[int, str, int, int]:
+    """return the best eligible score, subtree, count, and visible length; cap header credit at retained prose."""
     renderer = _new_renderer(
         source_html,
         frozenset({tag}),
@@ -1421,28 +1803,53 @@ def _select_main_scope_render(
     )
     best_len = 0
     best_render = ""
+    best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
         scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
         if site_links is not None:
             scored = site_links.clean(scored)
-        prose = _visible_chars(scored) - scoring.scope_heading_prose[i]
+        visible = _visible_chars(scored)
+        prose = visible - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
         size = len(scored) + min(scoring.scope_dropped[i], len(scored))
         if size > best_len:
             best_len = size
             best_render = rendered
-    return best_len, best_render
+            best_visible = visible
+    return (
+        best_len,
+        best_render,
+        sum(1 for seg in renderer.scope_segments if seg.strip()),
+        best_visible,
+    )
+
+
+def _render_main_document(
+    source_html: str, site_links: SiteLinks | None, span_char_limit: int
+) -> tuple[int, str]:
+    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit)
+    rendered = _strip_boilerplate_lines(_cleanup("".join(renderer._out)), site_links)
+    scoring = (
+        _new_renderer(
+            source_html,
+            None,
+            True,
+            span_char_limit = 0,
+            header_decisions = renderer.header_decisions,
+        )
+        if renderer._has_generated_spans
+        else renderer
+    )
+    scored = _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    if site_links is not None:
+        scored = site_links.clean(scored)
+    return _visible_chars(scored), rendered
 
 
 def _visible_chars(text: str) -> int:
-    """Visible characters in *text*, ignoring blank lines and link destinations.
-
-    Headings are NOT discounted here. The renderer already tallies what it marked
-    as a heading (``_seg_heading_prose``), which sees ``role="heading"``, hgroup
-    and a linked ``h1``; re-deriving that from ATX syntax could not, and running
-    both meant two answers to one question."""
+    """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
@@ -1504,46 +1911,35 @@ def html_to_markdown(
     site_links: SiteLinks | None = None,
     max_span_chars: int | None = None,
 ) -> str:
-    """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
-
-    ``<script>``, ``<style>``, and ``<head>`` are stripped entirely, as are
-    subtrees hidden from rendering (``hidden`` / ``aria-hidden="true"``).
-
-    ``main_content=True`` applies a readability-style heuristic for page
-    fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there),
-    then ``<main>``, falling back to the whole document, reduce a link-only
-    ``<header>`` to the heading it carries, and strip known boilerplate
-    fragments from the result.
-
-    ``site_links`` records the links back into the page's own site; the output is unchanged.
-
-    ``max_span_chars`` caps the cells generated for ``rowspan``/``colspan``, so a caller with a
-    smaller result budget keeps room for the text after a table.
-    """
+    """convert HTML to Markdown; main_content prefers a dominant article or main subtree, site_links records same-site links without changing output, and max_span_chars limits generated table cells."""
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     span_limit = 2 * len(source_html)
     if max_span_chars is not None:
         span_limit = min(span_limit, max_span_chars)
     rendered = ""
+    full_rendered = ""
     if main_content:
-        for scope_tag in ("article", "main"):
-            # Render only the chosen subtree so sibling <article>/<main> elements do not leak in.
-            length, rendered = _select_main_scope_render(
-                source_html, scope_tag, site_links, span_limit
+        length, rendered, articles, article_visible = _select_main_scope_render(
+            source_html, "article", site_links, span_limit
+        )
+        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
+            main_length, main_rendered, _, main_visible = _select_main_scope_render(
+                source_html, "main", site_links, span_limit
             )
-            if length >= _MIN_MAIN_CONTENT_CHARS:
-                break
-        else:
-            rendered = _strip_boilerplate_lines(
-                _render(
-                    source_html,
-                    None,
-                    strip_header = True,
-                    site_links = site_links,
-                    span_char_limit = span_limit,
-                ),
-                site_links,
-            )
+            if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
+                main_length, full_rendered = _render_main_document(
+                    source_html, site_links, span_limit
+                )
+                main_rendered = full_rendered
+                main_visible = main_length
+            if main_length >= _MIN_MAIN_CONTENT_CHARS and (
+                length < _MIN_MAIN_CONTENT_CHARS or main_visible > 2 * article_visible
+            ):
+                length, rendered = main_length, main_rendered
+        if length < _MIN_MAIN_CONTENT_CHARS:
+            if not full_rendered:
+                _, full_rendered = _render_main_document(source_html, site_links, span_limit)
+            rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
     return site_links.finish(rendered) if site_links is not None else rendered

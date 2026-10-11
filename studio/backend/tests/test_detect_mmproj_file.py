@@ -27,7 +27,9 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
     for k, v in fields.items():
         kb = k.encode("utf-8")
         body += struct.pack("<Q", len(kb)) + kb
-        if isinstance(v, int):
+        if isinstance(v, list):
+            body += struct.pack("<IIQ", 9, 7, len(v)) + bytes(v)
+        elif isinstance(v, int):
             body += struct.pack("<II", 4, v)
         else:
             vb = v.encode("utf-8")
@@ -491,6 +493,95 @@ def test_gemma4_finetune_pairs_by_functional_metadata(tmp_path, projection_dim, 
         assert mmproj_matches_model_family(str(model), str(projector)) == (projection_dim == 5376)
 
 
+@pytest.mark.parametrize("arch", ["qwen35", "qwen35moe"])
+@pytest.mark.parametrize(
+    "projection_dim, deepstack, paired",
+    [(2048, [False, False], True), (1024, [False, False], False), (2048, [False, True], False)],
+)
+def test_qwen35_projector_from_another_quantizer_pairs_by_function(
+    tmp_path, arch, projection_dim, deepstack, paired
+):
+    """#6305: an LM Studio Qwen3.6 weight next to Unsloth's projector; Qwen3-VL's deepstack one stays out."""
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": arch,
+            "general.basename": "Qwen_Qwen3.6",
+            f"{arch}.embedding_length": 2048,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Qwen3.6-35B-A3B",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+            "clip.projector_type": "qwen3vl_merger",
+            "clip.vision.projection_dim": projection_dim,
+            "clip.vision.is_deepstack_layers": deepstack,
+        },
+    )
+    assert detect_mmproj_file(str(model)) == (str(projector.resolve()) if paired else None)
+    assert mmproj_matches_model_family(str(model), str(projector)) == paired
+
+
+@pytest.mark.parametrize("weight_name", ["Qwen_Qwen3.5 35B A3B", "Qwen3.5 Uncensored"])
+def test_qwen35_same_width_projector_of_another_size_is_not_picked(tmp_path, weight_name):
+    """Qwen3.5 2B and 35B-A3B share width 2048, not vision towers; bartowski-style names tie otherwise."""
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": "qwen35moe",
+            "general.name": weight_name,
+            "general.basename": "Qwen_Qwen3.5",
+            "qwen35moe.embedding_length": 2048,
+        },
+    )
+    projectors = {}
+    for size in ("2B", "35B-A3B"):
+        projectors[size] = _gguf_with_general(
+            tmp_path / f"mmproj-Qwen_Qwen3.5-{size}-bf16.gguf",
+            {
+                "general.architecture": "clip",
+                "general.type": "mmproj",
+                "general.name": f"Qwen3.5 {size.replace('-', ' ')}",
+                "general.basename": "Qwen3.5",
+                "clip.projector_type": "qwen3vl_merger",
+                "clip.vision.projection_dim": 2048,
+                "clip.vision.is_deepstack_layers": [False, False],
+            },
+        )
+    assert detect_mmproj_file(str(model)) == str(projectors["35B-A3B"].resolve())
+
+
+def test_size_names_do_not_override_an_exact_repo_match(tmp_path):
+    """Converters name MoE sizes differently; the shared base_model URL is authoritative."""
+    url = "https://huggingface.co/Qwen/Qwen3.6-35B-A3B"
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": "qwen35moe",
+            "general.name": "Qwen3.6 35B",
+            "general.base_model.0.repo_url": url,
+            "qwen35moe.embedding_length": 2048,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.name": "Qwen3.6 A3B",
+            "general.base_model.0.repo_url": url,
+            "clip.projector_type": "qwen3vl_merger",
+            "clip.vision.projection_dim": 2048,
+            "clip.vision.is_deepstack_layers": [False, False],
+        },
+    )
+    assert detect_mmproj_file(str(model)) == str(projector.resolve())
+
+
 def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
     model = _gguf_with_general(tmp_path / "model.gguf", {"general.basename": "Foo"})
     _gguf_with_general(tmp_path / "mmproj.gguf", {"general.basename": "Bar"})
@@ -498,3 +589,28 @@ def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "general.basename" in output
     assert "Foo" in output and "Bar" in output
+
+
+@pytest.mark.parametrize("projection_dim", [None, 3840, 4096])
+def test_hf_repo_case_mismatch_keeps_compatible_projector(tmp_path, projection_dim):
+    """#6305: repo URL casing must not reject a projector without dimension metadata."""
+    model = _gguf_with_general(
+        tmp_path / "gemma-4-12b-it-Q4_K_M.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-12B-it",
+            "gemma4.embedding_length": 3840,
+        },
+    )
+    fields = {
+        "general.architecture": "clip",
+        "general.type": "mmproj",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-12b-it",
+    }
+    if projection_dim is not None:
+        fields.update(
+            {"clip.vision.projector_type": "gemma4v", "clip.vision.projection_dim": projection_dim}
+        )
+    projector = _gguf_with_general(tmp_path / "mmproj-F16.gguf", fields)
+    expected = None if projection_dim == 4096 else str(projector.resolve())
+    assert detect_mmproj_file(str(model)) == expected

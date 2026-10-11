@@ -292,15 +292,13 @@ export const ru = {
       loop: "Повтор",
       pictureInPicture: "Картинка в картинке",
       fullscreen: "Полноэкранный режим",
+      exitFullscreen: "Выйти из полноэкранного режима",
       copyFrame: "Копировать кадр",
       frameCopied: "Кадр скопирован",
       copyFrameFailed: "Не удалось скопировать кадр.",
-      copyName: "Копировать имя файла",
-      nameCopied: "Имя файла скопировано",
       copyOptions: "Параметры копирования",
       open: "Открыть",
       openOptions: "Параметры открытия",
-      saveAs: "Сохранить как…",
     },
     file: {
       openIn: "Открыть в",
@@ -316,6 +314,9 @@ export const ru = {
       copy: "Копировать содержимое",
       copied: "Скопировано",
       copyFailed: "Не удалось скопировать файл.",
+      copyPath: "Копировать путь",
+      pathCopied: "Путь скопирован",
+      openFailed: "Не удалось открыть {name}.",
       wrap: "Переносить строки",
     },
     pages: {
@@ -1663,6 +1664,17 @@ export const ru = {
         showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
         showAudioCppUpdatesDescription:
           "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
+        showUnslothUpdates: "Уведомления об обновлениях Unsloth",
+        showUnslothUpdatesDescription:
+          "Сообщать, когда доступна новая версия Unsloth для установки.",
+        frequency: {
+          always: "Всегда",
+          daily: "Раз в день",
+          weekly: "Раз в неделю",
+          biweekly: "Раз в две недели",
+          monthly: "Раз в месяц",
+          off: "Выкл.",
+        },
       },
       startup: {
         sectionTitle: "Автозапуск",
@@ -2109,6 +2121,10 @@ export const ru = {
           "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) не может инициализировать GPU ниже, поэтому использовать их нельзя. Проверьте драйвер видеокарты или восстановите установку.",
+        driverIdleEvict:
+          "В драйвере AMD {version} есть известная ошибка, из-за которой Windows может зависнуть, когда GPU AMD простаивает, чаще всего при нескольких GPU. Обновитесь до Adrenalin 26.9.2 или новее.",
+        driverIdleEvictDetails: "Подробнее",
+        dismissNotice: "Скрыть",
         unusableDevice: "недоступен",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",
@@ -2486,6 +2502,15 @@ export const ru = {
         "Старые ходы уходят в доступный для поиска архив, когда чат заполняет контекст.",
       autoCompactKeywords:
         "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас архив поиск извлечение compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "Длина вывода инструментов",
+      toolResultLimitDescription: "Сколько символов одного результата Python или Терминала читает модель. По умолчанию {count}.",
+      toolResultLimitHint: "Более длинный вывод сохраняется в файл, который модель может читать по частям. Более высокий лимит действует для моделей, запущенных в Unsloth, а маленькие окна контекста по-прежнему получают меньше. API-модели сохраняют значение по умолчанию, если вы его не уменьшите.",
+      toolResultLimitDefault: "{count} (по умолчанию)",
+      toolResultLimitLocked: "Задано через UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Не удалось загрузить длину вывода инструментов.",
+      toolResultLimitSaveError: "Не удалось сохранить длину вывода инструментов.",
+      toolResultLimitKeywords:
+        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Свёрнуто",
         auto: "Разворачивать во время работы",
@@ -2898,6 +2923,19 @@ export const ru = {
         connectionMissing: "Этого подключения больше нет или в нём нет моделей решений. Выберите другую модель.",
         addConnection: "Чтобы использовать облачную модель решений, добавьте TypeSafe, Liquid AI или OpenRouter в разделе «Подключения».",
         openConnections: "Открыть подключения",
+      },
+      mcp: {
+        title: "Доступ агентов (MCP)",
+        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth через MCP. Агенты входят с токеном доступа с этой страницы.",
+        enable: "Разрешить подключения агентов",
+        enableDescription: "Обслуживает /mcp/ для запросов с токеном доступа Unsloth.",
+        lockedByEnv: "Задано через {name}.",
+        loadError: "Не удалось загрузить настройки доступа агентов.",
+        saveError: "Не удалось сохранить настройку доступа агентов.",
+        agent: "Агент",
+        exportKeyHint: "Перед запуском агента задайте в {name} токен доступа с этой страницы.",
+        configFileHint: "Добавьте это в {path}.",
+        keywords: "mcp model context protocol agents claude codex tools агенты агент инструменты протокол контекста модели",
       },
       usageNoModel:
         "Загрузите или скачайте модель, чтобы увидеть готовые к запуску примеры. На этом сервере пока нет модели, которую можно подставить в примеры.",
@@ -3823,6 +3861,13 @@ export const ru = {
     discard: "Отменить",
     mentions: "Навыки",
     manage: "Управлять навыками",
+    bulkActions: "Действия с навыками",
+    enableAll: "Включить все",
+    disableAll: "Отключить все",
+    resetAll: "Сбросить по умолчанию",
+    resetTitle: "Сбросить все навыки?",
+    resetDescription: "Каждый навык вернётся в состояние новой установки: ваши навыки и навыки Claude включены, встроенные отключены. Ваш выбор включения и отключения будет удалён.",
+    reset: "Сбросить",
   },
   library: {
     tabs: {
@@ -3987,6 +4032,8 @@ export const ru = {
     selection: {
       startChat: "Начать чат",
       move: "Переместить",
+      selectAll: "Выбрать все",
+      countOfTotal: "Выбрано: {count} из {total}",
       clear: "Снять выделение",
     },
     menu: {
@@ -3994,6 +4041,7 @@ export const ru = {
       chatAboutThis: "Обсудить в чате",
       chatWithModel: "Чат с этой моделью",
       addToFavorites: "Добавить в избранное",
+      regenerateTitle: "Создать название заново",
       removeFromFavorites: "Удалить из избранного",
       download: "Скачать",
       addToFolder: "Добавить в папку",

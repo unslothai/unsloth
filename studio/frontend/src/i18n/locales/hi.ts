@@ -292,15 +292,13 @@ export const hi = {
       loop: "लूप",
       pictureInPicture: "पिक्चर इन पिक्चर",
       fullscreen: "फ़ुल स्क्रीन",
+      exitFullscreen: "पूर्ण स्क्रीन से बाहर निकलें",
       copyFrame: "फ़्रेम कॉपी करें",
       frameCopied: "फ़्रेम कॉपी हो गया",
       copyFrameFailed: "फ़्रेम कॉपी नहीं हो सका।",
-      copyName: "फ़ाइल का नाम कॉपी करें",
-      nameCopied: "फ़ाइल का नाम कॉपी हो गया",
       copyOptions: "कॉपी विकल्प",
       open: "खोलें",
       openOptions: "खोलने के विकल्प",
-      saveAs: "इस रूप में सहेजें…",
     },
     file: {
       openIn: "इसमें खोलें",
@@ -316,6 +314,9 @@ export const hi = {
       copy: "सामग्री कॉपी करें",
       copied: "कॉपी हो गया",
       copyFailed: "फ़ाइल कॉपी नहीं हो सकी।",
+      copyPath: "पथ कॉपी करें",
+      pathCopied: "पथ कॉपी किया गया",
+      openFailed: "{name} नहीं खोला जा सका।",
       wrap: "लाइनें रैप करें",
     },
     pages: {
@@ -1662,6 +1663,17 @@ export const hi = {
         showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
         showAudioCppUpdatesDescription:
           "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
+        showUnslothUpdates: "Unsloth अपडेट सूचनाएँ",
+        showUnslothUpdatesDescription:
+          "जब Unsloth का नया संस्करण इंस्टॉल करने के लिए उपलब्ध हो, तब सूचित करें।",
+        frequency: {
+          always: "हमेशा",
+          daily: "दिन में एक बार",
+          weekly: "सप्ताह में एक बार",
+          biweekly: "हर दो सप्ताह में",
+          monthly: "महीने में एक बार",
+          off: "बंद",
+        },
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -2105,6 +2117,10 @@ export const hi = {
           "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
         mismatchUnavailable:
           "PyTorch ({version}) नीचे दिए गए GPU को आरंभ नहीं कर पा रहा है, इसलिए उनका उपयोग नहीं किया जा सकता। GPU ड्राइवर जाँचें या इंस्टॉलेशन की मरम्मत करें।",
+        driverIdleEvict:
+          "AMD ड्राइवर {version} में एक ज्ञात बग है जिससे AMD GPU के निष्क्रिय रहने पर Windows फ़्रीज़ हो सकता है, ज़्यादातर एक से अधिक GPU होने पर। Adrenalin 26.9.2 या नए संस्करण में अपडेट करें।",
+        driverIdleEvictDetails: "विवरण",
+        dismissNotice: "खारिज करें",
         unusableDevice: "अनुपयोगी",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
@@ -2480,6 +2496,15 @@ export const hi = {
         "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
       autoCompactKeywords:
         "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "टूल आउटपुट की लंबाई",
+      toolResultLimitDescription: "Python या Terminal के एक परिणाम के कितने अक्षर मॉडल पढ़ता है। डिफ़ॉल्ट {count} है।",
+      toolResultLimitHint: "लंबा आउटपुट एक फ़ाइल में सहेजा जाता है जिसे मॉडल हिस्सों में पढ़ सकता है। ऊँची सीमा Unsloth में चल रहे मॉडल पर लागू होती है, और छोटी कॉन्टेक्स्ट विंडो को अब भी कम मिलता है। API मॉडल डिफ़ॉल्ट पर रहते हैं, जब तक आप इसे कम न करें।",
+      toolResultLimitDefault: "{count} (डिफ़ॉल्ट)",
+      toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS द्वारा सेट",
+      toolResultLimitLoadError: "टूल आउटपुट की लंबाई लोड नहीं हो सकी।",
+      toolResultLimitSaveError: "टूल आउटपुट की लंबाई सहेजी नहीं जा सकी।",
+      toolResultLimitKeywords:
+        "आउटपुट परिणाम काटना सीमा अक्षर लंबाई tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "संक्षिप्त",
         auto: "चलने के दौरान विस्तृत करें",
@@ -2893,6 +2918,19 @@ export const hi = {
         connectionMissing: "यह कनेक्शन अब मौजूद नहीं है या इसमें कोई निर्णय मॉडल नहीं है। कोई दूसरा मॉडल चुनें।",
         addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए कनेक्शन में TypeSafe, Liquid AI या OpenRouter जोड़ें।",
         openConnections: "कनेक्शन खोलें",
+      },
+      mcp: {
+        title: "एजेंट एक्सेस (MCP)",
+        description: "Claude Code और Codex जैसे कोडिंग एजेंट को MCP के ज़रिए Unsloth इस्तेमाल करने दें। एजेंट इस पेज के एक्सेस टोकन से साइन इन करते हैं।",
+        enable: "एजेंट कनेक्शन की अनुमति दें",
+        enableDescription: "Unsloth एक्सेस टोकन वाले अनुरोधों के लिए /mcp/ उपलब्ध कराता है।",
+        lockedByEnv: "{name} द्वारा सेट।",
+        loadError: "एजेंट एक्सेस सेटिंग्स लोड नहीं हो सकीं।",
+        saveError: "एजेंट एक्सेस सेटिंग सहेजी नहीं जा सकी।",
+        agent: "एजेंट",
+        exportKeyHint: "एजेंट शुरू करने से पहले {name} को इस पेज के किसी एक्सेस टोकन पर सेट करें।",
+        configFileHint: "इसे {path} में जोड़ें।",
+        keywords: "mcp model context protocol agents claude codex tools एजेंट टूल्स मॉडल कॉन्टेक्स्ट प्रोटोकॉल",
       },
       usageNoModel:
         "चलाने योग्य उदाहरण देखने के लिए कोई मॉडल लोड या डाउनलोड करें। इस सर्वर के पास अभी बताने को कोई मॉडल नहीं है।",
@@ -3804,6 +3842,13 @@ export const hi = {
     discard: "छोड़ें",
     mentions: "कौशल",
     manage: "कौशल प्रबंधित करें",
+    bulkActions: "कौशल क्रियाएँ",
+    enableAll: "सभी चालू करें",
+    disableAll: "सभी बंद करें",
+    resetAll: "डिफ़ॉल्ट पर रीसेट करें",
+    resetTitle: "सभी कौशल रीसेट करें?",
+    resetDescription: "हर कौशल नए इंस्टॉल वाली स्थिति में लौट आता है: आपके कौशल और Claude कौशल चालू, बंडल किए गए कौशल बंद। आपकी चालू/बंद पसंद हटा दी जाती है।",
+    reset: "रीसेट करें",
   },
   library: {
     tabs: {
@@ -3968,6 +4013,8 @@ export const hi = {
     selection: {
       startChat: "चैट शुरू करें",
       move: "ले जाएँ",
+      selectAll: "सभी चुनें",
+      countOfTotal: "{total} में से {count} चुने गए",
       clear: "चयन हटाएँ",
     },
     menu: {
@@ -3975,6 +4022,7 @@ export const hi = {
       chatAboutThis: "इसके बारे में चैट करें",
       chatWithModel: "इस मॉडल से चैट करें",
       addToFavorites: "पसंदीदा में जोड़ें",
+      regenerateTitle: "शीर्षक फिर से बनाएं",
       removeFromFavorites: "पसंदीदा से हटाएँ",
       download: "डाउनलोड करें",
       addToFolder: "फ़ोल्डर में जोड़ें",

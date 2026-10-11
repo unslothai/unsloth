@@ -241,6 +241,7 @@ export interface DiffusionLoraInfo {
   families: string[];
   size_bytes: number;
   weight_default: number;
+  fine_tuned?: boolean;
 }
 
 // A persisted image's full generation recipe (also embedded in the PNG).

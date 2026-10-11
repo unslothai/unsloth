@@ -302,15 +302,13 @@ export const he = {
       loop: "הפעלה חוזרת",
       pictureInPicture: "תמונה בתוך תמונה",
       fullscreen: "מסך מלא",
+      exitFullscreen: "יציאה ממסך מלא",
       copyFrame: "העתק פריים",
       frameCopied: "הפריים הועתק",
       copyFrameFailed: "לא ניתן להעתיק את הפריים.",
-      copyName: "העתק שם קובץ",
-      nameCopied: "שם הקובץ הועתק",
       copyOptions: "אפשרויות העתקה",
       open: "פתח",
       openOptions: "אפשרויות פתיחה",
-      saveAs: "שמור בשם…",
     },
     file: {
       openIn: "פתח ב",
@@ -326,6 +324,9 @@ export const he = {
       copy: "העתק תוכן",
       copied: "הועתק",
       copyFailed: "העתקת הקובץ נכשלה.",
+      copyPath: "העתקת נתיב",
+      pathCopied: "הנתיב הועתק",
+      openFailed: "לא ניתן לפתוח את {name}.",
       wrap: "גלישת שורות",
     },
     pages: {
@@ -466,16 +467,14 @@ export const he = {
     rollback: "שחזר את ההתקנה הקודמת",
     installTitle: "התקנת {engine}",
     installAndLoad: "התקן וטען",
-    confirm:
-      "להתקין את {engine} {version}? הורדה אופציונלית זו עשויה לתפוס כמה גיגה-בייט. נפח ההורדה והדיסק הנוסף המדויק אינו זמין. חבילות וקובצי מודל תואמים מהמטמון ינוצלו מחדש.",
-    confirmSized:
-      "להתקין את {engine} {version}? הורדה אופציונלית זו היא בגודל של כ-{size}. חבילות שכבר קיימות ב-Studio, כולל PyTorch כאשר הגרסאות תואמות, ינוצלו מחדש ולא יורדו שוב.",
+    confirm: "להתקין את {engine} {version}? ההורדה עשויה להגיע לכמה גיגה-בייט.",
+    confirmSized: "להתקין את {engine} {version}? הורדה של כ-{size}.",
     wslSetup:
-      "ב-Windows, {engine} פועל בתוך WSL2 (Windows Subsystem for Linux). Studio יפעיל את WSL2 ויגדיר סביבת Ubuntu פרטית משלו עבור המנועים; הפצות Linux הקיימות שלך לא ייפגעו. Windows יציג בקשת מנהל (UAC) אחת, וייתכן שיבקש ממך להפעיל מחדש לפני שההתקנה תסתיים. דבר לא ישתנה עד שתלחץ על התקנה.",
+      "ב-Windows, {engine} פועל בסביבת WSL2 פרטית ש-Studio מגדיר. תופיע בקשת מנהל אחת, וייתכן שיידרש אתחול.",
     wslReady: "ב-Windows, {engine} פועל בתוך סביבת WSL2 הפרטית של Studio.",
     wslRestart:
       "הפעל מחדש את Windows כדי לסיים את הפעלת WSL2, ולאחר מכן לחץ שוב על התקנה.",
-    background: "ההתקנה פועלת ברקע. הסרת המנוע שומרת את המודלים שהורדת.",
+    background: "ההתקנה פועלת ברקע.",
     failed: "התקנת המנוע נכשלה. נסה שוב או השתמש במנוע ברירת המחדל.",
     details: "פרטים טכניים",
     cancelled: "ההתקנה בוטלה. אפשר לנסות שוב.",
@@ -1759,6 +1758,17 @@ export const he = {
         showAudioCppUpdates: "התראות עדכון של audio.cpp",
         showAudioCppUpdatesDescription:
           "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
+        showUnslothUpdates: "התראות עדכון של Unsloth",
+        showUnslothUpdatesDescription:
+          "הודעה כשגרסה חדשה יותר של Unsloth זמינה להתקנה.",
+        frequency: {
+          always: "תמיד",
+          daily: "פעם ביום",
+          weekly: "פעם בשבוע",
+          biweekly: "כל שבועיים",
+          monthly: "פעם בחודש",
+          off: "כבוי",
+        },
       },
       startup: {
         sectionTitle: "הפעלה",
@@ -2185,6 +2195,10 @@ export const he = {
           "גרסת PyTorch מותאמת ל-CPU בלבד ({version}), ולכן לא ניתן להשתמש ב-GPUs שלמטה. תקן את ההתקנה כדי לשחזר תמיכה ב-GPU.",
         mismatchUnavailable:
           "גרסת PyTorch ({version}) אינה יכולה לאתחל את ה-GPUs שלמטה, ולכן לא ניתן להשתמש בהם. בדוק את מנהל ההתקן (Driver), או תקן את ההתקנה.",
+        driverIdleEvict:
+          "במנהל ההתקן של AMD {version} יש באג ידוע שעלול להקפיא את Windows כשמעבד גרפי של AMD במצב סרק, בעיקר כשיש יותר ממעבד גרפי אחד. עדכנו ל-Adrenalin 26.9.2 ומעלה.",
+        driverIdleEvictDetails: "פרטים",
+        dismissNotice: "סגירה",
         unusableDevice: "אינו שמיש",
         unknownDevice: "GPU לא ידוע",
         deviceWithIndex: "GPU {index}",
@@ -2580,6 +2594,15 @@ export const he = {
         "סבבים ישנים יותר עוברים לארכיון הניתן לחיפוש כאשר צ'אט ממלא את ההקשר שלו.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
+      toolResultLimit: "אורך פלט הכלים",
+      toolResultLimitDescription: "מספר התווים מתוצאה אחת של Python או Terminal שהמודל קורא. ברירת המחדל היא {count}.",
+      toolResultLimitHint: "פלט ארוך יותר נשמר בקובץ שהמודל יכול לקרוא בחלקים. מגבלה גבוהה יותר חלה על מודלים שרצים ב-Unsloth, וחלונות הקשר קטנים עדיין מקבלים פחות. מודלי API נשארים בברירת המחדל אלא אם תוריד אותה.",
+      toolResultLimitDefault: "{count} (ברירת מחדל)",
+      toolResultLimitLocked: "מוגדר על ידי UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "טעינת אורך פלט הכלים נכשלה.",
+      toolResultLimitSaveError: "שמירת אורך פלט הכלים נכשלה.",
+      toolResultLimitKeywords:
+        "פלט תוצאה קיצוץ מגבלה תווים אורך tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "מכווץ",
         auto: "מורחב בזמן ריצה",
@@ -3000,6 +3023,19 @@ export const he = {
         addConnection:
           "כדי להשתמש במודל החלטות מתארח, הוסף את TypeSafe,‏ Liquid AI או OpenRouter ב'חיבורים'.",
         openConnections: "פתח את 'חיבורים'",
+      },
+      mcp: {
+        title: "גישת סוכנים (MCP)",
+        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth דרך MCP. סוכנים מתחברים עם טוקן גישה מהדף הזה.",
+        enable: "אפשר חיבורי סוכנים",
+        enableDescription: "מגיש את /mcp/ לבקשות שנושאות טוקן גישה של Unsloth.",
+        lockedByEnv: "נקבע על ידי {name}.",
+        loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
+        saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",
+        agent: "סוכן",
+        exportKeyHint: "הגדר את {name} לטוקן גישה מהדף הזה לפני שתפעיל את הסוכן.",
+        configFileHint: "הוסף את זה ל-{path}.",
+        keywords: "mcp model context protocol agents claude codex tools סוכנים סוכן כלים פרוטוקול הקשר מודל",
       },
     },
     about: {
@@ -3902,6 +3938,13 @@ export const he = {
     discard: "ביטול שינויים",
     mentions: "מיומנויות",
     manage: "ניהול מיומנויות",
+    bulkActions: "פעולות מיומנויות",
+    enableAll: "הפעל הכול",
+    disableAll: "השבת הכול",
+    resetAll: "איפוס לברירת המחדל",
+    resetTitle: "לאפס את כל המיומנויות?",
+    resetDescription: "כל מיומנות חוזרת למצב של התקנה חדשה: המיומנויות שלך ומיומנויות Claude מופעלות, מיומנויות מובנות מושבתות. בחירות ההפעלה וההשבתה שלך יימחקו.",
+    reset: "איפוס",
   },
   library: {
     tabs: {
@@ -4075,6 +4118,8 @@ export const he = {
     selection: {
       startChat: "התחל צ'אט",
       move: "העברה",
+      selectAll: "בחר הכל",
+      countOfTotal: "{count} מתוך {total} נבחרו",
       clear: "ניקוי הבחירה",
     },
     menu: {
@@ -4082,6 +4127,7 @@ export const he = {
       chatAboutThis: "שוחח על זה",
       chatWithModel: "שוחח עם מודל זה",
       addToFavorites: "הוסף למועדפים",
+      regenerateTitle: "יצירת כותרת מחדש",
       removeFromFavorites: "הסר מהמועדפים",
       download: "הורדה",
       addToFolder: "הוסף לתיקייה",

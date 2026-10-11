@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import type {
   DesktopUpdatePolicyMode,
   RetainedUpdateFailure,
@@ -63,7 +64,12 @@ export function UpdateBanner({
   const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const showFailure = Boolean(lastFailure) && !dismissed;
   const showAvailable = status === "available" && !dismissed && !showFailure;
-  const show = showFailure || (showAvailable && Boolean(info));
+  // Failures always show; only the offer follows the notification frequency.
+  const offerOpen = useNotificationGate(
+    "unsloth",
+    showAvailable && Boolean(info),
+  );
+  const show = showFailure || offerOpen;
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
   const installDisabled = isManualLinuxPackage
     ? manualReleaseUrl === null

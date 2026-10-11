@@ -293,15 +293,13 @@ export const ja = {
       loop: "ループ",
       pictureInPicture: "ピクチャーインピクチャー",
       fullscreen: "全画面表示",
+      exitFullscreen: "全画面表示を終了",
       copyFrame: "フレームをコピー",
       frameCopied: "フレームをコピーしました",
       copyFrameFailed: "フレームをコピーできませんでした。",
-      copyName: "ファイル名をコピー",
-      nameCopied: "ファイル名をコピーしました",
       copyOptions: "コピーのオプション",
       open: "開く",
       openOptions: "開くオプション",
-      saveAs: "名前を付けて保存…",
     },
     file: {
       openIn: "開く場所",
@@ -317,6 +315,9 @@ export const ja = {
       copy: "内容をコピー",
       copied: "コピーしました",
       copyFailed: "ファイルをコピーできませんでした。",
+      copyPath: "パスをコピー",
+      pathCopied: "パスをコピーしました",
+      openFailed: "{name} を開けませんでした。",
       wrap: "行を折り返す",
     },
     pages: {
@@ -1647,6 +1648,17 @@ export const ja = {
         showAudioCppUpdates: "audio.cpp のアップデート通知",
         showAudioCppUpdatesDescription:
           "音声ページに必要な audio.cpp ランタイムの更新があるときに通知します。音声機能を使わない場合はオフにしてください。",
+        showUnslothUpdates: "Unsloth のアップデート通知",
+        showUnslothUpdatesDescription:
+          "新しいバージョンの Unsloth をインストールできるようになったときに通知します。",
+        frequency: {
+          always: "常に",
+          daily: "1日1回",
+          weekly: "週に1回",
+          biweekly: "2週間に1回",
+          monthly: "月に1回",
+          off: "オフ",
+        },
       },
       startup: {
         sectionTitle: "起動",
@@ -2082,6 +2094,10 @@ export const ja = {
           "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
         mismatchUnavailable:
           "PyTorch ({version}) は下の GPU を初期化できないため、利用できません。GPU ドライバーを確認するか、インストールを修復してください。",
+        driverIdleEvict:
+          "AMD ドライバー {version} には、AMD GPU がアイドル状態のときに Windows がフリーズすることがある既知の不具合があります。特に GPU が複数ある環境で発生しやすくなります。Adrenalin 26.9.2 以降に更新してください。",
+        driverIdleEvictDetails: "詳細",
+        dismissNotice: "閉じる",
         unusableDevice: "利用不可",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
@@ -2457,6 +2473,15 @@ export const ja = {
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "ツール出力の長さ",
+      toolResultLimitDescription: "Python またはターミナルの結果 1 件のうち、モデルが読む文字数です。既定値は {count} です。",
+      toolResultLimitHint: "これより長い出力はファイルに保存され、モデルは分割して読めます。上限を上げると Unsloth で動作するモデルに適用され、コンテキストウィンドウが小さい場合は引き続き少なくなります。API モデルは、下げない限り既定値のままです。",
+      toolResultLimitDefault: "{count}（既定）",
+      toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS で設定されています",
+      toolResultLimitLoadError: "ツール出力の長さを読み込めませんでした。",
+      toolResultLimitSaveError: "ツール出力の長さを保存できませんでした。",
+      toolResultLimitKeywords:
+        "出力 結果 切り詰め 上限 文字数 長さ tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "折りたたむ",
         auto: "実行中は展開",
@@ -2857,6 +2882,19 @@ export const ja = {
         connectionMissing: "この接続は存在しないか、判定モデルがありません。別のモデルを選んでください。",
         addConnection: "ホスト型の判定モデルを使うには、接続で TypeSafe、Liquid AI、OpenRouter のいずれかを追加してください。",
         openConnections: "接続を開く",
+      },
+      mcp: {
+        title: "エージェントアクセス (MCP)",
+        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Unsloth を使えるようにします。エージェントはこのページのアクセストークンでサインインします。",
+        enable: "エージェントの接続を許可",
+        enableDescription: "Unsloth のアクセストークンを持つリクエストに /mcp/ を提供します。",
+        lockedByEnv: "{name} で設定されています。",
+        loadError: "エージェントアクセスの設定を読み込めませんでした。",
+        saveError: "エージェントアクセスの設定を保存できませんでした。",
+        agent: "エージェント",
+        exportKeyHint: "エージェントを起動する前に、{name} にこのページのアクセストークンを設定してください。",
+        configFileHint: "これを {path} に追加してください。",
+        keywords: "mcp model context protocol agents claude codex tools エージェント ツール モデルコンテキストプロトコル",
       },
       usageNoModel:
         "モデルを読み込むかダウンロードすると、実行できる例が表示されます。このサーバーにはまだ指定できるモデルがありません。",
@@ -3744,6 +3782,13 @@ export const ja = {
     discard: "破棄",
     mentions: "スキル",
     manage: "スキルを管理",
+    bulkActions: "スキルの操作",
+    enableAll: "すべて有効にする",
+    disableAll: "すべて無効にする",
+    resetAll: "デフォルトに戻す",
+    resetTitle: "すべてのスキルをリセットしますか？",
+    resetDescription: "すべてのスキルが新規インストール時の状態に戻ります。自分のスキルと Claude のスキルはオン、同梱スキルはオフになり、オン/オフの選択は消去されます。",
+    reset: "リセット",
   },
   library: {
     tabs: {
@@ -3908,6 +3953,8 @@ export const ja = {
     selection: {
       startChat: "チャットを開始",
       move: "移動",
+      selectAll: "すべて選択",
+      countOfTotal: "{total} 件中 {count} 件選択中",
       clear: "選択を解除",
     },
     menu: {
@@ -3915,6 +3962,7 @@ export const ja = {
       chatAboutThis: "これについてチャット",
       chatWithModel: "このモデルとチャット",
       addToFavorites: "お気に入りに追加",
+      regenerateTitle: "タイトルを再生成",
       removeFromFavorites: "お気に入りから削除",
       download: "ダウンロード",
       addToFolder: "フォルダに追加",

@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import secrets
+import struct
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -57,45 +58,171 @@ _HTML_BLOCK_TAGS = frozenset(
     " td text textarea th title tr ul xmp".split()
 )
 _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
-# Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
+# atomic inline boxes separate neighbouring text without breaking the line
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
+_HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
+_HTML_TABLE_DEPTH = 32
+
+
+class _HtmlPre(str):
+    pass
+
+
+class _HtmlTable:
+    def __init__(
+        self,
+        sink: list,
+        nested: bool = False,
+    ) -> None:
+        self.sink = sink
+        self.nested = nested
+        self.row: list[list | None] | None = None
+        self.spans: list[int] = []
+
+
+def _html_span(attrs, name: str, limit: int) -> int:
+    try:
+        value = int(dict(attrs).get(name) or 1)
+    except ValueError:
+        return 1
+    # rowspan="0" runs to the end of its row group
+    return limit if value == 0 and name == "rowspan" else min(max(value, 1), limit)
 
 
 class _Stripper(HTMLParser):
-    """Collect visible text, one line per block element."""
+    """collect visible text, one line per block element."""
 
-    def __init__(self) -> None:
+    def __init__(self, span_budget: int = 0) -> None:
         super().__init__()
         self._skip = 0
         self._pre = 0
         self._templates: list[bool] = []
         self._line: list[str] = []
         self.out: list[str] = []
+        self._tables: list[_HtmlTable] = []
+        self._span_budget = span_budget
+        self._deep = 0
+
+    def _in_table(self) -> bool:
+        return bool(self._tables) and not self._skip and not self._deep
+
+    def _end_cell(self) -> None:
+        self._flush()
+        self.out = self._tables[-1].sink
+
+    def _end_row(self) -> None:
+        self._end_cell()
+        table = self._tables[-1]
+        row, table.row = table.row, None
+        if row is None:
+            return
+        missing = max(len(table.spans) - len(row), 0)
+        for col in range(len(row), len(table.spans)):
+            table.spans[col] = max(table.spans[col] - 1, 0)
+        self._span_budget -= missing
+        if self._span_budget < 0:
+            table.spans.clear()
+        else:
+            row.extend([None] * missing)
+        while table.spans and not table.spans[-1]:
+            table.spans.pop()
+        if len(row) == 1:
+            table.sink.extend(line for line in row[0] or () if line is not None)
+            return
+        cells: list[str] = []
+        below: list[str] = []
+        for cell in row:
+            lines = cell or []
+            parent: list[str] = []
+            in_nested = False
+            for line in lines:
+                if line is None:
+                    in_nested = not in_nested
+                elif in_nested:
+                    below.append(line)
+                else:
+                    parent.append(line)
+            parts: list[str] = []
+            previous_pre = False
+            for line in parent:
+                is_pre = isinstance(line, _HtmlPre)
+                if parts:
+                    parts.append("\n" if previous_pre or is_pre else " ")
+                parts.append(str(line) if is_pre else " ".join(line.split()))
+                previous_pre = is_pre
+            cells.append("".join(parts))
+        if any(cells):
+            table.sink.append(" | ".join(cells))
+        table.sink.extend(below)
+
+    def _start_cell(self, attrs) -> None:
+        self._end_cell()
+        table = self._tables[-1]
+        if table.row is None:
+            table.row = []
+        row, spans = table.row, table.spans
+        start = len(row)
+        while len(row) < len(spans) and spans[len(row)]:
+            spans[len(row)] -= 1
+            row.append(None)
+        self._flush()
+        cell: list[str] = []
+        rowspan = _html_span(attrs, "rowspan", 65534)
+        colspan = _html_span(attrs, "colspan", 1000)
+        # each spanned slot adds an empty field, so stop when fields outnumber input characters.
+        self._span_budget -= len(row) - start + colspan - 1
+        if self._span_budget < 0:
+            rowspan = colspan = 1
+            spans[:] = [0] * len(spans)
+        for i in range(colspan):
+            if len(row) < len(spans):
+                spans[len(row)] = rowspan - 1
+            else:
+                spans.append(rowspan - 1)
+            row.append(None if i else cell)
+        self.out = cell
 
     def _flush(self) -> None:
         text = "".join(self._line)
         self._line = []
-        # Whitespace inside <pre>/<textarea> is content; elsewhere it is layout.
+        # whitespace inside <pre>/<textarea> is content; elsewhere it is layout
         text = text.strip("\n") if self._pre else " ".join(text.split())
         if text.strip():
-            self.out.append(text)
+            self.out.append(_HtmlPre(text) if self._pre else text)
 
     def handle_starttag(self, tag, attrs):
         if tag == "template":
-            # A declarative shadow root (shadowrootmode=open|closed) is rendered; other templates are inert.
+            # declarative shadow roots render; other templates are inert
             inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
             self._templates.append(inert)
             self._skip += inert
         elif tag in _HTML_SKIP_TAGS:
             self._skip += 1
+        elif tag in ("td", "th") and self._in_table():
+            self._start_cell(attrs)
+        elif tag == "tr" and self._in_table():
+            self._end_row()
+            self._flush()
+            self._tables[-1].row = []
+        elif tag in _HTML_ROW_GROUPS and self._in_table():
+            self._end_row()
+            self._tables[-1].spans = []
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
+            # each nesting level copies lines into its parent, so deeply nested tables read as plain blocks
+            if tag == "table" and (self._deep or len(self._tables) >= _HTML_TABLE_DEPTH):
+                self._deep += 1
+            elif tag == "table":
+                nested = bool(self._tables and self.out is not self._tables[-1].sink)
+                if nested:
+                    self.out.append(None)
+                self._tables.append(_HtmlTable(self.out, nested))
             if tag in _HTML_PRE_TAGS:
                 self._pre += 1
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
-            # An absolute x/y starts a new SVG text chunk (a separate label or line).
+            # absolute x/y coordinates start a separate SVG text label or line
             self._flush()
 
     def handle_endtag(self, tag):
@@ -105,8 +232,22 @@ class _Stripper(HTMLParser):
         elif tag in _HTML_SKIP_TAGS:
             if self._skip:
                 self._skip -= 1
+        elif tag in ("td", "th") and self._in_table():
+            self._end_cell()
+        elif tag in _HTML_ROW_GROUPS and self._in_table():
+            self._end_row()
+            self._tables[-1].spans = []
+        elif tag in ("tr", "table") and self._in_table():
+            self._end_row()
+            if tag == "table":
+                table = self._tables.pop()
+                if table.nested:
+                    self.out.append(None)
+            self._flush()
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
+            if tag == "table" and self._deep:
+                self._deep -= 1
             if tag in _HTML_PRE_TAGS and self._pre:
                 self._pre -= 1
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
@@ -118,19 +259,23 @@ class _Stripper(HTMLParser):
 
     def close(self):
         super().close()
+        while self._tables:
+            self._end_row()
+            table = self._tables.pop()
+            if table.nested:
+                self.out.append(None)
         self._flush()
 
 
 def _html(raw: str) -> list[Page]:
-    parser = _Stripper()
+    parser = _Stripper(len(raw))
     parser.feed(raw)
     parser.close()
     return [_page("\n".join(parser.out), 1)]
 
 
-# pymupdf4llm rebuilds text from positioned glyphs and mangles complex-shaping scripts (RTL forms,
-# Indic matras to U+FFFD), so fall back to PyMuPDF's logical-order get_text(); thresholds mirror
-# unslothai/unsloth#5351.
+# pymupdf4llm can corrupt positioned RTL and Indic glyphs; use logical-order
+# get_text() at unslothai/unsloth#5351 thresholds
 _SHAPED_PRESENTATION_FORMS = re.compile("[\ufb1d-\ufdff\ufe70-\ufefc]")
 _PDF_FALLBACK_MIN_BAD_GLYPHS = 5
 _PDF_FALLBACK_BAD_GLYPH_RATIO = 0.0005
@@ -703,12 +848,37 @@ def _docx_table_rows(table) -> list[str]:
     return rows
 
 
+_WORD_EXTS = frozenset((".docx", ".docm", ".dotx", ".dotm"))
+_WORD_MAIN_TYPES = (
+    "application/vnd.ms-word.document.macroEnabled.main+xml",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+    "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+)
+
+
+def _open_word(path: str):
+    # docx.Document() rejects the macro and template main parts.
+    import docx  # noqa: F401  (registers the part types)
+    from docx.opc.constants import CONTENT_TYPE as CT
+    from docx.opc.part import PartFactory
+    from docx.package import Package
+    from docx.parts.document import DocumentPart
+
+    for content_type in _WORD_MAIN_TYPES:
+        PartFactory.part_type_for.setdefault(content_type, DocumentPart)
+    part = Package.open(path).main_document_part
+    if part.content_type not in (CT.WML_DOCUMENT_MAIN, *_WORD_MAIN_TYPES):
+        raise ValueError(
+            f"file '{os.path.basename(path)}' is not a Word file, content type is '{part.content_type}'"
+        )
+    return part.document
+
+
 def _docx(path: str) -> list[Page]:
-    import docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
-    document = docx.Document(path)
+    document = _open_word(path)
     lines: list[str] = []
     _docx_unwrap_table_controls(document.element.body)
     label_notes = _docx_mark_notes(document)
@@ -907,8 +1077,12 @@ def parse(path: str, *, want_images: bool = False):
         pages, images, _total = _pdf(path, want_images)
         return (pages, images) if want_images else pages
 
-    if ext == ".docx":
+    if ext in _WORD_EXTS:
         pages = _docx(path)
+        return (pages, []) if want_images else pages
+
+    if ext in config.DOCUMENT_UPLOAD_EXTS:
+        pages = _office_document(path, ext)
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown") or ext in config.SOURCE_TEXT_EXTS:
@@ -925,6 +1099,39 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     raise ValueError(f"unsupported file type: {ext}")
+
+
+def _html_bytes_text(raw: bytes) -> str:
+    return "\n\n".join(page.text for page in _html(_decode_text(raw, html = True)))
+
+
+def _xhtml(path: str) -> list[tuple[str, int | None]]:
+    with open(path, "rb") as f:
+        return [(_html_bytes_text(f.read()), None)]
+
+
+def _office_document(path: str, ext: str) -> list[Page]:
+    from . import office_formats as office
+
+    readers = {
+        ".doc": office.doc,
+        ".xls": office.xls,
+        ".ppt": office.ppt,
+        ".rtf": office.rtf,
+        ".epub": lambda p: office.epub(p, _html_bytes_text),
+        ".msg": lambda p: office.msg(p, _html_bytes_text),
+        **dict.fromkeys((".xlsx", ".xlsm", ".xltx", ".xltm"), office.xlsx),
+        **dict.fromkeys((".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm"), office.pptx),
+        **dict.fromkeys((".odt", ".ods", ".odp", ".ott", ".ots", ".otp"), office.opendocument),
+        # .mht/.mhtml are MIME with an HTML body.
+        **dict.fromkeys((".eml", ".mht", ".mhtml"), lambda p: office.eml(p, _html_bytes_text)),
+        **dict.fromkeys((".xhtml", ".xht"), _xhtml),
+    }
+    try:
+        sections = readers[ext](path)
+    except (KeyError, IndexError, struct.error, UnicodeError, EOFError) as exc:
+        raise ValueError(f"could not read {os.path.basename(path)}: file is damaged") from exc
+    return [_page(text, number) for text, number in sections if text.strip()]
 
 
 def parse_text(text: str) -> list[Page]:

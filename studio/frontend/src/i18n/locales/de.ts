@@ -292,15 +292,13 @@ export const de = {
       loop: "Wiederholen",
       pictureInPicture: "Bild im Bild",
       fullscreen: "Vollbild",
+      exitFullscreen: "Vollbild beenden",
       copyFrame: "Frame kopieren",
       frameCopied: "Frame kopiert",
       copyFrameFailed: "Der Frame konnte nicht kopiert werden.",
-      copyName: "Dateinamen kopieren",
-      nameCopied: "Dateiname kopiert",
       copyOptions: "Kopieroptionen",
       open: "Öffnen",
       openOptions: "Öffnen-Optionen",
-      saveAs: "Speichern unter…",
     },
     file: {
       openIn: "Öffnen in",
@@ -316,6 +314,9 @@ export const de = {
       copy: "Inhalt kopieren",
       copied: "Kopiert",
       copyFailed: "Die Datei konnte nicht kopiert werden.",
+      copyPath: "Pfad kopieren",
+      pathCopied: "Pfad kopiert",
+      openFailed: "{name} konnte nicht geöffnet werden.",
       wrap: "Zeilen umbrechen",
     },
     pages: {
@@ -1680,6 +1681,17 @@ export const de = {
         showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
         showAudioCppUpdatesDescription:
           "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",
+        showUnslothUpdates: "Unsloth-Update-Benachrichtigungen",
+        showUnslothUpdatesDescription:
+          "Benachrichtigen, wenn eine neuere Unsloth-Version zur Installation bereitsteht.",
+        frequency: {
+          always: "Immer",
+          daily: "Einmal täglich",
+          weekly: "Einmal pro Woche",
+          biweekly: "Alle zwei Wochen",
+          monthly: "Einmal im Monat",
+          off: "Aus",
+        },
       },
       startup: {
         sectionTitle: "Autostart",
@@ -2131,6 +2143,10 @@ export const de = {
           "PyTorch ist ein reiner CPU-Build ({version}), daher können die GPUs unten nicht genutzt werden. Reparieren Sie die Installation, um die GPU-Unterstützung wiederherzustellen.",
         mismatchUnavailable:
           "PyTorch ({version}) kann die GPUs unten nicht initialisieren, daher sind sie nicht nutzbar. Prüfen Sie den Grafiktreiber oder reparieren Sie die Installation.",
+        driverIdleEvict:
+          "Der AMD-Treiber {version} hat einen bekannten Fehler, der Windows einfrieren kann, wenn eine AMD-GPU im Leerlauf ist, meist mit mehr als einer GPU. Aktualisieren Sie auf Adrenalin 26.9.2 oder neuer.",
+        driverIdleEvictDetails: "Details",
+        dismissNotice: "Ausblenden",
         unusableDevice: "nicht nutzbar",
         unknownDevice: "Unbekannte GPU",
         deviceWithIndex: "GPU {index}",
@@ -2512,6 +2528,15 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "Länge der Tool-Ausgabe",
+      toolResultLimitDescription: "Zeichen eines Python- oder Terminal-Ergebnisses, die das Modell liest. Standard ist {count}.",
+      toolResultLimitHint: "Längere Ausgaben werden in einer Datei gespeichert, die das Modell in Teilen lesen kann. Ein höheres Limit gilt für Modelle, die in Unsloth laufen, und kleine Kontextfenster erhalten weiterhin weniger. API-Modelle behalten den Standard, außer du senkst ihn.",
+      toolResultLimitDefault: "{count} (Standard)",
+      toolResultLimitLocked: "Festgelegt durch UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Die Länge der Tool-Ausgabe konnte nicht geladen werden.",
+      toolResultLimitSaveError: "Die Länge der Tool-Ausgabe konnte nicht gespeichert werden.",
+      toolResultLimitKeywords:
+        "Ausgabe Ergebnis abschneiden gekürzt Grenze Zeichen Länge tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Eingeklappt",
         auto: "Während der Ausführung ausklappen",
@@ -2931,6 +2956,19 @@ export const de = {
         connectionMissing: "Diese Verbindung gibt es nicht mehr oder sie hat keine Entscheidungsmodelle. Wähle ein anderes Modell.",
         addConnection: "Für ein gehostetes Entscheidungsmodell füge TypeSafe, Liquid AI oder OpenRouter unter Verbindungen hinzu.",
         openConnections: "Verbindungen öffnen",
+      },
+      mcp: {
+        title: "Agentenzugriff (MCP)",
+        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen. Agenten melden sich mit einem Zugriffstoken von dieser Seite an.",
+        enable: "Agentenverbindungen erlauben",
+        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Zugriffstoken bereit.",
+        lockedByEnv: "Festgelegt durch {name}.",
+        loadError: "Die Einstellungen für den Agentenzugriff konnten nicht geladen werden.",
+        saveError: "Die Einstellung für den Agentenzugriff konnte nicht gespeichert werden.",
+        agent: "Agent",
+        exportKeyHint: "Setze {name} auf ein Zugriffstoken von dieser Seite, bevor du den Agenten startest.",
+        configFileHint: "Füge das zu {path} hinzu.",
+        keywords: "mcp model context protocol agents claude codex tools Agenten Agent Werkzeuge Tools Modellkontextprotokoll",
       },
       usageNoModel:
         "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",
@@ -3868,6 +3906,13 @@ export const de = {
     discard: "Verwerfen",
     mentions: "Fähigkeiten",
     manage: "Fähigkeiten verwalten",
+    bulkActions: "Fähigkeiten-Aktionen",
+    enableAll: "Alle aktivieren",
+    disableAll: "Alle deaktivieren",
+    resetAll: "Auf Standard zurücksetzen",
+    resetTitle: "Alle Fähigkeiten zurücksetzen?",
+    resetDescription: "Jede Fähigkeit kehrt zum Zustand einer Neuinstallation zurück: deine Fähigkeiten und Claude-Fähigkeiten an, mitgelieferte Fähigkeiten aus. Deine An/Aus-Auswahl wird gelöscht.",
+    reset: "Zurücksetzen",
   },
   library: {
     tabs: {
@@ -4032,6 +4077,8 @@ export const de = {
     selection: {
       startChat: "Chat starten",
       move: "Verschieben",
+      selectAll: "Alle auswählen",
+      countOfTotal: "{count} von {total} ausgewählt",
       clear: "Auswahl aufheben",
     },
     menu: {
@@ -4039,6 +4086,7 @@ export const de = {
       chatAboutThis: "Darüber chatten",
       chatWithModel: "Mit diesem Modell chatten",
       addToFavorites: "Zu Favoriten hinzufügen",
+      regenerateTitle: "Titel neu generieren",
       removeFromFavorites: "Aus Favoriten entfernen",
       download: "Herunterladen",
       addToFolder: "Zu Ordner hinzufügen",
