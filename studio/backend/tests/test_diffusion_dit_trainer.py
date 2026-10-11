@@ -356,13 +356,19 @@ def _linear(
 
 
 def test_mx_module_filter_accepts_dense_block_linear():
-    # A bias-free 3072x3072 attention/FFN linear at a normal block fqn is a valid mxfp8 target.
-    assert _mx_module_filter(_linear(3072, 3072), "blocks.0.ff.up") is True
+    # A bf16 3072x3072 attention/FFN linear at a normal block fqn is a valid mxfp8 target.
+    assert _mx_module_filter(_linear(3072, 3072).bfloat16(), "blocks.0.ff.up") is True
 
 
-def test_mx_module_filter_skips_biased_linear():
-    # The torchao 0.17 MX training path drops the bias, so an mxfp8'd biased FROZEN linear would corrupt the base output the LoRA regresses against.
-    assert _mx_module_filter(_linear(3072, 3072, bias = True), "blocks.0.ff.up") is False
+def test_mx_module_filter_keeps_biased_linear():
+    # MXFP8Linear adds the bias itself, so FLUX.1 / LTX-2 (all-biased blocks) are covered; only torchao 0.17's weight
+    # wrapper drops it, and _apply_mxfp8_training skips biased linears on that path alone.
+    assert _mx_module_filter(_linear(3072, 3072, bias = True).bfloat16(), "blocks.0.ff.up") is True
+
+
+def test_mx_module_filter_rejects_non_bf16_weight():
+    # The MX casts assert a bf16 weight.
+    assert _mx_module_filter(_linear(3072, 3072), "blocks.0.ff.up") is False
 
 
 def test_resolve_base_precision_explicit_mxfp8_requires_blackwell(monkeypatch):
@@ -436,6 +442,7 @@ def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
 
     class _Recipe:
         MXFP8_RCEIL = "mxfp8_rceil"
+        MXFP8_RCEIL_WGRAD_WITH_HP = "mxfp8_rceil_wgrad_with_hp"
 
     class _OpConfig:
         @staticmethod
@@ -450,7 +457,25 @@ def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", fake_config)
     assert _mxfp8_training_config() == "cfg-0.17"
-    assert calls["recipe"] == _Recipe.MXFP8_RCEIL
+    # High-precision wgrad: the MX dim1 cast of the frozen weight's discarded gradient asserts tokens % 32 == 0.
+    assert calls["recipe"] == _Recipe.MXFP8_RCEIL_WGRAD_WITH_HP
+
+
+def test_mxfp8_training_config_legacy_api_uses_rceil(monkeypatch):
+    # torchao 0.14-0.16: "mxfp8_cublas" is FLOOR scaling; RCEIL matches the 0.17+ recipe's numerics.
+    from types import SimpleNamespace
+
+    from core.training.diffusion_dit_trainer import _mxfp8_training_config
+
+    class _Cfg:
+        @staticmethod
+        def from_recipe_name(name):
+            return name
+
+    monkeypatch.setitem(
+        sys.modules, "torchao.prototype.mx_formats", SimpleNamespace(MXLinearConfig = _Cfg)
+    )
+    assert _mxfp8_training_config() == "mxfp8_cublas_rceil"
 
 
 def _patch_capability(monkeypatch, capability):
@@ -504,3 +529,50 @@ def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
     modes, recommended = train_precision_modes()
     assert modes == ["nf4"]
     assert recommended == "nf4"
+
+
+@pytest.mark.parametrize(
+    "capability, lowp",
+    [
+        ((8, 0), set()),
+        ((8, 6), set()),
+        ((8, 9), {"fp8"}),
+        ((9, 0), {"fp8"}),
+        ((10, 0), {"fp8", "mxfp8"}),
+        ((12, 0), {"fp8", "mxfp8"}),
+    ],
+)
+def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp):
+    # Only sm89+ is offered fp8 and only sm100+ mxfp8; an explicit mxfp8 below sm100 is refused before any load.
+    _patch_capability(monkeypatch, capability)
+    modes, _ = train_precision_modes()
+    assert {m for m in modes if m in ("fp8", "mxfp8")} == lowp
+    cfg = types.SimpleNamespace(base_precision = "mxfp8", mixed_precision = "bf16", base_model = "x")
+    if "mxfp8" in lowp:
+        assert _resolve_base_precision(cfg, None, "cuda") == "mxfp8"
+    else:
+        with pytest.raises(ValueError, match = "Blackwell"):
+            _resolve_base_precision(cfg, None, "cuda")
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps", "xpu"])
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+def test_lowp_refused_off_cuda(device, mode):
+    # The float8 / MX conversions are reachable only from a CUDA run: every other device is refused up front.
+    cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
+    with pytest.raises(ValueError, match = "CUDA"):
+        _resolve_base_precision(cfg, None, device)
+
+
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+def test_lowp_refused_on_rocm(monkeypatch, mode):
+    import core.training.diffusion_dit_trainer as dit
+    import core.training.diffusion_train_common as dtc
+
+    _patch_capability(monkeypatch, (10, 0))
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
+    monkeypatch.setattr(dtc, "torch_is_rocm", lambda: True)
+    assert not {"fp8", "mxfp8"} & set(train_precision_modes()[0])
+    cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
+    with pytest.raises(ValueError, match = "ROCm"):
+        _resolve_base_precision(cfg, None, "cuda")

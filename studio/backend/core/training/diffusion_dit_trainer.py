@@ -324,7 +324,7 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
         return transformer
 
     # int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear, whose peft-0.18
-    # constructor rejects the torchao-0.16 config API.
+    # constructor rejects the torchao-0.16 config API (peft 0.19+ accepts it; the order works for both).
     return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
@@ -372,46 +372,90 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     apply_small_m_padding(transformer, "int8", family)
 
 
-def _fp8_module_filter(mod, fqn: str) -> bool:
-    """Which frozen linears get float8 training compute: skip anything LoRA-owned (the adapters must
-    stay high precision, since PEFT has no float8 base support), the output projection, and
-    shapes float8 kernels reject (dims not divisible by 16), matching the diffusers FLUX2
-    reference filter."""
+# Linears that run on a [batch, dim] conditioning vector (AdaLN / modulation projections, timestep and pooled-text
+# embedders) or LTX-2's one-token audio stream: M = batch rows, where the float8 / MX casts cost more than the GEMM
+# saves. The int8 small-M list names exactly these. final_layer is Krea 2's output projection (proj_out guard below).
+_LOWP_EXTRA_EXCLUDE_TOKENS = ("final_layer",)
+
+
+def _lowp_exclude_tokens(family: Optional[str] = None) -> tuple[str, ...]:
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+    return tuple(exclude_tokens_for_scheme("int8", family)) + _LOWP_EXTRA_EXCLUDE_TOKENS
+
+
+def _lowp_module_filter(
+    mod,
+    fqn: str,
+    align: int,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
     import torch.nn as nn
 
     if not isinstance(mod, nn.Linear):
         return False
+    # The adapters stay high precision.
     if "lora_" in fqn:
         return False
     if fqn.endswith("proj_out") or ".proj_out." in fqn:
         return False
-    return mod.in_features % 16 == 0 and mod.out_features % 16 == 0
+    name = fqn.lower()
+    if any(tok in name for tok in exclude_tokens):
+        return False
+    return mod.in_features % align == 0 and mod.out_features % align == 0
+
+
+def _fp8_module_filter(
+    mod,
+    fqn: str,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
+    """Frozen linears for float8 training compute: not LoRA-owned, not the output projection, no
+    ``exclude_tokens`` name, dims divisible by 16 (the diffusers FLUX2 reference filter)."""
+    return _lowp_module_filter(mod, fqn, 16, exclude_tokens)
 
 
 def _fp8_training_config():
-    """The float8 training config: per-ROW (rowwise) scaling when this torchao build ships the
-    recipe, else the tensorwise default. The DiT families carry extreme activation outliers
-    (Z-Image MLP activations peak near 6.6e4, the same range that forced per-row scaling in the
-    inference quant layer): one tensor-wide dynamic scale pushes normal values (~1-30) below fp8
-    resolution, so the frozen base's forward -- the signal the LoRA regresses against --
-    degrades. Per-row scaling confines each outlier to its own token/channel. The tensorwise
-    fallback keeps pad_inner_dim so a non-16-aligned inner dim never aborts the scaled_mm (the
-    rowwise recipe manages its own padding rules and rejects the knob, hence the split)."""
+    """Per-ROW (rowwise) float8 scaling when torchao ships the recipe, else tensorwise. The DiT
+    families carry extreme activation outliers (Z-Image MLP activations peak near 6.6e4): one
+    tensor-wide scale pushes normal values below fp8 resolution, per-row confines each outlier.
+    The tensorwise fallback pads the inner dims instead (rowwise has its own padding rules)."""
     from torchao.float8 import Float8LinearConfig
+
     try:
-        return Float8LinearConfig.from_recipe_name("rowwise")
+        config = Float8LinearConfig.from_recipe_name("rowwise")
     except Exception:  # noqa: BLE001 -- older torchao without the rowwise recipe
         return Float8LinearConfig(pad_inner_dim = True)
+    return _with_hp_weight_grad(config)
+
+
+def _with_hp_weight_grad(config):
+    """Run the float8 weight-gradient GEMM in high precision. torchao's backward computes grad_weight
+    even for a frozen weight (matmul_with_hp_or_float8_args.backward has no needs_input_grad check)
+    and that GEMM's inner dim is the token count, which _scaled_mm needs 16-aligned: LTX-2 at
+    192x320 (60 tokens) raised eager and while compiling. Autograd discards that gradient for the
+    frozen base and AOTAutograd prunes it, so its precision changes nothing; the forward and
+    grad_input GEMMs stay float8. Same split as torchao's rowwise_with_gw_hp recipe."""
+    import dataclasses
+
+    from torchao.float8.config import CastConfig, ScalingType
+
+    return dataclasses.replace(
+        config,
+        cast_config_input_for_grad_weight = CastConfig(
+            scaling_type = ScalingType.DISABLED,
+            target_dtype = config.cast_config_input.target_dtype,
+        ),
+        cast_config_grad_output_for_grad_weight = CastConfig(
+            scaling_type = ScalingType.DISABLED,
+            target_dtype = config.cast_config_grad_output.target_dtype,
+        ),
+    )
 
 
 def _in_repeated_blocks(transformer, module_filter):
     """Restrict a float8 / MX module filter to the repeated blocks (the regionally compiled ones).
-
-    torchao's float8 / MX linear backward always computes grad_weight, even for a frozen base
-    weight; only AOTAutograd prunes it, so outside the compiled region it runs eager and raises
-    when the token count is not a multiple of 16 / 32 (Krea 2's M=1 modulation, FLUX.2's
-    non-contiguous x_embedder input at batch 2). The top-level embedders are a sliver of the
-    FLOPs, so they stay bf16. A model without ``_repeated_blocks`` keeps the unrestricted filter."""
+    The top-level embedders are a sliver of the FLOPs and run eager, so they stay bf16. A model
+    without ``_repeated_blocks`` keeps the unrestricted filter."""
     names = set(getattr(transformer, "_repeated_blocks", None) or ())
     prefixes = tuple(
         f"{fqn}." for fqn, mod in transformer.named_modules() if mod.__class__.__name__ in names
@@ -421,56 +465,102 @@ def _in_repeated_blocks(transformer, module_filter):
     return lambda mod, fqn: fqn.startswith(prefixes) and module_filter(mod, fqn)
 
 
-def _apply_fp8_training(transformer, on_event) -> bool:
+def _lowp_targets(transformer, base_filter, family: Optional[str]) -> list:
+    """(fqn, module) pairs a float8 / MX conversion takes: in the repeated blocks, past the small-M
+    exclusions, not already converted (a second call is a no-op)."""
+    tokens = _lowp_exclude_tokens(family)
+    keep = _in_repeated_blocks(transformer, lambda mod, fqn: base_filter(mod, fqn, tokens))
+    return [
+        (fqn, mod)
+        for fqn, mod in transformer.named_modules()
+        if not getattr(mod, "_studio_lowp", None) and keep(mod, fqn)
+    ]
+
+
+def _apply_fp8_training(
+    transformer,
+    on_event,
+    family: Optional[str] = None,
+) -> bool:
     """Convert the frozen base linears to torchao float8 training compute (dynamic scaling; weights
     stay bf16 in memory). Applied AFTER add_adapter so the filter can exclude the LoRA modules.
     Never fatal: on any failure the run continues in bf16 with a warning."""
     try:
         from torchao.float8 import convert_to_float8_training
+
+        names = {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
         convert_to_float8_training(
             transformer,
-            module_filter_fn = _in_repeated_blocks(transformer, _fp8_module_filter),
+            module_filter_fn = lambda mod, fqn: fqn in names,
             config = _fp8_training_config(),
         )
+        for fqn, mod in transformer.named_modules():
+            if fqn in names:
+                mod._studio_lowp = "fp8"
         return True
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
 
 
-def _mx_module_filter(mod, fqn: str) -> bool:
-    """Which frozen linears get mxfp8 training compute: skip anything LoRA-owned (the adapters must
-    stay high precision), the output projection (same guard as fp8), and shapes the 32-wide MX
-    block scaling cannot tile (dims not divisible by 32)."""
-    import torch.nn as nn
-
-    if not isinstance(mod, nn.Linear):
-        return False
-    if "lora_" in fqn:
-        return False
-    if fqn.endswith("proj_out") or ".proj_out." in fqn:
-        return False
-    # Skip biased linears: the torchao 0.17 MX path swaps the weight for a wrapper that drops the bias, changing the
-    # output the LoRA regresses against.
-    if getattr(mod, "bias", None) is not None:
-        return False
-    return mod.in_features % 32 == 0 and mod.out_features % 32 == 0
+def _mx_module_filter(
+    mod,
+    fqn: str,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
+    """Frozen linears for mxfp8 training compute: the fp8 rules with the 32-wide MX block alignment,
+    and a bf16 weight (the MX casts assert it)."""
+    import torch
+    return _lowp_module_filter(mod, fqn, 32, exclude_tokens) and mod.weight.dtype == torch.bfloat16
 
 
 def _mxfp8_training_config():
-    """The torchao MX training config across the prototype API's revisions: torchao 0.16 ships
-    ``MXLinearConfig`` in ``prototype.mx_formats``; 0.17 removed it in favour of the
-    ``MXFP8TrainingOpConfig`` recipe API shared with MoE training. Both feed ``quantize_``.
-    Raises ImportError when neither API exists (mxfp8 then falls back to bf16)."""
+    """The torchao MX training config across the prototype API's revisions, both RCEIL scaling:
+    torchao 0.14-0.16 ``MXLinearConfig`` (``prototype.mx_formats``); 0.17+ the
+    ``MXFP8TrainingOpConfig`` recipe API, with the weight gradient in high precision (the
+    ``_with_hp_weight_grad`` reasoning: its MX dim1 cast asserts a token count divisible by 32,
+    and the frozen base discards that gradient). Raises ImportError when neither API exists."""
     try:
         from torchao.prototype.mx_formats import MXLinearConfig
-        return MXLinearConfig.from_recipe_name("mxfp8_cublas")
+        return MXLinearConfig.from_recipe_name("mxfp8_cublas_rceil")
     except ImportError:
         from torchao.prototype.moe_training.config import (
             MXFP8TrainingOpConfig,
             MXFP8TrainingRecipe,
         )
-        return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL)
+        return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL_WGRAD_WITH_HP)
+
+
+def _mx_linear_class():
+    """torchao's MXFP8Linear (0.18+), whose forward adds the bias; None on older builds."""
+    try:
+        from torchao.prototype.moe_training.mxfp8_linear import MXFP8Linear
+        return MXFP8Linear
+    except ImportError:
+        return None
+
+
+_ROW_PADDED_MX: dict = {}
+
+
+def _row_padded_mx_linear(base_cls):
+    """torchao <= 0.16 ``MXLinear`` has no high-precision weight-gradient option and its dim1 cast
+    asserts the token count is a multiple of 32. Zero rows padded on and sliced off leave every
+    real row unchanged: MX scales are per 32-wide block along the feature dim."""
+    cls = _ROW_PADDED_MX.get(base_cls)
+    if cls is None:
+        import torch.nn.functional as F
+        def forward(self, x):
+            shape = x.shape
+            rows = x.reshape(-1, shape[-1])
+            m = rows.shape[0]
+            y = base_cls.forward(self, F.pad(rows, (0, 0, 0, (-m) % 32)))[:m]
+            return y.reshape(*shape[:-1], y.shape[-1])
+
+        cls = _ROW_PADDED_MX[base_cls] = type(
+            f"RowPadded{base_cls.__name__}", (base_cls,), {"forward": forward}
+        )
+    return cls
 
 
 def _autocast_mx_input(module, args):
@@ -487,24 +577,57 @@ def _autocast_mx_input(module, args):
     return None
 
 
-def _apply_mxfp8_training(transformer, on_event) -> bool:
+def _apply_mxfp8_training(
+    transformer,
+    on_event,
+    family: Optional[str] = None,
+) -> bool:
     """Swap the frozen base linears to torchao MX float8 training compute (mxfp8, the
-    Blackwell-native block-scaled format; the swap is in place and the weights stay bf16 in
-    memory, so like fp8 this is a speed mode, not a memory mode). Applied AFTER add_adapter so
-    the filter can exclude the LoRA modules. Only competitive under torch.compile and only ahead
-    of compiled bf16 at large token counts (high resolution or batch), which is why it stays an
-    explicit opt-in rather than an "auto" pick. Never fatal: on any failure the run continues in
-    bf16 with a warning."""
-    try:
-        from torchao.quantization import quantize_
+    Blackwell-native block-scaled format; weights stay bf16 in memory, so a speed mode, not a
+    memory mode). Applied AFTER add_adapter so the filter excludes the LoRA modules. Only
+    competitive compiled at large token counts, hence an explicit opt-in. Never fatal: on any
+    failure the run continues in bf16 with a warning.
 
-        keep = _in_repeated_blocks(transformer, _mx_module_filter)
-        converted = [m for fqn, m in transformer.named_modules() if keep(m, fqn)]
-        quantize_(transformer, _mxfp8_training_config(), filter_fn = keep)
-        # The MX linear asserts bf16 input and sits above autocast, so an fp32 LayerNorm output (FLUX.2's bias-free
-        # ff.linear_in) raised at step 1: cast it the way autocast would for a plain F.linear.
-        for mod in converted:
-            mod.register_forward_pre_hook(_autocast_mx_input)
+    torchao 0.18+: a class swap to ``MXFP8Linear`` (the Parameter stays, PEFT's base_layer stays an
+    nn.Linear). Not ``quantize_``: its weight wrapper drops F.linear's bias (pytorch/ao#4846, open
+    in 0.18), which on torchao 0.17, where it is the only path, keeps biased linears bf16."""
+    try:
+        import torch.nn as nn
+
+        config = _mxfp8_training_config()
+        targets = [
+            (fqn, mod)
+            for fqn, mod in _lowp_targets(transformer, _mx_module_filter, family)
+            if type(mod) is nn.Linear
+        ]
+        if not hasattr(config, "wgrad_with_hp"):
+            # torchao <= 0.16 MXLinear: handles bias and autocast itself.
+            from torchao.quantization import quantize_
+
+            names = {fqn for fqn, _ in targets}
+            quantize_(transformer, config, filter_fn = lambda mod, fqn: fqn in names)
+            for _, mod in targets:
+                mod.__class__ = _row_padded_mx_linear(mod.__class__)
+        else:
+            linear_cls = _mx_linear_class()
+            if linear_cls is not None:
+                for _, mod in targets:
+                    mod.__class__ = linear_cls
+                    mod.kernel_preference = config.kernel_preference
+                    mod.scale_calculation_mode = config.scale_calculation_mode
+                    mod.wgrad_with_hp = config.wgrad_with_hp
+            else:
+                from torchao.quantization import quantize_
+
+                targets = [(fqn, mod) for fqn, mod in targets if mod.bias is None]
+                names = {fqn for fqn, _ in targets}
+                quantize_(transformer, config, filter_fn = lambda mod, fqn: fqn in names)
+            # The MX linear asserts bf16 input and sits above autocast, so an fp32 LayerNorm output (FLUX.2's
+            # ff.linear_in) raised at step 1: cast it the way autocast would for a plain F.linear.
+            for _, mod in targets:
+                mod.register_forward_pre_hook(_autocast_mx_input)
+        for _, mod in targets:
+            mod._studio_lowp = "mxfp8"
         return True
     except Exception as exc:  # noqa: BLE001 -- mxfp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}")
@@ -2143,9 +2266,13 @@ def _train_dit(
     # and stay high precision.
     if base_precision == "int8":
         _int8_quantize_base(transformer, cfg.resolved_family)
-    if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
+    if base_precision == "fp8" and not _apply_fp8_training(
+        transformer, on_event, cfg.resolved_family
+    ):
         base_precision = "bf16"
-    if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):
+    if base_precision == "mxfp8" and not _apply_mxfp8_training(
+        transformer, on_event, cfg.resolved_family
+    ):
         base_precision = "bf16"
 
     # LoRA EMA (opt-in via cfg.ema_decay): shadows ONLY the trainable adapter params, initialised after the precision
