@@ -2379,18 +2379,24 @@ class InferenceBackend:
                 "Unsloth: chatting with a text-diffusion model needs a newer Unsloth "
                 "(FastDiffusionModel.generate_text). Update with `unsloth studio update`."
             )
+        cancelled_error = getattr(
+            sys.modules.get("unsloth.models.diffusion"), "DiffusionGenerationCancelled", ()
+        )
         with self._generation_lock:
             if _adapter_state is not None:
                 self._apply_adapter_state(_adapter_state)
-            text = generate_text(
-                model_info["model"],
-                model_info["tokenizer"],
-                prompt = prompt,
-                messages = messages,
-                max_new_tokens = int(max_new_tokens or 256),
-                temperature = float(temperature or 0.0),
-                stop_callback = (lambda: cancel_event is not None and cancel_event.is_set()),
-            )
+            try:
+                text = generate_text(
+                    model_info["model"],
+                    model_info["tokenizer"],
+                    prompt = prompt,
+                    messages = messages,
+                    max_new_tokens = int(max_new_tokens or 256),
+                    temperature = float(temperature or 0.0),
+                    stop_callback = (lambda: cancel_event is not None and cancel_event.is_set()),
+                )
+            except cancelled_error:
+                return
         text = text or ""
         for sequence in stop or ():
             if sequence and sequence in text:
