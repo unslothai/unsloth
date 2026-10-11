@@ -204,12 +204,10 @@ export async function regenerateChatTitle(
       : raw;
     const excerpt = titleRefreshExcerpt(branch);
     if (!excerpt) return "empty";
-    const answeredWith =
-      [...branch]
-        .reverse()
-        .filter((m) => m.role === "assistant")
-        .map((m) => answeringCheckpoint(m.metadata?.custom))
-        .find(Boolean) ?? "";
+    // The newest answer only: an unstamped one (stopped, interrupted) must not fall back to an
+    // older answer's provider, which never saw the later turns.
+    const latestAnswer = [...branch].reverse().find((m) => m.role === "assistant");
+    const answeredWith = answeringCheckpoint(latestAnswer?.metadata?.custom);
     const checkpoint = titleCheckpoint(answeredWith, selected);
     const serving = checkpoint ? await titleModelServing(checkpoint) : false;
     const title =

@@ -135,7 +135,8 @@ test("a refresh follows the connection that answered, and asks a local model onl
   );
   assert.match(body, /const selected = !modelLoading \? params\.checkpoint : "";/);
   // The latest answer on the branch names the connection; never the live selection alone.
-  assert.match(body, /answeringCheckpoint\(m\.metadata\?\.custom\)/);
+  assert.match(body, /const latestAnswer = \[\.\.\.branch\]\.reverse\(\)\.find\(\(m\) => m\.role === "assistant"\);/);
+  assert.match(body, /const answeredWith = answeringCheckpoint\(latestAnswer\?\.metadata\?\.custom\);/);
   assert.match(body, /const checkpoint = titleCheckpoint\(answeredWith, selected\);/);
   assert.match(
     body,
