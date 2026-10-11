@@ -1023,8 +1023,7 @@ class DiffusionLoraConfig:
     # eager), "int8" (torchao weight-only), "fp8" (Ada/Hopper/Blackwell + compile) or "auto". Non-nf4 needs a dense
     # base.
     base_precision: str = "nf4"
-    # None keeps the model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES, resolved in normalized()); a number is
-    # the effective shift s*u/(1+(s-1)*u) on the unshifted u, and "auto" without dynamic shifting falls back to identity.
+    # None: model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES); a number is the effective shift on unshifted u.
     flow_shift: Optional[Any] = None
     # Per-sample probability of replacing the caption with the empty prompt (classifier-free-guidance dropout). 0.0
     # disables.
@@ -1194,8 +1193,6 @@ class DiffusionLoraConfig:
                     f"base_precision={base_precision!r} is not validated for training "
                     f"{resolved_family}. Use 'nf4', 'int8', 'bf16', or 'auto'."
                 )
-        # flow_shift: None resolves to "auto" for AUTO_FLOW_SHIFT_FAMILIES and otherwise stays None (the model's own
-        # schedule); an explicit value is validated and kept.
         flow_shift = self.flow_shift
         if flow_shift is None and resolved_family in AUTO_FLOW_SHIFT_FAMILIES:
             flow_shift = "auto"

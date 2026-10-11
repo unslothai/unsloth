@@ -376,11 +376,8 @@ _STATIC_SHIFT_FAMILIES = frozenset({"z-image"})
 
 
 def _flow_shift_key(value: Any, family: str = "") -> str:
-    """flow_shift as text: "auto" and the number it resolves to are different runs. The model's own
-    schedule (None) keeps the "1.0" earlier builds recorded for it. A number is now the effective
-    shift on the unshifted schedule; that changed its meaning only where a static shift was baked
-    in, so only those families get a new token (an older checkpoint is refused there instead of
-    continuing at a new shift) and every other family keeps the token earlier builds wrote."""
+    """None keeps the "1.0" earlier builds wrote. Numbers changed meaning only on static-shift
+    families, so only those get a new token (older checkpoints are refused there)."""
     if value is None:
         return "1.0"
     if isinstance(value, str):

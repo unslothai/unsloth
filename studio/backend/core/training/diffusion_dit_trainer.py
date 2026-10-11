@@ -178,8 +178,7 @@ def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
 
 
 def _unshifted_sigmas(scheduler):
-    """The uniform u table a static ``shift`` was applied to at init (or ``scheduler.sigmas`` itself
-    when nothing was baked in), rebuilt the way ``FlowMatchEulerDiscreteScheduler.__init__`` does."""
+    """Uniform u before any init-time static shift, as ``FlowMatchEulerDiscreteScheduler.__init__`` builds it."""
     import numpy as np
     import torch
 
@@ -192,18 +191,9 @@ def _unshifted_sigmas(scheduler):
 
 
 def _training_sigma_table(scheduler, flow_shift):
-    """The sigma table training draws index into, per ``cfg.flow_shift``. ``None`` (every family
-    outside AUTO_FLOW_SHIFT_FAMILIES) returns ``scheduler.sigmas`` unchanged: the model's own
-    schedule, static shift included. ``"auto"`` (the
-    qwen-image default) reproduces the family's INFERENCE sigma distribution, which the scheduler
-    never bakes into ``sigmas`` when ``use_dynamic_shifting`` is true (the static ``shift`` at
-    init is skipped, so Qwen-Image otherwise trains on unshifted uniform sigmas): apply the
-    scheduler's own ``time_shift`` at mu = ``max_shift`` (Qwen pins base_shift = max_shift = log
-    3, so the inference mu is constant at every resolution) followed by its
-    ``stretch_shift_to_terminal`` -- using the scheduler's methods keeps the transform faithful
-    across diffusers versions. A number is the EFFECTIVE shift s*u/(1+(s-1)*u) on the unshifted u
-    (musubi/kohya discrete_flow_shift): applied on top of Z-Image's baked-in 3 or 6, a 3 trained at 9
-    or 18."""
+    """None: the scheduler's own sigmas. "auto": the inference distribution, which dynamic-shifting
+    schedulers never bake into ``sigmas`` (Qwen pins mu = max_shift = log 3). A number: the effective
+    shift s*u/(1+(s-1)*u) on unshifted u (musubi/kohya); applying it on top of a baked-in shift is WRONG."""
     sigmas = scheduler.sigmas
     if flow_shift is None:
         return sigmas
@@ -214,8 +204,7 @@ def _training_sigma_table(scheduler, flow_shift):
         mu = float(getattr(sc, "max_shift", None) or math.log(3.0))
         shifted = scheduler.time_shift(mu, 1.0, sigmas)
         if getattr(sc, "shift_terminal", None):
-            # The stretch scales off the table's own final sigma, so it must see the full descending schedule, never a
-            # batch.
+            # Stretch must see the full descending table, never a batch.
             shifted = scheduler.stretch_shift_to_terminal(shifted)
         return shifted
     s = float(flow_shift)

@@ -170,8 +170,7 @@ def test_numeric_table_applies_the_linear_shift():
 
 
 def test_identity_and_static_families_are_untouched():
-    # The default (None) must return the scheduler's own table object (no numeric drift for FLUX / Z-Image / Krea 2), and
-    # "auto" on a static-shift scheduler is a no-op: its init already baked the shift into sigmas.
+    # None returns the scheduler's own table; "auto" on a static-shift scheduler is a no-op.
     sched = _qwen_scheduler()
     assert _training_sigma_table(sched, None) is sched.sigmas
     assert _training_sigma_table(sched, 1.0) is sched.sigmas
@@ -183,8 +182,7 @@ def test_identity_and_static_families_are_untouched():
 def test_a_numeric_shift_is_the_effective_shift_on_a_static_scheduler():
     import torch
 
-    # Z-Image-Turbo bakes shift 3 into its sigmas. A requested 3 is that same schedule, not 3 on top of it (9), and 1.0
-    # trains on the unshifted uniform table.
+    # Z-Image-Turbo bakes in shift 3: a requested 3 is that schedule (not 9); 1.0 is unshifted.
     static = _flux_static_scheduler()
     assert torch.allclose(_training_sigma_table(static, 3.0), static.sigmas, atol = 1e-6)
     u = _training_sigma_table(static, 1.0)
@@ -204,8 +202,7 @@ def test_the_resume_identity_keeps_the_default_token_and_drops_min_snr_for_flow_
     assert ident.snr_gamma is None
     old = dc.CheckpointIdentity.from_dict({**ident.as_dict(), "snr_gamma": "5.0"})
     assert old.mismatch_reason(ident) is None
-    # FLUX.1 shifts dynamically, so its sigmas never carried a static shift: a number means what it did, and an
-    # older run's checkpoint still resumes.
+    # FLUX.1 shifts dynamically, so older checkpoints still resume.
     flux_shifted = dc.identity_for_config(
         DiffusionLoraConfig(
             base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o", flow_shift = 3.0
