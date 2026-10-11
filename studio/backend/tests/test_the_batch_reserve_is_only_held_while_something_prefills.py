@@ -297,11 +297,13 @@ class TestPlanPreemptionsAtTheLowerCeiling:
 
     def test_it_still_fires_once_the_lower_ceiling_is_passed(self):
         c = _controller()
+        fired = []
         for i in range(SLOTS):
             c.register(f"chat{i}", tokens = 1900, signal = PreemptSignal())
-            c.observe(f"chat{i}", 1)
+            fired += c.observe(f"chat{i}", 1)
         assert c.committed_tokens() == 7604 > BUDGET - IDLE_BUFFER
-        assert c.plan_preemptions(needed = 0), "7604 is past the 7416 dynamic ceiling"
+        fired += c.plan_preemptions(needed = 0)
+        assert fired, "7604 is past the 7416 dynamic ceiling"
 
     def test_a_prefill_starting_mid_flight_brings_the_ceiling_back_down(self):
         c = _controller()
