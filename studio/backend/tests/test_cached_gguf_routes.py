@@ -429,6 +429,37 @@ def test_collect_local_models_gives_one_parked_copy_the_repo_id(monkeypatch, tmp
     ]
 
 
+def test_collect_local_models_keeps_each_snapshot_of_a_registered_repo_dir_exact(
+    monkeypatch, tmp_path
+):
+    # A scan folder registered at a models--* repo dir lists each snapshot as its own custom row.
+    # Only the snapshot the cache scan names follows the newest-complete selection; an older
+    # snapshot row keeps serving its own quants, or /v1/models would advertise the newer one's
+    # quant for it and a pin on that quant would miss.
+    active = tmp_path / "active"
+    active.mkdir()
+    parked = tmp_path / "parked"
+    old = _complete_gguf_repo(parked, "Org/Model-GGUF")
+    (old / "Model-Q4_K_M.gguf").rename(old / "Model-Q8_0.gguf")
+    new = old.parent / ("1" * 40)
+    new.mkdir()
+    (new / "Model-Q4_K_M.gguf").write_bytes(b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64))
+    os.utime(old, (1_000_000_000, 1_000_000_000))
+    os.utime(new, (2_000_000_000, 2_000_000_000))
+    repo_dir = parked / "models--Org--Model-GGUF"
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(repo_dir)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    from core.inference.local_model_resolver import local_servable_model
+
+    served = {Path(row.path).name: local_servable_model(row) for row in rows}
+    assert served[old.name] == (True, ("Q8_0",))
+    assert served[new.name] == (True, ("Q4_K_M",))
+
+
 def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     # Total and stable on hostile input is the whole contract here; the exact
     # string is platform-dependent. POSIX realpath() rejects an embedded NUL with

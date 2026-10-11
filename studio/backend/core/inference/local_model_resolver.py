@@ -372,10 +372,8 @@ def _local_gguf_entry(
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         cache_repo_dir = None
-        # A cache-layout copy parked in a scan folder lists as a custom row (routes.models.
-        # _merge_scan_folder_row) but still needs the newest complete snapshot and its complete
-        # quants, or /v1/models would advertise a quant missing a shard the loader cannot serve.
-        if getattr(info, "source", None) in ("hf_cache", "custom"):
+        source = getattr(info, "source", None)
+        if source == "hf_cache":
             try:
                 if p.name.startswith("models--") and (p / "snapshots").is_dir():
                     cache_repo_dir = p
@@ -387,6 +385,25 @@ def _local_gguf_entry(
                 and p.parent.parent.name.startswith("models--")
             ):
                 cache_repo_dir = p.parent.parent
+        elif (
+            source == "custom"
+            and p.parent.name == "snapshots"
+            and p.parent.parent.name.startswith("models--")
+        ):
+            # A cache-layout copy parked in a scan folder lists as a custom row named by the
+            # snapshot the cache scan picks (routes.models._merge_scan_folder_row). It still needs
+            # the newest complete snapshot and its complete quants, or /v1/models would advertise
+            # a quant missing a shard. Any other snapshot row keeps its exact directory.
+            import os
+
+            from hub.utils.inventory_scan import resolve_hf_cache_realpath
+
+            named = resolve_hf_cache_realpath(p.parent.parent)
+            try:
+                if named and os.path.samefile(named, p):
+                    cache_repo_dir = p.parent.parent
+            except OSError:
+                pass
         if cache_repo_dir is not None:
             selected = _resolve_gguf_load_snapshot(cache_repo_dir)
             if selected is None:
