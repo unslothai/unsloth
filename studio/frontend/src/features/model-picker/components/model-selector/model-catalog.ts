@@ -261,6 +261,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     // Same reason as 2.1's alias: the int8 half of the prequant repo has no artifact row.
     aliases: ["unsloth/Qwen-Image-2.1-Turbo-FP8"],
+    // Right after 2.1's group, so its "Fast FP8" row sits directly under 2.1's at the top.
+    pinToTop: true,
     artifacts: [
       bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
         totalParams: 7115124736,

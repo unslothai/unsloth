@@ -1580,7 +1580,6 @@
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
-    "tests/test_gpu_selection.py",
     "tests/test_training_gpu_arch_gate.py",
     "tests/test_training_gpu_arch_gate.py",
     "tests/test_utils.py",

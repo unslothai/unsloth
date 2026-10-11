@@ -804,6 +804,13 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001 -- the first tool call probes instead
         _lifespan_log.warning("could not start the sandbox warm-up", exc_info = True)
 
+    # Windows AMD driver with the ROCm/TheRock#7221 idle-eviction bug: one log line, plus gpu.driver_warning.
+    try:
+        from utils.hardware.hardware import start_amd_driver_check
+        start_amd_driver_check()
+    except Exception:  # noqa: BLE001 -- a warning, never a startup failure
+        _lifespan_log.debug("could not start the AMD driver check", exc_info = True)
+
     try:
         from hub.services.models.account_access import adopt_unnamed_public_proofs
         from utils.hub_settings import operator_hf_endpoint
@@ -2293,6 +2300,7 @@ def _get_cached_system_gpu_info(
     """Return training and inference GPU info with bounded live-probe churn."""
     import time
     from utils.hardware import (
+        amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
@@ -2407,6 +2415,7 @@ def _get_cached_system_gpu_info(
             "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
             if aggregate_basis_matches
             else None,
+            **amd_driver_warning_report(),
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp bundle can
