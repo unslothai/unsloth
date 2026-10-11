@@ -352,7 +352,7 @@ class TestEverySignalTheClientReadsHasAProducer:
         backend_dir = pathlib.Path(__file__).resolve().parent.parent
         ts = backend_dir.parent / "frontend/src/features/chat/utils/admission-status.ts"
         if not ts.exists():
-            pytest.skip("frontend not present in this tree")
+            pytest.skip(reason = "backend-only install: no studio/frontend source to compare")
         pattern = r'^export const ADMISSION_COMMENT_\w+ = "([^"]+)";'
         declared = set(re.findall(pattern, ts.read_text(encoding = "utf-8"), re.M))
         assert declared == {
