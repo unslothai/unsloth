@@ -839,6 +839,14 @@ export function ModelsPage() {
   // the default (Recommended) hides unrunnable checkpoints and picking a format changes the rows.
   const effectiveDiscoverFormat: ModelFormatFilter = deferredFormatFilter;
   const checkpointQuantFormats = gpu.checkpointQuantFormats;
+  // Image / video NVFP4 also needs the build's NVFP4 switch: the backend refuses *-NVFP4 diffusion repos while it is off.
+  const diffusionQuantFormats = useMemo(
+    () =>
+      gpu.nvfp4Diffusion
+        ? checkpointQuantFormats
+        : checkpointQuantFormats.filter((format) => format !== "nvfp4"),
+    [checkpointQuantFormats, gpu.nvfp4Diffusion],
+  );
 
   const listChannel = useMemo<HfModelSearchChannel | null>(() => {
     if (!liveListChannel) return null;
@@ -990,7 +998,12 @@ export function ModelsPage() {
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
         (effectiveDiscoverFormat === "recommended"
-          ? matchesRecommended(row.result, checkpointQuantFormats)
+          ? matchesRecommended(
+              row.result,
+              row.capabilities.some((c) => c.key === "diffusion")
+                ? diffusionQuantFormats
+                : checkpointQuantFormats,
+            )
           : matchesFormat(
               detectResultFormat(row.result),
               effectiveDiscoverFormat,
@@ -1010,6 +1023,7 @@ export function ModelsPage() {
     hasQuery,
     effectiveDiscoverFormat,
     checkpointQuantFormats,
+    diffusionQuantFormats,
     deferredCapabilityFilter,
     activeChannel,
     fitOnDeviceOnly,
