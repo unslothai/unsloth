@@ -569,8 +569,11 @@ class TestWorkflow:
 
     def test_the_rename_expects_the_cells_platform(self, workflow):
         step = _step(workflow, "build", "Name the wheel the way upstream names it")
-        assert step["env"]["PLATFORM"] == "${{ matrix.platform }}"
-        assert "-${PLATFORM}.whl" in step["run"]
+        assert step["env"]["WHEEL_PLATFORM"] == "${{ matrix.platform }}"
+        assert (
+            "PLATFORM" not in step["env"]
+        )  # vcvars exports Platform=x64; Windows env is case-insensitive
+        assert "-${WHEEL_PLATFORM}.whl" in step["run"]
 
     def test_the_torch_abi_check_follows_the_cell(self, workflow):
         for job in ("warm", "build"):

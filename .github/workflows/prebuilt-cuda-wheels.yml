@@ -849,12 +849,14 @@ jobs:
           DIST: ${{ matrix.dist }}
           VERSION: ${{ matrix.version }}
           PYTHON_TAG: ${{ matrix.python_tag }}
-          PLATFORM: ${{ matrix.platform }}
+          # Not PLATFORM: Windows env names are case-insensitive, and vcvars exports Platform=x64,
+          # so the step's value reaches bash as `Platform` and $PLATFORM is unset.
+          WHEEL_PLATFORM: ${{ matrix.platform }}
           WHEEL_NAME: ${{ matrix.wheel_name }}
         run: |
           set -euo pipefail
           built="$(ls dist/*.whl)"
-          expected_raw="dist/${DIST}-${VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-${PLATFORM}.whl"
+          expected_raw="dist/${DIST}-${VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-${WHEEL_PLATFORM}.whl"
           if [ "$built" != "$expected_raw" ]; then
             echo "::error::built $built, expected $expected_raw before renaming"
             exit 1
