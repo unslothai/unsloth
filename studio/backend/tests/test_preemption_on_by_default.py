@@ -449,6 +449,21 @@ class TestExactParksAreCountedAcrossModels:
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "if self._server_launched_parking: _note_parking_backend(self)" in source
 
+    def test_a_plain_load_after_an_exact_one_leaves_its_room(self, monkeypatch):
+        # The exact model was certified first; a later ordinary load must not size its own
+        # parking into the RAM those parks were promised.
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
+        monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 100_000)
+        exact_one = self._backend(exact.EXACT_STATE_ON, 30_000)
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [exact_one])
+        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        alone = llama_mod._host_bounded_parking_mib(10**9)
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [])
+        assert alone < llama_mod._host_bounded_parking_mib(10**9)
+        assert llama_mod._exact_parks_held_mib() == 0
+
     def test_every_exact_host_check_asks_for_this_backends_share(self):
         import inspect
         source = inspect.getsource(LlamaCppBackend.load_model)

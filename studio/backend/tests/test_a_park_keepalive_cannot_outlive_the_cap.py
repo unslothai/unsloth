@@ -320,3 +320,15 @@ def test_a_resume_renews_the_configured_first_token_window(monkeypatch):
     window = source[start : source.index("\n    def ", start + 10)]
     assert "_DEFAULT_FIRST_TOKEN_TIMEOUT_S" not in window
     assert window.count("_first_token_timeout_s()") == 2
+
+
+def test_a_probe_excused_deadline_renews_the_configured_window():
+    """The aggregate-probe excuse for a build without notices renews the first-token window the
+    operator configured, as the notice path does, not the 20-minute default."""
+    import routes.inference as inference
+
+    source = inspect.getsource(inference._aiter_llama_stream_items)
+    excused = source[source.index("if not await _probe_off_the_loop(park_above.excuses_silence):"):]
+    excused = excused[: excused.index("return True")]
+    assert "first_token_deadline = now + _first_token_timeout_s()" in excused
+    assert "_DEFAULT_FIRST_TOKEN_TIMEOUT_S" not in excused

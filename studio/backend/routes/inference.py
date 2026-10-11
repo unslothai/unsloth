@@ -4978,7 +4978,7 @@ async def _aiter_llama_stream_items(
         if not await _probe_off_the_loop(park_above.excuses_silence):
             return False
         if waiting_first_item:
-            first_token_deadline = now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = now + _first_token_timeout_s()
         else:
             last_item_at = now
         return True

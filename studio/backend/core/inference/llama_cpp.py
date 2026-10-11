@@ -2536,14 +2536,32 @@ def _total_host_memory_mib() -> Optional[int]:
         return None
 
 
+def _exact_parks_held_mib() -> int:
+    """What the resident exact models certified and have not parked yet. A plain park past its
+    budget is only re-prefilled, but one that takes an exact model's room breaks its guarantee."""
+    held = 0
+    for other in _parking_neighbours(None):
+        if getattr(other, "_exact_concurrency", None) != _exact.EXACT_STATE_ON:
+            continue
+        try:
+            writes = max(0, int(getattr(other, "_exact_parking_writes", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+        if writes:
+            held += max(0, writes - _parked_host_mib(other))
+    return held
+
+
 def _host_bounded_parking_mib(need_mib: int) -> int:
     """``need_mib`` capped to what this host can pin without pressure; 0 means do not park.
 
     A park past the budget drops its cells and is re-prefilled, which costs about what the copy
-    would, so a short budget is safe; pinning past the host's headroom is not."""
+    would, so a short budget is safe; pinning past the host's headroom is not, nor into what a
+    resident exact model certified."""
     available = _available_host_memory_mib()
     if available is None:
         return 0
+    available = max(0, available - _exact_parks_held_mib())
     total = _total_host_memory_mib() or available
     reserve = max(_PARKING_HOST_RESERVE_MIB, int(total * _PARKING_HOST_RESERVE_FRACTION))
     cap = min(int(available * _PARKING_HOST_AVAILABLE_FRACTION), available - reserve)
