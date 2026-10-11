@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Maxwell / Pascal (sm_5x / sm_6x): ptxas rejects ld eviction hints below sm_70, so the indexed
-RoPE kernel crashed a GTX 10xx / Tesla P4 with "Modifier '.evict_first' on 'ld' requires .target
-sm_70 or higher", and the fused NF4 dequant failed to compile before falling back to bitsandbytes.
-The RoPE cases compile for the old target with the ptxas Triton ships: no old GPU needed."""
+"""ptxas rejects ld eviction hints below sm_70, so the indexed RoPE kernel crashed on Maxwell
+and Pascal ("Modifier '.evict_first' on 'ld' requires .target sm_70"). Compiles for the old
+targets with Triton's own ptxas: no old GPU needed."""
 
 import pytest
 import torch
@@ -41,7 +40,6 @@ def _compile(fn, signature, constexprs, cc):
     ],
 )
 def test_fused_nf4_kernels_only_from_volta(capabilities, supported, monkeypatch):
-    # Below sm_70 the bitsandbytes kernels dequantize instead of the fused Triton ones.
     monkeypatch.setattr(utils_mod, "DEVICE_TYPE", "cuda")
     monkeypatch.setattr(utils_mod, "DEVICE_COUNT", len(capabilities))
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: capabilities[index])
