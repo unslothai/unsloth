@@ -664,6 +664,10 @@ def run_safetensors_tool_loop(
 
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
+    if mcp_image is not None:
+        from core.inference.mcp_image import note_attached_image
+        from core.inference.tools import mcp_image_targets
+        messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
     conversation = list(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
@@ -1485,6 +1489,14 @@ def run_safetensors_tool_loop(
             # consecutive results the same way -- so without the id a batch persisted
             # as separate pairs replayed as several pictures on the next request.
             decision.provenance["round_id"] = iteration
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                from core.inference.tools import mcp_image_share
+                image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+                if image_share is not None:
+                    decision = tool_controller.reprepare_call(
+                        decision, provisional = provisional_match
+                    )
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
@@ -1530,8 +1542,6 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
             # high-risk python/terminal call without OS isolation.
-            from core.inference.tools import mcp_image_share
-
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),
                 bypass_permissions = bypass_permissions,
@@ -1541,7 +1551,6 @@ def run_safetensors_tool_loop(
                 sandbox_level = sandbox_level,
             )
             # Sending the user's image always asks, whatever the permission mode.
-            image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
             needs_confirm = needs_confirm or image_share is not None
             strict_isolation = requires_os_isolation(
                 confirm_tool_calls = bool(confirm_tool_calls),

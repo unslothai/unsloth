@@ -3528,9 +3528,25 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
 	}
 
+	/* At the editor's top right; with attachment cards above, at the surface's instead. */
+	.unsloth-composer-expand {
+		top: 0;
+		right: calc(var(--spacing) * -1);
+	}
+
+	.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-editor {
+		position: static;
+	}
+
+	.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-expand {
+		top: calc(var(--spacing) * 2.5);
+		right: calc(var(--spacing) * 2.5);
+	}
+
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
 	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
-	.aui-composer-root[data-writing-expanded="true"] .unsloth-composer-editor {
+	/* Either composer root: the thread's form or compare's wrapper. */
+	[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
 			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
 			clamp(8rem, calc(80svh - 12rem), 42rem)
@@ -3584,6 +3600,11 @@ html[data-chat-font] .aui-root {
 			padding-right: 0;
 			/* One gap for every control, so the row spaces evenly. */
 			--composer-tight-gap: calc(0.125rem * var(--ui-space-scale, 1));
+		}
+
+		/* The line's gutter is gone here, so the pinned toggle sits that much closer to the edge. */
+		.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-expand {
+			right: calc(var(--spacing) * 1.5);
 		}
 
 		.unsloth-composer-left,
@@ -5125,6 +5146,18 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	padding-inline: 1rem;
 	scroll-padding-inline: 1rem;
 	clip-path: inset(-0.625rem 0 0 0 round 28px 28px 0 0);
+}
+
+/* Keep attachment cards clear of the expand toggle in the top right corner. */
+.aui-composer-root[data-writing-toggle="true"] .unsloth-composer-surface .aui-composer-attachment-cards {
+	padding-right: calc(var(--spacing) * 9);
+}
+
+/* A scrolling strip paints cards through its padding, so end the scrollport before the toggle. */
+.aui-composer-root[data-writing-toggle="true"] .unsloth-composer-surface .aui-composer-attachment-cards[data-layout="strip"] {
+	width: calc(100% - var(--spacing) * 9 + 0.625rem);
+	padding-right: 1rem;
+	clip-path: inset(-0.625rem 0 0 0 round 28px 0 0 0);
 }
 
 /* Avoid iOS Safari focus zoom. Important in the base layer, because an important

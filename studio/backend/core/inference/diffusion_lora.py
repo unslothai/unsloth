@@ -15,9 +15,11 @@ validates the id against the catalog / local dir / HF hub before loading.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import stat
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +35,14 @@ from utils.paths.path_utils import is_appledouble_metadata
 _NATIVE_EXTS = (".safetensors", ".gguf")
 _DIFFUSERS_EXTS = (".safetensors",)
 _ALL_EXTS = (".safetensors", ".gguf")
+# ``kind`` in a ``<stem>.json`` sidecar marking the weight beside it as an image LoRA, not model weights.
+LORA_SIDECAR_KIND = "diffusion-lora"
+_MAX_SCAN_FOLDER_SUBDIRS = 200
+_EXPORT_LOCK = threading.Lock()
+# ``<stem>.json`` with these stems marks a model or pipeline folder to the model scanners.
+_MODEL_SENTINEL_STEMS = frozenset(
+    {"config", "adapter_config", "model_index", "modular_model_index"}
+)
 
 
 @dataclass(frozen = True)
@@ -48,6 +58,7 @@ class LoraCatalogEntry:
     local_path: Optional[str] = None
     size_bytes: int = 0
     weight_default: float = 1.0
+    fine_tuned: bool = False
 
 
 @dataclass(frozen = True)
@@ -112,58 +123,171 @@ def sanitize_alias(raw: str) -> str:
     return stem or "lora"
 
 
-def _scan_local() -> list[LoraCatalogEntry]:
-    root = loras_dir()
+def _weight_files(root: Path) -> list[Path]:
     try:
         children = sorted(root.iterdir())
     except OSError:
         return []
-
-    files = [
+    return [
         p
         for p in children
-        if p.is_file() and p.suffix.lower() in _ALL_EXTS and not is_appledouble_metadata(p)
+        if p.suffix.lower() in _ALL_EXTS and not is_appledouble_metadata(p) and _is_file(p)
     ]
+
+
+def _is_file(p: Path) -> bool:
+    # Path.is_file() re-raises EACCES before Python 3.14; one unreadable entry must not fail the catalog.
+    try:
+        return p.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir(p: Path) -> bool:
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def _scan_folder_roots() -> list[Path]:
+    """Registered custom model folders plus their direct sub-folders (where an export lands)."""
+    try:
+        from storage.studio_db import list_scan_folders
+        folders = list_scan_folders()
+    except Exception:  # noqa: BLE001 -- discovery never fails on the scan-folder table
+        return []
+    roots: list[Path] = []
+    for folder in folders:
+        root = Path(folder.get("path") or "")
+        if not _is_dir(root):
+            continue
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            children = []
+        subdirs = sorted(c for c in children if not c.name.startswith(".") and _is_dir(c))
+        roots.append(root)
+        roots.extend(subdirs[:_MAX_SCAN_FOLDER_SUBDIRS])
+    return roots
+
+
+def _account_allows():
+    """Managed accounts only see adapters (and sidecars) resolving inside paths they may read, so a
+    symlink cannot pull another account's or the host's file into listing, generation or export."""
+    from hub.services.models import account_access
+
+    if not account_access.managed_account():
+        return lambda p: True
+
+    def allows(p: Path) -> bool:
+        sidecar = p.with_suffix(".json")
+        return account_access.model_visible(str(p)) and (
+            not os.path.lexists(sidecar) or account_access.model_visible(str(sidecar))
+        )
+
+    return allows
+
+
+def _open_pinned(path: Path):
+    """Open ``path`` and prove the handle is the file now at its resolved, account-readable location,
+    so swapping a link between the catalog scan and the copy cannot redirect the read."""
+    f = open(path, "rb")
+    try:
+        real = os.path.realpath(path)
+        st, now = os.fstat(f.fileno()), os.stat(real)
+        if (st.st_dev, st.st_ino) != (now.st_dev, now.st_ino) or not _account_allows()(Path(real)):
+            raise FileNotFoundError(f"LoRA file '{path.name}' is not readable here")
+    except BaseException:
+        f.close()
+        raise
+    return f
+
+
+def _pinned_sidecar(weight_path: Path) -> Optional[dict]:
+    try:
+        with _open_pinned(weight_path.with_suffix(".json")) as f:
+            data = json.loads(f.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _scan_local() -> list[LoraCatalogEntry]:
+    root_dir = loras_dir()
+    allows = _account_allows()
+    files = [p for p in _weight_files(root_dir) if allows(p)]
     # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full
     # filename.
     stem_counts: dict[str, int] = {}
     for p in files:
         stem_counts[p.stem] = stem_counts.get(p.stem, 0) + 1
+    found = [(p, p.name if stem_counts.get(p.stem, 0) > 1 else p.stem) for p in files]
+    used = {entry_id for _, entry_id in found}
+    seen = {os.path.normcase(os.path.realpath(p)) for p in files}
+    # Custom models folders contribute only sidecar-marked image LoRAs, so model weights never show up here.
+    for root in _scan_folder_roots():
+        for p in _weight_files(root):
+            key = os.path.normcase(os.path.realpath(p))
+            if key in seen or not is_image_lora_file(p) or not allows(p):
+                continue
+            seen.add(key)
+            # Keyed on the path, not scan order, so saved recipes never drift to another folder's same-named file.
+            entry_id = f"{p.stem}-{hashlib.sha1(os.fsencode(key)).hexdigest()[:8]}"
+            if entry_id in used:
+                continue
+            used.add(entry_id)
+            found.append((p, entry_id))
+
     entries: list[LoraCatalogEntry] = []
-    for p in files:
-        ext = p.suffix.lower()
+    for p, entry_id in found:
         try:
             size = p.stat().st_size
         except OSError:
             size = 0
-        entry_id = p.name if stem_counts.get(p.stem, 0) > 1 else p.stem
         # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so
         # it is family-gated instead of "unknown". Best-effort.
         families, weight_default = _read_lora_sidecar(p)
         entries.append(
             LoraCatalogEntry(
                 id = entry_id,
-                display_name = entry_id,
+                display_name = entry_id if p.parent == root_dir else p.stem,
                 source = "local",
-                fmt = "gguf" if ext == ".gguf" else "safetensors",
+                fmt = "gguf" if p.suffix.lower() == ".gguf" else "safetensors",
                 local_path = str(p),
                 size_bytes = size,
                 families = families,
                 weight_default = weight_default,
+                fine_tuned = (_sidecar_data(p) or {}).get("source") == "studio-trained",
             )
         )
     return entries
 
 
+def _sidecar_data(weight_path: Path) -> Optional[dict]:
+    try:
+        data = json.loads(weight_path.with_suffix(".json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def is_image_lora_file(path: Path) -> bool:
+    """A .safetensors/.gguf whose sidecar marks it as an image LoRA (``kind``, or a trainer sidecar
+    from before the marker). Model scanners use this to keep image LoRAs out of model listings."""
+    if path.suffix.lower() not in _ALL_EXTS:
+        return False
+    data = _sidecar_data(path)
+    return data is not None and (
+        data.get("kind") == LORA_SIDECAR_KIND or data.get("source") == "studio-trained"
+    )
+
+
 def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
     """Read the ``<stem>.json`` sidecar next to a local adapter -> ``(families, weight_default)``.
     Returns ``((), 1.0)`` when absent or unreadable, so discovery never fails on a bad file."""
-    sidecar = weight_path.with_suffix(".json")
-    try:
-        data = json.loads(sidecar.read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return (), 1.0
-    if not isinstance(data, dict):
+    data = _sidecar_data(weight_path)
+    if data is None:
         return (), 1.0
     raw_family = data.get("family")
     raw_families = data.get("families")
@@ -198,6 +322,80 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
 
 
+def _staging_name(dest_dir: Path, stem: str) -> str:
+    # Not mkstemp: its 0600 file would publish an owner-only marker; a fresh open() honours the umask.
+    import secrets
+    return str(dest_dir / f".lora-export.{secrets.token_hex(8)}.part")
+
+
+def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
+    """Copy a local adapter into ``dest_dir`` with a ``<stem>.json`` sidecar carrying the image LoRA marker.
+
+    Takes a catalog id, never a path, so only listed image LoRAs can be read. Returns the copied weight
+    file; a stem already used by other bytes, another weight format or a foreign ``.json`` gets a suffix.
+    """
+    import filecmp
+    import shutil
+
+    entry = next((e for e in _scan_local() if e.id == lora_id), None)
+    if entry is None or not entry.local_path:
+        raise FileNotFoundError(f"no local image LoRA named '{lora_id}'")
+    src = Path(entry.local_path)
+    dest_dir.mkdir(parents = True, exist_ok = True)
+
+    def _free(out: Path) -> bool:
+        if out.stem.lower() in _MODEL_SENTINEL_STEMS:
+            return False
+        if out.exists() and os.path.samefile(src, out):
+            return True
+        # The sidecar is per stem, so a sibling weight of another format would share it (case-insensitive FS too).
+        if any(
+            c.name != out.name
+            and c.stem.casefold() == out.stem.casefold()
+            and c.suffix.lower() in _ALL_EXTS
+            for c in dest_dir.iterdir()
+        ):
+            return False
+        if not out.exists():
+            return not out.with_suffix(".json").exists()
+        return filecmp.cmp(src, out, shallow = False) and (
+            not out.with_suffix(".json").exists() or is_image_lora_file(out)
+        )
+
+    with _EXPORT_LOCK:
+        out, n = dest_dir / src.name, 2
+        while not _free(out):
+            out = dest_dir / f"{src.stem}-{n}{src.suffix}"
+            n += 1
+        meta = json.dumps({**(_pinned_sidecar(src) or {}), "kind": LORA_SIDECAR_KIND}, indent = 2)
+        copy = not (out.exists() and os.path.samefile(src, out))
+        # Both files are staged under names no scanner reads, so a failed export leaves nothing behind.
+        sidecar = out.with_suffix(".json")
+        staged: list[str] = []
+        new_sidecar = not sidecar.exists()
+        try:
+            if copy:
+                staged.append(_staging_name(dest_dir, src.stem))
+                with _open_pinned(src) as fsrc, open(staged[-1], "xb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+                    st = os.fstat(fsrc.fileno())
+                os.chmod(staged[-1], stat.S_IMODE(st.st_mode))
+                os.utime(staged[-1], ns = (st.st_atime_ns, st.st_mtime_ns))
+            staged.append(_staging_name(dest_dir, src.stem))
+            Path(staged[-1]).write_text(meta, encoding = "utf-8")
+            # Marker first: a scanner must never see the weight unmarked.
+            os.replace(staged[-1], sidecar)
+            if copy:
+                os.replace(staged[0], out)
+        except BaseException:
+            for tmp in staged:
+                Path(tmp).unlink(missing_ok = True)
+            if new_sidecar and not out.exists():
+                sidecar.unlink(missing_ok = True)
+            raise
+    return out
+
+
 def resolve_one(
     spec_id: str,
     weight: float,
@@ -205,6 +403,7 @@ def resolve_one(
     family: Optional[str] = None,
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
+    catalog: Optional[dict[str, LoraCatalogEntry]] = None,
 ) -> ResolvedLora:
     """Resolve a request LoRA id + weight to a concrete local file.
 
@@ -218,7 +417,7 @@ def resolve_one(
     """
     # An empty token triggers an auth error instead of anonymous access; normalise to None.
     hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
-    entry = _catalog_by_id().get(spec_id)
+    entry = (_catalog_by_id() if catalog is None else catalog).get(spec_id)
     if entry is not None:
         req_fam = (family or "").strip().lower()
         if entry.families and req_fam and req_fam not in {f.lower() for f in entry.families}:
@@ -229,6 +428,9 @@ def resolve_one(
         if entry.source == "local":
             path = entry.local_path or ""
             if not path or not os.path.exists(path):
+                raise FileNotFoundError(f"LoRA '{spec_id}' is no longer present on disk")
+            # Re-checked here: a catalog can be built well before an earlier stacked LoRA finishes downloading.
+            if not _account_allows()(Path(path)):
                 raise FileNotFoundError(f"LoRA '{spec_id}' is no longer present on disk")
             return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
         if not entry.repo_id or not entry.weight_name:
@@ -322,13 +524,20 @@ def resolve_specs(
     )
 
     out: list[ResolvedLora] = []
+    # One custom-folder scan per request, not one per stacked LoRA.
+    catalog = _catalog_by_id() if any(weight != 0 for _, weight in specs) else {}
     try:
         for spec_id, weight in specs:
             if weight == 0:
                 continue
             out.append(
                 resolve_one(
-                    spec_id, weight, family = family, hf_token = hf_token, cancel_event = cancel_event
+                    spec_id,
+                    weight,
+                    family = family,
+                    hf_token = hf_token,
+                    cancel_event = cancel_event,
+                    catalog = catalog,
                 )
             )
     except (

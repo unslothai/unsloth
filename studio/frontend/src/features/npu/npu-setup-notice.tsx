@@ -3,8 +3,10 @@
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import { AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import type { NpuStatus } from "./api";
 import type { NpuCatalog } from "./use-npu-catalog";
 
 export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
@@ -61,27 +63,45 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
           <Spinner className="size-3.5 text-muted-foreground" />
         </div>
       ) : null}
-      <p className="text-ui-11 text-muted-foreground">
-        Powered by{" "}
-        <a
-          href="https://github.com/ROCm/FastFlowLM"
-          target="_blank"
-          rel="noreferrer"
-          className="underline underline-offset-2"
-        >
-          FastFlowLM
-        </a>{" "}
-        and{" "}
-        <a
-          href="https://github.com/lemonade-sdk/lemonade"
-          target="_blank"
-          rel="noreferrer"
-          className="underline underline-offset-2"
-        >
-          Lemonade
-        </a>
-        .
-      </p>
+      <NpuPoweredBy status={status} />
     </div>
+  );
+}
+
+const version = (value: string | null | undefined) =>
+  value ? ` v${value}` : "";
+
+export function NpuPoweredBy({
+  status,
+  className,
+}: {
+  status: NpuStatus;
+  className?: string;
+}) {
+  return (
+    <p
+      data-testid="npu-powered-by"
+      className={cn("text-ui-11 text-muted-foreground", className)}
+    >
+      Powered by{" "}
+      <a
+        href="https://github.com/ROCm/FastFlowLM"
+        target="_blank"
+        rel="noreferrer"
+        className="underline underline-offset-2"
+      >
+        FastFlowLM
+      </a>
+      {version(status.versions?.fastflowlm)} and{" "}
+      <a
+        href="https://github.com/lemonade-sdk/lemonade"
+        target="_blank"
+        rel="noreferrer"
+        className="underline underline-offset-2"
+      >
+        Lemonade
+      </a>
+      {version(status.versions?.lemonade)}.
+    </p>
   );
 }

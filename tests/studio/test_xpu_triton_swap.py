@@ -523,7 +523,7 @@ class TestADeadDriverIsNotAFlavourMismatch:
         # Asserted on the source because _ensure_xpu_torch sits above the extracted slice: the early return must come
         # BEFORE the repair reason is set, or the repair runs anyway.
         src = STACK.read_text(encoding = "utf-8")
-        start = src.index('def _ensure_xpu_torch() -> "bool | None":')
+        start = src.index("def _ensure_xpu_torch(")
         body = src[start : src.index("def _installed_torch_version_label", start)]
         guard = body.index("_xpu_wheel_supported_on_disk()")
         armed = body.index('_why = "torch could not be probed"')
