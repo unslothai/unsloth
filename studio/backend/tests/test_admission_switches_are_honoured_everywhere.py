@@ -844,6 +844,7 @@ class TestAnInconclusiveProbeStandsTheChildDown:
 
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert (
-            '_stand_down_child_parking( env, cmd, server_supports = bool(server_caps.get("supports_preempt_ram")) )'
+            '_stand_down_child_parking( env, cmd, server_supports = bool(server_caps.get("supports_preempt_ram")),'
+            ' probe_inconclusive = bool(server_caps.get("reasoning_budget_probe_inconclusive")), )'
             in source
         )

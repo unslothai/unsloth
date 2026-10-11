@@ -190,6 +190,16 @@ class TestADefaultLaunch:
         assert cmd == _Launch._ARGV
         assert env == {}, "no LLAMA_ARG_PREEMPT_RAM written for a server that cannot park"
 
+    def test_an_unread_probe_still_tells_the_child_not_to_park(self):
+        # A --help that timed out may be a swap build from before the zero default, which parks
+        # on an implicit budget Studio never launched and so never excuses.
+        env = {}
+        cmd = list(_Launch._ARGV)
+        assert llama_mod._stand_down_child_parking(
+            env, cmd, server_supports = False, probe_inconclusive = True
+        ) == []
+        assert env == {"LLAMA_ARG_PREEMPT_RAM": "0"} and cmd == _Launch._ARGV
+
     def test_a_parking_server_is_asked_to_park(self, monkeypatch):
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 512 * 1024)
         monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 1024 * 1024)

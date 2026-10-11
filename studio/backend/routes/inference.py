@@ -4912,10 +4912,18 @@ async def _aiter_llama_stream_items(
     if track_prefill_progress:
         from core.inference.llama_cpp import LlamaCppBackend
 
-    def _park_renews_first_window() -> None:
-        """A park notice before any token renews the first-token window, up to the park cap."""
+    def _park_renews_first_window(notice: Optional[str] = None) -> None:
+        """A park notice before any token renews the first-token window, up to the park cap. A
+        resume ends that park, so a later one is measured from its own start."""
         nonlocal first_token_deadline, park_since
         now = time.monotonic()
+        if notice is not None and notice not in (
+            _OPENAI_PREEMPT_SSE_PAUSED,
+            _OPENAI_PREEMPT_SSE_KEEPALIVE,
+        ):
+            park_since = None
+            first_token_deadline = max(first_token_deadline, now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+            return
         if park_since is None:
             park_since = now
         if now - park_since < _RAW_PARK_STALL_CAP_S:
@@ -5060,7 +5068,7 @@ async def _aiter_llama_stream_items(
                 # and never gets to apply its own grace. Fed to the excuse and relayed. Checked
                 # here because the keepalives keep the read returning, so the deadline below
                 # (widened by the park cap again when the grace is installed) is never reached.
-                _park_renews_first_window()
+                _park_renews_first_window(_server_park_sse(item))
                 if time.monotonic() >= first_token_deadline:
                     raise httpx.ReadTimeout("The model did not produce a first token in time.")
                 if park_above is not None:
@@ -5077,9 +5085,9 @@ async def _aiter_llama_stream_items(
                     events = [item]
                 starts_output = False
                 for event in events:
-                    if _server_park_sse(event) is not None:
+                    if (_notice := _server_park_sse(event)) is not None:
                         # A byte chunk can carry a park notice beside other events.
-                        _park_renews_first_window()
+                        _park_renews_first_window(_notice)
                         if park_above is not None:
                             park_above.feed_line(event)
                         continue

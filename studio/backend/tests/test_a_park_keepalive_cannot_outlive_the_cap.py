@@ -23,6 +23,9 @@ class _Stream:
             time.sleep(0.01)
             yield chunk
 
+    def close(self):
+        pass
+
 
 @pytest.fixture(autouse = True)
 def _short_windows(monkeypatch):
@@ -135,3 +138,42 @@ class TestARawRelayParkedBeforeItsFirstToken:
         )
         seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0, window = 30.0))
         assert seen[-1].startswith("data:")
+
+
+def test_a_second_park_before_the_first_token_gets_its_own_cap(monkeypatch):
+    """Two parks during prefill, each inside the cap, together over it: the resume between them
+    starts the second one's clock afresh."""
+    items = [": preempted"] + [": preempt-keepalive"] * 30 + [": resumed", ": preempted"]
+    items += [": preempt-keepalive"] * 30 + [": resumed", 'data: {"choices":[{"delta":{"content":"a"}}]}']
+    seen = asyncio.run(
+        TestARawRelayParkedBeforeItsFirstToken._relay(items, monkeypatch, cap = 0.5, window = 0.4)
+    )
+    assert seen[-1].startswith("data:")
+
+
+class TestAChatParkedAfterItsFirstToken:
+    """The synchronous reader renews its stall window on keepalives only up to the park cap."""
+
+    @staticmethod
+    def _read(chunks):
+        return LlamaCppBackend._iter_text_cancellable(
+            _Stream(chunks),
+            stall_timeout_s = 0.1,
+            first_token_deadline = time.monotonic() + 30.0,
+        )
+
+    def test_a_wedged_park_times_out(self):
+        data = 'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+        chunks = [data, ": preempted\n\n"] + [": preempt-keepalive\n\n"] * 300
+        started = time.monotonic()
+        with pytest.raises(httpx.ReadTimeout, match = "stopped producing tokens"):
+            for _ in self._read(chunks):
+                pass
+        assert time.monotonic() - started < 2, "every keepalive renewed the stall window"
+
+    def test_a_park_inside_the_cap_still_answers(self):
+        data = 'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+        chunks = [data, ": preempted\n\n"] + [": preempt-keepalive\n\n"] * 5
+        chunks += [": resumed\n\n", data.replace('"a"', '"b"')]
+        assert "".join(self._read(chunks)).endswith('"b"}}]}\n\n')
+

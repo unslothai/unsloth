@@ -2722,6 +2722,7 @@ def _stand_down_child_parking(
     env: dict,
     args: Optional[list] = None,
     server_supports: Optional[bool] = None,
+    probe_inconclusive: bool = False,
 ) -> Optional[list[str]]:
     """One owner pauses chats: a budget somebody named must not buy the child a park beside Studio's
     own pause, which no relay excuses. ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` stands the child down
@@ -2731,6 +2732,8 @@ def _stand_down_child_parking(
     it, since llama.cpp applies argv after the environment. With preemption switched off and no
     budget named anywhere, it writes nothing at all: the server parks nothing unless it is told to
     (unslothai/llama.cpp#197), so a default install's child is left exactly as upstream ships it.
+    ``probe_inconclusive`` (a ``--help`` that timed out or read as nothing) still writes the zero:
+    the binary may be a swap build from before #197, which parks on an implicit budget.
     Returns the budgets it overrode, empty when the line named none, and None when the child keeps
     its parking."""
     if not _child_parking_stands_down(server_supports):
@@ -2754,10 +2757,11 @@ def _stand_down_child_parking(
             if value.strip() != "0":
                 overridden.append(f"--preempt-ram={value}")
             args[i] = "--preempt-ram=0"
-    if named_anywhere or _preemption.preemption_enabled():
-        # Somebody named a budget the child would park on, or Studio's own preemptor is armed
-        # (``studio`` mode, or a probe that could not confirm the flag) and a build that parks
-        # after all must not park beside it. Otherwise nothing is written: nothing would park.
+    if named_anywhere or probe_inconclusive or _preemption.preemption_enabled():
+        # Somebody named a budget the child would park on, the probe could not say what the
+        # binary is, or Studio's own preemptor is armed (``studio`` mode, or a probe that could
+        # not confirm the flag) and a build that parks after all must not park beside it.
+        # Otherwise nothing is written: nothing would park.
         env["LLAMA_ARG_PREEMPT_RAM"] = "0"
     return overridden
 
@@ -31110,7 +31114,10 @@ class LlamaCppBackend:
                 # the owner, and a child that parks after all is told not to: the variable is
                 # ignored by a build without the flag and honoured by one with it.
                 _parking_overridden = _stand_down_child_parking(
-                    env, cmd, server_supports = bool(server_caps.get("supports_preempt_ram"))
+                    env,
+                    cmd,
+                    server_supports = bool(server_caps.get("supports_preempt_ram")),
+                    probe_inconclusive = bool(server_caps.get("reasoning_budget_probe_inconclusive")),
                 )
                 if _parking_overridden is not None:
                     _stand_down_why = _child_parking_stand_down_reason(
@@ -37832,7 +37839,7 @@ class LlamaCppBackend:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         last_chunk_at: Optional[float] = None
         last_prefill_progress: Optional[float] = None
-        # When the current park before the first token began; keepalives renew only up to the cap.
+        # When the current park began; its keepalives renew only up to the cap.
         parked_since: Optional[float] = None
         prefill_sse_buffer = ""
         while True:
@@ -37892,7 +37899,21 @@ class LlamaCppBackend:
                             response,
                             post_first_chunk_read_timeout_s,
                         )
-                    last_chunk_at = time.monotonic()
+                    now = time.monotonic()
+                    if last_chunk_at is not None and LlamaCppBackend._chunk_is_park_notice(chunk):
+                        # Parked after its first token: the keepalives renew the stall window
+                        # only up to the park cap, as the async relay does.
+                        if parked_since is None:
+                            parked_since = now
+                        if now - parked_since < _SERVER_PARK_STALL_CAP_S:
+                            last_chunk_at = now
+                        elif now - last_chunk_at >= stall_timeout_s:
+                            # The keepalives keep the socket busy, so no read ever times out.
+                            response.close()
+                            raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+                    else:
+                        last_chunk_at = now
+                        parked_since = None
                 yield chunk
             except StopIteration:
                 return
@@ -37904,6 +37925,16 @@ class LlamaCppBackend:
                 elif now - last_chunk_at >= stall_timeout_s:
                     raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
                 continue
+
+    @staticmethod
+    def _chunk_is_park_notice(chunk: str) -> bool:
+        """Whether a chunk carries only ``: preempted`` notices and the parked keepalive."""
+        lines = [line.strip() for line in chunk.splitlines() if line.strip()]
+        return bool(lines) and all(
+            line == ": preempt-keepalive"
+            or (_preemption.parse_server_park_notice(line) or ("",))[0] == "preempted"
+            for line in lines
+        )
 
     @staticmethod
     def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
