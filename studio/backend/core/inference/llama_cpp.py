@@ -27919,8 +27919,13 @@ class LlamaCppBackend:
                         ):
                             return False
                         # A projector Studio never resolved but the child loads: unsized here.
-                        if _child_env.get("LLAMA_ARG_MMPROJ") or _child_env.get(
-                            "LLAMA_ARG_MMPROJ_URL"
+                        if (
+                            _child_env.get("LLAMA_ARG_MMPROJ")
+                            or _child_env.get("LLAMA_ARG_MMPROJ_URL")
+                            or (
+                                not launch_mmproj_path
+                                and extra_args_mmproj_auto(_child_extras, _child_env)
+                            )
                         ):
                             return False
                         # Effective --fit-target, last wins: a pass-through value, else the

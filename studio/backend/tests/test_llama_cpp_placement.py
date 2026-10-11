@@ -4147,6 +4147,32 @@ def test_an_inherited_projector_keeps_a_fit_on_moe_counted_as_spilled(
     assert seen == [True]
 
 
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [(("--mmproj-auto",), {}), ((), {"LLAMA_ARG_MMPROJ_AUTO": "1"})],
+    ids = ["argv_mmproj_auto", "env_mmproj_auto"],
+)
+def test_an_auto_discovered_projector_keeps_a_fit_on_moe_counted_as_spilled(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
+):
+    """--mmproj-auto lets the child find an adjacent projector Studio never resolved or
+    sized, so the footprint cannot vouch for residency either."""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    seen = []
+    eligible = backend._moe_cache_auto_eligible
+
+    def spy(**kwargs):
+        seen.append(kwargs["experts_on_host"])
+        return eligible(**kwargs)
+
+    backend._moe_cache_auto_eligible = spy
+    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)
+
+    assert seen == [True]
+
+
 def test_an_unsized_drafter_keeps_a_fit_on_moe_counted_as_spilled(tmp_path, _discrete_linux_host):
     """With the draft KV unsized the placement covers MTP with a flat cushion this
     footprint has no term for, so the residency check abstains."""
