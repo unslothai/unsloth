@@ -759,13 +759,13 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
             assert torch.equal(net(x), ref)
         restore()
         for lin in net[1]:
-            # torchao 0.14 (torch <= 2.9) keeps the v1 layout, nesting its int8 data one subclass deeper
+            # torchao 0.14 with torch <= 2.8 uses v1 layout, nesting int8 data one subclass deeper
             assert set(_inner_devices(lin.weight)) == {"cuda"}
         assert torch.equal(net(x), ref)
 
 
 def _encode_release_pipe(monkeypatch):
-    """A real group-offloaded denoiser pinned whole; the encoder records which blocks are on the device."""
+    """a whole-pinned group-offloaded denoiser whose encoder records block device placement."""
     torch, net = _cuda_offload_model()
     from diffusers.hooks import apply_group_offloading
 

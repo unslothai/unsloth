@@ -288,18 +288,18 @@ class TestStepThirteenWiring:
             calls = _calls_in(guard)
             assert [c for c in calls if c in repairs] == repairs
             assert calls[:2] == ["_progress", "_torch_step_label"]
-        # str() is the label coercion around the probe, not a step.
+        # str() coerces the probe label and does not represent a step.
         step13 = [c for c in _calls_in(guards[1]) if c != "str"]
-        # Step 13 also re-selects torchao when a repair moved the torch label, which both the
-        # spec and the leaf are read from, then removes an xFormers the final torch cannot
-        # import (#11545). Nothing else may join the set.
+        # repairs refresh torchao and flash-attn for final torch (#13244), then evict incompatible xFormers (#11545).
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs
             + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
+            + ["_ensure_flash_attn"]
             + ["_evict_xformers_built_for_another_torch", "_evict_xformers_requiring_another_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
+        assert "_ensure_flash_attn" not in _calls_in(guards[0])
 
     def test_the_invariant_is_wired_in_exactly_once(self):
         body = ast.unparse(_install_stack_ast())
@@ -307,11 +307,7 @@ class TestStepThirteenWiring:
 
 
 def _base_total(**flags) -> int:
-    """Re-execute install_python_stack()'s step-total arithmetic under given flags.
-
-    Read out of the function rather than duplicated, so a step added without a matching
-    total fails here instead of drawing a progress bar past 100%.
-    """
+    """re-execute the source step-total arithmetic so new steps cannot silently push progress past 100%."""
     lines = _STACK_SRC.splitlines()
     start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = "))
     end = next(i for i, line in enumerate(lines) if line.strip().startswith("base_requirements ="))
