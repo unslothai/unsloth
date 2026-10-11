@@ -211,9 +211,11 @@ def MistralForCausalLM_fast_forward(
 
             # If attention_mask exists, it is handled in the attention forward.
 
-        elif self.training:
+        elif self.training or kwargs.get("packed_seq_lengths", None) is not None:
             # LlamaModel_fast_forward's DPO embed-masking block needs the 2D attention_mask; it nulls the mask
             # before attention anyway, so leaving it 2D avoids a 4D conversion that crashes DPO.
+            # Packed rows (padding-free eval too) need no mask: attention keeps documents apart from
+            # packed_seq_lengths, where a causal mask over the whole row would let them attend across.
             pass
 
         else:

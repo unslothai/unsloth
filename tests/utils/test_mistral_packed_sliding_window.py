@@ -135,3 +135,26 @@ def test_flash_window_matches_sdpa(model, monkeypatch):
     monkeypatch.setattr(ad, "flash_attn_func", _flash_attn_func)
     monkeypatch.setattr(ad, "flash_attn_varlen_func", _flash_attn_varlen_func)
     torch.testing.assert_close(_logits(model, ids), sdpa, atol = 2e-2, rtol = 2e-2)
+
+
+@pytest.mark.parametrize("window", [WINDOW, None])
+def test_packed_eval_keeps_documents_apart(model, window):
+    # Eval builds a causal mask over the whole row unless the row is packed (padding-free eval batches are).
+    torch.manual_seed(2)
+    docs = [torch.randint(5, 100, (n,), device = "cuda") for n in LENGTHS]
+    packed = torch.cat(docs)[None]
+    position_ids = torch.cat([torch.arange(n, device = "cuda") for n in LENGTHS])[None]
+    model.config.sliding_window = window
+    model.eval()
+    try:
+        out = _logits(
+            model,
+            packed,
+            position_ids = position_ids,
+            packed_seq_lengths = torch.tensor(LENGTHS, dtype = torch.int32),
+        )
+        alone = torch.cat([_logits(model, d[None]) for d in docs], dim = 1)
+    finally:
+        model.config.sliding_window = WINDOW
+        model.train()
+    torch.testing.assert_close(out, alone, atol = 2e-2, rtol = 2e-2)
