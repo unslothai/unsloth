@@ -1302,9 +1302,8 @@ function handlePromptQueueRunState(
   if (run.paused) {
     return;
   }
-  // Cancellation can finish before the dispatch timer arms waitingForTargetIdle.
-  // That idle edge belongs to the old response, not this still-unsent prompt.
-  // index -1 remains the normal queue's wait for an existing response to finish.
+  // An idle edge before an unsent prompt dispatches belongs to the cancelled response (steering
+  // race with the dispatch timer); index -1 is the normal wait for the current response.
   if (
     run.waitingForTargetIdle ||
     (run.index >= 0 && !getActivePromptQueueItem(run)?.dispatched)
