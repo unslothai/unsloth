@@ -46,6 +46,7 @@ NAMES = (
     "_align_vlm_text_config",
     "_hold_peft_requires_grad",
     "_allow_moe_parameter_lora",
+    "_check_async_grpo_adapter_servable",
     "patch_trl_async_grpo",
 )
 
@@ -562,3 +563,22 @@ def test_moe_parameter_lora_passes_validation_only_while_held():
     assert peft_config.target_parameters == ["mlp.experts.gate_up_proj"]
     restore()
     assert module.validate_lora_for_vllm_sync is validate
+
+
+def test_unservable_adapter_fails_at_construction(fast_inference_trl):
+    mod, _ = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    seen = []
+
+    def load_lora(directory, load_tensors = False):
+        seen.append((os.path.isdir(directory), load_tensors))
+        raise NotImplementedError("cannot serve this LoRA on MoE expert weights")
+
+    peft.load_lora = load_lora
+    with pytest.raises(NotImplementedError, match = "MoE expert"):
+        mod.AsyncGRPOTrainer(
+            peft, None, args = mod.AsyncGRPOConfig("o"), train_dataset = [{"prompt": "hi"}]
+        )
+    assert seen == [(True, True)]
+    assert _FakeServer.started == []
+    assert mod._calls["init"] == []

@@ -4496,6 +4496,13 @@ def _allow_moe_parameter_lora(async_module, model):
     return restore
 
 
+def _check_async_grpo_adapter_servable(model):
+    # Raise vLLM's refusals (e.g. LoRA on MoE experts) at construction instead of at the first weight sync.
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        model.load_lora(directory, load_tensors = True)
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
@@ -4551,6 +4558,7 @@ def patch_trl_async_grpo():
         if _async_grpo_uses_fast_inference(model, config, kwargs):
             train_dataset = args[2] if len(args) >= 3 else kwargs.get("train_dataset")
             _check_async_grpo_fast_inference(async_module, model, train_dataset)
+            _check_async_grpo_adapter_servable(model)
             server = _start_async_grpo_vllm_server(model)
             config.vllm_server_base_url = server.url
             if getattr(config, "max_inflight_tasks", 0) < 0:
