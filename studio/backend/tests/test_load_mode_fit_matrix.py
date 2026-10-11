@@ -1735,7 +1735,8 @@ def test_the_fit_prices_the_effective_checkpoint_count():
     assert "_kv_bytes(effective_ctx,_effective_ctx_checkpoints)-_kv_bytes(effective_ctx,0)," in (
         compact
     )
-    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
+    assert "host_only_bytes=max(0,(_cpu_draft_fit_bytesor0)" in compact
+    assert "_fit_extra_host_pinned),)+_ckpt_host_bytes," in compact
     assert "def_kv_bytes(ctx:int,ctx_checkpoints:int=0)->int:" in compact
 
 
