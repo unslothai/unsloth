@@ -6499,6 +6499,36 @@ def test_textual_every_independent_edit_gets_its_own_verification_rerun(monkeypa
     assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
 
 
+def test_textual_mcp_listing_runs_again_after_an_mcp_write(monkeypatch):
+    """#10348: `list, create, list` on an MCP server re-lists instead of dropping the call."""
+    name = "mcp__docs__manager"
+    listing = '<tool_call>{"name":"%s","arguments":{"action":"list"}}</tool_call>' % name
+    create = '<tool_call>{"name":"%s","arguments":{"action":"create"}}</tool_call>' % name
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": listing + create + listing}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["[]", "created", "[a]"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(arguments.get("action"))
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Create a doc"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["list", "create", "list"]
+
+
 def _structured_batch(spec: list) -> list:
     """One assistant turn carrying `spec` as parallel structured tool_calls."""
     frames = [

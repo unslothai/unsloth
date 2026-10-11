@@ -5331,6 +5331,29 @@ def test_an_alternating_workspace_block_does_not_crowd_out_a_later_tool():
     ]
 
 
+def test_mcp_listing_runs_again_after_an_mcp_write():
+    """#10348: `list, create, list` on an MCP server re-lists instead of dropping the call."""
+    name = "mcp__docs__manager"
+    listing = '<tool_call>{"name":"%s","arguments":{"action":"list"}}</tool_call>' % name
+    create = '<tool_call>{"name":"%s","arguments":{"action":"create"}}</tool_call>' % name
+    turns = iter([listing + create + listing, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["[]", "created", "[a]"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Create a doc"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [args.get("action") for _, args in executor.calls] == ["list", "create", "list"]
+
+
 def test_every_independent_edit_gets_its_own_verification_rerun():
     """Two edit-and-verify cycles in one turn: the test after the second edit must run."""
     test = '<tool_call>{"name":"terminal","arguments":{"command":"pytest -q"}}</tool_call>'

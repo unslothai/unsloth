@@ -230,6 +230,33 @@ def test_status_reports_the_mlx_video_capability(monkeypatch):
     assert response.has_video_input is True
 
 
+@pytest.mark.parametrize("via_api_key", [False, True], ids = ["ui_session", "api_key"])
+def test_status_publishes_an_mlx_local_folder_as_the_count_names_it(monkeypatch, via_api_key):
+    """/chat/count_tokens answers with this same id (redacted the same way for an API-key caller);
+    the client drops a count naming any other checkpoint."""
+    from hub.utils.host_paths import redact_host_paths
+
+    active = "/Users/alice/outputs/my-finetune-mlx"
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = active
+    backend.models = {active: {"is_mlx": True}}
+    backend.loading_models = set()
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+
+    response = asyncio.run(
+        inference_route.inference_status(current_subject = "test", via_api_key = via_api_key)
+    )
+
+    # Redaction dumps the response model to a dict.
+    published = (
+        response["model_identifier"] if isinstance(response, dict) else response.model_identifier
+    )
+    expected = redact_host_paths({"model_identifier": active}, via_api_key = via_api_key)
+    assert published == expected["model_identifier"]
+    assert (published == active) is (not via_api_key)
+
+
 def test_status_reports_no_video_capability_for_a_model_without_one(monkeypatch):
     backend = _FakeInferenceBackend()
     backend.active_model_name = "org/plain-vision-model"

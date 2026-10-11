@@ -14014,11 +14014,26 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
                 else hf_hub_download(config.identifier, "config.json", token = hf_token)
             )
         metadata = json.loads(path.read_text(encoding = "utf-8"))
-        from core.inference.engine_install import _driver_rows, support_reason
+        from core.inference.engine_install import (
+            _driver_rows,
+            gpu_platform,
+            rocm_loads_quantization,
+            support_reason,
+        )
 
         def supported(name, method):
             if support_reason(name) is not None:
                 return False
+            if gpu_platform() == "rocm":
+                text_config = metadata.get("text_config")
+                return rocm_loads_quantization(
+                    metadata.get("quantization_config")
+                    or (
+                        text_config.get("quantization_config")
+                        if isinstance(text_config, dict)
+                        else None
+                    )
+                )
             if name != "sglang" or method != "compressed-tensors":
                 return True
             # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0; vLLM falls back to Marlin from 7.5.
@@ -34868,8 +34883,21 @@ async def _resident_model_reads_images() -> bool:
     return bool(entry.get("is_vision"))
 
 
-async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONResponse]:
-    """Must match the safetensors completion's path choice, or it prices a prompt the model never sees."""
+async def _mlx_count_chat_tokens(
+    payload,
+    request = None,
+    via_api_key = None,
+) -> Optional[JSONResponse]:
+    """Count with a resident MLX or managed engine tokenizer, otherwise return None.
+
+    This has to answer the question the safetensors completion answers -- which of its two
+    paths claims the request, and what each renders -- because a count that decides any of
+    it differently prices a prompt the model never sees. Where a helper carries a decision
+    it is called rather than restated; the admission conditions themselves are restated,
+    so they have to be kept in step with the completion above.
+    """
+    # Off the loop: building the singleton runs the torch import, and a count is not
+    # worth stalling login and the health probe behind it.
     backend = await asyncio.to_thread(get_inference_backend)
     active = getattr(backend, "active_model_name", None)
     # A same-ID reload (template override) keeps the name, so capture the generation and re-check.
@@ -35104,7 +35132,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             detail = "Cannot count tokens while a generation is in progress.",
         )
     try:
-        count, model = await asyncio.to_thread(
+        count, _counted = await asyncio.to_thread(
             backend.count_chat_tokens,
             messages,
             system_prompt or "",
@@ -35126,13 +35154,20 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    # Advertised id, not resident path: the caller drops a count whose model doesn't match.
+    # The id /status publishes as model_identifier (the raw active name, a local folder or
+    # snapshot path included): the client drops a count naming any other checkpoint.
     return JSONResponse(
-        content = {
-            "input_tokens": int(count),
-            "model": _orchestrator_public_model_id(backend) or model or active,
-        }
+        content = {"input_tokens": int(count), "model": _count_model_id(active, via_api_key)}
     )
+
+
+def _count_model_id(model_id, via_api_key):
+    """A count's ``model``, redacted for an API-key caller exactly as /status redacts its
+    ``model_identifier`` (the redactor keys on that field name)."""
+    from hub.utils.host_paths import redact_host_paths
+    return redact_host_paths({"model_identifier": model_id}, via_api_key = via_api_key)[
+        "model_identifier"
+    ]
 
 
 @router.post("/chat/count_tokens")
@@ -35140,6 +35175,7 @@ async def chat_count_tokens(
     payload: ChatCountTokensRequest,
     current_subject: str = Depends(get_current_subject),
     request: Request = None,
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
@@ -35213,7 +35249,9 @@ async def chat_count_tokens(
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
-        _mlx_count = await _mlx_count_chat_tokens(payload, request)
+        # The refusals above are about the request and so are shared; the ones below are
+        # llama.cpp's own render concerns, so this returns rather than falling through.
+        _mlx_count = await _mlx_count_chat_tokens(payload, request, via_api_key = via_api_key)
         if _mlx_count is not None:
             return _mlx_count
         raise HTTPException(
@@ -35389,7 +35427,12 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    return JSONResponse(content = {"input_tokens": int(count), "model": _tokenizer_model})
+    return JSONResponse(
+        content = {
+            "input_tokens": int(count),
+            "model": _count_model_id(_tokenizer_model, via_api_key),
+        }
+    )
 
 
 @router.post("/messages/count_tokens")

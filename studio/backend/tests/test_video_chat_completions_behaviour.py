@@ -15,7 +15,7 @@ pytest.importorskip("torch")
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from auth.authentication import get_current_subject  # noqa: E402
+from auth.authentication import authenticated_via_api_key, get_current_subject  # noqa: E402
 import routes.inference as inference_route  # noqa: E402
 
 from .llama_backend_double import FakeLlamaCppBackend  # noqa: E402
@@ -65,6 +65,7 @@ def _client(
     app = FastAPI()
     app.include_router(inference_route.router, prefix = prefix)
     app.dependency_overrides[get_current_subject] = lambda: "tester"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app, raise_server_exceptions = False)
 
 

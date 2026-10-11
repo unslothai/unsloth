@@ -57,8 +57,13 @@ class EngineAdapter:
         return {"VLLM_API_KEY" if self.name == "vllm" else "UNSLOTH_ENGINE_API_KEY": key}
 
     def environment(self, gpu_count):
-        if self.name == "vllm" and gpu_count > 1:
-            return {"VLLM_HOST_IP": "127.0.0.1"}
+        if self.name == "vllm":
+            # vLLM 0.30+ DeepSeek-OCR encoder kernel reads a plain-float LOG2E global, a NameError on
+            # Triton 3.7 (unslothai/unsloth#3911). The knob only lifts that error and is not in the cache key.
+            env = {"TRITON_ALLOW_NON_CONSTEXPR_GLOBALS": "1"}
+            if gpu_count > 1:
+                env["VLLM_HOST_IP"] = "127.0.0.1"
+            return env
         if self.name == "sglang" and gpu_count > 1:
             # Else SGLang rejects GPUs whose free memory differs >10%; KV pools size from the minimum anyway.
             return {
@@ -204,6 +209,11 @@ class EngineAdapter:
             *parallel_args,
             *precision_args,
             *tool_args,
+            *(
+                ["--max-num-seqs", str(options["max_num_seqs"])]
+                if self.name == "vllm" and options.get("max_num_seqs")
+                else []
+            ),
             *(["--trust-remote-code"] if trust_remote_code else []),
             *self.extra_args,
             "--host",
@@ -282,34 +292,22 @@ def gpu_memory_fraction(
     gpu_ids: list[int],
     reserve_mib: int = 512,
     reserve_share: float = 0.0,
+    measure = None,
 ) -> float:
-    """Each card keeps the larger of reserve_mib and reserve_share free; an unreadable device fails."""
-    from utils.hardware.nvidia import _nvidia_smi_executable
-    from utils.vram_budget_settings import get_vram_budget_fraction
+    """Budget every selected physical GPU after the previous resident is stopped.
 
+    Reserve the larger of ``reserve_mib`` and ``reserve_share`` of each card for allocations the
+    engine does not budget. ``measure`` returns (total, free) MiB per selected GPU; nvidia-smi
+    answers by default. An unreadable
+    device is an actionable failure, never permission to fall back to a larger engine default.
+    """
+    from utils.vram_budget_settings import get_vram_budget_fraction
     try:
-        result = subprocess.run(
-            [
-                _nvidia_smi_executable(),
-                "--id",
-                ",".join(str(gpu_id) for gpu_id in gpu_ids),
-                "--query-gpu=memory.total,memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output = True,
-            **windows_hidden_subprocess_kwargs(),
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 60,
-            check = True,
-        )
-        rows = result.stdout.strip().splitlines()
+        rows = (measure or _nvidia_memory_rows)(gpu_ids)
         if len(rows) != len(gpu_ids):
             raise ValueError("Could not measure every selected GPU")
         fraction = get_vram_budget_fraction()
-        for row in rows:
-            total, free = (float(value.strip()) for value in row.split(","))
+        for total, free in rows:
             reserve = max(reserve_mib, reserve_share * total)
             if total <= 0 or free <= reserve or free > total:
                 raise ValueError("Insufficient available GPU memory")
@@ -321,3 +319,27 @@ def gpu_memory_fraction(
         raise RuntimeError(
             "Could not reserve memory on every selected GPU. Free GPU memory or select fewer GPUs and retry."
         ) from exc
+
+
+def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
+    from utils.hardware.nvidia import _nvidia_smi_executable
+    result = subprocess.run(
+        [
+            _nvidia_smi_executable(),
+            "--id",
+            ",".join(str(gpu_id) for gpu_id in gpu_ids),
+            "--query-gpu=memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output = True,
+        **windows_hidden_subprocess_kwargs(),
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 60,
+        check = True,
+    )
+    return [
+        tuple(float(value.strip()) for value in row.split(","))
+        for row in result.stdout.strip().splitlines()
+    ]
