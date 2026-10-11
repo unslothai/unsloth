@@ -3348,7 +3348,10 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    # A ModelScope load keeps its snapshot here, since `_name_or_path` holds the repo id (#3726).
+    name_or_path = getattr(model, "_unsloth_modelscope_snapshot", None) or getattr(
+        getattr(model, "config", None), "_name_or_path", None
+    )
     try:
         return bool(name_or_path and os.path.isdir(str(name_or_path)))
     except Exception:
@@ -3438,7 +3441,9 @@ def _gguf_model_input_directory(
 ):
     """The folder the converter reads, which is not always `save_directory`: a reused loaded checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
     if _gguf_reuses_loaded_checkpoint(model, state_dict):
-        return str(model.config._name_or_path)
+        return str(
+            getattr(model, "_unsloth_modelscope_snapshot", None) or model.config._name_or_path
+        )
     return save_directory
 
 
@@ -4094,7 +4099,9 @@ def unsloth_save_pretrained_gguf(
             ) from e
     else:
         # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
-        original_path = getattr(self.config, "_name_or_path", None)
+        original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
+            self.config, "_name_or_path", None
+        )
         if _gguf_reuses_loaded_checkpoint(self, state_dict):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
@@ -5161,6 +5168,21 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _modelscope_base_model_name(model_name, load_in_4bit = True):
+    """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
+    name = get_model_name(model_name, load_in_4bit = load_in_4bit)
+    if not name or os.path.exists(name):
+        return name
+    try:
+        from modelscope import snapshot_download
+        return snapshot_download(name)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{name}` from ModelScope ({e}), trying Hugging Face."
+        )
+        return name
+
+
 def _prewarm_base_model_hub_cache(
     model,
     save_method = "merged_16bit",
@@ -5171,6 +5193,9 @@ def _prewarm_base_model_hub_cache(
     if os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower() in _false:
         return
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
+        return
+    # The merge fetches the base from ModelScope, so a Hub cache copy would go unused.
+    if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
         return
     _true = ("1", "true", "yes", "on")
     if (
@@ -5707,7 +5732,9 @@ def unsloth_generic_save(
         in_place = save_method in ("merged_4bit", "forced_merged_4bit")
         with nullcontext() if in_place else lora_relative_to_original_base(model):
             merge_and_overwrite_lora(
-                get_model_name,
+                _modelscope_base_model_name
+                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
+                else get_model_name,
                 model = model,
                 tokenizer = tokenizer,
                 save_directory = save_directory,
@@ -7276,9 +7303,93 @@ def not_implemented_save(*args, **kwargs):
     raise NotImplementedError("Unsloth: Sorry GGUF is currently not supported for vision models!")
 
 
+class _TokenizerBoundMethod:
+    """Picklable `types.MethodType`: a bound method pickles as getattr(obj, func.__name__), which no
+    tokenizer has. Unpickled it becomes the class's own method (or None), so readers need no Unsloth."""
+
+    def __init__(self, func, obj, name):
+        self.__func__ = func
+        self.__self__ = obj
+        self._unsloth_name = name
+
+    def __call__(self, *args, **kwargs):
+        return self.__func__(self.__self__, *args, **kwargs)
+
+    def __getattr__(self, name):
+        if name.startswith("_unsloth") or name in ("__func__", "__self__"):
+            raise AttributeError(name)
+        return getattr(self.__func__, name)
+
+    @property
+    def __doc__(self):
+        return self.__func__.__doc__
+
+    @property
+    def __signature__(self):
+        import inspect
+        import types
+        return inspect.signature(types.MethodType(self.__func__, self.__self__))
+
+    def __reduce__(self):
+        # During unpickling __dict__ is still empty, so this resolves the class attribute.
+        if hasattr(type(self.__self__), self._unsloth_name):
+            return (getattr, (self.__self__, self._unsloth_name))
+        return (type(None), ())
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        import copy
+        return type(self)(self.__func__, copy.deepcopy(self.__self__, memo), self._unsloth_name)
+
+
+def _bind_saving_method(func, obj, name):
+    import types
+    if isinstance(obj, (PreTrainedTokenizerBase, ProcessorMixin)):
+        return _TokenizerBoundMethod(func, obj, name)
+    return types.MethodType(func, obj)
+
+
+def unsloth_tokenizer_save_pretrained(
+    self,
+    save_directory,
+    legacy_format = None,
+    filename_prefix = None,
+    push_to_hub = False,
+    **kwargs,
+):
+    result = self.original_save_pretrained(
+        save_directory,
+        legacy_format = legacy_format,
+        filename_prefix = filename_prefix,
+        push_to_hub = False,
+        **kwargs,
+    )
+    _preserve_sentencepiece_tokenizer_assets(
+        self,
+        save_directory,
+        token = kwargs.get("token", None),
+    )
+    _preserve_tokenizer_eos_token(
+        self,
+        save_directory,
+        filename_prefix = filename_prefix,
+    )
+    _preserve_repaired_tokenizer_class(
+        self,
+        save_directory,
+        filename_prefix = filename_prefix,
+    )
+    if push_to_hub:
+        push_kwargs = dict(kwargs)
+        repo_id = push_kwargs.pop("repo_id", save_directory)
+        self.push_to_hub(repo_id, **push_kwargs)
+    return result
+
+
 def patch_saving_functions(model, vision = False):
     import inspect
-    import types
     from typing import Callable, Optional, Union, List
 
     if model.push_to_hub.__name__ == "unsloth_push_to_hub":
@@ -7351,42 +7462,6 @@ def patch_saving_functions(model, vision = False):
     '''
     exec(push_to_hub_text, globals())
 
-    def unsloth_tokenizer_save_pretrained(
-        self,
-        save_directory,
-        legacy_format = None,
-        filename_prefix = None,
-        push_to_hub = False,
-        **kwargs,
-    ):
-        result = self.original_save_pretrained(
-            save_directory,
-            legacy_format = legacy_format,
-            filename_prefix = filename_prefix,
-            push_to_hub = False,
-            **kwargs,
-        )
-        _preserve_sentencepiece_tokenizer_assets(
-            self,
-            save_directory,
-            token = kwargs.get("token", None),
-        )
-        _preserve_tokenizer_eos_token(
-            self,
-            save_directory,
-            filename_prefix = filename_prefix,
-        )
-        _preserve_repaired_tokenizer_class(
-            self,
-            save_directory,
-            filename_prefix = filename_prefix,
-        )
-        if push_to_hub:
-            push_kwargs = dict(kwargs)
-            repo_id = push_kwargs.pop("repo_id", save_directory)
-            self.push_to_hub(repo_id, **push_kwargs)
-        return result
-
     def unsloth_model_save_pretrained(self, *args, **kwargs):
         """`safe_serialization = None` means the safetensors default, not a pickle.
 
@@ -7426,7 +7501,9 @@ def patch_saving_functions(model, vision = False):
         and model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained"
     ):
         model.original_save_pretrained = model.save_pretrained
-        model.save_pretrained = types.MethodType(unsloth_tokenizer_save_pretrained, model)
+        model.save_pretrained = _bind_saving_method(
+            unsloth_tokenizer_save_pretrained, model, "save_pretrained"
+        )
     elif getattr(model, "tokenizer", None) is not None:
         patch_saving_functions(model.tokenizer)
 
@@ -7439,7 +7516,9 @@ def patch_saving_functions(model, vision = False):
         and getattr(model.save_pretrained, "__name__", "") != "unsloth_model_save_pretrained"
     ):
         model.original_model_save_pretrained = model.save_pretrained
-        model.save_pretrained = types.MethodType(unsloth_model_save_pretrained, model)
+        model.save_pretrained = _bind_saving_method(
+            unsloth_model_save_pretrained, model, "save_pretrained"
+        )
 
     original_model = model
     while True:
@@ -7448,7 +7527,9 @@ def patch_saving_functions(model, vision = False):
             and original_model.push_to_hub.__name__ != "unsloth_push_to_hub"
         ):
             original_model.original_push_to_hub = original_model.push_to_hub
-            original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+            original_model.push_to_hub = _bind_saving_method(
+                unsloth_push_to_hub, original_model, "push_to_hub"
+            )
             if hasattr(original_model, "add_model_tags"):
                 original_model.add_model_tags(
                     [
@@ -7463,33 +7544,55 @@ def patch_saving_functions(model, vision = False):
 
     if not vision:
         if hasattr(model, "config"):
-            model.push_to_hub_merged = types.MethodType(unsloth_generic_push_to_hub_merged, model)
-            model.save_pretrained_merged = types.MethodType(
-                unsloth_generic_save_pretrained_merged, model
+            model.push_to_hub_merged = _bind_saving_method(
+                unsloth_generic_push_to_hub_merged, model, "push_to_hub_merged"
             )
-            model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
-            model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
-            model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
-            model.save_pretrained_openvino = types.MethodType(
-                unsloth_save_pretrained_openvino, model
+            model.save_pretrained_merged = _bind_saving_method(
+                unsloth_generic_save_pretrained_merged, model, "save_pretrained_merged"
             )
-            model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
-            model.push_to_hub_ggml = types.MethodType(
-                unsloth_convert_lora_to_ggml_and_push_to_hub, model
+            model.push_to_hub_gguf = _bind_saving_method(
+                unsloth_push_to_hub_gguf, model, "push_to_hub_gguf"
             )
-            model.save_pretrained_ggml = types.MethodType(
-                unsloth_convert_lora_to_ggml_and_save_locally, model
+            model.save_pretrained_gguf = _bind_saving_method(
+                unsloth_save_pretrained_gguf, model, "save_pretrained_gguf"
+            )
+            model.save_pretrained_torchao = _bind_saving_method(
+                unsloth_save_pretrained_torchao, model, "save_pretrained_torchao"
+            )
+            model.save_pretrained_openvino = _bind_saving_method(
+                unsloth_save_pretrained_openvino, model, "save_pretrained_openvino"
+            )
+            model.push_to_hub_openvino = _bind_saving_method(
+                unsloth_push_to_hub_openvino, model, "push_to_hub_openvino"
+            )
+            model.push_to_hub_ggml = _bind_saving_method(
+                unsloth_convert_lora_to_ggml_and_push_to_hub, model, "push_to_hub_ggml"
+            )
+            model.save_pretrained_ggml = _bind_saving_method(
+                unsloth_convert_lora_to_ggml_and_save_locally, model, "save_pretrained_ggml"
             )
     else:
-        model.push_to_hub_merged = types.MethodType(unsloth_generic_push_to_hub_merged, model)
-        model.save_pretrained_merged = types.MethodType(
-            unsloth_generic_save_pretrained_merged, model
+        model.push_to_hub_merged = _bind_saving_method(
+            unsloth_generic_push_to_hub_merged, model, "push_to_hub_merged"
         )
-        model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
-        model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
-        model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
-        model.save_pretrained_openvino = types.MethodType(unsloth_save_pretrained_openvino, model)
-        model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
+        model.save_pretrained_merged = _bind_saving_method(
+            unsloth_generic_save_pretrained_merged, model, "save_pretrained_merged"
+        )
+        model.push_to_hub_gguf = _bind_saving_method(
+            unsloth_push_to_hub_gguf, model, "push_to_hub_gguf"
+        )
+        model.save_pretrained_gguf = _bind_saving_method(
+            unsloth_save_pretrained_gguf, model, "save_pretrained_gguf"
+        )
+        model.save_pretrained_torchao = _bind_saving_method(
+            unsloth_save_pretrained_torchao, model, "save_pretrained_torchao"
+        )
+        model.save_pretrained_openvino = _bind_saving_method(
+            unsloth_save_pretrained_openvino, model, "save_pretrained_openvino"
+        )
+        model.push_to_hub_openvino = _bind_saving_method(
+            unsloth_push_to_hub_openvino, model, "push_to_hub_openvino"
+        )
     return model
 
 

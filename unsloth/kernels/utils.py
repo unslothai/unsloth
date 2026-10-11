@@ -28,6 +28,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
+from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
@@ -395,6 +396,15 @@ def _packed_base(base_layer):
     if getattr(base_layer, "weight_fake_quantizer", None) is not None:
         return None
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
+
+
+def _has_packed_qweight(proj):
+    # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
+    base_layer = proj._modules.get("base_layer", proj)
+    return (
+        not isinstance(getattr(base_layer, "weight", None), torch_Tensor)
+        and _packed_base(base_layer) is None
+    )
 
 
 def _is_packed_state(quant_state):
@@ -1406,6 +1416,7 @@ def fast_linear_forward(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
+        or _has_packed_qweight(proj)
     ):
         result = proj(X)
         return result if out is None else out.copy_(result)

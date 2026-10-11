@@ -718,6 +718,12 @@ elif DEVICE_TYPE == "xpu":
 
     pass
 
+# After the bitsandbytes import above, never before: it only patches an already-imported bitsandbytes.
+from .import_fixes import patch_bitsandbytes_paged_optimizer_resume
+
+patch_bitsandbytes_paged_optimizer_resume()
+del patch_bitsandbytes_paged_optimizer_resume
+
 from .models import *
 from .models import __version__
 from .save import *
