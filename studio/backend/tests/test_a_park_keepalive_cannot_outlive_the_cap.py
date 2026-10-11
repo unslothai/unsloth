@@ -28,16 +28,22 @@ class _Stream:
 def _short_windows(monkeypatch):
     monkeypatch.setattr(llama_mod, "_SERVER_PARK_STALL_CAP_S", 0.3)
     monkeypatch.setattr(llama_mod, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", 30.0)
-    monkeypatch.setattr(LlamaCppBackend, "_set_stream_read_timeout", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_set_stream_read_timeout", staticmethod(lambda *a, **k: None)
+    )
 
 
 def _read(chunks):
-    return LlamaCppBackend._iter_text_cancellable(_Stream(chunks), first_token_deadline = time.monotonic() + 30.0)
+    return LlamaCppBackend._iter_text_cancellable(
+        _Stream(chunks), first_token_deadline = time.monotonic() + 30.0
+    )
 
 
 def test_a_park_that_never_ends_still_times_out():
     # Ten times the cap of keepalives; without the bound the stream just ends unrefused.
-    forever = itertools.chain([": preempted 1\n\n"], itertools.repeat(": preempt-keepalive\n\n", 300))
+    forever = itertools.chain(
+        [": preempted 1\n\n"], itertools.repeat(": preempt-keepalive\n\n", 300)
+    )
     started = time.monotonic()
     with pytest.raises(httpx.ReadTimeout):
         for _ in _read(forever):
@@ -83,6 +89,9 @@ class TestARawRelayParkedAfterItsFirstToken:
 
     def test_a_park_inside_the_cap_still_answers(self, monkeypatch):
         items = ['data: {"choices":[{"delta":{"content":"a"}}]}', ": preempted"]
-        items += [": preempt-keepalive"] * 5 + [": resumed", 'data: {"choices":[{"delta":{"content":"b"}}]}']
+        items += [": preempt-keepalive"] * 5 + [
+            ": resumed",
+            'data: {"choices":[{"delta":{"content":"b"}}]}',
+        ]
         seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0))
         assert seen[-1].endswith('"b"}}]}')

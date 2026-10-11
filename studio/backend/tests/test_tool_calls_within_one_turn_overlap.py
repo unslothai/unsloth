@@ -244,7 +244,6 @@ class TestOrderIsStillTheModelsOrder:
         assert [row.get("tool_call_id") for row in tool_rows] == ["call_a", "call_b"]
         assert [row.get("content") for row in tool_rows] == ["RESULT<alpha>", "RESULT<beta>"]
 
-
     def test_a_repeated_call_behind_a_running_one_answers_after_it_on_a_results_only_transport(
         self, rendezvous, monkeypatch
     ):
@@ -255,7 +254,11 @@ class TestOrderIsStillTheModelsOrder:
 
         def call(index, ident, query):
             args = json.dumps({"query": query})
-            return {"index": index, "id": ident, "function": {"name": "web_search", "arguments": args}}
+            return {
+                "index": index,
+                "id": ident,
+                "function": {"name": "web_search", "arguments": args},
+            }
 
         transport = FakeTransport(
             [

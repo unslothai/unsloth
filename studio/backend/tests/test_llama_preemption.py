@@ -1153,9 +1153,9 @@ class TestAChoiceInFlightIsCountedOnce:
         _register(controller, "d", ceiling // 6)
         first = controller.plan_preemptions(needed = 0)
         assert [v.gen_id for v in first] == ["d"], "the newest goes first"
-        assert controller.plan_preemptions(needed = 0) == [], (
-            "d's room is already on its way back, so a second sweep must not stop c too"
-        )
+        assert (
+            controller.plan_preemptions(needed = 0) == []
+        ), "d's room is already on its way back, so a second sweep must not stop c too"
 
     def test_growth_found_after_a_choice_still_gets_planned(self):
         controller = _controller()
