@@ -335,8 +335,7 @@ def test_rocm_forward_without_fp8e4nv_skips_act_quant(monkeypatch, gcn_arch):
     weight, scale = _make()
     X = torch.randn(4, 256, device = "cuda", dtype = torch.bfloat16)
     out = fp8.FP8BlockQuantLinear.apply(X, weight, scale)
-    W = (
-        weight.float()
-        * scale.repeat_interleave(BLOCK[0], 0).repeat_interleave(BLOCK[1], 1)
-    ).to(torch.bfloat16)
+    W = (weight.float() * scale.repeat_interleave(BLOCK[0], 0).repeat_interleave(BLOCK[1], 1)).to(
+        torch.bfloat16
+    )
     torch.testing.assert_close(out, X @ W.T)
