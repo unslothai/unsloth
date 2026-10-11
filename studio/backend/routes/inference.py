@@ -4896,6 +4896,8 @@ async def _aiter_llama_stream_items(
     last_item_at: Optional[float] = None
     last_prefill_progress: Optional[float] = None
     prefill_buffer = b""
+    # A byte stream frames its own events: a notice can arrive split or beside others.
+    post_buffer = b""
     item_task: Optional[asyncio.Future] = None
     park_since: Optional[float] = None
     # The first-item deadline is excused the same way, bounded from the deadline it first
@@ -5117,7 +5119,25 @@ async def _aiter_llama_stream_items(
                 # Before yielding, not before the next read: the consumer may sit
                 # on this item while the first-token deadline is still armed.
                 _set_stream_response_read_timeout(response, _post_first_timeout_s())
-            notice = None if last_item_at is None else _server_park_sse(item)
+            if last_item_at is None:
+                notice = None
+                if isinstance(item, (bytes, bytearray)):
+                    # Keep the first chunk's unfinished tail, or the next event is misread.
+                    post_buffer = re.split(rb"\r\n\r\n|\n\n|\r\r", bytes(item))[-1]
+            elif isinstance(item, (bytes, bytearray)):
+                post_buffer += item
+                events = re.split(rb"\r\n\r\n|\n\n|\r\r", post_buffer)
+                post_buffer = events.pop()
+                kinds = [_server_park_sse(event) for event in events if event.strip()]
+                if not kinds:
+                    # Only part of an event: it continues whatever the stream was doing.
+                    notice = _OPENAI_PREEMPT_SSE_KEEPALIVE if park_since is not None else None
+                elif all(k in (_OPENAI_PREEMPT_SSE_PAUSED, _OPENAI_PREEMPT_SSE_KEEPALIVE) for k in kinds):
+                    notice = _OPENAI_PREEMPT_SSE_KEEPALIVE
+                else:
+                    notice = None
+            else:
+                notice = _server_park_sse(item)
             now = time.monotonic()
             if notice in (_OPENAI_PREEMPT_SSE_PAUSED, _OPENAI_PREEMPT_SSE_KEEPALIVE):
                 # Parked after its first token: the keepalives say it is alive, but only up to
@@ -47476,6 +47496,7 @@ async def _openai_passthrough_stream_admitted(
                 )
                 lines_iter = resp.aiter_lines()
                 _raw_measured = False
+                _raw_saw_recompute = False
                 _keepalive_s = _openai_passthrough_stream_keepalive_interval()
                 items_iter = _aiter_llama_stream_items(
                     lines_iter,
@@ -47497,6 +47518,7 @@ async def _openai_passthrough_stream_admitted(
                         continue
                     _park = _server_park_sse(raw_line)
                     if _park is not None:
+                        _raw_saw_recompute |= _park == _OPENAI_PREEMPT_SSE_RECOMPUTED
                         yield _park
                         continue
                     if not raw_line.startswith("data:"):
@@ -47549,6 +47571,10 @@ async def _openai_passthrough_stream_admitted(
                     except json.JSONDecodeError:
                         chunk_data = None
                     if isinstance(chunk_data, dict):
+                        # A build that only counts the recompute: say so, as the other relays do.
+                        if not _raw_saw_recompute and _server_recompute_counted(chunk_data):
+                            _raw_saw_recompute = True
+                            yield _OPENAI_PREEMPT_SSE_RECOMPUTED
                         if isinstance(chunk_data.get("id"), str):
                             last_chunk_id = chunk_data["id"]
                         if isinstance(chunk_data.get("model"), str):

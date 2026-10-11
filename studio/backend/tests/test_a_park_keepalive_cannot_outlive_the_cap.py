@@ -179,3 +179,39 @@ class TestAChatParkedAfterItsFirstToken:
         chunks = [data, ": preempted\n\n"] + [": preempt-keepalive\n\n"] * 5
         chunks += [": resumed\n\n", data.replace('"a"', '"b"')]
         assert "".join(self._read(chunks)).endswith('"b"}}]}\n\n')
+
+
+class TestAByteStreamParkedAfterItsFirstToken:
+    """`/v1/completions` relays raw bytes, so a notice may be split or share a chunk."""
+
+    @staticmethod
+    async def _relay(items, monkeypatch, cap):
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", cap)
+
+        async def upstream():
+            for item in items:
+                await asyncio.sleep(0.01)
+                yield item
+
+        seen = []
+        async for item in inference._aiter_llama_stream_items(
+            upstream(),
+            first_token_deadline = time.monotonic() + 30.0,
+            post_first_item_read_timeout_s = 0.1,
+        ):
+            seen.append(item)
+        return seen
+
+    def test_a_wedged_park_in_split_chunks_times_out(self, monkeypatch):
+        items = [b'data: {"choices":[{"text":"a"}]}\n\n', b": preempted\n\n"]
+        items += [b": preempt-", b"keepalive\n\n: preempt-keepalive\n\n"] * 200
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(self._relay(items, monkeypatch, cap = 0.3))
+
+    def test_a_park_inside_the_cap_still_answers(self, monkeypatch):
+        items = [b'data: {"choices":[{"text":"a"}]}\n\n', b": preempted\n\n: preempt-"]
+        items += [b"keepalive\n\n"] * 5 + [b": resumed\n\n", b'data: {"choices":[{"text":"b"}]}\n\n']
+        seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0))
+        assert seen[-1].endswith(b'"b"}]}\n\n')

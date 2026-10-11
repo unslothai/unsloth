@@ -77,14 +77,19 @@ class TestARawStreamForwardsTheServersPark:
 
     def test_a_recompute_the_server_only_counted_reaches_the_translated_relays(self):
         # The Responses and Anthropic relays rebuild the final object, dropping its `preempt`
-        # field, so a build that counts a recompute without writing the notice has it
-        # synthesised there, once, as the chat path does.
+        # field, and the chat passthrough forwards it to a frontend that reads only the
+        # comment, so a build that counts a recompute without writing the notice has it
+        # synthesised in all three, once, as the chat path does.
         assert inference._server_recompute_counted({"preempt": {"parks": 1, "recomputes": 1}})
         assert not inference._server_recompute_counted({"preempt": {"parks": 2, "recomputes": 0}})
         assert not inference._server_recompute_counted({"preempt": {"recomputes": "x"}})
         assert not inference._server_recompute_counted({"choices": []})
         assert not inference._server_recompute_counted("data: {}")
-        for relay in (inference._responses_stream, inference._anthropic_passthrough_stream):
+        for relay in (
+            inference._responses_stream,
+            inference._anthropic_passthrough_stream,
+            inference._openai_passthrough_stream_admitted,
+        ):
             source = inspect.getsource(relay)
             assert source.count("_raw_saw_recompute = False") == 1
             assert "_raw_saw_recompute |= _park == _OPENAI_PREEMPT_SSE_RECOMPUTED" in source

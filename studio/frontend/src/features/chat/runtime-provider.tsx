@@ -3648,8 +3648,16 @@ function VisibleAnswerRecomputeSync({
   });
   const custom = lastAnswer?.metadata?.custom as Record<string, unknown> | undefined;
   const usage = custom?.contextUsage as { modelId?: unknown } | undefined;
+  const details = custom?.responseDetails as { modelId?: unknown } | undefined;
   const answerRecomputed = custom?.preemptRecomputed === true;
-  const answerModelId = typeof usage?.modelId === "string" ? usage.modelId : null;
+  // An answer with no usage (interrupted, or a server that sent none) still has its details.
+  // Neither known: keep the note, which can only add a caveat, never claim exact.
+  const answerModelId =
+    typeof usage?.modelId === "string"
+      ? usage.modelId
+      : typeof details?.modelId === "string" && details.modelId
+        ? details.modelId
+        : null;
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const recomputed =
     answerRecomputed && (answerModelId === null || answerModelId === checkpoint);
