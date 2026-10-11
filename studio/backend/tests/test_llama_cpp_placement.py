@@ -4005,6 +4005,34 @@ def test_a_fully_resident_moe_keeps_the_default_micro_batch(tmp_path, _discrete_
     assert backend._n_ubatch == backend._DEFAULT_N_UBATCH
 
 
+@pytest.mark.parametrize(
+    "footprint_mib, expect_ub",
+    [(88_000, []), (89_500, ["2048"])],
+    ids = ["fitter_keeps_it_resident", "fitter_spills"],
+)
+def test_a_fit_on_load_raises_the_micro_batch_only_when_the_fitter_spills(
+    tmp_path, _discrete_linux_host, footprint_mib, expect_ub
+):
+    """--fit on is not a spill: llama.cpp's fitter keeps every layer on the card while
+    the footprint fits free VRAM less its 1024 MiB --fit-target, a wider budget than
+    the 3% reserve Unsloth pins against (2940 MiB here). Only an overflow of the
+    fitter's own budget puts experts in host RAM (#12951 report: -ub 2048 on a
+    fully resident 8k load)."""
+    _mib = 1024 * 1024
+    # Weights + compute buffer (512) + CUDA context (320) + KV (256) = footprint_mib.
+    size_mib = footprint_mib - 512 - 320 - 256
+    backend, gguf = _moe_backend(tmp_path, size_gib = size_mib / 1024, memory = [(0, 90_000, 98_000)])
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: 256 * _mib
+    backend._estimate_compute_buffer_bytes = lambda **_k: 512 * _mib
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1)["cmd"]
+
+    # Over Unsloth's pin budget either way, so both hand placement to the fitter.
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
 def test_a_spilled_dense_model_keeps_the_default_micro_batch(tmp_path, _discrete_linux_host):
     backend, gguf = _moe_backend(tmp_path, moe = False, **_SPILLED)
     cmd = _launch(backend, gguf)["cmd"]

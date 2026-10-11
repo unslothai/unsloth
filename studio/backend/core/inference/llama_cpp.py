@@ -27790,11 +27790,45 @@ class LlamaCppBackend:
                     # unpriced larger buffer could OOM, so they are left alone. A GPU-only -ot
                     # does not count for the same reason. A user --device none / cpu runs on
                     # the CPU with nothing to stream, like the CPU fallback.
+                    #
+                    # use_fit alone is not a spill: it says Unsloth could not pin the load
+                    # inside ITS budget (the VRAM-fraction reserve, the flat MTP reserve),
+                    # while llama.cpp's fitter keeps every layer on the card whenever the
+                    # footprint fits free VRAM less its --fit-target margin. So a --fit on
+                    # load counts only when that same footprint overflows the fitter's
+                    # budget, and stays counted when it cannot be priced.
+                    def _fitter_keeps_model_resident() -> bool:
+                        if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
+                            return False
+                        _on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
+                        if not _on:
+                            return False
+                        _margin_mib = max(
+                            self._fit_target_margin_mib(
+                                auto_fit = False,
+                                fit_target_delta_mib = _fit_target_delta_mib,
+                                supports_fit_target = bool(server_caps.get("supports_fit_target")),
+                            ),
+                            fit_target_margin_in(extra_args, os.environ) or 0.0,
+                        )
+                        _need = (
+                            model_size_fit
+                            + _kv_bytes(effective_ctx)
+                            + _mtp_bytes(effective_ctx)
+                            + _cc_bytes(effective_ctx, len(_on))
+                            + (len(_on) - 1) * _pipeline_overhead_bytes
+                        )
+                        _free = sum(max(0.0, free - _margin_mib) for _idx, free in _on)
+                        return _need <= _free * 1024 * 1024
+
                     _moe_experts_on_host = bool(
                         not (gpu_memory_mode == "manual" and gpu_layers >= 0)
                         and not intent.cpu_fallback
                         and not _device_selection_is_cpu(extra_args, os.environ)
-                        and (use_fit or _expert_spill_places_tensors_on_cpu(extra_args, os.environ))
+                        and (
+                            (use_fit and not _fitter_keeps_model_resident())
+                            or _expert_spill_places_tensors_on_cpu(extra_args, os.environ)
+                        )
                     )
                     _moe_spill_discrete_gpu = bool(
                         _moe_experts_on_host
