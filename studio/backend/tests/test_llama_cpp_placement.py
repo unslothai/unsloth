@@ -4058,8 +4058,9 @@ def _fit_on_moe(
         ([], {}, ["2048"]),
         (["--fit-target", "512"], {}, []),
         ([], {"LLAMA_ARG_FIT_TARGET": "512"}, []),
+        ([], {"LLAMA_ARG_FIT_TARGET": "0"}, []),
     ],
-    ids = ["default_margin", "argv_lower_target", "env_lower_target"],
+    ids = ["default_margin", "argv_lower_target", "env_lower_target", "env_zero_target"],
 )
 def test_a_lower_fit_target_is_the_fitters_margin(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
@@ -4101,7 +4102,7 @@ def test_a_host_only_kv_cache_is_not_charged_to_the_fitter(
 @pytest.mark.parametrize(
     "extra_args, env, expect_ub",
     [
-        ([], {}, []),
+        ([], {}, ["2048"]),
         (["--device", "CUDA0"], {}, ["2048"]),
         ([], {"LLAMA_ARG_DEVICE": "CUDA0"}, ["2048"]),
         (["--split-mode", "none"], {}, ["2048"]),
@@ -4112,7 +4113,8 @@ def test_a_pass_through_device_restriction_is_not_pooled(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
 ):
     """Free memory pooled over every card is not what a pass-through --device or
-    --split-mode none child can use, so the residency check cannot vouch for it."""
+    --split-mode none child can use, and even unrestricted the fitter places whole layers
+    and expert fractions per device, so a pooled total cannot vouch for residency."""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     backend, gguf = _fit_on_moe(tmp_path, 88_700, memory = [(0, 46_000, 49_000), (1, 46_000, 49_000)])
@@ -4120,6 +4122,52 @@ def test_a_pass_through_device_restriction_is_not_pooled(
 
     assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on", cmd
     assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
+def test_an_inherited_projector_keeps_a_fit_on_moe_counted_as_spilled(
+    tmp_path, _discrete_linux_host, monkeypatch, name
+):
+    """A projector the child loads from the environment is VRAM the footprint never
+    sized (llama.cpp reserves it before fitting the model), so residency is unproven."""
+    monkeypatch.setenv(name, "https://example.invalid/mmproj.gguf")
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    seen = []
+    eligible = backend._moe_cache_auto_eligible
+
+    def spy(**kwargs):
+        seen.append(kwargs["experts_on_host"])
+        return eligible(**kwargs)
+
+    backend._moe_cache_auto_eligible = spy
+    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1)
+
+    # The projector's own micro-batch floor emits 2048 either way, so read the verdict
+    # the spill raise and the MoE cache offer both follow.
+    assert seen == [True]
+
+
+def test_an_unsized_drafter_keeps_a_fit_on_moe_counted_as_spilled(tmp_path, _discrete_linux_host):
+    """With the draft KV unsized the placement covers MTP with a flat cushion this
+    footprint has no term for, so the residency check abstains."""
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._resolve_launch_mtp_path = lambda **_k: "/fake/mtp.gguf"
+    backend._estimate_mtp_overhead_bytes = lambda *a, **k: None
+    cmd = _launch(
+        backend,
+        gguf,
+        n_ctx = 8192,
+        n_parallel = 1,
+        mtp_draft_path = "/fake/mtp.gguf",
+        speculative_type = "mtp",
+    )["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == ["2048"], cmd
 
 
 def test_smart_offload_keeps_a_fit_on_moe_counted_as_spilled(

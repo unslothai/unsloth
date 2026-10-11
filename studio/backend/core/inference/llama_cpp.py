@@ -27890,8 +27890,14 @@ class LlamaCppBackend:
 
                         if smart_offload_enabled(os.environ):
                             return False
+                        # A drafter priced with a flat cushion has no draft-KV term here.
+                        if _flat_mtp_engages:
+                            return False
                         _on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
-                        if not _on:
+                        # One card only: over several, llama.cpp's fitter places whole
+                        # layers and expert fractions per device (common/fit.cpp), so a
+                        # pooled total can fit while one device still spills experts.
+                        if len(_on) != 1:
                             return False
                         # What the child really gets: a gpu_ids pin strips the device
                         # flags and their env twins, while a pass-through --device,
@@ -27912,6 +27918,11 @@ class LlamaCppBackend:
                             gpu_indices = gpu_indices,
                         ):
                             return False
+                        # A projector Studio never resolved but the child loads: unsized here.
+                        if _child_env.get("LLAMA_ARG_MMPROJ") or _child_env.get(
+                            "LLAMA_ARG_MMPROJ_URL"
+                        ):
+                            return False
                         # Effective --fit-target, last wins: a pass-through value, else the
                         # one _ctx_integrity_flags emits (it beats the env twin), else
                         # LLAMA_ARG_FIT_TARGET, else llama.cpp's default.
@@ -27927,11 +27938,9 @@ class LlamaCppBackend:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
                             )
-                            _margin_mib = (
-                                _managed_mib
-                                if _emits
-                                else fit_target_margin_in((), _child_env) or _managed_mib
-                            )
+                            _env_mib = None if _emits else fit_target_margin_in((), _child_env)
+                            # An inherited 0 is a valid margin, not "unset".
+                            _margin_mib = _managed_mib if _env_mib is None else _env_mib
                         _need = (
                             model_size_fit
                             # --no-kv-offload keeps the KV cache in host RAM.
