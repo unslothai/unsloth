@@ -48,11 +48,11 @@ def test_nothing_is_counted_with_preemption_off(backend, monkeypatch):
 
 
 def test_both_completions_branches_count_and_release():
-    source = inspect.getsource(inference.openai_completions)
-    assert source.count('_openai_llama_count_completions_holder(llama_backend, body.get("prompt", ""))') == 2
-    assert (
-        source.count("_openai_llama_release_completions_holder(llama_backend, _cmpl_holder)") == 2
-    )
+    # Joined on whitespace, so a formatter wrapping the call does not move the pin.
+    source = "".join(inspect.getsource(inference.openai_completions).split())
+    count = '_openai_llama_count_completions_holder(llama_backend,body.get("prompt",""))'
+    assert source.count(count) == 2
+    assert source.count("_openai_llama_release_completions_holder(llama_backend,_cmpl_holder)") == 2
 
 
 def test_an_unpausable_holder_plans_before_its_request_goes_out(backend, monkeypatch):
