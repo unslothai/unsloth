@@ -673,6 +673,7 @@ def test_gguf_substring_does_not_reject_local_diffusers_dir(tmp_path):
 
 
 def test_sdxl_warns_when_an_unused_accelerator_leaves_it_on_the_cpu(monkeypatch, tmp_path):
+    pytest.importorskip("diffusers")
     import torch
     from PIL import Image
 
