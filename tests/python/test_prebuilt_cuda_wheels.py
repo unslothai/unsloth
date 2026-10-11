@@ -157,8 +157,10 @@ class TestOverrideScope:
             is None
         )
 
-    @pytest.mark.parametrize("platform_tag", ["linux_aarch64", "win_amd64", "macosx_11_0_arm64"])
-    def test_only_linux_x86_64(self, platform_tag):
+    # win_amd64, win_arm64 and linux_aarch64 are published too, for fewer cells; the windows and arm
+    # resolver tests own them.
+    @pytest.mark.parametrize("platform_tag", ["macosx_11_0_arm64", "linux_armv7l"])
+    def test_no_wheel_for_an_unbuilt_platform(self, platform_tag):
         assert (
             wheel_utils.unsloth_prebuilt_wheel_url(
                 filename_prefix = "mamba_ssm", env = env(platform_tag = platform_tag)
@@ -249,8 +251,8 @@ class TestBackwardsCompatible:
             == f"{OUR_BASE}causal_conv1d-1.7.0+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
         )
 
-    def test_a_windows_env_still_reaches_upstream_for_a_non_our_package(self):
-        """The override must not become a Windows gate for anything else that uses this path."""
+    def test_a_windows_env_never_reaches_an_upstream_name(self):
+        """No upstream release publishes a Windows asset, so a name built for one could only 404."""
         url = wheel_utils.direct_wheel_url(
             filename_prefix = "something_else",
             package_version = "1.0",
@@ -258,10 +260,7 @@ class TestBackwardsCompatible:
             release_base_url = "https://example.invalid/download",
             env = env(torch_mm = "2.13", platform_tag = "win_amd64"),
         )
-        assert url == (
-            "https://example.invalid/download/v1.0/"
-            "something_else-1.0+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
-        )
+        assert url is None
 
     def test_no_cuda_still_resolves_to_nothing(self):
         assert (

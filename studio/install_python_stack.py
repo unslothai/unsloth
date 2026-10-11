@@ -8386,12 +8386,16 @@ def _ensure_flash_attn() -> None:
         return
     if NO_TORCH:
         return
-    if IS_WINDOWS or IS_MACOS:
+    if IS_MACOS:
         return
     if _flash_attn_importable():
         return
 
-    env = probe_torch_wheel_env()
+    # Bounded like the import probe: a wedged Windows driver must not hang setup.
+    env = probe_torch_wheel_env(
+        timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT if IS_WINDOWS else None,
+        include_windows = True,
+    )
     # a failed flash-attn probe proves staleness only when torch still imports.
     stale = env is not None and _installed_distribution_version("flash-attn") is not None
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
@@ -8435,7 +8439,10 @@ def _ensure_flash_attn() -> None:
         return
 
     if wheel_url is None:
-        _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
+        if IS_WINDOWS:
+            _note("no flash-attn prebuilt wheel for this torch build; skipped")
+        else:
+            _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
     elif wheel_available is None:
         _step(
             "warning",
@@ -12141,8 +12148,9 @@ def install_python_stack() -> int:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
+        base_total += 1  # flash-attn, Linux and Windows
         if not IS_WINDOWS:
-            base_total += 2  # flash-attn + torch final repair (step 13), Linux
+            base_total += 1  # torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
     if IS_MAC_ARM and not NO_TORCH:
@@ -12545,7 +12553,7 @@ def install_python_stack() -> int:
     if not IS_WINDOWS and not IS_MACOS:
         _triton_kernels_step()
 
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+    if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
 
@@ -12742,8 +12750,13 @@ def install_python_stack() -> int:
     if IS_WINDOWS and not NO_TORCH:
         _progress(_torch_step_label("flavor"))
         torch_flavor_tag = _expected_torch_flavor_tag()
+        _torch_before_flavor = str(_probe_installed_torch_version() or "")
         if not _ensure_expected_torch_flavor(torch_flavor_tag):
             return 1
+        _torch_after_flavor = str(_probe_installed_torch_version() or "")
+        if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
+            # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
+            _ensure_flash_attn()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
