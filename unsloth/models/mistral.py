@@ -120,9 +120,11 @@ def MistralAttention_fast_forward(
         sw = kv_seq_len
     else:
         sw = sw_cfg
-    window_size = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
+    # transformers' window: k > q - sliding_window, so flash's left window is sliding_window - 1.
+    window_size = (-1, -1) if (kv_seq_len <= sw) else (sw - 1, sw - 1)
 
-    use_varlen = seq_info is not None and past_key_value is None and window_size == (-1, -1)
+    # Packed rows always take varlen: dense flash would let a document attend into the one before it.
+    use_varlen = seq_info is not None and past_key_value is None
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
         backend = backend,
@@ -133,6 +135,7 @@ def MistralAttention_fast_forward(
             "dropout_p": 0.0,
             "causal": True,
             "softmax_scale": getattr(self, "softmax_scale", None),
+            "window_size": window_size,
         },
     )
     # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
