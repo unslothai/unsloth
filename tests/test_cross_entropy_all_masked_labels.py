@@ -34,4 +34,6 @@ def test_fast_cross_entropy_partly_masked_keeps_the_mean():
     logits = torch.randn(1, 4, 256, device = "cuda")
     labels = torch.tensor([[3, -100, 7, -100]], device = "cuda")
     expected = torch.nn.functional.cross_entropy(logits.flatten(0, 1), labels.flatten())
-    torch.testing.assert_close(fast_cross_entropy_loss(logits, labels), expected, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(
+        fast_cross_entropy_loss(logits, labels), expected, rtol = 1e-5, atol = 1e-5
+    )
