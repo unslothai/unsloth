@@ -39,9 +39,8 @@ if not TRACE_LORA_FUNCTIONS:
     _apply = torch._dynamo.disable(_apply)
 
 
-# torchao's NVFP4 / MX QAT linears fake-quantize inside forward() and carry no fake quantizer children, so
-# fused LoRA reading .weight would silently train unquantized. Resolved lazily from sys.modules (None until
-# torchao.prototype.qat is imported) so importing Unsloth never imports torchao.
+# torchao's NVFP4 / MX QAT linears fake-quantize inside forward() with no quantizer children, so fused LoRA
+# would train unquantized. Read lazily from sys.modules so importing Unsloth never imports torchao.
 _FORWARD_FAKE_QUANT_LINEARS = None
 
 

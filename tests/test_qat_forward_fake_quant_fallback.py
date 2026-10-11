@@ -63,7 +63,6 @@ def _lora_block(scheme):
 
 
 def _route(block, monkeypatch):
-    """Run apply_lora_o and report which path it took."""
     calls = {"fused": 0, "module": 0}
 
     def fused(function, *args):
