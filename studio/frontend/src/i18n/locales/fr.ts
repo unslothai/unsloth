@@ -4087,6 +4087,8 @@ export const fr = {
     selection: {
       startChat: "Démarrer une discussion",
       move: "Déplacer",
+      selectAll: "Tout sélectionner",
+      countOfTotal: "{count} sur {total} sélectionnés",
       clear: "Effacer la sélection",
     },
     menu: {

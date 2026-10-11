@@ -18,7 +18,8 @@ import {
   useNativeFileDrop,
 } from "@/features/native-intents";
 import { getAuthSessionEpoch } from "@/features/auth";
-import { useSettingsDialogStore } from "@/features/settings";
+import { rangeBetween } from "@/features/chat";
+import { isMacPlatform, useSettingsDialogStore } from "@/features/settings";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
@@ -227,7 +228,15 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const [chosenFilters, setFilters] = useState<LibraryFilters>(() =>
     search.filter === "files" ? { ...EMPTY_FILTERS, types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
   );
-  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [selection, setSelectionState] = useState<Set<string>>(new Set());
+  // The entry last clicked, which a shift click ranges from. A key rather than an index: the
+  // listing can re-sort between clicks.
+  const selectionAnchor = useRef<string | null>(null);
+  // Select all and clearing drop the anchor, so a shift click never reaches back past them.
+  const setSelection = useCallback((next: Set<string>) => {
+    selectionAnchor.current = null;
+    setSelectionState(next);
+  }, []);
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LibraryTarget[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -366,19 +375,28 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
   }, [folders, folderId, tab, needle, filters, sort]);
 
-  // A search, filter or Content setting that hides a selected entry deselects it, so bulk actions
-  // only ever act on what is on screen and clearing the filter never brings a selection back.
-  const visibleKeys = useMemo(
-    () =>
-      new Set([
-        ...visibleFolders.map((folder) => `folder:${folder.id}`),
-        ...visibleItems.map((item) => `item:${item.id}`),
-      ]),
+  // Folders then items, the order both views show them in: grid's masonry deals cards across
+  // columns row by row, so this is also left to right, top to bottom there.
+  const orderedKeys = useMemo(
+    () => [
+      ...visibleFolders.map((folder) => `folder:${folder.id}`),
+      ...visibleItems.map((item) => `item:${item.id}`),
+    ],
     [visibleFolders, visibleItems],
   );
+  // A search, filter or Content setting that hides a selected entry deselects it, so bulk actions
+  // only ever act on what is on screen and clearing the filter never brings a selection back.
+  const visibleKeys = useMemo(() => new Set(orderedKeys), [orderedKeys]);
   if ([...selection].some((key) => !visibleKeys.has(key))) {
-    setSelection(new Set([...selection].filter((key) => visibleKeys.has(key))));
+    setSelectionState(new Set([...selection].filter((key) => visibleKeys.has(key))));
   }
+  // A hidden anchor goes too: else clearing the search brings it back, and the next shift click
+  // reaches from an entry the selection already lost.
+  useEffect(() => {
+    if (selectionAnchor.current && !visibleKeys.has(selectionAnchor.current)) {
+      selectionAnchor.current = null;
+    }
+  }, [visibleKeys]);
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
   const previewId = previewItem?.id ?? null;
@@ -641,15 +659,54 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     };
   };
 
-  const cardSelection = {
-    selection,
-    toggle: (key: string) =>
-      setSelection((current) => {
-        const next = new Set(current);
-        if (!next.delete(key)) next.add(key);
-        return next;
-      }),
+  // A shift click sets the whole range to the clicked entry's new state, as in Chats.
+  const toggleSelected = (key: string, range = false) => {
+    const anchor = selectionAnchor.current;
+    const keys = range && anchor ? rangeBetween(orderedKeys, anchor, key) : [key];
+    const on = !selection.has(key);
+    const next = new Set(selection);
+    for (const each of keys) {
+      if (on) next.add(each);
+      else next.delete(each);
+    }
+    setSelectionState(next);
+    selectionAnchor.current = next.size > 0 ? key : null;
   };
+  const selectAll = () => setSelection(new Set(orderedKeys));
+  const selectionBar = useRef<HTMLDivElement>(null);
+
+  const cardSelection = { selection, toggle: toggleSelected };
+
+  // Chats return their own view below, which has its own select all and Escape.
+  const showsChats = tab === "chats" && !folderId;
+  const selecting = selection.size > 0;
+  // Cmd/Ctrl+A selects everything shown and Escape clears it, outside text fields. Both stand down
+  // while a menu or dialog (the preview among them) is open, since the selection is behind it.
+  // Passive on Escape, as Chats is: a menu closing on it has already prevented the default.
+  useEffect(() => {
+    if (showsChats || (!selecting && orderedKeys.length === 0)) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable]")) {
+        return;
+      }
+      if (document.querySelector('[role="menu"], [role="dialog"], [role="alertdialog"]')) return;
+      const mod = isMacPlatform() ? event.metaKey : event.ctrlKey;
+      // By the letter typed, or by the key's position on a layout that types no Latin letter.
+      const isA = /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() === "a" : event.code === "KeyA";
+      if (mod && !event.altKey && !event.shiftKey && isA) {
+        if (orderedKeys.length === 0) return;
+        event.preventDefault();
+        setSelection(new Set(orderedKeys));
+      } else if (event.key === "Escape" && selecting) {
+        if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+        setSelection(new Set());
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showsChats, selecting, orderedKeys, setSelection]);
 
   const selectedTargets = (): LibraryTarget[] => {
     const out: LibraryTarget[] = [];
@@ -795,6 +852,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                   counts={counts}
                   selection={selection}
                   onSelectionChange={setSelection}
+                  onToggle={toggleSelected}
                   sort={sort}
                   onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
                   activity={false}
@@ -878,6 +936,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             counts={counts}
             selection={selection}
             onSelectionChange={setSelection}
+            onToggle={toggleSelected}
             sort={sort}
             onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
             activity={tab === "suggested" && !folderId}
@@ -1009,9 +1068,36 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         )}
 
         {selectedCount > 0 && (
-          <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]">
-            <span className="mr-4 whitespace-nowrap text-sm font-medium">
-              {t("shell.selection.countSelected", { count: selectedCount })}
+          // Sized to its pills, and scrolls sideways rather than squashing them in a narrow window.
+          <div
+            ref={selectionBar}
+            role="toolbar"
+            aria-label={t("library.selection.countOfTotal", { count: selectedCount, total: orderedKeys.length })}
+            tabIndex={-1}
+            className="fixed bottom-8 left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-ring dark:shadow-[0_8px_28px_-6px_var(--background)]"
+          >
+            <span className="mr-4 flex items-center whitespace-nowrap text-sm font-medium">
+              <span aria-live="polite">
+                {t("library.selection.countOfTotal", { count: selectedCount, total: orderedKeys.length })}
+              </span>
+              {selectedCount < orderedKeys.length && (
+                <>
+                  <span aria-hidden className="mx-2 text-muted-foreground">
+                    ·
+                  </span>
+                  <button
+                    type="button"
+                    // The link goes once everything is selected, so focus moves to the bar first.
+                    onClick={() => {
+                      selectAll();
+                      selectionBar.current?.focus();
+                    }}
+                    className="rounded-sm underline decoration-muted-foreground underline-offset-[3px] outline-none transition-colors hover:decoration-current focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {t("library.selection.selectAll")}
+                  </button>
+                </>
+              )}
             </span>
             <button
               type="button"
