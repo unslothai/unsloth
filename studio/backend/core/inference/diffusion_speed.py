@@ -1735,12 +1735,9 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
 
 
 def _enable_miopen_immediate(logger: Any) -> bool:
-    """ROCm convs ask MIOpen for a solution instead of running miopenFind*, which trial-launches
-    candidate kernels on every unseen shape. A trial launch faulting inside MIOpen aborts the
-    whole server (#9130). An explicit ``MIOPEN_FIND_MODE`` or ``MIOPEN_FIND_ENFORCE`` (hand tuning)
-    keeps torch's Find path. Deliberately
-    not in ``snapshot_backend_flags``: an unload restoring it would reopen Find under a co-resident
-    image or video pipeline."""
+    """ROCm: ask MIOpen for a conv solution instead of miopenFind*, whose trial launches on unseen shapes
+    are where #9130's uncatchable abort came from. MIOPEN_FIND_MODE / MIOPEN_FIND_ENFORCE keep Find. Not in
+    snapshot_backend_flags: an unload restoring it would reopen Find under a co-resident pipeline."""
     if os.environ.get("MIOPEN_FIND_MODE") or os.environ.get("MIOPEN_FIND_ENFORCE"):
         return False
     try:
