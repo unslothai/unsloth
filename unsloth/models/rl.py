@@ -4313,11 +4313,17 @@ def _unsloth_async_grpo_lm_head(original, flag):
                 return
             try:
                 transform = next(
-                    (t for t in transforms if backbone is not None and _packing_honored(backbone, t)),
+                    (
+                        t
+                        for t in transforms
+                        if backbone is not None and _packing_honored(backbone, t)
+                    ),
                     False,
                 )
             except Exception as error:
-                logger.info(f"Unsloth: could not check packed rows on `{type(backbone).__name__}`: {error}")
+                logger.info(
+                    f"Unsloth: could not check packed rows on `{type(backbone).__name__}`: {error}"
+                )
                 return
             if transform is False:
                 raise ValueError(

@@ -211,6 +211,7 @@ def test_non_unsloth_sdpa_model_is_refused(fake_trl):
         mod.AsyncGRPOTrainer(
             CausalLM(torch.nn.Module(), attn = "sdpa"), None, args = mod.AsyncGRPOConfig("o")
         )
+
     # Flash attention honors position_ids resets; TRL builds these models on CPU, where the self-test cannot run.
     def unrunnable(backbone, transform = None):
         raise NotImplementedError("flash varlen kernel on the CPU backend")
@@ -220,7 +221,9 @@ def test_non_unsloth_sdpa_model_is_refused(fake_trl):
         lm = CausalLM(torch.nn.Module(), attn = attn)
         mod.AsyncGRPOTrainer(lm, None, args = mod.AsyncGRPOConfig("o"))
     # A self-test that cannot run leaves TRL's behaviour unchanged instead of failing init.
-    mod.AsyncGRPOTrainer(CausalLM(torch.nn.Module(), attn = "sdpa"), None, args = mod.AsyncGRPOConfig("o"))
+    mod.AsyncGRPOTrainer(
+        CausalLM(torch.nn.Module(), attn = "sdpa"), None, args = mod.AsyncGRPOConfig("o")
+    )
     ns["_packing_honored"] = lambda backbone, transform = None: True
     lm = CausalLM(torch.nn.Module(), attn = "flash_attention_2")
     mod.AsyncGRPOTrainer(lm, None, args = mod.AsyncGRPOConfig("o"))
