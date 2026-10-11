@@ -44,6 +44,7 @@ import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
 } from "../lib/model-type-capabilities";
+import { runConfigDraftSelections } from "../lib/run-config-draft";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
   DatasetCacheReferenceOptions,
@@ -217,6 +218,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         options?: {
           applyTrainingDefaults?: boolean;
           keepModelSubfolder?: boolean;
+          fillMethodProvenance?: boolean;
         },
       ) => {
         const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
@@ -549,6 +551,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : {}),
             };
 
+            // Fill a copied CPT run's missing history, but preserve values captured by
+            // any method transition the user made while this request was pending.
+            const fallbackProvenanceRefresh = options?.fillMethodProvenance
+              ? {
+                  modelAdapterLearningRate,
+                  ...(requestState.trainingMethod === "cpt" &&
+                  _trainingMethodEditGeneration === trainingMethodEditGeneration
+                    ? cptProvenanceRefresh
+                    : {}),
+                }
+              : cptFallbackProvenanceRefresh;
+
             const nextStreamingState = {
               ...get(),
               ...patch,
@@ -586,11 +600,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       ...cptProvenanceRefresh,
                     },
                   }
-                : Object.keys(cptFallbackProvenanceRefresh).length > 0
+                : Object.keys(fallbackProvenanceRefresh).length > 0
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
-                        ...cptFallbackProvenanceRefresh,
+                        ...fallbackProvenanceRefresh,
                       },
                     }
                   : {}),
@@ -1584,6 +1598,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
           setUserEdit({ gradientCheckpointing }),
+        setOffloadLayers: (offloadLayers) => setUserEdit({ offloadLayers }),
+        setOffloadVramGb: (offloadVramGb) => setUserEdit({ offloadVramGb }),
+        setOffloadVramGbForDevice: (gpuIndex, value) =>
+          setUserEdit((state) => ({
+            offloadVramGbPerDevice: {
+              ...state.offloadVramGbPerDevice,
+              [String(gpuIndex)]: value,
+            },
+          })),
+        setPrefetchDepth: (prefetchDepth) => setUserEdit({ prefetchDepth }),
         setRandomSeed: (randomSeed) => setUserEdit({ randomSeed }),
         setEnableWandb: (enableWandb) => setUserEdit({ enableWandb }),
         setWandbToken: (wandbToken) => setUserEdit({ wandbToken }),
@@ -1605,6 +1629,26 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ targetModules });
         },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        restoreRunConfig: (config) => {
+          const selections = runConfigDraftSelections(config);
+          const hyperparameters = mapBackendModelConfigToTrainingPatch({
+            training: config,
+            lora: config,
+            logging: config,
+          });
+          _datasetCheckController?.abort();
+          get().reset();
+          _trainingMethodEditGeneration += 1;
+          _trainOnCompletionsManuallySet = true;
+          _trainOnCompletionsExplicitModel = selections.selectedModel;
+          setUserEdit({ ...hyperparameters, ...selections });
+          // Fetch capabilities without replacing the saved recipe.
+          loadAndApplyModelDefaults(selections.selectedModel, {
+            applyTrainingDefaults: false,
+            keepModelSubfolder: true,
+            fillMethodProvenance: true,
+          });
+        },
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;

@@ -24,7 +24,8 @@ class Checkpoint:
     # "laya" (rl_agent_config.json + encoder), "clef" (Qwen3.5 backbone + joint schema head), or
     # "gguf" (a GGUF_COMPANIONS entry llama.cpp serves, with no PyTorch form).
     layout: str = "laya"
-    # "pytorch", or "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target).
+    # "pytorch", "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target), or
+    # "mlx" for the form unsloth-zoo's MLX engine serves on Apple Silicon (see laya_runtime._mlx_target).
     backend: str = "pytorch"
     # The served GGUF files of a local export, so a re-export is a different checkpoint to a resident server.
     revision: str | None = None
@@ -251,6 +252,127 @@ GGUF_COMPANIONS = {
             ),
         )
     },
+}
+
+
+@dataclass(frozen = True)
+class MlxCompanion:
+    """The source repo unsloth-zoo's MLX decision engine reads on Apple Silicon in place of an entry's GGUF."""
+
+    family: str
+    repo: str
+    revision: str
+    files: tuple[str, ...]
+    download_bytes: int
+    # The language model an adapter is merged into at load, in its own repo.
+    base: MlxCompanion | None = None
+
+
+def _qwen_base(repo: str, revision: str, shards: int, size: int, *extra: str) -> MlxCompanion:
+    files = (
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+        "preprocessor_config.json",
+        "video_preprocessor_config.json",
+        "model.safetensors.index.json",
+        *extra,
+        *(f"model.safetensors-{i:05d}-of-{shards:05d}.safetensors" for i in range(1, shards + 1)),
+    )
+    return MlxCompanion("", repo, revision, files, size)
+
+
+_ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
+
+MLX_COMPANIONS = {
+    "julia-1": MlxCompanion(
+        "laya",
+        "SupersonicLabs/Julia-1",
+        "a85b127321d580d65176c89ced8273f305745d85",
+        (
+            "julia_config.json",
+            "model.safetensors",
+            "encoder/config.json",
+            "tokenizer/tokenizer.json",
+            "tokenizer/tokenizer_config.json",
+        ),
+        611_554_979,
+    ),
+    "lev": MlxCompanion(
+        "lev",
+        "interfaze-ai/lev",
+        "7bdc748dffebd85b57ee0dbea8f994c6354fed31",
+        (*_ADAPTER_FILES, "lev_release.json", "calibration.json"),
+        169_905_572,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-4B",
+            "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+            2,
+            9_342_816_694,
+            "chat_template.jinja",
+        ),
+    ),
+    "kev-0.8b": MlxCompanion(
+        "kev",
+        "jaredpalmer/kev-0.8b",
+        "bf75a6a8848ea6960ff2ed108d9ed44c2941174f",
+        (*_ADAPTER_FILES, "head.pt", "training_config.json"),
+        45_445_663,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-0.8B-Base", "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68", 1, 1_769_897_109
+        ),
+    ),
+    "kev-4b": MlxCompanion(
+        "kev",
+        "jaredpalmer/kev-4b",
+        "6cfce5c2fa4b4bd64026336ab649c5ca78857d52",
+        (*_ADAPTER_FILES, "head.pt", "training_config.json"),
+        135_176_939,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-4B-Base", "1001bb4d826a52d1f399e183466143f4da7b741b", 2, 9_342_808_116
+        ),
+    ),
+    "kev-9b": MlxCompanion(
+        "kev",
+        "jaredpalmer/kev-9b",
+        "db029f08b290afd9fee4aa4bbcd9ae48602d1eb0",
+        (*_ADAPTER_FILES, "head.pt", "training_config.json"),
+        181_576_197,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-9B-Base", "68c46c4b3498877f3ef123c856ecfde50c39f404", 4, 19_329_294_358
+        ),
+    ),
+    "bespoke-nimble-9b-v3": MlxCompanion(
+        "nimble",
+        "bespokelabs/Bespoke-Nimble-9B-v3",
+        "8e927b9b4afdbb14479fac10a7364d1a695be208",
+        (*_ADAPTER_FILES, "schema_config.json"),
+        692_535_920,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-9B",
+            "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+            4,
+            19_329_302_904,
+            "chat_template.jinja",
+        ),
+    ),
+    # The 8-bit MLX conversion, the closest in size and answers to the Q8_0 GGUF; text only.
+    "openjev": MlxCompanion(
+        "openjev",
+        "openjev/openjev-MLX",
+        "a9dcc20aa827a6c7eae478f6ebb3b255bb135451",
+        (
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "chat_template.jinja",
+            "model.safetensors.index.json",
+            *(f"model-{i:05d}-of-00006.safetensors" for i in range(1, 7)),
+        ),
+        28_599_913_943,
+    ),
 }
 
 # Names TypeSafe's and OpenJev's SDKs send by default, so an unmodified client reaches the configured model.

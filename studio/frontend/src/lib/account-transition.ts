@@ -27,6 +27,7 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "palette",
   APPEARANCE_KEY,
   "unsloth_locale",
+  "unsloth_spellcheck",
   "sidebar_pinned",
   "sidebar_width",
   "chat_settings_width",

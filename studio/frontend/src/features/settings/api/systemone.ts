@@ -9,7 +9,12 @@ import {
 import type { DecisionResponse } from "../lib/decision-request";
 
 export type SystemOneDevice = "cpu" | "gpu";
-export type SystemOneBackend = "auto" | "llama.cpp" | "pytorch";
+export type SystemOneBackend = "auto" | "llama.cpp" | "mlx" | "pytorch";
+
+/** The runtime name as the settings page shows it. */
+export function decisionRuntimeLabel(backend: string): string {
+  return backend === "mlx" ? "MLX" : backend;
+}
 
 export type SystemOneModel = {
   name: string;
@@ -38,6 +43,7 @@ export type SystemOneSettings = {
   error: string | null;
   mcpUrl: string;
   backend: SystemOneBackend;
+  mlxAvailable: boolean;
   nativeCtx: number;
   effectiveBackend: string | null;
   loadedBackend: string | null;
@@ -115,6 +121,8 @@ type ApiSystemOneSettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
   mcp_url: string;
   backend?: SystemOneBackend;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_available?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   native_ctx?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -196,6 +204,7 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     error: settings.error,
     mcpUrl: settings.mcp_url,
     backend: settings.backend ?? "auto",
+    mlxAvailable: settings.mlx_available ?? false,
     nativeCtx: settings.native_ctx ?? 16384,
     effectiveBackend: settings.effective_backend ?? null,
     loadedBackend: settings.loaded_backend ?? null,

@@ -238,6 +238,53 @@ pub fn browser_download_reveal(
     crate::native_intents::reveal_in_file_manager(&path)
 }
 
+/// Extensions that run code when opened, shared with download-safety.ts.
+fn runs_code(path: &Path) -> bool {
+    static EXTENSIONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let extensions = EXTENSIONS.get_or_init(|| {
+        #[derive(Deserialize)]
+        struct Policy {
+            extensions: Vec<String>,
+        }
+        serde_json::from_str::<Policy>(include_str!(
+            "../../frontend/src/features/browser/dangerous-file-types.json"
+        ))
+        .map(|policy| policy.extensions)
+        .unwrap_or_default()
+    });
+    // Windows drops trailing dots and spaces, so `setup.exe.` still runs.
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let name = name.trim_end_matches(['.', ' ']);
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        // Windows compares names upper-cased, so `.m\u{17f}i` (long s) is `.MSI`.
+        let folded = [ext.to_lowercase(), ext.to_uppercase().to_lowercase()];
+        extensions.iter().any(|known| folded.contains(known))
+    })
+}
+
+/// Open a download with its default app. Programs and scripts are refused: they stay a reveal away.
+#[tauri::command]
+pub fn browser_download_open(
+    webview: tauri::Webview,
+    app: AppHandle,
+    state: State<'_, BrowserDownloads>,
+    id: String,
+) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    let path = with_entries(&app, &state, |entries| (path_of(entries, &id), false))
+        .ok_or_else(|| "Unknown download.".to_string())?;
+    if !path.is_file() {
+        return Err("The file was moved or deleted.".to_string());
+    }
+    if runs_code(&path) {
+        return Err("Programs and scripts open from their folder.".to_string());
+    }
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| error.to_string())
+}
+
 /// Whether each download is still where it was saved, in the order asked.
 #[tauri::command]
 pub fn browser_download_exists(
@@ -550,6 +597,7 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
         return;
     };
     let app = app.clone();
+    let id = id.to_string();
     tauri::async_runtime::spawn(async move {
         let staging = entry.staged.parent().map(Path::to_path_buf);
         let result = match (entry.decision, entry.finished) {
@@ -568,13 +616,23 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
                 &path,
                 Some(download_id),
                 marked,
+                &id,
             ),
+            Ok(None) if matches!(entry.decision, Some(Decision::Allow { .. })) => {
+                crate::browser_webview::emit_download_cancelled(
+                    &app,
+                    &entry.tab_id,
+                    &entry.url,
+                    &id,
+                )
+            }
             Ok(None) => {}
             Err(_) => crate::browser_webview::emit_download_failed(
                 &app,
                 &entry.tab_id,
                 &entry.url,
                 &entry.name,
+                Some(&id),
             ),
         }
     });
@@ -691,6 +749,31 @@ fn copy_into_place(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn programs_and_scripts_are_not_opened() {
+        for name in [
+            "setup.exe",
+            "Install.CMD",
+            "run.sh",
+            "tool.command",
+            "x.jar",
+            "Foo.app",
+            "a.exe. ",
+            "installer.m\u{17f}i",
+        ] {
+            assert!(runs_code(Path::new(name)), "{name}");
+        }
+        for name in [
+            "report.pdf",
+            "data.csv",
+            "clip.mp4",
+            "noext",
+            ".exe-notes.txt",
+        ] {
+            assert!(!runs_code(Path::new(name)), "{name}");
+        }
+    }
 
     #[test]
     fn ids_are_random_hex_and_checked() {

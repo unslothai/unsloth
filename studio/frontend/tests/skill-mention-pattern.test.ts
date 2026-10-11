@@ -5,19 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-// The module imports the auth layer, so the pattern is lifted from source; the assertion keeps the copy honest.
-const SKILLS_API_SOURCE = readFileSync(
-  new URL("../src/features/chat/api/skills-api.ts", import.meta.url),
-  "utf8",
-);
-const declaration = /export const SKILL_MENTION_PATTERN =\s*(\/.*\/g);/.exec(
-  SKILLS_API_SOURCE,
-);
-assert.ok(declaration, "SKILL_MENTION_PATTERN declaration not found");
-const SKILL_MENTION_PATTERN = new RegExp(
-  declaration[1].slice(1, declaration[1].lastIndexOf("/")),
-  "g",
-);
+import { SKILL_MENTION_PATTERN } from "../src/features/chat/api/skill-tools.ts";
 
 const names = (text: string): string[] =>
   [...text.matchAll(SKILL_MENTION_PATTERN)].map((match) => match[2] ?? "");
@@ -41,6 +29,15 @@ test("emails, underscores, uppercase and dangling hyphens are not mentions", () 
   assert.deepEqual(names("@Probe-Alpha"), []);
   assert.deepEqual(names("@probe-alpha-"), []);
   assert.deepEqual(names("@-probe"), []);
+});
+
+test("one trailing sentence mark, the same rule as the backend preload", () => {
+  for (const text of ["@alpha.", "@alpha,", "@alpha;", "@alpha:", "@alpha!", "@alpha?", "@alpha)"]) {
+    assert.deepEqual(names(`${text} next`), ["alpha"], text);
+  }
+  for (const text of ["@alpha!!", "@alpha]", "@alpha).", "@alpha'", '@alpha"', "@alpha?!"]) {
+    assert.deepEqual(names(text), [], text);
+  }
 });
 
 test("a name is at most 64 characters", () => {

@@ -3,6 +3,7 @@
 
 import { documentKind, isMarkdown } from "@/components/file-viewer";
 import { attachmentTextLanguage } from "@/features/chat";
+import { mediaKind } from "./media-kind";
 
 export const HTML_NAME = /\.(html?|xhtml)$/i;
 const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)\b/i;
@@ -10,14 +11,7 @@ export const TEXT_TYPE = /^(text\/|application\/(json|xml|javascript|x-yaml|yaml
 export const TEXT_NAME =
   /\.(txt|log|md|markdown|mdx|json|jsonl|ya?ml|toml|ini|cfg|conf|csv|tsv|xml|svg|py|ipynb|js|mjs|cjs|ts|tsx|jsx|css|scss|sh|bash|zsh|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb|php|swift|sql|r|lua|pl|tex)$/i;
 
-export type Media = "image" | "video" | "audio";
-
-export function mediaKind(name: string, contentType: string): Media | null {
-  if (/^image\//i.test(contentType) || /\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(name)) return "image";
-  if (/^video\//i.test(contentType) || /\.(mp4|webm|mov|m4v|ogv)$/i.test(name)) return "video";
-  if (/^audio\//i.test(contentType) || /\.(mp3|wav|ogg|oga|flac|m4a|aac|opus)$/i.test(name)) return "audio";
-  return null;
-}
+export { type Media, mediaKind } from "./media-kind";
 
 export type TextFileKind = "html" | "markdown" | "code" | "text";
 

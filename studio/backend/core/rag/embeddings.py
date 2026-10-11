@@ -858,6 +858,29 @@ def _model_names_gguf_repo(model: str | None) -> bool:
     return config._names_gguf(model.strip().rstrip("/").rsplit("/", 1)[-1])
 
 
+# ST under auto stays on the CPU in float32 (_device); llama-server offloads. Exact ids: a fine-tune may lack the -GGUF.
+_LLAMA_SERVER_PREFERRED_MODELS = frozenset(
+    {"unsloth/embeddinggemma-300m", "unsloth/embeddinggemma-2"}
+)
+
+
+def _plan_prefers_llama_server(model: str) -> bool:
+    """Picker plan only: the runtime follows the saved record, so an env-configured model keeps its embedding space."""
+    if model.strip().rstrip("/").lower() not in _LLAMA_SERVER_PREFERRED_MODELS:
+        return False
+    # The runtime serves the unrecorded model in effect on the hardware default; another plan would be a dead download.
+    if model == config.effective_embedding_model():
+        return False
+    # A pinned GGUF repo serves other weights; an explicit device already chose where torch runs.
+    if config.gguf_repo_is_explicit() or config.embed_device_preference() != "auto":
+        return False
+    try:
+        from utils.embedding_model_settings import get_stored_backend
+        return not get_stored_backend(model)
+    except Exception:  # noqa: BLE001 - store unavailable: keep the hardware plan
+        return False
+
+
 def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """``auto``, but honouring the backend recorded for the saved model.
 
@@ -1009,12 +1032,14 @@ def resolved_backend_for_model(model_name: str, token: str | bool | None = None)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
     # Without a llama binary ST is the only plan; its error beats a fabricated GGUF destination. Stat before Hub.
     if key in _ST_ALIASES and _llama_server_runtime_available():
-        st_unusable = not sentence_transformers_runtime_available() or (
+        use_llama = (
+            # Auto only: an explicit ST policy ignores both the preference and the stored backend.
+            (raw in _AUTO_ALIASES and _plan_prefers_llama_server(model_name))
+            or not sentence_transformers_runtime_available()
             # An ST plan for it never loads, and its pending marker blocks the llama fallback's GGUF.
-            # Auto only: an explicit ST policy ignores the stored backend.
-            raw in _AUTO_ALIASES and not sentence_transformers_can_load(model_name, token)
+            or (raw in _AUTO_ALIASES and not sentence_transformers_can_load(model_name, token))
         )
-        if st_unusable:
+        if use_llama:
             key = "llama-server"
     if key in _LLAMA_ALIASES:
         return "llama-server"

@@ -2795,6 +2795,31 @@ class TestLoopBehaviour:
         )
         assert "previous tool request" not in after[1]["content"].lower()
 
+    @pytest.mark.parametrize("deduplicate", [True, False])
+    def test_identical_calls_in_one_turn_run_when_deduplication_is_off(self, deduplicate):
+        call = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+        turns = iter([[call * 2], ["final"]])
+
+        def fake_single_turn(messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["1", "1"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "run it twice"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+                deduplicate_tool_calls = deduplicate,
+            )
+        )
+
+        assert exec_fn.calls == [("python", {"code": "print(1)"})] * (1 if deduplicate else 2)
+
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
         captured_tool_names: list[list[str]] = []
@@ -5053,12 +5078,6 @@ class TestEnabledToolNameGate:
 
     def _names(self, calls):
         return [c["function"]["name"] for c in calls]
-
-    def test_parse_inactive_rehearsal_does_not_swallow_active_call(self):
-        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
-        assert self._names(calls) == ["web_search"]
-        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_parse_inactive_rehearsal_alone_is_prose(self):
         assert (

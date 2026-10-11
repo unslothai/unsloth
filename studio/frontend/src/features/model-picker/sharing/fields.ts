@@ -50,6 +50,8 @@ export type SharedConfigKey = Exclude<
   | "engine"
   | "enginePrecision"
   | "engineParallelism"
+  // A named drafter can be a local directory.
+  | "specDraftModel"
 >;
 type Field = { label: string; valid: Validator; error?: string };
 

@@ -78,6 +78,11 @@ def video_capability() -> dict:
     return _hardware.video_capability()
 
 
+def amd_driver_warning_report() -> dict:
+    """Return the AMD driver idle-eviction notice, if the startup check flagged one."""
+    return _hardware.amd_driver_warning_report()
+
+
 def get_torch_device_str() -> str:
     """Return the torch device string ("cuda", "xpu", "cpu") for the detected hardware."""
     return _hardware.get_torch_device_str()
@@ -94,6 +99,7 @@ __all__ = [
     "get_device",
     "export_capability",
     "video_capability",
+    "amd_driver_warning_report",
     "is_apple_silicon",
     "clear_gpu_cache",
     "get_gpu_memory_info",

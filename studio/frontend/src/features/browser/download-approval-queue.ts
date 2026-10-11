@@ -47,9 +47,20 @@ export function approveDownload(url: string, name: string, site: string = url): 
   if (!dangerous && (remembered === "allow" || !useBrowserPrefsStore.getState().askBeforeDownloading)) {
     return Promise.resolve(true);
   }
+  return ask(origin, label, shown, dangerous);
+}
+
+/** Picked from the context menu: no site answer applies, and only a file that runs code asks (with nothing to remember). */
+export function approveChosenDownload(url: string, name: string): Promise<boolean> {
+  const shown = safeDownloadName(name);
+  if (!isDangerousDownload(shown)) return Promise.resolve(true);
+  return ask("", hostOf(url) || url.slice(0, 80), shown, true);
+}
+
+function ask(origin: string, label: string, name: string, dangerous: boolean): Promise<boolean> {
   return new Promise((resolve) =>
     useApprovalStore.setState((state) => ({
-      queue: [...state.queue, { origin, label, name: shown, dangerous, resolve }],
+      queue: [...state.queue, { origin, label, name, dangerous, resolve }],
     })),
   );
 }

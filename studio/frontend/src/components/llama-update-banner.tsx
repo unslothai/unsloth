@@ -9,10 +9,12 @@ import {
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
 import {
-  useShowAudioCppUpdateBanner,
-  useShowLlamaUpdateBanner,
-  useShowWhisperUpdateBanner,
-} from "@/hooks/use-llama-update-pref";
+  type NotificationChannel,
+  markNotificationShown,
+  useDocumentVisible,
+  useNotificationDue,
+  useNotificationFrequency,
+} from "@/hooks/use-notification-frequency";
 import {
   heldUpdateBannerPref,
   llamaReleaseChanged,
@@ -114,9 +116,27 @@ export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
-  const showLlamaBannerPref = useShowLlamaUpdateBanner();
-  const showWhisperBannerPref = useShowWhisperUpdateBanner();
-  const showAudioCppBannerPref = useShowAudioCppUpdateBanner();
+  // The open card stays allowed after it records itself as shown.
+  const [shownChannel, setShownChannel] = useState<NotificationChannel | null>(
+    null,
+  );
+  const allowed = (channel: NotificationChannel, due: boolean, off: boolean) =>
+    !off && (due || shownChannel === channel);
+  const showLlamaBannerPref = allowed(
+    "llama",
+    useNotificationDue("llama"),
+    useNotificationFrequency("llama") === "off",
+  );
+  const showWhisperBannerPref = allowed(
+    "whisper",
+    useNotificationDue("whisper"),
+    useNotificationFrequency("whisper") === "off",
+  );
+  const showAudioCppBannerPref = allowed(
+    "audio",
+    useNotificationDue("audio"),
+    useNotificationFrequency("audio") === "off",
+  );
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this hook instance is the app-wide listener
   // for a cross-tab reload_required resync (the settings-sheet's own instance
@@ -201,6 +221,22 @@ export function LlamaUpdateBanner({
     visible &&
     status != null &&
     (llamaUpdateOffered(status) || applying);
+  const channel: NotificationChannel =
+    component === "whisper.cpp"
+      ? "whisper"
+      : component === "audio.cpp"
+        ? "audio"
+        : "llama";
+  const tabVisible = useDocumentVisible();
+  useEffect(() => {
+    // livePref: a chained apply can rename the held card to a muted component.
+    if (show && tabVisible && livePref && shownChannel !== channel) {
+      markNotificationShown(channel);
+      setShownChannel(channel);
+    } else if (!show && shownChannel !== null) {
+      setShownChannel(null);
+    }
+  }, [show, tabVisible, livePref, channel, shownChannel]);
   // A migration re-applies the install's own automatic choice, so it can be offered at a
   // release the machine already has, where the backend pair replaces the version line.
   const backendChange =

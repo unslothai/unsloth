@@ -47,6 +47,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import { ProgressiveRows } from "@/components/progressive-rows";
 import {
   HELP_GROUPS,
   HELP_ITEMS,
@@ -106,6 +107,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  Refresh01Icon,
   FolderExportIcon,
   Folder01Icon,
   Folder02Icon,
@@ -149,7 +151,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Copy, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -165,6 +167,7 @@ import {
   canForkChatRow,
   EditProjectDialog,
   forkChatRow,
+  regenerateChatTitle,
   showForkCreatedToast,
   getSidebarItemThreadIds,
   useForkInFlight,
@@ -260,6 +263,7 @@ import {
   isTrainingStartPending,
   removeTrainingUnloadGuard,
   renameTrainingRun,
+  useDuplicateTrainingRun,
   useTrainingCompletionWatch,
   useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
@@ -353,30 +357,26 @@ type NavRowDef = {
   children?: ReactNode;
 };
 
-// An expanded project shows this many recent chats before "Show more".
-// Row kebab with centred dots: Hugeicons draws them half a unit low.
+// row kebab with centred dots: Hugeicons draws them half a unit low.
 const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
   tag,
   { ...attrs, transform: "translate(0 -0.5)" },
 ]) as unknown as IconSvgElement;
 
 const PROJECT_CHAT_LIMIT = 4;
-// And the Projects section shows this many folders before its own "Show more".
 const SIDEBAR_PROJECT_LIMIT = 5;
+const RECENTS_PAGE_SIZE = 50;
 
-// The shared radio item ticks on the right; these read as settings, so tick first.
-// A sidebar or account menu's side and top padding (.sidebar-row-menu in index.css, before the
-// UI scale), the 2px margin every menu row keeps, and the gap a submenu keeps from its menu.
+// shared radio items tick on the right; these read as settings, so tick first.
+// sidebar and account menu padding precedes UI scaling; rows keep 2px margins and submenu gaps.
 const SIDEBAR_MENU_PAD_X = 8;
 const SIDEBAR_MENU_PAD_Y = 6;
 const MENU_ROW_MARGIN_PX = 2;
-// px-2.5 and the 1px transparent border the account menu draws its edge with.
+// account padding combines px-2.5 with its 1px transparent border.
 const ACCOUNT_MENU_PAD_X = 11;
 const SUBMENU_GAP_PX = 6;
 
-// Whether cmd or ctrl adds a row to the selection. This is the user's own keyboard, not the host
-// Unsloth runs on, so it reads the browser rather than the platform store: a Mac browser on a Linux
-// host still uses cmd. Ctrl is left alone on macOS, where ctrl click is the right click chord.
+// read the browser platform, not the host; macOS uses cmd because ctrl-click opens a context menu.
 const SELECT_WITH_META =
   typeof navigator !== "undefined" &&
   /mac/i.test(navigator.platform || navigator.userAgent);
@@ -938,7 +938,21 @@ function MoreMenuItem({
   );
 }
 
-function AudioMoreSubmenu({
+type MediaMoreSubmenuProps<Id extends string> = {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  badge?: string;
+  spinner?: boolean;
+  onIntent?: () => void;
+  onOpen: () => void;
+  onPick: (id: Id) => void;
+  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+};
+
+function MediaMoreSubmenu<Id extends string>({
   icon,
   label,
   active,
@@ -950,22 +964,14 @@ function AudioMoreSubmenu({
   onOpen,
   onPick,
   contentProps,
-}: {
-  icon: typeof ZapIcon;
-  label: string;
-  active: boolean;
-  disabled?: boolean;
-  tooltip?: string;
-  badge?: string;
-  spinner?: boolean;
-  onIntent?: () => void;
-  onOpen: () => void;
-  onPick: (id: AudioWorkflowId) => void;
-  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+  tabs,
+  current,
+  enabled,
+}: MediaMoreSubmenuProps<Id> & {
+  tabs: ReadonlyArray<{ id: Id; icon: IconSvgElement; label: string }>;
+  current: Id | null;
+  enabled: (id: Id) => boolean;
 }) {
-  const workflow = useAudioWorkspaceStore((s) => s.workflow);
-  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
-  const current = active ? (requested ?? workflow) : null;
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger
@@ -973,7 +979,7 @@ function AudioMoreSubmenu({
         title={tooltip}
         onPointerEnter={disabled ? undefined : onIntent}
         onFocus={disabled ? undefined : onIntent}
-        // click opens Audio; hover and keyboard still open the workflows.
+        // click opens the page; hover or keyboard opens its workflows.
         onClick={(event) => {
           if (disabled) return;
           event.preventDefault();
@@ -989,9 +995,11 @@ function AudioMoreSubmenu({
         )}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent {...contentProps} className="sidebar-more-menu w-44 p-1">
-        {AUDIO_WORKFLOWS.map((tab) => (
+        {tabs.map((tab) => (
           <DropdownMenuItem
             key={tab.id}
+            disabled={!enabled(tab.id)}
+            title={enabled(tab.id) ? undefined : WORKFLOW_UNAVAILABLE}
             onSelect={() => onPick(tab.id)}
             className={cn(current === tab.id && "bg-accent/60")}
           >
@@ -1001,6 +1009,35 @@ function AudioMoreSubmenu({
         ))}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
+  );
+}
+
+function ImagesMoreSubmenu(props: MediaMoreSubmenuProps<WorkflowId>) {
+  const workflow = useImageWorkflowStore((s) => s.workflow);
+  const supported = useImageWorkflowStore((s) => s.supported);
+  const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  const current = props.active && pageMode === "create" ? workflow : null;
+  return (
+    <MediaMoreSubmenu
+      {...props}
+      tabs={WORKFLOW_TABS}
+      current={current}
+      enabled={(id) => isWorkflowEnabled(id, supported)}
+    />
+  );
+}
+
+function AudioMoreSubmenu(props: MediaMoreSubmenuProps<AudioWorkflowId>) {
+  const workflow = useAudioWorkspaceStore((s) => s.workflow);
+  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
+  const current = props.active ? (requested ?? workflow) : null;
+  return (
+    <MediaMoreSubmenu
+      {...props}
+      tabs={AUDIO_WORKFLOWS}
+      current={current}
+      enabled={audioWorkflowAlwaysEnabled}
+    />
   );
 }
 
@@ -2684,6 +2721,10 @@ export function AppSidebar() {
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
+  const {
+    duplicate: duplicateTrainingRun,
+    disabled: duplicateTrainingRunDisabled,
+  } = useDuplicateTrainingRun();
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
   // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
   const trainingInProgress = useTrainingRuntimeStore(isTrainingStartPending);
@@ -2891,10 +2932,10 @@ export function AppSidebar() {
   // The Projects row repeats the section, so it only earns its place while the section is absent.
   const navRowPinned = (item: SidebarNavItemPref) =>
     sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing });
-  // Audio steps out of More while its page is open: a pin for the visit, never saved.
+  // audio and images are temporarily pinned while active without saving the preference.
   const { inline: inlineNavIds, overflow: overflowNavIds } = placeNavRows(
     sidebarNav.map((item) => ({ id: item.id, pinned: navRowPinned(item) })),
-    navRows.audio.active ? "audio" : null,
+    navRows.audio.active ? "audio" : navRows.images.active ? "images" : null,
   );
   // The mobile sheet shows labels regardless of the desktop pin state.
   const sidebarRowsLabelled = isMobile || sidebarState !== "collapsed";
@@ -2903,6 +2944,11 @@ export function AppSidebar() {
     sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
   const audioWorkflowsListed = sidebarRowsLabelled;
+  const pickImagesWorkflow = (workflowId: WorkflowId) => {
+    useImageWorkflowStore.getState().setWorkflow(workflowId);
+    navigate({ to: "/images" });
+    closeMobileIfOpen();
+  };
   // Sidebar and More-flyout picks only ask; the Audio page switches once it is free to.
   const pickAudioWorkflow = (workflowId: AudioWorkflowId) => {
     useAudioWorkspaceStore.getState().requestWorkflow(workflowId);
@@ -3044,6 +3090,21 @@ export function AppSidebar() {
       }
     } finally {
       inFlight.setForking(false);
+    }
+  }
+
+  async function regenerateChatTitleFromMenu(item: SidebarItem) {
+    // A fast refresh would only flash the toast.
+    const toastId = `regenerate-title-${item.id}`;
+    const slow = setTimeout(() => toast.loading("Regenerating title...", { id: toastId }), 400);
+    const outcome = await regenerateChatTitle(item);
+    clearTimeout(slow);
+    if (outcome === "empty") {
+      toast.error("This chat has no messages to title yet.", { id: toastId });
+    } else if (outcome === "failed") {
+      toast.error("Could not regenerate the title.", { id: toastId });
+    } else {
+      toast.dismiss(toastId);
     }
   }
 
@@ -3644,6 +3705,8 @@ export function AppSidebar() {
           : null,
         section: section ? { id: section.id, name: section.name } : null,
         rename: () => openRenameChat(item, false),
+        canRegenerateTitle: !generating,
+        regenerateTitle: () => void regenerateChatTitleFromMenu(item),
         togglePin: () => togglePinnedChat(item.id),
         toggleUnread: () =>
           unread
@@ -4602,6 +4665,13 @@ export function AppSidebar() {
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Rename</span>
             </P.Item>
+            <P.Item
+              disabled={isGenerating}
+              onSelect={() => void regenerateChatTitleFromMenu(item)}
+            >
+              <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-icon" />
+              <span>{t("library.menu.regenerateTitle")}</span>
+            </P.Item>
             <P.Item onSelect={() => togglePinnedChat(item.id)}>
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
               <span>{isPinned ? "Unpin" : "Pin"}</span>
@@ -5555,13 +5625,7 @@ export function AppSidebar() {
                       <ImagesWorkflowList
                         active={row.active}
                         collapsed={!sidebarRowsLabelled}
-                        onPick={(workflowId) => {
-                          useImageWorkflowStore
-                            .getState()
-                            .setWorkflow(workflowId);
-                          navigate({ to: "/images" });
-                          closeMobileIfOpen();
-                        }}
+                        onPick={pickImagesWorkflow}
                       />
                     ) : id === "audio" ? (
                       <AudioWorkflowList
@@ -5659,28 +5723,37 @@ export function AppSidebar() {
                         const row = navRows[id];
                         // Same pending handling as the inline rows above.
                         const rowState = resolveNavRowState(row);
-                        if (id === "audio") {
-                          return (
+                        if (id === "images" || id === "audio") {
+                          const submenu = {
+                            icon: row.icon,
+                            label: row.label,
+                            badge: row.badge,
+                            active: row.active,
+                            disabled: rowState.disabled,
+                            tooltip: rowState.tooltip,
+                            spinner: rowState.spinner,
+                            onIntent: row.onIntent,
+                            onOpen: () => {
+                              setMoreOpen(false);
+                              row.onClick();
+                            },
+                            contentProps: {
+                              ...sidebarSubmenuOffsets,
+                              // portaled outside the flyout, so its hover grace must include the submenu.
+                              ...moreHover.content,
+                            },
+                          };
+                          return id === "images" ? (
+                            <ImagesMoreSubmenu
+                              key={id}
+                              {...submenu}
+                              onPick={pickImagesWorkflow}
+                            />
+                          ) : (
                             <AudioMoreSubmenu
                               key={id}
-                              icon={row.icon}
-                              label={row.label}
-                              badge={row.badge}
-                              active={row.active}
-                              disabled={rowState.disabled}
-                              tooltip={rowState.tooltip}
-                              spinner={rowState.spinner}
-                              onIntent={row.onIntent}
-                              onOpen={() => {
-                                setMoreOpen(false);
-                                row.onClick();
-                              }}
+                              {...submenu}
                               onPick={pickAudioWorkflow}
-                              contentProps={{
-                                ...sidebarSubmenuOffsets,
-                                // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
-                                ...moreHover.content,
-                              }}
                             />
                           );
                         }
@@ -5778,8 +5851,7 @@ export function AppSidebar() {
                 })}
               </SidebarGroupLabel>
               <CollapsibleContent>
-                {/* The section as a whole takes the drop, so a chat dragged out of a folder has
-                    somewhere to land even when Recents is empty. */}
+                {/* Recents accepts drops so chats can leave folders when empty. */}
                 <SidebarGroupContent
                   className={cn(
                     unrailedRowPadding,
@@ -5789,33 +5861,37 @@ export function AppSidebar() {
                   {...dnd.dropZoneProps({ section: "recents" })}
                 >
                   <SidebarMenu>
-                    {sortedRecentChatItems.map((item) =>
-                      renderChatSidebarItem(item, "recent", {
-                        scope: RECENTS_ORDER_SCOPE,
-                        ids: recentRowIds,
-                        section: "recents",
-                        sort: { value: chatSort, set: setChatSort },
-                      }),
-                    )}
-                    {sortedRecentChatItems.length > 0 && (
-                      // The end of the list, as somewhere to aim; see Pinned's. The empty sidebar
-                      // below it aims here too (use-sidebar-drag.ts).
-                      <SidebarMenuItem
-                        aria-hidden
-                        className={cn(
-                          "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
-                          dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
-                        )}
-                        {...dnd.dropZoneProps({
+                    {/* only Recents pages unfiled chats; mount its end drop after the last row. */}
+                    <ProgressiveRows
+                      items={sortedRecentChatItems}
+                      pageSize={RECENTS_PAGE_SIZE}
+                      renderItem={(item) =>
+                        renderChatSidebarItem(item, "recent", {
+                          scope: RECENTS_ORDER_SCOPE,
+                          ids: recentRowIds,
                           section: "recents",
-                          blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
-                        })}
-                      />
-                    )}
+                          sort: { value: chatSort, set: setChatSort },
+                        })
+                      }
+                      end={
+                        sortedRecentChatItems.length > 0 && (
+                          // the end drop matches Pinned and receives empty-sidebar drops.
+                          <SidebarMenuItem
+                            aria-hidden
+                            className={cn(
+                              "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
+                              dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
+                            )}
+                            {...dnd.dropZoneProps({
+                              section: "recents",
+                              blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
+                            })}
+                          />
+                        )
+                      }
+                    />
                   </SidebarMenu>
-                  {/* "No chats yet" only when there is truly no history:
-                      project-scoped and archived threads leave Recents empty
-                      but still count as existing chats. */}
+                  {/* existing project or archived threads can leave Recents empty. */}
                   {chatItemsLoaded &&
                     allChatItems.length === 0 &&
                     archivedChatItems.length === 0 && (
@@ -5901,6 +5977,16 @@ export function AppSidebar() {
                             </button>
                           )}
                         >
+                          <DropdownMenuItem
+                            disabled={duplicateTrainingRunDisabled}
+                            onSelect={() => {
+                              void duplicateTrainingRun(run.id);
+                              closeMobileIfOpen();
+                            }}
+                          >
+                            <Copy className="size-icon" />
+                            <span>{t("common.duplicate")}</span>
+                          </DropdownMenuItem>
                           <DropdownMenuItem onSelect={() => openRenameRun(run)}>
                             <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                             <span>{t("common.rename")}</span>
