@@ -351,14 +351,23 @@ def test_load_uses_fastmodel_and_refuses_a_silent_autoregressive_load():
         assert f"{kwarg} = " in branch, kwarg
 
 
-def test_loaded_profile_reads_through_peft_wrappers():
+def test_loaded_profile_comes_from_the_config_not_a_stamp():
     from utils.models.diffusion_lm import loaded_diffusion_profile
 
-    base = SimpleNamespace(_unsloth_diffusion_profile = "dream")
-    assert loaded_diffusion_profile(base) == "dream"
-    wrapped = SimpleNamespace(base_model = SimpleNamespace(model = base))
-    assert loaded_diffusion_profile(wrapped) == "dream"
-    assert loaded_diffusion_profile(SimpleNamespace()) is None
+    # The diffusion loader marks _unsloth_slow_diffusion; it does not stamp a profile name.
+    cfg = SimpleNamespace(**DIFFUSION_CONFIGS["dream"])
+    assert (
+        loaded_diffusion_profile(SimpleNamespace(_unsloth_slow_diffusion = True, config = cfg))
+        == "dream"
+    )
+    llada_moe = SimpleNamespace(**DIFFUSION_CONFIGS["llada_moe"])
+    assert (
+        loaded_diffusion_profile(SimpleNamespace(_unsloth_slow_diffusion = True, config = llada_moe))
+        == "llada_moe"
+    )
+    # An autoregressive load is never reported as diffusion, whatever its config says.
+    assert loaded_diffusion_profile(SimpleNamespace(config = cfg)) is None
+    assert loaded_diffusion_profile(None) is None
 
 
 def test_missing_core_api_names_the_update(monkeypatch):

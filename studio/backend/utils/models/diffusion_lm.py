@@ -100,17 +100,20 @@ def diffusion_lm_profile_for_model(
 
 
 def loaded_diffusion_profile(model) -> Optional[str]:
-    """Profile name stamped on a model loaded through Unsloth's diffusion loader, unwrapping PEFT."""
-    seen = 0
-    while model is not None and seen < 4:
-        profile = getattr(model, "_unsloth_diffusion_profile", None)
+    """Profile name of a model loaded through Unsloth's diffusion loader (``_unsloth_slow_diffusion``), else
+    None. Resolved from the model's config with the core registry, then this mirror; PEFT wrappers forward
+    both attributes."""
+    if model is None or not getattr(model, "_unsloth_slow_diffusion", False):
+        return None
+    config = getattr(model, "config", None)
+    try:
+        from unsloth.models.diffusion_profiles import resolve_diffusion_profile
+        profile = resolve_diffusion_profile(config)
         if profile is not None:
-            return getattr(profile, "name", None) or str(profile)
-        if getattr(model, "_unsloth_slow_diffusion", False):
-            return diffusion_lm_profile(_config_dict(getattr(model, "config", None))) or "unknown"
-        model = getattr(model, "base_model", None) or getattr(model, "model", None)
-        seen += 1
-    return None
+            return profile.name
+    except Exception as exc:
+        logger.debug("Core diffusion profile lookup failed: %s", exc)
+    return diffusion_lm_profile(_config_dict(config)) or "unknown"
 
 
 def _config_dict(config) -> Optional[dict]:
