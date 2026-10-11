@@ -40878,7 +40878,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             detail = "Cannot count tokens while a generation is in progress.",
         )
     try:
-        count, model = await asyncio.to_thread(
+        count, _counted = await asyncio.to_thread(
             backend.count_chat_tokens,
             messages,
             system_prompt or "",
@@ -40901,15 +40901,9 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    # The advertised id, not the resident path: an auto-switch loads from a resolved
-    # snapshot while publishing the repo id, and the caller drops a count whose model
-    # does not match the checkpoint it captured.
-    return JSONResponse(
-        content = {
-            "input_tokens": int(count),
-            "model": _orchestrator_public_model_id(backend) or model or active,
-        }
-    )
+    # The id /status publishes as model_identifier (the raw active name, a local folder or
+    # snapshot path included): the caller drops a count naming any other checkpoint.
+    return JSONResponse(content = {"input_tokens": int(count), "model": active})
 
 
 @router.post("/chat/count_tokens")

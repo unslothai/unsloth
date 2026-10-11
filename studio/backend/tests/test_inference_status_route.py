@@ -235,6 +235,20 @@ def test_status_reports_the_mlx_video_capability(monkeypatch):
     assert response.has_video_input is True
 
 
+def test_status_publishes_an_mlx_local_folder_as_its_raw_active_name(monkeypatch):
+    """/chat/count_tokens answers with this same id; the client drops a count naming another."""
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = "/Users/alice/outputs/my-finetune-mlx"
+    backend.models = {backend.active_model_name: {"is_mlx": True}}
+    backend.loading_models = set()
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.model_identifier == "/Users/alice/outputs/my-finetune-mlx"
+
+
 def test_status_reports_no_video_capability_for_a_model_without_one(monkeypatch):
     backend = _FakeInferenceBackend()
     backend.active_model_name = "org/plain-vision-model"
