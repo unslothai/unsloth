@@ -6762,13 +6762,34 @@ CONVERT_ON_SAVE_LORA_WEIGHTS = ("lora_ga",)
 
 
 def _residual_lora_rows(model, adapters):
+    from transformers.pytorch_utils import Conv1D
     for name, module in model.named_modules():
         initial = getattr(module, "_unsloth_initial_lora", None)
         if not initial or not isinstance(getattr(module, "lora_A", None), torch.nn.ModuleDict):
             continue
+        # LoRA-GA only rewrites Linear / Conv1D bases; embeddings and convolutions keep PEFT's default init.
+        if not isinstance(module.get_base_layer(), (torch.nn.Linear, Conv1D)):
+            continue
         for k in initial:
             if k in adapters and k in module.lora_A:
                 yield module, k, name
+
+
+def _unconverted_patterns(model, converted, adapter):
+    """rank_pattern / alpha_pattern entries keeping `adapter`'s other LoRA layers at their own rank."""
+    import re
+    from peft.tuners.lora import LoraLayer
+
+    ranks, alphas = {}, {}
+    for name, module in model.named_modules():
+        if id(module) in converted or not isinstance(module, LoraLayer):
+            continue
+        if adapter not in getattr(module, "r", {}):
+            continue
+        key = re.escape(name.removeprefix("base_model.model."))
+        ranks[key] = module.r[adapter]
+        alphas[key] = module.lora_alpha[adapter]
+    return ranks, alphas
 
 
 def _convertible_adapters(model, selected):
@@ -6816,8 +6837,9 @@ def save_lora_relative_to_original_base(model):
         if bound.get("path_initial_model_for_weight_conversion") is not None:
             return original_save(save_directory, *args, **kwargs)
         extra = bound.get("kwargs", {})
+        selected = bound.get("selected_adapters")
         adapters = _convertible_adapters(
-            model, bound.get("selected_adapters") or list(model.peft_config)
+            model, list(model.peft_config) if selected is None else selected
         )
         rows = list(_residual_lora_rows(model, adapters))
         state_dict = _converted_state_dict(rows, extra.get("state_dict")) if rows else None
@@ -6834,9 +6856,12 @@ def save_lora_relative_to_original_base(model):
                 config["init_lora_weights"] = True
                 config["r"] *= 2
                 config["lora_alpha"] *= 2**0.5 if config.get("use_rslora") else 2
-                for pattern in ("rank_pattern", "alpha_pattern"):
-                    if config.get(pattern):
-                        config[pattern] = {key: 2 * v for key, v in config[pattern].items()}
+                kept = _unconverted_patterns(model, {id(m) for m, j, _ in rows if j == k}, k)
+                for pattern, pinned in zip(("rank_pattern", "alpha_pattern"), kept):
+                    doubled = {key: 2 * v for key, v in (config.get(pattern) or {}).items()}
+                    if pinned or doubled:
+                        # PEFT takes the first matching pattern, so the exact pins go first.
+                        config[pattern] = {**pinned, **doubled}
                 config.pop("lora_ga_config", None)
                 with open(path, "w", encoding = "utf-8") as f:
                     json.dump(config, f, indent = 2, sort_keys = True)

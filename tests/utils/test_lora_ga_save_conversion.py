@@ -25,14 +25,14 @@ def _base():
     return AutoModelForCausalLM.from_pretrained(MODEL, dtype = torch.float32)
 
 
-def _lora_ga_model(seed):
+def _lora_ga_model(seed, extra_targets = ()):
     torch.manual_seed(seed)
     model = _base()
     config = LoraConfig(
         r = R,
         lora_alpha = 8,
         lora_dropout = 0.0,
-        target_modules = ["q_proj", "v_proj", "down_proj"],
+        target_modules = ["q_proj", "v_proj", "down_proj", *extra_targets],
         init_lora_weights = "lora_ga",
         lora_ga_config = LoraGAConfig(),
     )
@@ -84,6 +84,24 @@ def test_saved_adapter_reloads_on_original_base(trained, tmp_path):
     )
     reloaded = PeftModel.from_pretrained(_base(), tmp_path)
     torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
+
+
+def test_embedding_targets_keep_their_rank(tmp_path):
+    # PEFT gives the embedding a default init; doubling only the global r would break its reload.
+    model = _lora_ga_model(seed = 3407, extra_targets = ["embed_tokens"])
+    _train(model)
+    reference = _logits(model)
+    model.save_pretrained(tmp_path)
+    config = json.load(open(tmp_path / "adapter_config.json"))
+    assert config["rank_pattern"] == {r"model\.embed_tokens": R}
+    reloaded = PeftModel.from_pretrained(_base(), tmp_path)
+    torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
+
+
+def test_empty_adapter_selection_saves_nothing(trained, tmp_path):
+    model, _ = trained
+    model.save_pretrained(tmp_path, selected_adapters = [])
+    assert not (tmp_path / "adapter_config.json").exists()
 
 
 def test_native_save_is_the_bug(trained, tmp_path):

@@ -236,13 +236,14 @@ def test_calibration_patch_does_not_trigger_lazy_module_getattr(monkeypatch):
     assert names and not set(asked) & set(names)
 
 
-def test_loraga_calibration_keeps_the_padding_mask(monkeypatch):
+@pytest.mark.parametrize("has_set_stance", [True, False])
+def test_loraga_calibration_keeps_the_padding_mask(monkeypatch, has_set_stance):
     loraga = pytest.importorskip("peft.tuners.lora.loraga")
     fn = loraga.preprocess_loraga
     monkeypatch.setattr(loraga, "preprocess_loraga", getattr(fn, "__wrapped__", fn))
+    if not has_set_stance:
+        monkeypatch.delattr(torch.compiler, "set_stance", raising = False)
     lora_init.patch_peft_calibration_eager()
-    if not getattr(loraga.preprocess_loraga, "_unsloth_eager", False):
-        pytest.skip("torch without torch.compiler.set_stance")
 
     model = torch.nn.Sequential(torch.nn.Linear(8, 8))
     model[0]._unsloth_keep_padding_mask = False

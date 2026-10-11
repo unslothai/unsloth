@@ -427,9 +427,6 @@ def _calibration_functions():
 def patch_peft_calibration_eager():
     import functools
     import sys
-
-    if not hasattr(torch.compiler, "set_stance"):
-        return
     for module, name in _calibration_functions():
         original = getattr(module, name, None)
         if original is None or getattr(original, "_unsloth_eager", False):
@@ -453,7 +450,12 @@ def patch_peft_calibration_eager():
             for m in masked:
                 m._unsloth_keep_padding_mask = True
             try:
-                with torch.compiler.set_stance("force_eager"):
+                # torch < 2.6 has no set_stance; the padding mask still matters there.
+                with (
+                    torch.compiler.set_stance("force_eager")
+                    if hasattr(torch.compiler, "set_stance")
+                    else contextlib.nullcontext()
+                ):
                     return __original(*args, **kwargs)
             finally:
                 for m in masked:
