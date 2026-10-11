@@ -4708,6 +4708,19 @@ def _openclaw_provider(
     }
 
 
+def _openclaw_doctor_command(path: Path, *, windows: bool) -> str:
+    """`openclaw doctor --fix` against Unsloth's managed config, in the user's shell syntax."""
+    env = {"OPENCLAW_CONFIG_PATH": str(path), "OPENCLAW_STATE_DIR": str(path.parent)}
+    if windows:
+        sets = "; ".join(
+            f'$env:{name} = "{value.replace("`", "``").replace(chr(34), "`" + chr(34)).replace("$", "`$")}"'
+            for name, value in env.items()
+        )
+        return f"{sets}; openclaw doctor --fix"
+    inline = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
+    return f"{inline} openclaw doctor --fix"
+
+
 def write_openclaw_config(
     base: str,
     key: str,
@@ -4768,12 +4781,24 @@ def write_openclaw_config(
         workspace_path = str(workspace)
     defaults["workspace"] = workspace_path
     # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This config is itself an isolated Unsloth copy, so remove stale explicit paths and let OpenClaw resolve every listed agent beneath the managed defaults/state directory.
+    # OpenClaw 2026.10.1 keys agents by id under agents.entries; older configs carry an agents.list array.
     agent_list = agents.get("list")
+    agent_entries = agents.get("entries")
+    listed = list(agent_list) if isinstance(agent_list, list) else []
+    if isinstance(agent_entries, dict):
+        listed += list(agent_entries.values())
+    for agent_config in listed:
+        if isinstance(agent_config, dict):
+            agent_config.pop("workspace", None)
+            agent_config.pop("agentDir", None)
     if isinstance(agent_list, list):
-        for agent_config in agent_list:
-            if isinstance(agent_config, dict):
-                agent_config.pop("workspace", None)
-                agent_config.pop("agentDir", None)
+        # 2026.10.1 rejects agents.list. Converting it (id normalization, ownership, channel bindings,
+        # workspace pins) is OpenClaw's own migration, so point at it rather than half-reimplement it.
+        typer.echo(
+            f"Note: {path} still has the legacy agents.list, which OpenClaw 2026.10.1+ rejects. "
+            f"Migrate it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
+            err = True,
+        )
     # Unauthenticated loopback gateway: without auth.mode=none the client will not open the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")
     gateway.setdefault("mode", "local")
