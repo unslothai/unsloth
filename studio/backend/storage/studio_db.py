@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 from core import chat_originals
+from storage import sqlite_gate
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -133,31 +134,8 @@ def contains_sensitive_path_component(path: str) -> bool:
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 
-# SQLite 3.51.0-3.51.1 deadlocks when a WAL close races an open/close of the same file
-# (fixed 3.51.2, #10022), so opens share the gate too. Reentrant for GC finalizers.
-_CONNECTION_GATE = threading.RLock()
-
-
-def _reset_connection_gate_after_fork() -> None:
-    global _CONNECTION_GATE
-    _CONNECTION_GATE = threading.RLock()
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child = _reset_connection_gate_after_fork)
-
-
-class _StudioDbConnection(sqlite3.Connection):
-    # A connection dropped without close() is finalized natively and bypasses this gate.
-    def close(self) -> None:
-        with _CONNECTION_GATE:
-            super().close()
-
-
-def connect_studio_db(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
-    """sqlite3.connect for studio.db, with opens and closes serialized process-wide."""
-    with _CONNECTION_GATE:
-        return sqlite3.connect(str(database), factory = _StudioDbConnection, **kwargs)
+# Opens and closes serialized process-wide against the SQLite 3.51.0-3.51.1 deadlock (#10022).
+connect_studio_db = sqlite_gate.connect
 
 
 _SQLITE_IN_CHUNK_SIZE = 900

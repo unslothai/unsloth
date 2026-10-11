@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+from storage import sqlite_gate
 from utils.paths import rag_db_path, ensure_dir
 
 # Optional dep: this module is imported unconditionally, so the import must never crash it.
@@ -296,7 +297,7 @@ def get_connection() -> sqlite3.Connection:
 
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite_gate.connect(db_path)
     conn.row_factory = sqlite3.Row
     # Wait for a lock instead of erroring: figure-heavy ingests hold connections across many seconds.
     conn.execute("PRAGMA busy_timeout = 5000")
@@ -330,7 +331,7 @@ def get_metadata_connection() -> sqlite3.Connection:
     is temporarily unavailable. Callers must not query or mutate the vec0 virtual table."""
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite_gate.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn

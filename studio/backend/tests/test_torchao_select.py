@@ -62,15 +62,20 @@ def _load_module(monkeypatch):
         ("2.9.0+cu128", "torchao==0.15.0"),
         ("2.9.1", "torchao==0.15.0"),
         ("2.9.1+rocm6.4", "torchao==0.15.0"),
-        # torch <= 2.8 retains the 0.14.0 pin.
-        ("2.8.0", "torchao==0.14.0"),
+        # torch <= 2.8 gets 0.15.0 too: transformers 5 and diffusers 0.41 refuse TorchAoConfig on 0.14.
+        ("2.8.0", "torchao==0.15.0"),
+        ("2.8.0+cu128", "torchao==0.15.0"),
+        ("2.7.1+cu126", "torchao==0.15.0"),
+        ("2.6.0+cu124", "torchao==0.15.0"),
+        # torchao 0.15 dropped torch <= 2.5, so those keep 0.14.0.
+        ("2.5.1+cu124", "torchao==0.14.0"),
         ("2.4.0", "torchao==0.14.0"),
         # malformed, missing, and non-2.x versions use the conservative default.
-        (None, "torchao==0.14.0"),
-        ("", "torchao==0.14.0"),
-        ("garbage", "torchao==0.14.0"),
-        ("2", "torchao==0.14.0"),
-        ("3.0.0", "torchao==0.14.0"),
+        (None, "torchao==0.15.0"),
+        ("", "torchao==0.15.0"),
+        ("garbage", "torchao==0.15.0"),
+        ("2", "torchao==0.15.0"),
+        ("3.0.0", "torchao==0.15.0"),
     ],
 )
 def test_select_torchao_spec(monkeypatch, torch_version, expected):
@@ -79,10 +84,30 @@ def test_select_torchao_spec(monkeypatch, torch_version, expected):
 
 
 def test_default_spec_matches_table(monkeypatch):
-    """the historical default keeps older torch versions unchanged."""
+    """torch 2.6-2.8 shares torch 2.9's torchao: below 0.15 transformers and diffusers refuse TorchAoConfig."""
     mod = _load_module(monkeypatch)
-    assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.14.0"
+    assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.15.0"
     assert mod._select_torchao_spec("2.8.0") == mod._TORCHAO_DEFAULT_SPEC
+    assert mod._TORCHAO_DEFAULT_SPEC == mod._TORCHAO_TORCH_29_SPEC
+
+
+@pytest.mark.parametrize("installed", ["0.14.0", "0.14.0+cu128", "0.14.1+cu128", "0.13.0"])
+def test_an_old_torch_install_on_torchao_014_is_repinned(monkeypatch, installed):
+    """An existing torch <= 2.8 install keeps torchao 0.14 until its next dependency pass, which
+    must force 0.15.0 over it even when the pass has evidence to skip satisfied steps."""
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: installed)
+    monkeypatch.setattr(mod, "_may_skip_on_evidence", lambda: True)
+    calls = []
+    monkeypatch.setattr(mod, "pip_install_try", lambda *a, **k: calls.append(a) or True)
+    monkeypatch.setattr(mod, "pip_install", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(mod, "_record_step", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "_note", lambda *a, **k: None)
+    mod._install_torchao_for_torch("2.8.0+cu128")
+    assert len(calls) == 1, calls
+    args = calls[0]
+    assert "torchao==0.15.0" in args and "--force-reinstall" in args
+    assert "https://download.pytorch.org/whl/cu128" in args
 
 
 def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
@@ -127,6 +152,9 @@ _TORCHAO_INDEX_GAPS = {
         range(8, 14),
     ),
     "rocm7.0": ({16: "0.16.0"}, range(9, 11)),
+    # Legacy leaves frozen before torchao 0.10 / 0.11: neither 0.14.0 nor 0.15.0 was ever there.
+    "cu124": ({m: f"0.{m}.0" for m in range(3, 10)}, range(4, 7)),
+    "rocm6.1": ({m: f"0.{m}.0" for m in range(7, 10)}, range(4, 7)),
 }
 
 
@@ -144,10 +172,15 @@ def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
     assert starved == {
         # cu118 lacks every selected torchao release for torch 2.5 through 2.7.
         ("cu118", 5, "0.14.0"),
-        ("cu118", 6, "0.14.0"),
-        ("cu118", 7, "0.14.0"),
-        # cu129 lacks torchao 0.14.0 and releases after 0.17.0.
-        ("cu129", 8, "0.14.0"),
+        ("cu118", 6, "0.15.0"),
+        ("cu118", 7, "0.15.0"),
+        ("cu124", 4, "0.14.0"),
+        ("cu124", 5, "0.14.0"),
+        ("cu124", 6, "0.15.0"),
+        ("rocm6.1", 4, "0.14.0"),
+        ("rocm6.1", 5, "0.14.0"),
+        ("rocm6.1", 6, "0.15.0"),
+        # cu129 lacks releases after 0.17.0 (it does carry 0.15.0, which torch 2.8 now selects).
         ("cu129", 12, "0.18.0"),
         ("cu129", 13, "0.18.0"),
         # rocm7.0 provides only torchao 0.16.0.
@@ -517,8 +550,12 @@ def test_torchao_export_not_rejected_with_real_torchao_on_windows_rocm(monkeypat
     [
         ("win32", True, False, False),
         ("win32", True, True, True),
-        ("win32", False, False, True),
-        ("linux", True, False, True),
+        # torchao_export_loadable is asked everywhere now: it also says no to torchao < 0.15.
+        ("win32", False, False, False),
+        ("win32", False, True, True),
+        ("linux", True, False, False),
+        ("linux", False, False, False),
+        ("linux", False, True, True),
     ],
 )
 def test_export_capability_torchao_flag(monkeypatch, platform, is_rocm, loadable, expected):
@@ -529,6 +566,119 @@ def test_export_capability_torchao_flag(monkeypatch, platform, is_rocm, loadable
     monkeypatch.setattr(hw, "IS_ROCM", is_rocm)
     monkeypatch.setattr(_stub, "torchao_export_loadable", lambda: loadable)
     assert hw.export_capability()["torchao_export_supported"] is expected
+
+
+@pytest.mark.parametrize(
+    ("platform", "is_rocm", "expected"),
+    [("win32", True, False), ("win32", False, True), ("linux", False, True), ("linux", True, True)],
+)
+def test_export_capability_fails_open_off_windows_rocm(monkeypatch, platform, is_rocm, expected):
+    import utils.hardware.hardware as hw
+
+    def broken():
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(hw, "IS_ROCM", is_rocm)
+    monkeypatch.setattr(_stub, "torchao_export_loadable", broken)
+    assert hw.export_capability()["torchao_export_supported"] is expected
+
+
+@pytest.mark.parametrize(
+    ("installed", "too_old"),
+    [
+        ("0.14.0", "0.14.0"),
+        ("0.14.1+cu128", "0.14.1+cu128"),
+        ("0.13.0", "0.13.0"),
+        # PEP 440, as transformers compares: prereleases of 0.15.0 are still below it.
+        ("0.15.0rc1", "0.15.0rc1"),
+        ("0.15.0.dev20250901", "0.15.0.dev20250901"),
+        ("0.15.0", None),
+        ("0.15.0+cu126", None),
+        ("0.17.0", None),
+        ("0.18.0+rocm7.2", None),
+        ("1.0.0", None),
+        (None, None),
+    ],
+)
+def test_torchao_export_loadable_needs_015_on_every_platform(monkeypatch, installed, too_old):
+    """transformers 5 refuses torchao < 0.15 with "requires torchao to be installed"."""
+    import importlib.metadata as md
+
+    def version(name):
+        if installed is None:
+            raise md.PackageNotFoundError(name)
+        return installed
+
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(_stub, "_transformers_torchao_min", lambda: "0.15.0")
+    monkeypatch.setattr(_stub.importlib.metadata, "version", version)
+    saved = {n: m for n, m in sys.modules.items() if n == "torchao" or n.startswith("torchao.")}
+    for name in saved:
+        monkeypatch.delitem(sys.modules, name)
+    assert _stub.torchao_export_loadable() is (too_old is None)
+    # metadata only: never imports torchao.
+    assert "torchao" not in sys.modules
+    assert _stub.torchao_too_old_for_export() == too_old
+
+
+@pytest.mark.parametrize("floor", ["0.4.0", None])
+def test_torchao_014_stays_exportable_where_transformers_accepts_it(monkeypatch, floor):
+    """transformers 4.57.6 (the Python 3.9 pin, torch 2.4 / 2.5 keep torchao 0.14) has a 0.4 floor;
+    an unreadable floor never hides the formats either."""
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(_stub, "_transformers_torchao_min", lambda: floor)
+    monkeypatch.setattr(_stub.importlib.metadata, "version", lambda name: "0.14.0")
+    assert _stub.torchao_too_old_for_export() is None
+    assert _stub.torchao_export_loadable() is True
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('TORCHAO_MIN_VERSION = "0.15.0"\n', "0.15.0"),
+        ("x = 1\nTORCHAO_MIN_VERSION = '0.4.0'\n", "0.4.0"),
+        ("x = 1\n", None),
+    ],
+)
+def test_transformers_torchao_min_read_without_import(monkeypatch, tmp_path, source, expected):
+    pkg = tmp_path / "transformers"
+    (pkg / "utils").mkdir(parents = True)
+    (pkg / "__init__.py").write_text("raise RuntimeError('must not be imported')\n")
+    (pkg / "utils" / "import_utils.py").write_text(source)
+    for name in [n for n in sys.modules if n == "transformers" or n.startswith("transformers.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    assert _stub._transformers_torchao_min() == expected
+    assert "transformers" not in sys.modules
+
+
+@pytest.mark.parametrize("alias", ["torchao_fp8", "portable_int8"])
+def test_torchao_export_rejected_early_when_torchao_is_too_old(monkeypatch, alias):
+    mod = _load_export_module_no_torch(monkeypatch)
+    monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(_stub, "_transformers_torchao_min", lambda: "0.15.0")
+    monkeypatch.setattr(_stub.importlib.metadata, "version", lambda name: "0.14.0")
+    _set_torchao(monkeypatch, "real")
+    _install_fake_unsloth_save(monkeypatch, has_method = True)
+
+    ok, message, out = _bare_backend(mod).export_merged_model("/tmp/x", compressed_method = alias)
+    assert ok is False and out is None
+    assert "0.15" in message and "0.14.0" in message
+
+
+def test_too_old_torchao_does_not_block_other_formats(monkeypatch):
+    mod = _load_export_module_no_torch(monkeypatch)
+    monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(_stub, "_transformers_torchao_min", lambda: "0.15.0")
+    monkeypatch.setattr(_stub.importlib.metadata, "version", lambda name: "0.14.0")
+    _install_fake_unsloth_save(monkeypatch, has_method = True)
+
+    ok, message, _ = _bare_backend(mod).export_merged_model("/tmp/x", compressed_method = None)
+    assert "0.15" not in (message or "")
 
 
 def test_torchao_export_loadable_ignores_the_stub(monkeypatch):
@@ -546,7 +696,13 @@ def test_torchao_export_loadable_ignores_the_stub(monkeypatch):
 
 @pytest.mark.parametrize(
     ("installed", "expect"),
-    [("0.14.0", False), ("0.15.0", True), ("0.17.0", True), ("0.18.0+rocm", True)],
+    [
+        ("0.14.0", False),
+        ("0.15.0rc1", False),
+        ("0.15.0", True),
+        ("0.17.0", True),
+        ("0.18.0+rocm", True),
+    ],
 )
 def test_torchao_export_loadable_needs_transformers_minimum(
     monkeypatch, tmp_path, installed, expect
@@ -635,7 +791,7 @@ def test_real_or_stub_replaces_a_stub_inherited_from_run_py(monkeypatch, consume
 
 
 def test_real_or_stub_keeps_the_stub_when_torchao_is_not_loadable(monkeypatch):
-    """torch <= 2.8 pairs with torchao 0.14, which transformers 5 rejects; never load it."""
+    """an install still on torchao 0.14 (transformers 5 rejects it) never loads it."""
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
     monkeypatch.setattr(_stub, "torchao_export_loadable", lambda: False)
     monkeypatch.delitem(sys.modules, "torchao", raising = False)

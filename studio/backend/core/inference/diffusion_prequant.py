@@ -74,8 +74,16 @@ def prequant_format_for(metadata: Any) -> str:
 # Request-supplied paths load only inside an operator allowlist (weights_only either way).
 ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 
-# Extra pickle constructors allowed under weights_only=True. Both the pickle name and the
-# real __module__ are listed; names a torchao lacks are skipped. New schemes add theirs.
+# The constructors a pre-quant checkpoint's pickle may name, on top of what ``weights_only`` already permits
+# (storages, dtypes, ``_rebuild_*``, ``OrderedDict``, ``torch.device``, ``_get_layout``). Surveyed across every hosted
+# checkpoint Unsloth resolves (image + video, fp8 + int8, rotated and not) this is the complete set, so the load runs
+# ``weights_only = True`` and a checkpoint naming anything else is refused before one opcode of it executes, hosted or
+# local. Registered under the name the PICKLE records, which for a re-exported class is not the class's own
+# ``__module__`` (``torchao.quantization.Float8Tensor`` really lives in
+# ``...quantize_.workflows.float8.float8_tensor``), so both spellings are listed. Names a given torchao lacks are
+# skipped rather than raised: the set spans every release ``install_python_stack`` pins or pinned (0.14 to 0.18) and an
+# absent class could not have produced a loadable checkpoint here anyway. Adding a scheme means adding its
+# constructors here; forgetting warns and falls back to dense-quantise, never a silent unpickle.
 _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
     ("torchao.dtypes.affine_quantized_tensor", "AffineQuantizedTensor"),
     ("torchao.dtypes.uintx.plain_layout", "PlainAQTTensorImpl"),

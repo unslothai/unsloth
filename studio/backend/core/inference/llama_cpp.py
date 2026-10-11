@@ -1876,7 +1876,20 @@ def _is_window_notice(result: str) -> bool:
     return _WINDOW_NOTICE_MARKER in result or _ZERO_ROOM_MARKER in result
 
 
-# llama.cpp prints its arg error last; bounded so a huge unterminated line stays cheap.
+def _note_before_envelopes(result: str, tool_name: str, add_note) -> str:
+    """Text after the __MCP_IMAGES__ array breaks its parse and ships the base64 as text (#11358)."""
+    if not isinstance(result, str):
+        return add_note(result)
+    from core.inference.tools import _split_frontend_suffix
+
+    body, suffix = _split_frontend_suffix(result, tool_name)
+    return add_note(body) + suffix
+
+
+# How far back the classifier looks for llama.cpp's argument-parsing error. It
+# prints one and exits, so it is always at the end; generous enough to survive a
+# usage hint printed after it, small enough that a 10 MB unterminated line (which
+# _drain_stdout keeps whole) stays cheap to scan.
 _FAILURE_SCAN_TAIL_CHARS = 64 * 1024
 _FAILURE_QUOTE_CHARS = 200
 # Sentence-anchored: mid-sentence the same words are prose naming a tool.
@@ -31305,7 +31318,11 @@ class LlamaCppBackend:
                             decision.tool_name,
                             _MIN_USEFUL_RESULT_TOKENS,
                         )
-                        result = _starved_result_message(decision.tool_name, result)
+                        result = _note_before_envelopes(
+                            result,
+                            decision.tool_name,
+                            lambda body: _starved_result_message(decision.tool_name, body),
+                        )
                     else:
                         _starved_call[0] = False
 
@@ -31335,8 +31352,15 @@ class LlamaCppBackend:
                                 decision.tool_name,
                                 _identical_result_runs[0],
                             )
-                            result = _repeated_result_message(
-                                decision.tool_name, _identical_result_runs[0], result
+                            # Told, not silently stopped. The model can still finish the
+                            # task another way, and hard-stopping a turn that is otherwise
+                            # healthy would trade one dead end for a worse one.
+                            result = _note_before_envelopes(
+                                result,
+                                decision.tool_name,
+                                lambda body: _repeated_result_message(
+                                    decision.tool_name, _identical_result_runs[0], body
+                                ),
                             )
                             _identical_result_runs[0] = 0
                             _last_tool_result_key[0] = None

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 import threading
 import weakref
@@ -26,6 +25,7 @@ from functools import partial
 from urllib.parse import urlsplit
 
 from loggers import get_logger
+from storage import sqlite_gate
 from utils.hf_endpoint import (
     DEFAULTS_BY_HEALTH_KEY,
     get_hf_datasets_server,
@@ -93,7 +93,8 @@ def _read_stored() -> dict | None:
             path = run_as(OWNER, studio_db_path)
             if not path.exists():
                 return {}
-            with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri = True)) as conn:
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            with closing(sqlite_gate.connect(uri, uri = True)) as conn:
                 rows = conn.execute(
                     "SELECT key, value_json FROM app_settings WHERE key IN (?, ?, ?)", keys
                 ).fetchall()

@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 import uuid
 from typing import Iterator, Optional, Tuple
 
+from storage import sqlite_gate
 from utils.paths import auth_db_path, ensure_dir
 
 DB_PATH = auth_db_path()
@@ -252,8 +253,8 @@ _auth_schema_ready: set[tuple[str, int, int, int]] = set()
 
 def get_connection() -> sqlite3.Connection:
     ensure_dir(DB_PATH.parent)
-    conn = sqlite3.connect(DB_PATH)
-    # sqlite3.connect makes DB 0644 under a 022 umask, exposing identity secrets and password hashes.
+    conn = sqlite_gate.connect(DB_PATH)
+    # sqlite3.connect would create the DB 0644 under a 022 umask, exposing identity secrets and password hashes.
     for _path, _mode in ((DB_PATH.parent, 0o700), (DB_PATH, 0o600)):
         try:
             os.chmod(_path, _mode)

@@ -358,6 +358,15 @@ def _torchao_runtime_unavailable():
         return False
 
 
+def _torchao_too_old():
+    """Installed torchao version when it is below what transformers' TorchAoConfig accepts, else None."""
+    try:
+        from core._torchao_stub import torchao_too_old_for_export
+        return torchao_too_old_for_export()
+    except Exception:
+        return None
+
+
 def _is_torchao_alias(alias):
     """Any torchao spelling unsloth's normalizer accepts, else a torchao_ prefix, so the Windows
     ROCm guard catches it before it is misread as compressed-tensors."""
@@ -1024,6 +1033,18 @@ class ExportBackend:
                 "16-bit merged or GGUF quantization instead.",
                 None,
             )
+
+        # transformers 5 refuses torchao < 0.15 as "requires torchao to be installed"; name the real cause.
+        if _is_torchao_alias(compressed_alias):
+            _old_torchao = _torchao_too_old()
+            if _old_torchao:
+                return (
+                    False,
+                    f"Portable torchao FP8/INT8 export needs torchao 0.15 or newer, but torchao "
+                    f"{_old_torchao} is installed. Update Unsloth to install a newer torchao, or "
+                    "use 16-bit merged or GGUF quantization instead.",
+                    None,
+                )
 
         compressed_suffix: Optional[str] = None
         torchao_info = None
