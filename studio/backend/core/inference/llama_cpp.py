@@ -2607,7 +2607,16 @@ _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORE
 
 
 def _is_companion_gguf_path(path: str) -> bool:
-    """Exclusion only: never use this to pick a drafter to launch; use _is_mtp_only_drafter_path."""
+    """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
+    drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
+    drafters for DeepSeek V4 Flash, the ``<model>-dspark-<quant>.gguf`` drafters for
+    prism-ml Bonsai, the ``eagle3-*.gguf`` draft heads). Mirrors
+    hub.utils.gguf so variant resolution never picks a companion as the main model --
+    a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
+    ahead of the real weight.
+
+    EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
+    """
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
@@ -2615,6 +2624,8 @@ def _is_companion_gguf_path(path: str) -> bool:
         return True
     # Mirrors hub.utils.gguf.is_imatrix_filename: only the name rules an imatrix GGUF out.
     if _IMATRIX_TOKEN_RE.search(Path(p).stem):
+        return True
+    if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
         return True
     return _drafter_path_kind(path) is not None
 
@@ -2649,9 +2660,14 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_companion_gguf_path.
+_DSPARK_BEFORE_QUANT_RE = re.compile(
+    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
     re.IGNORECASE,
 )
 
@@ -17185,6 +17201,29 @@ class LlamaCppBackend:
                 "older or pre-release one; this is not a memory problem. Download an "
                 "updated GGUF of this model, or update llama.cpp if the file is newer "
                 "than this build.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        # A type this build lacks (prism-ml PQ2_0 / PTQ1_0 = 142 / 143) or packs differently (group-128 Q2_0, #11259).
+        # A truncated download fails later instead, as "data is not within the file bounds".
+        bad_type = re.search(r"tensor '([^']*)' has invalid ggml type (\d+)", scan_tail)
+        bad_layout = re.search(r"tensor '[^']*' has offset \d+, expected \d+", scan_tail)
+        if bad_type or bad_layout:
+            detail = (
+                f"tensor '{_short(bad_type.group(1))}' uses quantization type "
+                f"{bad_type.group(2)}, which this build does not have"
+                if bad_type
+                else "its tensor layout does not match this build's quantization types"
+            )
+            return LlamaCppBackend._with_startup_diagnostics(
+                "The installed llama.cpp cannot read this GGUF's weights "
+                f"({detail}); this is not a memory problem. The file was likely made for "
+                "a different llama.cpp build: a newer one, or a publisher's own fork. Pick "
+                "another quant of this model, or use the llama.cpp build the "
+                "model card names. If the model card says it runs on stock llama.cpp, "
+                "the file may be damaged: download it again.",
                 output,
                 log_path,
                 secrets,

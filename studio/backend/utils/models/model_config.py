@@ -1688,14 +1688,32 @@ _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def _is_mtp_drafter(path: str) -> bool:
-    """Companion drafters are excluded from variant menus; match by prefix or exact dir, never substring."""
+    """True for a separate-file drafter, a companion to the main model rather
+    than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
+    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the
+    ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) or the
+    ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss).
+
+    Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
+    excluded everywhere mmproj is, or the drafter leaks into variant menus (a
+    phantom quant) and quant-matched file lookups -- a ``Q8_0`` request must not
+    resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight,
+    or to ``dspark/dspark-...-Q8_0.gguf``.
+
+    Prefix, an exact directory for ``_DRAFTER_DIR_KINDS``, or
+    ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names
+    double as family names (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model,
+    as is anything in a user's ``dflash/`` folder).
+    """
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
-        kind in parents for kind in _DRAFTER_DIR_KINDS
+    return (
+        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
+        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
+        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
     )
 
 
@@ -2409,7 +2427,7 @@ def _extract_quant_label(filename: str) -> str:
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
         r"|P?TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
-        r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"  # Standard/Packed: Q8_0, PQ2_0, Q2_0_g64
+        r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"  # Standard/Packed/Grouped: Q8_0, PQ2_0, Q2_0_g64, Q2_g64
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"
         # Optional bpw modifier so several builds of one base quant stay distinct.
@@ -2438,9 +2456,14 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_mtp_drafter.
+_DSPARK_BEFORE_QUANT_RE = re.compile(
+    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
     re.IGNORECASE,
 )
 
