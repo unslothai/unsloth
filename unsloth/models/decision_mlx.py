@@ -58,9 +58,35 @@ from unsloth._decision_common import (
 )
 
 
+def _row_audio(row: dict) -> list:
+    # A row's "audio": data URLs, decoded {"array": ..., "sampling_rate": 16000} clips, or the
+    # {"bytes": ..., "path": ...} an undecoded audio column holds.
+    audio = _parsed(row.get("audio"))
+    if audio is None:
+        return []
+    found = []
+    for clip in audio if isinstance(audio, (list, tuple)) else [audio]:
+        if hasattr(clip, "get_all_samples"):
+            # datasets 4 decodes an audio column to a decoder that reads like the dict.
+            clip = {"array": clip["array"], "sampling_rate": clip["sampling_rate"]}
+        elif isinstance(clip, dict) and "array" in clip:
+            clip = {"array": clip["array"], "sampling_rate": clip.get("sampling_rate")}
+        elif isinstance(clip, dict) and set(clip) <= {"bytes", "path"}:
+            import base64
+
+            data = clip.get("bytes")
+            if data is None and clip.get("path"):
+                data = Path(clip["path"]).read_bytes()
+            # The container is recognized from the bytes, whatever the URL calls it.
+            clip = data and "data:audio/wav;base64," + base64.b64encode(data).decode()
+        if clip:
+            found.append(clip)
+    return found
+
+
 def _decision_clef_items(rows, options: Callable, encode: Callable, validate, report, skip) -> list:
     # One item per row. `options(question)` names a question's options in the head's order and
-    # `encode(state, questions, images)` returns the backend's tokenized fields, raising when they do not fit.
+    # `encode(state, questions, images, audio)` returns the backend's tokenized fields, raising when they do not fit.
     items = []
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
@@ -94,7 +120,7 @@ def _decision_clef_items(rows, options: Callable, encode: Callable, validate, re
         if not kept:
             continue
         try:
-            encoded = encode(state, kept, _row_images(row))
+            encoded = encode(state, kept, _row_images(row), _row_audio(row))
         except (TypeError, ValueError, OSError) as exc:
             for name in kept:
                 skip(index, f"does not fit: {exc}", name)
@@ -415,16 +441,25 @@ def _decision_pad_token_id(tokenizer) -> int:
     return getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
 
 
-def _clef_item(zoo, pipeline, state, questions, max_length, images):
-    if not images:
-        return zoo.clef_training_item(pipeline, state, questions, max_length)
-    if "images" not in inspect.signature(zoo.clef_training_item).parameters:
-        # Left to fail as a row that does not fit, a dataset would train without its image rows.
-        raise ImportError(
-            "Unsloth: images in decision rows need a newer unsloth-zoo. "
-            "Upgrade with `pip install -U unsloth-zoo`."
-        )
-    return zoo.clef_training_item(pipeline, state, questions, max_length, images)
+def _clef_item(
+    zoo,
+    pipeline,
+    state,
+    questions,
+    max_length,
+    images,
+    audio = (),
+):
+    media = {name: value for name, value in (("images", images), ("audio", audio)) if value}
+    taken = inspect.signature(zoo.clef_training_item).parameters
+    for name in media:
+        if name not in taken:
+            # Left to fail as a row that does not fit, a dataset would train without these rows.
+            raise ImportError(
+                f"Unsloth: decision rows with {name} need a newer unsloth-zoo. "
+                "Upgrade with `pip install -U unsloth-zoo`."
+            )
+    return zoo.clef_training_item(pipeline, state, questions, max_length, **media)
 
 
 def _clef_items(pipeline, rows, tokenizer, max_len, validate, report, skip) -> list:
@@ -432,8 +467,8 @@ def _clef_items(pipeline, rows, tokenizer, max_len, validate, report, skip) -> l
     return _decision_clef_items(
         rows,
         functools.partial(zoo.clef_option_keys, pipeline),
-        lambda state, questions, images: _clef_item(
-            zoo, pipeline, state, questions, max_len, images
+        lambda state, questions, images, audio: _clef_item(
+            zoo, pipeline, state, questions, max_len, images, audio
         ),
         validate,
         report,
@@ -843,9 +878,11 @@ class FastDecisionModel:
         state,
         questions: dict,
         images = None,
+        audio = None,
     ) -> dict:
         """Answers one Decision API request: {name: answer} at the calibrated temperatures.
         `images` (as in a row: PIL images, data URLs, or bytes / path dicts) are read by a Clef whose base model has a vision tower.
+        `audio` (as in a row: data URLs, bytes / path dicts, or decoded 16 kHz mono clips) is heard by a Clef whose base model has an audio tower.
         Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
         "answer" (the option, True / False for noul, the level number for score) and
         "probabilities" over every option."""
@@ -856,19 +893,19 @@ class FastDecisionModel:
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
         state, config, zoo = _parsed(state), model.decision_config, _decision_zoo()
-        images = _row_images({"images": images})
+        images, audio = _row_images({"images": images}), _row_audio({"audio": audio})
         if _is_clef(model):
             pipeline = model._unsloth_pipeline
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
             # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.
             max_length = max(int(config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN)
-            item = _clef_item(zoo, pipeline, state, questions, max_length, images)
+            item = _clef_item(zoo, pipeline, state, questions, max_length, images, audio)
             logits = zoo.clef_logits(model, [item])[0]
             keys = [zoo.clef_option_keys(pipeline, q) for q in questions.values()]
             kinds = [QUESTION_TYPES.index(q["type"]) for q in questions.values()]
         else:
-            if images:
-                raise DecisionDataError("Laya reads text only; images need a Clef model.")
+            if images or audio:
+                raise DecisionDataError("Laya reads text only; images and audio need a Clef model.")
             common, max_len = _laya().common, int(config.get("max_len", 512))
             tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
             items, keys = [], []
