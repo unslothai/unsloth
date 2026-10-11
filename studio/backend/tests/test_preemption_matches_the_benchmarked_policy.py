@@ -80,8 +80,9 @@ class TestTheShippedOrderIsTheBenchmarkedOne:
         sim_chats = [_SimChat(controller.participant(f"gen{i}"), i) for i in population]
 
         victims = [p.gen_id for p in controller.plan_preemptions(needed = ceiling)]
-        if not victims:
-            pytest.skip("this population never crossed the watermark")
+        # `needed = ceiling` puts every population with a holder past the watermark, so an
+        # empty plan is a failure rather than a case to skip.
+        assert victims, "the sweep chose nobody for a population past the watermark"
         expected = [
             f"gen{c.cid}" for c in sorted(sim_chats, key = preempt_sim.POLICIES["newest_first"])
         ]

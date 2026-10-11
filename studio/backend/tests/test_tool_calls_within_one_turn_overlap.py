@@ -631,8 +631,8 @@ class TestTheLocalGgufLoopOverlapsToo:
             _execute,
         )
         given = [b for b in budgets if isinstance(b, int)]
-        if not given:
-            pytest.skip("this build does not pass result_budget_tokens")
+        # This build passes result_budget_tokens to every call, so none is a failure.
+        assert given, f"no call was handed result_budget_tokens: {budgets}"
         # Not identical: each call still subtracts the ARGUMENTS of the calls after it,
         # which is a real cost and differs per position. What must not differ is the
         # divisor, and a wrong one shows up as a spread far larger than that: with three
@@ -924,8 +924,9 @@ class TestTheRoundIsPricedOnceForEveryCallInIt:
             )
         )
         assert sorted(budgets) == ["alpha", "beta"], budgets
-        if not isinstance(budgets["alpha"], int):
-            pytest.skip("this build does not pass result_budget_tokens")
+        assert isinstance(
+            budgets["alpha"], int
+        ), f"the call was not handed result_budget_tokens: {budgets}"
         assert budgets["alpha"] > 0, budgets
         assert budgets["beta"] == budgets["alpha"], (
             f"the round handed out {budgets}: the call that was still running priced "
