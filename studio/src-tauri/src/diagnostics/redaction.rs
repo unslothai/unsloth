@@ -82,7 +82,7 @@ const AUTH_SCHEMES: [&str; 6] = ["bearer", "basic", "digest", "token", "apikey",
 
 fn redact_kv(caps: &Captures) -> Option<String> {
     let whole = caps.get(0)?;
-    let value = ["ev", "dv", "sv", "uv"]
+    let value = ["ev2", "ev", "dv", "sv", "uv"]
         .iter()
         .find_map(|name| caps.name(name))?;
     let key = caps["key"].to_ascii_lowercase();
@@ -116,7 +116,7 @@ fn redact_kv(caps: &Captures) -> Option<String> {
 // A bare "token" key also names tokenizer settings ("eos_token": "</s>"), so only a
 // credential-shaped value counts.
 fn redact_weak_kv(caps: &Captures) -> Option<String> {
-    let value = ["ev", "dv", "sv", "uv"]
+    let value = ["ev2", "ev", "dv", "sv", "uv"]
         .iter()
         .find_map(|name| caps.name(name))?;
     if value.as_str().starts_with('[') || !looks_like_credential(value.as_str()) {
@@ -225,8 +225,10 @@ const WEAK_SECRET_KEYS: &str = r"(?:[A-Za-z0-9]+[-_]?)?token|credentials?";
 
 // Quoted values come in three shapes: "plain", 'single', and \"escaped\" (a dict logged
 // inside a JSON log line, which is how the backend's server-*.log files are written; a
-// body logged as a string inside that is escaped twice, \\\"like this\\\").
-const SECRET_VALUE: &str = r#"(?:\\+"(?P<ev>(?:[^"\\\r\n]|\\+[^"\\\r\n])+)(?:\\+")?|"(?P<dv>(?:[^"\\\r\n]|\\.)+)"?|'(?P<sv>(?:[^'\\\r\n]|\\.)+)'?|(?P<uv>[^"'\\\s,;}\]<>]{6,}))"#;
+// body logged as a string inside that is escaped twice, \\\"like this\\\"). Each escaped
+// shape ends only at a quote with its own backslash count; a quote escaped deeper than that
+// is part of the value.
+const SECRET_VALUE: &str = r#"(?:\\\\\\"(?P<ev2>(?:[^"\\\r\n]|\\{4,}"|\\+[^"\\\r\n])+)(?:\\\\\\")?|\\"(?P<ev>(?:[^"\\\r\n]|\\{2,}"|\\+[^"\\\r\n])+)(?:\\")?|"(?P<dv>(?:[^"\\\r\n]|\\.)+)"?|'(?P<sv>(?:[^'\\\r\n]|\\.)+)'?|(?P<uv>[^"'\\\s,;}\]<>]{6,}))"#;
 
 // The leading class stands in for a lookbehind (the regex crate has none), so the key
 // still matches inside OPENAI_API_KEY or x-goog-api-key.
@@ -584,6 +586,17 @@ mod tests {
                 r#"{"event": "body='{\\\"access_token\\\": \\\"opaque0123456789\\\"}'"}"#,
                 "opaque0123456789",
                 r#"\\\"access_token\\\": \\\"<redacted>\\\"}'"#,
+            ),
+            // A quote inside the value is escaped one level deeper than the delimiters.
+            (
+                r#"{"event": "body {\"password\": \"ab\\\"opaque0123456789\", \"n\": 1}"}"#,
+                "opaque0123456789",
+                r#"\"password\": \"<redacted>\", \"n\": 1}"#,
+            ),
+            (
+                r#"{"event": "body='{\\\"password\\\": \\\"ab\\\\\\\"opaque0123456789\\\"}'"}"#,
+                "opaque0123456789",
+                r#"\\\"password\\\": \\\"<redacted>\\\"}'"#,
             ),
             (
                 r#"{"apiToken": "opaque0123456789", "cf_tunnel_token": "opaque0123456789"}"#,
