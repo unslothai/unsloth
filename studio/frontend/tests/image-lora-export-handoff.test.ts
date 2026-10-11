@@ -58,6 +58,8 @@ test("the finished training run hands its LoRA to the Export page", async () => 
     /to: "\/export",\s*search: \{ imageLora: catalogFileName\(catalogPath\)\s*\}/,
   );
   assert.equal(panel.match(/exportAdapter\(/g)?.length, 2);
+  // A run stopped early with a saved adapter can be exported too, not only a completed one.
+  assert.doesNotMatch(panel, /completed && status\?\.catalog_path && \(/);
   const route = await readSrcAsync("app/routes/export.tsx");
   assert.match(route, /imageLora: typeof search\.imageLora === "string"/);
   const page = await readSrcAsync("features/export/export-page.tsx");

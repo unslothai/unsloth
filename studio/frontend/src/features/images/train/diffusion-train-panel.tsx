@@ -2480,7 +2480,7 @@ export function DiffusionTrainPanel({
                       Deploy to Create
                     </Button>
                   )}
-                  {completed && status?.catalog_path && (
+                  {status?.catalog_path && (
                     <Button
                       type="button"
                       size="sm"
