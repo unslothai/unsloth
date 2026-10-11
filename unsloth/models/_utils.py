@@ -6762,7 +6762,6 @@ CONVERT_ON_SAVE_LORA_WEIGHTS = ("lora_ga",)
 
 
 def _residual_lora_rows(model, adapters):
-    """(module, adapter, module name) for every Linear LoRA of `adapters` holding a residual-init snapshot."""
     for name, module in model.named_modules():
         initial = getattr(module, "_unsloth_initial_lora", None)
         if not initial or not isinstance(getattr(module, "lora_A", None), torch.nn.ModuleDict):

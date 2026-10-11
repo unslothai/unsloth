@@ -441,8 +441,7 @@ def patch_peft_calibration_eager():
             __original = original,
             **kwargs,
         ):
-            # preprocess_loraga trains on the user's batches before get_peft_model, while the tokenizer still
-            # pads left; Unsloth drops the padding mask for labelled training forwards unless told to keep it.
+            # Runs before get_peft_model, so the tokenizer still pads left; labelled training forwards drop the mask.
             model = args[0] if args else kwargs.get("model")
             masked = []
             if isinstance(model, torch.nn.Module):
