@@ -622,7 +622,7 @@ def running_outside_managed_venv(extra_roots: Sequence[Path] = ()) -> bool:
     anything answered from this interpreter would then describe the wrong tree.
     """
     if not (Path(sys.prefix) / "pyvenv.cfg").is_file():
-        # Not a venv: on Colab the backend lives in the system Python, whose distro RECORDs lie (PEP 627).
+        # Not a venv: on Colab the system Python RECORDs legitimately list files the distro never installed.
         return True
     return _managed_root(extra_roots) is not None
 

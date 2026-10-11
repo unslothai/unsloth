@@ -102,7 +102,7 @@ LLAMA_CPP_TARGETS = [
     "llama-server",
 ]
 
-# A real Kaggle kernel, not a KAGGLE_* variable: the Kaggle CLI sets those on ordinary laptops.
+# A real Kaggle kernel, not a KAGGLE_* variable: the Kaggle CLI reads those on ordinary laptops.
 from .disk_utils import (
     KAGGLE_TMP,
     is_colab_environment,
@@ -1506,7 +1506,7 @@ def install_llama_cpp_clone_non_blocking():
 
 
 def install_llama_cpp_make_non_blocking():
-    # GPU conversion for GGUF weirdly breaks (hence GGML_CUDA=OFF); see ggerganov/llama.cpp#7062.
+    # GPU conversion for GGUF weirdly breaks; see ggerganov/llama.cpp issue 7062.
 
     # Skip the make-clean probe on CMake-only checkouts, whose error output is misleading.
     IS_CMAKE = _is_cmake_only_llama_cpp("llama.cpp")
@@ -2294,7 +2294,7 @@ def save_to_gguf(
                         all_saved_locations.remove(f)
                     Path(f).unlink(missing_ok = True)
 
-            # [text_model, mmproj] order.
+            # Flip the list to get [text_model, mmproj] order; text models stay the same.
             all_saved_locations.reverse()
 
             # Keep example commands ([0]=model, [-1]=mmproj) correct when the base format is preserved.
@@ -2973,7 +2973,7 @@ def _hub_cache_prewarm_disabled(disable):
             os.environ[key] = previous
 
 
-# The zoo's merge guard compares against int(free * 0.95) over tensors only.
+# Ask the redirect for the int(free * 0.95) guard figure; model_16bit_bytes counts tensors only.
 _MERGE_FREE_SPACE_RESERVE = 0.95
 
 # torchao weight-only fp8 / int8: one byte per quantized weight.
@@ -3596,8 +3596,7 @@ def _preflight_gguf_disk(
 
     # A disposable merge is reclaimed before the quants, so ask the redirect for the phased peak.
     phased_need = 0
-    # The intermediate conversion is written to the process CWD and only then moved. When the CWD shares
-    # this filesystem, charge max(checkpoint over 0.95, conversion): two phases, not two artefacts.
+    # On a shared filesystem, peak is max(checkpoint / 0.95, checkpoint + conversion), not their sum.
     if (
         merge_is_disposable
         and needs_merge
@@ -4056,7 +4055,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["_gguf_prewarm_ok"]  # a local decision, not a save_pretrained kwarg
     del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
 
-    # Same definition the preflight sized.
+    # Preserve the output before reusing a non-PEFT checkpoint as input; same dir the preflight sized.
     gguf_directory = _gguf_output_directory(save_directory)
 
     # save_pretrained writes the processor's own chat_template.jinja, so dedupe and restore both.
@@ -4295,7 +4294,7 @@ _DISK_FULL_PATTERNS = (
 # Below this headroom a failed conversion is plausibly about space.
 _DISK_HEADROOM_BYTES = 2 * 1024**3
 
-# A SIGKILLed child is 128 + 9 to a shell, so OOM surfaces as exit status 137.
+# A SIGKILLed child shows as 128 + 9, so llama-quantize reports exit status 137, no signal named.
 _OOM_KILL_PATTERNS = (
     "sigkill",
     "exit status 137",
@@ -5624,8 +5623,7 @@ def unsloth_generic_save(
             max_shard_size = max_shard_size,
             variant = variant,
         )
-        # Refuse rather than upload a format the caller declined. Check the ORIGINAL method:
-        # patch_saving_functions' passthrough would hide a transformers that honours it.
+        # Warn rather than upload a format the caller declined; check the original method, not the wrapper.
         _real_save = getattr(model, "original_model_save_pretrained", model.save_pretrained)
         if safe_serialization is False and not _honours_safe_serialization(_real_save):
             logger.warning_once(

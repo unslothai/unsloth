@@ -132,7 +132,7 @@ def _driver(
             "$wmiGpus = $null",
             _prelude(src),
             _amd_scan_block(src),
-            # Captured inside the arch block: $gpuNames[0] is what the indexing bug corrupts.
+            # Captured in the arch block: the indexing bug corrupts $gpuNames; [0] is what the arch lookup gets.
             _arch_resolution_block(src).replace(
                 "$nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
                 "$script:GpuNamesProbe = $gpuNames\n            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",

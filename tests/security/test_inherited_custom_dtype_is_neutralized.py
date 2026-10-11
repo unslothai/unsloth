@@ -58,7 +58,7 @@ def test_the_code_fields_of_an_inherited_value_are_emptied(monkeypatch):
     sanitized = neutralize_inherited_custom_dtype()
     checker, dtype, bnb, custom, execute = sanitized.split(";", 4)
     assert (custom, execute) == ("", "")
-    # The five fields stay because both packages assert on the count.
+    # The dtype fields of a well formed value still apply; the five fields stay for the count assert.
     assert (checker, dtype, bnb) == ("all", "torch.float16", "torch.float16")
     assert sanitized.count(";") == 4
 

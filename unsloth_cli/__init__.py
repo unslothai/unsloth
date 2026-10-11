@@ -128,7 +128,7 @@ def _prepare_entry_point():
     _entry_point_prepared = True
 
 
-# Only under the console-script; imports keep their argv intact.
+# Canonicalise -np<N> only under the console-script; imports keep their argv intact.
 if _is_entry_point:
     _prepare_entry_point()
 del _entry_base, _is_entry_point, _orig_argv, _runs_unsloth_cli

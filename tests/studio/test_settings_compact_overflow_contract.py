@@ -32,7 +32,7 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
     # Flex parents need min-w-0, or a long model id widens the layout past the viewport.
     assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
-    # Read as tokens.
+    # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped; read as tokens.
     text_boxes = [
         set(literal.split())
         for literal in re.findall(r'"([^"\n]*)"', source)

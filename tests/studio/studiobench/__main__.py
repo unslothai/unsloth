@@ -448,7 +448,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
         paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
     )
 
-    # See `invalidate_stale_reports`.
+    # Stale reports the archive left behind are invalidated here on every output dir reuse.
     invalidate_stale_reports(paths.out, archived = archived, extra_init = extra_init)
 
     # Armed after the sides are known; the budget is `watchdog_deadline_s`.
@@ -870,7 +870,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
                         if problem not in ratio_issues:
                             ratio_issues.append(problem)
                 if ratio_issues:
-                    # Close so a refused resume leaves nothing this session wrote.
+                    # Runs after the Recorder opened the payload, so the refusal must roll back this session's rows.
                     rec.close()
                     rollback_session_rows(paths.payload_jsonl, mark)
                     raise SystemExit(
@@ -958,7 +958,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
         rec.close()
 
     if ab_ref:
-        # Skip set comes from `ab.skippable_cells`.
+        # Cells this session was asked to measure: all planned cells or none, which _render_ab checks.
         _render_ab(
             paths,
             sides,
@@ -992,7 +992,7 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
                 recorder = ctx.recorder,
             )
         except Exception as exc:  # noqa: BLE001
-            # A sweep that raised and one that found nothing look identical in rows.
+            # A raising sweep is recorded as a failed gate: rows alone make it look the same as an empty sweep.
             _log(f"  the surface sweep failed: {type(exc).__name__}: {exc}")
             ctx.recorder.gate(
                 f"surface_sweep:{label}", False, {"error": f"{type(exc).__name__}: {exc}"}
@@ -1005,7 +1005,7 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         out = paths.out / f"surfaces_{label}.md"
         out.write_text(text, encoding = "utf-8")
         _log(f"surface coverage manifest written to {out}")
-        # An unscoped sweep reports one page-wide digest that agrees everywhere.
+        # Passes only if every non-conditional surface was reached and the digests are scoped.
         passed = manifest["not_reached_hard"] == 0 and manifest["digests_scoped"]
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
@@ -1237,7 +1237,7 @@ def recorded_identities(payload_path) -> list:
                 arm = str((row.get("cell") or {}).get("arm") or row.get("arm") or "")
                 if arm:
                     by_session[session].setdefault("mode", "single" if arm == SINGLE_ARM else "ab")
-                # See `ladder_ratio_problems`.
+                # Ratio the session's rungs were sized by, read off a cell it wrote; see ladder_ratio_problems.
                 sized = ((row.get("cell") or {}).get("meta") or {}).get("ladder_chars_per_token")
                 if isinstance(sized, dict) and sized.get("chars_per_token") is not None:
                     by_session[session].setdefault(

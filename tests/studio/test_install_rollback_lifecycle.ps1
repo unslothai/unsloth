@@ -318,7 +318,7 @@ try {
         (Select-StudioVolumeForPath -Path $otherPath -Volumes $vols).DeviceID -eq "other")
     Check "a path under neither falls to the root volume" (
         (Select-StudioVolumeForPath -Path $elsePath -Volumes $vols).DeviceID -eq "root")
-    # Volume{GUID}\... is not rooted; anchoring it to the current directory would mismatch.
+    # Volume GUID paths are unrooted; anchoring them to the current directory matches the wrong volume.
     Check "an unrooted path matches no volume at all" (
         $null -eq (Select-StudioVolumeForPath -Path "Volume{00000000-0000-0000-0000-000000000000}" -Volumes $vols))
     Check "nothing to choose from is not an error" (

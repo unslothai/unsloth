@@ -177,7 +177,7 @@ def test_trl_generation_vllm_generation_gated(tag: str):
         )
 
 
-# rl.py string-matches TRL's __version__.
+# The TRL version string must be parseable because rl.py string-matches it.
 def test_trl_version_parseable(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/__init__.py")
     assert src is not None

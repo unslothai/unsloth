@@ -1651,7 +1651,7 @@ def _cached_keys(cache: Path, base: str, source: str) -> list:
 
 
 def _write_private_json(path: Path, data: dict) -> None:
-    # O_CREAT with 0o600 so a file holding an API key is never world-readable, even briefly.
+    # 0o600 on create means a new key file is never world-readable; existing files keep their perms.
     path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
@@ -1736,7 +1736,7 @@ def _loaded_models_response(
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
-    # Never on an auth or server error. Older Studios answer /v1/models.
+    # Fall back, but never on an auth or server error; older Studios still answer /v1/models.
     return _http_json("GET", f"{base}/v1/models", key, timeout = timeout)
 
 
@@ -1957,7 +1957,7 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             None,
         )
     if entry is None and not status:
-        # Only when there is no status at all (older server); catalog order is not evidence.
+        # Only with no status at all (older server), and only if one model is loaded; order is no evidence.
         loaded = [m for m in models if m.get("loaded") is not False]
         if len(loaded) == 1:
             entry = loaded[0]
@@ -2342,7 +2342,7 @@ def _resolve_model(
     if resident is None:
         if _inference_status(base, key).get("yours") is False:
             _fail(_OTHER_ACCOUNT_RESIDENT)
-        # Which of the two a server sends depends only on its version.
+        # Empty and unloaded-only listings mean the same; the server version decides which it sends.
         _fail(
             "No model is loaded in Unsloth. Load one from the model dropdown in "
             "the UI, or pass --model <hf-id-or-path> to load it from here."
@@ -2759,7 +2759,7 @@ def _attach_gguf_check(
             variants = [
                 row for row in variants if not (isinstance(row, dict) and row.get("cleanable"))
             ]
-        # A raw answer the server calls non-local settles nothing (older servers lack the flag).
+        # Non-local raw answers settle nothing; a server lacking the flag still counts its raw answer.
         if (
             "/" not in candidate
             and candidate != candidates[-1]
@@ -4687,7 +4687,7 @@ def write_openclaw_config(
         search.pop("remote", None)
     # ORed with OPENCLAW_LOAD_SHELL_ENV: a persisted true re-enables the login-shell key import.
     _subdict(_subdict(config, "env"), "shellEnv")["enabled"] = False
-    # Else OpenClaw drops into its setup agent ("no models available").
+    # Pin a default model, or OpenClaw drops into its setup agent (no models available).
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
@@ -5133,7 +5133,7 @@ def _pi_local_entry(
         target = os.path.join(source, value)
     target = os.path.normpath(target)
     if agents_skills is not None:
-        # Pi reads ~/.agents/skills through HOME, which moved.
+        # Pi reads ~/.agents/skills via HOME, which moved; rules naming the user copy must follow it.
         user_root, session_root = agents_skills
         try:
             inside = os.path.relpath(target, user_root)

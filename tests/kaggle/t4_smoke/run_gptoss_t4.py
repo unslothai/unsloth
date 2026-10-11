@@ -263,7 +263,7 @@ def train_and_infer(args) -> dict:
         for line in Path(args.dataset).read_text(encoding = "utf-8").splitlines()
         if line.strip()
     ]
-    # dataset_text_field only for the text shape: on prompt-completion data TRL trains on everything.
+    # Never set dataset_text_field on prompt-completion data: an unfound field trains on everything.
     if args.train_on_completions:
         dataset = build_completion_dataset(tokenizer, rows)
     else:

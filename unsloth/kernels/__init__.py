@@ -41,7 +41,7 @@ from .fast_lora import (
     apply_lora_o,
     fast_lora_forward,
 )
-from .fp8 import *  # Patch FP8 forwards before model creation so compiled models are covered too.
+from .fp8 import *  # Patch FP8Linear forwards before model creation so compiled non-fast-inference models are covered.
 
 from .nvfp4 import *
 from .utils import (

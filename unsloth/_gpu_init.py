@@ -126,7 +126,7 @@ from .import_fixes import maybe_set_windows_rocm_bnb_version
 maybe_set_windows_rocm_bnb_version()
 del maybe_set_windows_rocm_bnb_version
 
-# Pure-python protobuf avoids "sentencepiece_model.proto already in the pool" errors.
+# Unsloth patches these libraries at import time; import it first or they run unoptimized.
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 # docker --gpus sets NVIDIA_VISIBLE_DEVICES but not CUDA_VISIBLE_DEVICES, so Inductor's

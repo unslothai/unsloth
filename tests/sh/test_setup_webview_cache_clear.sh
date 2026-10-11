@@ -74,7 +74,7 @@ assert_gone    "linux: XDG_DATA_HOME WebKitCache removed"    "$XDG/data/$BID/Web
 assert_present "linux: XDG_DATA_HOME localstorage kept"      "$XDG/data/$BID/localstorage"
 assert_present "linux: default data dir kept under override" "$H/.local/share/$BID/WebKitCache"
 
-# ── 3a. A relative XDG_DATA_HOME is invalid per spec and ignored by Tauri ──
+# A relative XDG_DATA_HOME is ignored by Tauri; following it would rm -rf under the installer cwd.
 H=$(new_home)
 W=$(mktemp -d "$_TMP_ROOT/work.XXXXXX")
 mkdir -p "$W/reldata/$BID/WebKitCache" "$H/.local/share/$BID/WebKitCache"

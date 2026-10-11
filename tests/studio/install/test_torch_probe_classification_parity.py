@@ -29,7 +29,7 @@ _SOURCE = _STACK_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(_SOURCE, str(_STACK_PATH))
 
 
-# (torch.__version__, torch.version.hip, torch.version.cuda) as the probe reports them.
+# Torch states the classifier must agree on, each (__version__, hip, cuda) from the probe.
 _TORCH_STATES = [
     ("2.9.1+cu128", "", "12.8"),
     ("2.7.1+cu118", "", "11.8"),

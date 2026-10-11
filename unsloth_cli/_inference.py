@@ -158,7 +158,7 @@ def ensure_studio_backend_path(*, seed_cache_env: bool = True) -> None:
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
     if seed_cache_env:
-        # Before the caller's backend import pulls in unsloth_zoo.compiler.
+        # After the path insert, before the caller's backend import pulls in unsloth_zoo.compiler.
         _seed_cache_env()
 
 
@@ -1067,7 +1067,7 @@ def connect_studio_server(
     if not base_url:
         return None
 
-    # An explicit UNSLOTH_STUDIO_URL fails loudly; local discovery falls back to a local load.
+    # Explicit UNSLOTH_STUDIO_URL we cannot safely attach to fails loudly; local discovery falls back.
     explicit = bool(os.environ.get("UNSLOTH_STUDIO_URL"))
 
     def _refuse(reason: str):

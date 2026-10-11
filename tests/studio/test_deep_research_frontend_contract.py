@@ -74,7 +74,7 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "readDeepResearchToolEvent(deepResearchHandoff, toolEvent)" in adapter
     assert "if (deepResearchHandoff.question !== null && !runSignal.aborted)" in adapter
     assert 'yield* startDeepResearch("")' not in adapter
-    # Without it the turn proxies through and the model is never offered the tool.
+    # Armed research must request the tool loop on the external body, or the tool is never offered.
     assert "projectRagEnabled ||" in adapter
     assert "deepResearchArmed)" in adapter
     research = adapter.split("const startDeepResearch = async function*", 1)[1].split(

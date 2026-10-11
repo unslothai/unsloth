@@ -394,7 +394,7 @@ class TestPinnedIndexClearsUvEnv:
             assert var not in env, f"{var} must be cleared for a pinned-index install"
 
     def test_pinned_default_index_strips_uv_index_vars(self):
-        # Matches install.sh / install.ps1.
+        # default-index must be gated too, like install.sh and install.ps1 do.
         cmd = ["uv", "pip", "install", "torch", "--default-index", "https://x/cu126"]
         with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
             env = ips._install_env_for_cmd(cmd)
@@ -476,7 +476,7 @@ class TestSdistOnlyBuildArgs:
     def test_openai_whisper_is_covered(self):
         """The package named in the issue, and the transitive one behind omegaconf."""
         assert "openai-whisper" in ips.SDIST_ONLY_PACKAGES
-        # omegaconf pins antlr4-python3-runtime to an sdist, which fails no-build transitively.
+        # omegaconf pins antlr4 below the 4.13.2 wheel, so it arrives as an sdist and fails no-build.
         assert "antlr4-python3-runtime" in ips.SDIST_ONLY_PACKAGES
 
     def test_flags_survive_translation_to_uv(self):
@@ -2926,7 +2926,7 @@ class TestExpectedTorchFlavorResolution:
                 assert ips._expected_torch_flavor_tag() == "cu124"
 
     def test_a_gpuless_host_with_nothing_recorded_says_nothing(self):
-        # Else every update would reinstall CUDA torch onto a CPU box.
+        # Inventing CUDA expectations from an absent GPU reinstalls CUDA torch on CPU boxes every update.
         with self._env():
             with (
                 mock.patch.object(ips, "_RECORDED_TORCH_TAG", None),

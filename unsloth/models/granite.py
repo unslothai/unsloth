@@ -535,7 +535,7 @@ class FastGraniteModel(FastLlamaModel):
         tokenizer,
         correct_dtype = None,
     ):
-        # torch.compile fails on the original embedding (torch < 2.2); rebuilding it works around that.
+        # torch.compile fails on the embedding matrix; this rebuild only randomly fixes it on torch < 2.2.
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(
             model.model.embed_tokens.weight
         )

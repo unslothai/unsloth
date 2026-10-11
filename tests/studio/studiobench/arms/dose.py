@@ -16,7 +16,7 @@ DOSES: tuple[int, ...] = (4, 40, 400, 4000)
 # Loose: the question is whether it is O(children), not the constant.
 MIN_R2_FOR_LINE = 0.90
 
-# Fraction of the largest-dose cost.
+# An intercept above this share of the largest-dose cost means most cost is fixed, not per child.
 MAX_INTERCEPT_FRACTION = 0.35
 
 

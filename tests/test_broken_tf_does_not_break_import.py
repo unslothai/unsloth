@@ -272,7 +272,7 @@ def test_a_broken_backend_still_loses_when_transformers_came_first(tmp_path):
 
 def test_the_environment_path_still_covers_the_transformers_not_loaded_case(tmp_path):
     _needs_unsloth()
-    # `getattr`, because 5.x has no such flag.
+    # getattr because 5.x has no such flag; the TF-never-loads case still asserts there.
     out = _run(
         """
         import unsloth, os, sys

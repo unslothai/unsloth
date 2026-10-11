@@ -140,8 +140,7 @@ def test_the_action_is_actually_used() -> None:
     assert len(users) >= 5, f"only {len(users)} workflows use the action: {users}"
 
 
-# The Windows jobs run install.ps1 from a hand-written step, so dist restore/save are their own
-# composite actions; each warm job restores one key and pairs it with a save.
+# Windows jobs skip install-unsloth-local, so the uv-cache restore and save are separate actions.
 
 ACTIONS = REPO_ROOT / ".github" / "actions"
 UV_RESTORE = ACTIONS / "uv-cache-restore" / "action.yml"

@@ -182,7 +182,7 @@ def GemmaModel_fast_forward_inference(
         if attention_mask is not None and attention_mask.dtype != torch.bool:
             attention_mask = attention_mask.eq(0)
 
-    # Once, avoiding a per-layer GPU-CPU sync from .item().
+    # Compute rotary_seq_len once to avoid a per-layer GPU-CPU sync from .item().
     rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
     next_decoder_cache = []

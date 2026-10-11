@@ -299,7 +299,7 @@ class TestXpuTritonSwap:
 
 class TestFailedSwapIsNotSurvivable:
     def test_a_failed_uninstall_changes_nothing(self, monkeypatch, tmp_path):
-        # A locked venv leaves generic triton registered; a later upgrade would redo the swap forever.
+        # A locked venv keeps generic triton; installing over it makes a later upgrade repeat the swap.
         log = _run(
             monkeypatch,
             tmp_path,

@@ -1907,7 +1907,7 @@ def _route_compressed_tensors_fp8_to_unsloth(
     skip = (),
     default = "0",
 ):
-    # Opt-in for FP8 (on-the-fly dequant trains slower than bf16); default beside NVFP4, where
+    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4.
     # decompressed FP8 layers would keep compressed-tensors' graph-breaking fake-quant forward.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", default) != "1":
         return 0
@@ -2793,7 +2793,7 @@ def _decompress_compressed_tensors_model(model):
         with torch.inference_mode(False), torch.no_grad():
             compressor.decompress_model(module)
         _remove_same_device_compressed_tensors_offload(module)
-        # Some compressed-tensors releases (0.19.0) leave the hook in place.
+        # Some compressed-tensors releases (0.19.0) leave the hook in place: drop it, also after a retry.
         hook = getattr(model, "ct_decompress_hook", None)
         if hook is not None:
             hook.remove()
@@ -3368,7 +3368,7 @@ def check_and_disable_bitsandbytes_loading(
         if maybe_arm_fp8_to_nf4(model_config, load_in_4bit, load_in_8bit, verbose = verbose):
             return load_in_4bit, load_in_8bit, None
 
-    # A non-bitsandbytes quantization config conflicts with both bitsandbytes flags.
+    # A non-bitsandbytes quantization config means both bitsandbytes flags must be disabled.
     if load_in_4bit or load_in_8bit:
         if verbose:
             print(

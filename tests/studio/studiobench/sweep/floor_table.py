@@ -68,7 +68,7 @@ def refuse_collisions(records: list[dict]) -> None:
     collided = collided_cells(records)
     if not collided:
         return
-    # A sequential re-run is not a collision; refuse only sessions shown to overlap in time.
+    # Sequential re-runs are not collisions; refuse overlapping sessions and any with no timing evidence.
     guilty: set[str] = set()
     for sessions in collided.values():
         guilty |= sessions

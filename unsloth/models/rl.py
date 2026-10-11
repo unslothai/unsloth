@@ -2233,7 +2233,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         print(f"Unsloth: {RLConfig.__name__} is already patched.")
         return
 
-    # Resolve thin trl.trainer shims to their trl.experimental parent class.
+    # TRL 0.26+: resolve trl.trainer shims to their parent class, only when it is in trl.experimental.
     _trainer_resolved_module = None
     try:
         _trainer_src = inspect.getsource(RLTrainer)
@@ -2579,8 +2579,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_prep_truncates = False\n"
                     "    except Exception:\n"
                     "        _unsloth_prep_truncates = False\n"
-                    # TRL's _prepare_dataset truncation is the only cap on pre-tokenized rows. Only a materialised
-                    # tokenized dataset counts: with_transform rows are rebuilt on every read.
+                    # Prep truncation caps pre-tokenized rows unless skip_prepare_dataset; only materialised data
+                    # counts.
                     "    def _unsloth_truncatable(_ds):\n"
                     "        if _ds is None or not hasattr(_ds, 'map'): return False\n"
                     "        try:\n"
@@ -3183,7 +3183,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             + "\n"
         )
 
-    # See huggingface/trl#3130. TRL >= 0.22 defaults scale_rewards to "group" (= True).
+    # Check dr_grpo loss_type with scale_rewards for GRPO; TRL >= 0.22 defaults scale_rewards to group.
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"

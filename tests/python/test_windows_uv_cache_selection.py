@@ -288,7 +288,7 @@ def test_an_intact_studio_cache_is_still_the_ordinary_answer(tmp_path):
 def test_a_marker_naming_a_deleted_cache_is_no_more_evidence_than_none(tmp_path):
     """A stale pointer is not a decision, so it gets the same ordering as an absent marker:
     behind uv's default when that is warm, ahead of it when it is cold."""
-    # A fresh root per half: the selector RECORDS its choice, so reusing a root reads a stale marker.
+    # Fresh root per half: a reused root reads the marker the first half recorded, not a stale one.
     warm_root = tmp_path / "studio-warm"
     _warm(warm_root / "cache" / "uv")
     (warm_root / "cache" / "uv-cache-dir").write_text(

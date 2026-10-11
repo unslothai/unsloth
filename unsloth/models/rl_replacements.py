@@ -990,7 +990,7 @@ _PAD_FALLBACK = (
 def orpo_trainer_processor_pad_token(function_name, function):
     if function_name != "__init__":
         return function
-    # Older TRL lacks this block, so the sub is a no-op there.
+    # Multimodal processors keep pad/eos on .tokenizer; TRL 1.x CPO/ORPO __init__ defaults pad from eos.
     function = re.sub(
         r"(?m)^([ \t]*)if processing_class\.pad_token is None:\n"
         r"\1[ \t]+processing_class\.pad_token\s*=\s*processing_class\.eos_token\n",

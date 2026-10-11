@@ -203,7 +203,7 @@ Remove-Item -Recurse -Force -LiteralPath $parityRoot -ErrorAction SilentlyContin
 Check "Get-PathState matches bare Test-Path on every non-throwing probe ($probed)" ($mismatch -eq 0)
 Check "Denied never appears where the old probe did not throw" ($deniedWithoutThrow -eq 0)
 
-# Windows only (POSIX keeps mode-000 files stat-able).
+# Windows only (POSIX keeps mode-000 files stat-able): a denied marker must not look like a dir.
 $adoptRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_adopt_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $adoptRoot | Out-Null
 $adoptMarker = Join-Path $adoptRoot "UNSLOTH_PREBUILT_INFO.json"

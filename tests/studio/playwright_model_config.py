@@ -862,8 +862,7 @@ with sync_playwright() as p:
             info("OK reset: distinctive context cleared from unsloth_model_configs")
         shoot("08-after-reset")
 
-    # 3b. Re-typing the shown value must not pin an override (HARD): it commits no onChange, so the
-    # cached blur value must not be replayed. The box shows "Auto" until focused.
+    # Re-typing the shown value must not pin an override (HARD); Auto shows while nothing is pinned.
     step("re-typing the shown context does not pin an override", LOAD_STEP_BUDGET_S)
     # Own its state: the Reset step can close the picker, which turned this into a silent skip.
     popover = open_picker()

@@ -556,7 +556,7 @@
             (running || (dom.stopQueuedButton ? Boolean(dom.stopQueuedButton()) : false)) &&
               !generating
           ),
-          // See dom.runStateControl and analysis/parity.generation_disagrees.
+          // Run-state token: separates a scaffold diff from different turn points from a rendering diff.
           composer_control: dom.runStateControl ? dom.runStateControl() : null,
           messages,
           overlays,

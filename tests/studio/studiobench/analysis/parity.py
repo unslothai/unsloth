@@ -371,7 +371,7 @@ def settled_messages_moved(base: dict, treat: dict) -> list[str]:
     """Moved rows provably not the streamed reply: user rows both arms agree on, or role-changed rows."""
     bm, tm = _messages(base), _messages(treat)
     streaming = in_flight(base, treat)
-    # See `fence_latch_residue`.
+    # A fence scrolled past on one arm only is scroll history, not rendering; see fence_latch_residue.
     latched = set(fence_latch_residue(base, treat, streaming))
     out: list[str] = []
     for i in sorted(set(bm) & set(tm)):
@@ -478,9 +478,7 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     # Not a refusal: these messages agreed on everything but the latch.
     latched = set(fence_latch_residue(base, treat, streaming))
     skip = streaming | latched
-    # The composer is inside `.aui-thread-root`, so Stop vs Send moved the scaffold on identical rows;
-    # a null control cannot see this bias. `_run_state_disagrees` must corroborate, though it reads the
-    # same subtree: it catches a dropped or renamed control, not a wrong run-state control.
+    # Composer sits in .aui-thread-root, so Stop vs Send moves the scaffold; run state must corroborate.
     if (
         generation_disagrees(base, treat)
         and _run_state_disagrees(base, treat)

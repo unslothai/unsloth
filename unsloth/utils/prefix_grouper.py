@@ -228,7 +228,7 @@ def build_group_layout(
     device = input_ids.device
     total_rows, L = input_ids.shape
     keep = input_ids != pad_id
-    # Matches create_completion_attention_mask / _pk_cstart.
+    # Completion start column per row, matching create_completion_attention_mask / _pk_cstart.
     cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(torch.long)
     cstart_cpu = cstart.tolist()
     ids_cpu = input_ids.tolist()

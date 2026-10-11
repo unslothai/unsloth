@@ -1633,7 +1633,7 @@ def test_a_staged_download_that_ends_rolls_back_the_optimistic_quant():
         cancelled = re.search(r"onCancelled: \(\) => \{.*?\n    \},", src, re.S)
         assert cancelled, f"{rel}: staged-download onCancelled not found"
         region = cancelled.group(0)
-        # Or a late completion loads a model nobody asked for.
+        # The pending pick must be cleared, or a late completion loads a model nobody asked for.
         assert "pendingStagedLoad.current = null" in region, f"{rel}: the dead pick is kept"
         assert "quantRevert.current" in region, f"{rel}: the pending quant rollback is ignored"
         assert re.search(
@@ -2482,7 +2482,7 @@ def test_chat_autoload_records_every_validation_failure():
     autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
     assert "canAutoLoadRecordingFailures(failureLabel, {" in autoload
     assert "recordCandidateFailure(failureLabel, error)" in autoload
-    # Or it records without halting.
+    # The preflight cancellation must also go through the helper, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
     assert_guard_holds(

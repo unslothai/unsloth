@@ -1474,7 +1474,7 @@ def _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     )
     if not tunnel_will_start and os.environ.get(_UNATTENDED_PROMPT_DONE_ENV):
-        # The outer CLI already waited out this terminal. Peeked, never popped (run.py consumes it).
+        # Outer CLI already waited; peeked, never popped; never skip for a tunnel, which fails closed.
         return
     if tunnel_will_start:
         exposure = "on a public Cloudflare URL"
@@ -1612,7 +1612,7 @@ def _enforce_password_change_before_exposure(
                 "with `unsloth studio reset-password`.",
                 err = True,
             )
-            # Else the child waits its own deadline on the same pty and can trip a startup watchdog.
+            # Tell the child the terminal was already tried, or it waits its own deadline on the same pty.
             os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
             return
         except (KeyboardInterrupt, EOFError):
@@ -2532,7 +2532,7 @@ def run(
         if _sampling_value is not None:
             os.environ[_sampling_env] = str(_sampling_value)
 
-    # --log-verbose keeps llama-server's own -v passthrough working.
+    # Set before any re-exec; --log-verbose keeps the llama-server -v passthrough working.
     if verbose:
         _enable_verbose_access_logs()
         if engine == "auto" and not any(

@@ -22,7 +22,7 @@ fi
 _last="$(grep -vE '^\s*(#|$)' "$INSTALL_SH" | tail -1)"
 assert_eq "last statement invokes the wrapper" '_unsloth_main "$@"' "$_last"
 
-# Below one pipe buffer this test would prove nothing.
+# Below one 64KiB pipe buffer this test proves nothing, so it must fail loudly, not pass.
 _bytes="$(wc -c < "$INSTALL_SH" | tr -d ' ')"
 if [ "$_bytes" -gt 65536 ]; then
     echo "  PASS: install.sh ($_bytes bytes) exceeds a 64KiB pipe buffer, so this matters"

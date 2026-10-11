@@ -88,7 +88,7 @@ def test_windows_resolves_a_cuda_matched_wheel(family: str, torch_tag: str):
         url = spec.split("@", 1)[1].strip()
         assert url == f"{WHEEL_INDEX_BASE}/{family}/xformers-{version}-cp39-abi3-win_amd64.whl"
     else:
-        # The index is the install-time --index-url, so only the version can be carried here.
+        # Index is the install-time --index-url; the pin must be the version it publishes for this torch.
         assert (
             spec == f"xformers=={version}"
         ), f"{extra} must pin the {family} wheel version for torch {torch_tag}, got {spec!r}"

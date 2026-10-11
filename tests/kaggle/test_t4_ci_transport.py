@@ -498,8 +498,7 @@ def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
 
     # Unpinned: an installer that sees no device resolves a CPU-only torch.
     assert calls[STUDIO_INSTALL]["cuda"] == AMBIENT_CUDA, calls[STUDIO_INSTALL]
-    # Every leg with a card is pinned to one; the per-card split is not asserted (see
-    # test_no_card_is_ever_asked_to_hold_more_than_it_has).
+    # Every leg with a card is pinned to one card; the per-card split is unasserted by design.
     unpinned = {f"t4_{LEGS[n].name}.ipynb" for n in ALL_LEGS if LEGS[n].all_cards}
     leg_cards = [c["cuda"] for n, c in calls.items() if n.startswith("t4_") and n not in unpinned]
     assert len(leg_cards) == len(ALL_LEGS) - len(unpinned), calls

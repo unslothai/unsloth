@@ -481,7 +481,7 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
         failures.append(f"close_ms is censored: {raw.get('closeCensoredReason')}")
     ok = not failures
 
-    # A censored timing is recorded explicitly, since `_action_timings` silently drops non-numerics.
+    # A censored timing is absent, not zero, and recorded in its own field so scoring can refuse it.
     timings = {}
     if raw["openMs"] is not None:
         timings["open_ms"] = raw["openMs"]
@@ -578,7 +578,7 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
         expect = {
             "panes": raw["panes"],
             "panes_scope": "mounted",
-            # Asserted by test_studiobench_reasoning_one_live.
+            # Exactly one pane whatever the thread holds; asserted by test_studiobench_reasoning_one_live.
             "panes_opened": 1,
             "open_after_expand": raw["openCount"],
             "open_after_collapse": raw["afterClose"],
@@ -598,7 +598,7 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
 OWN_TURN_FIXED_AFTER_SEND_MS = 600 + 400 + 200
 OWN_TURN_FIXED_MS = 80 + OWN_TURN_FIXED_AFTER_SEND_MS
 
-# Non-sleep cost measured at 60-424 ms after the turn starts; 500 ms covers it.
+# Cost beyond the sleeps, measured 60-424 ms after them; 500 ms covers it.
 OWN_TURN_STOP_POLL_MS = 500
 OWN_TURN_START_POLL_MS = 200
 OWN_TURN_POLL_MS = OWN_TURN_START_POLL_MS + OWN_TURN_STOP_POLL_MS
@@ -711,7 +711,7 @@ def _reclaim_pending_turn(
     if removed is not None:
         ctx.page.wait_for_timeout(200)
 
-    # Reported separately: not-stopped and not-deleted leave the film in different states.
+    # Reported separately: deleted-but-not-stopped and stopped-but-not-deleted leave different states.
     if running is not True:
         state = f"never started within the {TURN_START_TIMEOUT_MS}ms it was worth waiting for"
     elif stopped:

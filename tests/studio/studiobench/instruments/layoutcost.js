@@ -679,7 +679,7 @@
       try {
         restoreRawState(saved);
       } catch (e2) {
-        /* nothing further to try */
+        /* Leaving inflated counters would be worse than an empty catch; there is nothing further to try. */
       }
     }
 

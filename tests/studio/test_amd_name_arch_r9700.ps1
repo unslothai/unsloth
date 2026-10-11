@@ -37,7 +37,7 @@ function Resolve-Arch($table, $name) {
     return $null
 }
 
-# Plus the spellings WMI and amd-smi vary between.
+# The card as its reporters name it, plus the spellings WMI and amd-smi vary between.
 $r9700Names = @(
     "AMD Radeon AI PRO R9700",
     "AMD Radeon(TM) AI PRO R9700",

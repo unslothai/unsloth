@@ -2430,7 +2430,7 @@ def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
     # --force skips only the sampling draw; the gate already rolled it.
     assert "--force true" in recheck["run"]
     assert "--reserve-hours" in recheck["run"] and "--kernels" in recheck["run"]
-    # Checked on the dispatch step's condition, not step order, since collection sits between.
+    # Nothing that spends a session runs unless approved; test the dispatch condition, not step order.
     dispatch = steps[names.index("Dispatch to Kaggle")]
     assert "steps.recheck.outputs.should_run == 'true'" in dispatch["if"]
 

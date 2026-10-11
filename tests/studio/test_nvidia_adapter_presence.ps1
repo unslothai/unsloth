@@ -285,7 +285,7 @@ Check "the python floor table was found" ($tableMatch.Success)
 $pyRows = @([regex]::Matches($tableMatch.Groups[1].Value, '\((\d+),\s*\((\d+),\s*(\d+)\)\)') |
     ForEach-Object { "$($_.Groups[1].Value):$($_.Groups[2].Value).$($_.Groups[3].Value)" })
 Check "the python table has rows to compare (bites)" ($pyRows.Count -ge 5)
-# The table lives in Get-NvidiaCudaFloorForRelease, not Get-NvidiaDriverCudaFloor.
+# Get-NvidiaDriverCudaFloor no longer holds the table; reading it would pass on an empty list.
 $psRows = @([regex]::Matches((Get-FunctionText $setupPs1 "Get-NvidiaCudaFloorForRelease"), '@\((\d+),\s*(\d+),\s*(\d+)\)') |
     ForEach-Object { "$($_.Groups[1].Value):$($_.Groups[2].Value).$($_.Groups[3].Value)" })
 Check "the PowerShell floor table matches nvidia_probe.py exactly" (($pyRows -join ",") -eq ($psRows -join ","))

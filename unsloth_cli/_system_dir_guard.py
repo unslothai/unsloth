@@ -545,7 +545,7 @@ def _anchor(
         # llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to Path(), so expand ~ now.
         value = (expanduser or pathmod.expanduser)(value)
     if name in _EXPANDED_ENV and value:
-        # Written out so readers that expand and that do not agree. Unset variables stay as written.
+        # Written out so the reader that expands and the one that does not land in the same folder.
         expandvars = expandvars or _os.path.expandvars
         settled = _expand_settled(value, expandvars)
         if settled is None:

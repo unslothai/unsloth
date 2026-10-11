@@ -18,7 +18,7 @@ def _source() -> str:
 def test_a_shared_home_under_ab_is_refused_rather_than_warned():
     source = _source()
     assert "if not args.attach and args.home:" in source, "the A/B path must refuse a shared home"
-    # `return 2` is the CLI's usage-error code.
+    # A refusal, not a log line that scrolls past; return 2 is the CLI usage-error code.
     guard = source[source.index("if not args.attach and args.home:") :]
     assert "return 2" in guard[:900], "the guard must exit non-zero, not merely print"
 

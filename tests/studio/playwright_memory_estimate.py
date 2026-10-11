@@ -745,7 +745,7 @@ with sync_playwright() as p:
     else:
         info("OK row: Estimated Memory Usage rendered for the GGUF target")
         if "role=button" not in _match_note:
-            # Only the structural locator found it, so something hides the toggle from the accessibility tree.
+            # Found only by the structural locator: not reachable by role, hidden or misnamed; cause unproven.
             runtime_warn(
                 "the row was found only by markup, not by role=button: a screen "
                 "reader would not announce this toggle"

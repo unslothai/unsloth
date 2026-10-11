@@ -1062,7 +1062,7 @@ class TestVulkanAdvice:
             window = "\n".join(
                 line for line in _arm_window(lines, i) if not line.lstrip().startswith(("#", "//"))
             )
-            # Arms are hard-wrapped differently; 'Vulkan' is case-sensitive so the lowercase setter cannot stand in.
+            # Both halves are required: GGUF chat and the Vulkan backend, with Vulkan matched case-sensitively.
             assert "GGUF chat" in window and "Vulkan" in window, (
                 f"{path.name}:{i + 1}: this arm dead-ends without offering GPU GGUF chat "
                 f"through Vulkan:\n{window}"

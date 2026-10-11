@@ -3036,7 +3036,7 @@ class TestInstallShStructure:
         if not shell:
             pytest.skip("bash needed to execute the version chain")
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
-        # 'version-file' is /opt/rocm/.info/version, not a PATH tool.
+        # Whichever position holds the 6.4 reading must win; version-file is /opt/rocm/.info/version.
         outputs = {
             "amd-smi": "AMDSMI Tool: 25.0.1 | ROCm version: {v}",
             "version-file": "{v}.1-98",
@@ -7442,7 +7442,7 @@ class TestInstallShDropinPersistence:
     def test_gate5_early_return_persists_dropin(self):
         """The rocminfo-already-works early return must call the persist helper before returning."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The rocminfo GPU-agent gate is the one with the `!/generic/` clause.
+        # The persist call must precede return 0 at the rocminfo gate with the !/generic/ clause.
         gate = source.find("Name:[[:space:]]*gfx[1-9]/ && !/generic/")
         assert gate != -1
         window = source[gate : gate + 900]

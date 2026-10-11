@@ -96,7 +96,7 @@ def test_jupyterlab_is_pinned_to_the_cuda_core_image():
 
 
 NOT_MIRRORED = {
-    # No ROCm wheel exists for torchcodec.
+    # No torchcodec wheel on any pytorch.org rocm leaf; notebook installs of it are forwarded.
     "torchcodec",
     # The ROCm base already carries a newer protobuf than the CUDA pin.
     "protobuf",

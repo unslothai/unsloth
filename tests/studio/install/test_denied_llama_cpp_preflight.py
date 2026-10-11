@@ -371,7 +371,7 @@ def test_the_security_software_holding_the_folder_is_named() -> None:
         assert "catch { $mode = $null }" in body
         assert "catch { $others = @() }" in body
         assert _normalized(body).rstrip().endswith('return ""\n}')
-        # Mode 1 blocks file access; 2 is audit only, 3 and 4 cover disk-sector writes.
+        # Only mode 1 blocks file access; 2 only audits; 3 and 4 are disk writes and cannot be the cause
         assert "$mode -eq 1" in body
         assert "$mode -eq 2" in body
         assert "$mode -eq 3" not in body and "$mode -eq 4" not in body

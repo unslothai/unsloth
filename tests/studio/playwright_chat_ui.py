@@ -2335,7 +2335,7 @@ with sync_playwright() as p:
             pw_field = page.locator("#password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
             page.keyboard.press("Control+,")
-            # A "nothing may happen" window: 5.5 s spans more than one monitor poll interval.
+            # No /api/system request may go out while /login is up; 5.5 s spans more than one monitor poll.
             try:
                 wait_until(
                     lambda: len(system_requests) != login_system_request_count,

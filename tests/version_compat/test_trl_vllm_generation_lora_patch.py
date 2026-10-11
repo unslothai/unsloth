@@ -15,7 +15,7 @@ import types
 import pytest
 
 
-# daily-fresh-fetch collects tests/version_compat/ with only pytest.
+# Collection must stay cheap and safe with no runtime; daily-fresh-fetch collects with only pytest.
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed; this test drives the real patch", allow_module_level = True)
 

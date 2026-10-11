@@ -122,7 +122,7 @@ def _plugin_ref() -> str | None:
     return None
 
 
-# Only these two are required: unsloth_zoo subclasses / patches them; others are hasattr-checked.
+# Only these two are required: zoo subclasses/replaces them; apply_bnb_4bit is hasattr-checked.
 VLLM_BNB_SYMBOLS = (
     "BitsAndBytesConfig",
     "BitsAndBytesLinearMethod",

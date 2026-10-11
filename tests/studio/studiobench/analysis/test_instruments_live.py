@@ -180,7 +180,7 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
     except Exception as exc:  # noqa: BLE001
         fail(f"window row is not JSON-safe: {exc}")
 
-    # Consumed by the report layer's overhead_growth_with_length gate.
+    # Overhead is mandatory from every instrument at level 1 or higher; the report gate consumes it.
     for name, payload in crows.items():
         if "overhead_ms" not in payload or "overhead_ms_attempted" not in payload:
             fail(f"{name}.end_cell has no overhead_ms/overhead_ms_attempted")

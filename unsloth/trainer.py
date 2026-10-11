@@ -1548,7 +1548,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         forward_rejects_packing = not _forward_accepts_packing_kwargs(model)
         _packing_gate_deferred = model is None or isinstance(model, str)
-        # After __init__ the only move left is to refuse: the collator is already built from the flags.
+        # Resolve the class a string names so it is a silent block like the rest; after __init__ only refuse.
         _resolved_class = None
         if _packing_gate_deferred and isinstance(model, str):
             try:

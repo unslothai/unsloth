@@ -216,7 +216,7 @@ $source = Get-Content -LiteralPath $installPs1 -Raw
 Check "no emitted shell-icon type is left to try first" ($source -notmatch "UnslothShellIconRefresh")
 Check "the refresh goes straight through the child interpreter" (
     $source -match "Invoke-StudioPythonShellIconRefresh")
-# Single-quoted, so PowerShell does not eat the `$ as an escape.
+# Cosmetic and must stay that way: a failure here cannot be allowed to fail the install.
 Check "the call is still wrapped so a failure cannot fail the install" (
     $source -match '(?s)try \{[^{}]*Invoke-StudioPythonShellIconRefresh[^{}]*\} catch \{\}')
 

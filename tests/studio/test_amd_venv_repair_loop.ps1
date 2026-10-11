@@ -199,7 +199,7 @@ Check "CRLF is normalised, not tolerated" (-not (($setupText -replace "`n", "`r`
 Check "the healthy/all choice is @() wrapped" (
     $_wmi -match '\$wmiGpus = @\(if \(\$healthyGpus\.Count -gt 0\) \{ \$healthyGpus \} else \{ \$amdGpus \}\)')
 Check "the unwrapped form is gone"        (-not ($_wmi -match '\$wmiGpus = if \('))
-# Where-Object also returns a scalar on one match.
+# Wrapped in @() for the same reason: Where-Object returns a bare scalar when one item matches.
 Check "the adapter list is @() wrapped"   ($_wmi -match '\$amdGpus = @\(Get-CimInstance')
 Check "the healthy list is @() wrapped"   ($_wmi -match '\$healthyGpus = @\(\$amdGpus \| Where-Object')
 
@@ -661,7 +661,7 @@ foreach ($case in $_cases) {
 }
 Remove-Item Env:UNSLOTH_INSTALLER_TORCH_TAG -ErrorAction SilentlyContinue
 
-# Prove the hazard: reading an unassigned variable throws under Set-StrictMode.
+# The guard must not read $expectedTorchTag before $installedTorchTag is assigned (StrictMode throws)
 $_strictUnassignedThrew = $false
 try {
     & {

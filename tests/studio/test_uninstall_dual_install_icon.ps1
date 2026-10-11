@@ -11,7 +11,7 @@ $uninstallPath = (Resolve-Path $uninstallPath).Path
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($uninstallPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "uninstall.ps1 has parse errors" }
-# The helper delegates deletion to _RemoveTreeKeeping, so both must be extracted.
+# Delegates deletion to _RemoveTreeKeeping so a dir kept by an earlier pass survives removal.
 $wanted = @("_RemoveDataDirKeepingWslIcon", "_RemoveTreeKeeping")
 $fn = @()
 foreach ($name in $wanted) {

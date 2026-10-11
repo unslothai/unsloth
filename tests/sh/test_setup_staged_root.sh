@@ -37,8 +37,7 @@ for v in VenvDir VenvT5_530Dir VenvT5_550Dir VenvT5_510Dir; do
         "$(grep -qE "^\\\$${v} = Join-Path \\\$RuntimeRoot " "$SETUP_PS1" && echo 0 || echo 1)"
 done
 
-# The migration branch is the `elif` (the offline fast path owns the `if`). Anchors are
-# asserted non-empty so a reshape fails here instead of grepping an empty string.
+# Legacy sidecar delete must not run in a staged run, or the live install loses its sidecar.
 _sh_legacy=$(sed -n '/^elif \[ -d "\$STUDIO_HOME\/\.venv_t5" \]; then$/,/^fi$/p' "$SETUP_SH")
 check "setup.sh legacy sidecar block found" \
     "$([ -n "$_sh_legacy" ] && echo 0 || echo 1)"

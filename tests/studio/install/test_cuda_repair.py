@@ -1262,7 +1262,7 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         assert "--force-reinstall" in [str(a) for a in mock_pip.call_args.args]
 
     def test_a_published_cpu_tag_with_no_pin_is_still_left_alone(self):
-        # setup.ps1 publishes "cpu" when nvidia-smi answers nothing.
+        # setup.ps1 publishes cpu when nvidia-smi finds nothing; a healthy cu124 venv must not be downgraded
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.6.0+cu124",
             expected_env = "cpu",

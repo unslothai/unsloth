@@ -1068,7 +1068,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
             "function Initialize-WoaNativeCudaTorch {\n        param([string]$PythonMinor,"
             " [bool]$FreeThreaded = $false)" in INSTALL_SRC
         )
-        # A same-minor free-threaded build re-probes too.
+        # Both re-probes must answer for the chosen interpreter, so both pass its free-threaded flag.
         assert INSTALL_SRC.count("Test-PythonFreeThreaded -PythonExe $DetectedPython.Path") == 2
         assert "-FreeThreaded $WoaDetectedFreeThreaded" in INSTALL_SRC
         assert "-FreeThreaded $_woaNewFreeThreaded" in INSTALL_SRC

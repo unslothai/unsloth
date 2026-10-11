@@ -4448,7 +4448,7 @@ class FastBaseModel:
                 and hasattr(model.vllm_engine.llm_engine, "vllm_config")
                 and getattr(model.vllm_engine.llm_engine.vllm_config, "lora_config", None) is None
             ):
-                # See vllm v1/engine/processor.py#L148-L151.
+                # Raise when vLLM is used without LoRA enabled; see vllm v1/engine/processor.py lines 148-151.
                 raise RuntimeError("Unsloth: LoRA is not enabled for this model!")
             if finetune_vision_layers:
                 # vLLM does not support LoRA on vision layers; see vllm lora/models.py#L471-L477.
@@ -4470,7 +4470,7 @@ class FastBaseModel:
             loftq_config, lora_dropout, bias, init_lora_weights, model, r
         )
 
-        # Prefer the caller's leaf list so an attention-only request does not train experts.
+        # Prefer leaf list passed by caller over scoped regex only while MLP and language are in scope.
         _moe_module_detect = _select_moe_detection_targets(
             _moe_detect_target,
             target_modules,

@@ -610,7 +610,7 @@ else
     bad "a fish path with a space is written as one quoted argument ($_fish_line)"
 fi
 
-# The rc line is double-quoted, so $ or a backtick in the path must not be expanded.
+# The rc line is double-quoted, so $ or a backtick in a uv dir is expanded, not kept as a path.
 mkdir -p "$WORK/uvmeta_home/.local/bin" "$WORK/uvmeta_home/opt/a\$b/bin"
 : > "$WORK/uvmeta_home/.bashrc"
 (

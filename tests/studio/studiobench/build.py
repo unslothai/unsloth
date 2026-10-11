@@ -23,7 +23,7 @@ def _copy_package(staging: Path) -> None:
     target = staging / "tests" / "studio" / "studiobench"
     target.parent.mkdir(parents = True, exist_ok = True)
     shutil.copytree(PKG, target, ignore = shutil.ignore_patterns(*EXCLUDE_DIRS, "*.pyc", "*.pyo"))
-    # tests and tests/studio are not packages in the repo but must be inside the archive.
+    # Tests and tests/studio must be importable packages in the archive, though not in the repo.
     for pkg_dir in (staging / "tests", staging / "tests" / "studio"):
         init = pkg_dir / "__init__.py"
         if not init.exists():

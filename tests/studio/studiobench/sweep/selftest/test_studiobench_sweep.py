@@ -128,7 +128,7 @@ def test_gate_three_does_not_fire_on_a_tight_large_effect(tmp_path):
 
 
 def test_gate_three_cannot_fire_on_a_single_pair(tmp_path):
-    # With n=1 the spread is 0 by construction.
+    # With n=1 the spread is 0 by construction, so a single reading must not pass as scatter-checked.
     result = F.summarise([payload(tmp_path, "result", [(1000.0, 500.0)])])
     assert result["message_menu.open_close_ms"]["n"] == 1
     _f, v = F.verdict_for(

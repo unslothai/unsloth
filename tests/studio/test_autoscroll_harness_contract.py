@@ -87,7 +87,7 @@ def test_harnesses_report_why_the_page_failed() -> None:
 
 
 def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
-    # The live log dies with the runner; these artifacts are what remains.
+    # Keep the screenshot, body excerpt and vite transform errors; the live log dies with the runner.
     text = source("playwright_strip_ansi_smoke.py")
     assert "dump(page, vite)" in text, "the assertions do not run under the dump"
     assert "dump_diagnostics(page, ART" in text

@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parents[2]
 TESTS = REPO / "tests" / "studio"
 LINT = REPO / ".github" / "workflows" / "workflow-trigger-lint.yml"
 
-# Modules that read a workflow file but cannot run in that job; shrink, do not grow.
+# Modules that read a workflow file but cannot run in that job; growing it needs a written reason.
 EXEMPT = {
     # Imports PIL, which that lint job deliberately does not install.
     "test_tauri_branding_contract.py",

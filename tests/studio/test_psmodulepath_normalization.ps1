@@ -75,7 +75,7 @@ while ($pending.Count -gt 0) {
 }
 Check "the closure found Refresh-Environment's own helpers (bites)" ($needed.Count -ge 1)
 
-# Off Windows this only proves the function is callable; the AST check holds the line.
+# Registry reload must not clobber a normalized PSModulePath; off Windows only callability runs.
 $savedPath = $env:Path
 $savedModulePath = $env:PSModulePath
 try {

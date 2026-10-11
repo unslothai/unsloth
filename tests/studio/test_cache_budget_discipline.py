@@ -186,8 +186,7 @@ def _composite_actions():
 #: `workflow_call` runs on the caller's ref, so a PR caller saves on the PR ref.
 _PR_REACHABLE_TRIGGERS = frozenset({"pull_request", "pull_request_target", "workflow_call"})
 
-#: The only triggers that never run on a PR's ref; anything not listed (incl. `merge_group` and
-#: future events) stays indicted.
+# Triggers that never run on a PR ref unprompted; unlisted events such as merge_group stay indicted.
 _REF_SAFE_TRIGGERS = frozenset({"schedule", "repository_dispatch", "workflow_dispatch"})
 
 

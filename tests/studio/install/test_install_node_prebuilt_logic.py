@@ -889,7 +889,7 @@ def test_pins_manifest_ships_next_to_installer():
 
 
 def test_pins_manifest_is_declared_in_package_data():
-    # tomllib is stdlib only on 3.11+; fall back to tomli.
+    # The pins manifest must ship in package data: an unpackaged trust anchor is no trust anchor
     tomllib = pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
     data = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
