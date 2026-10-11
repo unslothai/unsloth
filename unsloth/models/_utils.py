@@ -6864,7 +6864,8 @@ def save_lora_relative_to_original_base(model):
                         config[pattern] = {**pinned, **doubled}
                 config.pop("lora_ga_config", None)
                 with open(path, "w", encoding = "utf-8") as f:
-                    json.dump(config, f, indent = 2, sort_keys = True)
+                    # No sort_keys: it would reorder the patterns PEFT matches first-come.
+                    json.dump(config, f, indent = 2)
         return out
 
     @functools.wraps(original_load)
@@ -6875,8 +6876,8 @@ def save_lora_relative_to_original_base(model):
         **kwargs,
     ):
         native = None
-        if adapter_name in model.peft_config and isinstance(model_id, str):
-            folder = os.path.join(model_id, kwargs.get("subfolder") or "")
+        if adapter_name in model.peft_config and isinstance(model_id, (str, os.PathLike)):
+            folder = os.path.join(os.fspath(model_id), kwargs.get("subfolder") or "")
             if os.path.isdir(folder):
                 native = _native_from_converted(model, adapter_name, folder)
         if native is None:

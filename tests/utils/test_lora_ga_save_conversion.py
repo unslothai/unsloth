@@ -25,7 +25,11 @@ def _base():
     return AutoModelForCausalLM.from_pretrained(MODEL, dtype = torch.float32)
 
 
-def _lora_ga_model(seed, extra_targets = ()):
+def _lora_ga_model(
+    seed,
+    extra_targets = (),
+    **config_kwargs,
+):
     torch.manual_seed(seed)
     model = _base()
     config = LoraConfig(
@@ -35,6 +39,7 @@ def _lora_ga_model(seed, extra_targets = ()):
         target_modules = ["q_proj", "v_proj", "down_proj", *extra_targets],
         init_lora_weights = "lora_ga",
         lora_ga_config = LoraGAConfig(),
+        **config_kwargs,
     )
     ids = torch.randint(
         0, model.config.vocab_size, (2, 12), generator = torch.Generator().manual_seed(0)
@@ -98,6 +103,18 @@ def test_embedding_targets_keep_their_rank(tmp_path):
     torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
 
 
+def test_user_pattern_does_not_shadow_the_embedding_pin(tmp_path):
+    # "embed_tokens" sorts before the pin and would resolve the embedding to the doubled rank.
+    model = _lora_ga_model(
+        seed = 3407, extra_targets = ["embed_tokens"], rank_pattern = {"embed_tokens": R}
+    )
+    _train(model)
+    reference = _logits(model)
+    model.save_pretrained(tmp_path)
+    reloaded = PeftModel.from_pretrained(_base(), tmp_path)
+    torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
+
+
 def test_empty_adapter_selection_saves_nothing(trained, tmp_path):
     model, _ = trained
     model.save_pretrained(tmp_path, selected_adapters = [])
@@ -120,12 +137,13 @@ def test_trainer_state_dict_save_is_converted(trained, tmp_path):
     torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
 
 
-def test_resume_into_live_model_restores_rank_r(trained, tmp_path):
+@pytest.mark.parametrize("as_path", [False, True])
+def test_resume_into_live_model_restores_rank_r(trained, tmp_path, as_path):
     model, reference = trained
     model.save_pretrained(tmp_path)
     saved = _lora_state(model)
     _train(model, seed = 2)
-    model.load_adapter(str(tmp_path), "default", is_trainable = True)
+    model.load_adapter(tmp_path if as_path else str(tmp_path), "default", is_trainable = True)
     for n, p in model.named_parameters():
         if "lora_" in n:
             assert p.shape == saved[n].shape and p.requires_grad
