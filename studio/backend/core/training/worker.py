@@ -1347,7 +1347,7 @@ def _attempt_package_install(
     wheel_rejected = False
 
     env = probe_torch_wheel_env(timeout = 30, include_windows = True)
-    # Windows is wheel-only: nothing upstream is published for it, and a PyPI fallback is a source build that needs MSVC and the CUDA toolkit.
+    # Windows is wheel-only: a PyPI fallback there is a source build needing MSVC + the CUDA toolkit.
     wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     if wheel_url_builder is not None:
         wheel_url = wheel_url_builder(env)
@@ -1399,7 +1399,6 @@ def _attempt_package_install(
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
 
     if wheel_only:
-        # A rejected wheel is removed by the caller's cleanup, which runs on every exit.
         logger.info("%s: no usable prebuilt wheel for Windows; skipping", display_name)
         return False
 
@@ -1560,7 +1559,7 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
         return
 
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
-        # mamba_ssm imports triton at package load and the wheel is installed --no-deps, so it would never import.
+        # mamba_ssm imports triton at load and the wheel goes in --no-deps.
         _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
         return
 
@@ -2010,7 +2009,6 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
         return False
     if max_seq_length < _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
         return False
-    # Windows resolves only listed wheels and never falls back to PyPI (_attempt_package_install).
     return sys.platform.startswith("linux") or sys.platform == "win32"
 
 

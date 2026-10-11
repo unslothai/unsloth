@@ -457,7 +457,6 @@ def test_is_importable_treats_broken_kernel_as_not_importable(monkeypatch, exc):
 
 
 def test_causal_conv1d_attempted_on_windows(monkeypatch):
-    # Windows now has prebuilt causal-conv1d wheels; _install_kernel keeps it wheel-only there.
     monkeypatch.setattr(ssm_runtime.sys, "platform", "win32")
     installed = []
     monkeypatch.setattr(
@@ -487,7 +486,6 @@ def test_ssm_model_on_windows_installs_causal_then_mamba_with_triton(monkeypatch
 
 
 def test_ssm_model_on_windows_without_triton_fails_clearly(monkeypatch):
-    # mamba_ssm imports triton at load and the wheel goes in --no-deps, so it would install and never import.
     monkeypatch.setattr(ssm_runtime.sys, "platform", "win32")
     monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda name, *a: None)
     installed = []

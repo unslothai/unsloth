@@ -278,7 +278,6 @@ def _install_kernel(
         return False
 
     env = probe_torch_wheel_env(timeout = 30, include_windows = True)
-    # Windows is wheel-only: no source toolchain is assumed, and a chat load must not stall in a build.
     wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     wheel_url = direct_wheel_url(
         filename_prefix = import_name,
@@ -314,7 +313,6 @@ def _install_kernel(
                 return True
             if outcome == "rejected":
                 if wheel_only:
-                    # Left installed, the next import finds it by metadata and fails the same way.
                     removed = (
                         run(
                             uninstall_command(pypi_name, use_uv = bool(shutil.which("uv"))),
@@ -402,7 +400,6 @@ def ensure_ssm_runtime(
     if not (wants_causal_conv1d or is_ssm):
         return
 
-    # Windows never source-builds here (see _install_kernel): a missing wheel is a quick torch fallback, not a chat load stalled in a build.
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
     if wants_causal_conv1d and not _install_kernel(
         **_pinned_kwargs(CAUSAL_CONV1D), status_cb = status_cb, run = run
@@ -410,7 +407,7 @@ def ensure_ssm_runtime(
         logger.warning("causal-conv1d unavailable; continuing on the model's torch fallback")
 
     if is_ssm and sys.platform == "win32" and importlib.util.find_spec("triton") is None:
-        # mamba_ssm imports triton at package load, and the wheel is installed --no-deps, so it would install and then never import.
+        # mamba_ssm imports triton at load and the wheel goes in --no-deps.
         raise RuntimeError(
             "mamba-ssm, required by this Mamba model, needs Triton on Windows "
             "(the triton-windows package); install it and reload the model."

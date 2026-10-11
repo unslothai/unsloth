@@ -333,7 +333,6 @@ class TestStepTotals:
         # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the
         # no-torch case also gets the runtime-deps slot an update announces separately. Both also
         # carry the diffusers main slot (11c), which is spent on every path including opting out.
-        # With torch, Windows also spends the flash-attn slot.
         assert _base_total(IS_WINDOWS = True) == 18
         assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 16
 

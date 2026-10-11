@@ -38,9 +38,6 @@ def env(**overrides):
     return base
 
 
-# ── win_amd64: our release, upstream naming ──────────────────────────────────
-
-
 @pytest.mark.parametrize("torch_mm", ["2.13", "2.14"])
 def test_win_amd64_resolves_every_kernel_to_our_release(torch_mm):
     e = env(torch_mm = torch_mm)
@@ -94,9 +91,6 @@ def test_no_windows_url_ever_names_an_upstream_release():
                 assert url is None or "Dao-AILab" not in url and "state-spaces" not in url
 
 
-# ── win_arm64: NVIDIA's flash-attn, pinned by sha256 ─────────────────────────
-
-
 @pytest.mark.parametrize(
     ("python_tag", "abi_tag"),
     [
@@ -122,7 +116,6 @@ def test_win_arm64_flash_attn_is_nvidias_wheel_with_its_sha256(python_tag, abi_t
         f"{NVIDIA}flash_attn-2.8.4+cu13torch2.14-{python_tag}-{abi_tag}-win_arm64.whl#sha256={digest}"
     )
     assert len(digest) == 64 and int(digest, 16) >= 0
-    # The fragment never reaches logs, and the CLI's filename display drops it with the path.
     assert "#" not in wheel_utils.redact_url_credentials(url)
 
 
@@ -156,9 +149,6 @@ def test_an_env_without_abi_tag_is_read_as_a_gil_build():
     e = env()
     del e["abi_tag"]
     assert wheel_utils.flash_attn_wheel_url(e) is not None
-
-
-# ── Linux: byte for byte as before ───────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -201,9 +191,6 @@ def test_linux_free_threaded_keeps_resolving_as_before():
     )
 
 
-# ── platform tag and probe gate ──────────────────────────────────────────────
-
-
 def test_windows_probe_is_opt_in_for_both_windows_tags(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -220,7 +207,6 @@ def test_windows_probe_is_opt_in_for_both_windows_tags(monkeypatch):
 
 
 def test_probe_reports_abi_tag():
-    # The real probe source, run here against this interpreter without torch.
     probe = subprocess.run(
         [
             sys.executable,
@@ -239,9 +225,6 @@ def test_probe_reports_abi_tag():
         "'abi_tag': f'cp{sys.version_info.major}{sys.version_info.minor}' + ('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else '')"
         in source
     )
-
-
-# ── unsloth install-kernels CLI ──────────────────────────────────────────────
 
 
 def test_cli_resolves_windows_kernels():

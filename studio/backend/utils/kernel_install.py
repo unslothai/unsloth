@@ -209,7 +209,6 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
         return None
     if name == "xformers":
         return xformers_wheel_url(env)
-    # flash-attn, causal-conv1d and mamba-ssm publish Linux wheels, plus the Windows ones wheel_utils lists.
     if not str(env.get("platform_tag") or "").startswith(("linux", "win_")):
         return None
     if name == "flash_attn":
@@ -350,8 +349,7 @@ def install_kernel(
     if url is None or exists(url) is False:
         print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
         return 0
-    # mamba_ssm imports triton at module load, and on Windows that is triton-windows, which the
-    # wheel's metadata cannot name. The training worker and ssm_runtime gate on it the same way.
+    # mamba_ssm imports triton at load; on Windows that is triton-windows, which its metadata cannot name.
     if name == "mamba_ssm" and sys.platform == "win32" and not _loads("import triton", run):
         print(
             "Unsloth: skipping mamba_ssm, which needs Triton on Windows; "

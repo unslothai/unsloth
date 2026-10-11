@@ -8392,8 +8392,7 @@ def _ensure_flash_attn() -> None:
     if _flash_attn_importable():
         return
 
-    # Windows resolves only to the wheels wheel_utils lists for it; nothing here falls back to a source build.
-    # Bounded there like the import probe above: a wedged `import torch` on a Windows driver must not hang setup.
+    # Bounded like the import probe: a wedged Windows driver must not hang setup.
     env = probe_torch_wheel_env(
         timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT if IS_WINDOWS else None,
         include_windows = True,
@@ -8439,7 +8438,6 @@ def _ensure_flash_attn() -> None:
 
     if wheel_url is None:
         if IS_WINDOWS:
-            # Expected for most Windows torch builds (only cu13 torch 2.13 / 2.14 have one), so not a warning.
             _note("no flash-attn prebuilt wheel for this torch build; skipped")
         else:
             _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)

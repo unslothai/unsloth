@@ -1488,9 +1488,6 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
     assert "HIPCC_COMPILE_FLAGS_APPEND" not in captured
 
 
-# ── Windows: wheel-only installs ─────────────────────────────────────────────
-
-
 def _as_windows(monkeypatch):
     monkeypatch.setattr(worker.sys, "platform", "win32")
     # shutil.which consults sys.platform, and a Linux host cannot answer as Windows.
@@ -1593,5 +1590,4 @@ def test_windows_rejected_wheel_does_not_fall_back_to_pypi(monkeypatch):
         monkeypatch, wheel_url = "https://x/fa.whl", exists = True, importable_after_install = False
     )
     assert ok is False and installed is True
-    # The caller's finally (_reject_install) removes it; nothing here reaches PyPI.
     assert runs == []

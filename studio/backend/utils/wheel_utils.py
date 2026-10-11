@@ -44,7 +44,6 @@ def wheel_platform_tag() -> str | None:
     elif sys.platform == "win32":
         if machine in {"x86_64", "amd64"}:
             return "win_amd64"
-        # Windows on ARM: CUDA torch comes from NVIDIA's index (pypi.nvidia.com/nvtorch_oot), and NVIDIA publishes a matching flash-attn.
         if machine in {"arm64", "aarch64"}:
             return "win_arm64"
     # No prebuilt wheels published for macOS
@@ -54,7 +53,7 @@ def wheel_platform_tag() -> str | None:
 def probe_torch_wheel_env(
     *, timeout: int | None = None, include_windows: bool = False
 ) -> dict[str, str] | None:
-    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``: a caller opts in only once every URL it can build on Windows names a published asset, since upstream flash-attn / causal-conv1d / mamba-ssm publish no Windows wheels at all and an env there would otherwise build 404s."""
+    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``, for callers whose every Windows URL names a published asset."""
     platform_tag = wheel_platform_tag()
     if platform_tag is None:
         return None
@@ -73,7 +72,7 @@ def probe_torch_wheel_env(
                     "torch_mm = parts[0] + '.' + minor; "
                     "print(json.dumps({"
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
-                    # The ABI tag differs from python_tag only on a free-threaded build (cp314t), which needs its own wheel.
+                    # Differs from python_tag only on a free-threaded build (cp314t).
                     "'abi_tag': f'cp{sys.version_info.major}{sys.version_info.minor}' + ('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else ''), "
                     "'torch_mm': torch_mm, "
                     # xFormers publishes one wheel per exact torch PATCH and per CUDA MINOR, so 'torch_mm' / 'cuda_major' cannot pick between them. Full release + full CUDA version: cu126 and cu128 are different builds of the same version string.
@@ -132,13 +131,13 @@ _UNSLOTH_PREBUILT_VERSIONS = {
     "mamba_ssm": "2.3.2.post1",
 }
 
-# platform_tag -> (the cxx11abi field in the filename, the interpreters published, None for "any"). The filename is upstream's own template on both, which copies torch._C._GLIBCXX_USE_CXX11_ABI verbatim; the Windows cu130 torch 2.13 / 2.14 wheels report True too (measured on windows-2022), so both read cxx11abiTRUE. Linux answers for any interpreter, as it always has; Windows only for the cp313 GIL build the workflow publishes, so a 3.12 or free-threaded venv resolves to nothing instead of a 404.
+# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True; Windows publishes cp313 GIL builds only.
 _UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
     "linux_x86_64": ("TRUE", None),
     "win_amd64": ("TRUE", frozenset({"cp313"})),
 }
 
-# NVIDIA's own flash-attn build for Windows on ARM (NVIDIA/pytorch-windows-ci, release Flash-Attention-for-WoA), built for the torch 2.14.0+cu134 the WoA installer takes from pypi.nvidia.com/nvtorch_oot. Not ours to sign, so each file is pinned by the sha256 GitHub reports for the asset and the URL carries it as a #sha256= fragment, which uv and pip both verify before installing (a mismatch fails the install). Keyed on the ABI tag, since cp314t is a separate wheel.
+# NVIDIA's flash-attn for Windows on ARM, built for the torch 2.14.0+cu134 the WoA installer takes. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
 NVIDIA_WOA_FLASH_ATTN_RELEASE_URL = (
     "https://github.com/NVIDIA/pytorch-windows-ci/releases/download/Flash-Attention-for-WoA"
 )
@@ -154,7 +153,7 @@ NVIDIA_WOA_FLASH_ATTN_SHA256 = {
 
 
 def is_windows_wheel_env(env: dict[str, str] | None) -> bool:
-    """True for a Windows env. There, a kernel comes from a listed wheel or not at all: nothing upstream is published for Windows, and a PyPI fallback is an unbounded source build that needs MSVC and the CUDA toolkit."""
+    """True for a Windows env, where a kernel comes from a listed wheel or not at all."""
     return bool(env) and str(env.get("platform_tag") or "").startswith("win_")
 
 
@@ -165,7 +164,6 @@ def nvidia_woa_flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     if env.get("torch_mm") != NVIDIA_WOA_FLASH_ATTN_TORCH_MM or env.get("cuda_major") != "13":
         return None
     python_tag = env.get("python_tag") or ""
-    # An env from before the probe reported abi_tag is a GIL build.
     abi_tag = env.get("abi_tag") or python_tag
     digest = NVIDIA_WOA_FLASH_ATTN_SHA256.get(abi_tag)
     if not python_tag or digest is None or not abi_tag.startswith(python_tag):
@@ -202,7 +200,6 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     if published_pythons is not None:
         if python_tag not in published_pythons:
             return None
-        # A free-threaded interpreter (cp313t) cannot load the cp313 GIL build.
         if (env.get("abi_tag") or python_tag) != python_tag:
             return None
     package_version = _UNSLOTH_PREBUILT_VERSIONS.get(filename_prefix)
@@ -233,7 +230,7 @@ def direct_wheel_url(
     ours = unsloth_prebuilt_wheel_url(filename_prefix = filename_prefix, env = env)
     if ours is not None:
         return ours
-    # No upstream release has ever published a Windows asset, so the upstream name would only 404.
+    # No upstream release has a Windows asset.
     if is_windows_wheel_env(env):
         return None
 
