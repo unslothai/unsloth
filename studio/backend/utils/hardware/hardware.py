@@ -3286,6 +3286,10 @@ def _windows_amd_adapter_records_or_none(
                         family, _ = winreg.QueryValueEx(adapter_key, "AdapterFamily")
                     except OSError:
                         family = ""
+                    try:
+                        driver_version, _ = winreg.QueryValueEx(adapter_key, "DriverVersion")
+                    except OSError:
+                        driver_version = None
                     dedicated_memory_bytes = 0
                     has_dedicated_memory = False
                     for value_name in ("DedicatedVideoMemory", "DedicatedSystemMemory"):
@@ -3307,11 +3311,159 @@ def _windows_amd_adapter_records_or_none(
                     record["gfx"] = gfx
                 if has_dedicated_memory:
                     record["dedicated_memory_bytes"] = dedicated_memory_bytes
+                driver = _parse_windows_driver_version(driver_version)
+                if driver is not None:
+                    record["driver_version"] = _format_driver_version(driver)
                 by_luid[int(luid)] = record
     except Exception as e:
         logger.debug("DirectX adapter registry read declined: %s", e)
         return None
     return by_luid
+
+
+# ROCm/TheRock#7221: Adrenalin 26.5.1 through PRO 26.9.1 let Windows power down an idle RDNA4 card and page out live HIP allocations, which freezes the whole system on multi-GPU hosts. 26.5.1 is the first bad build, 26.9.2 the fix; never a 26.3.1 bound, since RDNA4's clean 26.1.1-26.3.1 builds are 32.0.23xxx (gpuopen.com/version-table).
+_AMD_IDLE_EVICT_FIRST_BAD_DRIVER = (32, 0, 31007, 1017)
+_AMD_IDLE_EVICT_FIXED_DRIVER = (32, 0, 32015, 2008)
+_AMD_IDLE_EVICT_ISSUE_URL = "https://github.com/ROCm/TheRock/issues/7221"
+# Name fallback for a driver that wrote no AdapterFamily: RX 9060/9070 series and Radeon AI PRO R9600D/R9700.
+_RDNA4_ADAPTER_NAME = re.compile(r"\bRX\s*90[67]0\b|\bR9[67]00D?\b", re.IGNORECASE)
+_amd_driver_check_lock = threading.Lock()
+_amd_driver_check_started = False
+_amd_driver_notice: Optional[Dict[str, Any]] = None
+
+
+def _parse_windows_driver_version(value: Any) -> Optional[tuple[int, int, int, int]]:
+    """DirectX stores DriverVersion as a REG_QWORD of four 16-bit fields; the INF spells it "32.0.A.B". Either form, or None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if not 0 < value < 1 << 64:
+            return None
+        return tuple((value >> shift) & 0xFFFF for shift in (48, 32, 16, 0))
+    m = re.fullmatch(r"\s*(\d+)\.(\d+)\.(\d+)\.(\d+)\s*", str(value or ""))
+    return tuple(int(part) for part in m.groups()) if m else None
+
+
+def _format_driver_version(version: tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _is_rdna4_adapter(device: Dict[str, Any]) -> bool:
+    gfx = str(device.get("gfx") or "").lower()
+    if gfx:
+        # gfx1250 is Instinct, so not a bare gfx12 prefix.
+        return gfx.startswith("gfx120")
+    return bool(_RDNA4_ADAPTER_NAME.search(str(device.get("name") or "")))
+
+
+def amd_driver_idle_evict_notice(devices: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The TheRock#7221 notice for these physical inventory rows, or None. Severity is "critical" when the host has more than one GPU of any vendor, the shape that freezes Windows."""
+    flagged = []
+    for device in devices:
+        if device.get("vendor") != "amd" or not _is_rdna4_adapter(device):
+            continue
+        version = _parse_windows_driver_version(device.get("driver_version"))
+        if (
+            version is not None
+            and _AMD_IDLE_EVICT_FIRST_BAD_DRIVER <= version < _AMD_IDLE_EVICT_FIXED_DRIVER
+        ):
+            flagged.append((device, _format_driver_version(version)))
+    if not flagged:
+        return None
+    driver_version = flagged[0][1]
+    return {
+        "message": (
+            f"AMD driver {driver_version} has a known bug that can freeze Windows when an AMD "
+            "GPU sits idle, most often with more than one GPU. Update to Adrenalin 26.9.2 or later."
+        ),
+        "driver_version": driver_version,
+        "devices": [device.get("name") for device, _ in flagged],
+        "gpu_count": len(devices),
+        "severity": "critical" if len(devices) > 1 else "warning",
+        "link": _AMD_IDLE_EVICT_ISSUE_URL,
+    }
+
+
+def _windows_live_amd_driver_versions() -> Optional[list[tuple[str, str]]]:
+    """(Name, DriverVersion) of each present AMD display adapter, or None when WMI could not say. Read live because the DirectX registry keeps records of removed cards, and the inventory pairs same-named records with live cards in LUID order."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        ps = (
+            "$ErrorActionPreference='Stop';"
+            "(Get-CimInstance Win32_VideoController"
+            " | Where-Object { $_.PNPDeviceID -like 'PCI\\VEN_1002*' }"
+            ' | ForEach-Object { $_.Name + "`t" + $_.DriverVersion }) -join "`n"'
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            **_hidden_console_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("Live AMD driver version scan failed: %s", e)
+        return None
+    if r.returncode != 0:
+        return None
+    versions = []
+    for line in (r.stdout or "").splitlines():
+        name, _, version = line.partition("\t")
+        if name.strip() and version.strip():
+            versions.append((name.strip(), version.strip()))
+    return versions
+
+
+def _check_amd_driver_idle_evict() -> None:
+    global _amd_driver_notice
+    try:
+        # The registry alone first: a host with no affected record never pays for the live WMI scans.
+        records = [{"vendor": "amd", **r} for r in _windows_amd_adapter_records_by_luid().values()]
+        if amd_driver_idle_evict_notice(records) is None:
+            return
+        live = _windows_live_amd_driver_versions()
+        if live is None:
+            return
+        rows = []
+        for d in get_physical_gpu_inventory().get("devices") or []:
+            if d.get("vendor") == "amd":
+                # The inventory's own name join: rows carry the registry description, WMI the display name.
+                match = _claim_live_adapter(d.get("name"), [name for name, _ in live])
+                d = {**d, "driver_version": live.pop(match)[1] if match is not None else None}
+            rows.append(d)
+        notice = amd_driver_idle_evict_notice(rows)
+    except Exception as e:
+        logger.debug("AMD driver idle-eviction check failed: %s", e)
+        return
+    _amd_driver_notice = notice
+    if notice is not None:
+        logger.warning("%s See %s", notice["message"], notice["link"])
+
+
+def start_amd_driver_check() -> None:
+    """Check the AMD driver against TheRock#7221 once per process, Windows only, on a daemon thread: the inventory it reads runs a WMI scan, and its result is cached for the next caller."""
+    global _amd_driver_check_started
+    if platform.system() != "Windows":
+        return
+    with _amd_driver_check_lock:
+        if _amd_driver_check_started:
+            return
+        _amd_driver_check_started = True
+    try:
+        threading.Thread(
+            target = _check_amd_driver_idle_evict, name = "amd-driver-check", daemon = True
+        ).start()
+    except Exception as e:
+        logger.debug("Could not start the AMD driver check: %s", e)
+
+
+def amd_driver_warning_report() -> Dict[str, Any]:
+    """``driver_warning`` for /api/system once the startup check has flagged this host's driver, else ``{}``."""
+    notice = _amd_driver_notice
+    return {"driver_warning": dict(notice)} if notice else {}
 
 
 def _windows_rocm_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> Dict[int, float]:
@@ -5532,6 +5684,31 @@ def estimate_required_model_memory_gb(
 
 # Excludes generic code objects and family labels, which no device reports.
 _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
+_KERNEL_PACK_NAME = re.compile(r"^torch_(.+)\.kpack$", re.IGNORECASE)
+
+
+def _torch_kernel_pack_arches(torch) -> Optional[set[str]]:
+    """Arches whose kernel pack is installed, for a torch that ships its kernels as per-arch packs; None when it does not, or when the packs cannot be read.
+
+    AMD's multi-arch wheels (the Windows route) put each arch's kernels in its own `torch[device-gfxNNNN]` package, which drops `torch/.kpack/torch_gfxNNNN.kpack` (libtorch_hip loads `../.kpack/torch_@GFXARCH@.kpack`). get_arch_list() still names every arch the build supports, so a gfx1036 iGPU beside the gfx1101 card the install chose reads as covered and dies at its first kernel launch."""
+    try:
+        pack_dir = Path(torch.__file__).parent / ".kpack"
+        if not pack_dir.is_dir():
+            return None
+        arches: set[str] = set()
+        for entry in pack_dir.iterdir():
+            match = _KERNEL_PACK_NAME.match(entry.name)
+            if not match:
+                continue
+            arch = match.group(1).lower()
+            # A pack naming a family or generic target could cover devices no token names.
+            if not _CONCRETE_GFX_ARCH.match(arch):
+                return None
+            arches.add(arch)
+        return arches or None
+    except Exception as e:
+        logger.debug("torch kernel pack probe failed: %s", e)
+        return None
 
 
 def _props_gfx_arch(props) -> str:
@@ -5592,6 +5769,9 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
         if not tokens:
             return set()
         supported = set(tokens)
+        packs = _torch_kernel_pack_arches(torch)
+        if packs is not None:
+            supported &= packs
 
         # Under ROCR="1,0" + CUDA="1" the spec reports [1,0] but ordinal 0 is physical 0.
         if _rocm_device_ordinal_active() or _rocm_visibility_masks_are_stacked():
@@ -5637,13 +5817,14 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
 def _torch_kernel_arch_tokens() -> list[str]:
     try:
         import torch
-        return sorted(
-            {
-                str(arch).split(":")[0].strip().lower()
-                for arch in (torch.cuda.get_arch_list() or ())
-                if str(arch).strip()
-            }
-        )
+
+        tokens = {
+            str(arch).split(":")[0].strip().lower()
+            for arch in (torch.cuda.get_arch_list() or ())
+            if str(arch).strip()
+        }
+        packs = _torch_kernel_pack_arches(torch)
+        return sorted(tokens & packs if packs is not None else tokens)
     except Exception:
         return []
 

@@ -2125,6 +2125,10 @@ export const ptBR = {
           "O PyTorch é uma compilação somente CPU ({version}), então as GPUs abaixo não podem ser usadas. Repare a instalação para restaurar o suporte a GPU.",
         mismatchUnavailable:
           "O PyTorch ({version}) não consegue inicializar as GPUs abaixo, então elas não podem ser usadas. Verifique o driver da GPU ou repare a instalação.",
+        driverIdleEvict:
+          "O driver AMD {version} tem um bug conhecido que pode congelar o Windows quando uma GPU AMD fica ociosa, principalmente com mais de uma GPU. Atualize para o Adrenalin 26.9.2 ou posterior.",
+        driverIdleEvictDetails: "Detalhes",
+        dismissNotice: "Dispensar",
         unusableDevice: "inutilizável",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",
@@ -2501,6 +2505,15 @@ export const ptBR = {
         "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       autoCompactKeywords:
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "Tamanho da saída das ferramentas",
+      toolResultLimitDescription: "Caracteres de um resultado de Python ou Terminal que o modelo lê. O padrão é {count}.",
+      toolResultLimitHint: "Saídas mais longas são salvas em um arquivo que o modelo pode ler em partes. Um limite maior vale para modelos executados no Unsloth, e janelas de contexto pequenas continuam recebendo menos. Modelos de API mantêm o padrão, a menos que você o reduza.",
+      toolResultLimitDefault: "{count} (padrão)",
+      toolResultLimitLocked: "Definido por UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Não foi possível carregar o tamanho da saída das ferramentas.",
+      toolResultLimitSaveError: "Não foi possível salvar o tamanho da saída das ferramentas.",
+      toolResultLimitKeywords:
+        "saída resultado truncar cortado limite caracteres tamanho tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Recolhido",
         auto: "Expandir durante a execução",
@@ -4022,6 +4035,8 @@ export const ptBR = {
     selection: {
       startChat: "Iniciar chat",
       move: "Mover",
+      selectAll: "Selecionar tudo",
+      countOfTotal: "{count} de {total} selecionadas",
       clear: "Limpar seleção",
     },
     menu: {

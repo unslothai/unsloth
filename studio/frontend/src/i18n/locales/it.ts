@@ -2101,6 +2101,10 @@ export const it = {
           "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) non riesce a inizializzare le GPU sottostanti, quindi non possono essere usate. Controlla il driver della GPU o ripara l'installazione.",
+        driverIdleEvict:
+          "Il driver AMD {version} ha un bug noto che può bloccare Windows quando una GPU AMD resta inattiva, soprattutto con più di una GPU. Aggiorna ad Adrenalin 26.9.2 o successivo.",
+        driverIdleEvictDetails: "Dettagli",
+        dismissNotice: "Ignora",
         unusableDevice: "non utilizzabile",
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",
@@ -2481,6 +2485,15 @@ export const it = {
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "Lunghezza dell'output degli strumenti",
+      toolResultLimitDescription: "Caratteri di un risultato Python o Terminale che il modello legge. Il valore predefinito è {count}.",
+      toolResultLimitHint: "L'output più lungo viene salvato in un file che il modello può leggere a parti. Un limite più alto si applica ai modelli eseguiti in Unsloth, e le finestre di contesto piccole ricevono comunque meno. I modelli API mantengono il valore predefinito a meno che tu non lo abbassi.",
+      toolResultLimitDefault: "{count} (predefinito)",
+      toolResultLimitLocked: "Impostato da UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Impossibile caricare la lunghezza dell'output degli strumenti.",
+      toolResultLimitSaveError: "Impossibile salvare la lunghezza dell'output degli strumenti.",
+      toolResultLimitKeywords:
+        "output risultato troncare troncato limite caratteri lunghezza tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Compresso",
         auto: "Espandi durante l’esecuzione",
@@ -4064,6 +4077,8 @@ export const it = {
     selection: {
       startChat: "Avvia chat",
       move: "Sposta",
+      selectAll: "Seleziona tutto",
+      countOfTotal: "{count} di {total} selezionate",
       clear: "Annulla selezione",
     },
     menu: {

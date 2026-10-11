@@ -2116,6 +2116,10 @@ export const hi = {
           "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
         mismatchUnavailable:
           "PyTorch ({version}) नीचे दिए गए GPU को आरंभ नहीं कर पा रहा है, इसलिए उनका उपयोग नहीं किया जा सकता। GPU ड्राइवर जाँचें या इंस्टॉलेशन की मरम्मत करें।",
+        driverIdleEvict:
+          "AMD ड्राइवर {version} में एक ज्ञात बग है जिससे AMD GPU के निष्क्रिय रहने पर Windows फ़्रीज़ हो सकता है, ज़्यादातर एक से अधिक GPU होने पर। Adrenalin 26.9.2 या नए संस्करण में अपडेट करें।",
+        driverIdleEvictDetails: "विवरण",
+        dismissNotice: "खारिज करें",
         unusableDevice: "अनुपयोगी",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
@@ -2491,6 +2495,15 @@ export const hi = {
         "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
       autoCompactKeywords:
         "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "टूल आउटपुट की लंबाई",
+      toolResultLimitDescription: "Python या Terminal के एक परिणाम के कितने अक्षर मॉडल पढ़ता है। डिफ़ॉल्ट {count} है।",
+      toolResultLimitHint: "लंबा आउटपुट एक फ़ाइल में सहेजा जाता है जिसे मॉडल हिस्सों में पढ़ सकता है। ऊँची सीमा Unsloth में चल रहे मॉडल पर लागू होती है, और छोटी कॉन्टेक्स्ट विंडो को अब भी कम मिलता है। API मॉडल डिफ़ॉल्ट पर रहते हैं, जब तक आप इसे कम न करें।",
+      toolResultLimitDefault: "{count} (डिफ़ॉल्ट)",
+      toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS द्वारा सेट",
+      toolResultLimitLoadError: "टूल आउटपुट की लंबाई लोड नहीं हो सकी।",
+      toolResultLimitSaveError: "टूल आउटपुट की लंबाई सहेजी नहीं जा सकी।",
+      toolResultLimitKeywords:
+        "आउटपुट परिणाम काटना सीमा अक्षर लंबाई tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "संक्षिप्त",
         auto: "चलने के दौरान विस्तृत करें",
@@ -3999,6 +4012,8 @@ export const hi = {
     selection: {
       startChat: "चैट शुरू करें",
       move: "ले जाएँ",
+      selectAll: "सभी चुनें",
+      countOfTotal: "{total} में से {count} चुने गए",
       clear: "चयन हटाएँ",
     },
     menu: {

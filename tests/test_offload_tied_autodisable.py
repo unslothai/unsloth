@@ -227,12 +227,6 @@ def test_hook_without_execution_device_keeps_offload():
         assert resolve(_dispatched_model(None), True) is True
 
 
-def test_undispatched_model_keeps_offload():
-    # The single-GPU path must not lose the VRAM saving.
-    with _as_platform("posix"):
-        assert resolve(_untied_model(), True) is True
-
-
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

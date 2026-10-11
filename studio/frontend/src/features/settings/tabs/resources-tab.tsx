@@ -29,6 +29,7 @@ import {
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
@@ -47,7 +48,7 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderOpenIcon, LayersIcon } from "lucide-react";
 
@@ -237,9 +238,18 @@ interface GpuTorchMismatch {
   physical_count?: number;
 }
 
+/** /api/system's `gpu.driver_warning`: a Windows AMD driver with the idle-eviction bug
+ * (ROCm/TheRock#7221). "critical" when the host has more than one GPU. */
+interface GpuDriverWarning {
+  driver_version?: string;
+  severity?: "warning" | "critical";
+  link?: string;
+}
+
 type GpuPhysicalInventory = SystemGpuInfo & {
   physical_devices?: PhysicalGpuDevice[];
   mismatch?: GpuTorchMismatch | null;
+  driver_warning?: GpuDriverWarning | null;
 };
 
 export function ResourcesTab() {
@@ -247,6 +257,12 @@ export function ResourcesTab() {
   const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
   const setLiveUpdates = useSettingsPanelPrefsStore(
     (s) => s.setResourcesLiveUpdates,
+  );
+  const dismissedDriverWarning = useSettingsPanelPrefsStore(
+    (s) => s.dismissedDriverWarning,
+  );
+  const dismissDriverWarning = useSettingsPanelPrefsStore(
+    (s) => s.dismissDriverWarning,
   );
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
   // always fetch once: the switch is persisted now, so gating the hook on it
@@ -494,6 +510,12 @@ export function ResourcesTab() {
   const physicalDevices = gpuMismatch
     ? (gpuInventory?.physical_devices ?? [])
     : [];
+  const rawDriverWarning = gpuInventory?.driver_warning ?? null;
+  const driverWarning =
+    rawDriverWarning?.driver_version &&
+    rawDriverWarning.driver_version !== dismissedDriverWarning
+      ? rawDriverWarning
+      : null;
   // A CPU-only wheel is fixed by reinstalling torch, a dead runtime by the driver.
   const gpuMismatchMessage = gpuMismatch
     ? t(
@@ -650,6 +672,48 @@ export function ResourcesTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
+        {driverWarning?.driver_version ? (
+          <div className="flex items-start justify-between gap-3 border-b border-border/60 py-3">
+            <p
+              className={cn(
+                "text-sm",
+                driverWarning.severity === "critical"
+                  ? "text-destructive"
+                  : "text-amber-600 dark:text-amber-400",
+              )}
+            >
+              {t("settings.resources.gpu.driverIdleEvict", {
+                version: driverWarning.driver_version,
+              })}{" "}
+              {driverWarning.link?.startsWith("https://") ? (
+                <a
+                  href={driverWarning.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  // target="_blank" has nowhere to go in the Tauri webview.
+                  onClick={(event) => {
+                    if (openLink(event.currentTarget.href))
+                      event.preventDefault();
+                  }}
+                  className="inline-flex items-center gap-0.5 font-medium underline underline-offset-2"
+                >
+                  {t("settings.resources.gpu.driverIdleEvictDetails")}
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+                </a>
+              ) : null}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={() =>
+                dismissDriverWarning(driverWarning.driver_version as string)
+              }
+            >
+              {t("settings.resources.gpu.dismissNotice")}
+            </Button>
+          </div>
+        ) : null}
         {/* Physically present, torch-unusable cards. Their own block, above the
             device rows and visually separate from them, because nothing here is
             selectable: the rows below are what a model can be loaded onto. */}
