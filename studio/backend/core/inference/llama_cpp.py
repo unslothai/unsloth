@@ -42895,7 +42895,9 @@ class LlamaCppBackend:
                         # assistant message, so the round reserves it, as a sequential call does.
                         _round_notice = 0
                         if _over_cap:
-                            _notice_msgs = [tool_call_limit_nudge(_over_cap, _MAX_TOOL_CALLS_PER_TURN)]
+                            _notice_msgs = [
+                                tool_call_limit_nudge(_over_cap, _MAX_TOOL_CALLS_PER_TURN)
+                            ]
                             try:
                                 _round_notice = self.count_chat_tokens(
                                     _notice_msgs, None, None, strict = True

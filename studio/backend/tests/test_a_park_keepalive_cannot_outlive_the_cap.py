@@ -128,6 +128,10 @@ class TestARawRelayParkedBeforeItsFirstToken:
         assert time.monotonic() - started < 1.5, "a renewal reached a whole window past the cap"
 
     def test_a_park_that_resumes_inside_the_cap_answers(self, monkeypatch):
-        items = [": preempted"] + [": preempt-keepalive"] * 5 + [": resumed", 'data: {"choices":[{"delta":{"content":"a"}}]}']
+        items = (
+            [": preempted"]
+            + [": preempt-keepalive"] * 5
+            + [": resumed", 'data: {"choices":[{"delta":{"content":"a"}}]}']
+        )
         seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0, window = 30.0))
         assert seen[-1].startswith("data:")

@@ -29,7 +29,12 @@ def _counting_client(calls):
         def __exit__(self, *_exc):
             return False
 
-        def post(self, url, json = None, **_k):
+        def post(
+            self,
+            url,
+            json = None,
+            **_k,
+        ):
             calls.append(url)
             if url.endswith("/input_tokens"):
                 return _Resp({"input_tokens": 7 + len(str(json))})
@@ -82,8 +87,19 @@ def test_display_strip_fast_path_matches_the_full_strip_on_random_text(monkeypat
     # The full strip must already be the identity on text without < [ {; force the slow path
     # to prove it rather than trusting the fast path to agree with itself.
     pieces = list("abcxyz ABC019\n\t.,;:!?'\"()-_=+*&^%$#@~`|/\\}]") + [
-        "call:", "call: web_search", "web_search", "TOOL_CALLS", "ARGS", "think", "function=",
-        "tool_call", "｜", "|>", "/>", "python_tag", "parameter",
+        "call:",
+        "call: web_search",
+        "web_search",
+        "TOOL_CALLS",
+        "ARGS",
+        "think",
+        "function=",
+        "tool_call",
+        "｜",
+        "|>",
+        "/>",
+        "python_tag",
+        "parameter",
     ]
     rng = random.Random(7)
     texts = ["".join(rng.choice(pieces) for _ in range(rng.randint(0, 60))) for _ in range(3000)]
