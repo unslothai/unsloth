@@ -2308,6 +2308,11 @@ DESKTOP_EOF
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+        <string>x86_64</string>
+    </array>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
@@ -2317,8 +2322,12 @@ PLIST_EOF
         # Single-quoted heredoc + sed so $-vars in $_css_data_dir do not expand at launch.
         _css_sq_dir=$(printf '%s' "$_css_data_dir" | sed "s/'/'\\\\''/g")
         _css_sed_dir=$(printf '%s' "$_css_sq_dir" | sed 's/[\\&|]/\\&/g')
+        # A script-only bundle may be started under Rosetta (#9467), and a translated shell hands the x86_64 slice of a universal2 venv python its arm64 wheels. LSArchitecturePriority asks Launch Services for arm64, and arch -arm64 also covers a bundle id whose Rosetta choice Launch Services already cached. hw.optional.arm64 is absent on Intel, so Intel keeps the plain exec.
         cat > "$_css_macos_dir/launch-studio" << 'STUB_EOF'
 #!/bin/sh
+if [ "$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ] && [ -x /usr/bin/arch ]; then
+    exec /usr/bin/arch -arm64 '@@DATA_DIR@@/launch-studio.sh' "$@"
+fi
 exec '@@DATA_DIR@@/launch-studio.sh' "$@"
 STUB_EOF
         sed "s|@@DATA_DIR@@|$_css_sed_dir|g" "$_css_macos_dir/launch-studio" \
