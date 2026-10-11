@@ -153,7 +153,7 @@ def _blank_missing_prompt_value(value: Any) -> Any:
     return value
 
 
-def _allow_empty_prompt(_rendered_text: str) -> None:
+def _allow_empty_prompt(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
@@ -216,6 +216,34 @@ def _apply_data_designer_prompt_blank_patch() -> None:
 
     RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer = _patched_prepare
     setattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", True)
+
+
+def _apply_data_designer_expression_blank_patch() -> None:
+    # An empty string is a real value for a text Expression column ({{ response.question }} on an unanswered
+    # optional field); upstream rejects every empty render, which failed the whole run. Number / bool dtypes
+    # keep the error, since "" cannot be cast.
+    try:
+        from data_designer.engine.column_generators.generators.expression import (  # pyright: ignore[reportMissingImports]
+            ExpressionColumnGenerator,
+        )
+    except ImportError:
+        return
+
+    if getattr(ExpressionColumnGenerator, "_unsloth_expression_blank_patch_applied", False):
+        return
+
+    original_prepare = ExpressionColumnGenerator.prepare_jinja2_template_renderer
+
+    @functools.wraps(original_prepare)
+    def _patched_prepare(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_prepare(self, *args, **kwargs)
+        env = getattr(getattr(self, "_template_render_fn", None), "func", None)
+        env = getattr(env, "__self__", None)
+        if env is not None and self.config.dtype == "str":
+            env._assert_rendered_text_not_empty = _allow_empty_prompt
+
+    ExpressionColumnGenerator.prepare_jinja2_template_renderer = _patched_prepare
+    setattr(ExpressionColumnGenerator, "_unsloth_expression_blank_patch_applied", True)
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
@@ -489,6 +517,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     account_path(artifact_path)
     _apply_data_designer_image_context_patch()
     _apply_data_designer_prompt_blank_patch()
+    _apply_data_designer_expression_blank_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
