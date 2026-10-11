@@ -47,6 +47,9 @@ import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
+  findLatestUserAudioBase64,
+  findLatestUserVideoBase64,
+  messagesContainImage,
 } from "./api/chat-adapter";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
@@ -3663,11 +3666,11 @@ function ThreadContextUsageRecount({
     modelLoading,
   ]);
 
-  // Cloud model or none: no exact count follows, and a mounted chat never reruns the history loader,
-  // so estimate from the branch it shows. No storage read: a just-sent chat has no server row yet.
+  // No exact count follows (cloud model, none, or a local model on a branch the recount declines),
+  // and a mounted chat never reruns the history loader, so estimate from the branch it shows. No
+  // storage read: a just-sent chat has no server row yet.
   useEffect(() => {
     if (!enabled || !activeThreadId || runActive || modelLoading) return;
-    if (checkpoint && !isExternalModelId(checkpoint) && loadedContextLength != null) return;
     // An estimate is replaced, so a run that ends without usage still re-prices the new turn.
     const shown = useChatRuntimeStore.getState().contextUsage;
     if (shown != null && !shown.estimated) return;
@@ -3678,12 +3681,26 @@ function ThreadContextUsageRecount({
     } catch {
       return;
     }
+    const localWindow =
+      checkpoint && !isExternalModelId(checkpoint) ? loadedContextLength : null;
+    // The same media checks refreshContextUsage declines on, so exactly one of the two answers.
+    if (
+      localWindow != null &&
+      !messagesContainImage(messages) &&
+      !findLatestUserAudioBase64(messages) &&
+      !findLatestUserVideoBase64(messages)
+    ) {
+      return;
+    }
     const saved = [...messages].reverse().find((m) => m.role === "assistant")?.metadata
       ?.custom?.contextUsage as
       | (NonNullable<typeof shown> & { modelId?: string })
       | undefined;
+    // As the history loader: a count past a local window is stale.
+    const savedFits =
+      localWindow == null || (saved?.contextTokens ?? saved?.totalTokens ?? 0) <= localWindow;
     const usage =
-      saved?.modelId && saved.modelId === checkpoint
+      saved?.modelId && saved.modelId === checkpoint && savedFits
         ? saved
         : estimateContextUsage(
             messages.map((m, index) => ({ ...m, createdAt: index })) as unknown as MessageRecord[],

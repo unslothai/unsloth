@@ -2245,6 +2245,73 @@ def test_the_cloud_refill_prices_the_mounted_branch_without_reading_storage(thre
     assert (out["contextUsage"] or {}).get("totalTokens") == 6
 
 
+@pytest.mark.parametrize(
+    ("parts", "saved", "expected"),
+    [
+        # The recount prices a text-only branch exactly; the estimate must stay out of its way.
+        (
+            '[{ type: "text", text: "describe this please" }]',
+            "undefined",
+            {"total": 62, "estimated": None, "counts": 1},
+        ),
+        # It declines an image branch, which left the bar blank after a local model switch.
+        (
+            '[{ type: "text", text: "describe this please" }, { type: "image", image: "data:image/png;base64,iVBORw0KGgo=" }]',
+            "undefined",
+            {"total": 9, "estimated": True, "counts": 0},
+        ),
+        # That model's own saved count is restored, as the history loader would ...
+        (
+            '[{ type: "image", image: "data:image/png;base64,iVBORw0KGgo=" }]',
+            '{ promptTokens: 700, completionTokens: 9, totalTokens: 709, cachedTokens: 0, modelId: "unsloth/other-gguf" }',
+            {"total": 709, "estimated": None, "counts": 0},
+        ),
+        # ... unless it no longer fits the loaded window.
+        (
+            '[{ type: "image", image: "data:image/png;base64,iVBORw0KGgo=" }]',
+            '{ promptTokens: 9000, completionTokens: 9, totalTokens: 9009, cachedTokens: 0, modelId: "unsloth/other-gguf" }',
+            {"total": 4, "estimated": True, "counts": 0},
+        ),
+    ],
+    ids = [
+        "text_only_is_counted",
+        "image_is_estimated",
+        "image_restores_its_saved_count",
+        "image_saved_count_past_window",
+    ],
+)
+def test_a_media_chat_keeps_a_value_after_a_local_model_switch(parts, saved, expected):
+    """The recount refuses images, audio and video, so a chat carrying one showed a blank bar once
+    another local GGUF loaded under it; the mounted branch fills it like a cloud model's."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            world.storedMessages["thread-a"] = [
+              {{ id: "m1", role: "user", createdAt: 1, content: {parts}, metadata: {{}} }},
+              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "a cat on a sofa" }}],
+                metadata: {{ contextUsage: {saved} }} }},
+            ];
+            seed({{ activeThreadId: "thread-a", contextUsage: {{ promptTokens: 900, completionTokens: 9, totalTokens: 909, cachedTokens: 0 }} }});
+            renderThreadContextUsageRecount();
+            useChatRuntimeStore.getState().setCheckpoint("unsloth/other-gguf");
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const after = snapshot();
+            console.log(JSON.stringify({{ counts: world.countedMessages.length, usage: after.contextUsage }}));
+            """
+        )
+    )
+    usage = out["usage"] or {}
+    assert out["counts"] == expected["counts"]
+    assert (
+        usage.get("totalTokens") == expected["total"]
+    ), "a media chat must not be left with a blank bar"
+    assert usage.get("estimated") == expected["estimated"]
+
+
 def test_the_cloud_refill_never_prices_another_mounted_thread():
     """New Chat leaves the outgoing conversation mounted until the switch settles, so the runtime's
     main thread can lag the store; pricing it then would put another chat's count on the bar."""
