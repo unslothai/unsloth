@@ -118,5 +118,4 @@ def test_recovery_with_extras_owned_mtp_matches_an_identical_apply(monkeypatch):
     assert loads and loads[0].speculative_type == "off"
     assert "draft-mtp" not in (loads[0].extra_args or ())
     assert b._spec_fallback_reason == "runtime_error"
-    # _runtime_matches_intent treats any other value as a new request and relaunches MTP.
     assert b._requested_spec_mode is None
