@@ -144,7 +144,8 @@ def test_core_update_freezes_only_torch_past_the_released_ceiling(
     monkeypatch, tmp_path, mod, platform, resident, pinned
 ):
     monkeypatch.setattr(mod.sys, "platform", platform)
-    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: False)
+    monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: False)
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: True)
     monkeypatch.setattr(mod, "_resident_torch_release", lambda: resident)
     monkeypatch.setattr(
         mod,
@@ -185,7 +186,8 @@ def test_core_update_freeze_restores_an_unset_override(monkeypatch, mod):
 
 def _spaced_windows_freeze(monkeypatch, tmp_path, mod):
     monkeypatch.setattr(mod.sys, "platform", "win32")
-    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: False)
+    monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: False)
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: True)
     monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
     monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0+cu130"])
     spaced = tmp_path / "John Smith"
@@ -293,7 +295,7 @@ def test_inherited_relative_includes_still_resolve(monkeypatch, tmp_path, mod):
 def test_core_update_freeze_leaves_windows_on_arm_to_its_own_overrides(monkeypatch, tmp_path, mod):
     # install.ps1 writes the WoA UV_OVERRIDE; a second trio pin here would conflict with it.
     monkeypatch.setattr(mod.sys, "platform", "win32")
-    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: True)
+    monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: True)
     monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.14.0")
     monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.14.0+cu134"])
     inherited = tmp_path / "woa-overrides.txt"
@@ -302,3 +304,53 @@ def test_core_update_freeze_leaves_windows_on_arm_to_its_own_overrides(monkeypat
     with mod._FreezeNewTorchForCoreUpdate():
         assert mod.os.environ["UV_OVERRIDE"] == str(inherited)
         assert mod._TORCH_FREEZE_ACTIVE is False
+
+
+def test_an_emulated_x64_venv_on_windows_on_arm_is_frozen(monkeypatch, tmp_path, mod):
+    # The WoA override only exists for a native win-arm64 interpreter.
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: True)
+    monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: False)
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: True)
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0"])
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    with mod._FreezeNewTorchForCoreUpdate():
+        assert mod._TORCH_FREEZE_ACTIVE is True
+
+
+def test_the_windows_override_is_private_before_its_contents_land(monkeypatch, tmp_path, mod):
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    calls = []
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "whoami":
+            return mod.subprocess.CompletedProcess(
+                cmd, 0, '"host\\me","S-1-5-21-1-2-3-1001"\r\n', ""
+            )
+        calls.append((cmd, Path(cmd[1]).stat().st_size))
+        return mod.subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(mod, "_uv_safe_path", lambda path: str(path))
+    name, safe = mod._write_space_free_override("--index-url https://user:token@example/simple\n")
+    assert safe == name and Path(name).read_text(encoding = "utf-8").startswith("--index-url")
+    assert calls == [(["icacls", name, "/inheritance:r", "/grant:r", "*S-1-5-21-1-2-3-1001:F"], 0)]
+
+
+def test_a_directory_whose_acl_cannot_be_set_is_skipped(monkeypatch, tmp_path, mod):
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    temp, venv = tmp_path / "temp", tmp_path / "venv"
+    temp.mkdir()
+    venv.mkdir()
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(temp))
+    monkeypatch.setattr(mod.sys, "prefix", str(venv))
+    monkeypatch.setattr(mod, "_uv_safe_path", lambda path: str(path))
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: Path(path).parent == venv)
+    name, safe = mod._write_space_free_override("torch==2.13.0\n")
+    assert Path(name).parent == venv and list(temp.iterdir()) == []
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: False)
+    assert mod._write_space_free_override("torch==2.13.0\n") == ("", None)
+    assert list(temp.iterdir()) == [] and list(venv.iterdir()) == [Path(name)]

@@ -638,11 +638,33 @@ _TORCH_TRIO_LINE = re.compile(r"^\s*torch(vision|audio)?([\s<>=!~;@\[]|$)", re.I
 _TORCH_FREEZE_ACTIVE = False
 
 
+def _restrict_to_current_user(path: str) -> bool:
+    """On Windows, replace PATH's inherited ACL with one granting only the current user."""
+    if sys.platform != "win32":
+        return True
+    try:
+        who = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"], capture_output = True, text = True, timeout = 30
+        )
+        sid = who.stdout.strip().rsplit(",", 1)[-1].strip().strip('"')
+        if who.returncode != 0 or not sid.startswith("S-"):
+            return False
+        granted = subprocess.run(
+            ["icacls", path, "/inheritance:r", "/grant:r", f"*{sid}:F"],
+            capture_output = True,
+            timeout = 30,
+        )
+        return granted.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _write_space_free_override(text: str) -> tuple[str, str | None]:
     """Write TEXT to an overrides file uv can name: (path, space-free path to hand uv, or None).
 
-    Only user-private places: inherited override lines can carry authenticated index URLs, and
-    mkstemp's 0600 is private in a shared /tmp but a Windows file takes its directory's ACL.
+    Only user-private files: inherited override lines can carry authenticated index URLs.
+    mkstemp's 0600 covers POSIX; a Windows file takes its directory's ACL, so it gets an explicit
+    current-user-only one, and a directory where that fails is skipped.
     """
     if sys.platform == "win32":
         candidates = [None, sys.prefix]
@@ -658,6 +680,11 @@ def _write_space_free_override(text: str) -> tuple[str, str | None]:
                 prefix = "unsloth-torch-overrides-", suffix = ".txt", dir = directory
             )
         except OSError:
+            continue
+        # Still empty: restrict it before the contents land, as install.ps1 does for its copy.
+        if not _restrict_to_current_user(name):
+            os.close(fd)
+            Path(name).unlink(missing_ok = True)
             continue
         with os.fdopen(fd, "w", encoding = "utf-8") as handle:
             handle.write(text)
@@ -676,8 +703,9 @@ class _FreezeNewTorchForCoreUpdate:
     honours it: on a torch 2.13 install `studio update` swapped torch for PyPI's 2.12.1 and lost
     the matching prebuilt kernels. install.sh and install.ps1 freeze the trio the same way for
     every with-deps unsloth install. Scoped to Linux and native Windows x64 with torch >= 2.13,
-    the releases past that ceiling, so every other install resolves exactly as before; Windows
-    on ARM keeps its own UV_OVERRIDE (_woa_overrides_are_load_bearing).
+    the releases past that ceiling, so every other install resolves exactly as before; a native
+    Windows on ARM interpreter keeps its own UV_OVERRIDE (_woa_overrides_are_load_bearing), an
+    emulated x64 one there is frozen like any x64 install.
     """
 
     def __enter__(self):
@@ -687,7 +715,7 @@ class _FreezeNewTorchForCoreUpdate:
         if not (
             (
                 sys.platform.startswith("linux")
-                or (sys.platform == "win32" and not _is_windows_arm64())
+                or (sys.platform == "win32" and not _is_win_arm64_interpreter())
             )
             and release is not None
             and int(release.split(".")[1]) >= 13
