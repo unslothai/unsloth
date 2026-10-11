@@ -84,8 +84,7 @@ from core.training.diffusion_train_extras import (
     save_ema_adapter,
 )
 
-# Per-family LoRA target modules. FLUX / Qwen double-stream blocks also carry added-kv projections; Z-Image is
-# single-stream.
+# FLUX / Qwen double-stream blocks also carry added-kv projections; Z-Image is single-stream.
 _FLUX_TARGETS = (
     "to_q",
     "to_k",

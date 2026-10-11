@@ -3352,7 +3352,7 @@ async def start_diffusion_training(
     from core.training.diffusion_lora_trainer import _config_from_dict
 
     try:
-        # Offloaded: a resume with default targets reads the recorded ones from the checkpoint bundles.
+        # Off the event loop: resume may read checkpoint bundles.
         normalized_cfg = await asyncio.to_thread(_config_from_dict(config).normalized)
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
