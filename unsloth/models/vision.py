@@ -5032,8 +5032,7 @@ class FastBaseModel:
             embeddings = _embeddings_or_none(model, _getter)
             if hasattr(embeddings, "training"):
                 embeddings.training = True
-        # Always, not only under gradient checkpointing: with a KV cache transformers drops the packed-sequence
-        # mask, so padding-free rows attend across documents. for_inference restores the recorded value.
+        # Not only under GC: with a KV cache transformers drops the packed-sequence mask (padding-free rows leak).
         try:
             from unsloth_zoo.training_utils import disable_use_cache
             disable_use_cache(model)

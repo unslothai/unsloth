@@ -4795,8 +4795,7 @@ def test_mask_creation():
 
 
 def _forward_takes_use_cache(model) -> bool:
-    """A forward naming packed_seq_lengths without use_cache or **kwargs would raise on the extra key;
-    for_training's config-level disable covers it. Cached on the model: read every step."""
+    """False for a forward naming packed_seq_lengths without use_cache / **kwargs (the key would raise)."""
     takes = getattr(model, "_unsloth_forward_takes_use_cache", None)
     if takes is None:
         from unsloth.trainer import _forward_accepts_packing_kwargs
