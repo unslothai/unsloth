@@ -96,6 +96,15 @@ class TestARawStreamForwardsTheServersPark:
             assert "if not _raw_saw_recompute and _server_recompute_counted(" in source
             assert source.count("yield _OPENAI_PREEMPT_SSE_RECOMPUTED") == 1
 
+    def test_the_completions_relay_says_a_counted_recompute_once(self):
+        # It forwards raw events, but a client reading the normalized `: preempt-*` comments
+        # learns of a re-prefill only from the comment, so it is synthesized here too.
+        source = inspect.getsource(inference.openai_completions)
+        assert source.count("_cmpl_saw_recompute = False") == 1
+        assert "_cmpl_saw_recompute |= _park == _OPENAI_PREEMPT_SSE_RECOMPUTED" in source
+        assert source.count("not _cmpl_saw_recompute") == 2, "the event loop and the trailing buffer"
+        assert source.count("yield _OPENAI_PREEMPT_SSE_RECOMPUTED.encode(") == 2
+
     def test_every_raw_loop_asks(self):
         """One relay per raw loop: Responses, Anthropic passthrough, chat passthrough and the
         completions byte loop. The count is the guard against a loop that forgets."""

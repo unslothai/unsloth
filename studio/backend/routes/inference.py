@@ -38719,6 +38719,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
                 _cmpl_parks = ServerParkNotices()
+                _cmpl_saw_recompute = False
                 # Bound, not inlined: teardown must aclose() this before bytes_iter.
                 items_iter = _aiter_llama_stream_items(
                     bytes_iter,
@@ -38754,6 +38755,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         _park = _server_park_sse(event)
                         if _park is not None:
                             _cmpl_parks.feed_line(event)
+                            _cmpl_saw_recompute |= _park == _OPENAI_PREEMPT_SSE_RECOMPUTED
                             if _park == _OPENAI_PREEMPT_SSE_RESUMED and _cmpl_parks.parked:
                                 # Another prompt of the batch is still parked: not resumed yet.
                                 _park = _OPENAI_PREEMPT_SSE_KEEPALIVE
@@ -38769,6 +38771,16 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                             if progress_keepalive.due():
                                 yield _OPENAI_PREFILL_PROGRESS_SSE.encode()
                             continue
+                        if (
+                            not _cmpl_saw_recompute
+                            and b'"preempt"' in event
+                            and _server_recompute_counted(
+                                LlamaCppBackend._sse_event_payload(event.decode("utf-8", "replace"))
+                            )
+                        ):
+                            # A build that only counts the recompute: say so, as the other relays do.
+                            _cmpl_saw_recompute = True
+                            yield _OPENAI_PREEMPT_SSE_RECOMPUTED.encode("utf-8")
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
                             yield out + b"\n\n"
@@ -38782,6 +38794,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         == "error"
                     ):
                         mark_response_failed(getattr(request, "scope", None))
+                    if (
+                        not _cmpl_saw_recompute
+                        and b'"preempt"' in buffer
+                        and _server_recompute_counted(
+                            LlamaCppBackend._sse_event_payload(buffer.decode("utf-8", "replace"))
+                        )
+                    ):
+                        yield _OPENAI_PREEMPT_SSE_RECOMPUTED.encode("utf-8")
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
                         # Re-add the SSE separator the split consumed, so a final
