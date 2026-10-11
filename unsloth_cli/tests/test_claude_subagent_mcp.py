@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -51,6 +52,74 @@ def test_protocol_lists_and_calls_local_agent():
         "content": [{"type": "text", "text": "completed: inspect this"}],
         "isError": False,
     }
+
+
+def test_main_advertises_the_routing_rule_only_with_auto_route(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(bridge, "serve", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.delenv("UNSLOTH_CLAUDE_SUBAGENT_AUTO_ROUTE", raising = False)
+    bridge.main()
+    assert captured.get("tool_description") is None
+    assert captured.get("instructions") is None
+
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_AUTO_ROUTE", "1")
+    bridge.main()
+    initialized = bridge._response(
+        {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}},
+        instructions = captured.get("instructions"),
+    )
+    assert "unsloth_agent tool" in initialized["result"]["instructions"]
+    assert "NotebookRead and Agent calls are blocked" in initialized["result"]["instructions"]
+    listed = bridge._response(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        tool_description = captured.get("tool_description"),
+        run_read_only_agent = lambda task: task,
+        read_only_tool_name = captured["read_only_tool_name"],
+    )
+    tools = {tool["name"]: tool["description"] for tool in listed["result"]["tools"]}
+    assert "calls are blocked" in tools["unsloth_agent"]
+    assert "codebase search" in tools["unsloth_agent"]
+    assert tools["unsloth_plan_agent"] == bridge._SUBAGENT_PLAN_DESCRIPTION
+
+
+def _failing_agent(message):
+    def run(*args, **kwargs):
+        raise RuntimeError(message)
+
+    return run
+
+
+def test_failed_local_run_unblocks_the_parent_until_the_next_success(tmp_path):
+    marker = tmp_path / "local-agent-failed"
+    run = bridge._with_fallback(_failing_agent("Connection refused"), str(marker))
+    with pytest.raises(RuntimeError) as failure:
+        run("task", threading.Event())
+    assert "Connection refused" in str(failure.value)
+    assert "unblocked" in str(failure.value)
+    assert marker.exists()
+    succeed = bridge._with_fallback(lambda task, event: "LOCAL_OK", str(marker))
+    assert succeed("task", threading.Event()) == "LOCAL_OK"
+    assert not marker.exists()
+
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        bridge._with_fallback(_failing_agent("cancelled"), str(marker))("task", cancelled)
+    assert not marker.exists()
+
+
+def test_main_wraps_both_tools_only_with_auto_route(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(bridge, "serve", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.delenv(bridge._CLAUDE_SUBAGENT_FALLBACK_ENV, raising = False)
+    bridge.main()
+    assert captured["run_agent"] is bridge.run_local_agent
+    monkeypatch.setenv(bridge._CLAUDE_SUBAGENT_FALLBACK_ENV, str(tmp_path / "local-agent-failed"))
+    monkeypatch.setattr(bridge, "run_local_agent", _failing_agent("down"))
+    bridge.main()
+    for name in ("run_agent", "run_read_only_agent"):
+        with pytest.raises(RuntimeError, match = "unblocked"):
+            captured[name]("task", threading.Event())
 
 
 def test_protocol_exposes_read_only_agent_for_claude_plan_mode():
