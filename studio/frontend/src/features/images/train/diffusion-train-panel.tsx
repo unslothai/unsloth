@@ -1184,7 +1184,6 @@ export function DiffusionTrainPanel({
         // Zero rather than the field's value when the family has none: the field is only hidden, not
         // reset, so a value typed for one family would otherwise still be sent and refused.
         save_steps: supportsCheckpoints ? Math.max(0, Math.floor(saveSteps)) : 0,
-        // Same zeroing as save_steps for a family that renders no previews.
         sample_every: supportsSamples ? Math.max(0, Math.floor(sampleEvery)) : 0,
         sample_prompts:
           supportsSamples && sampleEvery > 0 ? parseSamplePrompts(samplePromptsText) : [],

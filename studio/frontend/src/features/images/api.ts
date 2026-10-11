@@ -833,7 +833,7 @@ export interface DiffusionTrainableFamily {
   // Whether the family's loop writes checkpoint bundles (gates the "Checkpoint every" field).
   // Undefined on an older backend, which has no checkpointless family, so it reads as true.
   supports_checkpoints?: boolean;
-  // Whether the family renders preview images (gates "Sample every"). Absent on an older backend: hidden.
+  // Absent on an older backend: "Sample every" hidden.
   supports_samples?: boolean;
   /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */
   max_train_batch_size?: number | null;

@@ -10,7 +10,6 @@ import {
 } from "../api";
 import { groupSamplesByStep } from "./diffusion-samples";
 
-// One auth-fetched preview (object URL, revoked on unmount or path change).
 function SampleImage({
   jobId,
   image,

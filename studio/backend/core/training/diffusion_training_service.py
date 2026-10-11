@@ -1217,7 +1217,6 @@ class DiffusionTrainingService:
                     s["resume_blocked_reason"] = (
                         "This run was stopped without saving, so it was discarded."
                     )
-                    # The child deleted this run's previews with its checkpoints.
                     s["samples"] = []
             elif etype == "error":
                 # Reset in_model_load too: an error during model loading has no model_load_completed.

@@ -163,7 +163,6 @@ class SamplePlan:
 
 
 def plan_samples(cfg: Any, family: str, captions: list[str]) -> Optional[SamplePlan]:
-    """The run's sample plan, or None when sampling is off."""
     every = int(getattr(cfg, "sample_every", 0) or 0)
     if every <= 0 or family not in SAMPLE_FAMILIES:
         return None
