@@ -12,6 +12,7 @@ __all__ = [
 import json
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 _LORA_ID_BASE = 1_000_000
 # Every request is served by the newest adapter (see `_lora_for`), so any number of named versions is servable.
 _SERVABLE_LORAS = 1 << 20
+_BATCH_WAIT_S = 0.0005
 
 
 def _sampled_logprob(logprobs, position, token_id):
@@ -57,6 +59,7 @@ class _Engine:
         self.newest = None
         self.lora_holds = {}
         self.next_lora_id = _LORA_ID_BASE
+        self.stats = {"requests": 0, "tokens": 0, "steps": 0, "step_s": 0.0, "max_batch": 0}
         self.thread = threading.Thread(
             target = self._run, name = "unsloth-async-grpo-vllm", daemon = True
         )
@@ -113,15 +116,27 @@ class _Engine:
                 self._admit(*item)
             if self.paused or not self.active:
                 continue
+            started = time.perf_counter()
+            batch = len(self.active)
             try:
                 outputs = self.engine.step()
             except BaseException as error:
                 self._fail_active(error)
                 continue
+            with self.cv:
+                # Releases the GIL so the HTTP thread can hand over requests that arrived during the step.
+                if not (self.pending or self.commands or self.stopping):
+                    self.cv.wait(_BATCH_WAIT_S)
+            stats = self.stats
+            stats["steps"] += 1
+            stats["step_s"] += time.perf_counter() - started
+            stats["max_batch"] = max(stats["max_batch"], batch)
             for output in outputs:
                 if output.finished and output.request_id in self.active:
                     future, lora_id = self.active.pop(output.request_id)
                     self._release(lora_id)
+                    stats["requests"] += 1
+                    stats["tokens"] += len(output.outputs[0].token_ids)
                     future.set_result(output)
         self._fail_active(RuntimeError("Unsloth: the in-process vLLM server stopped."))
         with self.cv:
@@ -240,59 +255,23 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _body(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(length) or b"{}") if length else {}
-
     def do_GET(self):
-        owner = self.server.owner
-        path = urlparse(self.path).path
-        if path == "/health":
-            return self._send(200, {"status": "ok"})
-        if path == "/v1/models":
-            return self._send(
-                200,
-                {
-                    "object": "list",
-                    "data": [
-                        {
-                            "id": owner.model_name,
-                            "object": "model",
-                            "max_model_len": owner.max_model_len,
-                        }
-                    ],
-                },
-            )
-        if path == "/server_info":
-            return self._send(200, {"vllm_config": owner.server_info()})
-        if path == "/get_world_size":
-            return self._send(200, {"world_size": 1})
-        return self._send(404, {"error": f"unknown path {path}"})
+        self._send(*self.server.owner.get(urlparse(self.path).path))
 
     def do_POST(self):
         owner = self.server.owner
-        path = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length") or 0)
         try:
-            body = self._body()
-            if path == "/v1/completions":
-                return self._send(200, owner.complete(body))
-            if path == "/v1/load_lora_adapter":
-                owner.engine.call(
-                    lambda: owner.engine.add_adapter(body["lora_name"], body["lora_path"])
-                )
-                return self._send(200, {"status": "ok"})
-            if path == "/v1/unload_lora_adapter":
-                owner.engine.call(lambda: owner.engine.remove_adapter(body.get("lora_name")))
-                return self._send(200, {"status": "ok"})
-            if path == "/pause":
-                owner.engine.call(lambda: owner.engine.set_paused(True))
-                return self._send(200, {"status": "ok"})
-            if path == "/resume":
-                owner.engine.call(lambda: owner.engine.set_paused(False))
-                return self._send(200, {"status": "ok"})
-        except Exception as error:
-            return self._send(400, {"error": f"{type(error).__name__}: {error}"})
-        return self._send(404, {"error": f"unknown path {path}"})
+            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except ValueError as error:
+            return self._send(400, {"error": f"bad JSON: {error}"})
+        path = urlparse(self.path).path
+        if path == "/v1/completions":
+            try:
+                return self._send(200, owner.finish(owner.start(body).result()))
+            except Exception as error:
+                return self._send(400, {"error": f"{type(error).__name__}: {error}"})
+        self._send(*owner.post(path, body))
 
 
 class UnslothAsyncVLLMServer:
@@ -307,6 +286,7 @@ class UnslothAsyncVLLMServer:
         llm = model.vllm_engine
         self.vllm_config = llm.llm_engine.vllm_config
         self.max_model_len = self.vllm_config.model_config.max_model_len
+        self.max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
         self.model_name = model_name or getattr(
             getattr(model, "config", None), "_name_or_path", "model"
         )
@@ -317,17 +297,24 @@ class UnslothAsyncVLLMServer:
             )
         _keep_awake(llm)
         self.engine = _Engine(llm, load_lora, sampling_params)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self.httpd.daemon_threads = True
-        self.httpd.owner = self
-        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.stopped = False
+        self.url = f"http://127.0.0.1:{self._serve()}"
+
+    def _serve(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        httpd.daemon_threads = True
+        httpd.owner = self
         self._thread = threading.Thread(
-            target = self.httpd.serve_forever,
-            name = "unsloth-async-grpo-http",
-            daemon = True,
+            target = httpd.serve_forever, name = "unsloth-async-grpo-http", daemon = True
         )
         self._thread.start()
-        self.stopped = False
+
+        def shutdown():
+            httpd.shutdown()
+            httpd.server_close()
+
+        self._shutdown = shutdown
+        return httpd.server_address[1]
 
     def server_info(self):
         lora_config = self.vllm_config.lora_config
@@ -342,7 +329,37 @@ class UnslothAsyncVLLMServer:
             "parallel_config": {"data_parallel_size": 1},
         }
 
-    def complete(self, body):
+    def get(self, path):
+        if path == "/health":
+            return 200, {"status": "ok"}
+        if path == "/v1/models":
+            model = {"id": self.model_name, "object": "model", "max_model_len": self.max_model_len}
+            return 200, {"object": "list", "data": [model]}
+        if path == "/server_info":
+            return 200, {"vllm_config": self.server_info()}
+        if path == "/get_world_size":
+            return 200, {"world_size": 1}
+        return 404, {"error": f"unknown path {path}"}
+
+    def post(self, path, body):
+        engine = self.engine
+        commands = {
+            "/v1/load_lora_adapter": lambda: engine.add_adapter(
+                body["lora_name"], body["lora_path"]
+            ),
+            "/v1/unload_lora_adapter": lambda: engine.remove_adapter(body.get("lora_name")),
+            "/pause": lambda: engine.set_paused(True),
+            "/resume": lambda: engine.set_paused(False),
+        }
+        if path not in commands:
+            return 404, {"error": f"unknown path {path}"}
+        try:
+            engine.call(commands[path])
+        except Exception as error:
+            return 400, {"error": f"{type(error).__name__}: {error}"}
+        return 200, {"status": "ok"}
+
+    def start(self, body):
         prompt = body["prompt"]
         if not (isinstance(prompt, list) and all(isinstance(x, int) for x in prompt)):
             raise ValueError("Unsloth: the in-process vLLM server takes token-id prompts only.")
@@ -350,31 +367,29 @@ class UnslothAsyncVLLMServer:
         for name in ("temperature", "top_p", "top_k", "min_p", "repetition_penalty", "seed"):
             if body.get(name) is not None:
                 params[name] = body[name]
-        want_logprobs = body.get("logprobs") is not None
-        if want_logprobs:
+        if body.get("logprobs") is not None:
             params["logprobs"] = int(body["logprobs"])
-        output = self.engine.submit(prompt, params, body.get("model")).result()
+        return self.engine.submit(prompt, params, body.get("model"))
+
+    @staticmethod
+    def finish(output):
         completion = output.outputs[0]
         token_ids = list(completion.token_ids)
+        logprobs = None
+        if completion.logprobs is not None:
+            logprobs = {
+                "token_logprobs": [
+                    _sampled_logprob(completion.logprobs, i, t) for i, t in enumerate(token_ids)
+                ]
+            }
         choice = {
             "index": 0,
             "text": "",
             "token_ids": token_ids,
             "finish_reason": completion.finish_reason,
-            "logprobs": None,
+            "logprobs": logprobs,
         }
-        if want_logprobs:
-            choice["logprobs"] = {
-                "token_logprobs": [
-                    _sampled_logprob(completion.logprobs, i, t) for i, t in enumerate(token_ids)
-                ]
-            }
-        return {
-            "id": output.request_id,
-            "object": "text_completion",
-            "model": body.get("model"),
-            "choices": [choice],
-        }
+        return {"id": output.request_id, "object": "text_completion", "choices": [choice]}
 
     def abort_all(self):
         if not self.stopped:
@@ -385,8 +400,7 @@ class UnslothAsyncVLLMServer:
             return
         self.stopped = True
         self.engine.stop()
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self._shutdown()
 
 
 def _keep_awake(llm):

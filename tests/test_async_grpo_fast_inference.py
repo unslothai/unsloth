@@ -36,7 +36,10 @@ class _FakeEngine:
     def __init__(self):
         lora_config = types.SimpleNamespace(max_lora_rank = 64)
         model_config = types.SimpleNamespace(max_model_len = 2048, dtype = "torch.bfloat16")
-        self.vllm_config = types.SimpleNamespace(model_config = model_config, lora_config = lora_config)
+        scheduler_config = types.SimpleNamespace(max_num_seqs = 64)
+        self.vllm_config = types.SimpleNamespace(
+            model_config = model_config, lora_config = lora_config, scheduler_config = scheduler_config
+        )
         self.requests = {}
         self.added_loras = []
         self.removed_loras = []

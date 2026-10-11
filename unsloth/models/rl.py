@@ -4381,6 +4381,10 @@ def patch_trl_async_grpo():
             _check_async_grpo_fast_inference(async_module, model, train_dataset)
             server = _start_async_grpo_vllm_server(model)
             config.vllm_server_base_url = server.url
+            if getattr(config, "max_inflight_tasks", 0) < 0:
+                # TRL's default counts rows, not rollouts, so token-budget packing would leave the engine
+                # nearly idle; let the engine batch as many as it can schedule.
+                config.max_inflight_tasks = server.max_num_seqs
             trainable = {id(p) for p in model.parameters() if p.requires_grad}
         try:
             original_init(self, model, *args, **kwargs)
@@ -4424,9 +4428,16 @@ def patch_trl_async_grpo():
             # Its arguments are pickled into a spawned process, which only needs the tokenizer to tokenize.
             def __init__(self, *args, **kwargs):
                 if "processing_class" in kwargs:
-                    kwargs["processing_class"] = _without_instance_bound_methods(
-                        kwargs["processing_class"]
-                    )
+                    processing_class = _without_instance_bound_methods(kwargs["processing_class"])
+                    # That process imports TRL without Unsloth, so it matches chat templates by exact string.
+                    try:
+                        from ._trl_tool_templates import with_trl_known_chat_template
+                        processing_class = with_trl_known_chat_template(processing_class)
+                    except Exception as e:
+                        logger.info(
+                            f"Unsloth: Could not map the chat template for the rollout process: {e}"
+                        )
+                    kwargs["processing_class"] = processing_class
                 super().__init__(*args, **kwargs)
 
         async_module.AsyncRolloutWorker = AsyncRolloutWorker

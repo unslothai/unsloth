@@ -325,6 +325,7 @@ class _FakeServer:
 
     def __init__(self, model):
         self.url = "http://127.0.0.1:1"
+        self.max_num_seqs = 96
         self.stopped = 0
         self.aborted = 0
         _FakeServer.started.append(self)
@@ -356,9 +357,11 @@ def fast_inference_trl(fake_trl):
             self,
             output_dir,
             vllm_server_base_url = "http://localhost:8000",
+            max_inflight_tasks = -1,
         ):
             self.output_dir = output_dir
             self.vllm_server_base_url = vllm_server_base_url
+            self.max_inflight_tasks = max_inflight_tasks
 
     class AsyncGRPOTrainer:
         lora_sync = True
@@ -382,11 +385,16 @@ def fast_inference_trl(fake_trl):
 
     mod.AsyncGRPOConfig = AsyncGRPOConfig
     mod.AsyncGRPOTrainer = AsyncGRPOTrainer
+    mod._calls = calls
     _FakeServer.started = []
     ns = _load(fast_backbone_types = (FastBackbone,))
     ns["_start_async_grpo_vllm_server"] = _FakeServer
     ns["patch_trl_async_grpo"]()
     return mod, ns
+
+
+def calls_args(mod):
+    return mod._calls["init"][-1][1]
 
 
 def test_fast_inference_model_gets_the_in_process_server(fast_inference_trl):
@@ -397,6 +405,13 @@ def test_fast_inference_model_gets_the_in_process_server(fast_inference_trl):
     )
     (server,) = _FakeServer.started
     assert trainer.url_seen == server.url
+    assert calls_args(mod).max_inflight_tasks == 96
+    mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())),
+        None,
+        args = mod.AsyncGRPOConfig("o", max_inflight_tasks = 8),
+    )
+    assert calls_args(mod).max_inflight_tasks == 8
     assert not peft.frozen.requires_grad and peft.lora.requires_grad
     assert trainer.train() == "trained" and server.aborted == 1
 
