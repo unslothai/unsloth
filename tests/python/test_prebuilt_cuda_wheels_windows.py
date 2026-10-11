@@ -63,11 +63,7 @@ def _step(workflow, job, name):
     return next(s for s in _steps(workflow, job) if s.get("name") == name)
 
 
-# ── The matrix ────────────────────────────────────────────────────────────────
-
-
-# What every Linux cell held before Windows existed, for the default dispatch. A change here is a
-# change to the Linux wheels that are already published, so it has to be deliberate.
+# Linux cells as published before Windows existed; changing them changes released wheels.
 LINUX_BEFORE = {
     "flash-attn": {
         "build_env": "FLASH_ATTENTION_FORCE_BUILD=TRUE FLASH_ATTENTION_FORCE_CXX11_ABI=TRUE "
@@ -186,9 +182,6 @@ class TestMatrix:
         assert {w["platform"] for w in warm} == {"win_amd64"}
 
 
-# ── Names ─────────────────────────────────────────────────────────────────────
-
-
 class TestNames:
     def test_windows_names_are_what_upstream_setup_py_would_write(self):
         """flash-attn, causal-conv1d and mamba's get_wheel_url() all format
@@ -258,9 +251,6 @@ class TestNames:
             "flash_attn-9.9.9+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
         )
         assert parsed["version"] == "9.9.9"
-
-
-# ── Release notes and SHA256SUMS ──────────────────────────────────────────────
 
 
 def _entries(platforms, torches = ("2.13.0", "2.14.0")):
@@ -341,8 +331,6 @@ class TestSums:
         ).stdout
         assert out == f"{'a' * 64}  a.whl\n{'b' * 64}  z.whl\n"
 
-
-# ── Shards ────────────────────────────────────────────────────────────────────
 
 WINDOWS_LISTING = "\n".join(
     [
@@ -432,9 +420,6 @@ class TestShards:
         assert calls[-1] == ["ninja", "-v", "-j", "1", "b.obj"]
 
 
-# ── The deadline wrapper ──────────────────────────────────────────────────────
-
-
 class TestDeadline:
     @pytest.mark.parametrize(
         "text, seconds", [("300m", 18000), ("90s", 90), ("2h", 7200), ("45", 45)]
@@ -478,9 +463,6 @@ class TestDeadline:
         assert deadline.main(["x", "5m", "echo"]) == 2
 
 
-# ── The workflow ──────────────────────────────────────────────────────────────
-
-
 WINDOWS_SETUP = (
     "Enable long paths (Windows)",
     "Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)",
@@ -513,7 +495,6 @@ class TestWorkflow:
             assert step["shell"] == "pwsh", (job, name)
         for name in LINUX_ONLY:
             assert _step(workflow, job, name)["if"] == "runner.os == 'Linux'", (job, name)
-        # Long paths before any checkout, or the cutlass submodule cannot be checked out.
         first_checkout = next(i for i, n in enumerate(names) if n and n.startswith("Checkout"))
         assert names.index("Enable long paths (Windows)") < first_checkout
         assert workflow["jobs"][job]["defaults"]["run"]["shell"] == "bash"
@@ -532,14 +513,12 @@ class TestWorkflow:
         assert "New-Item -ItemType Junction -Path 'C:\\cuda'" in run
         for package in ("nvcc", "cudart", "cublas_dev", "cusparse_dev", "cusolver_dev"):
             assert f"'{package}'" in run, package
-        # No display driver and no Visual Studio integration on a build machine.
         assert "visual_studio_integration" not in run and "Display.Driver" not in run
 
     def test_ccache_is_pinned_by_sha256(self, workflow):
         run = _step(workflow, "build", "Install ccache (Windows)")["run"]
         assert "ccache-4.14.1-windows-x86_64" in run
         assert "6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4" in run
-        # The default keys on nvcc.exe's mtime, which an installer need not keep across runners.
         assert "CCACHE_COMPILERCHECK=content" in run
 
     def test_msvc_environment_is_exported_with_distutils_use_sdk(self, workflow):
@@ -610,11 +589,10 @@ class TestWorkflow:
         assert "--clobber SHA256SUMS" in run
         assert "releases/assets/$id" in run
         assert "sha256:unknown" not in run
-        # Built before the notes, from the same listing.
         assert run.index("prebuilt_wheels.py sums") < run.index("prebuilt_wheels.py notes")
 
 
-# The MSVC preprocessor failure measured on windows-2022, reduced to the text the patch keys on.
+# The text the patch keys on, from the pinned upstream files.
 _MAMBA_KERNEL = """#include <c10/cuda/CUDAException.h>
 
 #ifndef USE_ROCM

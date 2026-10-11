@@ -9,11 +9,8 @@
 # five hours of nvcc for flash-attn, on a machine that has to have the CUDA toolkit installed.
 # So every torch minor from 2.13 on needs its own wheel set, and this is where they come from.
 #
-# Two platforms, linux_x86_64 and win_amd64, built by the same warm and build jobs on a per-cell
-# runner. Windows is here for a different reason than torch 2.13: Dao-AILab and state-spaces have
-# never published a Windows wheel of any of the three, so without this a Windows user's only route
-# is a local multi-hour compile. The steps that differ by OS are gated on runner.os and everything
-# else is the same bash on both, so the warm and build jobs cannot drift apart per platform.
+# win_amd64 too: upstream has never published a Windows wheel of any of the three. OS-specific
+# steps are gated on runner.os; the rest is the same bash on both.
 #
 # Dispatch only, once per torch minor, and `publish: false` is the default: a run then builds,
 # smoke tests and signs, and leaves everything as artifacts to inspect. Nothing here is reachable
@@ -131,7 +128,6 @@ jobs:
     timeout-minutes: 340
     permissions:
       contents: read
-    # Git Bash on Windows, so every step that is not OS specific is the same script on both.
     defaults:
       run:
         shell: bash
@@ -145,20 +141,17 @@ jobs:
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_NOHASHDIR: 'true'
       CCACHE_MAXSIZE: 20G
-      # torch reads this for the nvcc in build.ninja, on both platforms. It is written into the
-      # file verbatim, so the Windows value names space-free paths (see PLATFORMS).
+      # torch writes this into build.ninja unquoted, so the Windows value has no spaces.
       PYTORCH_NVCC: ${{ matrix.pytorch_nvcc }}
     steps:
       - name: Harden runner (audit)
-        # Audit egress because package downloads use changing endpoints. Linux only: the agent
-        # it installs is a Linux one.
+        # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
         if: runner.os == 'Linux'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      # Before any checkout: flash-attn's cutlass submodule has paths past MAX_PATH once the
-      # runner's workspace prefix is added, and git refuses them without core.longpaths.
+      # Before checkout: flash-attn's cutlass submodule has paths past MAX_PATH.
       - name: Enable long paths (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -238,14 +231,9 @@ jobs:
           ccache --version | head -1
           mkdir -p "$CCACHE_DIR"
 
-      # NVIDIA's own network installer, for the same reason Linux uses NVIDIA's apt repository
-      # rather than a setup action: this job installs the compiler whose output we sign. 13.0.2
-      # carries nvcc 13.0.88, the same nvcc the Linux apt package installs. The installer's
-      # Authenticode signature is checked before it runs, and only the subpackages a torch
-      # extension build needs are installed: no driver, no Nsight, and no Visual Studio
-      # integration, because the build is ninja, not MSBuild. C:\cuda is a junction onto the
-      # install so no path torch writes into build.ninja has a space in it; PYTORCH_NVCC is
-      # written there unquoted.
+      # NVIDIA's own installer, Authenticode-checked, not a setup action: this compiler's output is
+      # what we sign. 13.0.2 = nvcc 13.0.88, the same as the Linux apt package. C:\cuda is a
+      # junction so build.ninja never sees a space.
       - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 25
@@ -281,11 +269,8 @@ jobs:
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
 
-      # The developer environment vcvars64.bat sets up (cl, link, INCLUDE, LIB, the SDK), exported
-      # to every later step rather than through a setup action, for the same supply-chain reason.
-      # torch re-derives it itself whenever VSCMD_ARG_TGT_ARCH is absent, so exporting it also
-      # means every ninja run sees the one environment this step printed. DISTUTILS_USE_SDK=1
-      # makes setuptools take it as-is, and is what switches on flash-attn's own MSVC flags.
+      # vcvars64 exported to later steps (no setup action). DISTUTILS_USE_SDK=1 makes setuptools use
+      # it as-is and turns on flash-attn's MSVC flags.
       - name: Activate the MSVC x64 environment (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -321,11 +306,8 @@ jobs:
           'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Visual Studio at $vs"
 
-      # Upstream's Windows build of ccache, pinned by version and sha256. It caches nvcc, which is
-      # all the warm design needs on this platform: flash-attn is almost entirely .cu files.
-      # compiler_check=content because ccache's default keys on nvcc.exe's mtime, and nothing says
-      # the CUDA installer gives it the same mtime on two runners; if it does not, every warm
-      # slice is a miss in the build job and flash-attn recompiles from nothing.
+      # compiler_check=content: the default keys on nvcc.exe's mtime, which can differ per runner and
+      # would make every warm slice a miss in the build job.
       - name: Install ccache (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 10
@@ -345,10 +327,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
           & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
 
-      # The Windows counterpart of the Linux swap file below. windows-2022 ships a FIXED 2.9 GB
-      # page file (measured: 16 GB RAM, 18.9 GB commit limit, not system-managed), so nvcc's peak
-      # commit on the sm_100 flash-attn kernels has almost no headroom. This adds one on D:, which
-      # has ~220 GB free, through NtCreatePagingFile, so it takes effect without a reboot.
+      # The Linux swap file's counterpart: windows-2022 has a fixed 2.9 GB page file (18.9 GB commit
+      # limit on 16 GB RAM). NtCreatePagingFile, so no reboot.
       - name: Add a page file (Windows)
         if: runner.os == 'Windows'
         uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
@@ -357,8 +337,6 @@ jobs:
           maximum-size: 32GB
           disk-root: 'D:'
 
-      # Records how much room there is after the page file above, which is what makes an
-      # out-of-memory nvcc readable from the log.
       - name: Report memory, page file and disk (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -418,9 +396,6 @@ jobs:
         if: matrix.patch == 'cxx20'
         run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
 
-      # MSVC's preprocessor rejects the #ifndef USE_ROCM block mamba puts inside a BOOL_SWITCH
-      # macro argument, which gcc accepts. Asserting text patch, Windows only, so the Linux
-      # sources stay untouched. See patch_mamba_msvc.py.
       - name: Patch mamba-ssm for the MSVC host compiler (Windows)
         if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
         run: python unsloth/.github/scripts/patch_mamba_msvc.py src
@@ -458,9 +433,6 @@ jobs:
               python ../unsloth/.github/scripts/prebuilt_wheels_shard.py "$SHARD" "$SHARDS"
           fi
 
-      # Verbose on Windows, where -v names the reason for any uncacheable call. ccache does cache
-      # nvcc there (a causal-conv1d build on windows-2022 counted 3/3 nvcc calls cacheable), and a
-      # Windows warm slice that cached nothing would leave flash-attn compiling from scratch.
       - name: ccache stats
         if: always()
         run: |
@@ -492,14 +464,12 @@ jobs:
     needs: [plan, warm]
     # Run even if warm was skipped or failed; compile any cache misses here.
     if: ${{ !cancelled() && needs.plan.outputs.count != '0' }}
-    # Linux keeps the glibc floor at 2.35 (ubuntu-22.04); pip does not check it for
-    # linux_x86_64 wheels. Windows is windows-2022 (see PLATFORMS in prebuilt_wheels.py).
+    # Keep the Linux glibc floor at 2.35; pip does not check it for linux_x86_64 wheels.
     runs-on: ${{ matrix.runner }}
     # Allow cleanup after the build step's timeout, below GitHub's 6-hour limit.
     timeout-minutes: 340
     permissions:
       contents: read
-    # Git Bash on Windows, so every step that is not OS specific is the same script on both.
     defaults:
       run:
         shell: bash
@@ -512,21 +482,18 @@ jobs:
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_NOHASHDIR: 'true'
       CCACHE_MAXSIZE: 20G
-      # torch reads this for the nvcc in build.ninja, on both platforms. It is written into the
-      # file verbatim, so the Windows value names space-free paths (see PLATFORMS).
+      # torch writes this into build.ninja unquoted, so the Windows value has no spaces.
       PYTORCH_NVCC: ${{ matrix.pytorch_nvcc }}
     steps:
       # Keep setup through the mamba patch in sync with warm.
       - name: Harden runner (audit)
-        # Audit egress because package downloads use changing endpoints. Linux only: the agent
-        # it installs is a Linux one.
+        # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
         if: runner.os == 'Linux'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      # Before any checkout: flash-attn's cutlass submodule has paths past MAX_PATH once the
-      # runner's workspace prefix is added, and git refuses them without core.longpaths.
+      # Before checkout: flash-attn's cutlass submodule has paths past MAX_PATH.
       - name: Enable long paths (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -597,14 +564,9 @@ jobs:
           ccache --version | head -1
           mkdir -p "$CCACHE_DIR"
 
-      # NVIDIA's own network installer, for the same reason Linux uses NVIDIA's apt repository
-      # rather than a setup action: this job installs the compiler whose output we sign. 13.0.2
-      # carries nvcc 13.0.88, the same nvcc the Linux apt package installs. The installer's
-      # Authenticode signature is checked before it runs, and only the subpackages a torch
-      # extension build needs are installed: no driver, no Nsight, and no Visual Studio
-      # integration, because the build is ninja, not MSBuild. C:\cuda is a junction onto the
-      # install so no path torch writes into build.ninja has a space in it; PYTORCH_NVCC is
-      # written there unquoted.
+      # NVIDIA's own installer, Authenticode-checked, not a setup action: this compiler's output is
+      # what we sign. 13.0.2 = nvcc 13.0.88, the same as the Linux apt package. C:\cuda is a
+      # junction so build.ninja never sees a space.
       - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 25
@@ -640,11 +602,8 @@ jobs:
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
 
-      # The developer environment vcvars64.bat sets up (cl, link, INCLUDE, LIB, the SDK), exported
-      # to every later step rather than through a setup action, for the same supply-chain reason.
-      # torch re-derives it itself whenever VSCMD_ARG_TGT_ARCH is absent, so exporting it also
-      # means every ninja run sees the one environment this step printed. DISTUTILS_USE_SDK=1
-      # makes setuptools take it as-is, and is what switches on flash-attn's own MSVC flags.
+      # vcvars64 exported to later steps (no setup action). DISTUTILS_USE_SDK=1 makes setuptools use
+      # it as-is and turns on flash-attn's MSVC flags.
       - name: Activate the MSVC x64 environment (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -680,11 +639,8 @@ jobs:
           'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Visual Studio at $vs"
 
-      # Upstream's Windows build of ccache, pinned by version and sha256. It caches nvcc, which is
-      # all the warm design needs on this platform: flash-attn is almost entirely .cu files.
-      # compiler_check=content because ccache's default keys on nvcc.exe's mtime, and nothing says
-      # the CUDA installer gives it the same mtime on two runners; if it does not, every warm
-      # slice is a miss in the build job and flash-attn recompiles from nothing.
+      # compiler_check=content: the default keys on nvcc.exe's mtime, which can differ per runner and
+      # would make every warm slice a miss in the build job.
       - name: Install ccache (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 10
@@ -704,10 +660,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
           & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
 
-      # The Windows counterpart of the Linux swap file below. windows-2022 ships a FIXED 2.9 GB
-      # page file (measured: 16 GB RAM, 18.9 GB commit limit, not system-managed), so nvcc's peak
-      # commit on the sm_100 flash-attn kernels has almost no headroom. This adds one on D:, which
-      # has ~220 GB free, through NtCreatePagingFile, so it takes effect without a reboot.
+      # The Linux swap file's counterpart: windows-2022 has a fixed 2.9 GB page file (18.9 GB commit
+      # limit on 16 GB RAM). NtCreatePagingFile, so no reboot.
       - name: Add a page file (Windows)
         if: runner.os == 'Windows'
         uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
@@ -716,8 +670,6 @@ jobs:
           maximum-size: 32GB
           disk-root: 'D:'
 
-      # Records how much room there is after the page file above, which is what makes an
-      # out-of-memory nvcc readable from the log.
       - name: Report memory, page file and disk (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -768,9 +720,6 @@ jobs:
         if: matrix.patch == 'cxx20'
         run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
 
-      # MSVC's preprocessor rejects the #ifndef USE_ROCM block mamba puts inside a BOOL_SWITCH
-      # macro argument, which gcc accepts. Asserting text patch, Windows only, so the Linux
-      # sources stay untouched. See patch_mamba_msvc.py.
       - name: Patch mamba-ssm for the MSVC host compiler (Windows)
         if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
         run: python unsloth/.github/scripts/patch_mamba_msvc.py src
@@ -831,9 +780,6 @@ jobs:
               python setup.py bdist_wheel --dist-dir=dist
           fi
 
-      # Verbose on Windows, where -v names the reason for any uncacheable call. ccache does cache
-      # nvcc there (a causal-conv1d build on windows-2022 counted 3/3 nvcc calls cacheable), and a
-      # Windows warm slice that cached nothing would leave flash-attn compiling from scratch.
       - name: ccache stats
         if: always()
         run: |
@@ -849,8 +795,7 @@ jobs:
           DIST: ${{ matrix.dist }}
           VERSION: ${{ matrix.version }}
           PYTHON_TAG: ${{ matrix.python_tag }}
-          # Not PLATFORM: Windows env names are case-insensitive, and vcvars exports Platform=x64,
-          # so the step's value reaches bash as `Platform` and $PLATFORM is unset.
+          # Not PLATFORM: vcvars exports Platform=x64 and Windows env names are case-insensitive.
           WHEEL_PLATFORM: ${{ matrix.platform }}
           WHEEL_NAME: ${{ matrix.wheel_name }}
         run: |
@@ -965,9 +910,7 @@ jobs:
   gpu-smoke:
     name: GPU forward pass
     needs: [plan, build]
-    # A skipped warm (no flash-attn) would otherwise skip every job downstream of build. The
-    # runner is a Linux machine, so it only gets the Linux cells (gpu_matrix), and a run that
-    # built nothing for Linux has nothing here: an empty matrix is an error, not a no-op.
+    # Linux cells only (gpu_matrix); an empty matrix is an error, so skip when none were built.
     if: ${{ !cancelled() && inputs.gpu_smoke && needs.build.result == 'success' && needs.plan.outputs.gpu_count != '0' }}
     runs-on: [self-hosted, gpu]
     timeout-minutes: 90
@@ -1147,11 +1090,8 @@ jobs:
           name: prebuilt-cuda-wheels-signed
           path: wheels
 
-      # Created once and then added to. A run for torch 2.14, or for one platform, must not
-      # disturb the wheels already on the tag, so: create if absent, upload with --clobber, and
-      # regenerate SHA256SUMS and the notes from what the release holds AFTERWARDS rather than
-      # from what this run built. This run's own SHA256SUMS is the attestation's subject and
-      # stays in the signed artifact; it is not the release's, because it lists this run only.
+      # Created once, then added to: a run for one torch minor or platform must not disturb the
+      # rest. This run's SHA256SUMS is the attestation subject only; the release's is rebuilt below.
       #
       # --latest=false on both paths. This tag is a wheelhouse, not a product release, and the
       # repository's latest release is what the installers and the README resolve to.
@@ -1180,13 +1120,8 @@ jobs:
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             wheels/*.whl wheels/*.sigstore.json
 
-      # Regenerated from the release's OWN assets, using the digest GitHub reports per asset
-      # rather than the SHA256SUMS this run built. Those agree when nothing went wrong, and when
-      # they disagree both files should describe what a user will actually download. It also
-      # keeps them whole after a run that only added half the matrix: a Windows-only publish
-      # would otherwise replace SHA256SUMS with one that no longer lists a single Linux wheel.
-      # An asset GitHub reports no digest for is downloaded and hashed here instead, and
-      # `prebuilt_wheels.py sums` refuses to write anything that is not a real sha256.
+      # From the release's own assets (GitHub's per-asset digest, else download and hash), so a
+      # one-platform publish cannot drop the other platform's lines.
       - name: Regenerate SHA256SUMS and the release notes from the published assets
         env:
           GH_TOKEN: ${{ github.token }}

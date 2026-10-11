@@ -6,15 +6,8 @@
 
 Only ninja's targets change; compiler commands must stay identical to the full build.
 
-Objects are `.o` on Linux and `.obj` on Windows, and on Windows every target is an absolute path
-with a drive letter, so `ninja -t targets all` prints `D:\\a\\...\\kernel.obj: cuda_compile`. The
-target is everything before the LAST ": ", never the first colon.
-
-Two ways for a shard to do the wrong thing quietly are refused here. An empty object inventory
-means the listing was not understood, and handing ninja an empty target list builds its default
-target, which is the whole extension: every shard would become a full build and run into the job
-limit. So no objects at all is an error, and a legitimately empty slice exits without calling
-ninja.
+Windows targets are `D:\\...\\kernel.obj: cuda_compile`, so split on the LAST ": ". ninja with no
+targets builds everything, so an empty inventory is an error and an empty slice skips ninja.
 """
 
 import os

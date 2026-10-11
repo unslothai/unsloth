@@ -4,15 +4,9 @@
 
 """Run a build under a deadline and, when it passes, stop the WHOLE process tree.
 
-The Linux legs use coreutils `timeout --signal=INT --kill-after=120`. That does not carry over to
-the Windows legs: Git Bash's `timeout` can only end the one native process it started, and a
-setup.py build is python -> ninja -> ccache -> nvcc -> cicc/ptxas. The orphans keep the step's
-output pipe open, so the step does not end at the deadline, the job runs into GitHub's six-hour
-limit, and the steps that save a warm slice's partial ccache never get to run. That cache is
-the point of the deadline, so the tree is ended with `taskkill /T /F` instead.
-
-On POSIX it mirrors the coreutils behaviour the Linux legs already rely on: SIGINT to the process
-group, then SIGKILL after a grace period. Exit status 124 on a timeout, like `timeout`.
+Git Bash's `timeout` only ends the one native process it started; the orphaned ninja/nvcc tree
+keeps the step alive into the six-hour limit, so the warm slice's partial ccache is never saved.
+Windows uses `taskkill /T /F`; POSIX sends SIGINT to the group, then SIGKILL. Exits 124 on timeout.
 
 Usage: prebuilt_wheels_timeout.py <duration, e.g. 300m, 90s, 2h> -- <command> [args...]
 """

@@ -60,30 +60,11 @@ CXX11_ABI = "TRUE"
 # ubuntu-latest.
 PLATFORM_TAG = "linux_x86_64"
 
-# Every platform a cell can be built for, keyed by the pip platform tag the wheel carries.
-#
-# win_amd64 exists because nobody else builds these three for Windows at all: across every release
-# Dao-AILab and state-spaces have published there is not one Windows asset, so a Windows user's
-# only option today is a multi-hour local compile with MSVC and the CUDA toolkit installed.
-#
-# `abi` is what torch._C._GLIBCXX_USE_CXX11_ABI reports on that platform, and it goes into the
-# filename because that is what each upstream setup.py writes there on every platform: their own
-# get_wheel_url() formats the attribute verbatim. It is True on the Windows torch 2.13 and 2.14
-# cu130 wheels as well (measured on windows-2022: "cxx11abi True"; the macro means nothing to MSVC,
-# but torch still reports it), so a Windows wheel is `...cxx11abiTRUE-cp313-cp313-win_amd64.whl`.
-# Keeping their naming means the resolver builds the filename the same way on both platforms and
-# needs no Windows special case. The build asserts the attribute, so a torch that ever flips it
-# fails the job instead of publishing a misnamed wheel.
-#
-# `pytorch_nvcc` is the compiler line torch's cpp_extension writes into build.ninja (it honours
-# PYTORCH_NVCC on every OS, verbatim and unquoted, and on Windows that variable is the only way to
-# put a compiler cache in front of nvcc, because _wrap_compiler is a no-op there). Hence the
-# space-free C:/cuda junction and C:/ccache directory the Windows setup steps create.
-#
-# `smoke_exclude` / `smoke_extra` adjust the import smoke test's dependency install. mamba-ssm's
-# METADATA requires `triton`, `tilelang==0.1.8`, `apache-tvm-ffi` and `quack-kernels`, none of
-# which has a Windows wheel at that version; the import needs only `triton`, which triton-windows
-# provides, and mamba_ssm imports its tilelang and CuTe kernels inside try/except.
+# Keyed by the wheel's pip platform tag. No upstream release has ever shipped a Windows wheel.
+# `abi` is torch._C._GLIBCXX_USE_CXX11_ABI, which upstream setup.py copies into the name; the
+# Windows cu130 torch reports True too, and the build asserts it. `pytorch_nvcc` goes into
+# build.ninja unquoted and is the only way to cache nvcc on Windows (_wrap_compiler is a no-op
+# there), hence the space-free paths.
 PLATFORMS = {
     "linux_x86_64": {
         "os": "linux",
@@ -102,9 +83,8 @@ PLATFORMS = {
     },
 }
 
-# Windows only. torch pins the triton release it was built against (2.13: triton==3.7.1, 2.14:
-# triton~=3.8.0, both behind a Linux-only marker), and triton-windows tracks those releases with a
-# .postN suffix. Exact pins, so the smoke test is the same test on every run.
+# torch 2.13 pins triton==3.7.1 and 2.14 triton~=3.8.0 (Linux-only markers); exact pins keep
+# the Windows smoke test reproducible.
 TRITON_WINDOWS = {"2.13": "3.7.1.post27", "2.14": "3.8.0.post29"}
 WINDOWS_SMOKE_EXCLUDE = ("triton", "tilelang", "apache-tvm-ffi", "quack-kernels")
 
@@ -326,9 +306,7 @@ def build_matrix(
                             "wheel_name": wheel_name(
                                 package, torch_version, python_version, platform
                             ),
-                            # Only used for the job name in the Actions UI, where "flash-attn /
-                            # torch 2.13 / cp313" is the difference between reading the matrix
-                            # and counting the cells. Linux keeps its old label; Windows says so.
+                            # Job name in the Actions UI; Linux keeps its old label.
                             "label": f"{package} / torch {torch_minor(torch_version)} / "
                             f"{python_tag(python_version)}{target['label']}",
                             "platform": platform,
@@ -343,8 +321,7 @@ def build_matrix(
 
 
 def gpu_matrix(include: list[dict]) -> list[dict]:
-    """The cells the self-hosted GPU runner can test, which is a Linux machine: a Windows wheel
-    does not even load there, so handing it one would only turn an optional check red."""
+    """Cells the (Linux) self-hosted GPU runner can load."""
     return [cell for cell in include if cell["os"] == "linux"]
 
 
@@ -365,8 +342,8 @@ def parse_wheel_name(name: str) -> dict | None:
     """Filename back to the facts the notes table needs, or None if it is not one of ours.
 
     Deliberately strict. The release holds SHA256SUMS and .sigstore.json bundles beside the
-    wheels, and a loose parse would put them in the table as packages. The ABI must also be the
-    one that platform actually has, so a stray `cxx11abiTRUE-...-win_amd64` is not one of ours.
+    wheels, and a loose parse would put them in the table as packages. The ABI must match the
+    platform's, so a stray `cxx11abiFALSE` wheel is not one of ours.
     """
     platform = next((tag for tag in PLATFORMS if name.endswith(f"-{tag}.whl")), None)
     if platform is None:
@@ -390,8 +367,7 @@ def parse_wheel_name(name: str) -> dict | None:
     return {
         "package": package,
         "dist": dist,
-        # Read from the file, not from SPECS: the notes describe what is attached, and an asset
-        # left over from an older pin is a different version whatever the table says today.
+        # From the file, not SPECS: an asset left over from an older pin is a different version.
         "version": version,
         "torch": torch_part,
         "cuda": CUDA_TAG,
@@ -424,9 +400,8 @@ def _coverage(rows: list[dict]) -> str:
 def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     """One-sentence release body from `(sha256, filename)` pairs.
 
-    Regenerated from the release's current assets on every publish rather than appended to, so
-    a second run that adds the torch 2.14 half, or the Windows half, produces a sentence that
-    describes everything attached. A release holding one platform reads exactly as it always has.
+    Regenerated from the release's current assets on every publish, so a run that adds one
+    torch minor or one platform still describes everything attached.
     """
     parsed = [row for row in (parse_wheel_name(name) for _, name in entries) if row is not None]
     if not parsed:
@@ -445,8 +420,7 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
             f"Prebuilt {PLATFORM_NAMES[platforms[0]]} CUDA {CUDA_TAG} wheels for "
             f"{_join(packages)}, built for {_coverage(parsed)}.\n"
         )
-    # Per platform, because the two halves are published by separate runs and need not cover
-    # the same torch minors; one merged list would advertise combinations that are not attached.
+    # Per platform: separate runs need not cover the same torch minors.
     per_platform = "; ".join(
         f"{PLATFORM_NAMES[platform]} for "
         f"{_coverage([row for row in parsed if row['platform'] == platform])}"

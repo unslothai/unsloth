@@ -4,17 +4,10 @@
 
 """Make mamba-ssm's selective-scan kernels preprocess with MSVC as nvcc's host compiler.
 
-Windows only. Each launch function in the Mamba-1 kernels has an
-`#ifndef USE_ROCM ... #else ... #endif` block INSIDE the lambda passed to BOOL_SWITCH, i.e. inside
-a macro argument. gcc accepts directives there; MSVC's preprocessor does not (measured on
-windows-2022 against the pinned commit: `error: "#" not expected here`, then 100 errors). The
-block is replaced by its CUDA branch, which is exactly what the preprocessor keeps on this build:
-USE_ROCM is never defined for a CUDA wheel. The other USE_ROCM blocks in these files sit at file
-or function scope, are legal everywhere, and are left alone. (The other MSVC failure in these
-files, M_LOG2E, is handled for every package by NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES.)
-
-Same contract as patch_mamba_cxx20.py: it asserts on the text, an already-patched tree is a
-success with nothing to do, and anything else fails loudly so a human re-reads upstream.
+Windows only. An `#ifndef USE_ROCM` block sits inside the lambda passed to BOOL_SWITCH (a macro
+argument); gcc accepts that, MSVC does not (`error: "#" not expected here`). It is replaced by its
+CUDA branch, which is what a CUDA build preprocesses to anyway. Same contract as
+patch_mamba_cxx20.py: asserts the text, a patched tree is a no-op, anything else fails loudly.
 
 Usage: patch_mamba_msvc.py <mamba checkout root>
 """
