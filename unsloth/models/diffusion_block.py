@@ -18,6 +18,7 @@ import types
 import torch
 import torch.nn.functional as F
 
+from .diffusion_loss import chunked_cross_entropy, compile_loss, is_distributed_wrapper
 from .diffusion_profiles import (
     DiffusionProfile,
     register_diffusion_profile,
@@ -53,12 +54,7 @@ def block_diffusion_attention_mask(
 _unwrap = unwrap_diffusion_model
 
 
-def _is_distributed_wrapper(model):
-    return type(model).__name__ in (
-        "DistributedDataParallel",
-        "FullyShardedDataParallel",
-        "DeepSpeedEngine",
-    )
+_is_distributed_wrapper = is_distributed_wrapper
 
 
 class BlockDiffusionProfile(DiffusionProfile):
@@ -139,8 +135,12 @@ class BlockDiffusionProfile(DiffusionProfile):
         maskable = response_mask(inputs)
         if not self.defaults.get("eos_fill", False):
             return input_ids, maskable, valid
-        if (valid[:, 1:] & ~valid[:, :-1]).any():
-            raise ValueError("Unsloth: block-diffusion training expects right padding.")
+        base = _unwrap(model)
+        if not base.__dict__.get("_unsloth_right_padding_checked", False):
+            # The collator's padding side is fixed for a run: check the first batch, not every step (host sync).
+            if (valid[:, 1:] & ~valid[:, :-1]).any():
+                raise ValueError("Unsloth: block-diffusion training expects right padding.")
+            base.__dict__["_unsloth_right_padding_checked"] = True
         # Turns end with a terminator, not EOS, so stopping is learnt only from a supervised EOS tail (as the
         # reference's max-length EOS padding); pad to the next block past the longest row.
         block = self.block_size(model, args)
@@ -177,17 +177,19 @@ class BlockDiffusionProfile(DiffusionProfile):
         p = low + (high - low) * torch.rand(batch, device = clean.device)
         masked = (torch.rand(batch, length, device = clean.device) < p[:, None]) & maskable
         if self.defaults.get("ensure_masked", False):
+            # Rescue draw taken every step (fixed shape, no host sync); it only changes rows left empty.
             empty = maskable.any(dim = 1) & ~masked.any(dim = 1)
-            if empty.any():
-                scores = torch.rand(batch, length, device = clean.device).masked_fill(~maskable, -1.0)
-                pick = F.one_hot(scores.argmax(dim = 1), length).bool()
-                masked = masked | (pick & empty[:, None])
+            scores = torch.rand(batch, length, device = clean.device).masked_fill(~maskable, -1.0)
+            pick = F.one_hot(scores.argmax(dim = 1), length).bool()
+            masked = masked | (pick & empty[:, None])
         return torch.where(masked, mask_token_id, clean), masked, p
 
     def attention_mask(self, length, block_size, valid, dtype, device):
         mask = block_diffusion_attention_mask(length, block_size, device)[None, None]
         batch = valid.shape[0]
-        if self.defaults.get("key_padding", False) and not bool(valid.all()):
+        if self.defaults.get("key_padding", False):
+            # Unconditional: with no padding `keys` is all True and the diagonal is already allowed, so a
+            # padding-free batch gets the same mask without a host sync.
             keys = torch.cat([valid, valid], dim = 1)[:, None, None, :]
             # Padding is its own segment in the reference; a padding query keeps its diagonal so no row is empty.
             mask = (mask & keys) | torch.eye(2 * length, dtype = torch.bool, device = device)[
@@ -224,29 +226,49 @@ class BlockDiffusionProfile(DiffusionProfile):
         )
         return out[0][:, :length], head
 
-    def loss_from_noise(self, model, clean, noisy, masked, maskable, p, valid, args):
+    def loss_from_noise(
+        self,
+        model,
+        clean,
+        noisy,
+        masked,
+        maskable,
+        p,
+        valid,
+        args,
+        with_metrics = False,
+    ):
         block_size = self.block_size(model, args)
-        hidden, head = self.noisy_hidden_and_head(model, noisy, clean, valid, block_size)
-        if head is None:
-            logits = hidden[masked].float()
-        else:
-            # Project only the masked positions: the vocab-sized logits are the memory peak otherwise.
-            logits = head(hidden[masked]).float()
-        nll = F.cross_entropy(logits, clean[masked], reduction = "none")
         weighting = self.option(args, "diffusion_time_weighting", "none")
         if weighting not in ("inverse_t", "none"):
             raise ValueError(
                 f"Unsloth: {self.name} does not support diffusion_time_weighting={weighting!r}."
             )
+        hidden, head = self.noisy_hidden_and_head(model, noisy, clean, valid, block_size)
+        if head is not None and (type(head) is not torch.nn.Linear or hasattr(head, "_hf_hook")):
+            # A quantized / LoRA / offloaded head only runs through its own forward.
+            hidden, head = head(hidden), None
+        targets = torch.where(masked, clean, -100)
+        weights = masked.float()
         if weighting == "inverse_t":
-            nll = nll / p[:, None].expand_as(masked)[masked].float()
+            weights = weights / p[:, None].float()
+        # Every noisy position goes through the chunked CE (head applied per chunk, never [B, L, V] fp32);
+        # unmasked rows are ignored targets, so the shape is fixed whatever was masked.
+        weighted, ce_sum, count = chunked_cross_entropy(
+            hidden,
+            targets,
+            weights,
+            weight = None if head is None else head.weight,
+            bias = None if head is None else head.bias,
+            compiled = compile_loss(args, clean.device),
+        )
         if self.defaults.get("normalize", "masked") == "supervised":
             denominator = maskable.sum()
         else:
-            denominator = masked.sum()
-        loss = nll.sum() / denominator.clamp_min(1)
-        if not masked.any():
-            loss = loss + hidden.sum() * 0.0
+            denominator = count
+        loss = weighted / denominator.clamp_min(1)
+        if with_metrics:
+            return loss, ce_sum, count
         return loss
 
     def compute_loss(
@@ -259,10 +281,13 @@ class BlockDiffusionProfile(DiffusionProfile):
         clean, maskable, valid = self.build_batch(model, inputs, args)
         mask_token_id = self.mask_token_id(model, args)
         noisy, masked, p = self.sample_noise(clean, maskable, mask_token_id, args)
-        loss = self.loss_from_noise(model, clean, noisy, masked, maskable, p, valid, args)
+        loss, ce_sum, count = self.loss_from_noise(
+            model, clean, noisy, masked, maskable, p, valid, args, with_metrics = True
+        )
         metrics = {
-            "mask_ratio": (masked.sum() / maskable.sum().clamp_min(1)).item(),
-            "masked_tokens": masked.sum().item(),
+            "mask_ratio": (count / maskable.sum().clamp_min(1)).detach(),
+            "masked_tokens": count.detach(),
+            "masked_ce": (ce_sum / count.clamp_min(1)).detach(),
         }
         return loss, None, metrics
 

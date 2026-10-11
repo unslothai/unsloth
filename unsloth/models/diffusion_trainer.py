@@ -10,7 +10,8 @@ from typing import Optional
 import torch
 from trl import SFTConfig, SFTTrainer
 
-from .diffusion_profiles import resolve_diffusion_profile
+from .diffusion_loss import compile_backbone_layers, diffusion_compile_mode
+from .diffusion_profiles import resolve_diffusion_profile, unwrap_diffusion_model
 
 __all__ = ["DiffusionConfig", "DiffusionTrainer"]
 
@@ -46,6 +47,13 @@ class DiffusionConfig(SFTConfig):
     diffusion_prediction_type: Optional[str] = field(
         default = None,
         metadata = {"help": "Family-specific prediction parameterisation (e.g. 'mean', 'mean_loo')."},
+    )
+    diffusion_compile: Optional[str] = field(
+        default = "auto",
+        metadata = {
+            "help": "'auto' compiles the chunked loss on CUDA; 'loss' always; 'full' (or True) also compiles "
+            "each backbone layer; False / 'eager' disables. UNSLOTH_COMPILE_DISABLE=1 forces eager."
+        },
     )
 
     def __post_init__(self):
@@ -95,9 +103,12 @@ class DiffusionTrainer(SFTTrainer):
             )
         self.diffusion_profile = profile
         self._diffusion_metrics = defaultdict(list)
+        diffusion_compile_mode(args)  # reject a bad value before any work
         super().__init__(model, args, *pos, **kwargs)
         # The loss is ours, so the Trainer must scale it for gradient accumulation itself.
         self.model_accepts_loss_kwargs = False
+        if diffusion_compile_mode(args) == "full" and profile.compile_backbone:
+            compile_backbone_layers(unwrap_diffusion_model(self.model))
 
     def compute_loss(
         self,
@@ -110,8 +121,11 @@ class DiffusionTrainer(SFTTrainer):
             model, inputs, self.args, num_items_in_batch = num_items_in_batch
         )
         mode = "train" if model.training else "eval"
+        # Kept on device; one host sync per log() instead of one per metric per micro-batch.
         for key, value in (metrics or {}).items():
-            self._diffusion_metrics[f"{mode}/{key}"].append(float(value))
+            if isinstance(value, torch.Tensor):
+                value = value.detach().float().reshape(())
+            self._diffusion_metrics[f"{mode}/{key}"].append(value)
         return (loss, outputs) if return_outputs else loss
 
     def prediction_step(
@@ -132,5 +146,10 @@ class DiffusionTrainer(SFTTrainer):
         for key in [k for k in self._diffusion_metrics if k.startswith(mode + "/")]:
             values = self._diffusion_metrics.pop(key)
             if values:
-                logs[prefix + key.split("/", 1)[1]] = sum(values) / len(values)
+                tensors = [v for v in values if isinstance(v, torch.Tensor)]
+                total = sum(float(v) for v in values if not isinstance(v, torch.Tensor))
+                if tensors:
+                    device = tensors[0].device
+                    total += float(torch.stack([v.to(device) for v in tensors]).sum())
+                logs[prefix + key.split("/", 1)[1]] = total / len(values)
         return super().log(logs, *args, **kwargs)

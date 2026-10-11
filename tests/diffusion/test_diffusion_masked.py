@@ -424,7 +424,7 @@ def fixed_noise_ce():
     # Per-step losses are too noisy over 20 steps (1 / t weight, fresh noise); score one batch under one draw.
     torch.manual_seed(0)
     with torch.no_grad():
-        return trainer.diffusion_profile.compute_loss(model, fixed, args)[2]["masked_ce"]
+        return float(trainer.diffusion_profile.compute_loss(model, fixed, args)[2]["masked_ce"])
 
 
 first = fixed_noise_ce()
@@ -473,3 +473,38 @@ def test_tiny_remote_checkpoint_trains_and_reloads(name, tmp_path):
     )
     assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-3000:]
     assert "TINY_OK" in out.stdout
+
+
+class _WithHead(_Bidirectional):
+    def get_output_embeddings(self):
+        return self.head
+
+
+@pytest.mark.parametrize("name", ["llada", "dream", "nemotron_labs_diffusion"])
+def test_hidden_state_loss_matches_dense_logits(name):
+    # The fused path swaps the head for its input and projects per chunk; it must equal the logits path.
+    inputs, _ = _batch()
+    fused, dense = _WithHead(), _Bidirectional()
+    dense.load_state_dict(fused.state_dict())
+    fused_loss, _ = _ours(name, fused, inputs, 3)
+    dense_loss, _ = _ours(name, dense, inputs, 3)
+    assert fused.__dict__["_unsloth_diffusion_fused_head"] is fused.head
+    assert "forward" not in vars(fused.head)  # the swap is undone
+    torch.testing.assert_close(fused_loss, dense_loss, rtol = 1e-6, atol = 1e-6)
+    fused_loss.backward()
+    dense_loss.backward()
+    for (n, a), b in zip(fused.named_parameters(), dense.parameters()):
+        torch.testing.assert_close(a.grad, b.grad, rtol = 1e-5, atol = 1e-6, msg = n)
+
+
+def test_dream_zero_noise_level_is_finite(monkeypatch):
+    # Dream draws t ~ U(0, 1) with no floor and weights by 1 / t: t = 0 masks nothing and must not give inf * 0.
+    inputs, _ = _batch()
+    monkeypatch.setattr(
+        torch,
+        "rand",
+        lambda *a, **k: torch.zeros(*a, **{x: y for x, y in k.items() if x != "generator"}),
+    )
+    loss, metrics = _ours("dream", _Bidirectional(), inputs, 0)
+    assert torch.isfinite(loss) and float(loss) == 0.0 and loss.requires_grad
+    assert float(metrics["masked_fraction"]) == 0.0

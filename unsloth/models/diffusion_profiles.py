@@ -50,6 +50,9 @@ class DiffusionProfile:
     quant_skip_modules: Optional[list] = None
     # Profile-specific defaults a DiffusionConfig field left at None falls back to.
     defaults: dict = field(default_factory = dict)
+    # Whether DiffusionConfig(diffusion_compile = "full") may torch.compile each decoder layer. Off for
+    # data-dependent MoE dispatch (token gathers per expert) until that is rewritten.
+    compile_backbone: bool = False
 
     def matches(self, config) -> bool:
         model_type = getattr(config, "model_type", None)
@@ -89,7 +92,7 @@ class DiffusionProfile:
         args,
         num_items_in_batch = None,
     ):
-        """Returns (loss, outputs_or_None, metrics: dict[str, float])."""
+        """Returns (loss, outputs_or_None, metrics: dict[str, float | 0-dim tensor])."""
         raise NotImplementedError(
             f"Unsloth: diffusion profile {self.name} has no training objective."
         )
