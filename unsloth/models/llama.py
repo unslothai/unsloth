@@ -270,8 +270,8 @@ def _unfreeze_modules_to_save(model) -> None:
             if adapter_name not in module.modules_to_save:
                 continue
             trainable = module.modules_to_save[adapter_name]
-            weight = getattr(trainable, "weight", None)
-            if weight is not None and weight.dtype == torch.float16:
+            # Any parameter, not just .weight: a saved block (nn.Sequential, an MLP) has none at top level.
+            if any(p.dtype == torch.float16 for p in trainable.parameters()):
                 # Tesla T4 must use float32 and not float16; see #1200.
                 trainable.to(dtype = torch.float32)
             trainable.requires_grad_(True)

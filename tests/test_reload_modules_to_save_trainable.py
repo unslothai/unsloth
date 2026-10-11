@@ -90,6 +90,18 @@ def test_float16_copy_is_upcast_and_original_untouched():
             assert not module.original_module.weight.requires_grad
 
 
+def test_float16_composite_saved_module_is_upcast():
+    torch.manual_seed(0)
+    base = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.Sequential(torch.nn.Linear(8, 8)))
+    model = get_peft_model(
+        base.to(torch.float16), LoraConfig(r = 4, target_modules = ["0"], modules_to_save = ["1"])
+    )
+    _freeze_like_kbit_prep(model)
+    unfreeze(model)
+    saved = [p for n, p in model.named_parameters() if "modules_to_save" in n]
+    assert saved and all(p.dtype == torch.float32 and p.requires_grad for p in saved)
+
+
 def test_idempotent_and_skips_disabled_adapters():
     model = _peft()
     _freeze_like_kbit_prep(model)
