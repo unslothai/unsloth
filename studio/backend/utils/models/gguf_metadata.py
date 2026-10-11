@@ -1069,11 +1069,12 @@ def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optiona
             f"{arch}.embedding_length {embedding_length} != "
             f"clip.vision.projection_dim {projection_dim}"
         )
-    # Sizes share widths (Qwen3.5 2B and 35B-A3B are both 2048) but not vision towers.
+    # Sizes share widths (Qwen3.5 2B and 35B-A3B are both 2048) but not vision towers, so a
+    # size conflict withholds the rescue and leaves the verdict to the identity metadata.
     weight_sizes = _model_size_tokens(weight_path)
     projector_sizes = _model_size_tokens(mmproj_path)
     if weight_sizes and projector_sizes and weight_sizes.isdisjoint(projector_sizes):
-        return False, f"model size {sorted(weight_sizes)} != {sorted(projector_sizes)}"
+        return None, ""
     return True, ""
 
 

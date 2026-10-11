@@ -552,7 +552,33 @@ def test_qwen35_same_width_projector_of_another_size_is_not_picked(tmp_path):
             },
         )
     assert detect_mmproj_file(str(model)) == str(projectors["35B-A3B"].resolve())
-    assert not mmproj_matches_model_family(str(model), str(projectors["2B"]))
+
+
+def test_size_names_do_not_override_an_exact_repo_match(tmp_path):
+    """Converters name MoE sizes differently; the shared base_model URL is authoritative."""
+    url = "https://huggingface.co/Qwen/Qwen3.6-35B-A3B"
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": "qwen35moe",
+            "general.name": "Qwen3.6 35B",
+            "general.base_model.0.repo_url": url,
+            "qwen35moe.embedding_length": 2048,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.name": "Qwen3.6 A3B",
+            "general.base_model.0.repo_url": url,
+            "clip.projector_type": "qwen3vl_merger",
+            "clip.vision.projection_dim": 2048,
+            "clip.vision.is_deepstack_layers": [False, False],
+        },
+    )
+    assert detect_mmproj_file(str(model)) == str(projector.resolve())
 
 
 def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
