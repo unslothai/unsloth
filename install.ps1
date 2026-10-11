@@ -7679,7 +7679,6 @@ exit 0
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
     $script:PrevTorchPin = $null
-    # Any earlier environment in this home, readable or not: only a home without one takes a new-install torch default.
     $script:ExistingInstall = $false
 
     function Test-VenvPythonReady {
@@ -8148,7 +8147,6 @@ exit 0
         } catch { return $null }
     }
 
-    # torch's version.py read off disk, for an environment whose interpreter cannot be asked.
     function Get-TorchVersionFromDisk {
         param([string]$VenvRoot)
         $versionPy = Join-Path $VenvRoot "Lib\site-packages\torch\version.py"
@@ -8161,8 +8159,7 @@ exit 0
         return $null
     }
 
-    # Decided before anything below moves an environment aside, and for every earlier layout:
-    # a legacy .venv whose interpreter is missing or broken is still an earlier install.
+    # Before anything below moves an environment aside; a broken legacy .venv still counts.
     $_legacyVenvDir = Join-Path $StudioHome ".venv"
     $_cwdVenvPy = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe" } else { $null }
     if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir)) {
@@ -8172,7 +8169,6 @@ exit 0
         if (-not $SkipTorch) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot $_legacyVenvDir }
     } elseif ($studioUsesLegacyLayout -and $_cwdVenvPy -and (Test-Path -LiteralPath $_cwdVenvPy)) {
         $script:ExistingInstall = $true
-        # Migrated below and reused as is, so its release is kept like the other two layouts'.
         if (-not $SkipTorch) {
             $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $_cwdVenvPy
             if (-not $script:PrevTorchVer) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot (Split-Path (Split-Path $_cwdVenvPy -Parent) -Parent) }
@@ -10659,7 +10655,6 @@ main()
             [string]$TorchVersion,
             # Named -Constraint: the Windows port keeps no shell-style constraint variable.
             [Parameter(Mandatory = $true)][string]$Constraint,
-            # An upgrade with no newer release to move to still keeps the resident one.
             [switch]$Keep
         )
         if ($env:UNSLOTH_TORCH_UPGRADE -eq '1' -and -not $Keep) { return $null }
@@ -10677,16 +10672,12 @@ main()
         }
     }
 
-    # Windows ports of install.sh's cu130 torch 2.13 route. The torch 2.13/2.14 prebuilt kernel
-    # wheels (prebuilt-wheels-cu13) are cp313 and built for the cu130 index, so this is the only
-    # Windows route they serve.
+    # Port of install.sh's cu130 torch 2.13 route (the only one prebuilt-wheels-cu13 serves).
     $script:Cu130TorchCeiling = "2.15.0"
     $script:Cu130NewInstallTorchSpec = "torch>=2.13.0,<2.14.0"
     $script:Cu130NewInstallVisionSpec = "torchvision>=0.28.0,<0.29.0"
 
-    # The local half of the route, with no network: it alone decides the preservation window, so a
-    # PyPI outage on a re-run can never shrink it and downgrade an existing 2.13/2.14 install.
-    # Machine arch AND interpreter: an emulated x64 Python on an ARM64 host is not this route.
+    # Local facts only: decides the keep window, so a PyPI outage cannot shrink it.
     function Test-Cu130Torch213Platform {
         param([string]$IndexUrl, [string]$PythonExe)
         if (-not $IndexUrl -or (Get-TorchIndexLeafName $IndexUrl) -ne "cu130") { return $false }
@@ -10698,9 +10689,7 @@ main()
         return ($lines[-1].ToLowerInvariant() -eq "3.13 win-amd64")
     }
 
-    # PreserveSpec: the window an existing release is kept inside. NewInstall: whether a home with
-    # nothing kept installs torch 2.13. An existing home never takes 2.13 unasked, even when its torch
-    # could not be read or kept; UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) is the ask.
+    # An existing home never takes 2.13 unasked; UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) asks.
     function Resolve-Cu130TorchRoute {
         param([string]$IndexUrl, [string]$PythonExe, [Parameter(Mandatory = $true)][string]$DefaultSpec, [bool]$ExistingInstall)
         $result = [pscustomobject]@{ PreserveSpec = $DefaultSpec; NewInstall = $false }
@@ -10713,8 +10702,7 @@ main()
         return $result
     }
 
-    # UNSLOTH_TORCH_UPGRADE=1 with the 2.13 route closed (PyPI unreachable, a mirror, an older
-    # release) must not move a resident release above the default range down: keep it instead.
+    # UPGRADE=1 with the route closed must not move a resident 2.13/2.14 down.
     function Get-UpgradeKeptTorchPin {
         param(
             [string]$TorchVersion,
@@ -10728,8 +10716,7 @@ main()
         return (Get-PreviousTorchPin -TorchVersion $TorchVersion -Constraint $PreserveSpec -Keep)
     }
 
-    # Does a Requires-Dist list admit torch $Want? Exactly one unconditional torch requirement,
-    # every clause a plain comparison; anything else answers no.
+    # Exactly one unconditional torch requirement of plain comparisons, else no.
     function Test-RequiresDistAdmitsTorch {
         param([string[]]$RequiresDist, [Parameter(Mandatory = $true)][string]$Want)
         $toTuple = {
@@ -10766,10 +10753,8 @@ main()
         return $true
     }
 
-    # $true only when the newest unsloth on PyPI admits torch $Want: `studio update` runs the INSTALLED
-    # release's setup, which re-resolves under its own cap and would downgrade a newer torch. Any failure
-    # answers no, as does anything making public PyPI's newest release not what uv will pick: an upload
-    # cutoff, offline mode, another package index.
+    # `studio update` re-resolves under the INSTALLED release's cap, so only a release admitting $Want
+    # opens the route. Any failure, offline mode, upload cutoff or other index answers no.
     function Test-PypiUnslothAdmitsTorch {
         param([Parameter(Mandatory = $true)][string]$Want)
         $offline = ([string]$env:UV_OFFLINE).Trim().ToLowerInvariant()
@@ -11172,8 +11157,6 @@ main()
         $_pinTorchSpec = "torch>=2.4,<2.12.0"
         $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
         $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
-        # Only the cu130 route has prebuilt kernel wheels for torch 2.13/2.14 (prebuilt-wheels-cu13, cp313),
-        # so new installs get 2.13; preservation keeps a wider window so an existing 2.4-2.14 install stays on its release.
         $_preserveTorchSpec = $_pinTorchSpec
         $_cu130NewInstallRoute = $false
         if (-not $SkipTorch -and -not $ROCmIndexUrl) {

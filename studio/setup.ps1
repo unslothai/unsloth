@@ -8760,8 +8760,7 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# The x64 spec once torch is installed: triton-windows pairs torch 2.13 with 3.7 and 2.14 with 3.8,
-# one triton minor per torch minor; every earlier release keeps <3.7.
+# triton-windows: torch 2.13 -> 3.7, 2.14 -> 3.8, older keeps <3.7.
 function Get-TritonWindowsSpec {
     param([string]$TorchVersion, [bool]$WinArm64 = $false)
     if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
@@ -9136,7 +9135,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     }
 
     # Triton for Windows enables torch.compile (without it training can hang). Paired with the
-    # torch this step left in the venv, read from its metadata rather than by importing it.
+    # installed torch, read from metadata.
     $_tritonTorchProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
     if ($_tritonTorchProbe.Ok) {
         $_tritonTorchVer = @($_tritonTorchProbe.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })

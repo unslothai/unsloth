@@ -563,8 +563,7 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.12.0",
 )
 
-# The install.sh _cu130_torch213_route and install.ps1's Test-Cu130Torch213Platform: a repair
-# keeps a resident 2.9-2.14 release.
+# Mirrors install.sh / install.ps1's cu130 route: a repair keeps a resident 2.9-2.14 release.
 _CU130_PRESERVE_TORCH_CEILING_MINOR = 15
 _CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2.9.0
 
