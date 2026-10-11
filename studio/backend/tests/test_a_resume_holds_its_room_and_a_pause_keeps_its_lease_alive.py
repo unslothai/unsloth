@@ -135,10 +135,14 @@ class TestThePauseSaysItIsStillWaiting:
     def test_keepalives_are_yielded_while_the_policy_blocks(self, monkeypatch):
         monkeypatch.setattr(llama_mod, "_PREEMPT_KEEPALIVE_S", 0.05)
 
+        keepalive = {"type": "preempt", "state": "keepalive"}
+        # Released by the reader after the third keepalive, not after a fixed sleep: a slow
+        # runner fit two keepalives into 0.3s.
+        go = threading.Event()
+
         class _Slow:
             def await_resume(self, cancel_event = None):
-                time.sleep(0.3)
-                return True
+                return go.wait(10)
 
         events = []
 
@@ -148,7 +152,9 @@ class TestThePauseSaysItIsStillWaiting:
 
         for event in drive():
             events.append(event)
-        keepalives = [e for e in events if e == {"type": "preempt", "state": "keepalive"}]
+            if events.count(keepalive) >= 3:
+                go.set()
+        keepalives = [e for e in events if e == keepalive]
         assert len(keepalives) >= 3, events
         assert events[-1] == ("result", True)
 

@@ -23,10 +23,12 @@ class TestToolCallsOverlapAcrossChats:
                 windows.append((name, start, time.monotonic()))
 
         started = time.monotonic()
-        await asyncio.gather(*(chat(f"chat{i}", 3, 0.05) for i in range(4)))
+        # Long enough that thread start-up on a slow runner (0.39s against 0.36s on macOS at
+        # 0.05s a call) is small beside the work.
+        await asyncio.gather(*(chat(f"chat{i}", 3, 0.2) for i in range(4)))
         wall = time.monotonic() - started
 
-        serial = 4 * 3 * 0.05
+        serial = 4 * 3 * 0.2
         assert wall < serial * 0.6, (
             f"{wall:.2f}s for work that is {serial:.2f}s serialised: something is gating "
             f"tool execution across chats"
