@@ -384,10 +384,19 @@ fn acquire_named_studio_runtime_launch_guard(
     const WAIT_OBJECT_0: u32 = 0x0000_0000;
     const WAIT_ABANDONED: u32 = 0x0000_0080;
     const WAIT_TIMEOUT: u32 = 0x0000_0102;
+    // Only the rights the guard uses. CreateMutexW asks for MUTEX_ALL_ACCESS, which an
+    // elevated holder's mutex denies to this process: error 5 instead of busy (#9928).
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const MUTEX_MODIFY_STATE: u32 = 0x0000_0001;
 
     let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     let handle = unsafe {
-        windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, wide_name.as_ptr())
+        windows_sys::Win32::System::Threading::CreateMutexExW(
+            std::ptr::null(),
+            wide_name.as_ptr(),
+            0,
+            SYNCHRONIZE | MUTEX_MODIFY_STATE,
+        )
     };
     if handle.is_null() {
         return Err(format!(
@@ -820,6 +829,77 @@ mod studio_runtime_launch_guard_tests {
         assert!(error.contains("installation is modifying"));
         drop(first);
         acquire_named_studio_runtime_launch_guard(&name).unwrap();
+    }
+
+    // An elevated holder's mutex grants a non-elevated opener SYNCHRONIZE and
+    // MUTEX_MODIFY_STATE but not MUTEX_ALL_ACCESS (#9928).
+    #[test]
+    fn a_holder_that_denies_full_access_reads_as_busy() {
+        use windows_sys::Win32::Security::{
+            AddAccessAllowedAce, CreateWellKnownSid, InitializeAcl, InitializeSecurityDescriptor,
+            SetSecurityDescriptorDacl, WinWorldSid, ACL, ACL_REVISION, SECURITY_ATTRIBUTES,
+            SECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE,
+        };
+
+        let name = format!(
+            "Local\\UnslothStudioRuntimeGateAccessTest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let mut sid = [0_u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut sid_len = SECURITY_MAX_SID_SIZE;
+        let mut acl = [0_u64; 16];
+        let mut descriptor: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+        let descriptor_ptr = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+        unsafe {
+            assert_ne!(
+                CreateWellKnownSid(
+                    WinWorldSid,
+                    std::ptr::null_mut(),
+                    sid.as_mut_ptr().cast(),
+                    &mut sid_len
+                ),
+                0
+            );
+            let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+            assert_ne!(
+                InitializeAcl(acl_ptr, std::mem::size_of_val(&acl) as u32, ACL_REVISION),
+                0
+            );
+            assert_ne!(
+                AddAccessAllowedAce(acl_ptr, ACL_REVISION, 0x0010_0001, sid.as_mut_ptr().cast()),
+                0
+            );
+            assert_ne!(InitializeSecurityDescriptor(descriptor_ptr, 1), 0);
+            assert_ne!(SetSecurityDescriptorDacl(descriptor_ptr, 1, acl_ptr, 0), 0);
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor_ptr,
+            bInheritHandle: 0,
+        };
+        let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let holder = unsafe {
+            windows_sys::Win32::System::Threading::CreateMutexW(&attributes, 1, wide_name.as_ptr())
+        };
+        assert!(!holder.is_null());
+
+        let contender_name = name.clone();
+        let error = std::thread::spawn(move || {
+            acquire_named_studio_runtime_launch_guard(&contender_name)
+                .err()
+                .expect("second launcher unexpectedly acquired the gate")
+        })
+        .join()
+        .unwrap();
+        unsafe {
+            let _ = windows_sys::Win32::System::Threading::ReleaseMutex(holder);
+            let _ = windows_sys::Win32::Foundation::CloseHandle(holder);
+        }
+        assert_eq!(error, STUDIO_RUNTIME_GATE_BUSY);
     }
 
     #[test]
