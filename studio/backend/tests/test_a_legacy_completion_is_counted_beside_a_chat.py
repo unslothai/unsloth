@@ -49,7 +49,7 @@ def test_nothing_is_counted_with_preemption_off(backend, monkeypatch):
 
 def test_both_completions_branches_count_and_release():
     source = inspect.getsource(inference.openai_completions)
-    assert source.count("_openai_llama_count_completions_holder(llama_backend, prompt_text)") == 2
+    assert source.count('_openai_llama_count_completions_holder(llama_backend, body.get("prompt", ""))') == 2
     assert (
         source.count("_openai_llama_release_completions_holder(llama_backend, _cmpl_holder)") == 2
     )
@@ -68,5 +68,34 @@ def test_an_unpausable_holder_plans_before_its_request_goes_out(backend, monkeyp
 
 
 def test_both_unpausable_registrations_plan():
-    for helper in (inference._openai_llama_count_raw_holder, inference._openai_llama_count_completions_holder):
+    for helper in (inference._openai_llama_count_raw_holder, inference._openai_llama_count_direct_holder):
         assert "_plan_for_unpausable_holder(controller, gen_id)" in inspect.getsource(helper)
+    assert "_openai_llama_count_direct_holder(" in inspect.getsource(
+        inference._openai_llama_count_completions_holder
+    )
+
+
+def test_the_prompt_estimate_does_not_undercount_cjk_or_token_arrays():
+    assert inference._prompt_kv_tokens([101, 102, 103]) == 3
+    assert inference._prompt_kv_tokens([[1, 2], [3]]) == 3
+    assert inference._prompt_kv_tokens("你好世界") == 4, "one token a character, not a quarter"
+    assert inference._prompt_kv_tokens("hello world!") == 3
+    assert inference._prompt_kv_tokens(["你好", "abcd"]) == 3
+
+
+def test_a_caption_or_ocr_call_is_counted_while_it_runs(backend, monkeypatch):
+    fake, controller = backend
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: fake)
+    with inference._direct_llama_request(kv_tokens = 900):
+        held = [p for p in controller._participants if p.startswith("direct-holder-")]
+        assert len(held) == 1
+        assert controller.participant(held[0]).state == ParticipantState.STREAMING_RAW
+    assert not [p for p in controller._participants if p.startswith("direct-holder-")]
+
+
+def test_the_captioner_states_its_footprint():
+    from core.rag import captioner
+
+    source = inspect.getsource(captioner._vision_complete)
+    assert "_direct_llama_slot(prompt = prompt, max_tokens = max_tokens)" in source
+    assert "_direct_llama_request(kv_tokens = kv_tokens)" in inspect.getsource(captioner._direct_llama_slot)

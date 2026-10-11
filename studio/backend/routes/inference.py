@@ -3224,6 +3224,43 @@ def _plan_for_unpausable_holder(controller, gen_id: str) -> None:
         )
 
 
+def _prompt_kv_tokens(prompt) -> int:
+    """A conservative KV estimate for a raw prompt, with no tokenizer round trip on the request
+    path. Token arrays count exactly. Text is a quarter token per ASCII character and a whole
+    token per other character: four characters to a token undercounts CJK about fourfold."""
+    if isinstance(prompt, (list, tuple)):
+        if prompt and all(isinstance(x, int) for x in prompt):
+            return len(prompt)
+        return sum(_prompt_kv_tokens(part) for part in prompt)
+    if isinstance(prompt, int):
+        return 1
+    text = str(prompt or "")
+    ascii_chars = sum(1 for ch in text if ord(ch) < 128)
+    return ascii_chars // 4 + (len(text) - ascii_chars)
+
+
+def _openai_llama_count_direct_holder(llama_backend, tokens: int, prefix: str) -> Optional[str]:
+    """Count a request that reaches llama-server outside admission as a holder the controller
+    cannot pause, and plan room for it. Returns the id to release, or None when not counted."""
+    try:
+        if not preemption_enabled() or not _openai_llama_preemption_will_apply(
+            llama_backend, _openai_llama_admission_budget(llama_backend)
+        ):
+            return None
+        gen_id = f"{prefix}-{uuid.uuid4().hex}"
+        controller = get_preemption_controller(_preempt_key(llama_backend))
+        controller.register(
+            gen_id,
+            tokens = max(1, int(tokens)),
+            state = ParticipantState.STREAMING_RAW,
+        )
+        _plan_for_unpausable_holder(controller, gen_id)
+        return gen_id
+    except Exception:
+        logger.debug("could not count the direct holder", exc_info = True)
+        return None
+
+
 def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Optional[str]:
     """Count a /v1/completions request as a holder the controller cannot pause.
 
@@ -3232,23 +3269,9 @@ def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Option
     Charged by its prompt, unmeasured, like a non-streaming raw holder. Returns the id to
     release, or None when nothing was counted.
     """
-    try:
-        if not preemption_enabled() or not _openai_llama_preemption_will_apply(
-            llama_backend, _openai_llama_admission_budget(llama_backend)
-        ):
-            return None
-        gen_id = f"cmpl-holder-{uuid.uuid4().hex}"
-        controller = get_preemption_controller(_preempt_key(llama_backend))
-        controller.register(
-            gen_id,
-            tokens = max(1, len(str(prompt_text or "")) // 4),
-            state = ParticipantState.STREAMING_RAW,
-        )
-        _plan_for_unpausable_holder(controller, gen_id)
-        return gen_id
-    except Exception:
-        logger.debug("could not count the completions holder", exc_info = True)
-        return None
+    return _openai_llama_count_direct_holder(
+        llama_backend, _prompt_kv_tokens(prompt_text), "cmpl-holder"
+    )
 
 
 def _openai_llama_release_completions_holder(llama_backend, gen_id: Optional[str]) -> None:
@@ -9192,21 +9215,29 @@ def _direct_llama_request_finished() -> None:
 
 
 @contextmanager
-def _direct_llama_request(counted: bool = True):
+def _direct_llama_request(counted: bool = True, *, kv_tokens: int = 0):
     """Hold the direct-call count for the duration of the block.
 
     The increment is the last statement before the try that decrements it, so no
     caller can leak a permanent +1 by placing the pair itself. ``counted`` False is
-    a no-op, for callers that pick their backend at runtime.
+    a no-op, for callers that pick their backend at runtime. ``kv_tokens`` is what the
+    call can occupy in the cache: given, it is also counted with the preemptor, so a chat
+    decoding beside a caption or OCR call is contended and reads the cache.
     """
     if not counted:
         yield
         return
+    holder = None
+    if kv_tokens:
+        backend = get_llama_cpp_backend()
+        holder = _openai_llama_count_direct_holder(backend, kv_tokens, "direct-holder")
     _direct_llama_request_started()
     try:
         yield
     finally:
         _direct_llama_request_finished()
+        if holder is not None:
+            _openai_llama_release_completions_holder(backend, holder)
 
 
 def _direct_llama_is_busy() -> bool:
@@ -38375,7 +38406,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _cmpl_holder = None
             _direct_llama_request_started()
             try:
-                _cmpl_holder = _openai_llama_count_completions_holder(llama_backend, prompt_text)
+                _cmpl_holder = _openai_llama_count_completions_holder(llama_backend, body.get("prompt", ""))
                 req = client.build_request(
                     "POST",
                     target_url,
@@ -38525,7 +38556,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _cmpl_holder = None
         _direct_llama_request_started()
         try:
-            _cmpl_holder = _openai_llama_count_completions_holder(llama_backend, prompt_text)
+            _cmpl_holder = _openai_llama_count_completions_holder(llama_backend, body.get("prompt", ""))
             try:
                 resp = await _client.post(
                     target_url,
