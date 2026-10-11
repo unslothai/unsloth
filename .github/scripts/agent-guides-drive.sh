@@ -454,15 +454,27 @@ agents.setdefault("defaults", {})["skipBootstrap"] = True
 # --fix` does (id becomes the key) and never leave a list behind.
 entries = agents.get("entries")
 entries = dict(entries) if isinstance(entries, dict) else {}
+owner = None
 for item in agents.pop("list", None) or []:
     if isinstance(item, dict) and str(item.get("id") or "").strip():
-        rest = {k: v for k, v in item.items() if k != "id"}
-        entries.setdefault(str(item["id"]).strip(), rest)
+        key = str(item["id"]).strip()
+        if item.get("default") is True and owner is None:
+            owner = key
+        entries.setdefault(key, {k: v for k, v in item.items() if k not in ("id", "default")})
+for key, entry in entries.items():
+    if isinstance(entry, dict) and entry.pop("default", None) is True and owner is None:
+        owner = key
 agent = {"contextInjection": "never"}
 if mode == "notools":
     agent["tools"] = {"deny": ["*"]}
 entries["ci"] = agent
 agents["entries"] = entries
+# More than one agent needs explicit ownership (the retired default marker is rejected).
+if len(entries) > 1:
+    owner = owner or next(k for k in entries if k != "ci")
+    agents.setdefault("ownership", "explicit")
+    agents["defaults"].setdefault("systemAgent", {}).setdefault("agentId", owner)
+    agents["defaults"].setdefault("heartbeat", {}).setdefault("agentId", owner)
 with open(p, "w") as fh:
     json.dump(cfg, fh, indent=2)
 print(f"[openclaw] agent ci tools = {agent.get('tools', 'default')}")
