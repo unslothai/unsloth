@@ -4465,6 +4465,37 @@ def _hold_peft_requires_grad(model):
     return restore
 
 
+def _allow_moe_parameter_lora(async_module, model):
+    # TRL refuses target_parameters (fused-MoE LoRA) because a stock vLLM server needs is_3d_lora_weight declared;
+    # the in-process server loads adapters through Unsloth's load_lora, which remaps and validates MoE LoRA itself.
+    original = getattr(async_module, "validate_lora_for_vllm_sync", None)
+    peft_configs = getattr(model, "peft_config", None)
+    if original is None or not isinstance(peft_configs, dict):
+        return lambda: None
+
+    @functools.wraps(original)
+    def validate_lora_for_vllm_sync(peft_model):
+        saved = {
+            name: config.target_parameters
+            for name, config in peft_configs.items()
+            if getattr(config, "target_parameters", None)
+        }
+        for name in saved:
+            peft_configs[name].target_parameters = None
+        try:
+            return original(peft_model)
+        finally:
+            for name, value in saved.items():
+                peft_configs[name].target_parameters = value
+
+    async_module.validate_lora_for_vllm_sync = validate_lora_for_vllm_sync
+
+    def restore():
+        async_module.validate_lora_for_vllm_sync = original
+
+    return restore
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
@@ -4536,10 +4567,14 @@ def patch_trl_async_grpo():
         is_module = isinstance(model, torch.nn.Module)
         restore_text_config = _align_vlm_text_config(model) if is_module else (lambda: None)
         restore_requires_grad = _hold_peft_requires_grad(model) if is_module else (lambda: None)
+        restore_validate = (
+            _allow_moe_parameter_lora(async_module, model) if server is not None else (lambda: None)
+        )
         try:
             try:
                 original_init(self, model, *args, **kwargs)
             finally:
+                restore_validate()
                 restore_requires_grad()
                 restore_text_config()
             if trainable is not None:

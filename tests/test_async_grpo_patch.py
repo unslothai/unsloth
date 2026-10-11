@@ -45,6 +45,7 @@ NAMES = (
     "_packing_honored",
     "_align_vlm_text_config",
     "_hold_peft_requires_grad",
+    "_allow_moe_parameter_lora",
     "patch_trl_async_grpo",
 )
 
@@ -540,3 +541,24 @@ def test_non_peft_requires_grad_is_untouched():
     language_model.requires_grad_(True)
     assert all(p.requires_grad for p in language_model.parameters())
     restore()
+
+
+def test_moe_parameter_lora_passes_validation_only_while_held():
+    ns = _load()
+    peft_config = types.SimpleNamespace(target_parameters = ["mlp.experts.gate_up_proj"])
+    model = types.SimpleNamespace(peft_config = {"default": peft_config})
+    seen = []
+
+    def validate(peft_model):
+        seen.append(peft_config.target_parameters)
+        if peft_config.target_parameters:
+            raise ValueError("target_parameters")
+        return peft_config
+
+    module = types.SimpleNamespace(validate_lora_for_vllm_sync = validate)
+    restore = ns["_allow_moe_parameter_lora"](module, model)
+    assert module.validate_lora_for_vllm_sync(model) is peft_config
+    assert seen == [None]
+    assert peft_config.target_parameters == ["mlp.experts.gate_up_proj"]
+    restore()
+    assert module.validate_lora_for_vllm_sync is validate
