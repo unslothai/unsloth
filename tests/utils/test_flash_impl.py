@@ -95,8 +95,11 @@ def test_unsupported_or_mixed_devices_stay_off(fake, monkeypatch, majors):
     assert fake.probes == [] and fake.current_impl is None
 
 
-def test_hopper_auto_prefers_fa3_and_fa4_only_on_request(fake, monkeypatch):
+def test_hopper_is_opt_in(fake, monkeypatch):
     monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    assert fi.maybe_activate_flash_attention_impl(_model()) is None
+    assert fake.probes == []
+    monkeypatch.setenv(fi._ENV, "fa3")
     assert fi.maybe_activate_flash_attention_impl(_model()) == "FA3"
     fi.deactivate_flash_attention_impl()
     monkeypatch.setenv(fi._ENV, "fa4")

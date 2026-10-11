@@ -10,7 +10,7 @@ raises instead of falling back on dropout and on head dims it lacks, and its Pyt
 attention dropout, every head dim it can send to flash is one the kernel has, and a probe on the
 model's own shapes matches torch's bundled flash. Anything uncertain leaves torch untouched.
 
-UNSLOTH_FLASH_ATTENTION_IMPL = auto (default) | fa4 | fa3 | off
+UNSLOTH_FLASH_ATTENTION_IMPL = auto (default: FA4 on sm100 only) | fa4 | fa3 (sm90) | off
 """
 
 import contextlib
@@ -99,15 +99,15 @@ def _device_majors():
 
 
 def _candidates(requested, majors):
-    """Impls worth trying on these devices. torch's FA4 hook takes majors 9 / 10, its FA3 hook 9; FA4
-    on Hopper has not been validated against FA3 here, so auto picks FA3 there."""
+    """Impls worth trying on these devices. torch's FA4 hook takes majors 9 / 10, its FA3 hook 9.
+    auto only turns FA4 on for sm100 (measured); Hopper (FA3 / FA4) is opt-in until measured there."""
     if not majors or len(majors) != 1:
         return []
     major = next(iter(majors))
     if major == 10:
         return ["FA4"] if requested in ("auto", "FA4") else []
-    if major == 9:
-        return ["FA3"] if requested in ("auto", "FA3") else ["FA4"]
+    if major == 9 and requested in ("FA3", "FA4"):
+        return [requested]
     return []
 
 
