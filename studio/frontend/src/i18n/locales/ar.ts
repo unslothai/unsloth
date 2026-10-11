@@ -1659,6 +1659,17 @@ export const ar = {
         showAudioCppUpdates: "إشعارات تحديث audio.cpp",
         showAudioCppUpdatesDescription:
           "التنبيه عندما تحتاج بيئة تشغيل audio.cpp إلى تحديث لتشغيل صفحات الصوت. أوقف التشغيل إذا كنت لا تستخدم الصوت أبدًا.",
+        showUnslothUpdates: "إشعارات تحديث Unsloth",
+        showUnslothUpdatesDescription:
+          "الإشعار عند توفر إصدار أحدث من Unsloth للتثبيت.",
+        frequency: {
+          always: "دائمًا",
+          daily: "مرة يوميًا",
+          weekly: "مرة أسبوعيًا",
+          biweekly: "كل أسبوعين",
+          monthly: "مرة شهريًا",
+          off: "إيقاف",
+        },
       },
       startup: {
         sectionTitle: "بدء التشغيل",
@@ -2102,6 +2113,10 @@ export const ar = {
           "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
         mismatchUnavailable:
           "لا يستطيع PyTorch ({version}) تهيئة وحدات GPU أدناه، لذا لا يمكن استخدامها. تحقق من تعريف كرت الشاشة أو أصلح التثبيت.",
+        driverIdleEvict:
+          "يحتوي برنامج تشغيل AMD {version} على خلل معروف قد يؤدي إلى تجمّد Windows عندما تكون وحدة GPU من AMD خاملة، وغالبًا مع وجود أكثر من GPU. حدّث إلى Adrenalin 26.9.2 أو أحدث.",
+        driverIdleEvictDetails: "التفاصيل",
+        dismissNotice: "إغلاق",
         unusableDevice: "غير قابل للاستخدام",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
@@ -2474,6 +2489,15 @@ export const ar = {
         "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "طول مخرجات الأدوات",
+      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
+      toolResultLimitHint: "تُحفظ المخرجات الأطول في ملف يمكن للنموذج قراءته على أجزاء. ينطبق الحد الأعلى على النماذج التي تعمل في Unsloth، وتظل نوافذ السياق الصغيرة تحصل على أقل. تحتفظ نماذج API بالقيمة الافتراضية ما لم تخفضها.",
+      toolResultLimitDefault: "{count} (افتراضي)",
+      toolResultLimitLocked: "مضبوط بواسطة UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "تعذر تحميل طول مخرجات الأدوات.",
+      toolResultLimitSaveError: "تعذر حفظ طول مخرجات الأدوات.",
+      toolResultLimitKeywords:
+        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "مطوي",
         auto: "التوسيع أثناء التشغيل",
@@ -2887,6 +2911,19 @@ export const ar = {
         connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
         addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
         openConnections: "فتح الاتصالات",
+      },
+      mcp: {
+        title: "وصول الوكلاء (MCP)",
+        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
+        enable: "السماح باتصالات الوكلاء",
+        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Unsloth.",
+        lockedByEnv: "مضبوط بواسطة {name}.",
+        loadError: "تعذّر تحميل إعدادات وصول الوكلاء.",
+        saveError: "تعذّر حفظ إعداد وصول الوكلاء.",
+        agent: "الوكيل",
+        exportKeyHint: "اضبط {name} على توكن وصول من هذه الصفحة قبل تشغيل الوكيل.",
+        configFileHint: "أضف هذا إلى {path}.",
+        keywords: "mcp model context protocol agents claude codex tools وكلاء وكيل أدوات بروتوكول سياق النموذج",
       },
       usageNoModel:
         "حمّل نموذجًا أو نزّله لعرض أمثلة قابلة للتشغيل. لا يوجد في هذا الخادم أي نموذج يمكن استخدامه في الأمثلة بعد.",
@@ -3796,6 +3833,13 @@ export const ar = {
     discard: "تجاهل",
     mentions: "المهارات",
     manage: "إدارة المهارات",
+    bulkActions: "إجراءات المهارات",
+    enableAll: "تفعيل الكل",
+    disableAll: "تعطيل الكل",
+    resetAll: "إعادة التعيين إلى الافتراضي",
+    resetTitle: "إعادة تعيين كل المهارات؟",
+    resetDescription: "تعود كل مهارة إلى حالتها في التثبيت الجديد: مهاراتك ومهارات Claude مفعّلة، والمهارات المضمّنة معطّلة. ستُمسح اختياراتك للتفعيل والتعطيل.",
+    reset: "إعادة التعيين",
   },
   library: {
     tabs: {
@@ -3960,6 +4004,8 @@ export const ar = {
     selection: {
       startChat: "بدء محادثة",
       move: "نقل",
+      selectAll: "تحديد الكل",
+      countOfTotal: "{count} من {total} محددة",
       clear: "مسح التحديد",
     },
     menu: {
@@ -3967,6 +4013,7 @@ export const ar = {
       chatAboutThis: "الدردشة حول هذا",
       chatWithModel: "الدردشة مع هذا النموذج",
       addToFavorites: "إضافة إلى المفضلة",
+      regenerateTitle: "إعادة إنشاء العنوان",
       removeFromFavorites: "إزالة من المفضلة",
       download: "تنزيل",
       addToFolder: "إضافة إلى مجلد",

@@ -1667,6 +1667,17 @@ export const ptBR = {
         showAudioCppUpdates: "Notificações de atualização do audio.cpp",
         showAudioCppUpdatesDescription:
           "Notifica quando o runtime do audio.cpp precisa de uma atualização para as páginas de Áudio. Desative se você nunca usa Áudio.",
+        showUnslothUpdates: "Notificações de atualização do Unsloth",
+        showUnslothUpdatesDescription:
+          "Avisar quando houver uma versão mais recente do Unsloth para instalar.",
+        frequency: {
+          always: "Sempre",
+          daily: "Uma vez por dia",
+          weekly: "Uma vez por semana",
+          biweekly: "A cada duas semanas",
+          monthly: "Uma vez por mês",
+          off: "Desativado",
+        },
       },
       startup: {
         sectionTitle: "Inicialização",
@@ -2114,6 +2125,10 @@ export const ptBR = {
           "O PyTorch é uma compilação somente CPU ({version}), então as GPUs abaixo não podem ser usadas. Repare a instalação para restaurar o suporte a GPU.",
         mismatchUnavailable:
           "O PyTorch ({version}) não consegue inicializar as GPUs abaixo, então elas não podem ser usadas. Verifique o driver da GPU ou repare a instalação.",
+        driverIdleEvict:
+          "O driver AMD {version} tem um bug conhecido que pode congelar o Windows quando uma GPU AMD fica ociosa, principalmente com mais de uma GPU. Atualize para o Adrenalin 26.9.2 ou posterior.",
+        driverIdleEvictDetails: "Detalhes",
+        dismissNotice: "Dispensar",
         unusableDevice: "inutilizável",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",
@@ -2490,6 +2505,15 @@ export const ptBR = {
         "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       autoCompactKeywords:
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "Tamanho da saída das ferramentas",
+      toolResultLimitDescription: "Caracteres de um resultado de Python ou Terminal que o modelo lê. O padrão é {count}.",
+      toolResultLimitHint: "Saídas mais longas são salvas em um arquivo que o modelo pode ler em partes. Um limite maior vale para modelos executados no Unsloth, e janelas de contexto pequenas continuam recebendo menos. Modelos de API mantêm o padrão, a menos que você o reduza.",
+      toolResultLimitDefault: "{count} (padrão)",
+      toolResultLimitLocked: "Definido por UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Não foi possível carregar o tamanho da saída das ferramentas.",
+      toolResultLimitSaveError: "Não foi possível salvar o tamanho da saída das ferramentas.",
+      toolResultLimitKeywords:
+        "saída resultado truncar cortado limite caracteres tamanho tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Recolhido",
         auto: "Expandir durante a execução",
@@ -2903,6 +2927,19 @@ export const ptBR = {
         connectionMissing: "Esta conexão não existe mais ou não tem modelos de decisões. Escolha outro modelo.",
         addConnection: "Para usar um modelo de decisões hospedado, adicione TypeSafe, Liquid AI ou OpenRouter em Conexões.",
         openConnections: "Abrir Conexões",
+      },
+      mcp: {
+        title: "Acesso de agentes (MCP)",
+        description: "Permita que agentes de código como Claude Code e Codex usem o Unsloth via MCP. Os agentes entram com um token de acesso desta página.",
+        enable: "Permitir conexões de agentes",
+        enableDescription: "Atende /mcp/ para solicitações que trazem um token de acesso do Unsloth.",
+        lockedByEnv: "Definido por {name}.",
+        loadError: "Não foi possível carregar as configurações de acesso de agentes.",
+        saveError: "Não foi possível salvar a configuração de acesso de agentes.",
+        agent: "Agente",
+        exportKeyHint: "Defina {name} com um token de acesso desta página antes de iniciar o agente.",
+        configFileHint: "Adicione isto a {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agentes agente ferramentas protocolo de contexto de modelo",
       },
       usageNoModel:
         "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",
@@ -3827,6 +3864,13 @@ export const ptBR = {
     discard: "Descartar",
     mentions: "Habilidades",
     manage: "Gerenciar habilidades",
+    bulkActions: "Ações de habilidades",
+    enableAll: "Ativar todas",
+    disableAll: "Desativar todas",
+    resetAll: "Restaurar padrões",
+    resetTitle: "Redefinir todas as habilidades?",
+    resetDescription: "Cada habilidade volta ao estado de uma instalação nova: suas habilidades e as do Claude ativadas, as incluídas desativadas. Suas escolhas de ativar e desativar são apagadas.",
+    reset: "Redefinir",
   },
   library: {
     tabs: {
@@ -3991,6 +4035,8 @@ export const ptBR = {
     selection: {
       startChat: "Iniciar chat",
       move: "Mover",
+      selectAll: "Selecionar tudo",
+      countOfTotal: "{count} de {total} selecionadas",
       clear: "Limpar seleção",
     },
     menu: {
@@ -3998,6 +4044,7 @@ export const ptBR = {
       chatAboutThis: "Conversar sobre isto",
       chatWithModel: "Conversar com este modelo",
       addToFavorites: "Adicionar aos Favoritos",
+      regenerateTitle: "Regenerar título",
       removeFromFavorites: "Remover dos Favoritos",
       download: "Baixar",
       addToFolder: "Adicionar à pasta",

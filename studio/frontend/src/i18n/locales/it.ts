@@ -1657,6 +1657,17 @@ export const it = {
         showAudioCppUpdates: "Notifiche di aggiornamento di audio.cpp",
         showAudioCppUpdatesDescription:
           "Avvisa quando il runtime di audio.cpp deve essere aggiornato per le pagine Audio. Disattiva le notifiche se non usi mai Audio.",
+        showUnslothUpdates: "Notifiche di aggiornamento di Unsloth",
+        showUnslothUpdatesDescription:
+          "Avvisa quando è disponibile una versione più recente di Unsloth da installare.",
+        frequency: {
+          always: "Sempre",
+          daily: "Una volta al giorno",
+          weekly: "Una volta a settimana",
+          biweekly: "Ogni due settimane",
+          monthly: "Una volta al mese",
+          off: "Disattivate",
+        },
       },
       startup: {
         sectionTitle: "Avvio",
@@ -2090,6 +2101,10 @@ export const it = {
           "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) non riesce a inizializzare le GPU sottostanti, quindi non possono essere usate. Controlla il driver della GPU o ripara l'installazione.",
+        driverIdleEvict:
+          "Il driver AMD {version} ha un bug noto che può bloccare Windows quando una GPU AMD resta inattiva, soprattutto con più di una GPU. Aggiorna ad Adrenalin 26.9.2 o successivo.",
+        driverIdleEvictDetails: "Dettagli",
+        dismissNotice: "Ignora",
         unusableDevice: "non utilizzabile",
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",
@@ -2470,6 +2485,15 @@ export const it = {
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "Lunghezza dell'output degli strumenti",
+      toolResultLimitDescription: "Caratteri di un risultato Python o Terminale che il modello legge. Il valore predefinito è {count}.",
+      toolResultLimitHint: "L'output più lungo viene salvato in un file che il modello può leggere a parti. Un limite più alto si applica ai modelli eseguiti in Unsloth, e le finestre di contesto piccole ricevono comunque meno. I modelli API mantengono il valore predefinito a meno che tu non lo abbassi.",
+      toolResultLimitDefault: "{count} (predefinito)",
+      toolResultLimitLocked: "Impostato da UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Impossibile caricare la lunghezza dell'output degli strumenti.",
+      toolResultLimitSaveError: "Impossibile salvare la lunghezza dell'output degli strumenti.",
+      toolResultLimitKeywords:
+        "output risultato troncare troncato limite caratteri lunghezza tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Compresso",
         auto: "Espandi durante l’esecuzione",
@@ -2890,6 +2914,19 @@ export const it = {
         connectionMissing: "Questa connessione non esiste più o non ha modelli decisionali. Scegli un altro modello.",
         addConnection: "Per usare un modello decisionale ospitato, aggiungi TypeSafe, Liquid AI o OpenRouter in Connessioni.",
         openConnections: "Apri Connessioni",
+      },
+      mcp: {
+        title: "Accesso degli agenti (MCP)",
+        description: "Consenti ad agenti di programmazione come Claude Code e Codex di usare Unsloth tramite MCP. Gli agenti accedono con un token di accesso di questa pagina.",
+        enable: "Consenti connessioni degli agenti",
+        enableDescription: "Rende disponibile /mcp/ alle richieste che portano un token di accesso di Unsloth.",
+        lockedByEnv: "Impostato da {name}.",
+        loadError: "Impossibile caricare le impostazioni di accesso degli agenti.",
+        saveError: "Impossibile salvare l’impostazione di accesso degli agenti.",
+        agent: "Agente",
+        exportKeyHint: "Imposta {name} su un token di accesso di questa pagina prima di avviare l’agente.",
+        configFileHint: "Aggiungi questo a {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agenti agente strumenti protocollo di contesto del modello",
       },
     },
     about: {
@@ -3869,6 +3906,13 @@ export const it = {
     discard: "Scarta",
     mentions: "Competenze",
     manage: "Gestisci competenze",
+    bulkActions: "Azioni sulle competenze",
+    enableAll: "Attiva tutte",
+    disableAll: "Disattiva tutte",
+    resetAll: "Ripristina predefiniti",
+    resetTitle: "Ripristinare tutte le competenze?",
+    resetDescription: "Ogni competenza torna come in una nuova installazione: le tue competenze e quelle di Claude attive, quelle incluse disattivate. Le tue scelte di attivazione vengono cancellate.",
+    reset: "Ripristina",
   },
   library: {
     tabs: {
@@ -4033,6 +4077,8 @@ export const it = {
     selection: {
       startChat: "Avvia chat",
       move: "Sposta",
+      selectAll: "Seleziona tutto",
+      countOfTotal: "{count} di {total} selezionate",
       clear: "Annulla selezione",
     },
     menu: {
@@ -4040,6 +4086,7 @@ export const it = {
       chatAboutThis: "Chatta su questo",
       chatWithModel: "Chatta con questo modello",
       addToFavorites: "Aggiungi ai preferiti",
+      regenerateTitle: "Rigenera titolo",
       removeFromFavorites: "Rimuovi dai preferiti",
       download: "Scarica",
       addToFolder: "Aggiungi a cartella",

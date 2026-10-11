@@ -473,17 +473,14 @@ export const sv = {
     rollback: "Återställ föregående installation",
     installTitle: "Installera {engine}",
     installAndLoad: "Installera och läs in",
-    confirm:
-      "Installera {engine} {version}? Denna valfria hämtning kan använda flera gigabyte. Exakt hur mycket mer som hämtas och hur mycket diskutrymme som används är inte känt. Kompatibla cachade paket och modellfiler återanvänds.",
-    confirmSized:
-      "Installera {engine} {version}? Denna valfria hämtning är ungefär {size}. Paket som Studio redan har, inklusive PyTorch när versionerna matchar, återanvänds i stället för att hämtas igen.",
+    confirm: "Installera {engine} {version}? Detta kan hämta flera GB.",
+    confirmSized: "Installera {engine} {version}? Cirka {size} att hämta.",
     wslSetup:
-      "I Windows körs {engine} inuti WSL2 (Windows Subsystem for Linux). Studio aktiverar WSL2 och konfigurerar en egen privat Ubuntu-miljö för motorer; dina befintliga Linux-distributioner påverkas inte. Windows visar en administratörsfråga (UAC) och kan be dig starta om innan installationen kan slutföras. Ingenting ändras förrän du klickar på Installera.",
+      "I Windows körs {engine} i en privat WSL2-miljö som Studio konfigurerar. Räkna med en administratörsfråga och eventuellt en omstart.",
     wslReady: "I Windows körs {engine} inuti Studios privata WSL2-miljö.",
     wslRestart:
       "Starta om Windows för att slutföra aktiveringen av WSL2 och klicka sedan på Installera igen.",
-    background:
-      "Installationen körs i bakgrunden. Om du tar bort motorn behålls dina hämtade modeller.",
+    background: "Installeras i bakgrunden.",
     failed:
       "Installationen av motorn misslyckades. Försök igen eller använd standardmotorn.",
     details: "Tekniska detaljer",
@@ -1822,6 +1819,17 @@ export const sv = {
         showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
         showAudioCppUpdatesDescription:
           "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",
+        showUnslothUpdates: "Uppdateringsaviseringar för Unsloth",
+        showUnslothUpdatesDescription:
+          "Meddela när en nyare version av Unsloth finns att installera.",
+        frequency: {
+          always: "Alltid",
+          daily: "En gång om dagen",
+          weekly: "En gång i veckan",
+          biweekly: "Varannan vecka",
+          monthly: "En gång i månaden",
+          off: "Av",
+        },
       },
       startup: {
         sectionTitle: "Start",
@@ -2258,6 +2266,10 @@ export const sv = {
           "PyTorch är en version endast för CPU ({version}), så GPU:erna nedan kan inte användas. Reparera installationen för att återställa GPU-stödet.",
         mismatchUnavailable:
           "PyTorch ({version}) kan inte initiera GPU:erna nedan, så de kan inte användas. Kontrollera GPU-drivrutinen eller reparera installationen.",
+        driverIdleEvict:
+          "AMD-drivrutinen {version} har en känd bugg som kan frysa Windows när ett AMD-grafikkort står inaktivt, oftast med fler än ett grafikkort. Uppdatera till Adrenalin 26.9.2 eller senare.",
+        driverIdleEvictDetails: "Detaljer",
+        dismissNotice: "Stäng",
         unusableDevice: "oanvändbar",
         unknownDevice: "Okänd GPU",
         deviceWithIndex: "GPU {index}",
@@ -2662,6 +2674,15 @@ export const sv = {
         "Äldre turer flyttas till ett sökbart arkiv när en chatt fyller sin kontext.",
       autoCompactKeywords:
         "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall search",
+      toolResultLimit: "Längd på verktygsutdata",
+      toolResultLimitDescription: "Tecken i ett Python- eller Terminal-resultat som modellen läser. Standard är {count}.",
+      toolResultLimitHint: "Längre utdata sparas i en fil som modellen kan läsa i delar. En högre gräns gäller modeller som körs i Unsloth, och små kontextfönster får fortfarande mindre. API-modeller behåller standardvärdet om du inte sänker det.",
+      toolResultLimitDefault: "{count} (standard)",
+      toolResultLimitLocked: "Anges av UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Det gick inte att läsa in längden på verktygsutdata.",
+      toolResultLimitSaveError: "Det gick inte att spara längden på verktygsutdata.",
+      toolResultLimitKeywords:
+        "utdata resultat trunkera avkortad gräns tecken längd tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Hopfälld",
         auto: "Fäll ut medan den körs",
@@ -3101,6 +3122,19 @@ export const sv = {
         addConnection:
           "Lägg till TypeSafe, Liquid AI eller OpenRouter under Anslutningar för att använda en värdbaserad beslutsmodell.",
         openConnections: "Öppna Anslutningar",
+      },
+      mcp: {
+        title: "Agentåtkomst (MCP)",
+        description: "Låt kodagenter som Claude Code och Codex använda Unsloth via MCP. Agenter loggar in med en åtkomsttoken från den här sidan.",
+        enable: "Tillåt agentanslutningar",
+        enableDescription: "Betjänar /mcp/ för förfrågningar som har en åtkomsttoken för Unsloth.",
+        lockedByEnv: "Angiven av {name}.",
+        loadError: "Det gick inte att läsa in inställningarna för agentåtkomst.",
+        saveError: "Det gick inte att spara inställningen för agentåtkomst.",
+        agent: "Agent",
+        exportKeyHint: "Sätt {name} till en åtkomsttoken från den här sidan innan du startar agenten.",
+        configFileHint: "Lägg till det här i {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agenter agent verktyg modellkontextprotokoll",
       },
     },
     about: {
@@ -4036,6 +4070,13 @@ export const sv = {
     discard: "Ignorera",
     mentions: "Färdigheter",
     manage: "Hantera färdigheter",
+    bulkActions: "Färdighetsåtgärder",
+    enableAll: "Aktivera alla",
+    disableAll: "Inaktivera alla",
+    resetAll: "Återställ standard",
+    resetTitle: "Återställa alla färdigheter?",
+    resetDescription: "Varje färdighet återgår till hur en ny installation har den: dina färdigheter och Claude-färdigheter på, medföljande färdigheter av. Dina val av på och av rensas.",
+    reset: "Återställ",
   },
   library: {
     tabs: {
@@ -4216,6 +4257,8 @@ export const sv = {
     selection: {
       startChat: "Starta chatt",
       move: "Flytta",
+      selectAll: "Markera alla",
+      countOfTotal: "{count} av {total} markerade",
       clear: "Rensa markering",
     },
     menu: {
@@ -4223,6 +4266,7 @@ export const sv = {
       chatAboutThis: "Chatta om detta",
       chatWithModel: "Chatta med den här modellen",
       addToFavorites: "Lägg till i Favoriter",
+      regenerateTitle: "Generera om titel",
       removeFromFavorites: "Ta bort från Favoriter",
       download: "Hämta",
       addToFolder: "Lägg till i mapp",

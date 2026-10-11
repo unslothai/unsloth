@@ -1949,11 +1949,12 @@ def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
             guard_rocm_fused_sdpa(target, logger)
         except Exception as exc:
             _warn(logger, "ROCm fused SDPA check", exc)
-    if rocm and sdpa_math_only(target):
+    mps = getattr(target, "device", None) == "mps"
+    if mps or (rocm and sdpa_math_only(target)):
         try:
             from .diffusion_qwenimage21_math import install
             if install(pipe, target, logger):
-                if logger is not None:
+                if logger is not None and not mps:
                     logger.warning(
                         "diffusion.attention: Qwen-Image-2.1 is using bounded math attention; "
                         "check the AMD device packages if fused kernels are expected on this GPU"
