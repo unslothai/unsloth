@@ -714,8 +714,12 @@ class ExportBackend:
         self.diffusion_lm_profile = None
 
     def _diffusion_refusal(self, method: str) -> Optional[str]:
+        profile = getattr(self, "diffusion_lm_profile", None)
+        if not profile:
+            return None
         from utils.models.diffusion_lm import export_refusal
-        return export_refusal(getattr(self, "diffusion_lm_profile", None), method)
+
+        return export_refusal(profile, method)
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
