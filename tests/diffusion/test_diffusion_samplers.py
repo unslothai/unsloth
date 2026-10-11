@@ -299,6 +299,35 @@ def test_generate_text_cuts_at_eos_and_budget(monkeypatch):
         diffusion_samplers.generate_text(model, _Tok(), prompt = "hi")
 
 
+_PAD_SCRIPT = r"""
+import os, sys
+import torch
+from unsloth import FastModel
+
+path = sys.argv[1]
+model, processor = FastModel.from_pretrained(path, trust_remote_code = True, dtype = torch.float32, device_map = {"": os.environ.get("TINY_DEVICE", "cpu")}, load_in_4bit = False)
+tok = getattr(processor, "tokenizer", processor)
+assert tok.pad_token is not None and tok.pad_token == tok.eos_token, (tok.pad_token, tok.eos_token)
+assert tok.pad_token_id != getattr(model, "_unsloth_mask_token_id", None)
+assert model.config.pad_token_id == tok.pad_token_id
+assert getattr(model.generation_config, "pad_token_id", tok.pad_token_id) == tok.pad_token_id
+batch = tok.pad([{"input_ids": [1, 2, 3]}, {"input_ids": [4]}], return_tensors = "pt")
+assert batch["input_ids"].shape == (2, 3)
+print("PAD_OK", tok.pad_token)
+"""
+
+
+def test_tiny_nemotron_gets_eos_pad_token():
+    path = os.path.join(_TINY or "", "Nemotron-Labs-Diffusion-3B")
+    if not _TINY or not os.path.isdir(path):
+        pytest.skip("set UNSLOTH_DIFFUSION_TINY_DIR to tiny remote-code copies")
+    out = subprocess.run(
+        [sys.executable, "-c", _PAD_SCRIPT, path], capture_output = True, text = True, timeout = 900
+    )
+    assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-4000:]
+    assert "PAD_OK" in out.stdout
+
+
 _TINY_SCRIPT = r"""
 import os, sys
 import torch

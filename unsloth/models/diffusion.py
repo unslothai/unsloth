@@ -91,6 +91,26 @@ def is_diffusion_model(model):
     return resolve_diffusion_profile(getattr(base, "config", None)) is not None
 
 
+def _ensure_pad_token(model, tokenizer):
+    """Collators need a pad token (Nemotron-Labs-Diffusion ships none). Pad with EOS, as the objectives treat
+    padding as EOS-filled; never the [MASK] token. Only fills what is unset, so repeat calls change nothing."""
+    tok = getattr(tokenizer, "tokenizer", tokenizer)
+    if tok is None or getattr(tok, "pad_token", None) is not None:
+        return
+    if getattr(tok, "eos_token", None) is None:
+        return
+    tok.pad_token = tok.eos_token
+    if tok is not tokenizer and getattr(tokenizer, "pad_token", None) is None:
+        try:
+            tokenizer.pad_token = tok.eos_token
+        except AttributeError:
+            pass
+    base = unwrap_diffusion_model(model)
+    for holder in (getattr(base, "config", None), getattr(base, "generation_config", None)):
+        if holder is not None and getattr(holder, "pad_token_id", None) is None:
+            holder.pad_token_id = tok.pad_token_id
+
+
 def _refuse_tied_lora_merge(model):
     """DiffusionGemma's encoder and decoder layers share one base tensor but get separate adapters, so a merge
     adds both deltas to both. Refuse it instead of writing a silently wrong checkpoint."""
@@ -476,6 +496,7 @@ class FastDiffusionModel:
                 cache_dir = cache_dir,
             )
 
+        _ensure_pad_token(model, tokenizer)
         if profile is not None:
             # On the base module: the objectives read these attributes after unwrapping PEFT / DDP.
             profile.prepare_model(unwrap_diffusion_model(model), tokenizer)
