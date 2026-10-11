@@ -21967,9 +21967,8 @@ class LlamaCppBackend:
                 secrets,
             )
 
-        # A tensor type this build does not define (prism-ml PQ2_0 / PTQ1_0 are 142 / 143), or one it
-        # defines with another block layout (prism-ml's group-128 Q2_0, #11259). A truncated file
-        # fails later, as "data is not within the file bounds", so neither line means a bad download.
+        # A type this build lacks (prism-ml PQ2_0 / PTQ1_0 = 142 / 143) or packs differently (group-128 Q2_0, #11259).
+        # A truncated download fails later instead, as "data is not within the file bounds".
         bad_type = re.search(r"tensor '([^']*)' has invalid ggml type (\d+)", scan_tail)
         bad_layout = re.search(r"tensor '[^']*' has offset \d+, expected \d+", scan_tail)
         if bad_type or bad_layout:

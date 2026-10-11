@@ -548,7 +548,7 @@ def test_pick_best_gguf_skips_fork_only_packs_when_a_loadable_quant_exists():
         )
         == "Ternary-Bonsai-27B-Q2_g64.gguf"
     )
-    # Only the downloaded rows, no full-precision file among them.
+    # Ready rows only, no full precision.
     assert (
         gguf.pick_best_gguf(["Ternary-Bonsai-27B-PQ2_0.gguf", "Ternary-Bonsai-27B-Q2_g64.gguf"])
         == "Ternary-Bonsai-27B-Q2_g64.gguf"
@@ -558,7 +558,7 @@ def test_pick_best_gguf_skips_fork_only_packs_when_a_loadable_quant_exists():
         gguf.pick_best_gguf(["Ternary-Bonsai-27B-Q2_0.gguf", "Ternary-Bonsai-27B-Q2_g64.gguf"])
         == "Ternary-Bonsai-27B-Q2_g64.gguf"
     )
-    # Otherwise the first-listed fallback stands; only the shadowed plain pack is skipped.
+    # Otherwise the first-listed fallback stands.
     assert gguf.pick_best_gguf(["m-Q4_0.gguf", "m-Q2_g64.gguf", "m-F16.gguf"]) == "m-Q4_0.gguf"
     assert (
         gguf.pick_best_gguf(["m-Q4_0.gguf", "m-Q2_0.gguf", "m-Q2_g64.gguf", "m-F16.gguf"])
@@ -570,7 +570,6 @@ def test_pick_best_gguf_skips_fork_only_packs_when_a_loadable_quant_exists():
         gguf.pick_best_gguf(["base/Q2_0/model.gguf", "instruct/Q2_g64/model.gguf"])
         == "base/Q2_0/model.gguf"
     )
-    # Another checkpoint's grouped pack shadows nothing.
     assert (
         gguf.pick_best_gguf(["base-Q2_0.gguf", "instruct-Q2_g64.gguf", "base-F16.gguf"])
         == "base-Q2_0.gguf"
