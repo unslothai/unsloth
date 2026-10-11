@@ -332,8 +332,25 @@ def _decoder_layer_lists(model):
         yield name, module
 
 
+def _warm_rotary_caches(model):
+    """LLaDA fills its RoPE cache lazily and moves it to the parameters' device on first use. Inside a compiled,
+    checkpointed layer that move happens in the forward but not in the recompute, so the two save different
+    tensors (CheckpointError). Fill it on the right device before compiling."""
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        return
+    for module in model.modules():
+        rotary = getattr(module, "get_rotary_embedding", None)
+        config = getattr(module, "config", None)
+        length = getattr(config, "max_sequence_length", None)
+        if callable(rotary) and isinstance(length, int) and length > 0:
+            rotary(length, device)
+
+
 def compile_backbone_layers(model, dynamic = None):
     """Compile every decoder layer in place (regional compile); idempotent. Returns the layer count."""
+    _warm_rotary_caches(model)
     compiled = 0
     for _, layers in _decoder_layer_lists(model):
         for layer in layers:
