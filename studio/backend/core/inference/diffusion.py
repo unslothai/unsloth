@@ -5758,7 +5758,7 @@ class DiffusionBackend:
                 if table is None:
                     return None
                 share = table_priced / max(1, len(sources))
-                # MPS only ever takes the int8 ConvRot file, smaller than the fp8 one the default scale prices.
+                # MPS only takes the int8 ConvRot file, smaller than the fp8 one.
                 scale = (
                     TE_INT8_CONVROT_BUDGET_SCALE
                     if int8_convrot_te_runs_on(target)
@@ -9604,8 +9604,7 @@ class DiffusionBackend:
                 from .diffusion_te_prequant import int8_convrot_te_runs_on
 
                 # Never below scanned dense shards: a bad checkpoint falls back to opening them. Not on MPS, where
-                # that failure raises instead (_te_prequant_pipe_kwargs): pricing the dense shards there refused
-                # every Mac that had loaded the dense encoder before (#11792).
+                # that failure raises instead (_te_prequant_pipe_kwargs, #11792).
                 if not int8_convrot_te_runs_on(target):
                     precast_mib = max(int(precast_mib), scanned_te)
                 text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
