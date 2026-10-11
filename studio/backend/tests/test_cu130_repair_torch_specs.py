@@ -55,7 +55,14 @@ def _route(
         ("2.14.0", ("torch==2.14.0", "torchvision==0.29.*", "torchaudio==2.11.*")),
     ],
 )
-@pytest.mark.parametrize("host", [{"platform": "linux"}, {"platform": "win32", "machine": "AMD64"}])
+@pytest.mark.parametrize(
+    "host",
+    [
+        {"platform": "linux"},
+        {"platform": "linux", "machine": "aarch64"},
+        {"platform": "win32", "machine": "AMD64"},
+    ],
+)
 def test_a_resident_release_is_kept(monkeypatch, mod, resident, expected, host):
     _route(monkeypatch, mod, torch = resident, **host)
     assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == expected
@@ -83,7 +90,8 @@ def test_no_keepable_release_repairs_to_the_default_range(monkeypatch, mod, resi
         (CU130, {"platform": "win32", "machine": "AMD64", "woa": True}),
         (CU130, {"platform": "win32", "machine": "AMD64", "py": (3, 12)}),
         (CU130, {"platform": "darwin"}),
-        (CU130, {"machine": "aarch64"}),
+        (CU130, {"machine": "armv7l"}),
+        (CU130, {"platform": "darwin", "machine": "arm64"}),
         (CU130, {"py": (3, 12)}),
         (CU130, {"py": (3, 11)}),
         (None, {}),

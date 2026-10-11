@@ -35,7 +35,7 @@ _pypi_fixture() {
 }
 _pypi_fixture "torch<2.15.0,>=2.4.0"
 
-echo "=== route: only cu130 + Linux/WSL + x86_64 + Python 3.13 ==="
+echo "=== route: only cu130 + Linux/WSL + x86_64/aarch64 + Python 3.13 ==="
 _stub_python 3.13
 OS=linux; _ARCH=x86_64
 assert_eq "linux x86_64 cu130 py3.13"      "yes" "$(_cu130_torch213_route "$CU130")"
@@ -49,7 +49,9 @@ done
 OS=macos
 assert_eq "macOS never"                    "no" "$(_cu130_torch213_route "$CU130")"
 OS=linux; _ARCH=aarch64
-assert_eq "aarch64 never (no wheels)"      "no" "$(_cu130_torch213_route "$CU130")"
+assert_eq "linux aarch64 cu130 py3.13"     "yes" "$(_cu130_torch213_route "$CU130")"
+_ARCH=armv7l
+assert_eq "32-bit ARM never"               "no" "$(_cu130_torch213_route "$CU130")"
 _ARCH=x86_64
 for py in 3.11 3.12 3.14; do
     _stub_python "$py"
