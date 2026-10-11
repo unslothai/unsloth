@@ -363,10 +363,11 @@ def _bwrap_under(
     monkeypatch,
     usr_mode,
     usr_gid = 0,
-    egid = 1000,
+    gids = (1000, 1000, 1000),
     groups = (1000,),
+    usr_xattrs = (),
 ):
-    """Point the trust check at /usr/bin/bwrap with the given /usr mode, group and caller groups."""
+    """Point the trust check at /usr/bin/bwrap with the given /usr mode, group, xattrs and caller groups."""
     entries = {
         "/": (stat.S_IFDIR | 0o755, 0),
         "/usr": (stat.S_IFDIR | usr_mode, usr_gid),
@@ -375,6 +376,7 @@ def _bwrap_under(
     }
 
     real_stat, real_access, real_realpath = os.stat, os.access, os.path.realpath
+    real_listxattr = os.listxattr
 
     def fake_stat(path, *args, **kwargs):
         if os.fspath(path) not in entries:
@@ -384,6 +386,13 @@ def _bwrap_under(
 
     def fake_access(path, mode, *args, **kwargs):
         return os.fspath(path) in entries or real_access(path, mode, *args, **kwargs)
+
+    def fake_listxattr(path, *args, **kwargs):
+        if os.fspath(path) not in entries:
+            return real_listxattr(path, *args, **kwargs)
+        if isinstance(usr_xattrs, OSError):
+            raise usr_xattrs
+        return list(usr_xattrs) if os.fspath(path) == "/usr" else []
 
     monkeypatch.setattr(sandbox_linux.shutil, "which", lambda _name: "/usr/bin/bwrap")
     monkeypatch.setattr(
@@ -395,7 +404,8 @@ def _bwrap_under(
     )
     monkeypatch.setattr(sandbox_linux.os, "stat", fake_stat)
     monkeypatch.setattr(sandbox_linux.os, "access", fake_access)
-    monkeypatch.setattr(sandbox_linux.os, "getegid", lambda: egid)
+    monkeypatch.setattr(sandbox_linux.os, "listxattr", fake_listxattr)
+    monkeypatch.setattr(sandbox_linux.os, "getresgid", lambda: tuple(gids))
     monkeypatch.setattr(sandbox_linux.os, "getgroups", lambda: list(groups))
 
 
@@ -407,15 +417,32 @@ def test_a_root_group_writable_directory_is_trusted_when_studio_is_outside_group
     assert sandbox_linux._trusted_bwrap_path() == "/usr/bin/bwrap"
 
 
+def test_a_filesystem_without_xattrs_still_trusts_a_root_group_writable_directory(monkeypatch):
+    _bwrap_under(monkeypatch, 0o775, usr_xattrs = OSError(errno.ENOTSUP, "not supported"))
+    assert sandbox_linux._trusted_bwrap_path() == "/usr/bin/bwrap"
+
+
 @pytest.mark.parametrize(
-    "egid, groups",
-    [(1000, (1000, 0)), (0, (0,))],
-    ids = ["supplementary", "effective"],
+    "gids, groups",
+    [
+        ((1000, 1000, 1000), (1000, 0)),
+        ((1000, 0, 1000), (0,)),
+        ((0, 1000, 1000), (1000,)),
+        ((1000, 1000, 0), (1000,)),
+    ],
+    ids = ["supplementary", "effective", "real", "saved"],
 )
 def test_a_root_group_writable_directory_is_refused_when_studio_is_in_group_root(
-    monkeypatch, egid, groups
+    monkeypatch, gids, groups
 ):
-    _bwrap_under(monkeypatch, 0o775, egid = egid, groups = groups)
+    _bwrap_under(monkeypatch, 0o775, gids = gids, groups = groups)
+    with pytest.raises(SandboxUnavailableError, match = r"replaceable: /usr\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+def test_a_root_group_writable_directory_with_an_acl_is_refused(monkeypatch):
+    # With an ACL the group bits are its mask, so a named user may be the writer.
+    _bwrap_under(monkeypatch, 0o775, usr_xattrs = ("system.posix_acl_access",))
     with pytest.raises(SandboxUnavailableError, match = r"replaceable: /usr\)"):
         sandbox_linux._trusted_bwrap_path()
 
