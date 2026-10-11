@@ -3238,10 +3238,10 @@ class DiffusionBackend:
         if (
             fam is None
             or kind not in ("gguf", "single_file")
-            or fam.single_file_is_pipeline
-            or fam.pipeline_only
             or not gguf_filename
             or not _is_local_path(repo_id)
+            or getattr(fam, "single_file_is_pipeline", False)
+            or getattr(fam, "pipeline_only", False)
             or os.environ.get("UNSLOTH_DIFFUSION_COMFY_TEXT_ENCODERS", "").strip().lower()
             in ("0", "false", "off", "no")
         ):
