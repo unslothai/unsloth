@@ -535,6 +535,20 @@ def test_speed_max_gguf_regional_compile_not_dequant(monkeypatch):
     assert called == {"compiled_dequant": 0}
 
 
+def test_speed_max_gguf_without_block_compile_keeps_dequant_compile(monkeypatch):
+    # ROCm targets never regionally compile, so max used to run the GGUF dequant eager: slower than default on gfx1151
+    # (3.83 vs 2.98 s per 512 px FLUX.2-klein Q2_K render).
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(compile_ok = False), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is False and pipe.compiled is False
+    assert applied["compiled_dequant"] is True
+    assert called == {"compiled_dequant": 1}
+
+
 def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)

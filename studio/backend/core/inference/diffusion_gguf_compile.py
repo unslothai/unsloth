@@ -14,8 +14,8 @@ dequant inputs are the fixed-shape WEIGHT tensors, so it compiles once and never
 resolution change. ``forward_native`` resolves the function as a module global, so replacing the
 module attribute reroutes every linear.
 
-The ``default`` tier's lever (block stays eager). NOT used under ``max``: there the block compiles
-as one graph that fuses the dequant inline, and a separate compiled dequant would break that graph.
+The ``default`` tier's lever (block stays eager), and ``max``'s where the block cannot compile (ROCm). NOT used
+when ``max`` compiles the block: that graph fuses the dequant inline, and a separate compiled dequant would break it.
 
 The swap goes through the shared reversible patch backend; ``uninstall_*`` restores the exact
 original so a later bit-identical ``off`` load runs stock dequant. Kill-switch:

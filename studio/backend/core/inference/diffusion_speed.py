@@ -257,6 +257,10 @@ def restore_backend_flags(state: Optional[dict]) -> None:
         _set_knob(triton_cfg, _INDUCTOR_TRITON_MODULE, attr, key)
 
 
+def _gguf_dequant_compilable(is_gguf: bool, on_cuda: bool, family_allows_compile: bool) -> bool:
+    return is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available()
+
+
 def _pin_memory_planning_off() -> None:
     """Inductor's default, for every diffusion compile. Unsloth's training config turns ``memory_planning`` on
     process-wide on torch < 2.12, and its pooled buffers come back from ``inductor::_alloc_from_pool`` as views that
@@ -522,7 +526,7 @@ def apply_speed_optims(
     # of the repeated block. eager = no compile.
     if mode == SPEED_DEFAULT:
         # Asked directly: this arm never reaches compile_eligible(), unlike the dense arm below.
-        if is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available():
+        if _gguf_dequant_compilable(is_gguf, on_cuda, family_allows_compile):
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
             target, pipe, offload_active = offload_active
@@ -541,21 +545,23 @@ def apply_speed_optims(
                 onload_device = _onload_device(target) if stream_int8_gemm else None,
                 filter_reductions = filter_reductions,
             )
-    elif (
-        mode == SPEED_MAX
-        and compile_eligible(target, is_gguf = is_gguf, family = family)
-        and not fp16_unet_offloaded(target, pipe, offload_active = offload_active)
-    ):
-        applied["compiled"] = _compile_repeated_blocks(
-            pipe,
-            logger,
-            max_autotune = True,
-            cache_active = cache_active,
-            offload_active = offload_active,
-            denoiser_offloaded = denoiser_offloaded,
-            onload_device = _onload_device(target) if stream_int8_gemm else None,
-            filter_reductions = filter_reductions,
-        )
+    elif mode == SPEED_MAX:
+        if compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
+            target, pipe, offload_active = offload_active
+        ):
+            applied["compiled"] = _compile_repeated_blocks(
+                pipe,
+                logger,
+                max_autotune = True,
+                cache_active = cache_active,
+                offload_active = offload_active,
+                denoiser_offloaded = denoiser_offloaded,
+                onload_device = _onload_device(target) if stream_int8_gemm else None,
+                filter_reductions = filter_reductions,
+            )
+        elif _gguf_dequant_compilable(is_gguf, on_cuda, family_allows_compile):
+            # No block compile here (ROCm): max keeps default's dequant compile rather than running slower than default.
+            applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
 
     if applied["compiled"]:
         applied["int8_gemm"] = any(
