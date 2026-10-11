@@ -670,3 +670,32 @@ def test_gguf_substring_does_not_reject_local_diffusers_dir(tmp_path):
     # A *-GGUF repo id (not a local dir) still rejects.
     with pytest.raises(ValueError, match = "GGUF"):
         resolve_trainable_family("unsloth/FLUX.1-dev-GGUF")
+
+
+def test_sdxl_warns_when_an_unused_accelerator_leaves_it_on_the_cpu(monkeypatch, tmp_path):
+    import torch
+    from PIL import Image
+
+    import core.training.diffusion_lora_trainer as sdxl
+
+    data = tmp_path / "data"
+    data.mkdir()
+    Image.new("RGB", (64, 64)).save(data / "a.png")
+    monkeypatch.setattr(sdxl, "_assert_trusted_base_model", lambda *_a, **_k: None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    cfg = DiffusionLoraConfig(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0",
+        data_dir = str(data),
+        output_dir = str(tmp_path / "out"),
+        instance_prompt = "a photo",
+    )
+
+    def warnings_for(mps):
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+        events = []
+        sdxl.run_diffusion_lora_training(cfg, on_event = events.append, should_stop = lambda: True)
+        return [e for e in events if e.get("type") == "warning" and "CPU" in e.get("message", "")]
+
+    # A Mac (MPS present, SDXL trains on the CPU) is told why the run is slow; a CPU-only host is not.
+    assert len(warnings_for(True)) == 1
+    assert warnings_for(False) == []

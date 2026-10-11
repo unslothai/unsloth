@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import math
 import os
 import random
 import time
@@ -53,6 +54,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
     _config_from_dict,
     _CONFIG_ALIASES,
     _emit,
+    resolve_train_device,
     _latent_cache_forced,
     _latent_cache_over_budget,
     _plan_cache_variants,
@@ -273,6 +275,14 @@ def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
     return latents, batch_time_ids
 
 
+def _mps_available() -> bool:
+    import torch
+    try:
+        return bool(torch.backends.mps.is_available())
+    except Exception:  # noqa: BLE001 -- an unprobeable backend is not one we train on
+        return False
+
+
 def run_diffusion_lora_training(
     config: DiffusionLoraConfig,
     *,
@@ -355,6 +365,15 @@ def run_diffusion_lora_training(
                 identity = identity,
                 target_steps = cfg.train_steps,
             )
+        if device == "cpu" and (resolve_train_device() == "xpu" or _mps_available()):
+            _emit(
+                on_event,
+                "warning",
+                message = (
+                    "SDXL training runs on the CPU in fp32 on this host: the SDXL trainer uses CUDA / ROCm "
+                    "GPUs only, so expect slow steps and previews."
+                ),
+            )
         _emit(on_event, "model_load_started", num_images = len(pairs))
 
         # Honour a stop requested before the (slow) base model load.
@@ -413,6 +432,8 @@ def run_diffusion_lora_training(
 
         lora_params = [p for p in unet.parameters() if p.requires_grad]
         optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
+        # A frozen fp16 UNet (pre-Ampere / RDNA2 fallback) underflows the LoRA gradients without loss scaling.
+        scaler = torch.amp.GradScaler("cuda", enabled = weight_dtype is torch.float16)
         # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
         # accumulation factor would stretch warmup.
         lr_sched = get_scheduler(
@@ -627,17 +648,22 @@ def run_diffusion_lora_training(
                 else:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
 
-                (loss / cfg.gradient_accumulation_steps).backward()
+                scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
                 step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
                 micro += 1
 
             # max_grad_norm at or below 0 disables clipping (Unsloth sends 0.0); passing 0.0 to clip_grad_norm_
             # would zero every gradient.
             grad_norm = None
+            scaler.unscale_(optimizer)
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
                 # Returned value is the total PRE-clip norm, reported to the UI chart.
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
-            optimizer.step()
+                # An fp16 overflow step is skipped by the scaler; its inf norm is not a chart point.
+                if not math.isfinite(grad_norm):
+                    grad_norm = None
+            scaler.step(optimizer)
+            scaler.update()
             lr_sched.step()
 
             running_loss += step_loss
