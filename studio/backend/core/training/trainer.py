@@ -387,6 +387,24 @@ def _ignored_adapter_settings(
     return ignored
 
 
+def _load_adapter_aware_tokenizer(lookup_name, hf_token, **kwargs):
+    """AutoTokenizer for *lookup_name*. A PEFT adapter saved without tokenizer files falls back
+    to the base it names, as Unsloth's own adapter loader does (#13140)."""
+    from transformers import AutoTokenizer
+    try:
+        return AutoTokenizer.from_pretrained(lookup_name, token = hf_token, **kwargs)
+    except Exception:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        base = get_base_model_from_lora_identifier(lookup_name, hf_token)
+        if not base:
+            raise
+        # The adapter's revision and subfolder do not apply to its base repo.
+        kwargs.pop("revision", None)
+        kwargs.pop("subfolder", None)
+        return AutoTokenizer.from_pretrained(base, token = hf_token, **kwargs)
+
+
 class UnslothTrainer:
     def __new__(cls, *args, **kwargs):
         if cls is UnslothTrainer and should_use_mlx_training_backend():
@@ -523,11 +541,10 @@ class UnslothTrainer:
                     revision = model_revision,
                 )
             else:
-                from transformers import AutoTokenizer
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer = _load_adapter_aware_tokenizer(
                     lookup_name,
+                    hf_token,
                     trust_remote_code = trust_remote_code,
-                    token = hf_token,
                     local_files_only = local_files_only,
                     revision = model_revision,
                     # Spark-TTS keeps its tokenizer under LLM/; reading the root finds no vocab and fails blaming a

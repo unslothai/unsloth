@@ -486,9 +486,12 @@ def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
     return not should_use_mlx_training_backend()
 
 
+# The names PEFT and Unsloth's loader open; numbered adapter shards are not loaded.
+_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+
+
 def _has_local_adapter_weights(path: Path) -> bool:
-    from utils.transformers_version import _has_adapter_weights
-    return path.is_dir() and _has_adapter_weights(path)
+    return path.is_dir() and any((path / name).is_file() for name in _ADAPTER_WEIGHT_FILES)
 
 
 _HF_MODEL_ACCESS_DENIED = (
@@ -664,7 +667,7 @@ def _remote_untrainable_model_format(
                 root_files.add(normalized[len(root) :])
     if "adapter_config.json" in root_files:
         # Same weight files the local check accepts; config-only repos fail later in the loader.
-        if any(re.fullmatch(r"adapter_model.*\.(?:safetensors|bin)", name) for name in root_files):
+        if any(name in root_files for name in _ADAPTER_WEIGHT_FILES):
             return "adapter"
         return "adapter_without_weights"
     has_trainable_weights = any(name in root_files for name, _ in _MODEL_WEIGHT_CANDIDATES)

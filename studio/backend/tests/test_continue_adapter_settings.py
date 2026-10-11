@@ -97,3 +97,64 @@ def test_matching_targets_and_all_linear_are_not_reported():
     assert (
         ignored(_adapter(target_modules = "all-linear"), 8, 16, None, target_modules = ["q_proj"]) == []
     )
+
+
+def _tokenizer_loader(fake_auto, base):
+    import sys
+    import types
+
+    tree = ast.parse(open(TRAINER, encoding = "utf-8").read())
+    fn = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_adapter_aware_tokenizer"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body = [fn], type_ignores = []), TRAINER, "exec"), namespace)
+    transformers = types.SimpleNamespace(AutoTokenizer = fake_auto)
+    model_config = types.SimpleNamespace(
+        get_base_model_from_lora_identifier = lambda name, token: base
+    )
+    return namespace["_load_adapter_aware_tokenizer"], {
+        "transformers": transformers,
+        "utils.models.model_config": model_config,
+    }
+
+
+class _FakeAutoTokenizer:
+    calls = []
+
+    @classmethod
+    def from_pretrained(cls, name, **kwargs):
+        cls.calls.append((name, kwargs))
+        if name.endswith("adapter"):
+            raise OSError("no tokenizer files")
+        return f"tokenizer:{name}"
+
+
+def test_adapter_without_tokenizer_loads_the_base_tokenizer(monkeypatch):
+    import sys
+
+    _FakeAutoTokenizer.calls = []
+    load, modules = _tokenizer_loader(_FakeAutoTokenizer, "org/base")
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    assert (
+        load("/runs/adapter", "tok", revision = "abc", local_files_only = False) == "tokenizer:org/base"
+    )
+    assert _FakeAutoTokenizer.calls[-1] == ("org/base", {"token": "tok", "local_files_only": False})
+
+
+def test_non_adapter_tokenizer_failure_is_not_masked(monkeypatch):
+    import sys
+
+    import pytest
+
+    _FakeAutoTokenizer.calls = []
+    load, modules = _tokenizer_loader(_FakeAutoTokenizer, None)
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    with pytest.raises(OSError):
+        load("/models/broken-adapter", None)

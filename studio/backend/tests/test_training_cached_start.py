@@ -1264,6 +1264,32 @@ def test_untrainable_gate_rejects_remote_adapter_without_weights_for_lora():
     assert exc_info.value.detail["code"] == "training_remote_model_adapter_weights_missing"
 
 
+def test_remote_format_probe_ignores_numbered_adapter_shards():
+    route = _load_route_module("training_route_remote_adapter_shards")
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "adapter_config.json"),
+            SimpleNamespace(rfilename = "adapter_model-00001-of-00002.safetensors"),
+            SimpleNamespace(rfilename = "adapter_model-00002-of-00002.safetensors"),
+        ]
+    )
+
+    with _patch_model_info(return_value = info):
+        assert (
+            route._remote_untrainable_model_format("org/adapter", None) == "adapter_without_weights"
+        )
+
+
+def test_start_rejects_local_adapter_with_only_numbered_shards(tmp_path):
+    route = _load_route_module("training_route_local_adapter_shards")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model-00001-of-00002.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path))
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_weights_missing"
+
+
 def test_untrainable_gate_rejects_remote_gguf_only_repository():
     route = _load_route_module("training_route_remote_gguf")
     request = _request()
