@@ -12,9 +12,12 @@
 """DDP defaults for Unsloth trainers.
 
 transformers' Trainer passes ``find_unused_parameters=True`` to DDP whenever the model is not a
-``PreTrainedModel`` and ``ddp_find_unused_parameters`` is None, which is every PEFT model. That costs an
-autograd-graph walk plus an unused-parameter bitmap allreduce per step. For a plain LoRA adapter on a
-dense text model every trainable parameter gets a gradient each step, so it is safe to turn off.
+``PreTrainedModel`` and ``ddp_find_unused_parameters`` is None, which is every PEFT model. Under reentrant
+gradient checkpointing that crashes on the first backward ("marked as ready twice"): the checkpointed
+forward runs without grad, DDP marks every LoRA weight unused, then the recompute marks them again.
+transformers already picks False for a ``PreTrainedModel`` under checkpointing; this does the same for a
+plain LoRA adapter on a dense text model, where every trainable parameter gets a gradient each step.
+Without checkpointing True works (and tolerates an adapter a step never runs), so it is left alone.
 """
 
 import os
@@ -87,6 +90,16 @@ def _config_may_skip(config):
     return False
 
 
+def _gradient_checkpointing_on(args, model):
+    """True unless checkpointing is off both in the args (Trainer turns it on in train()) and on the model."""
+    if getattr(args, "gradient_checkpointing", False):
+        return True
+    try:
+        return any(getattr(m, "gradient_checkpointing", False) for m in model.modules())
+    except Exception:
+        return True
+
+
 def _lora_uses_every_trainable_param(model):
     """True only when we can show every trainable tensor is a LoRA weight run on each forward."""
     from transformers import PreTrainedModel
@@ -123,7 +136,8 @@ def _lora_uses_every_trainable_param(model):
 
 
 def unsloth_default_ddp_find_unused_parameters(args, model):
-    """Set ``args.ddp_find_unused_parameters = False`` for a plain LoRA model under DDP when the user left it None.
+    """Set ``args.ddp_find_unused_parameters = False`` for a plain LoRA model under DDP with gradient
+    checkpointing when the user left it None.
 
     Kept at None (transformers' True) for anything a step may skip: MoE / expert LoRA, vision or audio
     towers, MTP heads, lm_head / embedding adapters, modules_to_save, several adapters, non-LoRA PEFT.
@@ -142,7 +156,7 @@ def unsloth_default_ddp_find_unused_parameters(args, model):
     if not _is_distributed():
         return None
     try:
-        safe = _lora_uses_every_trainable_param(model)
+        safe = _gradient_checkpointing_on(args, model) and _lora_uses_every_trainable_param(model)
     except Exception:
         safe = False
     if safe:

@@ -47,6 +47,8 @@ def _lora(model, **kwargs):
 
 
 def _args(**kwargs):
+    # TRL's configs (SFTConfig, GRPOConfig, ...) turn gradient checkpointing on by default.
+    kwargs.setdefault("gradient_checkpointing", True)
     return transformers.TrainingArguments(output_dir = "unused", report_to = "none", **kwargs)
 
 
@@ -61,6 +63,20 @@ def test_plain_lora_defaults_to_false(ddp_env):
     assert args.ddp_find_unused_parameters is None
     assert _helper()(args, _lora(_llama())) is False
     assert args.ddp_find_unused_parameters is False
+
+
+def test_no_gradient_checkpointing_keeps_default(ddp_env):
+    # Without checkpointing transformers' True works and tolerates an adapter a step never runs.
+    args = _args(gradient_checkpointing = False)
+    assert _helper()(args, _lora(_llama())) is None
+    assert args.ddp_find_unused_parameters is None
+
+
+def test_checkpointing_armed_on_model_only_defaults_to_false(ddp_env):
+    # Unsloth arms checkpointing on the model (for_training) even when the args leave it off.
+    model = _llama()
+    model.gradient_checkpointing_enable()
+    assert _helper()(_args(gradient_checkpointing = False), _lora(model)) is False
 
 
 def test_user_value_is_kept(ddp_env):
@@ -97,6 +113,102 @@ def test_env_opt_out(ddp_env, monkeypatch):
 def test_skippable_models_keep_transformers_default(ddp_env, make):
     args = _args()
     assert _helper()(args, make()) is None
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"num_experts": 4},
+        {"n_routed_experts": 4},
+        {"moe_num_experts": 4},
+        {"num_experts_per_tok": 2},
+        {"layerdrop": 0.1},
+    ],
+)
+def test_moe_and_layerdrop_config_keys_keep_default(ddp_env, extra):
+    model = _lora(_llama())
+    for key, value in extra.items():
+        setattr(model.get_base_model().config, key, value)
+    assert _helper()(_args(), model) is None
+
+
+def test_vision_sub_config_keeps_default(ddp_env):
+    model = _lora(_llama())
+    # A VLM loaded through a text class still carries its tower config.
+    model.get_base_model().config.vision_config = transformers.CLIPVisionConfig()
+    assert _helper()(_args(), model) is None
+
+
+def test_vision_config_under_text_config_keeps_default(ddp_env):
+    model = _lora(_llama())
+    outer = transformers.PretrainedConfig()
+    outer.text_config = model.get_base_model().config
+    outer.text_config.audio_config = transformers.PretrainedConfig()
+    model.get_base_model().config = outer
+    assert _helper()(_args(), model) is None
+
+
+def test_two_adapters_keep_default(ddp_env):
+    model = _lora(_llama())
+    model.add_adapter("second", peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj"]))
+    assert _helper()(_args(), model) is None
+
+
+def test_non_lora_peft_keeps_default(ddp_env):
+    model = peft.get_peft_model(
+        _llama(),
+        peft.IA3Config(target_modules = ["q_proj", "down_proj"], feedforward_modules = ["down_proj"]),
+    )
+    assert _helper()(_args(), model) is None
+
+
+@pytest.mark.parametrize("attr", ["target_parameters", "trainable_token_indices"])
+def test_extra_trainable_targets_keep_default(ddp_env, attr):
+    model = _lora(_llama())
+    cfg = next(iter(model.peft_config.values()))
+    object.__setattr__(
+        cfg, attr, ["mlp.experts.gate_up_proj"] if attr == "target_parameters" else [1, 2]
+    )
+    assert _helper()(_args(), model) is None
+
+
+def test_transformers_native_adapter_keeps_default(ddp_env):
+    # PreTrainedModel.add_adapter keeps the model a PreTrainedModel: transformers' own rule decides.
+    model = _llama()
+    model.add_adapter(peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj"]))
+    assert isinstance(model.peft_config, dict) and len(model.peft_config) == 1
+    assert _helper()(_args(), model) is None
+
+
+def test_non_lora_peft_type_keeps_default(ddp_env):
+    # Isolates the peft_type rule: LoRA-named tensors, but the adapter says it is something else.
+    model = _lora(_llama())
+    cfg = next(iter(model.peft_config.values()))
+    object.__setattr__(cfg, "peft_type", peft.PeftType.ADALORA)
+    assert _helper()(_args(), model) is None
+
+
+def test_modules_to_save_config_keeps_default(ddp_env):
+    # Isolates the modules_to_save rule from the tensor-name rules.
+    model = _lora(_llama())
+    cfg = next(iter(model.peft_config.values()))
+    object.__setattr__(cfg, "modules_to_save", ["score"])
+    assert _helper()(_args(), model) is None
+
+
+def test_lora_on_linear_embedding_projection_keeps_default(ddp_env):
+    # An embedding-side Linear (e.g. GPT-NeoX's `embed_out` head on transformers 4.x) gets lora_A / lora_B
+    # tensors, so only the name rule keeps it out.
+    model = _llama()
+    model.model.embed_proj = torch.nn.Linear(16, 16, bias = False)
+    model = _lora(model, target_modules = ["q_proj", "embed_proj"])
+    assert any("embed_proj.lora_A" in n for n, _ in model.named_parameters())
+    assert _helper()(_args(), model) is None
+
+
+def test_dora_defaults_to_false(ddp_env):
+    # DoRA magnitude vectors run on every forward, like lora_A / lora_B.
+    assert _helper()(_args(), _lora(_llama(), use_dora = True)) is False
 
 
 def test_non_lora_trainable_param_keeps_default(ddp_env):
