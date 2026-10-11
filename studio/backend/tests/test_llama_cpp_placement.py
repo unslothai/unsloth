@@ -4202,6 +4202,36 @@ def test_vision_off_drops_the_projector_from_the_residency_check(
     assert seen == [False]
 
 
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (("--no-mmproj-offload",), {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf"}),
+        ((), {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf", "LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1"}),
+        (("--mmproj-auto", "--no-mmproj-offload"), {}),
+    ],
+    ids = ["argv_no_offload", "env_no_offload", "auto_no_offload"],
+)
+def test_a_projector_kept_on_the_cpu_does_not_block_residency(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
+):
+    """A projector pinned to the CPU takes no VRAM from the fitter, so it cannot make
+    the experts spill and the check need not abstain for it."""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    seen = []
+    eligible = backend._moe_cache_auto_eligible
+
+    def spy(**kwargs):
+        seen.append(kwargs["experts_on_host"])
+        return eligible(**kwargs)
+
+    backend._moe_cache_auto_eligible = spy
+    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)
+
+    assert seen == [False]
+
+
 def test_an_unsized_drafter_keeps_a_fit_on_moe_counted_as_spilled(tmp_path, _discrete_linux_host):
     """With the draft KV unsized the placement covers MTP with a flat cushion this
     footprint has no term for, so the residency check abstains."""

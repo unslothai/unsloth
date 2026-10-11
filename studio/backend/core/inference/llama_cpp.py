@@ -27920,9 +27920,12 @@ class LlamaCppBackend:
                             return False
                         # A projector Studio never resolved but the child loads: unsized here.
                         # Vision off scrubs the env projectors and appends --no-mmproj-auto
-                        # at launch, keeping only an audio-only LLAMA_ARG_MMPROJ.
+                        # at launch, keeping only an audio-only LLAMA_ARG_MMPROJ. One kept
+                        # on the CPU (--no-mmproj-offload or its env twin) takes no VRAM.
                         _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
-                        if disable_vision:
+                        if _resolved_mmproj_offload(_child_extras, _child_env) is False:
+                            pass
+                        elif disable_vision:
                             if _mmproj_env_is_audio_only(_env_mmproj):
                                 return False
                         elif (
