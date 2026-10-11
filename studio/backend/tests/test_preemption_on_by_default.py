@@ -355,6 +355,5 @@ class TestExactParksAreCountedAcrossModels:
 
     def test_every_exact_host_check_asks_for_this_backends_share(self):
         import inspect
-
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert source.count("_exact_host_free_mib(self)") == 4

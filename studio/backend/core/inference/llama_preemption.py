@@ -1859,9 +1859,7 @@ class ControllerPreemptionPolicy:
             # its own bound on progress up to its hard deadline, so this waits as long, and on
             # giving up cancels it: left running, it kept its place in the slot line for hours.
             try:
-                got = bool(
-                    future.result(timeout = timeout * _MAX_REPARK_WAIT_MULTIPLE + 5.0)
-                )
+                got = bool(future.result(timeout = timeout * _MAX_REPARK_WAIT_MULTIPLE + 5.0))
             except BaseException:
                 future.cancel()
                 raise

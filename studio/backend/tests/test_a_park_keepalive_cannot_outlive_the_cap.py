@@ -181,7 +181,6 @@ class TestAChatParkedAfterItsFirstToken:
         chunks += [": resumed\n\n", data.replace('"a"', '"b"')]
         assert "".join(self._read(chunks)).endswith('"b"}}]}\n\n')
 
-
     def test_a_wedged_park_in_split_chunks_times_out(self):
         data = 'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
         chunks = [data, ": preempted\n\n"]
@@ -197,6 +196,7 @@ class TestAChatParkedAfterItsFirstToken:
         chunks = [data, ": preempted\n\n: preempt-"] + ["keepalive\n\n"] * 5
         chunks += [": resumed\n\n", data.replace('"a"', '"b"')]
         assert "".join(self._read(chunks)).endswith('"b"}}]}\n\n')
+
 
 class TestAByteStreamParkedAfterItsFirstToken:
     """`/v1/completions` relays raw bytes, so a notice may be split or share a chunk."""
