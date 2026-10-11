@@ -160,6 +160,18 @@ def _adapter_trains_embeddings(model) -> bool:
     return False
 
 
+def _adapter_base_changed_error(config: dict) -> str | None:
+    """Refuse when the adapter now names a different base than the one checked at start (#13140)."""
+    pinned = config.get("adapter_base_pin")
+    if not pinned:
+        return None
+    from utils.models.model_config import get_base_model_from_lora
+
+    if get_base_model_from_lora(str(config.get("model_name") or "")) != pinned:
+        return "The adapter's base model changed after the run was checked. Start the run again."
+    return None
+
+
 def _untrainable_model_format_error(config: dict) -> str | None:
     model_format = str(config.get("model_format") or "").strip().lower()
     if model_format == "gguf":
@@ -488,7 +500,7 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
 def _validate_training_worker_config(config: dict, event_queue: Any) -> bool:
     if not _verify_config_pins(config, event_queue):
         return False
-    format_error = _untrainable_model_format_error(config)
+    format_error = _untrainable_model_format_error(config) or _adapter_base_changed_error(config)
     if format_error:
         event_queue.put(
             {

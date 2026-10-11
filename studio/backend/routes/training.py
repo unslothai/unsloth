@@ -228,6 +228,8 @@ class _ModelPreflightResult:
     model_name: str
     model_local_path: Optional[str]
     cached_model_pin: Optional[tuple[str, str]]
+    # The base an admitted adapter named at preflight; the worker refuses a different one.
+    adapter_base_pin: Optional[str] = None
 
 
 # Consecutive 1s polls without a step update that count as a stall (~30 min). Applied only once
@@ -968,7 +970,7 @@ def _refuse_multimodal_adapter_continuation(request: TrainingStartRequest) -> No
         )
 
 
-def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
+def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]:
     """A continued adapter also loads the base it names. Check that base the way the adapter
     was checked, or a public adapter could open a private base from the shared cache (#13140)."""
     from hub.utils.hf_cache_state import (
@@ -979,14 +981,14 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
 
     base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
     if not base:
-        return
+        return None
     if is_local_path(base):
         # A managed account may only reach bases in its own workspace or the shared cache.
         account_path(base, shared_cache = True)
         # A base path inside the Hub cache is still that repository's cached weights.
         cached_ref = cached_repo_ref_for_path(base)
         if cached_ref is None:
-            return
+            return base
         repo_id, repo_type = cached_ref
         is_cached = lambda: True  # noqa: E731 -- the path itself is the evidence
     else:
@@ -1022,6 +1024,7 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
             "Hugging Face denied access to this adapter's cached base model. "
             "Add a token with repository access.",
         )
+    return base
 
 
 def _is_decision_checkpoint(request: TrainingStartRequest) -> bool:
@@ -1295,8 +1298,10 @@ def _reject_untrainable_model_request(
             )
         _refuse_hub_adapter_continuation(request)
         _refuse_multimodal_adapter_continuation(request)
-        _authorize_adapter_base(str(path), hf_token)
-        return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
+        adapter_base = _authorize_adapter_base(str(path), hf_token)
+        return _ModelPreflightResult(
+            model_name, model_local_path, cached_model_pin, adapter_base_pin = adapter_base
+        )
     try:
         has_gguf = _detect_local_gguf(path) is not None
     except _LocalModelProbeIncomplete:
@@ -2150,6 +2155,7 @@ async def start_training(
             "require_exact_model_resource": resume_requires_exact_model,
             "require_exact_dataset_resource": resume_requires_exact_dataset,
             "require_validated_model_snapshot": cached_model_pin is not None,
+            "adapter_base_pin": getattr(model_preflight, "adapter_base_pin", None),
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,

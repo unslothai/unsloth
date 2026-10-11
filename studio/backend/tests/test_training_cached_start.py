@@ -677,6 +677,37 @@ def test_start_probes_an_uncached_hub_base_named_by_a_local_adapter(tmp_path):
     assert probe.call_args.args[0] == "org/missing-base"
 
 
+def test_start_pins_the_base_a_local_adapter_was_checked_against(tmp_path):
+    route = _load_route_module("training_route_adapter_base_pin")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with (
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = True),
+        patch.object(route, "cached_read_refused", return_value = False),
+        patch.object(route, "hf_env_offline", return_value = False),
+    ):
+        result = route._reject_untrainable_model_request(request, None, "hf_tok")
+
+    assert result.adapter_base_pin == "org/base"
+
+
+def test_worker_refuses_an_adapter_whose_base_changed_after_start(tmp_path):
+    from core.training import worker
+
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    config = {"model_name": str(tmp_path)}
+    assert worker._adapter_base_changed_error(config) is None
+    assert worker._adapter_base_changed_error({**config, "adapter_base_pin": "org/base"}) is None
+    error = worker._adapter_base_changed_error({**config, "adapter_base_pin": "org/other"})
+    assert error is not None and "changed" in error
+
+
 def test_adapter_trains_embeddings_reads_saved_modules():
     from core.training import worker
 
