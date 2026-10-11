@@ -35,6 +35,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 from core.inference import llama_cpp as llama_cpp_module  # noqa: E402
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from utils import process_lifetime  # noqa: E402
 from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread  # noqa: E402
 
 
@@ -111,6 +112,9 @@ def test_llama_server_spawns_use_the_lifetime_thread():
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PDEATHSIG is Linux-only")
 def test_lifetime_thread_keeps_a_child_spawned_from_a_short_thread_alive():
+    if not process_lifetime._pdeathsig_available():
+        pytest.skip("PR_SET_PDEATHSIG unavailable on this host")
+
     def _spawn():
         return subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"],
