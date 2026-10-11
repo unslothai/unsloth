@@ -89,7 +89,7 @@ echo "=== preservation never waits on PyPI; only a fresh home takes 2.13 ==="
 _PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"$/p' "$INSTALL_SH"; echo fi)
 assert_eq "block found in install.sh" "yes" "$(printf '%s' "$_PRESERVE_BLOCK" | grep -q _CU130_NEW_INSTALL_ROUTE && echo yes)"
 substep() { :; }
-_CU130_TORCH_CEILING="2.15.0"; _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"; SKIP_TORCH=false; TORCH_INDEX_URL="$CU130"
+_CU130_TORCH_CEILING="2.15.0"; _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"; SKIP_TORCH=false; TORCH_INDEX_URL="$CU130"; PACKAGE_NAME="unsloth"
 _run_block() {  # $1 existing-install flag, $2 previous torch version
     _EXISTING_INSTALL="$1"; _PREV_TORCH_VER="$2"
     TORCH_CONSTRAINT="torch>=2.4,<2.12.0"; TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
@@ -114,6 +114,11 @@ for gate in unreachable capped open; do
 done
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.11.0+cu130"; unset UNSLOTH_TORCH_UPGRADE
 assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.13" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+PACKAGE_NAME="unsloth-fork"; _run_block false ""; PACKAGE_NAME="unsloth"
+assert_eq "--package other than unsloth: fresh home keeps the old default" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
+assert_eq "--package other than unsloth: window still wide" "torch>=2.4,<2.15.0" "$_PRESERVE_TORCH_CONSTRAINT"
+PACKAGE_NAME="Unsloth"; _run_block false ""; PACKAGE_NAME="unsloth"
+assert_eq "--package Unsloth is unsloth" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
 for gate in unreachable capped; do
     case "$gate" in
         unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;

@@ -32136,7 +32136,7 @@ async def produce_openai_chat_completions(
                 except Exception as e:
                     logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
                     api_monitor.fail(monitor_id, _friendly_error(e))
-                    # Recover if an MTP+tensor crash killed the server mid-stream.
+                    # Recover if an MTP crash killed the server mid-stream.
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse(error_chunk)
@@ -32516,7 +32516,7 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                # Recover if an MTP+tensor crash killed the server.
+                # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
@@ -33204,7 +33204,7 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                # Recover if an MTP+tensor crash killed the server.
+                # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
@@ -43349,7 +43349,7 @@ async def _passthrough_retry_url(llama_backend, exc):
 
     A crashed server relaunches on a NEW ephemeral port, so a passthrough still
     holding the old base_url keeps failing until the next load. Mirrors the
-    respawn-and-retry in generate_chat_completion. None when an MTP+tensor crash
+    respawn-and-retry in generate_chat_completion. None when an MTP crash
     already scheduled its own recovery, or when nothing needed respawning.
 
     Shared by both passthrough surfaces: /v1/messages and /v1/chat/completions post

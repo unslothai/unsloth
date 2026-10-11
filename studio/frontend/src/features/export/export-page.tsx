@@ -335,8 +335,9 @@ export function ExportPage() {
     };
   }, []);
 
-  // Apply the ?run= deep link once its run appears in the checkpoint list.
-  const { run: preselectRun } = useSearch({ from: "/export" });
+  // Apply the ?run= deep link once its run appears in the checkpoint list: select the run and
+  // default to GGUF. The main checkpoint is auto-selected below, after the model-change effect.
+  const { run: preselectRun, imageLora: preselectImageLora } = useSearch({ from: "/export" });
   const appliedRunRef = useRef<string | null>(null);
   useEffect(() => {
     if (!preselectRun) {
@@ -2017,7 +2018,7 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
-        <ImageLoraExportCard />
+        <ImageLoraExportCard preselect={preselectImageLora} />
         <Q4nxConvertCard />
       </main>
     </div>
