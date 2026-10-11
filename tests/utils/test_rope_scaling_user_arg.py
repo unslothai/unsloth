@@ -81,10 +81,10 @@ def test_user_rope_scaling_inv_freq_matches_transformers_yarn():
 def test_yarn_inv_freq_under_meta_device_context():
     # transformers builds the model under a meta device context; yarn's helpers then made meta
     # tensors and the rotary fell back to unscaled RoPE with a warning.
-    from unsloth.models.llama import _compute_config_rope_inv_freq, _user_rope_scaling
+    from unsloth.models.llama import _compute_config_rope_inv_freq
 
     config = _qwen2_config()
-    config.rope_scaling = _user_rope_scaling(config, YARN)
+    config.rope_scaling = {**YARN, "rope_theta": ROPE_THETA}
     rope = getattr(config, "rope_parameters", None) or config.rope_scaling
     with torch.device("meta"):
         inv_freq, attention_scaling = _compute_config_rope_inv_freq(config, rope)
