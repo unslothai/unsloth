@@ -214,7 +214,7 @@ def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
     monkeypatch.setattr(rag_db, "_schema_ready", set())
     factories = [studio_db.get_connection] + [module.get_connection for module in modules]
     factories += [auth_storage.get_connection, rag_db.get_metadata_connection]
-    if rag_db.RAG_AVAILABLE:
+    if rag_db.rag_available():  # sqlite_vec can import while its vec0 library cannot load
         factories.append(rag_db.get_connection)
 
     class TrackingLock:
