@@ -567,6 +567,8 @@ def test_start_checks_a_cache_path_base_named_by_a_local_adapter(tmp_path):
     route = _load_route_module("training_route_adapter_base_cache_path")
     base = tmp_path / "hub" / "models--org--private" / "snapshots" / "rev"
     base.mkdir(parents = True)
+    (base / "config.json").write_text("{}")
+    (base / "model.safetensors").write_bytes(b"x")
     (tmp_path / "adapter_config.json").write_text(
         json.dumps({"base_model_name_or_path": str(base)})
     )
@@ -773,6 +775,47 @@ def test_start_refuses_an_adapter_whose_hub_base_is_not_trainable(tmp_path, base
         exc_info = _shared_setup_2(request, route)
 
     assert exc_info.value.detail["code"] == "training_adapter_base_not_trainable"
+
+
+def test_start_refuses_an_adapter_whose_local_base_has_no_weights(tmp_path):
+    route = _load_route_module("training_route_adapter_base_empty")
+    base = tmp_path / "empty-base"
+    base.mkdir()
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_adapter_base_not_trainable"
+
+
+def test_cache_path_base_needs_the_account_grant(tmp_path):
+    route = _load_route_module("training_route_adapter_cache_base_grant")
+    base = tmp_path / "hub" / "models--org--private" / "snapshots" / "rev"
+    base.mkdir(parents = True)
+    (base / "config.json").write_text("{}")
+    (base / "model.safetensors").write_bytes(b"x")
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+    denied = HTTPException(status_code = 404, detail = "Model not found")
+
+    with (
+        patch(
+            "hub.utils.hf_cache_state.cached_repo_ref_for_path",
+            side_effect = lambda p: ("org/private", "model") if str(p) == str(base) else None,
+        ),
+        patch.object(route, "_authorize_cache_fallback", side_effect = denied) as grant,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 404
+    assert grant.call_args.args == ("org/private", "model")
 
 
 def test_adapter_trains_embeddings_reads_saved_modules():

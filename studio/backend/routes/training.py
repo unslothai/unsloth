@@ -985,11 +985,18 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
     if is_local_path(base):
         # A managed account may only reach bases in its own workspace or the shared cache.
         account_path(base, shared_cache = True)
-        if not Path(base).expanduser().is_dir():
+        base_path = Path(base).expanduser()
+        if not base_path.is_dir():
             raise _training_start_error(
                 400,
                 "training_adapter_base_missing",
                 "The base model folder this adapter names no longer exists.",
+            )
+        if not _has_trainable_local_weights(base_path):
+            raise _training_start_error(
+                400,
+                "training_adapter_base_not_trainable",
+                "The base model folder this adapter names has no trainable weights.",
             )
         # A base path inside the Hub cache is still that repository's cached weights.
         cached_ref = cached_repo_ref_for_path(base)
@@ -997,6 +1004,8 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
             return base
         repo_id, repo_type = cached_ref
         is_cached = lambda: True  # noqa: E731 -- the path itself is the evidence
+        # Reading the shared cache needs a grant, as for a selected cached model.
+        _authorize_cache_fallback(repo_id, repo_type)
     else:
         repo_id, repo_type = canonical_model_repo_id(base), "model"
         is_cached = lambda: repo_cache_has_usable_snapshot("model", repo_id)  # noqa: E731
