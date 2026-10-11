@@ -427,8 +427,10 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
     raise RuntimeError("Could not allocate an inference server port.")
 
 
-# Engine silence, not total startup time: an uncached Hub model downloads inside the engine.
-STARTUP_STALL_S = 900
+# Engine silence, not total startup time: an uncached Hub model downloads inside the engine, and
+# a first load can compile (torch.compile, Triton kernels) for tens of minutes without a line,
+# as a block-FP8 27B did on gfx1151 for over 17 minutes.
+STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
 
 

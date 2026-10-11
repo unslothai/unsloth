@@ -613,3 +613,8 @@ def test_a_startup_timeout_names_where_the_engine_stalled(monkeypatch, tmp_path)
     with pytest.raises(RuntimeError, match = "(?s)timed out.*JIT kernel warmup finished"):
         engine.start("model", 2048, [0], dict(os.environ))
     assert not engine.alive()
+
+
+def test_startup_allows_a_long_silent_first_compile():
+    # Measured on gfx1151: a block-FP8 27B compiled for over 17 minutes without printing a line.
+    assert managed_engine.STARTUP_STALL_S >= 3600
