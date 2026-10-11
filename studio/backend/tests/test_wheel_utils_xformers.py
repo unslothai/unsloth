@@ -39,11 +39,17 @@ class TestWheelPlatformTag:
         monkeypatch.setattr(wheel_utils.platform, "machine", lambda: "AMD64")
         assert wheel_utils.wheel_platform_tag() == "win_amd64"
 
-    def test_windows_on_arm_has_no_wheel(self, monkeypatch):
-        """No CUDA and no win_arm64 asset on any index -- must stay None."""
+    def test_windows_on_arm_is_named_but_has_no_xformers_wheel(self, monkeypatch):
+        """NVIDIA publishes win_arm64 CUDA torch and flash-attn, so the tag is named; xFormers still has no win_arm64 asset."""
         monkeypatch.setattr(wheel_utils.sys, "platform", "win32")
         monkeypatch.setattr(wheel_utils.platform, "machine", lambda: "ARM64")
-        assert wheel_utils.wheel_platform_tag() is None
+        assert wheel_utils.wheel_platform_tag() == "win_arm64"
+        env = {
+            "platform_tag": "win_arm64",
+            "torch_version": "2.14.0+cu134",
+            "cuda_version": "13.4",
+        }
+        assert wheel_utils.xformers_wheel_url(env) is None
 
     @pytest.mark.parametrize(
         ("machine", "expected"),

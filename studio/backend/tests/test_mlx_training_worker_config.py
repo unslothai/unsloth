@@ -78,6 +78,7 @@ def _load_worker_module():
             "direct_wheel_url",
             "flash_attn_wheel_url",
             "install_wheel",
+            "is_windows_wheel_env",
             "probe_torch_wheel_env",
             "url_exists",
         ):
