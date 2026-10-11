@@ -983,6 +983,7 @@ jobs:
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
             logs/playwright_image_download_queue
+            logs/playwright_staged_download_rows
             logs/playwright_image_text_encoder
             logs/playwright_modelcfg
             logs/playwright_memory_estimate
