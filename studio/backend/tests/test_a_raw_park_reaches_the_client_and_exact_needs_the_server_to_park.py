@@ -127,14 +127,16 @@ class TestExactNeedsTheServerToPark:
         assert self._state(setting = "off", server_parks = False) == exact.EXACT_STATE_OFF
 
     def test_the_settings_page_is_told_what_parking_needs(self, monkeypatch):
-        # Off by default: Auto came up unavailable and On failed the load from a selector
-        # that offered both. The response names the variable that turns parking on.
+        # Switched off, Auto came up unavailable and On failed the load from a selector that
+        # offered both. The response names the variable that turns parking on.
         from core.inference import llama_preemption as preemption
         from routes import settings as settings_mod
 
-        monkeypatch.delenv(preemption.PREEMPT_ENV, raising = False)
         monkeypatch.delenv(preemption.PREEMPT_MODE_ENV, raising = False)
+        monkeypatch.setenv(preemption.PREEMPT_ENV, "0")
         assert settings_mod._exact_parking_prerequisite() == f"{preemption.PREEMPT_ENV}=1"
+        monkeypatch.delenv(preemption.PREEMPT_ENV, raising = False)
+        assert settings_mod._exact_parking_prerequisite() is None
         monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
         assert settings_mod._exact_parking_prerequisite() is None
         monkeypatch.setenv(preemption.PREEMPT_MODE_ENV, "studio")
@@ -913,16 +915,11 @@ class TestAParkDuringPrefillIsExcusedToo:
 class TestTheGlobalOptOutBlocksAnAutoLaunch:
     def test_preemption_off_with_nothing_named_is_parking_off(self, monkeypatch):
         monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
-        monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: False)
-        why = llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {})
-        # Spelled as the operator set it. Unset is the default, and "=0" there would name a
-        # variable nobody wrote.
-        assert why and f"{preemption_mod.PREEMPT_ENV} is not set" in why
         monkeypatch.setenv(preemption_mod.PREEMPT_ENV, "0")
+        # Spelled as the operator set it.
         assert f"{preemption_mod.PREEMPT_ENV}=0" in llama_mod._exact_auto_blocker(
             exact.EXACT_AUTO, ["llama-server"], {}
         )
-        monkeypatch.delenv(preemption_mod.PREEMPT_ENV, raising = False)
         # A named budget does not buy the child a park either: `_stand_down_child_parking`
         # zeroes it, so the mode would be started for a server that never parks.
         for argv, env in (
@@ -931,7 +928,8 @@ class TestTheGlobalOptOutBlocksAnAutoLaunch:
         ):
             blocked = llama_mod._exact_auto_blocker(exact.EXACT_AUTO, argv, env)
             assert blocked and preemption_mod.PREEMPT_ENV in blocked
-        monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: True)
+        # Unset is auto, which asks the server to park.
+        monkeypatch.delenv(preemption_mod.PREEMPT_ENV, raising = False)
         assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {}) is None
 
 
@@ -1329,7 +1327,7 @@ class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
     @staticmethod
     def _opt_out(monkeypatch):
         monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
-        monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: False)
+        monkeypatch.setenv(preemption_mod.PREEMPT_ENV, "0")
 
     def test_the_launch_generates_no_budget_under_the_opt_out(self, monkeypatch):
         self._opt_out(monkeypatch)

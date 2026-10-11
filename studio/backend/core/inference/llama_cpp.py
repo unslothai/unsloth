@@ -2502,6 +2502,35 @@ def _exact_parking_budget_mib(
     return _exact_parking_need_mib(kv_bytes, draft_bytes = draft_bytes, parallel = parallel)
 
 
+# Host RAM the default parking budget leaves alone: the larger of these, so a small box keeps its
+# OS and page cache and a large one its weights spilled to host.
+_PARKING_HOST_RESERVE_MIB = 4096
+_PARKING_HOST_RESERVE_FRACTION = 0.15
+_PARKING_HOST_AVAILABLE_FRACTION = 0.25
+
+
+def _total_host_memory_mib() -> Optional[int]:
+    try:
+        import psutil
+        return int(psutil.virtual_memory().total // (1024 * 1024))
+    except Exception:
+        return None
+
+
+def _host_bounded_parking_mib(need_mib: int) -> int:
+    """``need_mib`` capped to what this host can pin without pressure; 0 means do not park.
+
+    A park past the budget drops its cells and is re-prefilled, which costs about what the copy
+    would, so a short budget is safe; pinning past the host's headroom is not."""
+    available = _available_host_memory_mib()
+    if available is None:
+        return 0
+    total = _total_host_memory_mib() or available
+    reserve = max(_PARKING_HOST_RESERVE_MIB, int(total * _PARKING_HOST_RESERVE_FRACTION))
+    cap = min(int(available * _PARKING_HOST_AVAILABLE_FRACTION), available - reserve)
+    return max(0, min(int(need_mib), cap))
+
+
 def _server_owned_parking_budget_mib(
     kv_bytes: int,
     *,
@@ -2511,6 +2540,7 @@ def _server_owned_parking_budget_mib(
     kv_unified: bool,
     draft_bytes: int = 0,
     parallel: int = 1,
+    bound_to_host: bool = False,
 ) -> Optional[int]:
     """The ``--preempt-ram`` Studio names so the SERVER is the one pausing chats, else None.
 
@@ -2519,18 +2549,23 @@ def _server_owned_parking_budget_mib(
     launch that means it to park has to name a budget. None is a child that parks nothing of
     Studio's doing: a build without the flag, a cache that is not unified (the only one a sequence
     can be parked out of, and half of what ``server_preempts_kv`` reports), the switches handing
-    the pausing to Studio or to nobody, or a budget somebody already named, whose say is kept."""
+    the pausing to Studio or to nobody, or a budget somebody already named, whose say is kept.
+    ``bound_to_host`` caps it to the host's headroom (every launch but an exact one, which judges
+    a short budget itself); a cap of zero is no parking, so the launch runs as upstream does."""
     if not server_supports or not kv_unified:
         return None
     if _child_parking_stands_down(server_supports):
         return None
-    return _exact_parking_budget_mib(
+    budget = _exact_parking_budget_mib(
         kv_bytes,
         args = args,
         env = env,
         draft_bytes = draft_bytes,
         parallel = parallel,
     )
+    if budget is None or not bound_to_host:
+        return budget
+    return _host_bounded_parking_mib(budget) or None
 
 
 def _named_preempt_ram_mib(args, env: Mapping[str, str]) -> Optional[int]:
@@ -2606,10 +2641,7 @@ def _exact_preflight_env(environ: Mapping[str, str], gpu_memory_mode: Optional[s
 
 
 def _preempt_switch_spelling() -> str:
-    """The preemption switch as the operator set it, for a message that names what lost.
-
-    An unset switch is not spelled as a zero: preemption is off until it is asked for, so "=0"
-    would name a variable nobody wrote."""
+    """The preemption switch as the operator set it, for a message that names what lost."""
     setting = (os.environ.get(_preemption.PREEMPT_ENV) or "").strip()
     if setting:
         return f"{_preemption.PREEMPT_ENV}={setting}"
@@ -2643,7 +2675,7 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
         )
     # The same condition `_stand_down_child_parking` acts on later (studio mode above is its
     # other): Studio's preemption off hands the child a zero, over any budget the line names.
-    if not _preemption.preemption_enabled():
+    if not _preemption.preemption_wanted():
         return f"{_preempt_switch_spelling()} switches the server's parking off as well"
     return None
 
@@ -2656,7 +2688,7 @@ def _child_parking_stand_down_reason(server_supports: Optional[bool] = None) -> 
     then arms its own preemptor, and a child that can park after all must not park beside it."""
     if _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO:
         return f"{_preemption.PREEMPT_MODE_ENV}=studio"
-    if not _preemption.preemption_enabled():
+    if not _preemption.preemption_wanted():
         return _preempt_switch_spelling()
     if server_supports is False:
         return "the llama-server probe did not confirm --preempt-ram"
@@ -28956,6 +28988,7 @@ class LlamaCppBackend:
 
                 server_caps = _launch_caps(binary)
                 self._server_preempts_kv = False
+                _preemption.note_server_parking(False)
 
                 # Before the extras, like the batch pair: a hand-typed flag still
                 # last-wins over the control. Each is gated on the capability
@@ -30356,13 +30389,13 @@ class LlamaCppBackend:
                         kv_unified = _kv_unified_from_args(cmd),
                         draft_bytes = _exact_draft_bytes,
                         parallel = n_parallel,
+                        bound_to_host = not _exact_wanted,
                     )
                     if _exact_budget is not None:
                         cmd.extend(["--preempt-ram", str(_exact_budget)])
                         logger.info(
-                            "Server-side preemption: --preempt-ram %d holds every park of the "
-                            "%d MiB pool and its %d MiB of draft state across %d slots, so no "
-                            "park has to be re-prefilled.",
+                            "Server-side preemption: --preempt-ram %d for a %d MiB pool and "
+                            "%d MiB of draft state across %d slots; a park past it is re-prefilled.",
                             _exact_budget,
                             _exact_kv_bytes // (1024 * 1024),
                             _exact_draft_bytes // (1024 * 1024),
@@ -33281,6 +33314,9 @@ class LlamaCppBackend:
                 # that actually spawned, which the retries can rewrite under the decision above.
                 if _preempt_ram_disabled_in(_last_spawn_cmd or cmd, env = env):
                     self._server_preempts_kv = False
+                if self._server_preempts_kv:
+                    self._server_preempts_kv = self._server_confirms_parking()
+                _preemption.note_server_parking(self._server_preempts_kv and kv_cache_unified)
                 # Read off the argv that LAUNCHED and the env it launched with, not the intent: respawns rewrite them.
                 self._requested_exact_concurrency = _exact_setting
                 _exact_short = getattr(self, "_exact_parking_short", None)
@@ -34584,6 +34620,7 @@ class LlamaCppBackend:
             self._swa_full = False
             self._kv_cache_unified = False
             self._server_preempts_kv = False
+            _preemption.note_server_parking(False)
             self._requested_exact_concurrency = _exact.EXACT_OFF
             self._exact_concurrency = _exact.EXACT_STATE_OFF
             self._memory_state = None
@@ -36895,6 +36932,15 @@ class LlamaCppBackend:
             return props if isinstance(props, dict) else None
         except Exception:
             return None
+
+    def _server_confirms_parking(self) -> bool:
+        """Whether the running server reports, in ``/props``, that it parks slots. A build without
+        the report counts as parking only when preemption was asked for by name: auto needs proof."""
+        props = self._query_server_props() or {}
+        preempt = props.get("preempt")
+        if isinstance(preempt, dict):
+            return preempt.get("enabled") is True
+        return _preemption.preemption_setting() == _preemption.PREEMPT_SETTING_ON
 
     def _server_reports_exact_concurrency(self) -> bool:
         """Whether the running llama-server says it runs exact concurrency: ``/props`` carries

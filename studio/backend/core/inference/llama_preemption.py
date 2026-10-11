@@ -4,11 +4,11 @@
 """Who pauses when the shared KV cache fills. llama-server admits on `prompt_tokens <
 slot.n_ctx` alone, so chats that each fit collide and it errors EVERY processing slot.
 
-OPT-IN: all of it is off unless `UNSLOTH_LLAMA_ADMISSION_PREEMPT=1`. Unset, an install behaves
-as it did before this module existed: no `/slots` reads on the token path, no participants, no
-`preempt_event` handed to a generation, no `: preempt-*` SSE comments, no park notices, and
-admission prices every request against its fair share. `preemption_enabled()` is that switch and
-every entry point below asks it first."""
+On by default only where the running llama-server parks slots itself (see `preemption_enabled`).
+Anywhere else, or with `UNSLOTH_LLAMA_ADMISSION_PREEMPT=0`, an install behaves as it did before
+this module existed: no `/slots` reads on the token path, no participants, no `preempt_event`
+handed to a generation, no `: preempt-*` SSE comments, no park notices, and admission prices
+every request against its fair share. Every entry point below asks `preemption_enabled()` first."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 from core.inference.llama_admission import (
     LlamaAdmissionLease,
-    _bool_env,
     llama_admission_config_from_env,
 )
 from core.inference.llama_exact import EXACT_STATE_OFF, EXACT_STATES
@@ -38,10 +37,17 @@ from loggers import get_logger
 _log = get_logger(__name__)
 
 
-# Opt-in: `=1` turns the whole controller on. Unset it is off and admission falls back to step 1's
-# wire clamp alone, which is what every install ran before preemption existed.
+# `=1` arms preemption wherever it can run, `=0` is the behaviour before it existed. Unset is
+# auto: on only once the running llama-server confirms through `/props` that it parks slots
+# itself, so a stock or older server keeps the fair share admission it always had.
 PREEMPT_ENV = "UNSLOTH_LLAMA_ADMISSION_PREEMPT"
-DEFAULT_PREEMPT_ENABLED = False
+DEFAULT_PREEMPT_ENABLED = True
+PREEMPT_SETTING_ON = "on"
+PREEMPT_SETTING_OFF = "off"
+PREEMPT_SETTING_AUTO = "auto"
+
+# Whether the loaded llama-server confirmed its own parking. Written at launch and on unload.
+_server_parking_confirmed = False
 
 
 # The park notices a llama-server built with unslothai/llama.cpp#197 writes on the very stream it
@@ -497,14 +503,45 @@ _DECODES_WHEN_TOKENS_ARRIVE = frozenset(
 )
 
 
-def preemption_enabled() -> bool:
-    """Whether the operator opted in with ``UNSLOTH_LLAMA_ADMISSION_PREEMPT=1``.
+def preemption_setting() -> str:
+    """``on``, ``off`` or ``auto`` (unset or unrecognised) for ``UNSLOTH_LLAMA_ADMISSION_PREEMPT``."""
+    raw = (os.environ.get(PREEMPT_ENV) or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return PREEMPT_SETTING_ON
+    if raw in {"0", "false", "no", "off"}:
+        return PREEMPT_SETTING_OFF
+    return PREEMPT_SETTING_AUTO if DEFAULT_PREEMPT_ENABLED else PREEMPT_SETTING_OFF
 
-    A plain environment read, so it is cheap enough to be the FIRST thing every gate asks:
-    off, the caller must be able to bail out before it builds a signal, registers a
+
+def preemption_wanted() -> bool:
+    """Whether a launch should ask the server to park: anything but an explicit off."""
+    return preemption_setting() != PREEMPT_SETTING_OFF
+
+
+def note_server_parking(confirmed: bool) -> None:
+    """Record what the running llama-server reported. Auto preemption follows it."""
+    global _server_parking_confirmed
+    _server_parking_confirmed = bool(confirmed)
+
+
+def server_parking_confirmed() -> bool:
+    return _server_parking_confirmed
+
+
+def preemption_enabled() -> bool:
+    """Whether preemption is armed now.
+
+    ``on`` always; ``off`` never; ``auto`` only while the server confirmed its own parking or
+    ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` asks Studio to pause chats. Cheap enough to be the
+    FIRST thing every gate asks: off, the caller bails out before it builds a signal, registers a
     participant or opens a ``/slots`` round trip.
     """
-    return _bool_env(PREEMPT_ENV, DEFAULT_PREEMPT_ENABLED)
+    setting = preemption_setting()
+    if setting == PREEMPT_SETTING_ON:
+        return True
+    if setting == PREEMPT_SETTING_OFF:
+        return False
+    return _server_parking_confirmed or preempt_mode_setting() == PREEMPT_MODE_STUDIO
 
 
 def preemption_eligible() -> bool:

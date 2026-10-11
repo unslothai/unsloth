@@ -2024,12 +2024,12 @@ def _exact_concurrency_reload_required(effective: str) -> bool:
 
 
 def _exact_parking_prerequisite() -> Optional[str]:
-    """What has to be set before the server can park, else None. Preemption is off by default
-    and exact mode cannot run without the server parking, so a selector offering Auto and On
-    on a default install offered two choices that could not work."""
+    """What has to be set before the server can park, else None. Exact mode cannot run without
+    the server parking, so a selector offering Auto and On where preemption is switched off
+    offered two choices that could not work."""
     from core.inference import llama_preemption as _preemption
 
-    if not _preemption.preemption_enabled():
+    if not _preemption.preemption_wanted():
         return f"{_preemption.PREEMPT_ENV}=1"
     if _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO:
         return f"{_preemption.PREEMPT_MODE_ENV}={_preemption.PREEMPT_MODE_SERVER}"
