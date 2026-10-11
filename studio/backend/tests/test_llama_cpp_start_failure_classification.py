@@ -193,6 +193,22 @@ class TestOllamaAndFallback:
         assert "diffusion" in msg.lower()
         assert "Images page" in msg
 
+    def test_missing_gguf_key_names_key_not_memory(self):
+        # #8513: a MiniMax-M3 GGUF made before llama.cpp's native MSA support.
+        out = (
+            "llama_model_load: error loading model: error loading model hyperparameters: "
+            "key not found in model: minimax-m3.attention.indexer.head_count\n"
+            "llama_model_load_from_file_impl: failed to load model\n"
+        )
+        msg = _classify(
+            out, "/models/MiniMax-M3-UD-Q6_K_XL-00001-of-00009.gguf", "unsloth/MiniMax-M3-GGUF", 1
+        )
+        assert "'minimax-m3.attention.indexer.head_count'" in msg
+        assert "not a memory problem" in msg
+        assert "updated GGUF" in msg
+        assert "GGUF file is valid" not in msg
+        assert "minimax-m3.attention.indexer.head_count\n" in msg  # output tail kept
+
     def test_generic_oom_keeps_memory_message(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big")
         assert "enough memory" in msg.lower()

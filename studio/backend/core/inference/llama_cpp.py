@@ -21905,6 +21905,23 @@ class LlamaCppBackend:
                     "Ollama instead."
                 )
 
+        # A required GGUF key is absent: the file was converted for a different
+        # llama.cpp format of this architecture (pre-release MiniMax-M3 GGUFs lack
+        # the indexer keys llama.cpp#24908 made mandatory, #8513). Not memory.
+        missing_key = re.search(r"key not found in model:\s*([\w.\-]+)", scan_tail, re.IGNORECASE)
+        if missing_key:
+            return LlamaCppBackend._with_startup_diagnostics(
+                f"This GGUF is missing the metadata key '{_short(missing_key.group(1))}', "
+                "which the installed llama.cpp requires to load it. The file was made "
+                "for a different llama.cpp version of this model's format, usually an "
+                "older or pre-release one; this is not a memory problem. Download an "
+                "updated GGUF of this model, or update llama.cpp if the file is newer "
+                "than this build.",
+                output,
+                log_path,
+                secrets,
+            )
+
         # 127 without any loader line above is not specific to a library: it is
         # also what a shell wrapper entrypoint reports when its exec target is
         # gone (_llama_lib_dir supports those, as does a custom
