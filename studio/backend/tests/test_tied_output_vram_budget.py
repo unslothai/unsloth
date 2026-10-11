@@ -1191,3 +1191,64 @@ def test_an_unlisted_sidecar_arch_is_still_charged(backend, tmp_path: Path):
         architecture = "medusa",
     )
     assert backend._tied_output_bytes(str(sidecar)) == 8 * 64 * 4
+
+
+def test_a_lazily_read_table_leaves_the_host_floor_once(backend, tmp_path: Path):
+    """Under --lazy-mode a per-layer table over 4 GiB stays mmap'd (lazy_read::add), so
+    the host-pinned floor must not charge it as resident RAM. The file term drops it
+    already; the floor drops the same bytes, and only the rest stays pinned."""
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
+
+    gib = 1024**3
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 40 * gib
+    instance.probe_server_capabilities = lambda _binary: {}
+    instance._lazy_auto_resolves_off = lambda **_kw: False
+    instance._lazy_read_host_bytes = lambda *_a, **_kw: 27 * gib
+    argv = ["llama-server", "-m", str(tmp_path / "model.gguf")]
+    rows = [(0, 64 * 1024)]  # the 13 GiB left after the table fits in VRAM
+    # Floor = token_embd 1 GiB + per_layer_token_embd 27 GiB, as the launch passes it.
+    floor = 28 * gib
+    # Pinned share is 1 GiB: fits 1 GiB of RAM plus headroom, which 28 GiB would not.
+    avail_mib = 1024 + _HOST_RAM_HEADROOM_MIB
+    assert (
+        instance._launch_host_shortfall_message(
+            argv, rows, avail_mib = avail_mib, host_only_bytes = floor
+        )
+        is None
+    )
+    # Without the lazy table the whole floor is resident and RAM falls short.
+    instance._lazy_read_host_bytes = lambda *_a, **_kw: 0
+    assert (
+        instance._launch_host_shortfall_message(
+            argv, rows, avail_mib = avail_mib, host_only_bytes = floor
+        )
+        is not None
+    )
+
+
+def test_the_load_mode_fit_removes_a_lazy_table_once():
+    """The fit's footprint carries the host-pinned embeddings in host_only_bytes, not in
+    model_size. A lazily read table among them leaves host_only_bytes, and only the
+    rest of the lazy bytes leaves the footprint: removing it from both would shrink
+    the device share by the table a second time."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert (
+        "_fit_lazy_in_host_pinned=min(_fit_lazy_bytes,_host_pinned+_fit_extra_host_pinned)"
+    ) in compact
+    assert "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes," in compact
+    assert "lazy_read_bytes=_fit_lazy_bytes-_fit_lazy_in_host_pinned," in compact
+
+    # The arithmetic it protects, through the real spill formula: 13 GiB of device
+    # weights, 1 GiB pinned token_embd, a 27 GiB lazy table, 4 GiB of free VRAM.
+    gib = 1024**3
+    device, embd, table, vram = 13 * gib, 1 * gib, 27 * gib, 4 * gib
+    host_only = embd + table - min(table, embd + table)
+    footprint = device + embd + table - min(table, embd + table)  # model_size + host_only
+    footprint -= table - min(table, embd + table)  # lazy_read_bytes left for the footprint
+    spill = max(0, footprint - host_only - vram) + host_only
+    assert spill == (device - vram) + embd

@@ -331,7 +331,7 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     # A lazily read table leaves it, and checkpoint bytes join it.
     assert (
         "+_host_pinned+_fit_extra_host_pinned+_draft_host_pinned+_fit_extra_draft_pinned"
-        "-min(_fit_lazy_bytes,_host_pinned+_fit_extra_host_pinned),)+_ckpt_host_bytes,"
+        "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes,"
     ) in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
 
@@ -1736,7 +1736,7 @@ def test_the_fit_prices_the_effective_checkpoint_count():
         compact
     )
     assert "host_only_bytes=max(0,(_cpu_draft_fit_bytesor0)" in compact
-    assert "_fit_extra_host_pinned),)+_ckpt_host_bytes," in compact
+    assert "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes," in compact
     assert "def_kv_bytes(ctx:int,ctx_checkpoints:int=0)->int:" in compact
 
 

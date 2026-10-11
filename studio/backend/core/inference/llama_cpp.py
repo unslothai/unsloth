@@ -15657,30 +15657,29 @@ class LlamaCppBackend:
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
         shared = set(shared_gpu_ids or ())
+        host_floor = max(0, int(host_only_bytes or 0))
         # Same lazy-read discount as the fit, or this rewrite undoes its pinned verdict.
         try:
-            model_bytes = max(
-                1,
-                model_bytes
-                - self._lazy_read_host_bytes(
-                    model_path,
-                    caps = self.probe_server_capabilities(argv[0]),
-                    extra_args = argv,
-                    env = _env,
-                    auto_resolves_off = self._lazy_auto_resolves_off(
-                        gpu_indices = [row[0] for row in gpus] if gpus else None,
-                        detected_gpus = gpus,
-                        shared_gpu_ids = shared,
-                        is_vulkan_backend = bool(shared) or self._is_vulkan_backend(argv[0]),
-                        probe_integrated_cuda = False,
-                    ),
+            _lazy_bytes = self._lazy_read_host_bytes(
+                model_path,
+                caps = self.probe_server_capabilities(argv[0]),
+                extra_args = argv,
+                env = _env,
+                auto_resolves_off = self._lazy_auto_resolves_off(
+                    gpu_indices = [row[0] for row in gpus] if gpus else None,
+                    detected_gpus = gpus,
+                    shared_gpu_ids = shared,
+                    is_vulkan_backend = bool(shared) or self._is_vulkan_backend(argv[0]),
+                    probe_integrated_cuda = False,
                 ),
             )
+            model_bytes = max(1, model_bytes - _lazy_bytes)
+            # The lazily read table is one of the host-pinned embeddings, but stays mmap'd.
+            host_floor = max(0, host_floor - min(_lazy_bytes, host_floor))
         except Exception as e:  # noqa: BLE001 -- unverified discount: price the whole file
             logger.debug("Lazy-read discount skipped in the host preflight: %s", e)
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
-        host_floor = max(0, int(host_only_bytes or 0))
         additional_host = max(0, int(additional_host_only_bytes or 0))
         heap_bytes = additional_host + max(host_floor, heap_bytes)
         offload_bytes = additional_host + max(host_floor, model_bytes - free_vram_mib * 1024 * 1024)
@@ -29127,6 +29126,12 @@ class LlamaCppBackend:
                             is_vulkan_backend = is_vulkan_backend,
                         ),
                     )
+                    # The share of that table counted among the host-pinned embeddings
+                    # (model_size no longer holds it) leaves host_only_bytes below, and
+                    # only the rest leaves the footprint, so no share loses it twice.
+                    _fit_lazy_in_host_pinned = min(
+                        _fit_lazy_bytes, _host_pinned + _fit_extra_host_pinned
+                    )
                     _fit_load_mode_kwargs = dict(
                         model_size = _fit_model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes
@@ -29158,9 +29163,7 @@ class LlamaCppBackend:
                         ),
                         # Host-only, not pooled: free VRAM cannot pay for a drafter
                         # -ngld 0 puts in RAM, the floors moved out above, or checkpoints.
-                        # A lazily read table is one of those host-pinned embeddings, but
-                        # stays mmap'd: lazy_read_bytes already takes it off the footprint,
-                        # so it leaves this term too rather than shrink the device share.
+                        # Less the lazily read share of those embeddings: it stays mmap'd.
                         host_only_bytes = max(
                             0,
                             (_cpu_draft_fit_bytes or 0)
@@ -29168,7 +29171,7 @@ class LlamaCppBackend:
                             + _fit_extra_host_pinned
                             + _draft_host_pinned
                             + _fit_extra_draft_pinned
-                            - min(_fit_lazy_bytes, _host_pinned + _fit_extra_host_pinned),
+                            - _fit_lazy_in_host_pinned,
                         )
                         + _ckpt_host_bytes,
                         # One lump on the layer path, where the graph buffer is
@@ -29201,7 +29204,7 @@ class LlamaCppBackend:
                         # launch's own -ngl.
                         extra_args = _fit_extras,
                         env = _fit_env,
-                        lazy_read_bytes = _fit_lazy_bytes,
+                        lazy_read_bytes = _fit_lazy_bytes - _fit_lazy_in_host_pinned,
                     )
                     _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
                     if _moe_cache_candidate:

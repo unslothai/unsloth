@@ -459,7 +459,7 @@ class TestCheckpointsNeverReachAVramFigure:
         compact = "".join(source.split())
         # Beside the CPU drafter and the host-pinned embeddings, never in a VRAM term.
         assert "host_only_bytes=max(0,(_cpu_draft_fit_bytesor0)" in compact
-        assert "_fit_extra_host_pinned),)+_ckpt_host_bytes," in compact
+        assert "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes," in compact
         assert "_kv_bytes(effective_ctx, _effective_ctx_checkpoints)" in source
         assert "- _kv_bytes(effective_ctx, 0)," in source
 
