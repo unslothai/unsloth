@@ -14,6 +14,9 @@ scikit-learn==1.8.0; sys_platform == "win32" and platform_machine == "ARM64"
 # Additional extras
 jiwer==4.0.0                     # WER/CER metrics for vision OCR save-merge benchmarks
 omegaconf==2.3.1
+# Imported only by Hub remote code (DeepSeek-OCR and DeepSeek-OCR-2 modeling files), so a
+# grep of this repo finds no user; without it those models fail to load (#8732).
+addict==2.4.0
 einx<0.4.3; sys_platform == "win32"
 # einx dropped 3.9 in 0.4.0, so the non-Windows pin splits at 3.10.
 einx==0.4.3; sys_platform != "win32" and python_version >= "3.10"
