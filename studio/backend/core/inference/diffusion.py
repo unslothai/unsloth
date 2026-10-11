@@ -3246,6 +3246,7 @@ class DiffusionBackend:
             in ("0", "false", "off", "no")
         ):
             return []
+        started = time.monotonic()
         try:
             from hub.utils.comfy_models import comfy_text_encoder_files
 
@@ -3303,9 +3304,10 @@ class DiffusionBackend:
             return []
         if picked:
             logger.info(
-                "diffusion.comfy_text_encoders: %s from the ComfyUI folder beside %s",
+                "diffusion.comfy_text_encoders: %s from the ComfyUI folder beside %s (%.1fs)",
                 ", ".join(os.path.basename(p) for p in picked),
                 gguf_filename,
+                time.monotonic() - started,
             )
         return picked
 
