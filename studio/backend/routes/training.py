@@ -969,6 +969,8 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
     if not base:
         return
     if is_local_path(base):
+        # A managed account may only reach bases in its own workspace or the shared cache.
+        account_path(base, shared_cache = True)
         # A base path inside the Hub cache is still that repository's cached weights.
         cached_ref = cached_repo_ref_for_path(base)
         if cached_ref is None:
@@ -979,6 +981,16 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
         _authorize_cache_fallback(base)
         repo_id, repo_type = canonical_model_repo_id(base), "model"
         is_cached = lambda: repo_cache_has_usable_snapshot("model", repo_id)  # noqa: E731
+        if hf_env_offline() and not is_cached():
+            raise _hf_preflight_error(
+                409,
+                "hf_model_not_cached_offline",
+                (
+                    "Offline mode is enabled, but this adapter's base model is not available "
+                    "in the local cache. Disable offline mode to download it before starting "
+                    "training."
+                ),
+            )
     if cached_read_refused(
         hf_token,
         repo_id = repo_id,

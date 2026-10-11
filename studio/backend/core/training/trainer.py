@@ -380,7 +380,13 @@ def _ignored_adapter_settings(
     requested_list = target_modules if isinstance(target_modules, (list, tuple)) else []
     wants_all_linear = target_modules == "all-linear" or "all-linear" in requested_list
     requested = [m for m in requested_list if m != "all-linear"]
-    if isinstance(saved_targets, (list, set, tuple)) and (requested or wants_all_linear):
+    if isinstance(saved_targets, str) and requested:
+        # Saved as "all-linear" or a PEFT regex: an explicit selection cannot narrow it.
+        ignored.append(
+            f"target modules {', '.join(sorted({leaf(m) for m in requested}))} "
+            f"(adapter has {saved_targets})"
+        )
+    elif isinstance(saved_targets, (list, set, tuple)) and (requested or wants_all_linear):
         saved_names = ", ".join(sorted({leaf(m) for m in saved_targets}))
         if wants_all_linear:
             ignored.append(f"all-linear targets (adapter has {saved_names})")

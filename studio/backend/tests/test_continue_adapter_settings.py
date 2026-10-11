@@ -93,9 +93,6 @@ def test_reports_targets_dropout_and_variant_kept_from_adapter():
 def test_matching_targets_and_all_linear_are_not_reported():
     ignored = _helper()
     assert ignored(_adapter(), 8, 16, None, target_modules = ["model.q_proj", "v_proj"]) == []
-    assert (
-        ignored(_adapter(target_modules = "all-linear"), 8, 16, None, target_modules = ["q_proj"]) == []
-    )
 
 
 def _tokenizer_loader(fake_auto, base):
@@ -168,3 +165,10 @@ def test_reports_all_linear_request_against_explicit_saved_targets():
     expected = ["all-linear targets (adapter has q_proj, v_proj)"]
     assert ignored(_adapter(), 8, 16, None, target_modules = ["all-linear"]) == expected
     assert ignored(_adapter(), 8, 16, None, target_modules = "all-linear") == expected
+
+
+def test_reports_explicit_targets_against_a_saved_all_linear_adapter():
+    ignored = _helper()(
+        _adapter(target_modules = "all-linear"), 8, 16, None, target_modules = ["q_proj"]
+    )
+    assert ignored == ["target modules q_proj (adapter has all-linear)"]

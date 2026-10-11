@@ -583,6 +583,49 @@ def test_start_checks_a_cache_path_base_named_by_a_local_adapter(tmp_path):
     assert refused.call_args.kwargs["repo_id"] == "org/private"
 
 
+def test_start_checks_a_local_base_against_the_account_workspace(tmp_path):
+    route = _load_route_module("training_route_adapter_base_workspace")
+    base = tmp_path / "other-account" / "base"
+    base.mkdir(parents = True)
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+
+    def guard(value, **kwargs):
+        if str(value) == str(base):
+            assert kwargs == {"shared_cache": True}
+            raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
+        return value
+
+    with patch.object(route, "account_path", side_effect = guard):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 403
+
+
+def test_offline_start_refuses_an_uncached_adapter_base(tmp_path):
+    route = _load_route_module("training_route_adapter_base_offline")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with (
+        patch.object(route, "hf_env_offline", return_value = True),
+        patch.object(route, "cached_read_refused", return_value = False),
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = False),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "hf_model_not_cached_offline"
+
+
 def test_adapter_trains_embeddings_reads_saved_modules():
     from core.training import worker
 
