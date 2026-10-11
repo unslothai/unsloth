@@ -103,7 +103,12 @@ def test_the_repo_readme_run_command_matches_the_image():
         f"them together; a second unpinned run command is how the README goes stale."
     )
     section = running[0]
-    assert "unsloth/unsloth:core" in section
+    # The run command starts `latest` (Studio). Notebook-only users need `core`, and this
+    # section is the only place the README tells them it exists.
+    assert "unsloth/unsloth:core" in section, (
+        "the README Docker section that runs the image no longer names the `unsloth/unsloth:core` "
+        "tag; keep a pointer to it for notebook-only users"
+    )
     assert "/workspace/host" in section
     assert "--ipc=host" in section
     for stale in ("2222:22", "/workspace/work"):
