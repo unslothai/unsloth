@@ -128,7 +128,6 @@ export interface NativeFileDropOptions {
   multiple?: boolean;
   /** Register under a policy other than the attachment one (datasets, models). */
   register?: (path: string) => Promise<NativeIntent>;
-  /** Browser drops: walk dropped folders and take the files inside them. */
   folders?: boolean;
 }
 

@@ -41,7 +41,6 @@ const Nothing = () => null;
 const Passthrough = ({ children }: { children?: React.ReactNode }) =>
   React.createElement(React.Fragment, null, children);
 
-// The real grouping, so the folder test checks what ships.
 const folderGroups = loadWithStubs<typeof FolderGroupsModule>(
   new URL("../src/features/rag/components/linked-folder-groups.ts", import.meta.url),
   { react: React, "../api/rag-api": { listLinkedFolders: async () => [] } },

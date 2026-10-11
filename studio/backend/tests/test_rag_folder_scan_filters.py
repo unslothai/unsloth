@@ -122,7 +122,6 @@ def test_scan_honours_root_and_nested_gitignore(source):
     report: dict[str, int] = {}
     found, _ = folder_sync._scan(str(source), report = report)
     assert set(found) == {"notes.md", "important.log", "pkg/kept.md", "local.md"}
-    # debug.log, the generated/ directory and pkg/local.md
     assert report["gitignored"] == 3
 
 

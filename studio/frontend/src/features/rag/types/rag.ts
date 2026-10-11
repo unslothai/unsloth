@@ -104,7 +104,6 @@ export interface LinkedFolder {
   error?: string | null;
   activeJobId?: string | null;
   createdAt?: string | null;
-  /** Counts the last pass left out on purpose. */
   skipped?: Partial<Record<LinkedFolderSkipReason, number>>;
   /** Files the last pass could not index (capped), and how many there were in all. */
   failures?: { path: string; error: string }[];

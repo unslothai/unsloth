@@ -4,7 +4,6 @@
 // Folders dropped or picked in the browser, flattened to their files. The desktop app links a
 // folder instead; the browser has no lasting handle to one, so it can only copy it in once.
 
-/** A folder upload past this many files is cut short with a warning. */
 export const MAX_FOLDER_FILES = 2000;
 
 // Same spirit as the linked-folder scan: dependency, VCS and cache trees, and hidden folders.
@@ -40,7 +39,6 @@ export interface FolderFiles {
   files: File[];
   /** Files left out past MAX_FOLDER_FILES; a dropped folder stops at the first, so reports 1. */
   truncated: number;
-  /** Whether any of the input was a folder. */
   hadFolder: boolean;
 }
 
