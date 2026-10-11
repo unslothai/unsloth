@@ -28997,7 +28997,10 @@ class LlamaCppBackend:
                 ):
                     gpu_fallback_warning = (
                         None
-                        if intent.cpu_fallback or _arch_gate_forced_cpu or _extras_cache is not None
+                        if intent.cpu_fallback
+                        or _arch_gate_forced_cpu
+                        or not _detected_gpus
+                        or _extras_cache is not None
                         else _kv_cache_gpu_fallback_warning(
                             cache_type_kv,
                             gpu_memory_mode,

@@ -62,6 +62,8 @@ def _write_minimal_gguf(path: Path) -> str:
     [
         # A ROCm build with no kernels for the GPU runs on the CPU, where iq4_nl is fine.
         ("iq4_nl", "arch_gated", None, None, ("iq4_nl", "iq4_nl")),
+        # A CUDA build that sees no GPU (masked, driver down) also runs on the CPU.
+        ("iq4_nl", "no_gpu", None, None, ("iq4_nl", "iq4_nl")),
         ("iq4_nl", None, None, ("iq4_nl", "auto", -1, True), ("q4_0", "q4_0")),
         ("IQ4_NL", None, None, ("iq4_nl", "auto", -1, True), ("q4_0", "q4_0")),
         ("q8_0", None, None, ("q8_0", "auto", -1, False), ("q8_0", "q8_0")),
@@ -76,6 +78,9 @@ def test_load_path_warns_only_for_its_own_cache_type(
     gguf = _write_minimal_gguf(tmp_path / "model.gguf")
     backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 10_000, 16_000)]
     arch_gated = extra_args == "arch_gated"
+    if extra_args == "no_gpu":
+        extra_args = None
+        backend._get_gpu_memory = lambda _binary = None, **_kw: []
     if arch_gated:
         extra_args = None
         backend._get_gpu_memory = lambda _binary = None, for_llama_server = False, **_kw: (
