@@ -15,7 +15,6 @@ masking_utils = pytest.importorskip("transformers.masking_utils")
 from unsloth.import_fixes import (  # noqa: E402
     _CHUNKED_MASK_PATCH_FLAG,
     _chunked_mask_rejects_block_sequence_ids,
-    _swap_function_references,
     fix_transformers_chunked_mask_block_sequence_ids,
 )
 
