@@ -5073,6 +5073,14 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	display: none;
 }
 
+.media-lightbox-overlay {
+	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 7%) 64%, transparent);
+}
+
+.dark .media-lightbox-overlay {
+	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 45%) 78%, transparent);
+}
+
 /* Video tabs: the clip sits on a soft brand-tinted band. */
 .browser-video-band {
 	background:
@@ -6040,6 +6048,15 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 
 .browser-file-page:has(.overflow-auto > table) {
 	padding-top: var(--browser-file-toolbar-inset);
+}
+
+.browser-file-page .browser-video {
+	padding-top: var(--browser-file-toolbar-inset);
+}
+
+/* Full screen leaves the bar behind, and the UA sheet keeps padding, so drop the inset there. */
+.browser-file-page .browser-video:fullscreen {
+	padding-top: 0;
 }
 
 /* Dark mode: the browser's tabs and controls a step lighter than the panel, their text brighter. */
