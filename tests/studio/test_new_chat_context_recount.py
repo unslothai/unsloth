@@ -396,6 +396,16 @@ const auiFixture: any = {
     switchToNewThread: async () => {
       world.switchedToNewThread += 1;
     },
+    // The runtime's main thread follows the store unless a test pins another one.
+    getState: () => ({ mainThreadId: world.mainThreadId ?? state.activeThreadId }),
+  }),
+  // The mounted main thread's visible branch: a test's live messages, else its stored records.
+  thread: () => ({
+    getState: () => ({
+      messages:
+        world.liveMessages?.[state.activeThreadId] ??
+        (world.storedMessages[state.activeThreadId] ?? []).map(storedMessageToRunMessage),
+    }),
   }),
   // The switch clears a staged attachment before moving on, so the composer has to
   // exist here: a missing one throws inside the effect and the recount below it
@@ -434,6 +444,7 @@ const recountDeps: any[] = [];
 
 export function renderThreadContextUsageRecount(props: any = {}): void {
   const enabled = props.enabled ?? true;
+  const aui = auiFixture;
   // Read through the store the way the component's selectors do.
   const activeThreadId = state.activeThreadId;
   const checkpoint = state.params.checkpoint;
@@ -442,6 +453,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
     activeThreadId,
+    aui,
     checkpoint,
     enabled,
     loadedContextLength,
@@ -2072,6 +2084,231 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
     assert (out["cached"] or {}).get("totalTokens") == 62
     assert out["counts"] == 1
     assert len(out["sent"]) == 2, "the thread's stored branch must be priced"
+
+
+@pytest.mark.parametrize(
+    ("picked", "saved_model", "expected"),
+    [
+        pytest.param(
+            "external::openai::gpt-x",
+            None,
+            {"totalTokens": 6, "estimated": True},
+            id = "cloud_model_estimates",
+        ),
+        pytest.param("", None, {"totalTokens": 6, "estimated": True}, id = "no_model_estimates"),
+        pytest.param(
+            "external::openai::gpt-x",
+            "external::openai::gpt-x",
+            {"totalTokens": 300, "estimated": None},
+            id = "cloud_model_restores_its_own_saved_usage",
+        ),
+        pytest.param(
+            "external::openai::gpt-x",
+            "unsloth/gguf-model",
+            {"totalTokens": 6, "estimated": True},
+            id = "another_models_saved_usage_is_not_restored",
+        ),
+    ],
+)
+def test_a_mounted_thread_revisited_without_a_countable_model_is_refilled(
+    picked, saved_model, expected
+):
+    """#10337: picking a cloud model (or none) wipes every thread's usage, and a chat already opened
+    this session never reruns the history loader, so switching back to it showed no bar at all."""
+    saved = (
+        f'{{ promptTokens: 280, completionTokens: 20, totalTokens: 300, cachedTokens: 0, modelId: "{saved_model}" }}'
+        if saved_model
+        else "undefined"
+    )
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            world.storedMessages["thread-a"] = [
+              {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hello there" }}], metadata: {{}} }},
+              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "general kenobi" }}],
+                metadata: {{ contextUsage: {saved} }} }},
+            ];
+            seed({{
+              activeThreadId: "thread-b",
+              contextUsage: {{ promptTokens: 700, completionTokens: 20, totalTokens: 720, cachedTokens: 0 }},
+              contextUsageByThreadId: {{
+                "thread-a": {{ promptTokens: 500, completionTokens: 10, totalTokens: 510, cachedTokens: 0 }},
+                "thread-b": {{ promptTokens: 700, completionTokens: 20, totalTokens: 720, cachedTokens: 0 }},
+              }},
+            }});
+            renderThreadContextUsageRecount();
+
+            // Both chats stay mounted; the user picks another model, then clicks back into thread-a.
+            useChatRuntimeStore.getState().setCheckpoint({json.dumps(picked)});
+            if (!{json.dumps(picked)}) seed({{ loadedContextLength: null }});
+            renderThreadContextUsageRecount();
+            useChatRuntimeStore.getState().setActiveThreadId("thread-a");
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            const after = snapshot();
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: after.contextUsage,
+              cached: after.contextUsageByThreadId["thread-a"] ?? null,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 0, "nothing can be counted exactly without a local model"
+    shown = out["contextUsage"] or {}
+    assert (
+        shown.get("totalTokens") == expected["totalTokens"]
+    ), "a revisited chat must show its stored usage or an estimate, not a blank bar"
+    assert shown.get("estimated") == expected["estimated"]
+    assert (out["cached"] or {}).get("totalTokens") == expected["totalTokens"]
+
+
+@pytest.mark.parametrize(
+    ("run_usage", "expected"),
+    [
+        ("null", {"totalTokens": 13, "estimated": True}),
+        (
+            "{ promptTokens: 40, completionTokens: 9, totalTokens: 49, cachedTokens: 0 }",
+            {"totalTokens": 49, "estimated": None},
+        ),
+    ],
+    ids = ["run_ends_without_usage", "run_reports_usage"],
+)
+def test_a_cloud_estimate_is_repriced_after_a_run_but_exact_usage_stays(run_usage, expected):
+    """A cancelled or failed cloud run, or a provider that omits usage, leaves the pre-run estimate
+    on the bar; the run ending must re-estimate the new turn, while a reported count is kept."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            world.storedMessages["thread-a"] = [
+              {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hello there" }}], metadata: {{}} }},
+              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "general kenobi" }}], metadata: {{}} }},
+            ];
+            seed({{ activeThreadId: "thread-a" }});
+            useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const before = snapshot().contextUsage;
+
+            seed({{ runningByThreadId: {{ "thread-a": true }} }});
+            renderThreadContextUsageRecount();
+            world.storedMessages["thread-a"].push(
+              {{ id: "m3", role: "user", createdAt: 3, content: [{{ type: "text", text: "and what about the moon then" }}], metadata: {{}} }},
+            );
+            const reported = {run_usage};
+            if (reported) useChatRuntimeStore.getState().setContextUsage(reported);
+            seed({{ runningByThreadId: {{}} }});
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{ before, after: snapshot().contextUsage }}));
+            """
+        )
+    )
+    assert (out["before"] or {}).get("totalTokens") == 6
+    after = out["after"] or {}
+    assert after.get("totalTokens") == expected["totalTokens"]
+    assert after.get("estimated") == expected["estimated"]
+
+
+@pytest.mark.parametrize("thread_id", ["thread-a", "__LOCALID_saved"])
+def test_the_cloud_refill_prices_the_mounted_branch_without_reading_storage(thread_id):
+    """The refill runs only for a mounted chat, whose runtime already holds the visible branch. A
+    storage read would 404 for a just-sent chat (Studio UI CI, IME smoke), and saved chats can carry
+    a runtime-minted __LOCALID_ id, so the id shape must not decide anything."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            let reads = 0;
+            const records = [
+              {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hello there" }}], metadata: {{}} }},
+              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "general kenobi" }}], metadata: {{}} }},
+            ];
+            world.liveMessages = {{ "{thread_id}": records.map((r) => ({{ ...r, createdAt: new Date(r.createdAt), metadata: {{ custom: {{}} }} }})) }};
+            world.storedMessages = new Proxy({{}}, {{ get() {{ reads += 1; return []; }} }});
+            seed({{ activeThreadId: "{thread_id}" }});
+            useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
+            renderThreadContextUsageRecount();
+            console.log(JSON.stringify({{ reads, contextUsage: snapshot().contextUsage }}));
+            """
+        )
+    )
+    assert out["reads"] == 0, "the mounted branch is in memory; nothing should hit storage"
+    assert (out["contextUsage"] or {}).get("totalTokens") == 6
+
+
+def test_the_cloud_refill_never_prices_another_mounted_thread():
+    """New Chat leaves the outgoing conversation mounted until the switch settles, so the runtime's
+    main thread can lag the store; pricing it then would put another chat's count on the bar."""
+    out = _run(
+        textwrap.dedent(
+            """
+            // @ts-nocheck
+            import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+            world.storedMessages["thread-a"] = [
+              { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hello there" }], metadata: {} },
+            ];
+            world.mainThreadId = "thread-b";
+            seed({ activeThreadId: "thread-a" });
+            useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
+            renderThreadContextUsageRecount();
+            console.log(JSON.stringify({ contextUsage: snapshot().contextUsage }));
+            """
+        )
+    )
+    assert out["contextUsage"] is None
+
+
+@pytest.mark.parametrize("interruption", ["run_active", "load_still_cancelling"])
+def test_a_cloud_refill_waits_for_a_run_or_load_to_settle(interruption):
+    """Nothing is published while a run or a model load is in flight (a cancelled local load clears
+    usage again after the external pick); both settling must re-fire the refill on the new branch."""
+    if interruption == "run_active":
+        interrupt = 'seed({ runningByThreadId: { "thread-a": true } });'
+        settle = """
+            world.storedMessages["thread-a"].push(
+              { id: "m3", role: "user", createdAt: 3, content: [{ type: "text", text: "and what about the moon then" }], metadata: {} },
+            );
+            seed({ runningByThreadId: {} });
+        """
+    else:
+        interrupt = "seed({ modelLoading: true });"
+        settle = "seed({ modelLoading: false, contextUsage: null, contextUsageByThreadId: {} });"
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            world.storedMessages["thread-a"] = [
+              {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hello there" }}], metadata: {{}} }},
+              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "general kenobi" }}], metadata: {{}} }},
+            ];
+            seed({{ activeThreadId: "thread-a" }});
+            useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
+            {interrupt}
+            renderThreadContextUsageRecount();
+            const during = snapshot().contextUsage;
+
+            {settle}
+            renderThreadContextUsageRecount();
+            console.log(JSON.stringify({{ during, after: snapshot().contextUsage }}));
+            """
+        )
+    )
+    assert out["during"] is None, "nothing may be published while a run or load is in flight"
+    expected = 13 if interruption == "run_active" else 6
+    assert (
+        (out["after"] or {}).get("totalTokens") == expected
+    ), "the refill must run again once the run or load settles, against the current branch"
 
 
 @pytest.mark.parametrize(

@@ -1659,6 +1659,17 @@ export const ar = {
         showAudioCppUpdates: "إشعارات تحديث audio.cpp",
         showAudioCppUpdatesDescription:
           "التنبيه عندما تحتاج بيئة تشغيل audio.cpp إلى تحديث لتشغيل صفحات الصوت. أوقف التشغيل إذا كنت لا تستخدم الصوت أبدًا.",
+        showUnslothUpdates: "إشعارات تحديث Unsloth",
+        showUnslothUpdatesDescription:
+          "الإشعار عند توفر إصدار أحدث من Unsloth للتثبيت.",
+        frequency: {
+          always: "دائمًا",
+          daily: "مرة يوميًا",
+          weekly: "مرة أسبوعيًا",
+          biweekly: "كل أسبوعين",
+          monthly: "مرة شهريًا",
+          off: "إيقاف",
+        },
       },
       startup: {
         sectionTitle: "بدء التشغيل",
@@ -2102,6 +2113,10 @@ export const ar = {
           "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
         mismatchUnavailable:
           "لا يستطيع PyTorch ({version}) تهيئة وحدات GPU أدناه، لذا لا يمكن استخدامها. تحقق من تعريف كرت الشاشة أو أصلح التثبيت.",
+        driverIdleEvict:
+          "يحتوي برنامج تشغيل AMD {version} على خلل معروف قد يؤدي إلى تجمّد Windows عندما تكون وحدة GPU من AMD خاملة، وغالبًا مع وجود أكثر من GPU. حدّث إلى Adrenalin 26.9.2 أو أحدث.",
+        driverIdleEvictDetails: "التفاصيل",
+        dismissNotice: "إغلاق",
         unusableDevice: "غير قابل للاستخدام",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
@@ -2890,9 +2905,9 @@ export const ar = {
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
-        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth Studio عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
+        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
         enable: "السماح باتصالات الوكلاء",
-        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Unsloth Studio.",
+        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Unsloth.",
         lockedByEnv: "مضبوط بواسطة {name}.",
         loadError: "تعذّر تحميل إعدادات وصول الوكلاء.",
         saveError: "تعذّر حفظ إعداد وصول الوكلاء.",
@@ -3809,6 +3824,13 @@ export const ar = {
     discard: "تجاهل",
     mentions: "المهارات",
     manage: "إدارة المهارات",
+    bulkActions: "إجراءات المهارات",
+    enableAll: "تفعيل الكل",
+    disableAll: "تعطيل الكل",
+    resetAll: "إعادة التعيين إلى الافتراضي",
+    resetTitle: "إعادة تعيين كل المهارات؟",
+    resetDescription: "تعود كل مهارة إلى حالتها في التثبيت الجديد: مهاراتك ومهارات Claude مفعّلة، والمهارات المضمّنة معطّلة. ستُمسح اختياراتك للتفعيل والتعطيل.",
+    reset: "إعادة التعيين",
   },
   library: {
     tabs: {
@@ -3980,6 +4002,7 @@ export const ar = {
       chatAboutThis: "الدردشة حول هذا",
       chatWithModel: "الدردشة مع هذا النموذج",
       addToFavorites: "إضافة إلى المفضلة",
+      regenerateTitle: "إعادة إنشاء العنوان",
       removeFromFavorites: "إزالة من المفضلة",
       download: "تنزيل",
       addToFolder: "إضافة إلى مجلد",

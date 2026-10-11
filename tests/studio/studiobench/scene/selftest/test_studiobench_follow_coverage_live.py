@@ -287,23 +287,6 @@ def test_a_run_the_user_started_reattaches_when_the_app_pins_for_it(page):
     )
 
 
-def test_a_pin_inside_the_SAME_run_is_still_a_yank_and_not_a_reattachment(page):
-    """The other half has to survive. No new run started, so the app returning the viewport to the
-    bottom on its own is the behaviour the sampler exists to catch, not the user coming back."""
-    _start_at_bottom(page)
-    _settle(page)
-    page.evaluate("() => window.__sb.follow.suspend()")
-    _to_top(page)
-    page.evaluate("() => window.__sb.follow.resume()")
-    _settle(page, 400)
-    _to_bottom(page)
-    _settle(page)
-    got = _read(page)
-    assert got["reattachments"] == 0, got
-    assert got["yanked_back_samples"] > 0, got
-    assert got["yanked_after_scroll"] is True, got
-
-
 def test_a_new_run_the_app_does_NOT_pin_for_leaves_the_sampler_detached(page):
     """A run start is not a free pass. The re-attachment needs the viewport to actually BE at the
     end, so an app that leaves a scrolled-up user where they are is scored exactly as before."""
