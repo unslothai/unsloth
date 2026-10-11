@@ -594,7 +594,9 @@ class TestEnsureFlashAttn:
         ):
             ips._ensure_flash_attn()
 
-        mock_probe.assert_called_once_with(include_windows = True)
+        mock_probe.assert_called_once_with(
+            timeout = ips._FLASH_ATTN_IMPORT_PROBE_TIMEOUT, include_windows = True
+        )
         assert mock_install_wheel.call_args.args[0] == url
 
     def test_windows_without_a_wheel_notes_it_quietly(self):

@@ -8393,7 +8393,11 @@ def _ensure_flash_attn() -> None:
         return
 
     # Windows resolves only to the wheels wheel_utils lists for it; nothing here falls back to a source build.
-    env = probe_torch_wheel_env(include_windows = True)
+    # Bounded there like the import probe above: a wedged `import torch` on a Windows driver must not hang setup.
+    env = probe_torch_wheel_env(
+        timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT if IS_WINDOWS else None,
+        include_windows = True,
+    )
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_available:
