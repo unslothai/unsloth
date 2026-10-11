@@ -549,6 +549,17 @@ def test_speed_max_gguf_without_block_compile_keeps_dequant_compile(monkeypatch)
     assert called == {"compiled_dequant": 1}
 
 
+def test_speed_max_gguf_whose_block_compile_fails_keeps_dequant_compile(monkeypatch):
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is False and applied["compiled_dequant"] is True
+    assert called == {"compiled_dequant": 1}
+
+
 def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
@@ -1998,6 +2009,14 @@ def test_settle_fallback_keeps_compiled_while_another_dit_still_compiles(monkeyp
     third.blocks[0](1)
     ds_mod.settle_compile_fallback(state, pipe)
     assert state.speed_optims == ("cuda_graph", "compile_fallback_eager")
+
+
+def test_settle_fallback_drops_a_dequant_compile_that_fell_back(monkeypatch):
+    monkeypatch.setattr(ds_mod.gguf_compile, "compile_error", lambda: "InductorError: hip_utils.c")
+    pipe = types.SimpleNamespace(transformer = _Dit([_Block(lambda x: x)]))
+    state = types.SimpleNamespace(speed_optims = ("compiled_dequant", "cudnn_benchmark"))
+    assert "hip_utils" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("cudnn_benchmark", "compile_fallback_eager")
 
 
 def test_settle_fallback_sees_a_modular_workflows_named_partition(monkeypatch):

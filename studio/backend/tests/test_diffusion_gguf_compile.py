@@ -96,6 +96,7 @@ def test_compile_failure_falls_back_to_eager():
     guarded = gc._guard(compiled, eager, logging.getLogger("t"))
     x = torch.ones(3)
     assert torch.equal(guarded(x), x * 2)
+    assert gc._compile_error.startswith("InductorError")
     assert torch.equal(guarded(x), x * 2)
     assert calls == ["compiled", "eager", "eager"]
 
@@ -127,6 +128,9 @@ def test_installed_dequant_survives_a_failing_compile(monkeypatch):
     plain = torch.arange(4, dtype = torch.float32)
     # A non-GGUF tensor goes through the stock function unchanged, so this compares to the original exactly.
     assert torch.equal(gguf_utils.dequantize_gguf_tensor(plain), orig(plain))
+    assert gc.compile_error().startswith("InductorError")
+    gc.uninstall_all()
+    assert gc.compile_error() is None
 
 
 class TestGgufTrimmedDimsAreRestored:

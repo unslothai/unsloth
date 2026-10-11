@@ -53,6 +53,7 @@ def _gguf_utils():
 
 
 _compiled_dequant_installed = False
+_compile_error: str | None = None
 _DEQUANT_ATTR = "dequantize_gguf_tensor"
 
 
@@ -60,10 +61,15 @@ def is_compiled_dequant_installed() -> bool:
     return _compiled_dequant_installed
 
 
+def compile_error() -> str | None:
+    """Why the installed compiled dequant now runs eager, or None while it still compiles."""
+    return _compile_error if _compiled_dequant_installed else None
+
+
 def install_compiled_dequant(logger: Any = None) -> bool:
     """Replace ``dequantize_gguf_tensor`` with ``torch.compile(orig, dynamic=True)`` via the patch
     backend. Idempotent. Returns True if the compiled dequant is in place, False otherwise."""
-    global _compiled_dequant_installed
+    global _compiled_dequant_installed, _compile_error
     if not _enabled(_ENV_COMPILE_DEQUANT):
         return False
     if _compiled_dequant_installed:
@@ -80,6 +86,7 @@ def install_compiled_dequant(logger: Any = None) -> bool:
         # correctly reject.
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
+            _compile_error = None
             return True
         return False
     except Exception as exc:  # noqa: BLE001 - optimisation only
@@ -103,7 +110,11 @@ def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
 
                 if not is_compile_failure(exc):
                     raise
+                global _compile_error
                 failed.append(type(exc).__name__)
+                _compile_error = (
+                    f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[:300]
+                )
                 # The handled exception pins inductor's frames through the eager retry.
                 exc.__traceback__ = None
                 _warn(logger, "compiled dequant (running eager)", exc)

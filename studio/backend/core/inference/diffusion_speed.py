@@ -580,8 +580,10 @@ def apply_speed_optims(
                 onload_device = _onload_device(target) if stream_int8_gemm else None,
                 filter_reductions = filter_reductions,
             )
-        elif _gguf_dequant_compilable(is_gguf, on_cuda, family_allows_compile):
-            # No block compile here (ROCm): max keeps default's dequant compile rather than running slower than default.
+        if not applied["compiled"] and _gguf_dequant_compilable(
+            is_gguf, on_cuda, family_allows_compile
+        ):
+            # No block compile (ROCm, or its setup failed): keep default's dequant compile rather than run slower.
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
 
     if applied["compiled"]:
@@ -1457,7 +1459,8 @@ def settle_compile_fallback(
     the recorded failure, or None when nothing fell back."""
     dit_error = compile_fallback_error(pipe)
     vae_error = _vae_compile_error(getattr(pipe, "vae", None))
-    fallback = dit_error or vae_error
+    dequant_error = gguf_compile.compile_error()
+    fallback = dit_error or vae_error or dequant_error
     if not fallback:
         return None
     optims = tuple(getattr(state, "speed_optims", None) or ())
@@ -1470,6 +1473,8 @@ def settle_compile_fallback(
         updated.remove("compiled")
     if vae_error and "compiled_vae_decode" in updated:
         updated.remove("compiled_vae_decode")
+    if dequant_error and "compiled_dequant" in updated:
+        updated.remove("compiled_dequant")
     if tuple(updated) != optims:
         # The load states are frozen dataclasses; the status must still reflect what actually runs.
         object.__setattr__(state, "speed_optims", tuple(updated))
