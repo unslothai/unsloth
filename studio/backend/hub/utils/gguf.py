@@ -80,7 +80,7 @@ _GGUF_QUANT_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
     re.IGNORECASE,
@@ -273,15 +273,18 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
             continue
         if quant in _FLOAT_PRECISION_QUANTS:
             # The list leaves out quants such as Q4_0, Q3_K and TQ1_0; the first listed of them still beats full precision.
-            filename = next(
-                (
-                    name
-                    for name in by_quant.values()
-                    if (token := extract_quant_token(name))
-                    and token.upper() not in _FLOAT_PRECISION_QUANTS
-                ),
-                filename,
-            )
+            quantized = [
+                name
+                for name in by_quant.values()
+                if (token := extract_quant_token(name))
+                and token.upper() not in _FLOAT_PRECISION_QUANTS
+            ]
+            loadable = [
+                name
+                for name in quantized
+                if not _FORK_ONLY_QUANT_RE.match(extract_quant_token(name))
+            ]
+            filename = next(iter(loadable or quantized), filename)
         return filename
     return gguf_files[0]
 
@@ -292,6 +295,8 @@ def _gguf_stem(filename: str) -> str:
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
+# prism-ml's PQ2_0 / PTQ1_0 are ggml types only its llama.cpp fork defines; the bundled build rejects them (#11259).
+_FORK_ONLY_QUANT_RE = re.compile(r"PT?Q[0-9]", re.IGNORECASE)
 
 
 def _select_quant_match(text: str) -> Optional[re.Match]:

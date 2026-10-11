@@ -431,6 +431,7 @@ class TestExtractQuantToken:
         assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-PQ2_0.gguf") == "PQ2_0"
         assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0.gguf") == "Q2_0"
         assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0_g64.gguf") == "Q2_0_g64"
+        assert gguf.extract_quant_token("Ternary-Bonsai-27B-Q2_g64.gguf") == "Q2_g64"
         assert gguf.extract_quant_token("Ternary-Bonsai-2-27B-PTQ1_0.gguf") == "PTQ1_0"
 
     def test_precision_infix_variants_do_not_collapse(self):
@@ -518,6 +519,33 @@ def test_pick_best_gguf_prefers_an_unlisted_quant_only_over_full_precision():
     assert gguf.pick_best_gguf(["model-bf16.gguf", "model-Q3_K.gguf"]) == "model-Q3_K.gguf"
     assert gguf.pick_best_gguf(["model-F32.gguf", "model-bf16.gguf"]) == "model-bf16.gguf"
     assert gguf.pick_best_gguf(["model-APEX.gguf", "model-Q4_0.gguf"]) == "model-APEX.gguf"
+
+
+def test_pick_best_gguf_skips_fork_only_packs_when_a_loadable_quant_exists():
+    # prism-ml/Ternary-Bonsai-27B-gguf, largest first as the variant listing orders it: the
+    # bundled llama.cpp rejects PQ2_0 (ggml type 142) and reads the group-64 Q2_g64 (#11259).
+    assert (
+        gguf.pick_best_gguf(
+            [
+                "Ternary-Bonsai-27B-F16.gguf",
+                "Ternary-Bonsai-27B-PQ2_0.gguf",
+                "Ternary-Bonsai-27B-Q2_g64.gguf",
+                "Ternary-Bonsai-27B-Q2_0.gguf",
+            ]
+        )
+        == "Ternary-Bonsai-27B-Q2_g64.gguf"
+    )
+    # Ternary-Bonsai-2-27B has nothing else quantized; its F16 needs the fork too, so keep the pack.
+    assert (
+        gguf.pick_best_gguf(
+            [
+                "Ternary-Bonsai-2-27B-F16.gguf",
+                "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+                "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+            ]
+        )
+        == "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+    )
 
 
 def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, monkeypatch):
