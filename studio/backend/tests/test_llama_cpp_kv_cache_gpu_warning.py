@@ -167,5 +167,4 @@ def test_load_path_warns_only_for_its_own_cache_type(
         idx = [i for i, a in enumerate(argv) if a == flag]
         return argv[idx[-1] + 1] if idx else None
 
-    # iq4_nl runs its attention on the CPU of a CUDA launch; q4_0 is the same size (#10336).
     assert (last("--cache-type-k"), last("--cache-type-v")) == launched
