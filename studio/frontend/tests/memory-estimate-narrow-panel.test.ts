@@ -174,11 +174,11 @@ test("memory figures are keyboard targets with the full value as their name", ()
 });
 
 test("breakdown captions preserve word groups", () => {
-  assert.ok(
-    render({ expanded: true }).includes(
-      glueNoteItems(`f16 · ${(262144).toLocaleString()} tokens · 4 slots`),
-    ),
+  const caption = glueNoteItems(
+    `f16 · ${(262144).toLocaleString()} tokens · 4 slots`,
   );
+  // Escaped like the markup, since some locales group digits with an apostrophe.
+  assert.ok(render({ expanded: true }).includes(renderToStaticMarkup(caption)));
 });
 
 test("an item's own spaces do not break", () => {
@@ -224,6 +224,7 @@ test("gluing round-trips the note the row actually builds", () => {
     nParallel: 4,
     kvOnGpu: false,
   });
-  // Only whitespace changes.
-  assert.equal(glueNoteItems(note).replace(new RegExp(NBSP, "g"), " "), note);
+  // Only whitespace changes. Some locales already group digits with a no-break space.
+  const spaced = (text: string) => text.replace(new RegExp(NBSP, "g"), " ");
+  assert.equal(spaced(glueNoteItems(note)), spaced(note));
 });
