@@ -90,3 +90,13 @@ def test_yarn_inv_freq_under_meta_device_context():
         inv_freq, attention_scaling = _compute_config_rope_inv_freq(config, rope)
     assert inv_freq is not None and inv_freq.device.type == "cpu"
     assert attention_scaling > 1.0
+
+
+def test_user_rope_scaling_keeps_an_existing_yarn_window():
+    from unsloth.models.llama import _user_rope_scaling
+
+    config = _qwen2_config()
+    config.rope_scaling = {**YARN, "rope_theta": ROPE_THETA}
+    config.max_position_embeddings = 131072
+    scaling = _user_rope_scaling(config, {"rope_type": "yarn", "factor": 8.0})
+    assert scaling["original_max_position_embeddings"] == 32768

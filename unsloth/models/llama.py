@@ -1864,7 +1864,12 @@ def _user_rope_scaling(config, rope_scaling):
         scaling["rope_type"] = scaling["type"]
     # Pin YaRN's pretraining window to the checkpoint's, before max_position_embeddings is widened.
     if scaling.get("rope_type") == "yarn" and "original_max_position_embeddings" not in scaling:
-        scaling["original_max_position_embeddings"] = config.max_position_embeddings
+        existing = _rope_scaling_as_dict(
+            getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
+        )
+        scaling["original_max_position_embeddings"] = (
+            existing.get("original_max_position_embeddings") or config.max_position_embeddings
+        )
     if isinstance(getattr(config, "rope_parameters", None), dict) and "rope_theta" not in scaling:
         scaling["rope_theta"] = _get_rope_theta(config)
     return scaling
@@ -2952,6 +2957,12 @@ class FastLlamaModel:
         if max_seq_length is None:
             max_seq_length = model_max_seq_length
 
+        if rope_scaling is not None and model_config.model_type in ("gemma", "gemma2"):
+            # GemmaFixedRotaryEmbedding ignores config scaling, so vLLM and training would disagree.
+            logger.warning_once(
+                f"Unsloth: `rope_scaling` is not supported for {model_config.model_type} and is ignored."
+            )
+            rope_scaling = None
         if rope_scaling is not None:
             # On the config for the in-process load and in kwargs for load_vllm, else vLLM keeps the
             # checkpoint's RoPE and indexes past its cos/sin cache (#3083).
