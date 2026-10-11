@@ -550,6 +550,20 @@ def test_ods_does_not_expand_empty_repeats(tmp_path):
     assert _text(build_ods(tmp_path / "sheet.ods")) == "Sheet: Revenue\nRegion | Q | Q\nZebramarker"
 
 
+def test_ots_template_is_streamed_like_ods(tmp_path, monkeypatch):
+    calls = []
+    real = office_formats._ods_streamed
+    monkeypatch.setattr(office_formats, "_ods_streamed", lambda *a: calls.append(1) or real(*a))
+    path = _odf(
+        tmp_path / "plan.ots",
+        '<office:spreadsheet><table:table table:name="S"><table:table-row>'
+        "<table:table-cell><text:p>Zebramarker</text:p></table:table-cell>"
+        "</table:table-row></table:table></office:spreadsheet>",
+    )
+    assert "Zebramarker" in _text(path)
+    assert calls == [1]
+
+
 def test_ods_keeps_the_width_of_empty_runs_before_content(tmp_path):
     path = _odf(
         tmp_path / "gaps.ods",
