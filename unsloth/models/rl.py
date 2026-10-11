@@ -4437,6 +4437,34 @@ def _align_vlm_text_config(model):
     return restore
 
 
+def _hold_peft_requires_grad(model):
+    # TRL's VLM branch calls requires_grad_ on the model, its text model and LM head: under LoRA that would train
+    # the base (and raises on 4-bit weights), so make those calls no-ops while TRL's init runs.
+    from transformers import PreTrainedModel
+
+    if not hasattr(model, "peft_config"):
+        return lambda: None
+    targets = {id(model): model}
+    for module in model.modules():
+        if isinstance(module, PreTrainedModel):
+            targets[id(module)] = module
+    try:
+        head = model.get_output_embeddings()
+        if isinstance(head, torch.nn.Module):
+            targets[id(head)] = head
+    except Exception:
+        pass
+    held = [m for m in targets.values() if "requires_grad_" not in vars(m)]
+    for module in held:
+        module.requires_grad_ = functools.partial(lambda m, *args, **kwargs: m, module)
+
+    def restore():
+        for module in held:
+            vars(module).pop("requires_grad_", None)
+
+    return restore
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
@@ -4505,13 +4533,14 @@ def patch_trl_async_grpo():
             if isinstance(model, torch.nn.Module) and hasattr(model, "peft_config")
             else None
         )
-        restore_text_config = (
-            _align_vlm_text_config(model) if isinstance(model, torch.nn.Module) else (lambda: None)
-        )
+        is_module = isinstance(model, torch.nn.Module)
+        restore_text_config = _align_vlm_text_config(model) if is_module else (lambda: None)
+        restore_requires_grad = _hold_peft_requires_grad(model) if is_module else (lambda: None)
         try:
             try:
                 original_init(self, model, *args, **kwargs)
             finally:
+                restore_requires_grad()
                 restore_text_config()
             if trainable is not None:
                 for p in model.parameters():

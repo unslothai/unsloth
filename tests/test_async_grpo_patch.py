@@ -44,6 +44,7 @@ NAMES = (
     "_text_prepended_position_ids",
     "_packing_honored",
     "_align_vlm_text_config",
+    "_hold_peft_requires_grad",
     "patch_trl_async_grpo",
 )
 
@@ -509,4 +510,33 @@ def test_vlm_text_config_left_alone_when_identity_already_holds():
     restore = ns["_align_vlm_text_config"](model)
     assert "get_text_config" not in vars(top)
     assert model.config.get_text_config() is language_model.config
+    restore()
+
+
+def test_peft_requires_grad_calls_are_held_during_init():
+    ns = _load()
+    model, _, language_model = _vlm(copy_text_config = True)
+    model.peft_config = {"default": object()}
+    model.requires_grad_(False)
+    for p in model.lm_head.parameters():
+        p.requires_grad_(False)
+    restore = ns["_hold_peft_requires_grad"](model)
+    # What TRL's VLM branch does: unfreeze the text model and LM head.
+    model.requires_grad_(False)
+    language_model.requires_grad_(True)
+    model.get_output_embeddings().requires_grad_(True)
+    assert not any(p.requires_grad for p in model.parameters())
+    restore()
+    assert all("requires_grad_" not in vars(m) for m in model.modules())
+    language_model.requires_grad_(True)
+    assert all(p.requires_grad for p in language_model.parameters())
+
+
+def test_non_peft_requires_grad_is_untouched():
+    ns = _load()
+    model, _, language_model = _vlm(copy_text_config = True)
+    restore = ns["_hold_peft_requires_grad"](model)
+    model.requires_grad_(False)
+    language_model.requires_grad_(True)
+    assert all(p.requires_grad for p in language_model.parameters())
     restore()
