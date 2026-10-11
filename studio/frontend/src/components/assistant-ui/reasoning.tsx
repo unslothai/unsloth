@@ -555,6 +555,15 @@ function ReasoningTail({
         data-slot="reasoning-tail"
         data-capped={capped ? "" : undefined}
         data-overflowing={clipped ? "" : undefined}
+        onFocus={(event) => {
+          // Clipped lines cannot scroll into view: a link focused up there shows the full trace.
+          if (
+            clipped &&
+            event.target.getBoundingClientRect().top <
+              event.currentTarget.getBoundingClientRect().top
+          )
+            onShowFull();
+        }}
         className={cn(
           capped &&
             "flex max-h-[min(18rem,40vh)] flex-col justify-end overflow-hidden [&>*]:shrink-0",

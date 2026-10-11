@@ -76,6 +76,18 @@ test("Show full hands keyboard focus to the block header before its button unmou
   assert.match(tail, /focus-visible:ring-1 focus-visible:ring-ring/);
 });
 
+test("focus landing in the clipped lines lifts the cap instead of staying invisible", () => {
+  const tail = reasoning.slice(
+    reasoning.indexOf("function ReasoningTail("),
+    reasoning.indexOf("// With the fold preference on"),
+  );
+  // Links in the clipped top stay in the tab order; nothing can scroll them into the box.
+  assert.match(
+    tail,
+    /onFocus=\{\(event\) => \{[\s\S]*?clipped &&[\s\S]*?event\.target\.getBoundingClientRect\(\)\.top <\s*event\.currentTarget\.getBoundingClientRect\(\)\.top[\s\S]*?onShowFull\(\);/,
+  );
+});
+
 test("a bounded transcript corrects nothing through the thread and mounts the tail", () => {
   assert.match(transcript, /!bounded &&\s*virtualizer\.scrollElement !== null/);
   assert.match(transcript, /if \(passage && !bounded\)\s*adjustAbove/);
