@@ -33063,6 +33063,7 @@ class LlamaCppBackend:
                             cmd,
                             _retry_rows,
                             env,
+                            shared_gpu_ids = _shared_gpu_ids,
                             host_only_bytes = _host_pinned_floor,
                             additional_host_only_bytes = (
                                 (_cpu_draft_fit_bytes or 0) + _draft_host_pinned_floor
@@ -33371,6 +33372,7 @@ class LlamaCppBackend:
                                     cmd,
                                     _retry_rows,
                                     env,
+                                    shared_gpu_ids = _shared_gpu_ids,
                                     host_only_bytes = _host_pinned_floor,
                                     additional_host_only_bytes = (
                                         (_cpu_draft_fit_bytes or 0) + _draft_host_pinned_floor
