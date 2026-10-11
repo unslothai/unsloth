@@ -68,7 +68,7 @@ const paneDecisionBody = new AsyncFunction(
   "paneEngine",
   "validation",
   "deps",
-  `const { sel, compareModelDisplayName, confirmManagedEngineIfNeeded, validatePane,
+  `const { sel, compareModelDisplayName, confirmManagedEngineIfNeeded, validateModel, panePayload,
      throwIfCompareCancelled, compareSignal, ownConfig, reconcilePersistedGpuIds } = deps;
    let paneEngineFields = { engine: paneEngine };
    ${composer.slice(paneStart, paneEnd)}
@@ -92,7 +92,8 @@ async function paneDecision(
       asked.push([model, offer]);
       return choice;
     },
-    validatePane: async () => {
+    panePayload: () => ({}),
+    validateModel: async () => {
       revalidated += 1;
       return { managed_engine_offer: null, revalidated: true };
     },

@@ -1776,7 +1776,7 @@ export function SharedComposer({
           effectiveMaxSeqLength,
         );
         // Re-run as the engine the offer dialog picks, so its settings are checked before /load.
-        const validatePane = () => validateModel({
+        const panePayload = () => ({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
           max_seq_length: compareMaxSeqLength,
@@ -1821,8 +1821,10 @@ export function SharedComposer({
                 ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
-        }, { signal: compareSignal });
-        const validation = await validatePane();
+        });
+        const validation = await validateModel(panePayload(), {
+          signal: compareSignal,
+        });
         throwIfCompareCancelled(compareSignal);
         // Same offer as the primary picker: the default engine cannot run it (#8861).
         const engineOffer =
@@ -1855,7 +1857,10 @@ export function SharedComposer({
                 }
               : {}),
           };
-          Object.assign(validation, await validatePane());
+          Object.assign(
+            validation,
+            await validateModel(panePayload(), { signal: compareSignal }),
+          );
           throwIfCompareCancelled(compareSignal);
         }
         // Upgrade dialog first (mirrors the primary load path).
