@@ -500,7 +500,7 @@ export function DiffusionTrainPanel({
   // Periodic resume points. 0 (off) keeps the default: only a stop-and-save writes one, so nothing
   // is spent on disk unless asked.
   const [saveSteps, setSaveSteps] = useState(0);
-  // How many periodic checkpoints stay on disk; 0 keeps every one. The backend default is 2.
+  // 0 keeps every checkpoint; backend default 2.
   const [saveTotalLimit, setSaveTotalLimit] = useState(2);
   // LR schedule. Warmup applies only to non-constant schedules. Seeded from the family, which is
   // where the flow-matching DiTs' short ramp comes from.
@@ -508,7 +508,6 @@ export function DiffusionTrainPanel({
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
-  // Opt-in: a mirrored sample teaches text, logos and one-sided features in both orientations.
   const [randomFlip, setRandomFlip] = useState(false);
   // Only the DiT loops read it, and MiniMax-H3 refuses it: it has no unconditional branch to train.
   const [cfgDropout, setCfgDropout] = useState(0);

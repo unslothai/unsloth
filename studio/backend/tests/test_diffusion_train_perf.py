@@ -58,7 +58,6 @@ def _cfg(**kw) -> DiffusionLoraConfig:
 
 # ── _plan_cache_variants (pure, seed-deterministic) ───────────────────────────
 def test_random_flip_is_opt_in():
-    # Every other trainer's flip is opt-in; on by default it mirrored text and one-sided features in half the samples.
     assert DiffusionLoraConfig.random_flip is False
     req = DiffusionTrainingStartRequest(base_model = _SDXL, data_dir = "d", output_dir = "o")
     assert req.random_flip is False

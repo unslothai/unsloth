@@ -1569,9 +1569,7 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
     return None
 
 
-# A request can carry values the H3 loop does not run (several are defaults), so they are normalised rather than refused
-# (which would 422 every untouched request): one centre cover-crop, nothing flipped, a plain unweighted MSE, and exactly
-# one cached tuple.
+# Normalised, not refused: several are request defaults, refusing would 422 every untouched request.
 _H3_FIXED_RECIPE: dict[str, Any] = {
     "center_crop": True,
     "random_flip": False,

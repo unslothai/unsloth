@@ -608,15 +608,11 @@ export interface DiffusionTrainingStartRequest {
   seed?: number;
   mixed_precision?: "bf16" | "fp16" | "no";
   gradient_checkpointing?: boolean;
-  // Left-right mirror augmentation. Off when omitted.
   random_flip?: boolean;
   // Chance of training a sample on the empty prompt (DiT families; MiniMax-H3 refuses it). 0 when omitted.
   cfg_dropout?: number;
-  // PEFT dropout on the LoRA input, every family. 0 when omitted.
   lora_dropout?: number;
-  // Flow-matching timestep shift (not sdxl): a number, or "auto" for the family's inference schedule. Omitted =
-  // the family default (auto for qwen-image / ltx-2 / minimax-h3, the model's own schedule otherwise). The Train tab
-  // sends only a number.
+  // Not sdxl. "auto" = family inference schedule; omitted = family default.
   flow_shift?: number | "auto";
   lr_scheduler?: string;
   lr_warmup_steps?: number;
