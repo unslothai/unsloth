@@ -490,7 +490,12 @@ def prepare_for_training_mode(f):
         # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
             if _was_training is False:
+                # Mode only: a UNSLOTH_RETURN_LOGITS=1 set before the next train() must survive (#3071).
+                _logits_env = [(_k, os.environ.get(_k)) for _k in ("UNSLOTH_RETURN_LOGITS", "_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE")]
                 self.model.for_inference()
+                for _k, _v in _logits_env:
+                    if _v is None: os.environ.pop(_k, None)
+                    else: os.environ[_k] = _v
             elif _was_training is True and hasattr(self.model, "for_training"):
                 self.model.for_training(use_gradient_checkpointing=use_gc)
         # Reset gradient checkpointing buffers to free memory while staying ready for next run

@@ -154,3 +154,42 @@ def test_trainer_init_leaves_the_flag_for_train(fbm, monkeypatch):
     os.environ[FLAG] = "1"
     fbm.for_training(model)
     assert os.environ[FLAG] == "1"
+
+
+def _prepare_for_training_mode():
+    tree = ast.parse((MODELS / "rl.py").read_text(encoding = "utf-8"))
+    template = next(
+        n.value.value
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "RLTrainer_replacement" for t in n.targets)
+    )
+    lines = template.splitlines()
+    start = lines.index("def prepare_for_training_mode(f):")
+    end = lines.index("    return wrapper", start)
+    namespace = _Namespace(os = os, functools = __import__("functools"))
+    exec("\n".join(lines[start : end + 1]).format(), namespace)
+    return namespace["prepare_for_training_mode"]
+
+
+def test_flag_set_between_two_train_calls_is_kept(fbm):
+    model = _Model()
+    model.for_inference = lambda: fbm.for_inference(model)
+    model.for_training = lambda use_gradient_checkpointing = None: fbm.for_training(model)
+    seen = []
+
+    class _Trainer:
+        args = types.SimpleNamespace(gradient_checkpointing = False)
+
+        def train(self):
+            seen.append(os.environ.get(FLAG))
+
+    trainer = _Trainer()
+    trainer.model = model
+    train = _prepare_for_training_mode()(_Trainer.train)
+    model.eval()
+    train(trainer)
+    assert model.training is False
+    os.environ[FLAG] = "1"
+    train(trainer)
+    assert seen == ["0", "1"]
