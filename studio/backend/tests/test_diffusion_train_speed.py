@@ -70,7 +70,6 @@ def test_resuming_an_8bit_bundle_rebuilds_adamw8bit(fake_bnb, factory):
 
 
 def test_8bit_resume_on_xpu_falls_back_to_torch_adamw(fake_bnb, monkeypatch):
-    # XPU: refused later by restore_resume_state with a readable message.
     monkeypatch.setattr(dtc, "bitsandbytes_optimizer_supported", lambda: False)
     opt = make_lora_optimizer(_params(), 1e-4, BNB_KEY)
     assert type(opt) is torch.optim.AdamW
@@ -197,8 +196,7 @@ def test_a_fused_bundle_resumed_under_the_fp32_override_stays_non_fused(run_dir,
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "fused AdamW needs CUDA")
 def test_a_non_fused_bundle_resumes_into_fused_adamw(run_dir, monkeypatch):
-    # A plain AdamW bundle (fp32 override, or written on a CPU / MPS / XPU host) keeps its step on the CPU;
-    # the fused kernel needs it on the param's device.
+    # A plain AdamW bundle keeps its step on the CPU; the fused kernel needs it on the param's device.
     torch.manual_seed(0)
     model = torch.nn.Linear(4, 4, bias = False).cuda()
     plain = torch.optim.AdamW(model.parameters(), lr = 1e-3)
@@ -233,7 +231,6 @@ def test_old_8bit_bundle_resumes_and_continues_identically(run_dir, monkeypatch)
 
     def _model():
         torch.manual_seed(0)
-        # Above bitsandbytes' min_8bit_size, so the moments really are 8-bit.
         return torch.nn.Linear(128, 64, bias = False).cuda()
 
     def _step(model, opt, i):
@@ -380,7 +377,6 @@ def test_checkpoint_modes_match_uncheckpointed_grads(mode, monkeypatch):
 
 
 def _fake_zoo_helper(monkeypatch):
-    # A stand-in unsloth_zoo.block_checkpointing, so these tests do not depend on the installed zoo release.
     import sys
     import types
 
@@ -419,7 +415,6 @@ def test_checkpointing_falls_back_to_every_block_without_the_zoo_helper(monkeypa
             seen["func"] = gradient_checkpointing_func
 
     monkeypatch.setenv(dtc.GC_MODE_ENV, "partial")
-    # An unsloth_zoo without the helper: every block through the diffusers hook.
     monkeypatch.setitem(sys.modules, "unsloth_zoo.block_checkpointing", None)
     assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == "plain"
     assert seen["func"].keywords == {"use_reentrant": False}

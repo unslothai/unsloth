@@ -2694,8 +2694,7 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
             self.assertTrue(self._probe()())
 
     def test_diffusion_factories_skip_bnb_on_xpu_and_keep_it_elsewhere(self):
-        """Fresh runs build torch AdamW everywhere; AdamW8bit is only rebuilt to resume a bundle
-        it wrote, and never on XPU, where it would die at the first step."""
+        """torch AdamW everywhere; AdamW8bit only to resume its own bundle, never on XPU."""
         import torch
 
         import core.training.diffusion_dit_trainer as dit_mod

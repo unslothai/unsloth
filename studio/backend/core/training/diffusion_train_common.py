@@ -835,9 +835,7 @@ GC_EVERY_N_ENV = "UNSLOTH_DIFFUSION_GC_EVERY_N"
 
 
 def enable_diffusion_gradient_checkpointing(model: Any, mode: Optional[str] = None) -> str:
-    """Mode "plain" checkpoints every block; "partial" every Nth (UNSLOTH_DIFFUSION_GC_EVERY_N, default 2): fewer
-    recomputes, more VRAM. Selective / CPU-offloaded checkpointing were slower or numerically different under
-    regional compile."""
+    """ "plain" checkpoints every block, "partial" every Nth; selective / CPU-offloaded were slower or diverged under regional compile."""
     mode = (mode or os.environ.get(GC_MODE_ENV, "") or "plain").strip().lower()
     every_n = 1
     if mode == "partial":
@@ -848,7 +846,6 @@ def enable_diffusion_gradient_checkpointing(model: Any, mode: Optional[str] = No
     try:
         from unsloth_zoo.block_checkpointing import enable_block_gradient_checkpointing
     except ImportError:
-        # unsloth_zoo older than the helper: every block, the default, through the diffusers hook.
         import functools
 
         import torch.utils.checkpoint as _ckpt
@@ -866,10 +863,7 @@ def make_lora_optimizer(
     lr: float,
     resume_optimizer_class: Optional[str] = None,
 ) -> Any:
-    """torch AdamW, fused on CUDA. Not AdamW8bit: its step() syncs the device once per parameter.
-
-    AdamW8bit only to resume a bundle it wrote (state1/state2 do not load into torch AdamW).
-    bitsandbytes is checked first: on XPU it builds fine and dies at the first step()."""
+    """torch AdamW (AdamW8bit step() syncs per parameter); AdamW8bit only to resume its own bundle, never on XPU (dies at step())."""
     import torch
 
     if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
@@ -2122,8 +2116,7 @@ def restore_resume_state(
             optimizer_state.get("param_groups") if isinstance(optimizer_state, dict) else None
         )
         if isinstance(saved_groups, list) and len(saved_groups) == len(kernels):
-            # torch places each "step" by the SAVED group's fused flag: a non-fused bundle keeps it on the CPU,
-            # which the fused kernel rejects at the first step.
+            # torch places "step" by the SAVED fused flag: non-fused bundles keep it on CPU, which fused rejects.
             optimizer_state = {
                 **optimizer_state,
                 "param_groups": [{**g, **kept} for g, kept in zip(saved_groups, kernels)],
