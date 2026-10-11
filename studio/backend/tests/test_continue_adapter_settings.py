@@ -158,3 +158,7 @@ def test_non_adapter_tokenizer_failure_is_not_masked(monkeypatch):
 
     with pytest.raises(OSError):
         load("/models/broken-adapter", None)
+
+
+def test_reports_loftq_request_on_a_continued_adapter():
+    assert _helper()(_adapter(), 8, 16, None, use_loftq = True) == ["LoftQ initialization"]

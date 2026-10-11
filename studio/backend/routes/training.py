@@ -959,18 +959,31 @@ def _refuse_multimodal_adapter_continuation(request: TrainingStartRequest) -> No
 def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
     """A continued adapter also loads the base it names. Check that base the way the adapter
     was checked, or a public adapter could open a private base from the shared cache (#13140)."""
-    from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
+    from hub.utils.hf_cache_state import (
+        cached_repo_ref_for_path,
+        repo_cache_has_usable_snapshot,
+    )
     from utils.models.model_config import get_base_model_from_lora_identifier
 
     base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
-    if not base or is_local_path(base):
+    if not base:
         return
-    _authorize_cache_fallback(base)
-    repo_id = canonical_model_repo_id(base)
+    if is_local_path(base):
+        # A base path inside the Hub cache is still that repository's cached weights.
+        cached_ref = cached_repo_ref_for_path(base)
+        if cached_ref is None:
+            return
+        repo_id, repo_type = cached_ref
+        is_cached = lambda: True  # noqa: E731 -- the path itself is the evidence
+    else:
+        _authorize_cache_fallback(base)
+        repo_id, repo_type = canonical_model_repo_id(base), "model"
+        is_cached = lambda: repo_cache_has_usable_snapshot("model", repo_id)  # noqa: E731
     if cached_read_refused(
         hf_token,
         repo_id = repo_id,
-        is_cached = lambda: repo_cache_has_usable_snapshot("model", repo_id),
+        repo_type = repo_type,
+        is_cached = is_cached,
         offline = hf_env_offline(),
     ):
         raise _hf_preflight_error(

@@ -348,6 +348,7 @@ def _ignored_adapter_settings(
     lora_dropout = None,
     use_dora = False,
     use_rslora = False,
+    use_loftq = False,
 ) -> list[str]:
     """Requested LoRA settings a continued adapter keeps from its own config instead."""
     adapter = next(iter(peft_config.values()), None) if isinstance(peft_config, dict) else None
@@ -371,6 +372,9 @@ def _ignored_adapter_settings(
         ignored.append("DoRA on" if use_dora else "DoRA off")
     if bool(use_rslora) != bool(getattr(adapter, "use_rslora", False)):
         ignored.append("rsLoRA on" if use_rslora else "rsLoRA off")
+    if use_loftq:
+        # LoftQ only initializes a new adapter; an existing one keeps its weights.
+        ignored.append("LoftQ initialization")
     # A string target is a PEFT regex or "all-linear"; only explicit lists compare cleanly.
     saved_targets = getattr(adapter, "target_modules", None)
     requested = [m for m in (target_modules or []) if m != "all-linear"]
@@ -1572,6 +1576,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     use_dora = use_dora,
                     use_rslora = use_rslora,
+                    use_loftq = use_loftq,
                 )
                 status = "Continuing from existing LoRA adapters"
                 if ignored:

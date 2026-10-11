@@ -559,6 +559,30 @@ def test_start_checks_the_cached_base_a_local_adapter_names(tmp_path, refused):
     assert "org/private-base" in asked
 
 
+def test_start_checks_a_cache_path_base_named_by_a_local_adapter(tmp_path):
+    route = _load_route_module("training_route_adapter_base_cache_path")
+    base = tmp_path / "hub" / "models--org--private" / "snapshots" / "rev"
+    base.mkdir(parents = True)
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": str(base)})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with (
+        patch(
+            "hub.utils.hf_cache_state.cached_repo_ref_for_path",
+            side_effect = lambda p: ("org/private", "model") if str(p) == str(base) else None,
+        ),
+        patch.object(route, "cached_read_refused", return_value = True) as refused,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 422
+    assert refused.call_args.kwargs["repo_id"] == "org/private"
+
+
 def test_adapter_trains_embeddings_reads_saved_modules():
     from core.training import worker
 
