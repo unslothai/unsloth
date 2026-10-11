@@ -139,14 +139,24 @@ class _InertUnpickler(pickle.Unpickler):
         return None
 
 
-def _plain(value: Any) -> Any:
-    """``value`` as JSON-like data; a stand-in anywhere inside becomes None (read as "absent")."""
+_MAX_PLAIN_NODES = 1_000_000
+
+
+def _plain(value: Any, budget: Optional[list] = None) -> Any:
+    """``value`` as JSON-like data; a stand-in anywhere inside becomes None (read as "absent").
+
+    Pickle memo references can share one container many times over, so the walk is capped by node count."""
+    if budget is None:
+        budget = [_MAX_PLAIN_NODES]
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise _ProbeBudgetExceeded("metadata too large")
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
+        return [_plain(v, budget) for v in value]
     if isinstance(value, dict):
-        return {str(k): _plain(v) for k, v in value.items() if isinstance(k, str)}
+        return {str(k): _plain(v, budget) for k, v in value.items() if isinstance(k, str)}
     return None
 
 
