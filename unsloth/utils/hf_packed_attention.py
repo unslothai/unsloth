@@ -210,6 +210,7 @@ def _sdpa_packed_varlen(
             is_causal = is_causal,
             **kwargs,
         )
+    from .flash_impl import flash_impl_allows
     from .attention_dispatch import (
         _VARLEN_INT32_GUARD_DISABLED,
         FLASH_VARLEN,
@@ -249,6 +250,9 @@ def _sdpa_packed_varlen(
         and not _sdpa_requested(query, key)
     ):
         torch_varlen = _torch_varlen(query.device)
+        # An FA4 / FA3 impl behind torch's flash op lacks some head dims (sm100: 136-248).
+        if torch_varlen is not None and not flash_impl_allows(head_dim, None, query.device):
+            torch_varlen = None
         backend = select_attention_backend(use_varlen = True)
         # Flash-2 varlen backward faults past int32 indexing. Keyed on training / grad mode, not
         # requires_grad, so a reentrant checkpoint's no_grad forward and its recompute agree.

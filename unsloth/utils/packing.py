@@ -203,6 +203,15 @@ def _enable_hf_packed_attention() -> None:
         logging.getLogger(__name__).info(f"Unsloth: packed varlen attention not enabled ({exc})")
 
 
+def _scope_flash_attention_impl(model, trainer) -> None:
+    # FA4 / FA3 behind torch's flash kernels while this trainer trains (gated; see flash_impl).
+    try:
+        from .flash_impl import scope_flash_attention_impl_to_train
+        scope_flash_attention_impl_to_train(trainer, model)
+    except Exception as exc:
+        logging.getLogger(__name__).info(f"Unsloth: flash attention impl not scoped ({exc})")
+
+
 def enable_sample_packing(
     model,
     trainer,
@@ -222,6 +231,7 @@ def enable_sample_packing(
     if collator is None or not hasattr(collator, "torch_call"):
         return
     _enable_hf_packed_attention()
+    _scope_flash_attention_impl(model, trainer)
     if getattr(collator, "_unsloth_packing_wrapped", False):
         return
 
@@ -274,6 +284,7 @@ def enable_padding_free_metadata(model, trainer):
 
     mark_allow_overlength(model)
     _enable_hf_packed_attention()
+    _scope_flash_attention_impl(model, trainer)
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
     if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):
