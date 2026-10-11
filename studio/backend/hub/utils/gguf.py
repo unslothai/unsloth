@@ -287,16 +287,21 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
 def _first_mainline_loadable(names: list[str]) -> Optional[str]:
     """First of *names*, skipping packs mainline llama.cpp cannot read while anything else is left."""
     tokens = {name: (extract_quant_token(name) or "").upper() for name in names}
-    # A plain Q2_0 published beside its own grouped Q2_g64 / Q2_0_g64 is the fork's group-128 pack.
+
+    def _checkpoint(name: str) -> str:
+        return _gguf_stem(name).upper().replace(tokens[name], "", 1)
+
+    # A plain Q2_0 published beside the same checkpoint's grouped Q2_g64 / Q2_0_g64 is the fork's group-128 pack.
     shadowed = {
-        f"{match.group(1)}_0".upper()
-        for token in tokens.values()
+        (_checkpoint(name), f"{match.group(1)}_0")
+        for name, token in tokens.items()
         if (match := _GROUPED_QUANT_RE.match(token))
     }
     loadable = [
         name
         for name in names
-        if not _FORK_ONLY_QUANT_RE.match(tokens[name]) and tokens[name] not in shadowed
+        if not _FORK_ONLY_QUANT_RE.match(tokens[name])
+        and (_checkpoint(name), tokens[name]) not in shadowed
     ]
     return next(iter(loadable or names), None)
 
