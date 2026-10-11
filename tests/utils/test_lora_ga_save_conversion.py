@@ -87,7 +87,7 @@ def test_saved_adapter_reloads_on_original_base(trained, tmp_path):
     assert (
         config["r"] == 2 * R and config["lora_alpha"] == 16 and config["init_lora_weights"] is True
     )
-    reloaded = PeftModel.from_pretrained(_base(), tmp_path)
+    reloaded = PeftModel.from_pretrained(_base(), tmp_path, torch_device = "cpu")
     torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
 
 
@@ -99,7 +99,7 @@ def test_embedding_targets_keep_their_rank(tmp_path):
     model.save_pretrained(tmp_path)
     config = json.load(open(tmp_path / "adapter_config.json"))
     assert config["rank_pattern"] == {r"model\.embed_tokens": R}
-    reloaded = PeftModel.from_pretrained(_base(), tmp_path)
+    reloaded = PeftModel.from_pretrained(_base(), tmp_path, torch_device = "cpu")
     torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
 
 
@@ -111,7 +111,7 @@ def test_user_pattern_does_not_shadow_the_embedding_pin(tmp_path):
     _train(model)
     reference = _logits(model)
     model.save_pretrained(tmp_path)
-    reloaded = PeftModel.from_pretrained(_base(), tmp_path)
+    reloaded = PeftModel.from_pretrained(_base(), tmp_path, torch_device = "cpu")
     torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
 
 
@@ -124,7 +124,7 @@ def test_empty_adapter_selection_saves_nothing(trained, tmp_path):
 def test_native_save_is_the_bug(trained, tmp_path):
     model, reference = trained
     model.save_pretrained.__wrapped__(tmp_path)
-    reloaded = PeftModel.from_pretrained(_base(), tmp_path)
+    reloaded = PeftModel.from_pretrained(_base(), tmp_path, torch_device = "cpu")
     assert (
         _logits(reloaded) - reference
     ).abs().max() > 1e-3  # 30x the tolerance the converted save meets
@@ -133,7 +133,7 @@ def test_native_save_is_the_bug(trained, tmp_path):
 def test_trainer_state_dict_save_is_converted(trained, tmp_path):
     model, reference = trained
     model.save_pretrained(tmp_path, state_dict = model.state_dict(), safe_serialization = True)
-    reloaded = PeftModel.from_pretrained(_base(), tmp_path)
+    reloaded = PeftModel.from_pretrained(_base(), tmp_path, torch_device = "cpu")
     torch.testing.assert_close(_logits(reloaded), reference, atol = 1e-4, rtol = 1e-4)
 
 
@@ -212,7 +212,7 @@ def test_trainer_checkpoints_resume_and_reload(tmp_path):
         return _logits(model)
 
     reference = train(_lora_ga_model(seed = 3407))
-    plain = PeftModel.from_pretrained(_base(), tmp_path / "checkpoint-4")
+    plain = PeftModel.from_pretrained(_base(), tmp_path / "checkpoint-4", torch_device = "cpu")
     torch.testing.assert_close(_logits(plain), reference, atol = 1e-4, rtol = 1e-4)
     # A fresh run draws another LoRA-GA init, then resumes steps 3-4 from the converted checkpoint.
     resumed = train(_lora_ga_model(seed = 7), resume = str(tmp_path / "checkpoint-2"))
