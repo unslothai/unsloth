@@ -124,3 +124,19 @@ test("the turn card follows its focused marker when the rail scrolls", async () 
     /const onRailScroll = useCallback\([\s\S]{0,700}current\.openerId === focused\.dataset\.turnId[\s\S]{0,120}top: box\.top \+ box\.height \/ 2/,
   );
 });
+
+test("the turn card names its turn and stays out of select-all copies", async () => {
+  const nav = await readFile(
+    new URL(
+      "../src/components/assistant-ui/turn-navigation.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // the card is portaled to body, so the rail anchor's select-none does not reach it
+  assert.match(nav, /"aui-turn-preview [^"]*\bselect-none\b/);
+  assert.match(
+    nav,
+    /<span className="shrink-0 text-muted-foreground\/80 text-ui-11">\s*\{preview \? t\("turns\.label", \{ number: preview\.turn \}\)/,
+  );
+});

@@ -840,15 +840,16 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           onPointerEnter={cancelHide}
           onPointerLeave={hidePreview}
           className={cn(
-            "aui-turn-preview pointer-events-auto fixed z-50 flex w-84 -translate-y-1/2 flex-col gap-1.5 rounded-2xl border border-sidebar-border bg-sidebar py-3 pr-2.5 pl-4 text-sidebar-foreground text-ui-13 shadow-md",
+            "aui-turn-preview pointer-events-auto fixed z-50 flex w-84 -translate-y-1/2 select-none flex-col gap-1.5 rounded-2xl border border-sidebar-border bg-sidebar py-3 pr-2.5 pl-4 text-sidebar-foreground text-ui-13 shadow-md",
             !previewOpen && "invisible",
           )}
         >
           <div className="flex items-center gap-2">
-            <p className="min-w-0 flex-1 truncate font-medium text-ui-13p5">
-              {preview
-                ? preview.prompt || t("turns.label", { number: preview.turn })
-                : " "}
+            <p className="flex min-w-0 flex-1 items-baseline gap-2 font-medium text-ui-13p5">
+              <span className="shrink-0 text-muted-foreground/80 text-ui-11">
+                {preview ? t("turns.label", { number: preview.turn }) : " "}
+              </span>
+              <span className="min-w-0 truncate">{preview?.prompt ?? " "}</span>
             </p>
             {threadId && !incognito && (
               <button
