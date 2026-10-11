@@ -24,7 +24,9 @@ from utils.gguf_archs import (
 from utils.paths.path_utils import file_contents_available_locally
 
 
-_DIFFUSION_GGUF_ARCHS = frozenset({"flux", "flux2", "qwen_image", "qwenimage", "z_image", "zimage"})
+_DIFFUSION_GGUF_ARCHS = frozenset(
+    {"flux", "flux2", "qwen_image", "qwenimage", "qwen_image21", "qwenimage21", "z_image", "zimage"}
+)
 _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
 )

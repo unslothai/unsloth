@@ -20917,6 +20917,7 @@ class LlamaCppBackend:
     _IMAGE_ARCHES = frozenset(
         (
             "qwen_image",
+            "qwen_image21",
             "flux",
         )
     )
