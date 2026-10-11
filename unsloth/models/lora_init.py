@@ -450,7 +450,6 @@ def patch_peft_calibration_eager():
             for m in masked:
                 m._unsloth_keep_padding_mask = True
             try:
-                # torch < 2.6 has no set_stance; the padding mask still matters there.
                 with (
                     torch.compiler.set_stance("force_eager")
                     if hasattr(torch.compiler, "set_stance")

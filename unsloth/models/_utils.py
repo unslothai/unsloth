@@ -6776,7 +6776,6 @@ def _residual_lora_rows(model, adapters):
 
 
 def _unconverted_patterns(model, converted, adapter):
-    """rank_pattern / alpha_pattern entries keeping `adapter`'s other LoRA layers at their own rank."""
     import re
     from peft.tuners.lora import LoraLayer
 
@@ -6860,11 +6859,10 @@ def save_lora_relative_to_original_base(model):
                 for pattern, pinned in zip(("rank_pattern", "alpha_pattern"), kept):
                     doubled = {key: 2 * v for key, v in (config.get(pattern) or {}).items()}
                     if pinned or doubled:
-                        # PEFT takes the first matching pattern, so the exact pins go first.
                         config[pattern] = {**pinned, **doubled}
                 config.pop("lora_ga_config", None)
                 with open(path, "w", encoding = "utf-8") as f:
-                    # No sort_keys: it would reorder the patterns PEFT matches first-come.
+                    # No sort_keys: PEFT matches patterns first-come, and the exact pins go first.
                     json.dump(config, f, indent = 2)
         return out
 
