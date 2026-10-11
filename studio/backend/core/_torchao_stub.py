@@ -252,7 +252,12 @@ def _alias_fqn_to_config_now() -> None:
 class _FqnAliasBeforeDiffusers(importlib.abc.MetaPathFinder):
     """Aliases on the first ``import diffusers`` and never resolves a module itself."""
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname == "diffusers":
             try:
                 _alias_fqn_to_config_now()
