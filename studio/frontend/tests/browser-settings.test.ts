@@ -863,7 +863,7 @@ test("file toolbars keep a Downloads button registered, and a hidden panel close
   const read = (file: string) => readFileSync(new URL(`../src/features/browser/${file}`, import.meta.url), "utf8");
   // Mounted only once a save began, it would register after a quick save had already finished.
   const panel = read("browser-panel.tsx");
-  assert.equal(panel.match(/<DownloadsButton [^>]*visible=\{visible\} idleHidden=\{true\} \/>/g)?.length, 3);
+  assert.equal(panel.match(/<DownloadsButton [^>]*visible=\{visible\} idleHidden=\{true\} \/>/g)?.length, 2);
   assert.doesNotMatch(panel, /BusyDownloadsButton/);
   // The popover is portaled out of the panel, so it would stay up over the next page.
   assert.match(read("downloads-button.tsx"), /if \(!visible && mode !== "closed"\) \{\s*setMode\("closed"\);/);

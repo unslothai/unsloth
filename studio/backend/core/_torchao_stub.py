@@ -228,6 +228,50 @@ def install_torchao_windows_rocm_stub() -> None:
                 sys.modules[_tao_name] = _make_mod_stub(_tao_name)
 
 
+_FQN_TO_CONFIG_SINCE = (0, 15)
+
+
+def _alias_fqn_to_config_now() -> None:
+    if is_stubbed("torchao"):
+        return
+    try:
+        version = importlib.metadata.version("torchao")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    nums = re.findall(r"\d+", version.split("+", 1)[0])[:2]
+    if len(nums) < 2 or (int(nums[0]), int(nums[1])) >= _FQN_TO_CONFIG_SINCE:
+        return
+    try:
+        import torchao.quantization as quantization
+    except Exception:  # noqa: BLE001 -- an unimportable torchao fails later with its own error
+        return
+    if not hasattr(quantization, "FqnToConfig") and hasattr(quantization, "ModuleFqnToConfig"):
+        quantization.FqnToConfig = quantization.ModuleFqnToConfig
+
+
+class _FqnAliasBeforeDiffusers(importlib.abc.MetaPathFinder):
+    """Aliases on the first ``import diffusers`` and never resolves a module itself."""
+
+    def find_spec(self, fullname, path = None, target = None):
+        if fullname == "diffusers":
+            try:
+                _alias_fqn_to_config_now()
+            except Exception:  # noqa: BLE001 -- must never break the diffusers import it precedes
+                pass
+        return None
+
+
+def alias_torchao_fqn_to_config() -> None:
+    """diffusers 0.41 imports ``FqnToConfig`` from torchao unguarded; torchao < 0.15 (Studio's torch <= 2.8
+    pairing) names it ``ModuleFqnToConfig``, and 0.15 keeps ``ModuleFqnToConfig = FqnToConfig``.
+    Deferred to the first diffusers import: importing torchao here would load torch into the server
+    process and every spawn child (seconds and ~600 MB each) that never touch diffusers."""
+    if "diffusers" in sys.modules or "torchao.quantization" in sys.modules:
+        _alias_fqn_to_config_now()
+    elif not any(isinstance(f, _FqnAliasBeforeDiffusers) for f in sys.meta_path):
+        sys.meta_path.insert(0, _FqnAliasBeforeDiffusers())
+
+
 def _load_torchao_nodist():
     """unsloth/_torchao_nodist.py, loaded by path: importing unsloth here would start its GPU
     stack before the worker is ready. None on an unsloth that predates it."""
@@ -249,15 +293,13 @@ _TORCHAO_EXPORT_MIN = (0, 15)
 
 
 def torchao_export_loadable() -> bool:
-    """Whether an export worker can get real torchao: always off Windows ROCm; there, torchao must
-    be installed and unsloth must ship the shim. Searches sys.path, so a stub already in
-    sys.modules does not count, and imports nothing."""
+    """checks Windows ROCm for torchao and unsloth's shim without imports; true elsewhere."""
     if not _is_windows_rocm():
         return True
     try:
         if importlib.machinery.PathFinder.find_spec("torchao") is None:
             return False
-        # transformers 5's TorchAoConfig minimum; torch <= 2.9 is paired with torchao 0.14.
+        # TorchAoConfig requires torchao 0.15; torch <= 2.8 is paired with torchao 0.14
         found = re.match(r"(\d+)\.(\d+)", importlib.metadata.version("torchao"))
         if not found or (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
             return False
@@ -272,8 +314,7 @@ _STUB_CONSUMERS = ("transformers", "peft", "diffusers", "accelerate", "unsloth",
 
 
 def install_torchao_windows_rocm_real_or_stub() -> bool:
-    """Export worker: real torchao on Windows ROCm when it is installed and unsloth can import it
-    without torch.distributed, else the stub. True iff real torchao is loaded. No-op elsewhere."""
+    """load real torchao on Windows ROCm when its no-distributed shim works; return true iff loaded."""
     if not _is_windows_rocm():
         return False
     # A spawn child re-runs run.py as __mp_main__, which stubs torchao first. Drop that stub
