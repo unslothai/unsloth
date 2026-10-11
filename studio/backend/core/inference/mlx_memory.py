@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import glob
 import functools
 import json
@@ -25,6 +26,7 @@ __all__ = [
     "MLX_PREFILL_CHUNK",
     "MlxMemoryBreakdown",
     "mlx_fit_context",
+    "mlx_fit_outcome",
     "mlx_memory_breakdown",
     "mlx_shard_files",
     "mlx_weight_bytes",
@@ -34,6 +36,8 @@ MLX_KV_BLOCK = 256
 
 _PROBE_SHORT = 8
 _PROBE_LONG = 40
+# Above mlx-vlm's decode block (8 tokens), inside which some targets evaluate their forward.
+_DRAFTER_PROBE = (16, 48)
 
 MLX_PREFILL_CHUNK = 2048
 
@@ -295,8 +299,16 @@ def _generation_settings(config: dict) -> tuple:
     )
 
 
+# The route a sizing prices when the load overrides the config's own: a speculative text load goes through mlx-vlm.
+_ROUTE_VISION: contextvars.ContextVar = contextvars.ContextVar("mlx_route_vision", default = None)
+
+
 def _loads_as_vision(config: dict) -> bool:
+    forced = _ROUTE_VISION.get()
+    if forced is not None:
+        return forced
     from types import SimpleNamespace
+
     try:
         from utils.models.model_config import _is_vlm
     except Exception:
@@ -586,6 +598,24 @@ def _config_widths(config: dict):
     )
 
 
+def _entries(cache, quantized = None) -> list:
+    entries = []
+    for index, entry in enumerate(cache):
+        converts = quantized is not None and quantized[index] is not entry
+        for leaf in _sub_caches(entry):
+            entries.append(
+                {
+                    "bytes": _entry_bytes(leaf),
+                    "quant_bytes": _entry_bytes(leaf),
+                    "bound_spec": _bound_spec(leaf),
+                    "conv_width": _conv_width(leaf),
+                    "block": _block(leaf),
+                    "converts": converts,
+                }
+            )
+    return entries
+
+
 def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     import mlx.core as mx
 
@@ -609,20 +639,7 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     if cache is None:
         raise failure
     quantized = _quantize_like_runtime(cache, kv_bits)
-    entries = []
-    for index, entry in enumerate(cache):
-        converts = quantized is not None and quantized[index] is not entry
-        for leaf in _sub_caches(entry):
-            entries.append(
-                {
-                    "bytes": _entry_bytes(leaf),
-                    "quant_bytes": _entry_bytes(leaf),
-                    "bound_spec": _bound_spec(leaf),
-                    "conv_width": _conv_width(leaf),
-                    "block": _block(leaf),
-                    "converts": converts,
-                }
-            )
+    entries = _entries(cache, quantized)
     if quantized is not None:
         converted = [leaf for entry in quantized for leaf in _sub_caches(entry)]
         if len(converted) == len(entries):
@@ -643,30 +660,7 @@ def _cache_plan(config: dict, dtype, kv_bits):
     far = _probe(config, dtype, _PROBE_LONG, kv_bits)
     if not near["entries"] or len(near["entries"]) != len(far["entries"]):
         raise ValueError("cache probe returned no comparable entries")
-    span = _PROBE_LONG - _PROBE_SHORT
-
-    def solve(key):
-        return [
-            (n[key] - (f[key] - n[key]) / span * _PROBE_SHORT, (f[key] - n[key]) / span)
-            for n, f in zip(near["entries"], far["entries"])
-        ]
-
-    plan = []
-    for slot, (const, slope), (q_const, q_slope) in zip(
-        near["entries"], solve("bytes"), solve("quant_bytes")
-    ):
-        plan.append(
-            {
-                "const": const,
-                "slope": slope,
-                "quant_const": q_const,
-                "quant_slope": q_slope,
-                "bound_spec": slot["bound_spec"],
-                "conv_width": slot["conv_width"],
-                "block": slot["block"],
-                "converts": slot["converts"] and near["quantized"],
-            }
-        )
+    plan = _solved(near["entries"], far["entries"], (_PROBE_SHORT, _PROBE_LONG), near["quantized"])
     return (
         plan,
         0 if near["quantized"] else None,
@@ -675,6 +669,58 @@ def _cache_plan(config: dict, dtype, kv_bits):
             "layers": near["layers"],
             "widths": near["widths"],
         },
+    )
+
+
+def _solved(near: list, far: list, lengths: tuple, quantized: bool) -> list:
+    """Per-entry ``const + slope * T`` from the entries of caches filled to two lengths."""
+    short, span = lengths[0], lengths[1] - lengths[0]
+
+    def solve(key):
+        return [
+            (n[key] - (f[key] - n[key]) / span * short, (f[key] - n[key]) / span)
+            for n, f in zip(near, far)
+        ]
+
+    return [
+        {
+            "const": const,
+            "slope": slope,
+            "quant_const": q_const,
+            "quant_slope": q_slope,
+            "bound_spec": slot["bound_spec"],
+            "conv_width": slot["conv_width"],
+            "block": slot["block"],
+            "converts": slot["converts"] and quantized,
+        }
+        for slot, (const, slope), (q_const, q_slope) in zip(
+            near, solve("bytes"), solve("quant_bytes")
+        )
+    ]
+
+
+def _drafter_sizing(config: dict, dtype, drafter: tuple) -> tuple:
+    """``(weight bytes, cache plan, capture bytes per prompt token)`` of the drafter ``(path, builtin)``
+    attaches, from a weightless target and a lazily built drafter."""
+    from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter, probe_drafter
+
+    path, builtin = drafter
+    if not builtin and (_snapshot_config(path) or {}).get("model_file"):
+        raise ValueError("this drafter carries its own model module")
+    target = _whole_model(config, dtype)
+    built = (native_mtp_drafter if builtin else companion_drafter)(path, target, lazy = True)
+    if built is None:
+        raise ValueError("no MTP splitter knows this checkpoint")
+    near, far = (_entries(probe_drafter(target, built, length)) for length in _DRAFTER_PROBE)
+    if len(near) != len(far):
+        raise ValueError("drafter cache probe returned no comparable entries")
+    # A dflash or eagle3 prefill keeps every chunk's captured layers, then a concatenated copy.
+    captured = len(getattr(built, "capture", {}).get("capture_layer_ids", ()))
+    hidden = _config_width((config.get("text_config") or config).get("hidden_size"))
+    return (
+        built.weight_bytes,
+        _solved(near, far, _DRAFTER_PROBE, False),
+        2 * captured * hidden * dtype.size,
     )
 
 
@@ -981,6 +1027,9 @@ class _MlxSizing:
     chunk: int
     kv_bits: Optional[int]
     kv_group_size: int
+    drafter_weights: int = 0
+    drafter_plan: tuple = ()
+    capture_per_token: int = 0
 
 
 _SIZING_CACHE_MAX = 16
@@ -1003,7 +1052,12 @@ def _checkpoint_fingerprint(model_dir: str) -> tuple:
 
 
 def _size_load(
-    model_dir: str, kv_bits: Optional[int], prefill_chunk: Optional[int], load_in_4bit: bool
+    model_dir: str,
+    kv_bits: Optional[int],
+    prefill_chunk: Optional[int],
+    load_in_4bit: bool,
+    vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
 ) -> Optional[_MlxSizing]:
     """Cached ``_size_load_uncached``: every estimate prices the fit and the breakdown, and every
     slider step prices again, each otherwise rebuilding the same weightless architecture."""
@@ -1015,14 +1069,17 @@ def _size_load(
             bool(load_in_4bit),
             os.environ.get("UNSLOTH_MLX_PROMPT_CACHE_BYTES"),
             _checkpoint_fingerprint(model_dir),
+            vision,
+            drafter,
+            drafter and _checkpoint_fingerprint(drafter[0]),
         )
     except Exception:
-        return _size_load_uncached(model_dir, kv_bits, prefill_chunk, load_in_4bit)
+        return _size_load_uncached(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
     with _sizing_lock:
         if key in _sizing_cache:
             _sizing_cache.move_to_end(key)
             return _sizing_cache[key]
-    sizing = _size_load_uncached(model_dir, kv_bits, prefill_chunk, load_in_4bit)
+    sizing = _size_load_uncached(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
     with _sizing_lock:
         _sizing_cache[key] = sizing
         while len(_sizing_cache) > _SIZING_CACHE_MAX:
@@ -1036,7 +1093,26 @@ def _clear_sizing_cache() -> None:
 
 
 def _size_load_uncached(
-    model_dir: str, kv_bits: Optional[int], prefill_chunk: Optional[int], load_in_4bit: bool
+    model_dir: str,
+    kv_bits: Optional[int],
+    prefill_chunk: Optional[int],
+    load_in_4bit: bool,
+    vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
+) -> Optional[_MlxSizing]:
+    token = _ROUTE_VISION.set(vision)
+    try:
+        return _sized(model_dir, kv_bits, prefill_chunk, load_in_4bit, drafter)
+    finally:
+        _ROUTE_VISION.reset(token)
+
+
+def _sized(
+    model_dir: str,
+    kv_bits: Optional[int],
+    prefill_chunk: Optional[int],
+    load_in_4bit: bool,
+    drafter: Optional[tuple],
 ) -> Optional[_MlxSizing]:
     """Everything about a load that does not move with the context, or None if it cannot be sized."""
     config = _snapshot_config(model_dir)
@@ -1062,6 +1138,7 @@ def _size_load_uncached(
             for tower, checkpoint in zip(facts["widths"], _config_widths(config))
         )
         chunk = prefill_chunk or loaded_chunk
+        drafted = (0, (), 0) if drafter is None else _drafter_sizing(config, dtype, drafter)
     except Exception as exc:
         logger.debug(
             "MLX estimate could not size %s (%s): %s", model_dir, config.get("model_type"), exc
@@ -1077,6 +1154,9 @@ def _size_load_uncached(
         chunk = chunk,
         kv_bits = kv_bits,
         kv_group_size = loaded_group,
+        drafter_weights = drafted[0],
+        drafter_plan = tuple(drafted[1]),
+        capture_per_token = drafted[2],
     )
 
 
@@ -1096,14 +1176,16 @@ def _priced_at(sizing: _MlxSizing, n_ctx: int) -> Optional[MlxMemoryBreakdown]:
             sizing.kv_bits,
             sizing.kv_group_size,
         )
+        drafter_kv = _line_bytes(list(sizing.drafter_plan), context, chunk, quantized = False)
     except Exception as exc:
         logger.debug("MLX estimate could not price %s tokens: %s", n_ctx, exc)
         return None
-    total = sizing.weights + kv + compute
+    capture = sizing.capture_per_token * context
+    total = sizing.weights + sizing.drafter_weights + kv + drafter_kv + compute + capture
     return MlxMemoryBreakdown(
-        weights_bytes = sizing.weights,
-        kv_bytes = kv,
-        compute_bytes = compute,
+        weights_bytes = sizing.weights + sizing.drafter_weights,
+        kv_bytes = kv + drafter_kv,
+        compute_bytes = compute + capture,
         total_bytes = total,
         gpu_bytes = total,
         n_ctx = context,
@@ -1126,13 +1208,16 @@ def mlx_memory_breakdown(
     kv_bits: Optional[int] = None,
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
+    vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
 ) -> Optional[MlxMemoryBreakdown]:
-    """Price an MLX load, or None when it cannot honestly be sized."""
-    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit)
+    """Price an MLX load, or None when it cannot honestly be sized. ``vision`` overrides the loader route
+    the config implies; ``drafter`` is the ``(path, builtin)`` drafter a speculative load attaches."""
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
     return None if sizing is None else _priced_at(sizing, n_ctx)
 
 
-def mlx_fit_context(
+def mlx_fit_outcome(
     model_dir: str,
     *,
     budget_bytes: int,
@@ -1141,25 +1226,36 @@ def mlx_fit_context(
     kv_bits: Optional[int] = None,
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
-) -> Optional[int]:
-    """Largest context whose estimated footprint stays inside ``budget_bytes``."""
-    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit)
+    vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
+) -> tuple:
+    """``("unsizable" | "fits" | "fitted" | "no_fit", context)``: the largest context inside
+    ``budget_bytes`` for ``"fitted"``, else None."""
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
     if sizing is None:
-        return None
+        return "unsizable", None
     ceiling = max(int(max_ctx or 0), MLX_KV_BLOCK)
     at_ceiling = _priced_at(sizing, ceiling)
-    if at_ceiling is None or at_ceiling.total_bytes <= budget_bytes:
-        return None
+    if at_ceiling is None:
+        return "unsizable", None
+    if at_ceiling.total_bytes <= budget_bytes:
+        return "fits", None
     floor = max(-(-int(min_ctx or 0) // MLX_KV_BLOCK) * MLX_KV_BLOCK, MLX_KV_BLOCK)
     low, high, best = floor, ceiling, None
     while low <= high:
         middle = (low + high) // 2
         priced = _priced_at(sizing, middle)
         if priced is None:
-            return None
+            return "unsizable", None
         if priced.total_bytes <= budget_bytes:
             best = middle
             low = middle + 1
         else:
             high = middle - 1
-    return None if best is None else (best // MLX_KV_BLOCK) * MLX_KV_BLOCK
+    return ("no_fit", None) if best is None else ("fitted", (best // MLX_KV_BLOCK) * MLX_KV_BLOCK)
+
+
+def mlx_fit_context(model_dir: str, **kwargs) -> Optional[int]:
+    """Largest context whose estimated footprint stays inside ``budget_bytes``; None when the ceiling
+    already fits or nothing can be said."""
+    return mlx_fit_outcome(model_dir, **kwargs)[1]

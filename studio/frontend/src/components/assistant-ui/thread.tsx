@@ -329,6 +329,7 @@ import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
+import { openFilePicker } from "@/lib/open-file-picker";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
@@ -469,6 +470,8 @@ type PromptQueueTarget = {
   complete: () => void;
   cancel: () => void;
   cancelActiveRun: () => void;
+  /** Forget the captured local model so a held prompt resolves the one loaded when it is sent. */
+  releaseModel: () => void;
   isIndexing: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
@@ -1300,7 +1303,12 @@ function handlePromptQueueRunState(
   if (run.paused) {
     return;
   }
-  if (run.waitingForTargetIdle) {
+  // An idle edge before an unsent prompt dispatches belongs to the cancelled response (steering
+  // race with the dispatch timer); index -1 is the normal wait for the current response.
+  if (
+    run.waitingForTargetIdle ||
+    (run.index >= 0 && !getActivePromptQueueItem(run)?.dispatched)
+  ) {
     clearPromptQueueRetryTimer(run);
     run.waitingForTargetIdle = false;
     const activeItem = run.items[run.index];
@@ -1586,44 +1594,53 @@ function stopLocalPromptQueueRun(run: PromptQueueRun) {
     })),
     run.index,
   );
-  if (plan.retainedItemIndexes.length === run.items.length) {
+  if (!plan.cancelActiveItem && plan.heldItemIndexes.length === 0) {
     return;
   }
 
+  const heldItems = plan.heldItemIndexes.map((index) => run.items[index]);
   run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
+  for (const item of heldItems) {
+    // Held like a failed load: the row stays editable and Resume sends it to the model loaded then.
+    item.blockedByModelFailure = true;
+    item.target.releaseModel();
+  }
   if (!getActivePromptQueueItem(run)) {
     deletePromptQueueRun(run);
-    if (!plan.cancelActiveItem) {
-      return;
-    }
     try {
       activeItem?.target.cancel();
     } catch {
       // The active local run may have already ended.
     }
     return;
-  }
-  if (plan.activeItemRemoved) {
-    clearPromptQueueRetryTimer(run);
   }
   if (plan.cancelActiveItem) {
     waitForPromptQueueTargetIdle(run);
     try {
-      activeItem?.target.cancel();
+      // A permanent cancel would also void the held prompts that share this target.
+      if (run.items.some((item) => item.target === activeItem?.target)) {
+        activeItem?.target.cancelActiveRun();
+      } else {
+        activeItem?.target.cancel();
+      }
     } catch {
       // The active local run may have already ended.
     }
     refreshPromptQueueTargetIdleWait(run);
     return;
   }
+  if (getActivePromptQueueItem(run)?.blockedByModelFailure) {
+    // Invalidate an attempt already underway for the now-held item.
+    run.generation += 1;
+    clearPromptQueueRetryTimer(run);
+    promptQueueDispatchingRunIds.delete(run.id);
+    promptQueueActiveRunIds.delete(run.id);
+    // The cleared timer may be the poll that sees the run this queue waits behind end.
+    if (shouldPollPromptQueueTargetState(run)) {
+      refreshPromptQueueTargetIdleWait(run);
+    }
+  }
   syncPromptQueueUI();
-  if (plan.refreshTargetIdleWait) {
-    refreshPromptQueueTargetIdleWait(run);
-    return;
-  }
-  if (plan.activeItemRemoved && run.index >= 0 && !run.waitingForTargetIdle) {
-    requestPromptQueuePump(50);
-  }
 }
 
 function stopLocalPromptQueueRunsForThreadIds(threadIds: string[]) {
@@ -2553,7 +2570,8 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
+      {/* With a files panel showing (chat with files, or project sources), center the whole block. */}
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]">
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* Center the greeting (sloth + title) over the composer. */}
@@ -2595,6 +2613,8 @@ export const ProjectComposer: FC<{
         placeholder={placeholder}
         disableQueue
       />
+      {/* Its file cards open previews; the thread's mount is not on this page. */}
+      <DocumentPreviewMount />
     </GeneratedImageOverlayProvider>
   );
 };
@@ -2677,8 +2697,6 @@ const Composer: FC<{
 
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
-  // Effective Code (Full Access implies it), the same gate the request uses to offer read_skill.
-  const codeToolsEffective = useChatRuntimeStore(codeToolsOn);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
@@ -2785,7 +2803,7 @@ const Composer: FC<{
   const setMentionOpen = useCallback((open: boolean) => {
     mentionOpenRef.current = open;
   }, []);
-  const { inputProps, isComposing, isComposingRef } =
+  const { inputProps, isComposing, isComposingRef, imeSessionOpenRef } =
     useImeComposerInputHandlers({
       submitOnEnter: true,
       skipEnterRef: mentionConsumesEnterRef,
@@ -3818,11 +3836,15 @@ const Composer: FC<{
   }, [draftKey, pasteDraftKey]);
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
-    justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+    justSentRef.current = armSentTextGuard(
+      texts,
+      draftKeyRef.current,
+      imeSessionOpenRef.current,
+    );
     // Here, not beside send(): handleSubmit returns early on the three queueing
     // paths, which empty the composer too.
     setIsWritingExpanded(false);
-  }, []);
+  }, [imeSessionOpenRef]);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
@@ -4006,7 +4028,7 @@ const Composer: FC<{
     const usesKnowledgeBaseAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "kb";
-    const deferModelResolution =
+    let deferModelResolution =
       chatStateAtQueueStart.modelLoading &&
       parseExternalModelId(
         chatStateAtQueueStart.loadingModelPick &&
@@ -4262,6 +4284,12 @@ const Composer: FC<{
         appendEpoch += 1;
         discardOldestPendingSettings();
         getThreadRuntime()?.cancelRun();
+      },
+      releaseModel: () => {
+        // The same snapshot a queue started during a model load takes.
+        deferModelResolution = true;
+        runSettingsAtQueueStart.params.checkpoint = "";
+        runSettingsAtQueueStart.activeGgufVariant = null;
       },
       isIndexing: () =>
         promptQueueTargetMountedRef.current &&
@@ -5410,14 +5438,6 @@ const Composer: FC<{
           <PendingAudioChip />
         </>
       ) : null}
-      {/* Keep indexing state subscribed while dictating, but hide its chips so
-          the waveform stays the composer's only status indicator. */}
-      <div className={isDictating ? "hidden" : "contents"}>
-        <ThreadDocumentsBar
-          threadId={referenceThreadId}
-          onIndexingChange={handleIndexingChange}
-        />
-      </div>
       {!isDictating ? <ComposerDraftPreview text={composerText} /> : null}
       {!isDictating ? <ToolStatusDisplay /> : null}
       <div
@@ -5509,13 +5529,14 @@ const Composer: FC<{
               {(showWritingToggle || isWritingExpanded) && (
                 <TooltipIconButton
                   type="button"
-                  tooltip={
+                  tooltip={isWritingExpanded ? "Collapse" : "Expand"}
+                  aria-label={
                     isWritingExpanded ? "Collapse composer" : "Expand composer"
                   }
                   aria-expanded={isWritingExpanded}
                   aria-controls={inputId}
                   disabled={disabled}
-                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  className="unsloth-composer-expand absolute size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={toggleWritingExpanded}
                 >
@@ -5583,24 +5604,36 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <SkillMentionPopover
-        enabled={supportsTools && codeToolsEffective}
+        // mentions remain available without Code because each one offers read_skill.
+        enabled={supportsTools}
+        composerRef={editorRef}
         onConsumesEnterChange={setMentionConsumesEnter}
         onOpenChange={setMentionOpen}
       />
     <ComposerPrimitive.Root
       ref={attachComposer}
-      // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
-      // all this leaves to find are the pill labels, and a search for "code" or "images" would land
-      // on the toolbar instead of on the conversation.
+      // skip find-in-page because it cannot index the textarea and would match toolbar pills.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
       data-writing-expanded={
         isWritingExpanded && !isDictating ? "true" : undefined
       }
+      data-writing-toggle={
+        (showWritingToggle || isWritingExpanded) && !isDictating
+          ? "true"
+          : undefined
+      }
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
+      {/* Chat with files card. Stays mounted while dictating to keep indexing state. */}
+      <div className={isDictating ? "hidden" : "contents"}>
+        <ThreadDocumentsBar
+          threadId={referenceThreadId}
+          onIndexingChange={handleIndexingChange}
+        />
+      </div>
       {youtubeOfferUrl && !isDictating && !disabled ? (
         // Keyed by URL: pasting a second link while the first is still fetching
         // remounts the prompt, so its cleanup aborts the request that is no
@@ -5933,6 +5966,7 @@ function useImeComposerInputHandlers({
     },
     isComposing,
     isComposingRef: composingRef,
+    imeSessionOpenRef,
   };
 }
 
@@ -6508,6 +6542,30 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return pickerAcceptForTextBasenames(enabledAccept);
 }
 
+function usePickComposerAttachment(): () => void {
+  const aui = useAui();
+  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
+    const activeCheckpoint = s.params.checkpoint;
+    // No model yet: offer audio too, since files attached now wait for the model loaded next.
+    if (!activeCheckpoint || s.modelLoading) {
+      return true;
+    }
+    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
+    return Boolean(activeModel?.hasAudioInput);
+  });
+  return useCallback(() => {
+    const attachmentAccept = attachmentAcceptForPicker(
+      aui.composer().getState().attachmentAccept,
+      audioAttachmentsEnabled,
+    );
+    openFilePicker(attachmentAccept, (files) => {
+      for (const file of files) {
+        void aui.composer().addAttachment(file);
+      }
+    });
+  }, [aui, audioAttachmentsEnabled]);
+}
+
 const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
   researchAvailable: boolean;
@@ -6537,15 +6595,6 @@ const ComposerToolsMenu: FC<{
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
-  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
-    const activeCheckpoint = s.params.checkpoint;
-    // No model yet: offer audio too, since files attached now wait for the model loaded next.
-    if (!activeCheckpoint || s.modelLoading) {
-      return true;
-    }
-    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
-    return Boolean(activeModel?.hasAudioInput);
-  });
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -6621,37 +6670,7 @@ const ComposerToolsMenu: FC<{
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
   );
-  const pickAttachment = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.hidden = true;
-
-    const attachmentAccept = attachmentAcceptForPicker(
-      aui.composer().getState().attachmentAccept,
-      audioAttachmentsEnabled,
-    );
-    if (attachmentAccept !== "*") {
-      input.accept = attachmentAccept;
-    }
-
-    document.body.appendChild(input);
-    input.onchange = (event) => {
-      const files = (event.target as HTMLInputElement).files;
-      if (files) {
-        for (const file of files) {
-          void aui.composer().addAttachment(file);
-        }
-      }
-      document.body.removeChild(input);
-    };
-    input.oncancel = () => {
-      if (!input.files || input.files.length === 0) {
-        document.body.removeChild(input);
-      }
-    };
-    input.click();
-  }, [aui, audioAttachmentsEnabled]);
+  const pickAttachment = usePickComposerAttachment();
   // Straight to the picker, skipping the "+" menu the item lives in. Off-route
   // the chat pane is hidden rather than unmounted, so the chords gate on it
   // being the visible tab; a window listener does not care about `inert`.

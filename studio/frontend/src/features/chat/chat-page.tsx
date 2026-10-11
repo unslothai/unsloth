@@ -1280,7 +1280,8 @@ function CompareShell({
         {/* Symmetric: the extra right inset mirrored the viewport's one-sided
             scrollbar gutter, which is now reserved on both edges. */}
         <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
+          {/* unsloth-composer-shell: the size container the single composer's narrow layout queries. */}
+          <div className="unsloth-composer-shell mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.
@@ -4769,7 +4770,8 @@ export function ChatPage({
           </div>
           <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
-            view.mode === "single" &&
+            (view.mode === "single" ||
+              (view.mode === "project" && activeThreadId != null)) &&
             (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}

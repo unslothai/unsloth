@@ -65,6 +65,8 @@ from core.inference.mcp_image import (
     image_input_mappings,
     image_mapping,
     public_tool,
+    settle_image_call,
+    strip_attached_image_note,
 )
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
@@ -89,6 +91,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
 from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils import sandbox_memory_limit, tool_result_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -171,7 +174,17 @@ def _env_int(name: str, default: int) -> int:
 
 # Model-visible cap on python/terminal tool results. The live UI stream is capped separately and higher, so
 # _truncate's notice stays mode-neutral (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
-_MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
+_MAX_OUTPUT_CHARS = _env_int(tool_result_limit.MAX_CHARS_ENV, tool_result_limit.DEFAULT_MAX_CHARS)
+
+
+def _tool_result_max_chars() -> int:
+    """The cap before the window lowers it: Settings > Chat, unless the env var decides. Read per call so a save
+    applies to the next tool call; no saved value keeps `_MAX_OUTPUT_CHARS`."""
+    if tool_result_limit.locked_by_environment():
+        return _MAX_OUTPUT_CHARS
+    return tool_result_limit.saved_max_chars() or _MAX_OUTPUT_CHARS
+
+
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
@@ -9877,6 +9890,15 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     return env
 
 
+# Read by _sandbox_preexec after the fork, so it is resolved here first: the settings store cannot be read in the child.
+_sandbox_as_bytes = 8 * 1024 * 1024 * 1024
+
+
+def _refresh_sandbox_memory_limit() -> None:
+    global _sandbox_as_bytes
+    _sandbox_as_bytes = sandbox_memory_limit.memory_limit_bytes()
+
+
 def _sandbox_preexec():
     """Best-effort sandbox setup for sandboxed subprocesses (modules are resolved at import time so
     the forked child runs no imports)."""
@@ -9916,8 +9938,9 @@ def _sandbox_preexec():
         except (ValueError, OSError):
             pass
         try:
-            as_bytes = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")) * 1024 * 1024 * 1024
-            _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
+            as_bytes = _sandbox_as_bytes
+            if as_bytes is not None:
+                _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
         except (ValueError, OSError, AttributeError):
             pass
         try:
@@ -13534,12 +13557,26 @@ def _mcp_image_destination(url: str) -> str:
 
 
 def mcp_image_share(name, arguments, mcp_image) -> dict | None:
-    """Approval-card details plus the image bound to this server when the call would send it, else None."""
+    """Approval-card details plus the image bound to this server when the call would send it, else None.
+
+    A call that would send it has ``arguments`` rewritten in place to what goes out (settle_image_call).
+    """
     if mcp_image is None or not isinstance(arguments, dict):
         return None
+    from .tool_loop_controller import UNPARSED_ARGUMENTS_KEY  # noqa: PLC0415
+
     server, tool, tool_name = _mcp_resolve_tool(name)
     mapping = image_mapping(server, tool) if server else None
-    if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
+    if mapping is None:
+        return None
+    # Arguments that could not be read are not a call to rewrite: they keep their ordinary path.
+    schema = _mcp_input_schema(tool)
+    properties = schema.get("properties") or {}
+    if UNPARSED_ARGUMENTS_KEY in arguments or (
+        set(arguments) == {"raw"} and "raw" not in properties
+    ):
+        return None
+    if not settle_image_call(arguments, mapping["field"], schema.get("required") or ()):
         return None
     # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
     return {
@@ -13562,6 +13599,17 @@ def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
     return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
 
 
+def mcp_image_targets(names) -> list[tuple[str, str]]:
+    """(catalog name, field) for each of these tools with a field mapped to the attached image."""
+    targets = []
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        mapping = image_mapping(server, tool) if server else None
+        if mapping:
+            targets.append((name, mapping["field"]))
+    return targets
+
+
 def mcp_catalog_takes_image(names) -> bool:
     """Whether any of these catalog tools has a field mapped to the attached image."""
     for name in names:
@@ -13577,7 +13625,7 @@ def mcp_tool_input_schema(name) -> dict | None:
 
 
 def _mcp_schema_page(prefix: str, text: str, offset: int) -> str:
-    page_chars = _tool_result_char_budget()
+    page_chars = _other_tool_result_char_budget()
     while True:
         end = min(offset + page_chars, len(text))
         page = prefix + text[offset:end]
@@ -14687,10 +14735,10 @@ def _last_user_text(conversation: list[dict]) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return strip_current_date_update_note(content).strip()
+            return strip_current_date_update_note(strip_attached_image_note(content)).strip()
         if isinstance(content, list):
             parts = [
-                p.get("text", "")
+                strip_attached_image_note(p.get("text", ""))
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
@@ -16542,6 +16590,16 @@ def _result_char_budget(cap: int) -> int:
 
 def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
+    cap = _tool_result_max_chars()
+    if not _request_context_tokens():
+        # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
+        cap = min(cap, _MAX_OUTPUT_CHARS)
+    return _result_char_budget(cap)
+
+
+def _other_tool_result_char_budget() -> int:
+    """Non-code tools keep the install cap: the setting names Python and Terminal, and these results have no spill to
+    page back through."""
     return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
@@ -17128,7 +17186,7 @@ def _fetch_page_text(
             # Markdown README that merely opens with a block tag is kept as-is (see _HTML_DOCUMENT_RE).
             if _looks_like_html_document(body):
                 from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True)
+                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
                 readme_body = converted if converted.strip() else body
             if readme_body.strip():
                 return _truncate_page_text(
@@ -17158,7 +17216,10 @@ def _fetch_page_text(
     from ._html_to_md import SiteLinks, html_to_markdown
 
     site_links = SiteLinks(url)
-    text = html_to_markdown(body, main_content = True, site_links = site_links)
+    # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
+    text = html_to_markdown(
+        body, main_content = True, site_links = site_links, max_span_chars = max_chars // 2
+    )
     # a page that fits keeps same-site links so the model can follow them.
     if text and len(text) <= max_chars and len(text) <= _dense_char_limit(text, max_chars):
         return text
@@ -21103,7 +21164,7 @@ def _fit_result_to_room(text, name = None):
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body)
+    fitted = _truncate(body, _other_tool_result_char_budget())
     return fitted + suffix if fitted is not body else text
 
 
@@ -21135,7 +21196,7 @@ _TOOL_TEXT_READERS = frozenset({"terminal", "python"})
 def _hard_cap_chars() -> int:
     """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
     spilled) passes through with its own spill reference intact."""
-    return max(MAX_TOOL_TEXT_CHARS, _MAX_OUTPUT_CHARS + 4_000)
+    return max(MAX_TOOL_TEXT_CHARS, max(_MAX_OUTPUT_CHARS, _tool_result_max_chars()) + 4_000)
 
 
 def _tool_text_notice_head() -> str:
@@ -22618,6 +22679,8 @@ def _python_exec(
             if sys.platform == "win32"
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
+        if base_preexec is _sandbox_preexec:
+            _refresh_sandbox_memory_limit()
         # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
         if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
@@ -22877,6 +22940,8 @@ def _bash_exec(
             if sys.platform == "win32"
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
+        if base_preexec is _sandbox_preexec:
+            _refresh_sandbox_memory_limit()
         if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(

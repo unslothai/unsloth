@@ -457,10 +457,15 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
     )
 
 
-# XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, PVC, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
-_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
-# Core Ultra iGPUs with Arc Graphics, which PyTorch XPU lists: the ids Intel compute-runtime (devices_base.inl) names Arc (MTL-H, ARL-H, LNL, PTL).
-_INTEL_XPU_PCI_IDS = frozenset((0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083))
+# XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
+_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0xE200, 0xE2FF))
+# Core Ultra iGPUs with Arc Graphics, which PyTorch XPU lists: the ids Intel compute-runtime (devices_base.inl) names Arc (MTL-H, ARL-H, LNL, PTL), plus the PTL Arc Pro ids it lists unnamed.
+# Then PVC (Data Center GPU Max), by exact id: a 0x0B69-0x0BE5 range would also take Cedar Trail (0x0BE0-0x0BE5, gma500).
+_INTEL_XPU_PCI_IDS = frozenset((
+    0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083,  # Core Ultra Arc iGPUs
+    0xB084, 0xB085, 0xB086, 0xB087,  # PTL Arc Pro (Mesa iris_pci_ids.h)
+    0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
+))  # fmt: skip
 
 
 def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
@@ -3281,6 +3286,10 @@ def _windows_amd_adapter_records_or_none(
                         family, _ = winreg.QueryValueEx(adapter_key, "AdapterFamily")
                     except OSError:
                         family = ""
+                    try:
+                        driver_version, _ = winreg.QueryValueEx(adapter_key, "DriverVersion")
+                    except OSError:
+                        driver_version = None
                     dedicated_memory_bytes = 0
                     has_dedicated_memory = False
                     for value_name in ("DedicatedVideoMemory", "DedicatedSystemMemory"):
@@ -3302,11 +3311,159 @@ def _windows_amd_adapter_records_or_none(
                     record["gfx"] = gfx
                 if has_dedicated_memory:
                     record["dedicated_memory_bytes"] = dedicated_memory_bytes
+                driver = _parse_windows_driver_version(driver_version)
+                if driver is not None:
+                    record["driver_version"] = _format_driver_version(driver)
                 by_luid[int(luid)] = record
     except Exception as e:
         logger.debug("DirectX adapter registry read declined: %s", e)
         return None
     return by_luid
+
+
+# ROCm/TheRock#7221: Adrenalin 26.5.1 through PRO 26.9.1 let Windows power down an idle RDNA4 card and page out live HIP allocations, which freezes the whole system on multi-GPU hosts. 26.5.1 is the first bad build, 26.9.2 the fix; never a 26.3.1 bound, since RDNA4's clean 26.1.1-26.3.1 builds are 32.0.23xxx (gpuopen.com/version-table).
+_AMD_IDLE_EVICT_FIRST_BAD_DRIVER = (32, 0, 31007, 1017)
+_AMD_IDLE_EVICT_FIXED_DRIVER = (32, 0, 32015, 2008)
+_AMD_IDLE_EVICT_ISSUE_URL = "https://github.com/ROCm/TheRock/issues/7221"
+# Name fallback for a driver that wrote no AdapterFamily: RX 9060/9070 series and Radeon AI PRO R9600D/R9700.
+_RDNA4_ADAPTER_NAME = re.compile(r"\bRX\s*90[67]0\b|\bR9[67]00D?\b", re.IGNORECASE)
+_amd_driver_check_lock = threading.Lock()
+_amd_driver_check_started = False
+_amd_driver_notice: Optional[Dict[str, Any]] = None
+
+
+def _parse_windows_driver_version(value: Any) -> Optional[tuple[int, int, int, int]]:
+    """DirectX stores DriverVersion as a REG_QWORD of four 16-bit fields; the INF spells it "32.0.A.B". Either form, or None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if not 0 < value < 1 << 64:
+            return None
+        return tuple((value >> shift) & 0xFFFF for shift in (48, 32, 16, 0))
+    m = re.fullmatch(r"\s*(\d+)\.(\d+)\.(\d+)\.(\d+)\s*", str(value or ""))
+    return tuple(int(part) for part in m.groups()) if m else None
+
+
+def _format_driver_version(version: tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _is_rdna4_adapter(device: Dict[str, Any]) -> bool:
+    gfx = str(device.get("gfx") or "").lower()
+    if gfx:
+        # gfx1250 is Instinct, so not a bare gfx12 prefix.
+        return gfx.startswith("gfx120")
+    return bool(_RDNA4_ADAPTER_NAME.search(str(device.get("name") or "")))
+
+
+def amd_driver_idle_evict_notice(devices: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The TheRock#7221 notice for these physical inventory rows, or None. Severity is "critical" when the host has more than one GPU of any vendor, the shape that freezes Windows."""
+    flagged = []
+    for device in devices:
+        if device.get("vendor") != "amd" or not _is_rdna4_adapter(device):
+            continue
+        version = _parse_windows_driver_version(device.get("driver_version"))
+        if (
+            version is not None
+            and _AMD_IDLE_EVICT_FIRST_BAD_DRIVER <= version < _AMD_IDLE_EVICT_FIXED_DRIVER
+        ):
+            flagged.append((device, _format_driver_version(version)))
+    if not flagged:
+        return None
+    driver_version = flagged[0][1]
+    return {
+        "message": (
+            f"AMD driver {driver_version} has a known bug that can freeze Windows when an AMD "
+            "GPU sits idle, most often with more than one GPU. Update to Adrenalin 26.9.2 or later."
+        ),
+        "driver_version": driver_version,
+        "devices": [device.get("name") for device, _ in flagged],
+        "gpu_count": len(devices),
+        "severity": "critical" if len(devices) > 1 else "warning",
+        "link": _AMD_IDLE_EVICT_ISSUE_URL,
+    }
+
+
+def _windows_live_amd_driver_versions() -> Optional[list[tuple[str, str]]]:
+    """(Name, DriverVersion) of each present AMD display adapter, or None when WMI could not say. Read live because the DirectX registry keeps records of removed cards, and the inventory pairs same-named records with live cards in LUID order."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        ps = (
+            "$ErrorActionPreference='Stop';"
+            "(Get-CimInstance Win32_VideoController"
+            " | Where-Object { $_.PNPDeviceID -like 'PCI\\VEN_1002*' }"
+            ' | ForEach-Object { $_.Name + "`t" + $_.DriverVersion }) -join "`n"'
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            **_hidden_console_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("Live AMD driver version scan failed: %s", e)
+        return None
+    if r.returncode != 0:
+        return None
+    versions = []
+    for line in (r.stdout or "").splitlines():
+        name, _, version = line.partition("\t")
+        if name.strip() and version.strip():
+            versions.append((name.strip(), version.strip()))
+    return versions
+
+
+def _check_amd_driver_idle_evict() -> None:
+    global _amd_driver_notice
+    try:
+        # The registry alone first: a host with no affected record never pays for the live WMI scans.
+        records = [{"vendor": "amd", **r} for r in _windows_amd_adapter_records_by_luid().values()]
+        if amd_driver_idle_evict_notice(records) is None:
+            return
+        live = _windows_live_amd_driver_versions()
+        if live is None:
+            return
+        rows = []
+        for d in get_physical_gpu_inventory().get("devices") or []:
+            if d.get("vendor") == "amd":
+                # The inventory's own name join: rows carry the registry description, WMI the display name.
+                match = _claim_live_adapter(d.get("name"), [name for name, _ in live])
+                d = {**d, "driver_version": live.pop(match)[1] if match is not None else None}
+            rows.append(d)
+        notice = amd_driver_idle_evict_notice(rows)
+    except Exception as e:
+        logger.debug("AMD driver idle-eviction check failed: %s", e)
+        return
+    _amd_driver_notice = notice
+    if notice is not None:
+        logger.warning("%s See %s", notice["message"], notice["link"])
+
+
+def start_amd_driver_check() -> None:
+    """Check the AMD driver against TheRock#7221 once per process, Windows only, on a daemon thread: the inventory it reads runs a WMI scan, and its result is cached for the next caller."""
+    global _amd_driver_check_started
+    if platform.system() != "Windows":
+        return
+    with _amd_driver_check_lock:
+        if _amd_driver_check_started:
+            return
+        _amd_driver_check_started = True
+    try:
+        threading.Thread(
+            target = _check_amd_driver_idle_evict, name = "amd-driver-check", daemon = True
+        ).start()
+    except Exception as e:
+        logger.debug("Could not start the AMD driver check: %s", e)
+
+
+def amd_driver_warning_report() -> Dict[str, Any]:
+    """``driver_warning`` for /api/system once the startup check has flagged this host's driver, else ``{}``."""
+    notice = _amd_driver_notice
+    return {"driver_warning": dict(notice)} if notice else {}
 
 
 def _windows_rocm_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> Dict[int, float]:
@@ -4604,6 +4761,12 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 _physical_gpu_count: Optional[int] = None
 # Whether the cached count came from the SMI (physical) or the torch fallback (visibility-filtered). Only the former can answer "is this host single-GPU".
 _physical_gpu_count_from_smi: bool = False
+# NVIDIA counts are re-read once a minute so a GPU whose driver loads after Studio starts still appears (#9510); `nvidia-smi -L` is already TTL cached by gpu_query. None = never re-read (ROCm: amd-smi is uncached and slow; XPU, MLX, CPU).
+_PHYSICAL_GPU_COUNT_TTL_SECONDS = 60.0
+_physical_gpu_count_checked_at: Optional[float] = None
+_physical_gpu_count_refresh_lock = threading.Lock()
+_physical_gpu_count_work_lock = threading.Lock()
+_physical_gpu_count_refreshing = False
 _visible_gpu_count: Optional[int] = None
 
 
@@ -5499,7 +5662,8 @@ def estimate_required_model_memory_gb(
         metadata["estimation_mode"] = "detailed"
         metadata["attention_implementation"] = vram_config.attention_implementation
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
-        max_gpus = max(1, get_visible_gpu_count())
+        # The parent-visible ids can outgrow the visible count when a GPU appears after startup; auto-selection ranks every id and reads this table.
+        max_gpus = max(1, get_visible_gpu_count(), len(get_parent_visible_gpu_ids()))
         for n_gpus in range(1, max_gpus + 1):
             metadata["vram_breakdown"][f"min_per_gpu_{n_gpus}"] = round(
                 breakdown.min_gpu_vram(n_gpus) / (1024**3), 3
@@ -5527,6 +5691,31 @@ def estimate_required_model_memory_gb(
 
 # Excludes generic code objects and family labels, which no device reports.
 _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
+_KERNEL_PACK_NAME = re.compile(r"^torch_(.+)\.kpack$", re.IGNORECASE)
+
+
+def _torch_kernel_pack_arches(torch) -> Optional[set[str]]:
+    """Arches whose kernel pack is installed, for a torch that ships its kernels as per-arch packs; None when it does not, or when the packs cannot be read.
+
+    AMD's multi-arch wheels (the Windows route) put each arch's kernels in its own `torch[device-gfxNNNN]` package, which drops `torch/.kpack/torch_gfxNNNN.kpack` (libtorch_hip loads `../.kpack/torch_@GFXARCH@.kpack`). get_arch_list() still names every arch the build supports, so a gfx1036 iGPU beside the gfx1101 card the install chose reads as covered and dies at its first kernel launch."""
+    try:
+        pack_dir = Path(torch.__file__).parent / ".kpack"
+        if not pack_dir.is_dir():
+            return None
+        arches: set[str] = set()
+        for entry in pack_dir.iterdir():
+            match = _KERNEL_PACK_NAME.match(entry.name)
+            if not match:
+                continue
+            arch = match.group(1).lower()
+            # A pack naming a family or generic target could cover devices no token names.
+            if not _CONCRETE_GFX_ARCH.match(arch):
+                return None
+            arches.add(arch)
+        return arches or None
+    except Exception as e:
+        logger.debug("torch kernel pack probe failed: %s", e)
+        return None
 
 
 def _props_gfx_arch(props) -> str:
@@ -5587,6 +5776,9 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
         if not tokens:
             return set()
         supported = set(tokens)
+        packs = _torch_kernel_pack_arches(torch)
+        if packs is not None:
+            supported &= packs
 
         # Under ROCR="1,0" + CUDA="1" the spec reports [1,0] but ordinal 0 is physical 0.
         if _rocm_device_ordinal_active() or _rocm_visibility_masks_are_stacked():
@@ -5632,13 +5824,14 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
 def _torch_kernel_arch_tokens() -> list[str]:
     try:
         import torch
-        return sorted(
-            {
-                str(arch).split(":")[0].strip().lower()
-                for arch in (torch.cuda.get_arch_list() or ())
-                if str(arch).strip()
-            }
-        )
+
+        tokens = {
+            str(arch).split(":")[0].strip().lower()
+            for arch in (torch.cuda.get_arch_list() or ())
+            if str(arch).strip()
+        }
+        packs = _torch_kernel_pack_arches(torch)
+        return sorted(tokens & packs if packs is not None else tokens)
     except Exception:
         return []
 
@@ -5812,6 +6005,21 @@ def auto_select_gpu_ids(
     # Per-GPU check: activations do not shard, so each GPU needs its weight shard plus the full activation cost.
     vram_breakdown = estimate_metadata.get("vram_breakdown", {})
 
+    # A ROCm APU's free reading is the shared host pool: a discrete card that fits alone goes first.
+    if IS_ROCM and len(ranked) > 1:
+        unified = {
+            td["index"]
+            for td in _torch_get_device_inventory(get_parent_visible_gpu_ids())
+            if td.get("_rocm_known_unified")
+        }
+        if unified and ranked[0]["index"] in unified:
+            discrete = next(
+                (c for c in ranked if c["index"] not in unified and c["free_gb"] >= required_gb),
+                None,
+            )
+            if discrete is not None:
+                ranked = [discrete] + [c for c in ranked if c is not discrete]
+
     for candidate in ranked:
         selected.append(candidate["index"])
         if len(selected) == 1:
@@ -5917,27 +6125,69 @@ def prepare_gpu_selection(
     return selected_gpu_ids, metadata
 
 
+def _nvidia_physical_gpu_row_count() -> Optional[int]:
+    # Physical rows only: MIG instances created after startup add indented `nvidia-smi -L` rows, not GPUs.
+    try:
+        from . import nvidia
+        return nvidia.get_physical_gpu_count(gpu_rows_only = True)
+    except Exception:
+        return None
+
+
+def _run_physical_gpu_count_probe() -> None:
+    """Keep a re-read NVIDIA count only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows."""
+    global _physical_gpu_count, _physical_gpu_count_from_smi, _physical_gpu_count_checked_at
+    count = _nvidia_physical_gpu_row_count()
+    # Stamped after the probe, so the next expiry also outlives gpu_query's own cache entry for it.
+    _physical_gpu_count_checked_at = time.monotonic()
+    previous = _physical_gpu_count
+    if count is None or previous is None or count <= previous:
+        return
+    logger.info("Physical GPU count grew from %d to %d; using the new GPUs", previous, count)
+    _physical_gpu_count = count
+    _physical_gpu_count_from_smi = True
+
+
+def _refresh_physical_gpu_count() -> None:
+    """Re-probe once per TTL off the caller's thread: async routes reach this, and `nvidia-smi` can take seconds on a busy driver. The caller keeps the cached count; growth shows on the next call."""
+    checked_at = _physical_gpu_count_checked_at
+    if checked_at is None or time.monotonic() - checked_at < _PHYSICAL_GPU_COUNT_TTL_SECONDS:
+        return
+    _schedule_single_flight_refresh(
+        "_physical_gpu_count_refreshing",
+        _physical_gpu_count_refresh_lock,
+        _physical_gpu_count_work_lock,
+        _run_physical_gpu_count_probe,
+        "gpu-count-refresh",
+        "GPU count",
+    )
+
+
 def get_physical_gpu_count() -> int:
-    """Number of physical GPUs on the machine, from `nvidia-smi -L` (unaffected by CUDA_VISIBLE_DEVICES) with a torch fallback for AMD ROCm and Intel XPU. Cached after the first call."""
-    global _physical_gpu_count, _physical_gpu_count_from_smi
+    """Number of physical GPUs on the machine, from `nvidia-smi -L` (unaffected by CUDA_VISIBLE_DEVICES) with a torch fallback for AMD ROCm and Intel XPU. Cached; on NVIDIA re-read once a minute and only ever grows."""
+    global _physical_gpu_count, _physical_gpu_count_from_smi, _physical_gpu_count_checked_at
     if _physical_gpu_count is not None:
+        _refresh_physical_gpu_count()
         return _physical_gpu_count
 
     device = get_device()
 
     if device == DeviceType.CUDA:
+        count = None
         try:
             if IS_ROCM:
                 from . import amd as _smi_mod
             else:
                 from . import nvidia as _smi_mod
             count = _smi_mod.get_physical_gpu_count()
-            if count is not None:
-                _physical_gpu_count = count
-                _physical_gpu_count_from_smi = True
-                return _physical_gpu_count
         except Exception:
             pass
+        if not IS_ROCM:
+            _physical_gpu_count_checked_at = time.monotonic()
+        if count is not None:
+            _physical_gpu_count = count
+            _physical_gpu_count_from_smi = True
+            return _physical_gpu_count
         # SMI unavailable: fall back to torch.
         count = _torch_get_physical_gpu_count()
         _physical_gpu_count = count if count is not None else 1
