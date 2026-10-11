@@ -566,8 +566,7 @@ class TestEnsureFlashAttn:
         install_returncode: int = 0,
         fake_run = None,
     ) -> tuple[list[tuple[str, str]], list[list[str]], mock.Mock]:
-        """The #13244 venv: a cu13torch2.10 wheel left behind under torch 2.9+cu126 on cp313,
-        a combination flash-attn v2.8.3 publishes no wheel for."""
+        """#13244 leaves cu13torch2.10 under torch 2.9+cu126 on cp313, unsupported by v2.8.3."""
         step_messages: list[tuple[str, str]] = []
         removals: list[list[str]] = []
 
@@ -589,7 +588,6 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
-            # probe_torch_wheel_env returns None when `import torch` fails.
             mock.patch.object(
                 ips, "probe_torch_wheel_env", return_value = env if torch_imports else None
             ),
@@ -613,7 +611,7 @@ class TestEnsureFlashAttn:
         return step_messages, removals, mock_install_wheel
 
     def test_stale_copy_is_removed_when_no_wheel_is_published(self):
-        """Left in place, xformers imports it and every diffusers pipeline fails (#13244)."""
+        """if kept, xformers imports it and every diffusers pipeline fails (#13244)."""
         step_messages, removals, mock_install_wheel = self._run_with_resident_copy()
 
         mock_install_wheel.assert_not_called()
@@ -647,7 +645,7 @@ class TestEnsureFlashAttn:
         assert ("warning", "Continuing without flash-attn") in step_messages
 
     def test_stale_copy_is_force_replaced(self):
-        """A same-version build for another CUDA counts as installed unless forced."""
+        """a same-version build for another CUDA counts as installed unless forced."""
         imports: list[int] = []
 
         def fake_run(cmd, **kwargs):
@@ -674,7 +672,7 @@ class TestEnsureFlashAttn:
         assert not any("removed it" in value for value in warnings), warnings
 
     def test_resident_copy_is_kept_when_torch_does_not_import(self):
-        """The import probe loads torch first, so a broken torch says nothing about flash-attn."""
+        """the import probe loads torch first, so a broken torch says nothing about flash-attn."""
         _, removals, mock_install_wheel = self._run_with_resident_copy(torch_imports = False)
 
         assert removals == []
@@ -763,8 +761,7 @@ class TestInstallPythonStackFlashAttnIntegration:
         assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0
 
     def test_flash_attn_is_rechecked_after_the_linux_torch_repair(self):
-        """The flash-attn step runs before step 13, which can move torch from 2.12+cu130 to
-        2.9+cu126 under the cu13torch2.10 wheel it just installed (#13244)."""
+        """step 13 can move torch from 2.12+cu130 to 2.9+cu126 under cu13torch2.10 (#13244)."""
         source = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
         step = source.split('_progress(_torch_step_label("final"))', 1)[1]
         step = step.split("# 13w.", 1)[0]
