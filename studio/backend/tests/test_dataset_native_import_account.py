@@ -68,7 +68,7 @@ def _sign(path: Path) -> str:
 def _csv(directory: Path) -> Path:
     directory.mkdir(parents = True, exist_ok = True)
     path = directory / "rows.csv"
-    path.write_text("a,b\n1,2\n", encoding = "utf-8")
+    path.write_bytes(b"a,b\n1,2\n")
     return path
 
 
