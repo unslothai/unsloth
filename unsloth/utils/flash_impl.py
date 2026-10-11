@@ -52,7 +52,9 @@ def _requested():
     if value in ("fa4", "fa3"):
         return value.upper()
     if value not in ("", "0", "off", "false", "no", "none"):
-        _log_once(f"Unsloth: {_ENV}={value!r} is not auto / fa4 / fa3 / off; leaving torch's flash kernels as they are.")
+        _log_once(
+            f"Unsloth: {_ENV}={value!r} is not auto / fa4 / fa3 / off; leaving torch's flash kernels as they are."
+        )
     return None
 
 
@@ -116,7 +118,6 @@ def _candidates(requested, majors):
 def _package_error(impl):
     try:
         import importlib
-
         importlib.import_module(_MODULES[impl])
         if impl == "FA3":
             ops = getattr(torch.ops, "flash_attn_3", None)
@@ -127,7 +128,13 @@ def _package_error(impl):
     return None
 
 
-def head_dim_supported(impl, major, head_dim, head_dim_v = None, window = None) -> bool:
+def head_dim_supported(
+    impl,
+    major,
+    head_dim,
+    head_dim_v = None,
+    window = None,
+) -> bool:
     """Shapes the impl's kernels take (flash_attn.cute interface._validate_head_dims and the sm100
     hd256 backward, which has no local / sliding window). torch pads dense SDPA heads to a multiple of 8."""
     head_dim_v = head_dim if head_dim_v is None else head_dim_v
@@ -192,7 +199,12 @@ def model_facts(model):
         heads = getattr(cfg, "num_attention_heads", None)
         hidden = getattr(cfg, "hidden_size", None)
         head_dim = getattr(cfg, "head_dim", None)
-        if not isinstance(head_dim, int) and isinstance(heads, int) and isinstance(hidden, int) and heads:
+        if (
+            not isinstance(head_dim, int)
+            and isinstance(heads, int)
+            and isinstance(hidden, int)
+            and heads
+        ):
             head_dim = hidden // heads
         qk = [getattr(cfg, k, None) for k in ("qk_nope_head_dim", "qk_rope_head_dim")]
         v_dim = getattr(cfg, "v_head_dim", None)
@@ -210,9 +222,13 @@ def model_facts(model):
             n_kv = kv if isinstance(kv, int) and kv > 0 else heads
             sliding = getattr(cfg, "sliding_window", None)
             layer_types = getattr(cfg, "layer_types", None) or ()
-            if isinstance(sliding, int) and sliding > 0 and (
-                getattr(cfg, "use_sliding_window", True) is not False
-                or any("sliding" in str(t) for t in layer_types)
+            if (
+                isinstance(sliding, int)
+                and sliding > 0
+                and (
+                    getattr(cfg, "use_sliding_window", True) is not False
+                    or any("sliding" in str(t) for t in layer_types)
+                )
             ):
                 window = sliding
     modules = getattr(model, "modules", None)
@@ -281,10 +297,18 @@ def _run_case(case, device):
     q = randn(total, n_heads, head_dim).requires_grad_()
     k = randn(total, n_kv, head_dim).requires_grad_()
     v = randn(total, n_kv, head_dim).requires_grad_()
-    cu = torch.tensor([0] + torch.tensor(lengths).cumsum(0).tolist(), device = device, dtype = torch.int32)
+    cu = torch.tensor(
+        [0] + torch.tensor(lengths).cumsum(0).tolist(), device = device, dtype = torch.int32
+    )
     with torch.enable_grad():
         out = varlen_attn(
-            q, k, v, cu, cu, max(lengths), max(lengths),
+            q,
+            k,
+            v,
+            cu,
+            cu,
+            max(lengths),
+            max(lengths),
             window_size = (window - 1, 0) if window else (-1, 0),
             enable_gqa = True,
         )
@@ -298,7 +322,6 @@ def _count_impl_calls(impl):
     name = impl.lower()
     try:
         import importlib
-
         module = importlib.import_module(f"torch.nn.attention._{name}")
         fwd, bwd = getattr(module, f"_{name}_run_forward"), getattr(module, f"_{name}_run_backward")
     except Exception:
@@ -363,7 +386,9 @@ def maybe_activate_flash_attention_impl(model = None):
     requested = _requested()
     registry = _registry()
     if requested is None or registry is None:
-        FLASH_IMPL_STATE["reason"] = "off" if requested is None else "torch has no flash attention impl registry (< 2.11)"
+        FLASH_IMPL_STATE["reason"] = (
+            "off" if requested is None else "torch has no flash attention impl registry (< 2.11)"
+        )
         return None
     if torch.compiler.is_compiling():
         return FLASH_IMPL_STATE["active"]
@@ -440,7 +465,9 @@ def scope_flash_attention_impl_to_train(trainer, model) -> None:
     def train(*args, **kwargs):
         activated = None
         try:
-            activated = maybe_activate_flash_attention_impl(getattr(trainer, "model", None) or model)
+            activated = maybe_activate_flash_attention_impl(
+                getattr(trainer, "model", None) or model
+            )
         except Exception as exc:
             FLASH_IMPL_STATE["reason"] = f"activation error ({type(exc).__name__}: {exc})"
             deactivate_flash_attention_impl()

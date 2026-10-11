@@ -13,7 +13,11 @@ from unsloth.utils import flash_impl as fi
 
 
 class FakeRegistry:
-    def __init__(self, impls = ("FA3", "FA4"), current = None):
+    def __init__(
+        self,
+        impls = ("FA3", "FA4"),
+        current = None,
+    ):
         self.impls, self.current_impl, self.calls = list(impls), current, []
 
     def activate(self, impl):
@@ -167,7 +171,9 @@ def test_head_dims_that_never_reach_flash_do_not_block(fake):
     mla = _model(qk_nope_head_dim = 128, qk_rope_head_dim = 64, v_head_dim = 128)
     assert fi.maybe_activate_flash_attention_impl(mla) == "FA4"
     fi.deactivate_flash_attention_impl()
-    assert fi.maybe_activate_flash_attention_impl(_model(head_dim = 256, global_head_dim = 512)) == "FA4"
+    assert (
+        fi.maybe_activate_flash_attention_impl(_model(head_dim = 256, global_head_dim = 512)) == "FA4"
+    )
     fi.deactivate_flash_attention_impl()
 
 
@@ -307,7 +313,15 @@ def real_fa4(monkeypatch):
     assert calls == {"fwd": 0, "bwd": 0}, calls
 
 
-def _varlen(head_dim, dtype, window, lengths = (300, 17, 1000, 1, 731), hq = 16, hk = 4, seed = 0):
+def _varlen(
+    head_dim,
+    dtype,
+    window,
+    lengths = (300, 17, 1000, 1, 731),
+    hq = 16,
+    hk = 4,
+    seed = 0,
+):
     from torch.nn.attention.varlen import varlen_attn
 
     g = torch.Generator(device = "cuda").manual_seed(seed)
@@ -317,10 +331,19 @@ def _varlen(head_dim, dtype, window, lengths = (300, 17, 1000, 1, 731), hq = 16,
         return torch.randn(*shape, device = "cuda", dtype = dtype, generator = g)
 
     q, k, v = (randn(total, h, head_dim).requires_grad_() for h in (hq, hk, hk))
-    cu = torch.tensor([0, *torch.tensor(lengths).cumsum(0).tolist()], device = "cuda", dtype = torch.int32)
+    cu = torch.tensor(
+        [0, *torch.tensor(lengths).cumsum(0).tolist()], device = "cuda", dtype = torch.int32
+    )
     out = varlen_attn(
-        q, k, v, cu, cu, max(lengths), max(lengths),
-        window_size = (window - 1, 0) if window else (-1, 0), enable_gqa = True,
+        q,
+        k,
+        v,
+        cu,
+        cu,
+        max(lengths),
+        max(lengths),
+        window_size = (window - 1, 0) if window else (-1, 0),
+        enable_gqa = True,
     )
     out.backward(randn(*out.shape))
     return out.detach(), q.grad, k.grad, v.grad
@@ -328,9 +351,15 @@ def _varlen(head_dim, dtype, window, lengths = (300, 17, 1000, 1, 731), hq = 16,
 
 @needs_fa4
 def test_fa4_varlen_matches_bundled_flash(real_fa4):
-    cases = [(64, torch.bfloat16, None), (64, torch.bfloat16, 128), (128, torch.bfloat16, None),
-             (128, torch.bfloat16, 128), (256, torch.bfloat16, None), (128, torch.float16, None),
-             (128, torch.float16, 128)]
+    cases = [
+        (64, torch.bfloat16, None),
+        (64, torch.bfloat16, 128),
+        (128, torch.bfloat16, None),
+        (128, torch.bfloat16, 128),
+        (256, torch.bfloat16, None),
+        (128, torch.float16, None),
+        (128, torch.float16, 128),
+    ]
     if torch.cuda.get_device_capability()[0] == 9:
         cases.append((256, torch.bfloat16, 128))
     refs = [_varlen(*case) for case in cases]
@@ -374,8 +403,15 @@ def test_fa4_run_attention_compiles_without_breaks(real_fa4):
     cu[1:] = lens.cumsum(0)
     config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = 8, n_groups = 4)
     ctx = ad.AttentionContext(
-        bsz = 1, q_len = total, kv_seq_len = total, n_heads = 32, head_dim = 128,
-        requires_grad = True, seq_info = (lens, cu, max(lengths)), attention_mask = None, causal_mask = None,
+        bsz = 1,
+        q_len = total,
+        kv_seq_len = total,
+        n_heads = 32,
+        head_dim = 128,
+        requires_grad = True,
+        seq_info = (lens, cu, max(lengths)),
+        attention_mask = None,
+        causal_mask = None,
     )
     q = torch.randn(1, 32, total, 128, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
     k = torch.randn(1, 8, total, 128, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
@@ -413,10 +449,14 @@ def test_fa4_hd256_window_keeps_segments_route(real_fa4):
     assert fi.maybe_activate_flash_attention_impl(_model(head_dim = 256)) == "FA4"
     q = torch.randn(1, 8, 512, 256, device = "cuda", dtype = torch.bfloat16)
     assert not ad._torch_varlen_takes(q, q[:, :2], q[:, :2], {}, True, 128)
-    assert ad._torch_varlen_takes(q, q[:, :2], q[:, :2], {}, True, None) == (ad._TORCH_VARLEN_ATTN is not None)
+    assert ad._torch_varlen_takes(q, q[:, :2], q[:, :2], {}, True, None) == (
+        ad._TORCH_VARLEN_ATTN is not None
+    )
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA tensors (the wrapper only takes CUDA rows)")
+@pytest.mark.skipif(
+    not has_real_cuda(), reason = "needs CUDA tensors (the wrapper only takes CUDA rows)"
+)
 @pytest.mark.parametrize("window", [None, 2])
 @pytest.mark.parametrize("allowed", [True, False])
 def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, allowed, window):
@@ -425,7 +465,17 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, al
 
     seen, used, asked = [], [], []
 
-    def orig(module, q, k, v, mask, dropout = 0.0, scaling = None, is_causal = None, **kwargs):
+    def orig(
+        module,
+        q,
+        k,
+        v,
+        mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
         seen.append(1)
         return "orig", None
 
@@ -454,7 +504,11 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, al
         mask = mask & (position[None, :] > position[:, None] - window)
     try:
         out = hpa._sdpa_packed_varlen(
-            types.SimpleNamespace(is_causal = True, sliding_window = window), q, q, q, mask,
+            types.SimpleNamespace(is_causal = True, sliding_window = window),
+            q,
+            q,
+            q,
+            mask,
             packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
         )
     finally:
