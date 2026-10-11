@@ -1862,6 +1862,9 @@ def _user_rope_scaling(config, rope_scaling):
     scaling = dict(_rope_scaling_as_dict(rope_scaling))
     if "rope_type" not in scaling and "type" in scaling:
         scaling["rope_type"] = scaling["type"]
+    # Pin YaRN's pretraining window to the checkpoint's, before max_position_embeddings is widened.
+    if scaling.get("rope_type") == "yarn" and "original_max_position_embeddings" not in scaling:
+        scaling["original_max_position_embeddings"] = config.max_position_embeddings
     if isinstance(getattr(config, "rope_parameters", None), dict) and "rope_theta" not in scaling:
         scaling["rope_theta"] = _get_rope_theta(config)
     return scaling

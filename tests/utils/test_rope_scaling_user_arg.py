@@ -41,8 +41,11 @@ def test_user_rope_scaling_keeps_rope_theta():
 
 def test_user_rope_scaling_fills_rope_type_from_legacy_type():
     from unsloth.models.llama import _user_rope_scaling
+
     scaling = _user_rope_scaling(_qwen2_config(), {"type": "yarn", "factor": 4.0})
     assert scaling["rope_type"] == "yarn"
+    # The checkpoint window, not the widened max_seq_length transformers would fall back to.
+    assert scaling["original_max_position_embeddings"] == 32768
 
 
 def test_user_rope_scaling_inv_freq_matches_transformers_yarn():
