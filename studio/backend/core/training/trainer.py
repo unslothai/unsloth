@@ -158,6 +158,22 @@ def _hf_stdout_progress_disabled() -> bool:
     return not _verbose_logging_requested()
 
 
+def _tokenizer_blocks_map_workers(tokenizer) -> bool:
+    """True when `dataset_num_proc` workers cannot receive this tokenizer. dill pickles a remote-code
+    tokenizer class by value (transformers 5.5 does not set its module on the parent package), dragging
+    in module globals up to huggingface_hub's live HTTP client: "cannot pickle 'SSLContext' object"
+    (Dream's DreamTokenizer). Stock tokenizer classes pickle by reference, so only those are probed."""
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    if not str(getattr(type(inner), "__module__", "")).startswith("transformers_modules"):
+        return False
+    try:
+        import dill
+        dill.dumps(tokenizer)
+    except Exception:
+        return True
+    return False
+
+
 # Keys that only ever appear on Trainer's end-of-run / end-of-eval summary record.
 _TRAINER_SUMMARY_KEYS = (
     "train_runtime",
@@ -4473,7 +4489,14 @@ class UnslothTrainer:
                 # to keep dataset workers off a process holding audio/CUDA state; pass None otherwise, so the shared
                 # policy sizes it from CPU affinity and cgroup quota rather than host os.cpu_count().
                 "dataset_num_proc": dataset_map_num_proc(
-                    1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else None,
+                    1
+                    if (
+                        self.is_audio
+                        or self.is_audio_vlm
+                        or self._cuda_audio_used
+                        or _tokenizer_blocks_map_workers(self.tokenizer)
+                    )
+                    else None,
                     serial_as_none = False,
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),

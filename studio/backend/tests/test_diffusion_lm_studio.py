@@ -307,6 +307,28 @@ def test_worker_turns_packing_off_once_and_only_for_diffusion():
     assert ar == {"packing": True}
 
 
+def test_unpicklable_remote_tokenizer_runs_the_map_in_process():
+    import ssl
+    from core.training import trainer as trainer_mod
+
+    def remote_tokenizer(**attrs):
+        cls = type(
+            "DreamTokenizer", (), {"__module__": "transformers_modules.dream.tokenization_dream"}
+        )
+        tok = cls()
+        tok.__dict__.update(attrs)
+        return tok
+
+    probe = trainer_mod._tokenizer_blocks_map_workers
+    unpicklable = remote_tokenizer(session = ssl.create_default_context())
+    assert probe(unpicklable)
+    assert probe(SimpleNamespace(tokenizer = unpicklable))
+    assert not probe(remote_tokenizer(vocab = {"a": 0}))
+    assert not probe(SimpleNamespace(session = ssl.create_default_context()))
+    src = inspect.getsource(trainer_mod.UnslothTrainer)
+    assert "or _tokenizer_blocks_map_workers(self.tokenizer)" in src
+
+
 def test_pre_detect_applies_the_overrides_before_the_row_bound():
     from core.training import worker
     src = inspect.getsource(worker._pre_detect_training_model)
