@@ -85,8 +85,7 @@ def _blame_latest_turn(context_tokens: int):
     latest_turn = _int(refusal.get("latest_turn_tokens"))
     if irreducible <= 0 or latest_turn <= 0:
         return None
-    # Only a COUNTED turn compares with `irreducible_tokens`: the char estimate can be off 15x either way.
-    # Absent flag means an older producer, which always counted.
+    # Only a counted turn compares with irreducible_tokens: the char estimate is 14.8x high or 0.86x low.
     exact = bool(refusal.get("latest_turn_exact", True))
     if not exact:
         return None

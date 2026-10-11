@@ -2203,7 +2203,7 @@ def status() -> dict[str, Any]:
             "fallback_reason": _fallback_reason if _loaded and _loaded.layout != "laya" else None,
             "device": _device_name,
             "loading_model": _loading.name if _loading else None,
-            # Kept for the settings API.
+            # Always False: laya is vendored, so no install is ever in flight; kept for the settings API.
             "installing": False,
             "error": failure[1] if failure else None,
             "error_model": failure[0].name if failure else None,

@@ -2109,7 +2109,7 @@ def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     set_tool_policy(enable_tools)
 
 
-# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*.
+# Mirror CLI _PARALLEL_*; define above run_server() so embedders do not serialise chats.
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_PLAIN = 4
@@ -2612,7 +2612,7 @@ def run_server(
     # LAST so it runs FIRST (atexit is LIFO): the sweep must see the shutdown latch set.
     atexit.register(mark_process_shutting_down)
 
-    # The headless `run --api-only` path opts out.
+    # Tauri port: print only after sockets bind and startup; headless run --api-only opts out.
     if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
         # Desktop-owned backends only: a headless --api-only must survive its terminal (nohup).

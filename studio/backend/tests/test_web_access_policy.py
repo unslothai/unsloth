@@ -90,7 +90,7 @@ def test_policy_normalizes_idna_deduplicates_and_rejects_urls():
 
 
 def test_oversized_raw_domains_normalize_without_entering_the_cache():
-    # Nameprep strips U+00AD, so huge inputs must normalise on the uncached path.
+    # Huge raw inputs must skip the cache: a memo key would pin the raw tuple for the process life.
     normalize_website_policy({})  # warm the empty-list key so the counts below are exact
     padded = "a" + "\u00ad" * 100_000 + ".com"
     before = _normalized_domain_tuple.cache_info().currsize

@@ -1079,7 +1079,7 @@ def test_bound_leaves_enough_rows_after_the_eval_carve():
     bounded = bound_dataset_rows(source, rows, 3407)
     train, _eval = split_dataset_for_evaluation(bounded)
 
-    # MAX_STEPS_ROW_SLACK budgets for the eval carve.
+    # Run must still reach max_steps without re-reading rows; MAX_STEPS_ROW_SLACK covers the carve.
     needed = config["max_steps"] * config["batch_size"] * config["gradient_accumulation_steps"]
     assert len(train) >= needed
 
@@ -1206,7 +1206,7 @@ def test_data_parallel_world_size_counts_ranks_and_devices(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _torch(1))
     assert training_worker._data_parallel_world_size() == 1
 
-    # transformers wraps a multi-GPU run in DataParallel, scaling the batch by visible devices.
+    # non-distributed multi-GPU runs get DataParallel, scaling the batch by visible devices.
     monkeypatch.setitem(sys.modules, "torch", _torch(4))
     assert training_worker._data_parallel_world_size() == 4
 

@@ -797,7 +797,7 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
             if not (
                 name == _BUNDLE_NAME
                 or (name.startswith(_BUNDLE_PREFIX) and name.endswith(_BUNDLE_SUFFIX))
-                # A killed daemon save leaves its temp file behind (can be GB).
+                # A killed save leaves a temp file (can be GB); the grace window never takes an in-flight write
                 or (name.startswith(".") and name.endswith(_TEMP_SUFFIX))
             ):
                 continue

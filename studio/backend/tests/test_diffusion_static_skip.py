@@ -340,7 +340,7 @@ def test_z_image_list_outputs_are_skipped_and_rebuilt():
 
 
 def test_z_image_list_in_output_dataclass_is_skipped_and_rebuilt():
-    # ZImageImg2Img / ZImageInpaint pipelines call the transformer without return_dict=False.
+    # ZImageImg2ImgPipeline / ZImageInpaintPipeline call the transformer without return_dict=False
     outputs = pytest.importorskip("diffusers.models.modeling_outputs")
     out_cls = outputs.Transformer2DModelOutput
     value, rebuild = ss._split_output(out_cls(sample = [torch.ones(4, 2), torch.zeros(4, 2)]))

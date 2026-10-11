@@ -4138,7 +4138,7 @@ class ExternalProviderClient:
             and bool(tool_choice["function"].get("name"))
         )
         _hosted_builtins_allowed = not _tool_choice_disabled and not _tool_choice_forced_function
-        # Image-tier models reject tools and thinkingConfig regardless of the pill.
+        # Image-tier models reject text-only tools and thinkingConfig regardless of the pill.
         image_tool_requested = bool(
             _hosted_builtins_allowed and enabled_tools and "image_generation" in enabled_tools
         )

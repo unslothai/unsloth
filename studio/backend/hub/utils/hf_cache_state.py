@@ -438,7 +438,7 @@ def repo_cache_has_usable_snapshot(
         except OSError:
             return True
         if not metadata_filenames:
-            # Need some real content: an interrupted download leaves only README/.gitattributes.
+            # Any file at any depth counts, never an extension allowlist; empty or README-only is partial.
             for revision in revisions:
                 if revision.is_file():
                     return True

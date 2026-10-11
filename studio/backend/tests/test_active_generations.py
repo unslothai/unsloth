@@ -1227,7 +1227,7 @@ def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
 
 
 def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # stream defaults to false, so the non-streaming branch is the common shape.
+    # Non-streaming is the common shape and holds llama-server unregistered, so /unload counts zero.
     _route_gate()
     import asyncio
     from types import SimpleNamespace

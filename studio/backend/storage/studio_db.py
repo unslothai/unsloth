@@ -2246,7 +2246,7 @@ def update_chat_thread(
             "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
         )
         values.append(patch.get("title"))
-    # The CASE reads the pre-update row.
+    # Stamp real renames, moves and (un)archives as edits.
     edited = [
         (column, value)
         for key, (column, value) in allowed.items()

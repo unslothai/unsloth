@@ -263,7 +263,7 @@ async def preview_models_checkpoint(run: str, checkpoint: str, request: Request)
     return _models_response(run, checkpoint)
 
 
-# The SPA static mount is absent in --api-only (Tauri).
+# Serve logo and fonts here too: the SPA static mount is absent in --api-only (Tauri).
 _FRONTEND_DIST = (Path(__file__).resolve().parents[2] / "frontend" / "dist").resolve()
 _PREVIEW_ASSET_MEDIA_TYPES = {
     ".png": "image/png",
@@ -295,7 +295,7 @@ def _preview_page(run: str, checkpoint: str | None) -> HTMLResponse:
     _resolve_or_4xx(run, checkpoint)
     title = run if not checkpoint else f"{run}/{checkpoint}"
     page = _PREVIEW_PAGE_HTML.replace("__TITLE__", html.escape(title))
-    # no-referrer: the capability token is in the query string.
+    # no-referrer: the capability token rides in the query string, so keep it out of Referer headers.
     return HTMLResponse(
         page,
         headers = {

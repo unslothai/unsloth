@@ -788,7 +788,7 @@ def _mmproj_repo(*file_names: str):
 
 
 def test_repo_has_mmproj_requires_gguf_projector():
-    # Runtime projector detection is GGUF-only.
+    # A non-GGUF sidecar named mmproj must not mark the repo vision-capable.
     assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "mmproj_config.json")) is False
     assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "README-mmproj.md")) is False
     assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "mmproj-F16.gguf")) is True

@@ -242,7 +242,7 @@ def test_load_request_manual_defaults():
 
 @pytest.mark.parametrize("bad", [[0, 0], [-1, 2], [float("inf"), 1], [float("nan"), 1]])
 def test_load_request_rejects_degenerate_tensor_split(bad):
-    # Bad splits are dropped at launch but compared raw in dedupe, so they would reload forever.
+    # Degenerate splits are dropped at launch but compared raw in dedupe, so reject them up front.
     with pytest.raises(ValueError):
         LoadRequest(model_path = "owner/repo", tensor_split = bad)
 

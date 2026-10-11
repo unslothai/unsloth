@@ -176,7 +176,7 @@ def test_kill_switch_disables_arming(monkeypatch):
     ],
 )
 def test_load_time_background_compile_is_opt_in(monkeypatch, raw, deferred, at_load):
-    # Eager then compiled renders would break same-seed repeats, so only deferred compiles in bg.
+    # Eager then compiled renders break same-seed repeats; only deferred compiles in bg unless =1.
     if raw is None:
         monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
     else:

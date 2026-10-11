@@ -424,8 +424,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         ONE_PASS: tl.constexpr,
         FP32_SCALE: tl.constexpr,
     ):
-        # Matches torchao Int8Tensor.from_hp(x, PerRow()): <= 0.17 rounds s, 1/s, x/s to bf16,
-        # >= 0.18 keeps fp32 (FP32_SCALE). q = clamp(rint(x * (1 / s)), -128, 127).
+        # Matches torchao from_hp PerRow: <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps fp32
         row = tl.program_id(0).to(tl.int64)
         offs = tl.arange(0, BLOCK)
         xrow = x_ptr + row * stride_x

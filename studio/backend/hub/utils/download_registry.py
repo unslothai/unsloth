@@ -1050,7 +1050,7 @@ def existing_blob_bytes(
                 ):
                     # Unresumable partials are refetched in full; a locked (live peer) one counts.
                     continue
-                # Use allocated bytes: hf_transfer leaves sparse files whose st_size runs ahead.
+                # Partials use allocated bytes (hf_transfer sparse st_size runs ahead); finalized blobs keep st_size.
                 bytes_here = (
                     blob_bytes_present(blob)
                     if partial_hash is not None

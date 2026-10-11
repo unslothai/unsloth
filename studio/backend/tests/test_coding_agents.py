@@ -16,7 +16,7 @@ from utils.coding_agents import (
 
 
 def test_matches_unsloth_start_subcommands():
-    # Spelled out rather than imported from unsloth_cli start.py, which pulls heavy deps.
+    # Each entry must be a real unsloth start subcommand name; spelled out to avoid heavy imports
     assert CODING_AGENTS == (
         "claude",
         "codex",

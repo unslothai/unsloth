@@ -3076,7 +3076,7 @@ def _mlx_sampling_processors(
     return processors or None
 
 
-# Families mlx_vlm inlined before should_add_special_tokens; excludes laguna (0.6.9 only)
+# Families whose template emits the markers: tokenization must not add them; laguna is excluded
 _VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_unified")
 # First mlx-vlm whose gemma-4 mask overlay skips a resumed suffix's non-square mask (#1445).
 _VLM_MEDIA_BLOCK_MIN_VERSION = "0.6.4"

@@ -503,7 +503,7 @@ _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-l
 # Stripped only when the matching field is set
 _BATCH_FLAGS: frozenset[str] = frozenset({"-b", "--batch-size"})
 _UBATCH_FLAGS: frozenset[str] = frozenset({"-ub", "--ubatch-size"})
-# --swa-checkpoints is upstream's older spelling of --ctx-checkpoints
+# Stripped only when its field is set; --swa-checkpoints is the old name of --ctx-checkpoints.
 _CTX_CHECKPOINTS_FLAGS: frozenset[str] = frozenset(
     {"-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"}
 )

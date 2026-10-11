@@ -458,7 +458,7 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
 
     p = threading.Thread(target = _prewarm, daemon = True)
     p.start()
-    # Lock-order inversion: the prewarm must not wait on a lock held by a thread waiting on its own.
+    # Prewarm must not be blocked behind a thread that holds a lock while waiting on a prewarm lock
     release.set()
     assert done.wait(20), "the prewarm deadlocked against a concurrent submodule import"
     assert finished.wait(20), "the concurrent submodule import deadlocked against the prewarm"

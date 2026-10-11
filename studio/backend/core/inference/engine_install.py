@@ -41,7 +41,7 @@ PROFILES = {
         "module": "vllm",
         "cuda": "cu130",
         "driver": 580,
-        # FlashInfer fetches trtllm kernels on demand; driver 580 runs CUDA 13 CUTLASS DSL.
+        # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
         # Newest first; each release pins one torch build.
         "releases": (

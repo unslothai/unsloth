@@ -407,7 +407,7 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             "ROCm error: invalid kernel file",
             "hipErrorInvalidDeviceFunction: invalid device function",
             "ggml-cuda.cu:76: ROCm error\n  invalid device function\n  current device: 1",
-            # cudaErrorInvalidDeviceFunction.
+            # cudaErrorInvalidDeviceFunction: the NVIDIA spelling of the HIP code above.
             "CUDA error: invalid device function",
         ],
     )

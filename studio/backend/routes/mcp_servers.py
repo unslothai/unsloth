@@ -69,7 +69,7 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
-# Annotated, not a Depends default: direct test calls would read a Depends object as truthy.
+# Only a UI session may define a local command; API keys keep http(s) MCP (Annotated, not a default).
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)]
 

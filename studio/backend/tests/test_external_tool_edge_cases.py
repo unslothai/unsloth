@@ -915,7 +915,7 @@ def test_replayed_conversation_is_valid_for_a_strict_server(executed):
     assistant = messages[1]
     assert assistant["tool_calls"][0]["id"] == messages[2]["tool_call_id"]
     assert isinstance(assistant["content"], (str, type(None)))
-    # the two shapes a strict server rejects
+    # two user turns in a row, or a tool result with no preceding call, are refused by strict servers
     for previous, current in zip(messages, messages[1:]):
         assert not (previous["role"] == "user" and current["role"] == "user"), roles
 

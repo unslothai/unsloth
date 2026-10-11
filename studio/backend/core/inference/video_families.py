@@ -88,7 +88,7 @@ class VideoFamily:
     prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # (base_repo, scheme, repo_id) keyed on lowercased base id: a prequant only loads on its own base.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # (scheme, filename) or (scheme, task, filename); derived name stays as fallback for old builds.
+    # (scheme, filename) overrides the derived name, which stays as fallback; task rows get none.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Tasks with a separate denoiser partition, served ONLY by their own (scheme, task, filename) row.
     prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
@@ -159,9 +159,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("int8", "ref2va", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
             ("fp8", "ref2va", "MiniMax-H3-Ref2VA-FP8.pt"),
         ),
-        # Equal to H3_TASK_REFERENCES; literal avoids importing the H3 module into the registry.
+        # No ref2va row means a ref2va pick is refused, not served the keyframe checkpoint.
         prequant_partition_tasks = ("ref2va",),
-        # Measured from Hub file sizes (FP8 / INT8 .pt ~20.26 GB each).
+        # Both FP8 and INT8 schemes are ~20.3 GB resident against the 66.3 GB dense denoiser.
         prequant_resident_gb = 20.3,
         modular_workflow = "fl2va",
         default_flow_shift = 12.0,

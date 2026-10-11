@@ -271,7 +271,7 @@ def test_the_bundled_api_examples_are_still_runnable():
 
 
 def test_a_structured_type_field_does_not_crash_the_relay():
-    # A non-string `type` is unhashable for the frozenset test and would raise.
+    # A dict or list type value is unhashable, so the frozenset membership test would raise.
     for value in ('{"a": 1}', "[1, 2]", "3", "null", "true"):
         line = 'data: {"type": %s, "choices": []}' % value
         assert is_ui_control_sse_line(line) is False, line

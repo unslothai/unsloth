@@ -1161,7 +1161,7 @@ class DiffusionTrainableFamily(BaseModel):
     supports_compile: bool = False
     # save_steps is refused for checkpointless families; True keeps old payloads.
     supports_checkpoints: bool = True
-    # Declared so Pydantic does not drop it from the response.
+    # 1 for a family whose forward covers one packed sequence; a larger value is refused, not clamped.
     max_train_batch_size: Optional[int] = None
     # LoRA previews on this repo, not the training base (Krea trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None

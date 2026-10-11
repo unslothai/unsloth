@@ -264,7 +264,7 @@ def test_staged_dims_all_moe_no_leading_dense(tmp_path: Path):
 
 
 def test_staged_dims_uint64_block_count(tmp_path: Path):
-    # block_count stored as uint64 (vtype 10).
+    # block_count stored as uint64 (vtype 10) still parses; moe equals block_count
     p = _write_synthetic_gguf(
         tmp_path / "moe64.gguf",
         {"general.architecture": "gpt-oss"},

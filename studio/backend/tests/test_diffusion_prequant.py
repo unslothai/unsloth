@@ -804,7 +804,7 @@ def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
 
 
 def test_load_require_bf16_mismatch_is_none(monkeypatch, tmp_path):
-    # fp8 built without the bf16 gate quantised a different layer set than the runtime
+    # fp8 built without the bf16 gate quantised a different layer set than the runtime filter; reject it
     ckpt = _good_ckpt(scheme = "fp8")
     ckpt["metadata"]["require_bf16"] = False
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
@@ -1011,7 +1011,7 @@ def test_a_malicious_checkpoint_is_refused_before_it_executes():
 
 
 def test_the_scheme_probe_does_not_execute_the_checkpoint_either(tmp_path, monkeypatch):
-    """The scheme probe must not execute the checkpoint, since planning calls it on every request."""
+    """The scheme probe must not execute the checkpoint, since planning reaches it without a load."""
     import os
 
     torch = pytest.importorskip("torch")

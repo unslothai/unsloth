@@ -62,7 +62,7 @@ CACHE_MARKER = ".unsloth_compiled_cache"
 import re as _re
 
 _GENERATED_NAME_RE = _re.compile(r"\A(unsloth_compiled_module_.+|Unsloth.+Trainer)\.py\Z")
-# Unsloth*Trainer.py can match a user subclass, so only compiled modules are deletable.
+# Unowned dirs: only unsloth_compiled_module_*.py is deletable; Unsloth*Trainer.py may be user code.
 _OWNED_DELETE_RE = _re.compile(r"\Aunsloth_compiled_module_.+\.py\Z")
 
 

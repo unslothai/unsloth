@@ -795,7 +795,7 @@ def _loadable_variants(identifier: str, variants):
     except OSError:
         return None
 
-    # Resolver walks the tree per call, so dedupe spellings via `seen` first.
+    # Dedupe spellings via seen first; each alias is still confirmed so a wrong file is never advertised.
     accepted: list = []
     seen = set()
     for variant in variants:

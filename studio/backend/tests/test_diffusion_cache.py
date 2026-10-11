@@ -650,7 +650,7 @@ def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
 
     t = _T()
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
-    # Two walks: the pre-engage probe for existing FBCache hooks, then the restore.
+    # Two walks (pre-engage probe, then restore); the restore must precede disable_cache.
     assert order == ["restore-walk", "restore-walk", "disable"]
 
 
@@ -713,7 +713,7 @@ def test_a_redundant_engage_keeps_the_running_cache(monkeypatch):
 
 
 def test_re_engaging_at_a_new_threshold_reconfigures(monkeypatch):
-    # Disable then enable is the only order diffusers accepts.
+    # Disable then enable is the only order diffusers accepts; the marker must show the new threshold.
     _stub_diffusers(monkeypatch)
     t = _RealisticCacheMixin()
     apply_step_cache(_pipe(t), mode = "fbcache")

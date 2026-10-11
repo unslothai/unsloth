@@ -1315,7 +1315,7 @@ async def stream_with_studio_tools(
     finally:
         await _drain_step_task(load_task, cancel_event)
         skill_loads.close()
-    # Never None: an unrestricted parse re-opens markerless tool-call promotion.
+    # Allowlist is the selected catalog, never None: unrestricted parse re-opens markerless promotion.
     heal_names = (
         heal_gate(policy.auto_heal, tools, tool_choice) if transport.heals_text_tool_calls else None
     )
@@ -1665,7 +1665,7 @@ async def stream_with_studio_tools(
                     }
                 )
                 continue
-            # The frontend groups a round by this id (codexLocalToolRoundId).
+            # Every tool card must carry this round id, including the budget-exhausted card.
             decision.provenance["round_id"] = round_id
             image_share = None
             if decision.should_execute and mcp_image is not None:
@@ -1902,7 +1902,7 @@ async def stream_with_studio_tools(
                 tool_stream.close()
 
             completion = controller.record_result(decision, result)
-            # Counted even on failure (side effects happened), per call so parallel calls each spend one.
+            # Counted even on failure, since a failed call may have had side effects; counted per call.
             if not unlimited:
                 remaining -= 1
             turn_executed_real_tool = True

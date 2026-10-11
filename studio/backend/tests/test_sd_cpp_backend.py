@@ -2398,7 +2398,7 @@ def test_a_cached_engine_is_re_checked_against_the_family_now_loading(tmp_path):
 
 
 def test_a_rejected_concurrent_load_cannot_move_the_family_the_worker_validates_against():
-    # begin_load assigns the family before taking _lock, so it must not be shared state.
+    # Take _lock before assigning the family, or a refused load replaces the family the worker checks.
     backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
     worker_family = detect_family("qwen-image-2.1")
     backend._loading_family = worker_family

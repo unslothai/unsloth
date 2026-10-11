@@ -361,7 +361,7 @@ def _forced_target(device):
 
 
 def test_the_modular_pipeline_is_refused_on_metal(monkeypatch):
-    # enable_auto_cpu_offload needs mem_get_info, which torch.mps lacks.
+    # Refuse MPS before the ~145 GB download: auto CPU offload needs mem_get_info, torch.mps lacks it.
     monkeypatch.setattr(
         "core.inference.video.resolve_diffusion_device_target", _forced_target("mps")
     )

@@ -139,7 +139,7 @@ def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
 
 
 def test_lora_identifier_persistent_transient_returns_none():
-    # Assert on the logger directly: robust to structlog vs stub.
+    # Two transient errors return None and log at WARNING; a missed base is gated by neither.
     from utils.models import model_config as _mc
     with (
         patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("down")),

@@ -1983,7 +1983,7 @@ def test_the_sql_candidate_order_agrees_with_the_python_recall_order(conn):
 
     scope = store.conversation_archive_scope(THREAD)
     plan = [
-        # (ordinal, created_at, chunk count)
+        # Legacy rows tie on created_at, then one separates by clock, then two numbered rows tie
         (None, "2026-01-01T00:00:00+00:00", 3),
         (None, "2026-01-01T00:00:00+00:00", 2),
         (None, "2026-01-02T00:00:00+00:00", 1),

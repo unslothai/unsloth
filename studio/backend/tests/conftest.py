@@ -471,7 +471,7 @@ def _configured_server_hosts() -> frozenset:
 # Addresses allowed names resolved to: create_connection dials the numeric result.
 _RESOLVED_SERVER_ADDRESSES: set = set()
 
-# Module global: its callers run before any per-test fixture exists.
+# Lifted only by allow_outbound(); a module global since callers run before any per-test fixture.
 _outbound_permitted = False
 
 

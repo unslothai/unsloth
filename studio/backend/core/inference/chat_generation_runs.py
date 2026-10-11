@@ -31,7 +31,7 @@ _SHUTDOWN_GRACE_SECONDS = 10.0
 _SHUTDOWN_CANCEL_SECONDS = 5.0
 # Desktop force-kills the backend after five seconds.
 _SWEEP_SHUTDOWN_SECONDS = 0.5
-# Below where integer milliseconds overflow.
+# A century: clear of any real lease, far below where integer milliseconds overflow.
 _MAX_ENV_SECONDS = 100.0 * 365.0 * 24.0 * 60.0 * 60.0
 _MAX_ADMISSION_INTERVAL_SECONDS = 24.0 * 60.0 * 60.0
 _LEASE_TIMEOUT_SECONDS = 1200.0

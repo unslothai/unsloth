@@ -517,7 +517,7 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
     with torch.no_grad():
         for mname, sub in module.named_modules():
             want = _want(mname)
-            # T5 casts its input to ``wo.weight.dtype`` before the hook runs
+            # kept-fp32 Linears convert now: T5 casts its input to wo.weight.dtype before the hook runs
             if (
                 type(sub) in streamable
                 and not _kept(mname)
@@ -630,7 +630,7 @@ class _EncoderPrefetcher:
     def _ensure_stage(self) -> None:
         import torch
         if not self.stage:
-            # inference_mode is thread-local: the worker cannot write the forward thread's tensors.
+            # inference_mode is thread-local; the worker cannot write inference tensors from the forward thread.
             with torch.inference_mode(False):
                 self.stage = [
                     torch.empty(_STAGE_SLOT_BYTES, dtype = torch.uint8, pin_memory = True)

@@ -2332,7 +2332,7 @@ def test_download_plan_sizes_its_file_set_for_the_selected_card(client, monkeypa
 
 
 def test_download_plan_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
-    # a bad pick is a 400, not a 500, though it sits inside the plan route's own try/except
+    # a bad pick is a 400, not a 500: this call sits inside the plan route's own try/except
     import types as _types
 
     from core.inference import diffusion_device as devmod

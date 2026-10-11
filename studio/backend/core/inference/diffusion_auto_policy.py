@@ -59,7 +59,7 @@ def policy_steady_factor(family: Any, base_repo: Optional[str] = None) -> Option
     return None if policy is None else _POLICY_STEADY_FACTOR.get(policy.policy_id)
 
 
-# bf16-resident sizes in decimal GB from HF metadata, not download size (Z-Image ships fp32).
+# bf16-resident sizes in decimal GB from HF metadata, not download size (Z-Image-Turbo ships fp32).
 _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.1": (23.8, 9.8, 0.2),
     "flux.1-kontext": (23.8, 9.8, 0.2),

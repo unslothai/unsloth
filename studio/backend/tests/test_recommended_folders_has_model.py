@@ -97,7 +97,7 @@ def test_ollama_with_manifest_is_true(tmp_path):
 
 
 def test_ollama_manifest_without_blob_is_false(tmp_path):
-    # A pruned pull leaves the manifest but not the blob.
+    # A pruned pull leaves a manifest with no blob; the chip must not lead to an empty picker.
     models = tmp_path / "ollama" / "models"
     manifest = models / "manifests" / "registry.ollama.ai" / "library" / "llama3"
     manifest.mkdir(parents = True)

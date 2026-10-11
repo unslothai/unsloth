@@ -2822,7 +2822,7 @@ class TestTheApuRetryRecomputesThePageLock:
         )
         import utils.model_memory_settings as _mem_settings
 
-        # (keep_resident, no_ram_reserve)
+        # (keep_resident, no_ram_reserve) snapshot: should_mlock and apply_model_memory_policy both read it.
         monkeypatch.setattr(_mem_settings, "get_model_memory_settings", lambda: (mlock, False))
 
         capture: dict = {}

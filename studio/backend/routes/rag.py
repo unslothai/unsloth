@@ -400,7 +400,7 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
     try:
         conn = rag_db.get_connection()
     except rag_db.RagExtensionUnavailable:
-        # The vec0 native lib can fail per connection; degrade instead of 500 on every poll.
+        # Degrade only when the vec0 native lib is unavailable; locked or corrupt DBs must still raise.
         return {"knowledgeBases": [], **_availability(False)}
     try:
         kbs = store.list_kbs(conn)

@@ -272,7 +272,7 @@ def _snapshot_complete_on_disk(
             started_at = "",
             expected_files = metadata_expected,
         )
-    # Check ANY retained snapshot; require entries to resolve to known hashes (no sha256 read).
+    # Check ANY retained snapshot; hashes gate the match when they resolve, else filenames alone.
     for snap in snapshots:
         if not download_manifest.verify_against_disk(manifest, snap).ok:
             continue

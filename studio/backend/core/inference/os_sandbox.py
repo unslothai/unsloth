@@ -40,7 +40,7 @@ def with_session_packages(env: dict, workdir: str) -> dict:
     if not os.path.isdir(packages):
         return env
     updated = dict(env)
-    # Block a planted usercustomize.py; the trusted sitecustomize shim stays first.
+    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first.
     updated["PYTHONNOUSERSITE"] = "1"
     scripts = "Scripts" if os.name == "nt" else "bin"
     for key, value in (

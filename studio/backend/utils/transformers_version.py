@@ -887,7 +887,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             model_name,
             url,
         )
-        # Transient: serve the hub cache uncached so the next call retries the network.
+        # Transient: serve hub cache uncached so the next call retries; never private data of another caller.
         return None if cache_denied else _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
@@ -1566,7 +1566,7 @@ def get_transformers_tier(
                 )
                 return tier
             if _config_needs_530(cfg):
-                # Qwen3.6 reuses Qwen3.5 config ids but needs 5.5 by name; only a real Hub id may override.
+                # Qwen3.6 reuses Qwen3.5 ids but needs 5.5 by name; only a Hub id or folder name may override 530.
                 base = _resolve_base_model(model_name)
                 hint_src = (
                     base

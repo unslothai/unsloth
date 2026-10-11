@@ -2573,7 +2573,7 @@ class VideoBackend:
                     f"(expected a .safetensors name; use a .gguf name for a GGUF load)."
                 )
             root = Path(repo_id).expanduser()
-            # A backslash never appears in "org/name".
+            # Path-shaped picks (./ ../ ~ backslash, absolute) fail here, before the handoff.
             path_shaped = (
                 repo_id.startswith(("/", "\\", "~", ".")) or "\\" in repo_id or root.is_absolute()
             )
@@ -8245,7 +8245,7 @@ class VideoBackend:
                 # LTX-2 takes frame_rate (shapes audio length); others fix their rate, fps only at export
                 if "frame_rate" in call_params:
                     kwargs["frame_rate"] = float(out_fps)
-                # WanPipeline raises with boundary_ratio=None.
+                # Low-noise expert guidance only if the family declares it and the signature accepts it.
                 if fam.cfg2_kwarg and fam.cfg2_kwarg in call_params and guidance_2 is not None:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
                 if fam.modular_workflow:

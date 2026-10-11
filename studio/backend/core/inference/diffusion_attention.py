@@ -1463,7 +1463,7 @@ _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
 
 _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 
-# Stops apply re-running the 600s install under _generate_lock.
+# A recorded attempt stops the in-lock apply re-running the 600s install under _generate_lock.
 _INSTALL_ATTEMPTED: set[str] = set()
 
 # Wheel resolved against the running torch; probe timeouts are transient and not cached.

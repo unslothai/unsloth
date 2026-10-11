@@ -1414,7 +1414,7 @@ def detect_audio_type_checked(
     revision: Optional[str] = None,
 ) -> Tuple[Optional[str], bool]:
     """definitive is False on a 401, 5xx, or timeout, so None then means unknown rather than not audio."""
-    # Else the name lands in the Hub URL and every poll fetches /None/resolve/main/.
+    # Empty name: no model is definitively not audio, and the name would land in the Hub URL.
     if not model_name:
         return None, True
 
@@ -2749,7 +2749,7 @@ def list_gguf_variants(
             )
         )
 
-    # Pinning and OOM demotion happen client-side where VRAM info exists.
+    # Largest first; pinning and OOM demotion happen client-side where VRAM info exists.
     variants.sort(key = lambda v: -v.size_bytes)
 
     return variants, has_vision
@@ -3489,7 +3489,7 @@ def scan_exported_models(
                         pass
                 elif has_gguf:
                     export_type = "gguf"
-                    # export.py writes metadata to the top-level dir.
+                    # Check checkpoint_dir first, then run_dir: export.py writes metadata to the top-level dir.
                     for meta_dir in (checkpoint_dir, run_dir):
                         export_meta = meta_dir / "export_metadata.json"
                         try:
@@ -4151,7 +4151,8 @@ class ModelConfig:
                         identifier, variant, verify_sizes = True, hf_token = hf_token
                     )
                     if verified_file is None:
-                        # Only a live, complete listing can prove the variant absent.
+                        # Reject before the load unloads the resident model; only a live, complete listing proves
+                        # absence.
                         try:
                             from huggingface_hub import list_repo_files
                             repo_files = call_with_anonymous_retry(

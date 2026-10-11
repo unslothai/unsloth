@@ -825,7 +825,7 @@ class TestSecurityHeadersMiddleware:
         assert r.headers["referrer-policy"] == "no-referrer"
 
     def test_response_start_with_tuple_headers_is_hardened(self, main_module):
-        # ASGI servers may emit tuple-valued raw headers.
+        # Middleware must coerce tuple-valued raw headers to a list and still inject security headers
         import asyncio
 
         async def _inner_app(scope, receive, send):

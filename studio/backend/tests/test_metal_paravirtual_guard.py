@@ -305,7 +305,7 @@ def test_gpu_companions_are_pinned_to_cpu_too():
     params.speculative.draft.n_gpu_layers, default -1 = auto."""
     src = _load_model_source()
     assert '"--no-mmproj-offload"' in src
-    # --spec-draft-ngl exists from b8955 only; older builds expose -ngld.
+    # Drafter flag name comes from the probe, never a literal; --spec-draft-ngl needs b8955 or newer.
     assert (
         '"--spec-draft-ngl", "0"' not in src
     ), "hardcoding the flag defeats the capability probe on builds that only have -ngld"

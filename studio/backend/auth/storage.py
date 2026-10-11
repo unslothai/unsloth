@@ -253,7 +253,7 @@ _auth_schema_ready: set[tuple[str, int, int, int]] = set()
 def get_connection() -> sqlite3.Connection:
     ensure_dir(DB_PATH.parent)
     conn = sqlite3.connect(DB_PATH)
-    # sqlite3.connect would create the DB 0644 under a 022 umask.
+    # sqlite3.connect makes DB 0644 under a 022 umask, exposing identity secrets and password hashes.
     for _path, _mode in ((DB_PATH.parent, 0o700), (DB_PATH, 0o600)):
         try:
             os.chmod(_path, _mode)

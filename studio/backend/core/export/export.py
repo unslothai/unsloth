@@ -1075,7 +1075,7 @@ class ExportBackend:
                         llmcompressor_shadow_pythonpath,
                     )
 
-                    # Same rule as the consent probe.
+                    # Same rule as the consent probe: the dialog names the shadow whenever it can be provisioned.
                     _shadow_offered = not _llmcompressor_main_disabled() and not _env_offline()
                     _shadow_pp = llmcompressor_shadow_pythonpath(
                         allow_provision = install_missing_dependencies,
@@ -1136,7 +1136,7 @@ class ExportBackend:
                     and _supports_kwarg(self.current_model.save_pretrained_merged, "token")
                     else {}
                 )
-                # Explicit False: the library defaults to auto-installing.
+                # Always explicit: the library auto-installs by default, so an unconsented export must pass False.
                 consent_kw = (
                     {"install_missing_dependencies": bool(install_missing_dependencies)}
                     if _supports_kwarg(
@@ -2090,7 +2090,7 @@ class ExportBackend:
                             repo_type = "model",
                         )
                 else:
-                    # Create the repo ourselves: `private` cannot change an existing repo's visibility.
+                    # Create the repo here: another client could create it public first, and private cannot fix that.
                     repo_id = _open_hub_repo(hf_api, repo_id, private)
                     _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)

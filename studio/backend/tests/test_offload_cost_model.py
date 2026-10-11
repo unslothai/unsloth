@@ -25,7 +25,7 @@ def ms(t_per_s: float) -> float:
     return 1000.0 / t_per_s
 
 
-# Measured t/s anchors at 128K, UD-Q4_K_XL: dense Qwen3.8-27B, MoE Qwen3.6-35B-A3B.
+# Anchors at 128K for UD-Q4_K_XL on the dense Qwen3.8-27B.
 DENSE_BASE = ms(75.37)
 DENSE_LM_HEAD = ms(42.60)
 DENSE_FFN = ms(13.63)

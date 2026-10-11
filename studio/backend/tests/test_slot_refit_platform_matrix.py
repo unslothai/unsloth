@@ -89,7 +89,7 @@ class _RefitSpy:
         return False
 
 
-# Reducible at _FIT_MIN_CTX 4096, 8192 and 16384, so a floor change keeps it in the refit band.
+# Reducible at each of 4096, 8192 and 16384, so a later floor change is less likely to move it out.
 _FIXTURE_WEIGHTS_MIB = 8_800
 _FIXTURE_SLOTS = 4
 

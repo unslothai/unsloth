@@ -1283,7 +1283,7 @@ def test_ltx23_verbatim_sigmas_restores_scheduler_config():
 
 
 def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
-    # FBCache residuals survive a generation and crash at a new resolution; reset both DiTs.
+    # Reset FBCache residuals on the DiTs only when a cache is engaged; transformer_2 if present.
     import dataclasses
 
     backend = _load_ltx23_from_dir(tmp_path)
@@ -10112,7 +10112,7 @@ def test_decode_phase_fires_once_and_restores_a_class_decode():
         assert vae.decode(2) == "decoded"
     assert fired == ["decode"]
     assert vae.calls == 2
-    # A bound method in the instance __dict__ is a reference cycle.
+    # Nothing may shadow the class method: a bound method in __dict__ is a cycle back to its owner.
     assert "decode" not in vae.__dict__
     assert vae.decode(3) == "decoded"
 

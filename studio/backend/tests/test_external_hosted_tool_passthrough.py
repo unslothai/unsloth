@@ -302,7 +302,7 @@ def test_a_code_execution_with_run_tools_locally_still_answers_the_confirm_gate(
     from fastapi import HTTPException
 
     inf = _install(monkeypatch, "openai")
-    # class-level state; an untouched record proves nothing was sent
+    # Class-level state; an untouched record is evidence that nothing was sent
     FakeExternalClient.last = {}
     payload = _payload(
         enable_tools = True,

@@ -525,7 +525,7 @@ class CloudflareTunnel:
             if proc.stdout is not None:
                 for line in proc.stdout:
                     self._tail.append(line.rstrip())
-                    # Keep draining so cloudflared never blocks on a full pipe.
+                    # Once stdout closes cloudflared has exited: record why and wake waiters at once.
                     if self.url is None:
                         match = _URL_RE.search(line)
                         if match:

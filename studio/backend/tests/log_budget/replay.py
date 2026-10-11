@@ -147,7 +147,7 @@ def replay(
         send_request(Request(method = method, path = path, status = status))
         clock.advance(0.05)
 
-    # Whole-number periods land on exact ticks, so expectation and replay agree.
+    # Each registry period lands on an exact tick, so expectation and replay agree by construction.
     tick = 0.5
     started_at = clock.now
     next_due = {path: 0.0 for path in polled}

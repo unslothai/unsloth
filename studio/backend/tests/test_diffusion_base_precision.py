@@ -377,7 +377,7 @@ def test_resolve_auto_uses_klein_variant_size(monkeypatch):
 
 
 def test_resolve_auto_int8_band_treats_stub_as_absent(monkeypatch):
-    # Windows-ROCm torchao stub: find_spec succeeds but quantize_ is a no-op.
+    # Windows-ROCm torchao stub (find_spec ok, quantize_ no-op): the int8 band must fall to nf4.
     import torch
 
     spec = dit._SPECS["flux.1"]

@@ -443,7 +443,7 @@ class _StopSequenceStreamer:
                     prefix = wide_prefix
                     window = self._decode(self.token_ids[wider:])
         if window.endswith("\ufffd"):
-            # Bytes still arriving can rewrite the whole window (byte-fallback tokenizers).
+            # Bytes still arriving can rewrite the window (unfinished emoji shows as U+FFFD), so wait for them.
             tail = window[len(prefix) :] if window.startswith(prefix) else ""
             self.text = self.settled + tail
             return

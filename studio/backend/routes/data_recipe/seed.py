@@ -972,7 +972,7 @@ def inspect_seed_dataset(
     data_files = [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
     configs = _list_hf_dataset_configs(dataset_name = dataset_name, token = token)
 
-    # Preview the same files and format the resolved path will read.
+    # Preview the same files the recipe will read, not from a config the resolved path excludes.
     declared_files = _files_under_patterns(
         _declared_split_patterns(configs, split, subset),
         data_files,

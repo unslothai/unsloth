@@ -1207,7 +1207,7 @@ def latest_valid_checkpoint(
     usable: "Optional[Callable[[Path, dict], bool]]" = None,
 ) -> Optional[tuple[Path, dict]]:
     """Bundles outside the run's start and end times are skipped, since runs can share one output dir."""
-    # A promotion killed mid-swap leaves the only bundle under the stale name; recover it here.
+    # Killed mid-swap leaves the only bundle under the stale name; recover it into empty slots only.
     _recover_orphaned_slots(Path(output_dir).expanduser())
     for candidate in list_checkpoints(output_dir):
         manifest = read_checkpoint(candidate)
@@ -1386,7 +1386,7 @@ def resolve_resume_dir(path_value: str) -> Path:
     return resolved
 
 
-# The random.Random streams both trainers hand to capture_rng_state.
+# Not read from the manifest: the route preflight must know what a complete bundle carries.
 _TRAINER_RNG_STREAMS: tuple[str, ...] = ("loop", "variant")
 
 _REQUIRED_STATE: tuple[tuple[str, str], ...] = (

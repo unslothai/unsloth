@@ -1052,7 +1052,7 @@ def _compile_repeated_blocks(
         ):
             # Auto dynamic hits CantSplit on torchao stream-merging blocks; static recompiles.
             dit_kwargs["dynamic"] = False
-        # Read by auto_dynamic_active.
+        # Read by auto_dynamic_active: a text-length recompile must reach the bundle.
         transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
         if type(transformer).__name__ == "QwenImage21Transformer2DModel":
             try:

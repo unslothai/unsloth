@@ -231,7 +231,7 @@ def _bnb_4bit_config():
     )
 
 
-# Kept for existing callers.
+# Alias kept for callers; the heuristic moved to diffusion_train_common for config validation.
 _repo_is_prequantized = repo_is_prequantized
 
 
@@ -1060,7 +1060,7 @@ def _ltx2_encode_prompts(pipe, captions, device):
     import torch
 
     _encoders_to_device(pipe, device)
-    # Gemma3 hidden states are ~370 MB per caption; cache only the connector output.
+    # Gemma3 hidden states are stacked per layer; only the connector output reaches the transformer.
     out = []
     with torch.no_grad():
         for cap in captions:
@@ -1657,7 +1657,7 @@ def run_dit_lora_training(
     weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
     _assert_trusted_base_model(cfg.base_model)
-    # Check the repo this run will FETCH: the canonical id may be redirected to a mirror.
+    # Check the fetched repo: the canonical id would raise for a gated base redirected to its mirror.
     _assert_gated_access(cfg.fetch_base_model or cfg.base_model, cfg.hf_token)
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column

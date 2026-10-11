@@ -77,7 +77,7 @@ _TOOL_CLOSED_PATS = [
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>.*$', re.DOTALL),
-    # Drop a truncated tail only when a call-shaped start follows; prose mentions keep theirs.
+    # Drop a truncated tail only when a call-shaped start follows, or a bare marker sits at EOF.
     re.compile(r"<\|tool_call>(?=\s*call\s*:|\s*$).*$", re.DOTALL),
     re.compile(
         r"\[TOOL_CALLS\](?=\s*(?:[\[{]|[A-Za-z_][\w.\-]*(?:[\[{]|\s*$))|\s*$).*$",
@@ -579,7 +579,7 @@ def _top_level_maskable_values(
                 while k < end and text[k].isspace():
                     k += 1
                 if k < end and text[k] == ":":
-                    # The key is data too: a wrapper spelled into a key of a truncated object was promoted.
+                    # The key is data too: a wrapper spelled into the key of a truncated object must not be promoted.
                     if key not in _BARE_JSON_CLASSIFY_KEYS:
                         spans.append((i + 1, min(j, end)))
                     k += 1
@@ -1966,7 +1966,7 @@ def parse_tool_calls_from_text(
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     """Closed calls only when allow_incomplete is False; enabled_tool_names gates Llama-3.2 bare JSON."""
-    # Drop Magistral [THINK] before dispatch so parse and display strip agree.
+    # Drop Magistral [THINK] before dispatch: a rehearsed call inside it must never be promoted.
     content = _strip_mistral_reasoning(content)
 
     # Equal-length mask so returned spans still index the caller's text.

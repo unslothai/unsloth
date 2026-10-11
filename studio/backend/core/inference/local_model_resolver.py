@@ -380,7 +380,7 @@ def _local_gguf_entry(
         # Head of that list is the largest quant; a bare id must mean what a plain load takes.
         from core.inference.openai_auto_download import preferred_quant
 
-        # Rank root checkpoints only: a plain local load always takes the repo root.
+        # Rank root checkpoints alone when any exist; a plain local load always takes the repo root.
         unqualified = tuple(q for q in quants if "/" not in q)
         best = preferred_quant(unqualified or quants)
         if best and quants[0] != best:
@@ -492,7 +492,7 @@ def _config_declares_multimodality(config: dict) -> bool:
     for key in config:
         if not isinstance(key, str):
             continue
-        # Neither counts alone: text-only configs nest text_config too (ClvpConfig).
+        # Neither counts alone: text_config nests in text-only configs; audio_token_id skips audio allowlist.
         if key in ("text_config", "audio_token_id"):
             continue
         if key in _VISUAL_TOKEN_ID_KEYS:

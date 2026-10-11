@@ -1286,7 +1286,7 @@ def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
 
 
 def test_terminal_stall_releases_an_in_flight_stop_watchdog(monkeypatch):
-    # As above, via an unrecoverable stall.
+    # Arming again no-ops; only the terminal signal keeps the watchdog off the 600s save backstop.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
     b, calls = _shared_setup_3(monkeypatch)
     b._in_model_load = True

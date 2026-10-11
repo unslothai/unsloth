@@ -2425,7 +2425,7 @@ def test_a_case_variant_chat_gets_its_own_directory(tmp_path, monkeypatch):
 def test_the_delete_switch_does_not_promise_project_files():
     """A chat moved back to Recents wrote its earlier files into the project
     workspace, which chat deletion does not touch."""
-    # Required copy is checked where sidebar copy lives; forbidden copy is checked everywhere.
+    # The copy is the contract: check where the sidebar copy lives, not across the whole tree.
     assert "This chat's own sandbox folder is removed from disk." in _frontend_copy_text()
     assert "Anything this chat's tools wrote is removed from disk." not in _frontend_src_text()
 

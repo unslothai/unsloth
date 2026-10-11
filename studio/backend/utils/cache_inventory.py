@@ -421,7 +421,7 @@ def _purge_unsloth_compiled() -> PurgeOutcome:
     outcome.freed_bytes = max(0, before - after)
     outcome.removed_entries = max(0, entries - remaining)
     if after > 0:
-        # clear_unsloth_compiled_cache swallows failures, so check what remains.
+        # Failures are swallowed: check remaining bytes, not entries, as a dedicated cache keeps a marker.
         outcome.errors.append(
             "Part of the compiled cache could not be removed and is still in place."
         )

@@ -1242,7 +1242,7 @@ class TestProbeTier:
         assert _probe_tier_cache["org/m"] == "530"
 
     def test_partial_sidecars_no_parse_is_530_uncached(self, monkeypatch):
-        # 510 sidecar missing: inconclusive, return 530 uncached.
+        # 510 sidecar missing and 530/550 fail to parse: inconclusive, return 530 uncached.
         monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
         for fn in ("_ensure_venv_t5_530_exists", "_ensure_venv_t5_550_exists"):
             monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)

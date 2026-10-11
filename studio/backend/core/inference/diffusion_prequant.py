@@ -352,7 +352,7 @@ def local_prequant_path_ready(path: str) -> bool:
     return os.path.isfile(os.path.expanduser(path))
 
 
-# Operator mirror checked before the Hub: <root>/<owner>/<repo>/<filename>, os.pathsep roots.
+# Operator mirror checked before the Hub; names come only from family tables, never a request.
 PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
 
 
@@ -1793,7 +1793,7 @@ def _resolve_checkpoint_path(
                     name,
                     hf_token,
                     cache_dir,
-                    # Only the last name may swallow its 404, so the next candidate is tried.
+                    # Only the last name may swallow its 404; earlier ones must propagate so the next is tried.
                     propagate_missing = not last,
                     local_files_only = local_files_only,
                 )

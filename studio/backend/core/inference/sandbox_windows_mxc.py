@@ -312,7 +312,7 @@ def verify_success(prepared, proc) -> dict:
             raise SandboxBuildError(
                 "MXC cleanup did not complete cleanly; execution state is uncertain"
             )
-        # Tree killed; only ACE restore is unconfirmed and later wxc-exec replays the journal.
+        # Tree killed, workload gone; only ACE restore unconfirmed. Report timeout or cancel, not an error.
         logger.warning(
             "MXC could not confirm the DACL restore after a forced exit; it retries at the next start"
         )

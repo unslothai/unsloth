@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 # amd-smi on Windows initialises ROCm on first call, which can take 15-25 s.
 _AMD_SMI_DEFAULT_TIMEOUT = 30 if platform.system() == "Windows" else 10
 
-# Each failed Windows call may pop a UAC/DiskPart elevation prompt.
+# Stop polling amd-smi after this many consecutive failures; each Windows failure may pop UAC.
 _AMD_SMI_FAILURE_LIMIT = 3
 _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
@@ -999,7 +999,7 @@ def _loadable_icd_manifests(paths: "list[str] | None" = None) -> "list[str]":
     return [
         path
         for path in (_vulkan_icd_manifest_paths() if paths is None else paths)
-        # A 32-bit manifest is unloadable here, so it is evidence of no vendor.
+        # A 32-bit manifest is unloadable here, so it is neither evidence of AMD nor of another vendor.
         if not _an_icd_is_32_bit(path)
         and _vulkan_loader_allows(path)
         and _icd_manifest_is_usable(path)

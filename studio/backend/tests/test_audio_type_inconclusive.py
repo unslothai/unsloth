@@ -392,7 +392,7 @@ def test_a_populated_audio_named_column_of_prose_still_answers_textual(monkeypat
 
 
 def test_the_first_tokenizer_load_failing_still_reaches_the_retry(monkeypatch):
-    # Spark-TTS tokenizer lives under LLM/, so the retry must run before the load.
+    # Spark-TTS tokenizer lives under LLM/, so the retry must still run when the first load raises.
     import core.training.trainer as trainer_mod
 
     answers = [(None, False), ("bicodec", True)]

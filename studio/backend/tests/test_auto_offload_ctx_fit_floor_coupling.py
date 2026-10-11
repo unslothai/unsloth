@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""_AUTO_OFFLOAD_CTX must stay at or above _FIT_MIN_CTX, or the residency re-check changes placement."""
+"""_AUTO_OFFLOAD_CTX must stay at or above the fit helpers' min_ctx defaults, or placement changes."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ MIB = _matrix.MIB
 PLATFORMS = _matrix.PLATFORMS
 LINUX = next(p for p in PLATFORMS if p[0] == "linux")
 
-# 20000 MiB free on 24 GB leaves 2280 MiB after weights: ~4560 tokens of KV.
+# 20000 MiB free gives 19280 MiB after the reserve; 17000 MiB of weights leaves 2280 (4560 tokens).
 CARD = Accelerator("nvidia-single", False, ((0, 20_000, 24_000),))
 MODEL_MIB = 17_000
 

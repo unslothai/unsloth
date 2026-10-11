@@ -341,7 +341,7 @@ class TestOverheadTotal:
         )
 
     def test_a_separate_drafter_pays_the_same_target_rollback_state(self, monkeypatch):
-        # Rollback copies live in the target and are sized from --spec-draft-n-max for all draft types.
+        # Rollback copies sit in the target for every draft-model type except draft-simple.
         b = _make_backend(n_layers = 65)
         b._ssm_state_size = 128
         b._ssm_group_count = 16

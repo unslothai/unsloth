@@ -237,7 +237,7 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
         json.dumps(bundle, separators = (",", ":")),
     )
     if previous and previous.get("account_id") != bundle.get("account_id"):
-        # Imported here: the client module imports this one at load time.
+        # Rebound to a different account (other plan slugs): no later request will notice, so forget them.
         from core.inference.openai_codex_client import (
             forget_subscription_models,
             mark_subscription_catalog_stale,

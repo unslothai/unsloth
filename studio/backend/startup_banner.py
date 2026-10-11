@@ -110,7 +110,7 @@ def print_studio_access_banner(
         network_url = f"http://[{resolved_network_host}]:{port}"
     else:
         network_url = f"http://{resolved_network_host}:{port}"
-    # Exact aliases the canned loopback_url is valid for.
+    # Only these exact aliases get the canned loopback URL; other binds must show their real address.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
     primary_url = loopback_url if listen_all or loopback_bind else external_url

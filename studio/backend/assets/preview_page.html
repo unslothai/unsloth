@@ -315,7 +315,7 @@
     </div>
     <script>
       const base = location.pathname.replace(/\/+$/, "");
-      // The capability token rides in ?k= and location.pathname drops it, so carry it explicitly.
+      // Capability token rides in ?k=; pathname drops it, so carry it explicitly. Never store or log it.
       const k = new URLSearchParams(location.search).get("k");
       const chatUrl =
         base + "/v1/chat/completions" + (k ? "?k=" + encodeURIComponent(k) : "");

@@ -21,8 +21,7 @@ MAX_EMBEDDING_MODEL_LENGTH = 512
 
 # Read on the embed hot path, so cached briefly; other processes converge within the TTL.
 _CACHE_TTL_S = 2.0
-# typing.Optional: a type alias is evaluated at import, and 3.9 lacks PEP 604.
-# (override model, resolved model, GGUF repo, backend, download pending, raw record).
+# typing.Optional, not str | None: a type alias is evaluated at import, and PEP 604 needs 3.10.
 _StoredState = tuple[
     Optional[str], Optional[str], Optional[str], Optional[str], bool, Optional[dict]
 ]

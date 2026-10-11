@@ -3186,7 +3186,7 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
             return False
         if not p.exists():
             return False
-        # modules.json alone also passes is_embedding_model's local-path check.
+        # A directory must hold a checkpoint: modules.json alone passes the local-path check.
         if not p.is_dir():
             return False
         if not any(_is_st_weight_name(child.name) and child.is_file() for child in p.rglob("*")):

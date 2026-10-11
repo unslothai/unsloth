@@ -50,7 +50,7 @@ class TestInstalledLlamaGfxArchs:
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
 
     def test_unreadable_marker_is_unknown(self, tmp_path, monkeypatch):
-        # Runs inside the GPU probe, where an exception would drop every device.
+        # A raising marker read must answer unknown, never propagate: it runs inside the GPU probe.
         import utils.llama_cpp_freshness as freshness
 
         def _boom(_binary):

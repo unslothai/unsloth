@@ -1965,7 +1965,7 @@ def test_route_start_refuses_a_component_repo_before_freeing_gpu(client, monkeyp
 
 
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
-    # The route imports the helper locally, so patch its home module.
+    # A DiT precision the host cannot run must 400 before the GPU residents are freed
     import routes.training as tr
 
     freed = []

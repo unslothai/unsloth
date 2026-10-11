@@ -281,7 +281,7 @@ def test_management_rejects_api_keys():
         routes._require_ui_session(True)
     assert exc.value.status_code == 403
     assert remote_access.remote_access_status(_state())["streaming_supported"] is True
-    # Scoped to /remote-access handlers: a file-wide count breaks when other endpoints adopt the gate.
+    # Every /remote-access handler must carry the gate; scoped there since a file-wide count breaks.
     tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
     gated = {}
     for node in ast.walk(tree):

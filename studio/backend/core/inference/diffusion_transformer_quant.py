@@ -700,7 +700,7 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-# GGUF / pipeline / single-file artifacts keep their own precision.
+# GGUF substitutes dense base weights; pipeline rewrites in place; single-file keeps stored precision.
 DENSE_QUANT_KINDS: tuple[str, ...] = ("gguf", "pipeline")
 
 
@@ -1107,7 +1107,7 @@ def _auto_scheme_order(
         return ()
     prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
     if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
-        # Switch off: drop gated rows before their gate record or backend probe (flashinfer).
+        # Switch off: drop gated and backend rows before their gate record or backend probe (flashinfer).
         prefer = None
     head: tuple[str, ...] = ()
     if prefer is not None and cap >= prefer.floor:

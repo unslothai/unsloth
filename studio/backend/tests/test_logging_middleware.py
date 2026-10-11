@@ -441,7 +441,7 @@ def test_unrelated_image_routes_still_log(logs, monkeypatch):
 
 
 def test_indicator_status_polls_collapse_to_one_shared_heartbeat(logs, monkeypatch):
-    # The three cheap status polls share one heartbeat bucket; inference/status is slow.
+    # Three cheap status polls share one heartbeat; inference/status is excluded as it can be slow.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -472,7 +472,7 @@ def test_the_runtime_status_polls_share_the_liveness_bucket(logs, monkeypatch):
 
 
 def test_health_keeps_its_own_heartbeat(logs, monkeypatch):
-    # A slow but successful /api/health is worth logging (preflight has a 2s deadline).
+    # Health keeps its own heartbeat; a slow successful /api/health must not be suppressed by a poll.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 

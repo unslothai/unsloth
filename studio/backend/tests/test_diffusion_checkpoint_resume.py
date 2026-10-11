@@ -238,7 +238,7 @@ def test_failed_write_cleans_up_and_next_save_clears_stale_staging(run_dir, monk
 
 
 def test_a_real_fsync_failure_fails_the_save_but_an_unsupported_one_does_not(run_dir, monkeypatch):
-    # Windows _commit and some network filesystems refuse fsync; that must not fail the run.
+    # A real fsync error (ENOSPC/EIO) must fail the save; unsupported fsync (Windows _commit) must not.
     run = _Run(run_dir)
     real_fsync = dc.os.fsync
 

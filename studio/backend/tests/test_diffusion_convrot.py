@@ -320,7 +320,7 @@ def test_format_tag_follows_the_rotation():
     [
         (pq.PREQUANT_FORMAT, {}, True),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"]), True),
-        # A rotated artifact tagged v1 would load on older Unsloth and render wrong pixels.
+        # A rotated artifact tagged v1 must be refused: older Unsloth loads it and renders wrong pixels.
         (pq.PREQUANT_FORMAT, _meta(["a"]), False),
         (pq.PREQUANT_FORMAT_ROTATED, {}, False),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"], kind = "something_else"), False),

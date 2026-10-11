@@ -3874,7 +3874,7 @@ class AnthropicToolResultBlock(BaseModel):
         return "" if v is None else v
 
 
-# Unknown block types are accepted and dropped by the converter rather than 400-ing.
+# Unknown block types are accepted; the converter renders them if it can, else drops them.
 _KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset(
     {"text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking"}
 )

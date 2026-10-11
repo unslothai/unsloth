@@ -2772,8 +2772,7 @@ _INFERENCE_DIR = _REPO_ROOT / "studio" / "backend" / "core" / "inference"
 
 _CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
 
-# studio_tool_loop.py (external provider) is a known gap needing a transport change.
-# Keyed by (path, function, site count), not line number, so only adding a controller fails.
+# studio_tool_loop.py is a known gap; keyed by site count, so adding or removing a controller fails
 _CONTROLLER_SITES_OUT_OF_SCOPE = frozenset(
     {("core/inference/studio_tool_loop.py", "stream_with_studio_tools", 1)}
 )

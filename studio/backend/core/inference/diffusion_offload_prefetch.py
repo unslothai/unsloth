@@ -390,7 +390,7 @@ class GroupPrefetcher:
         stream = group.stream
         where = self.slot_of.get(id(group)) if slot else None
         with torch.cuda.stream(stream):
-            # Made on the copy stream: the allocator orders block reuse per stream.
+            # Copies run on the copy stream; a block the compute stream still reads is never handed to them
             buffers = self._views_for(group, where) if where is not None else None
             for i, t in enumerate(_group_tensors(group)):
                 src = cpu[t]

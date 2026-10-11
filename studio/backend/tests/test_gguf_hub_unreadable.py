@@ -110,7 +110,7 @@ def test_hub_401_on_gguf_repo_raises_clear_error(monkeypatch):
     ids = ["no_token", "anonymous", "explicit_token"],
 )
 def test_hub_401_is_not_served_from_a_stale_cache(monkeypatch, _isolated, hf_token):
-    # The owner-session case lives in test_gguf_refused_cached_load.py.
+    # Not the owner session (an API key or another account): the cached copy stays refused
     _cache(_isolated, REPO, GGUF)
     monkeypatch.setattr(
         huggingface_hub, "model_info", _hub(RepositoryNotFoundError("401 Client Error"))

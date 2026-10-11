@@ -430,7 +430,7 @@ class TestConsentGate:
         scan.assert_not_called()
 
     def test_medium_severity_blocks_pending_approval(self):
-        # MEDIUM is rarely emitted, so the scan result is mocked.
+        # MEDIUM is approvable but blocks until pinned: trust_remote_code=True alone cannot run it
         from utils.security.remote_code_scan import MEDIUM
 
         class _MediumResult:
@@ -1425,7 +1425,7 @@ class TestScannerCoversAllExecutableCode:
                 repo_remote_code_files("third/party")
 
     def test_external_tokenizer_auto_map_list_is_scanned(self):
-        # transformers encodes a tokenizer auto_map as a [slow, fast] list.
+        # A tokenizer auto_map [slow, fast] list: the external code in the list must still be scanned
         def _dl(
             repo,
             fn,

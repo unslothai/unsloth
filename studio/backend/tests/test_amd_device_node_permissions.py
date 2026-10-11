@@ -68,7 +68,7 @@ def _no_inherited_gpu_mask(monkeypatch):
 @pytest.fixture(autouse = True)
 def _the_account_this_process_runs_as(monkeypatch):
     """Stubs passwd so the account is not the runner's own, which differs per machine."""
-    # Real struct_passwd: getpass.getuser() subscripts it when no USER env is set.
+    # Real struct_passwd: getpass.getuser() subscripts it if no LOGNAME/USER/LNAME/USERNAME is set.
     _record = pwd.struct_passwd(("ada", "x", os.getuid(), os.getgid(), "", "/home/ada", "/bin/sh"))
     monkeypatch.setattr(pwd, "getpwuid", lambda _uid: _record)
 

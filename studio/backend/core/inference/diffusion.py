@@ -736,7 +736,6 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
 
 
 # Official non-unsloth pipeline bases: safetensors-only, no remote code, exact lowercased match.
-# Every family's base_repo must be listed, else validate_load_request refuses the family.
 _TRUSTED_NON_GGUF_REPOS = frozenset(
     {
         "stabilityai/stable-diffusion-xl-base-1.0",
@@ -1091,7 +1090,7 @@ class _LoadingState:
     base_repo: str
     expected_bytes: int = 0
     error: Optional[str] = None
-    # Mirror repo the companion bytes land in; the cache scan and delete guard must look here.
+    # Companion bytes land in base_repo or its mirror; the cache scan and delete guard must look there.
     fetch_repo: Optional[str] = None
     asset_repos: tuple[str, ...] = ()
     # (repo, filename, declared size, repo bytes on disk when this load claimed it)
@@ -2947,7 +2946,7 @@ class DiffusionBackend:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-        # Resolve the GPU once in the route: bad picks 400 early and free VRAM cannot re-rank after download.
+        # Resolve the GPU once here, before the worker: bad picks 400 early; free VRAM cannot re-rank later.
         if gpu_ordinal is None:
             gpu_ordinal = (
                 resolve_selected_cuda_ordinal(gpu_ids)
@@ -4224,7 +4223,7 @@ class DiffusionBackend:
             revision = revisions.get(repo)
             live = hub_cache_dir()
 
-            # Adopt a running @diffusion job only when one cache root serves the whole snapshot.
+            # Adoption needs the same complete file set; the fast path drops a repo only if one root serves it.
             if self._files_already_cached(repo, files, revision, declared_sizes).issuperset(files):
                 for entry in entries:
                     if entry["repo_id"] == repo:

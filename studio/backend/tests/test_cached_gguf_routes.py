@@ -2816,7 +2816,7 @@ def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
 
 
 def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
-    # sd.cpp re-reads companion VAE/text-encoder files per generation; refuse deleting them.
+    # sd.cpp re-reads companion files each generation: refuse deleting them while the GGUF is loaded.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -3400,7 +3400,7 @@ def test_hub_local_rows_are_tagged_with_their_task():
 
 
 def test_pipeline_class_guard_fires_before_any_download():
-    # 0.35.2 is the last release before ZImagePipeline and still installs on Python 3.9.
+    # Validation must refuse before the checkpoint download, naming the version and the fix.
     import pytest
 
     from core.inference.diffusion_families import assert_pipeline_class_available
@@ -5265,7 +5265,9 @@ def test_the_listing_probe_reads_the_installed_version_instead_of_importing_diff
     monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
 
     assert family_pipeline_available(z_image) is True
-    assert family_pipeline_available(h3) is False  # first release with its transformer
+    assert (
+        family_pipeline_available(h3) is False
+    )  # 0.40.0 is the first release with its transformer
     assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
 
     installed[0] = "0.40.0.dev0"

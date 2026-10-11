@@ -1514,7 +1514,7 @@ def test_a_pipeline_is_planned_by_its_index_not_its_directory_name(
 
 
 def test_a_gguf_the_loader_cannot_open_is_not_advertised(catalog, tmp_path):
-    # A non-active HF cache is scanned via snapshot paths whose blob symlinks validators refuse.
+    # Scan a non-active HF cache by snapshot path; never unwrap to a repo id, or it re-downloads.
     _repo_dir, snapshot = _hf_cache_repo(
         tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-image-turbo-Q4_K_S.gguf"]
     )

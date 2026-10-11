@@ -3676,7 +3676,7 @@ def _rocm_windows_per_device_vram(
                 unified = _rocm_props_are_positively_unified(props)
                 if unified and hasattr(mod, "mem_get_info"):
                     pool_bytes = int(mod.mem_get_info(ordinal)[1])
-                    # Equal is the expected case: PAL adds the WDDM shared heap to globalMemSize_ on APUs.
+                    # Equal is the only case: both totals read globalMemSize_, which PAL widens on APUs.
                     pool_confirmed = pool_bytes >= total_bytes
                     # Shrink guard: a shrunk total would report past 100% utilization.
                     if pool_bytes > total_bytes:

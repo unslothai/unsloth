@@ -5968,7 +5968,7 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # Matches llama.cpp's --fit margin; an iGPU's VRAM is shared system RAM.
 _IGPU_HOST_RESERVE_MIB = 1024
 _HOST_RAM_HEADROOM_MIB = 2048
-# Never advise taking more than this from the host, or the desktop becomes unusable.
+# The host keeps the larger of a GB floor or a RAM share, else the desktop becomes unusable.
 _CARVEOUT_ADVICE_MIN_HOST_GB = 8
 # A fifth, not a quarter: 128 GB Strix Halo firmware offers and runs 96 GB.
 _CARVEOUT_ADVICE_HOST_FRACTION = 0.20
@@ -6372,7 +6372,7 @@ class LlamaCppBackend:
         3. unload_model(): terminate the subprocess
     """
 
-    # On the class: doubles built with __new__ never run __init__.
+    # Held across the teardown check and child publish, never across a health wait.
     _spawn_lock = threading.Lock()
 
     # Lock order is always _teardown_lock then _spawn_lock.
@@ -11590,7 +11590,7 @@ class LlamaCppBackend:
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            # 4 columns from an older probe, 5 with name, 6 with type.
+            # 4 columns from an older probe (no name); 5 with the name column.
             if len(parts) not in (4, 5, 6):
                 continue
             try:
@@ -16102,7 +16102,7 @@ class LlamaCppBackend:
             ranked: list[tuple[tuple[int, int, int, str], Path]] = []
             for snap in snapshots:
                 names = _gguf_snapshot_files(snap)
-                # Other root GGUFs are weights a sidecar could name; that identifies a neighbour's sidecar.
+                # Every non-sidecar GGUF here, nested dflash-*.gguf included, is a weight a sidecar could name.
                 others = [
                     Path(name).name for name in names if not _is_root_dflash_drafter_path(name)
                 ]
@@ -16817,7 +16817,7 @@ class LlamaCppBackend:
                     f"signature of {lib}. The file was modified or is "
                     f"incompletely signed, so {LlamaCppBackend._runtime_remedy(binary)}."
                 )
-            # dyld4 vs older wording.
+            # dyld4 reports incompatible architecture; older dyld reported wrong architecture.
             if "incompatible architecture" in verdict_l or "wrong architecture" in verdict_l:
                 return (
                     f"llama-server could not start: {lib} was built for a "
@@ -18061,8 +18061,7 @@ class LlamaCppBackend:
                 if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                     out[i + 1] = "f16"
                     _cache_reset = True
-        # MLA rejects K != V, and V is always f16 on this FA-off path, so K must follow.
-        # Gated per model (target vs drafter); drafter defaults to target's mla, the safe side.
+        # MLA rejects K != V, so K follows V; gated per model, and an unreadable drafter counts as MLA.
         _main_k_flags = ("--cache-type-k", "-ctk")
         _draft_k_flags = ("--cache-type-k-draft", "--spec-draft-type-k", "-ctkd")
         if draft_mla is None:
@@ -22250,7 +22249,7 @@ class LlamaCppBackend:
                     # -1 is llama.cpp's default, so the --fit on retry does not abort on a user-set -ngl.
                     fully_gpu_offloaded = True
                 elif use_fit:
-                    # Spill whole layers, not tensors: a layer takes its KV cache with it.
+                    # Spill weight tensors, not whole layers: a spilled layer takes its KV cache with it.
                     _spill = self._planned_tensor_spill(
                         _spill_inputs,
                         extra_args = extra_args,
@@ -27432,7 +27431,8 @@ class LlamaCppBackend:
                         if self._cancel_event.is_set() or self._unload_epoch != unload_epoch:
                             undo_reload = True
                         else:
-                            # Keep the stripped list, or the comparator reloads the crashing MTP config.
+                            # Keep the original extras: a comparator seeing only the stripped list reloads the MTP
+                            # config.
                             if fallback_extra_args is not snapshot.extra_args:
                                 self._requested_extra_args = (
                                     self._strip_device_extra_args(_ea)

@@ -131,7 +131,7 @@ def test_a_root_at_or_near_the_filesystem_root_is_refused(raw):
 
 
 def test_a_shallow_root_is_refused_even_when_nothing_protects_it(tmp_path):
-    # One component below the anchor is a real dir, never a cache.
+    # The depth rule alone stops a variable pointed one level down from an rmtree of its contents.
     shallow = Path(*tmp_path.parts[:2])
     if not shallow.is_dir() or shallow.is_symlink() or len(shallow.parts) != 2:
         pytest.skip(f"no shallow non-symlink directory to test with ({shallow})")

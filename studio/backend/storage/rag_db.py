@@ -298,7 +298,7 @@ def get_connection() -> sqlite3.Connection:
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    # Figure-heavy ingests hold their connection across many seconds of vision calls.
+    # Wait for a lock instead of erroring: figure-heavy ingests hold connections across many seconds.
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
         conn.enable_load_extension(True)

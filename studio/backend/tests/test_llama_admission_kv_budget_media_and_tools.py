@@ -77,7 +77,7 @@ class TestMediaIsCharged:
         # clear of the clamp, else both sides pin to the budget and agree regardless
         legacy_cost = _openai_llama_admission_tokens(legacy, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
-        # not to the token: inline sends a content-part wrapper legacy does not
+        # Wire spelling must not change the commitment (not to the token); the 30x gap must not survive
         assert abs(legacy_cost - inline_cost) <= 64, (legacy_cost, inline_cost)
         assert max(legacy_cost, inline_cost) < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
 

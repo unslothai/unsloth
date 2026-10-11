@@ -1582,7 +1582,7 @@ class TestRouteErrors(unittest.TestCase):
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
         model_config = _gguf_model_config(gguf_mtp_file = None)
         acquired = []
-        # Duplicate id is rejected on any host.
+        # Make [0, 1] invalid on every host; the point is that validation runs before the CHAT handoff.
         request.gpu_ids = [0, 0]
         with (
             patch.object(

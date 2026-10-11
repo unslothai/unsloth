@@ -2343,7 +2343,7 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "setxattr",
         "removexattr",
         "import_module",
-        # extract/extractall allow zip-slip even for a single member.
+        # exec_module runs module code like import_module; extract/extractall allow zip-slip escapes
         "exec_module",
         "extractall",
         "extract",
@@ -5154,7 +5154,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     methodcaller_aliases: "set[str]" = set()
     basicconfig_aliases: "set[str]" = set()
     fileinput_aliases = {"fileinput"}
-    # The write-callable gate keeps map(len, ...) safe.
+    # Higher-order invokers call their first arg, so a handed writer writes; track aliases.
     invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
 
     def _in_numpy(node) -> bool:
@@ -5716,7 +5716,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     if func.attr in _ARCHIVE_CTOR_NAMES and _builtin_open_writes(node):
                         return True
-                    # Enumerating a directory outside the sandbox reveals host filenames; dynamic dirs are left
+                    # Listing a dir outside the sandbox reveals host filenames; gate absolute, tilde or sensitive
+                    # dirs.
                     # to other checks.
                     _enum_dir = None
                     if func.attr == "iterdir":
@@ -5751,7 +5752,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     return False
 
 
-# Mirrors the sandbox SSRF blocklist.
+# Metadata and link-local hosts: a read-named HTTP MCP tool aimed at one reads instance credentials.
 _MCP_METADATA_HOST_RE = re.compile(
     r"169\.254\.\d{1,3}\.\d{1,3}|"
     r"100\.100\.100\.\d{1,3}|"
@@ -6306,7 +6307,7 @@ _GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
 _OPENSSL_NETWORK_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
 )
-# Paired with the var-executed test so `echo "${a[@]}"` is left alone.
+# Array expansion builds commands the scan cannot resolve; a shell -c or eval runs them unscreened.
 _ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
 # Non-shell interpreters running an inline program (python -c, node -e, php -r): the terminal path never screens that
 # program the way the python tool does. sh/bash -c are omitted, the hard-block already recursing into their payloads.
@@ -6859,7 +6860,7 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
     method_pending = False
     for t in tokens:
         name = t.split("=", 1)[0]
-        # Separated, attached (-XDELETE) and --request= forms.
+        # curl -X DELETE / --request PUT mutate a remote resource; separate, attached and = forms count.
         if has_curl:
             if method_pending:
                 method_pending = False
@@ -7538,9 +7539,9 @@ def _python_is_high_risk(code: str) -> bool:
             and _references_sensitive_path(_node.value)
         ):
             return True
-    # Parity with the terminal `rm` gate.
+    # Destructive fs calls (shutil.rmtree, Path.unlink) ask, like the terminal rm gate.
     destructive_fs_aliases: "set[str]" = set()
-    # So an unrelated .kill() on a user object is not mistaken for one.
+    # Modules whose handles end processes; so an unrelated .kill() on a user object is not flagged.
     psutil_names: "set[str]" = set()
     for _node in _tree_nodes(tree):
         if isinstance(_node, ast.Import):
@@ -7555,7 +7556,7 @@ def _python_is_high_risk(code: str) -> bool:
     os_module_aliases: "set[str]" = {"os", "posix", "nt"}
 
     def _is_os_module_ref(value) -> bool:
-        # builtins.__import__ is the same callable reached through the module.
+        # Matches os/posix/nt names, walrus bindings, and __import__ of os (also via builtins).
         if isinstance(value, ast.Name):
             return value.id in os_module_aliases
         if isinstance(value, ast.NamedExpr):
@@ -7815,7 +7816,7 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
-        # One vocabulary for the term-boundary regexes.
+        # Normalize every separator and camelCase boundary to underscore so term regexes match one form.
         tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
         # Exec tools, credential nouns and sensitive paths prompt; ordinary CRUD calls run.
         _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
@@ -12846,8 +12847,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             )
         return found
 
-    # An oversized attachment is mandatory grounding: search it alone without the relevance floor,
-    # then add project context if it fits.
+    # Auto-injection off: an oversized attachment searched alone, unfloored; project context if it fits.
     if text is None and (enabled or whole_doc_requested):
         try:
             if whole_doc_requested and not enabled:
@@ -14110,7 +14110,7 @@ def _fetch_url_raw(
         try:
             raw_html = raw_bytes.decode(declared or fallback_codec, errors = "replace")
         except (LookupError, ValueError):
-            # Lookup succeeds but decode fails for non-text codecs (base64, hex, zlib, undefined, idna).
+            # Decode fails for base64, hex, zlib (not text codecs), undefined, and idna with errors=replace.
             declared = None
             declared_codec = None
             raw_html = raw_bytes.decode(fallback_codec, errors = "replace")
@@ -16618,7 +16618,7 @@ def _check_signal_escape_patterns(code: str):
         def __init__(self):
             # Accumulated, not overwritten: the map is not scope aware, so resolution must be monotone.
             self.module_aliases: dict[str, set[str]] = {}
-            # Accumulated for the same reason.
+            # Accumulated, not overwritten: a later binding must not hide an earlier network function.
             self.func_aliases: dict[str, set[str]] = {}
             # Built only when the source can name a network module; ordinary code skips these walks.
             nodes = _tree_nodes(tree) if network_possible else ()

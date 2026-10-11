@@ -9413,7 +9413,7 @@ class _SlotHandoffLock:
 def test_cancel_spares_a_serialized_request_during_slot_handoff(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # A waiter can own _generate_lock before moving its cancel event to the active slot.
+    # A waiter can own _generate_lock before its cancel moves to the active slot; Stop must spare it.
     backend = _loaded_backend(tmp_path)
 
     denoising = threading.Event()
@@ -9654,7 +9654,7 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
 
 
 def test_auto_retries_a_lower_scheme_that_has_a_prequant(monkeypatch):
-    # Qwen-Image: auto picks fp8 but only int8 is published; the retry walks the ladder for a cached rung.
+    # Qwen-Image: fp8 has no published prequant, only int8; the retry walks the ladder for one.
     from core.inference.diffusion import DiffusionBackend
 
     monkeypatch.setattr(

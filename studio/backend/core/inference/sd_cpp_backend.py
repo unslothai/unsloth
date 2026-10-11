@@ -2545,7 +2545,7 @@ class SdCppDiffusionBackend:
                     )
                     raise RuntimeError("sd-cli binary is present but not runnable.")
 
-            # Swap once so size probe and download agree; offline asks memo/local header only.
+            # Swap once so size probe and download agree; speech refusal runs before any fetch.
             _assert_pick_is_not_speech(
                 repo_id, gguf_filename, hf_token, allow_network = not local_files_only
             )
@@ -2901,7 +2901,7 @@ class SdCppDiffusionBackend:
 
         # Stage from the fetch repo: some asset repos are gated and anonymous staging would 401.
         fetch_repo = _fetch_repo_map(specs, hf_token)
-        # Merged: two upstream repos can share one fetch repo.
+        # Merge, do not reassign: two upstream repos can share one fetch repo and drop files.
         merged: dict[str, list[str]] = {}
         for repo, names in by_repo.items():
             into = merged.setdefault(fetch_repo[repo], [])

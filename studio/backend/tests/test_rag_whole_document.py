@@ -525,7 +525,7 @@ def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
 
 
 def test_build_rag_autoinject_refuses_when_not_even_one_passage_fits(rag_conn, monkeypatch):
-    # The current turn cannot be evicted, so a non-fitting passage would fail the request.
+    # The current turn may not be evicted, so when no passage fits, inject nothing rather than fail.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )

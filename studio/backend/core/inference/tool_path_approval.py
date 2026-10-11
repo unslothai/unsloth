@@ -91,7 +91,7 @@ _SYSTEM_READ_SILENT_ROOTS = (
     "/dev",
     # Mirrors tool_confinement._SYSTEM_READ_ROOTS; secret subdirs are caught by the credential check.
     "/run",
-    # On macOS /var/run is the real location and /etc/resolv.conf links into it.
+    # On macOS the REAL location is /private/var/run, not /var/run.
     "/var/run",
     "/System",
     "/Library",
@@ -1343,7 +1343,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             _add_flag_operand(operands, spec.get(flag), arg, write_cmd, creating)
             continue
         if arg.startswith("-") and arg != "-":
-            # A flag value can be a path or data that merely looks like one (`cut -d /`).
+            # A flag value is always consumed: a path, or data that merely looks like one (cut -d /).
             name, sep, attached = arg.partition("=")
             # The pattern came from a flag, so the first positional is a real operand.
             if name in pattern_flags:
@@ -1729,7 +1729,7 @@ _PY_PATH_READ_CALLS = frozenset(
 
 _PY_PATH_WRITE_CALLS = frozenset(
     {
-        # Source directories are read through `_PY_PATH_KWARGS_BY_CALL`.
+        # make_archive creates base_name + ext; its source dirs are read via _PY_PATH_KWARGS_BY_CALL.
         "make_archive",
         "write_text",
         "write_bytes",

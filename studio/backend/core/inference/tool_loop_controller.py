@@ -250,7 +250,7 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
-        # The frontend persists this payload and replays it as a role="tool" message.
+        # Mask here too, not only in model_message: the frontend persists this payload and replays it.
         result = self.result
         return {
             "tool_name": self.decision.tool_name,

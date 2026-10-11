@@ -3312,7 +3312,7 @@ async def start_diffusion_training(
         )
         if mixed_refusal is not None:
             raise HTTPException(status_code = 400, detail = mixed_refusal)
-        # Same discovery the trainer runs, so the two cannot disagree.
+        # Preflight the dataset so a missing or empty data_dir fails before GPU eviction, not after.
         try:
             pairs = await asyncio.to_thread(
                 _dtc.discover_training_pairs,

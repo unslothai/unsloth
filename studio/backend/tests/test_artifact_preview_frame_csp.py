@@ -81,7 +81,7 @@ def test_the_shell_reports_which_directive_was_violated():
 
 
 def test_the_grant_widens_everything_but_the_locked_directives():
-    # Pins GRANT_CANNOT_FIX in html-frame.tsx.
+    # Locking another directive fails this, so the banner never prompts for a grant that cannot fix it.
     strict = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_STRICT_CSP)
     network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
     unchanged = {
@@ -93,7 +93,7 @@ def test_the_grant_widens_everything_but_the_locked_directives():
 
 
 def test_the_permissive_policy_widens_every_hostless_scheme_but_one():
-    # Pins GRANT_CANNOT_FIX_SCHEME in html-frame.tsx.
+    # Non-HTTP(S) violations report a bare scheme, so offer the grant only where that scheme is allowed.
     network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
     skip = {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}
     gaps = {

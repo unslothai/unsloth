@@ -417,7 +417,7 @@ def test_a_non_gguf_single_file_costs_no_request_at_all(monkeypatch, tmp_path):
 
 
 def test_pasting_a_token_re_probes_a_pick_that_missed_anonymously(monkeypatch, tmp_path):
-    # The memo keeps a miss, so an unreachable Hub is not asked three times per load.
+    # The memo keeps a miss, but a token paste must re-probe or a gated GGUF stays unguarded.
     bodies: dict[str, bytes] = {}
     requests = _stub_range_reads(monkeypatch, bodies)
 

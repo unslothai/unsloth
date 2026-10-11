@@ -41,7 +41,7 @@ UNREADABLE_MARKER = "[log record omitted: not UTF-8 text the redactor can mask]"
 
 MAX_SOURCE_TAIL_BYTES = 8 * 1024 * 1024
 
-# ~12s of the redactor at ~4.2 MB/s, inside the 30s DOWNLOAD_READ_TIMEOUT for headers.
+# Sized to ~12s of redactor time in the 30s header timeout; raise it only with a faster redactor.
 MAX_TOTAL_SOURCE_BYTES = 32 * 1024 * 1024
 
 # Caps quadratic ANSI backtracking so the build still lands inside DOWNLOAD_READ_TIMEOUT.

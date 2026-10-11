@@ -5759,7 +5759,7 @@ _TOOL_XML_RE = _re.compile(
     # Truncated [TOOL_CALLS] array (lost ']' to EOS): strip its tail.
     r"|\[TOOL_CALLS\]\s*\[.*\Z"
     r"|\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
-    # Rehearsal: NAME captured as ``reh`` for the inactive-name display gate.
+    # Rehearsal: match only at EOS so prose like foo[ARGS] survives; NAME captured as reh.
     r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)"
     r"|"
     + _DS_OPEN_SRC
@@ -12047,7 +12047,7 @@ def _gguf_memory_breakdown(
     tensor_parallel = (
         _effective_tensor_parallel(llama_extra_args, tensor_parallel)
         and tensor_split_possible
-        # Session latches that force a layer split, asked of the same classmethods.
+        # Latches that force a layer split: a build refusing quantized KV under tensor, or a session abort.
         and _tensor_latches_allow_a_split(gguf_path, config, cache_type_kv, llama_extra_args)
         and _manual_keeps_tensor_split(gpu_memory_mode, gpu_layers, llama_extra_args)
     )
@@ -22255,7 +22255,7 @@ def _wav_seconds(raw: bytes) -> Optional[float]:
             block_align = int.from_bytes(raw[body + 12 : body + 14], "little")
             bits = int.from_bytes(raw[body + 14 : body + 16], "little")
             if not _wav_format_is_pcm(raw, body, size, format_tag):
-                # Only WAVE_FORMAT_PCM has fixed blockAlign/byte rate; ADPCM math would understate length.
+                # Only WAVE_FORMAT_PCM fixes blockAlign and byte rate; PCM math on other codecs understates length.
                 return None
             # Measure frames as miniaudio does; trusting rate fields let inflated values hide length.
             frame_bytes = channels * bits // 8 if bits % 8 == 0 else block_align
@@ -24763,7 +24763,7 @@ async def _proxy_to_external_provider(
                     messages = chat_messages,
                     session_id = payload.session_id,
                     thread_id = payload.thread_id,
-                    # Only model id the client sees; omitted, usage is attributed to "external".
+                    # Only model id the client sees; if omitted it falls back to external, and usage is unattributed.
                     model = model,
                     tool_choice = payload.tool_choice,
                     continue_final_message = _continue_final_message(payload),
@@ -32663,7 +32663,7 @@ def _reject_unserviceable_responses_attachment(part, *, role = "user") -> None:
             )
 
 
-# Allowlist, not an input_ prefix test (misses computer_screenshot).
+# Metadata parts may be dropped only on assistant replay turns, never on system or developer.
 _RESPONSES_TEXT_PART_TYPES = frozenset({"input_text", "output_text"})
 # Droppable only on assistant replay turns; on system/developer it is caller content.
 _RESPONSES_ASSISTANT_METADATA_PART_TYPES = frozenset({"refusal", "summary_text"})
@@ -34527,7 +34527,7 @@ def _llama_image_data_url(raw: bytes) -> str:
     return f"data:image/png;base64,{_image_bytes_to_png_b64(raw)}"
 
 
-# Per-image cap matches llama-server; the count bounds DNS/redirect work regardless of size.
+# Match the llama-server per-image limit and add a per-request budget.
 _REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _REMOTE_IMAGE_REQUEST_BUDGET_BYTES = 32 * 1024 * 1024
 _REMOTE_IMAGE_MAX_COUNT = 8
@@ -37373,7 +37373,7 @@ async def _anthropic_passthrough_stream(
                 _healing_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
             )
-        # These yields sit outside the teardown try; __exit__ is idempotent.
+        # Outside the teardown try: a disconnect here would strand the tracker; __exit__ is idempotent.
         try:
             for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
                 yield line
@@ -37738,7 +37738,7 @@ async def _anthropic_passthrough_non_streaming(
         else:
             text = message.get("content") or ""
             if text:
-                # Keep unpromoted bytes when healing is active; legacy stripping only for opted-out requests.
+                # Keep unpromoted bytes if healing is active; strip legacy only when opted out or no client tools.
                 if not healing_active and response_format is None:
                     text = _strip_tool_xml_for_display(
                         text,
@@ -39953,7 +39953,7 @@ async def load_diffusion_model_gated(
 
     backend = get_diffusion_backend()
     try:
-        # A bad kind raises here, so a 400.
+        # Resolve the kind once so validation, engine selection and the load agree; a bad kind is a 400.
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # A bare single-file .safetensors directory is reinterpreted as a single_file load.
         if kind == "pipeline" and not request.gguf_filename:
@@ -40074,7 +40074,7 @@ async def load_diffusion_model_gated(
         # predict_engine never installs, so a failed sd-cli install lands on the OTHER engine: re-preflight.
         if (needs_gpu or preflighted is not None) and engine is not preflighted:
             await asyncio.to_thread(_preflight, engine)
-        # Re-run the precision gate when prediction raised or missed, or sd.cpp silently accepts FP8.
+        # Re-run the precision gate only when the prediction raised or missed; a correct one already ran it.
         activated = active_engine_name()
         if fam is not None and activated != pending_name:
             if activated == ENGINE_SD_CPP:

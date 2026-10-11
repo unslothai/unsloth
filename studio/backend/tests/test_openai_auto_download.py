@@ -2066,7 +2066,7 @@ def test_the_diagnosis_does_not_report_a_model_this_account_cannot_see(monkeypat
     assert "is downloaded" not in hidden
     assert "is not downloaded on this server" in hidden
 
-    # A row the filter keeps must still be diagnosed, or a managed account is told nothing.
+    # Kept rows must still be diagnosed, or managed accounts are told nothing they own is downloaded.
     granted = _unavailable_message(
         "org/Granted",
         downloaded = [],

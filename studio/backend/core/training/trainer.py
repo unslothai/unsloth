@@ -158,7 +158,7 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
             pass
 
 
-# These load_model branches force load_in_4bit=False, so the base is always 16-bit.
+# These load_model branches force load_in_4bit=False: the base is 16-bit or wider (bicodec fp32).
 _FORCED_16BIT_AUDIO_TYPES = frozenset({"csm", "whisper", "bicodec", "dac"})
 
 

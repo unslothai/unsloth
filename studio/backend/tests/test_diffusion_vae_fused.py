@@ -513,7 +513,7 @@ def test_blend_seam_on_cuda_is_bit_identical_and_host_free(dtype):
 
 
 def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
-    # the fused attention holds fp32 score chunks stock SDPA never allocates, so its OOM must not abort
+    # fused attention: fp32 score chunks stock SDPA never allocates; its OOM must not abort the decode
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     torch.manual_seed(0)
