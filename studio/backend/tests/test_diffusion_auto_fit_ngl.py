@@ -245,6 +245,10 @@ def test_zero_layer_fit_runs_on_the_cpu(monkeypatch, tmp_path):
     cmd, backend = _launch(monkeypatch, tmp_path, [(0, 0, 8_188)])
     assert (_ngl(cmd), cmd[cmd.index("--gpu") + 1]) == ("0", "")
     assert backend._gpu_offload_active is False
+    # The arbiter must see a CPU runner, though the request stays Auto.
+    backend._is_diffusion = True
+    assert backend.gpu_memory_mode == "auto"
+    assert backend.holds_no_vram is True
 
 
 def test_auto_launch_that_fits_is_unchanged(monkeypatch, tmp_path):
@@ -252,6 +256,8 @@ def test_auto_launch_that_fits_is_unchanged(monkeypatch, tmp_path):
         cmd, _backend = _launch(monkeypatch, tmp_path, [(0, 23_500, 24_576)], n_ctx = n_ctx)
         assert _ngl(cmd) is None
         assert _maxtok(cmd) == str(n_ctx)
+        _backend._is_diffusion = True
+        assert _backend.holds_no_vram is False
 
 
 def test_auto_launch_with_an_old_shim_keeps_the_default(monkeypatch, tmp_path):

@@ -9039,6 +9039,10 @@ class LlamaCppBackend:
         never competed with."""
         if self._arch_gate_forced_cpu:
             return True
+        # A diffusion runner reports offload False only when its GPU token was masked: a
+        # manual zero split, or an Auto fit that found no room on the card.
+        if self._is_diffusion and self._gpu_offload_active is False:
+            return True
         return (
             self._gpu_memory_mode == "manual"
             and self._gpu_layers == 0
