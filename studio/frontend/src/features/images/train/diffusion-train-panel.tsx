@@ -426,6 +426,8 @@ export function DiffusionTrainPanel({
   const isDiT = familyName !== "sdxl";
   const isH3 = familyName === "minimax-h3";
   const supportsCfgDropout = isDiT && !isH3;
+  // H3 shifts its video and audio schedules separately and applies a number to video only: no shared control.
+  const supportsFlowShift = isDiT && !isH3;
   // An EMPTY precision_modes list on a DiT family means this host cannot train it at all (the reason rides in
   // vram_note); only an ABSENT field means an older backend. SDXL reports [] too but is not precision-gated,
   // hence the isDiT scope.
@@ -511,8 +513,8 @@ export function DiffusionTrainPanel({
   // Only the DiT loops read it, and MiniMax-H3 refuses it: it has no unconditional branch to train.
   const [cfgDropout, setCfgDropout] = useState(0);
   const [loraDropout, setLoraDropout] = useState(0);
-  // Flow-matching families only. "default" sends nothing, so each family keeps its own default.
-  const [flowShiftMode, setFlowShiftMode] = useState<"default" | "auto" | "custom">("default");
+  // "default" sends nothing, so each family keeps its own default.
+  const [flowShiftMode, setFlowShiftMode] = useState<"default" | "custom">("default");
   const [flowShift, setFlowShift] = useState(3);
   // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen base
   // weights and ignore this.
@@ -1163,7 +1165,7 @@ export function DiffusionTrainPanel({
     if (!(loraDropout >= 0 && loraDropout < 1)) {
       return toast.error("LoRA dropout must be at least 0 and below 1.");
     }
-    if (isDiT && flowShiftMode === "custom" && !(flowShift > 0)) {
+    if (supportsFlowShift && flowShiftMode === "custom" && !(flowShift > 0)) {
       return toast.error("Timestep shift must be greater than 0.");
     }
     setStarting(true);
@@ -1202,12 +1204,7 @@ export function DiffusionTrainPanel({
         save_total_limit: supportsCheckpoints ? Math.max(0, Math.floor(saveTotalLimit)) : undefined,
         cfg_dropout: supportsCfgDropout ? cfgDropout : undefined,
         lora_dropout: loraDropout,
-        flow_shift:
-          isDiT && flowShiftMode !== "default"
-            ? flowShiftMode === "auto"
-              ? "auto"
-              : flowShift
-            : undefined,
+        flow_shift: supportsFlowShift && flowShiftMode === "custom" ? flowShift : undefined,
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only
         // send compile where supported.
@@ -1248,6 +1245,7 @@ export function DiffusionTrainPanel({
     loraDropout,
     flowShiftMode,
     flowShift,
+    supportsFlowShift,
     lrScheduler,
     lrWarmupSteps,
     rank,
@@ -1344,6 +1342,8 @@ export function DiffusionTrainPanel({
     });
   }, [status, effectiveBase, customBase, family, instancePrompt, onDeploy, deployBaseFor]);
 
+  // For fields no family seeds: editing one must not stop a family switch from reseeding rank / LR / resolution.
+  const keepFamilyDefaults = () => {};
   const numberField = (
     label: string,
     value: number,
@@ -1472,6 +1472,7 @@ export function DiffusionTrainPanel({
           saveSteps > 0 &&
           numberField("Keep checkpoints", saveTotalLimit, setSaveTotalLimit, 2, {
             min: 0,
+            markDirty: keepFamilyDefaults,
             hint: "How many of those checkpoints stay on disk; older ones are deleted as new ones are saved. Raise it to compare earlier steps. 0 keeps every one.",
           })}
       </div>
@@ -1559,39 +1560,41 @@ export function DiffusionTrainPanel({
         {supportsCfgDropout &&
           numberField("Caption dropout", cfgDropout, setCfgDropout, 0, {
             min: 0,
+            markDirty: keepFamilyDefaults,
             step: 0.05,
             hint: "The chance each image trains with an empty prompt instead of its caption. 0.05 to 0.1 can help a LoRA respond to guidance (CFG) without overfitting to the exact caption; 0 turns it off.",
           })}
         {numberField("LoRA dropout", loraDropout, setLoraDropout, 0, {
           min: 0,
+          markDirty: keepFamilyDefaults,
           step: 0.05,
           hint: "Randomly drops part of the LoRA's input each step, a light guard against memorising a small dataset. 0 (off) is the usual choice; try 0.05 to 0.1 if results copy the training images too closely.",
         })}
-        {isDiT && (
+        {supportsFlowShift && (
           <div className={fieldClass}>
-            <FieldLabel hint="Which noise levels training spends its steps on. Default follows each model's own schedule (Qwen-Image, LTX-2 and MiniMax-H3 default to Auto). Auto matches the schedule the model generates with. Custom sets the shift directly: higher favours composition and layout, lower fine detail.">
+            <FieldLabel hint="Which noise levels training spends its steps on. Default follows the model's own schedule (Qwen-Image and LTX-2 match the one they generate with). Custom sets the shift directly: higher favours composition and layout, lower fine detail.">
               Timestep shift
             </FieldLabel>
             <Select
               value={flowShiftMode}
-              onValueChange={(v) => setFlowShiftMode(v as "default" | "auto" | "custom")}
+              onValueChange={(v) => setFlowShiftMode(v as "default" | "custom")}
             >
               <SelectTrigger className={selectClass} aria-label="Timestep shift">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="default">Default</SelectItem>
-                <SelectItem value="auto">Auto (match generation)</SelectItem>
                 <SelectItem value="custom">Custom</SelectItem>
               </SelectContent>
             </Select>
           </div>
         )}
-        {isDiT &&
+        {supportsFlowShift &&
           flowShiftMode === "custom" &&
           numberField("Shift value", flowShift, setFlowShift, 3, {
             min: 0.1,
             step: 0.5,
+            markDirty: keepFamilyDefaults,
             hint: "1 is no shift; around 3 suits most image models.",
           })}
 

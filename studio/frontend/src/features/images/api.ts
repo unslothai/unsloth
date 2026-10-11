@@ -615,7 +615,8 @@ export interface DiffusionTrainingStartRequest {
   // PEFT dropout on the LoRA input, every family. 0 when omitted.
   lora_dropout?: number;
   // Flow-matching timestep shift (not sdxl): a number, or "auto" for the family's inference schedule. Omitted =
-  // the family default (auto for qwen-image / ltx-2 / minimax-h3, the model's own schedule otherwise).
+  // the family default (auto for qwen-image / ltx-2 / minimax-h3, the model's own schedule otherwise). The Train tab
+  // sends only a number.
   flow_shift?: number | "auto";
   lr_scheduler?: string;
   lr_warmup_steps?: number;
