@@ -271,23 +271,46 @@ with sync_playwright() as p:
     # Settings-committing requests (the load POST, the per-model override mirror PUT, the VRAM
     # budget PUT), so a click that commits settings is waited out rather than slept on. On the
     # context, so a replacement page is covered too.
-    _commits = {"started": 0, "inflight": set()}
+    # loads: every /load request in send order; loads_ended: the ones that have finished or failed.
+    _commits = {"started": 0, "inflight": set(), "loads": [], "loads_ended": set()}
 
+    # validate and unload are the Load/Reload flow's own preliminaries: after the override PUT
+    # answers, the flow POSTs /validate (~0.4 s on CI), then /unload, and only then /load. Left
+    # out, those ~0.5 s read as quiet and the wait below returned before /load was even sent, so
+    # the test's next page.reload() aborted it (Chat UI Tests (extra) on main at 52b822c79: validate
+    # and unload logged, no load, then GET /chat). The model came back from the page's own restore a
+    # few seconds later, mid-way through the Reset step, and flipped "Load model" to "Reload model"
+    # under a click that then waited out its 60 s on a button that no longer existed.
     def _is_commit(req) -> bool:
         return req.method != "GET" and (
-            "/api/inference/load" in req.url or "/api/settings/" in req.url
+            "/api/inference/load" in req.url
+            or "/api/inference/validate" in req.url
+            or "/api/inference/unload" in req.url
+            or "/api/settings/" in req.url
         )
+
+    def _is_load(req) -> bool:
+        return req.method == "POST" and "/api/inference/load" in req.url
 
     def _commit_started(req):
         try:
             if _is_commit(req):
                 _commits["started"] += 1
                 _commits["inflight"].add(req)
+                if _is_load(req):
+                    _commits["loads"].append(req)
         except Exception:
             pass
 
+    # Finished or failed alike: either way that /load is over, and a failed one is for the
+    # assertions after the wait to report, not for the wait to sit out.
     def _commit_ended(req):
         _commits["inflight"].discard(req)
+        try:
+            if _is_load(req):
+                _commits["loads_ended"].add(req)
+        except Exception:
+            pass
 
     ctx.on("request", _commit_started)
     ctx.on("requestfinished", _commit_ended)
@@ -303,18 +326,60 @@ with sync_playwright() as p:
         Never raises: a click that sends nothing is logged after 10 s and the assertions after
         it decide, as they did after the fixed pause.
         """
+        # A Load/Reload click is not answered until its /load is: quiet polls alone cannot see a
+        # request the flow has not sent yet. Save/Forget send no load, so they keep the quiet rule.
+        # A flow can also stop short of /load (validation refused, consent declined); with
+        # validate and unload tracked, its steps sit tens of ms apart, so 3 s with nothing in
+        # flight and no /load started means it ended there.
+        label = " ".join((btn.text_content() or "").split())
+        expects_load = label in ("Load model", "Reload model")
+        # Snapshot AFTER a Playwright call: the sync API delivers request events only while one
+        # runs (see wait_until), so a page-restore /load already sent would otherwise be recorded
+        # during the call above and counted as this click's. Only a /load sent after this point
+        # answers the click; a restore load ending while the clicked flow is still in /validate
+        # would otherwise reopen the race.
         started = _commits["started"]
+        loads_before = len(_commits["loads"])
         clicked_at = time.monotonic()
         btn.click()
         quiet = [0]
+        # What the wait can see change. A request whose finish event never reaches the driver
+        # leaves `inflight` non-empty for good; on PR #12333's run the clicked flow sent /validate
+        # and a settings PUT, the server answered both within a second, and this still sat out
+        # the full 180 s, which pushed the script past its 720 s cap.
+        progress = [None, time.monotonic()]
+
+        def _pending_loads():
+            return [req for req in _commits["loads"] if req not in _commits["loads_ended"]]
 
         def settled():
             if _commits["started"] == started:
                 return "nothing sent" if time.monotonic() - clicked_at > 10 else None
+            seen = (_commits["started"], len(_commits["inflight"]), len(_commits["loads_ended"]))
+            if seen != progress[0]:
+                progress[:] = [seen, time.monotonic()]
+            # 30 s with nothing tracked starting or ending, while only settings writes are open,
+            # is a lost event rather than work in progress. Any open /load, /validate or /unload
+            # keeps the full timeout: the frontend awaits /unload before /load, and a large GGUF
+            # teardown can take minutes.
+            if (
+                _commits["inflight"]
+                and all("/api/settings/" in req.url for req in _commits["inflight"])
+                and not _pending_loads()
+                and time.monotonic() - progress[1] > 30
+            ):
+                return "stalled"
             if _commits["inflight"]:
                 quiet[0] = 0
                 return None
             quiet[0] += 1
+            if expects_load:
+                ours = _commits["loads"][loads_before:]
+                if not any(req in _commits["loads_ended"] for req in ours):
+                    if ours:
+                        quiet[0] = 0
+                        return None
+                    return "stopped before load" if quiet[0] >= 12 else None
             return "answered" if quiet[0] >= 3 else None
 
         try:
@@ -327,8 +392,21 @@ with sync_playwright() as p:
             )
             if outcome == "nothing sent":
                 info(f"WARN {what}: the click sent no load or settings request within 10s")
+            elif outcome == "stopped before load":
+                info(f"WARN {what}: the load flow ended without sending /api/inference/load")
+            elif outcome == "stalled":
+                info(
+                    f"WARN {what}: nothing changed for 30s with only settings writes open; still counted in "
+                    f"flight: {sorted(f'{req.method} {req.url}' for req in _commits['inflight'])}"
+                )
+                # Those events are not coming; carrying them would stall every later wait too.
+                _commits["inflight"].clear()
         except TimeoutError as exc:
-            info(f"WARN {exc}")
+            info(
+                f"WARN {exc}; in flight: "
+                f"{sorted(f'{req.method} {req.url}' for req in _commits['inflight'])}, "
+                f"/load not ended: {[req.url for req in _pending_loads()]}"
+            )
 
     def shoot(name: str) -> None:
         _n[0] += 1
@@ -726,16 +804,19 @@ with sync_playwright() as p:
         loc = popover.locator('input[aria-label="Context Length"]').first
         return loc if _count(loc) else None
 
+    PRIMARY_BUTTON_NAMES = re.compile(r"^(Load model|Reload model|Save settings|Forget settings)$")
+
     def primary_button(popover):
-        # exact: get_by_role matches the accessible name as a substring by default, so
-        # "Load model" also matches "Reload model" -- and it is swept first, so the
-        # reload case would be found under the wrong name. The panel shows exactly one
-        # of these four.
-        for name in ("Load model", "Reload model", "Save settings", "Forget settings"):
-            b = popover.get_by_role("button", name = name, exact = True).first
-            if _count(b):
-                return b
-        return None
+        # Anchored: get_by_role matches the accessible name as a substring by default, so
+        # "Load model" would also match "Reload model". `.first` is the primary: it precedes the
+        # separate Save settings button (#10216).
+        #
+        # One locator for all four, not the name seen at lookup: the label follows the runtime
+        # store, which fills in after a page load, so a resident model can read "Load model" and
+        # then "Reload model" a moment later. A locator pinned to the first name then resolves to
+        # nothing and its click waits out the whole timeout.
+        b = popover.get_by_role("button", name = PRIMARY_BUTTON_NAMES).first
+        return b if _count(b) else None
 
     # ─────────────────────────────────────────────────────
     # 1. Hidden infra models absent from the picker (HARD).

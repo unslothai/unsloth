@@ -729,7 +729,7 @@ test("reasoning is read through the resolver the composer uses", () => {
   for (const source of [infoDialog, settingsDialog]) {
     assert.match(
       source,
-      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*apiType,\s*\}\)/,
+      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*reasoningConfig,\s*baseUrl,\s*apiType,\s*\}\)/,
     );
     // "none" is the off switch, not a level on offer.
     assert.match(source, /\(level\) => level !== "none"/);
@@ -809,4 +809,16 @@ test("a served catalogue cannot take away a context window it has no field for",
   assert.equal(resolveModelCatalogEntry("openai", "gpt-4-turbo")?.contextLength, bundled);
 
   setModelsDevCatalog({ fetched_at: Date.now(), providers: {} } as never);
+});
+
+test("connection saves write back the live store, not the render snapshot", () => {
+  const liveWrites = providersDialog.match(
+    /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
+  );
+  assert.equal(liveWrites?.length, 3);
+  assert.match(providersDialog, /models: keepSavedModels \? undefined : modelsToSave,/);
+  assert.match(providersDialog, /availableModels: keepSavedModels \? undefined : availableModelsToSave,/);
+  // An empty response (row never backfilled) keeps this browser's lists instead of blanking them.
+  assert.match(providersDialog, /updated\.models\?\.length \? updated\.models : existing\.models/);
+  assert.match(providersDialog, /updated\.available_models\?\.length\s*\?\s*updated\.available_models\s*:\s*existing\.availableModels/);
 });

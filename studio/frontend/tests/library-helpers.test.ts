@@ -307,6 +307,17 @@ test("an empty Fine-tunes tab hides by default, and for settings saved before th
   assert.equal((migrateLibrarySettings({ tabs: hidden }, 2).tabs as typeof saved).models, "hidden");
 });
 
+test("the Images tab shows by default, and for settings saved before that", () => {
+  assert.equal(DEFAULT_LIBRARY_SETTINGS.tabs.images, "always");
+  const saved = { ...DEFAULT_LIBRARY_SETTINGS.tabs, images: "auto" };
+  assert.equal((migrateLibrarySettings({ tabs: saved }, 3).tabs as typeof saved).images, "always");
+  const hidden = { ...saved, images: "hidden" };
+  assert.equal((migrateLibrarySettings({ tabs: hidden }, 3).tabs as typeof saved).images, "hidden");
+  // The v1 media switch left on auto lands on always too.
+  assert.equal((migrateLibrarySettings({ mediaTabs: "auto" }, 1).tabs as typeof saved).images, "always");
+  assert.equal((migrateLibrarySettings({ mediaTabs: "auto" }, 1).tabs as typeof saved).videos, "auto");
+});
+
 test("a card's date shows on hover, on keyboard focus and always on touch", () => {
   const date = /"([^"]*)",\s*\)}\s*>\s*\{formatCardTime/.exec(readSrc("features/library/components/library-cards.tsx"))?.[1].split(" ");
   for (const reveal of [

@@ -11,6 +11,7 @@ from core.inference import mlx_inference as snapshots
 from core.inference.mlx_inference import (
     VLM_PREFILL_STEP,
     RecordingForward,
+    VLMBatchRowCache,
     VLMPromptCacheSession,
     VLMPromptSnapshotStore,
     cache_entries_nbytes,
@@ -564,6 +565,45 @@ def test_session_serves_and_stores_only_prefixes_past_the_last_media_token(fake_
     assert list(store._entries) == [("m", tuple(prompt[:768]))]
     assert session(releases_unserved = True).find_prefix_length(_media_prompt(700)) == 0
     assert len(store) == 0 and store.nbytes == 0
+
+
+def _prefill_row(state, token_ids):
+    """unsloth-zoo's batched row: resume the opened cache, checkpoint where a grid chunk ends."""
+    cache, lengths = state.open(token_ids)
+    done = prefix = cache_entries_offset(cache)
+    while len(token_ids) - done > 1:
+        take = min(STEP, len(token_ids) - done - 1)
+        for entry in cache:
+            entry.advance(token_ids[done : done + take])
+        done += take
+        if done in lengths:
+            state.checkpoint(done, cache)
+    return prefix, cache
+
+
+@pytest.mark.parametrize("media", (False, True))
+def test_a_batched_row_resumes_and_banks_what_the_single_path_does(fake_mx, media):
+    single, batched = (VLMPromptSnapshotStore(max_bytes = 10**9) for _ in range(2))
+    media_ids = (9,) if media else ()
+    prompts = [_media_prompt(n) if media else list(range(n)) for n in (700, 700, 900, 1000)]
+    prompts.append(prompts[-1] + [1])
+    for prompt in prompts:
+        # A media row keeps only what serves it, on both paths.
+        for store in (single, batched):
+            store.store("m", [-1], _snapshot([-1]))
+        session, _cache, _stored = _generate(
+            single, FakeLanguageModel(), prompt, media_token_ids = media_ids, releases_unserved = media
+        )
+        row = VLMBatchRowCache(batched, "m", make_cache, media_ids, media, step = STEP)
+        prefix, cache = _prefill_row(row, prompt)
+        assert prefix == session.reused_tokens and cache[0].keys.rows == prompt[:-1]
+        assert set(batched._entries) == set(single._entries)
+        assert batched._replays == single._replays
+    # The row advanced a copy: what it resumed from stays as banked.
+    entries, prefix = batched.lookup("m", prompts[-1] + [0], limit = 768)
+    assert prefix == 768 and entries[0].keys.rows == prompts[-1][:768]
+    cache, lengths = VLMBatchRowCache(None, "m", make_cache).open(prompts[-1])
+    assert cache_entries_offset(cache) == 0 and not lengths
 
 
 class FakeMediaBlock:

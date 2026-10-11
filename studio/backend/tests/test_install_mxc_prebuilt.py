@@ -265,9 +265,51 @@ def test_prepare_host_reports_a_failed_step(monkeypatch, prepared_install):
         installer.prepare_host(install_dir)
 
 
+def _windows_split(command_line: str) -> list[str]:
+    """CommandLineToArgvW rules for the parameter string ShellExecuteExW and CreateProcess pass on."""
+    args, current, quoted, i, pending = [], [], False, 0, False
+    while i < len(command_line):
+        char = command_line[i]
+        if char == "\\":
+            run = len(command_line[i:]) - len(command_line[i:].lstrip("\\"))
+            if i + run < len(command_line) and command_line[i + run] == '"':
+                pending = True
+                current.append("\\" * (run // 2))
+                if run % 2:
+                    current.append('"')
+                    i += run + 1
+                    continue
+                i += run
+                continue
+            current.append("\\" * run)
+            i += run
+            pending = True
+            continue
+        if char == '"':
+            if quoted and command_line[i + 1 : i + 2] == '"':
+                current.append('"')
+                i += 2
+                continue
+            quoted, pending = not quoted, True
+        elif char in " \t" and not quoted:
+            if pending:
+                args.append("".join(current))
+            current, pending = [], False
+        else:
+            current.append(char)
+            pending = True
+        i += 1
+    if pending:
+        args.append("".join(current))
+    return args
+
+
 def _decoded_script(argv):
-    import base64
-    return base64.b64decode(argv[argv.index("-EncodedCommand") + 1]).decode("utf-16-le")
+    # What powershell.exe receives: the argv after the exe, serialised and split the Windows way.
+    received = _windows_split(installer.subprocess.list2cmdline(argv[1:]))
+    assert received == argv[1:]
+    assert received.index("-Command") == len(received) - 2
+    return received[-1]
 
 
 @pytest.fixture
@@ -301,6 +343,39 @@ def test_host_prep_elevates_only_when_needed(monkeypatch, tmp_path, elevated, wi
     script = _decoded_script(argv)
     assert f"[IO.File]::Copy('{executable}', $exe)" in script
     assert "& $exe 'prepare-null-device' '--quiet'" in script
+
+
+@pytest.mark.parametrize("elevated", [True, False])
+def test_host_prep_script_is_passed_as_plain_text(monkeypatch, tmp_path, elevated, windows_dirs):
+    calls: list = []
+    monkeypatch.setattr(installer, "_is_elevated", lambda: elevated)
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda argv, **_kwargs: calls.append(argv) or subprocess_result(0),
+    )
+    monkeypatch.setattr(
+        installer,
+        "_run_elevated",
+        lambda executable, arguments, _directory: calls.append([str(executable), *arguments]) or 0,
+    )
+    install = tmp_path / "O'Brien's dir" / "a b\\" / "wxc-host-prep.exe"
+    assert installer._run_host_prep(install, "prepare-system-drive") == 0
+    argv = calls[0]
+    assert not any(
+        arg.lower().startswith(("-enc", "-e", "-ec")) for arg in argv[1:] if arg != "-Command"
+    )
+    script = _decoded_script(argv)
+    assert "\n" not in script and '"' not in script
+    assert "[IO.File]::Copy('" + str(install).replace("'", "''") + "', $exe)" in script
+    assert script == installer._host_prep_script(install, ["prepare-system-drive"])
+
+
+def test_host_prep_refuses_a_path_it_cannot_quote(tmp_path):
+    with pytest.raises(installer.MxcInstallError):
+        installer._host_prep_script(
+            tmp_path / 'a"b' / "wxc-host-prep.exe", ["prepare-system-drive"]
+        )
 
 
 def test_host_prep_runs_elevated_only_from_an_admin_only_copy(tmp_path):

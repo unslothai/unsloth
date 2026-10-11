@@ -175,6 +175,10 @@ def release_runtime(proc) -> None:
     if runtime_lease is not None:
         proc._mxc_runtime_lease = None
         runtime_lease.release()
+    drive_alias = getattr(proc, "_mxc_drive_alias", None)
+    if drive_alias is not None:
+        proc._mxc_drive_alias = None
+        drive_alias.release()
 
 
 def abort(proc, *, grace_seconds: float = 1) -> None:

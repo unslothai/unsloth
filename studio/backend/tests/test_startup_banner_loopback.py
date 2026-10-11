@@ -43,6 +43,87 @@ def test_wildcard_aliases_show_reachable_urls(capsys, host, loopback_url):
     assert "http://192.168.1.24:8891" in out
 
 
+WSL_HINT = "WSL2: open http://localhost:"
+
+
+@pytest.mark.parametrize("mode,wsl", [("nat", True), (None, False)])
+def test_wsl_hint_replaces_the_private_address_note(capsys, monkeypatch, mode, wsl):
+    import lan_access
+    import run
+    from utils.paths import file_manager
+
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: mode)
+    monkeypatch.setattr(file_manager, "_in_container", lambda: False)
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output("0.0.0.0", 8888, "172.25.35.232")
+    out = capsys.readouterr().out
+    assert (WSL_HINT + "8888" in out) is wsl
+    assert ("networkingMode=mirrored" in out) is wsl
+    assert ("172.25.35.232 is a private/LAN address" in out) is not wsl
+    assert run._public_reachable is False
+    if wsl:
+        assert out.index("/api/health") < out.index(WSL_HINT)
+
+
+@pytest.mark.parametrize(
+    "host,mode,expected",
+    [
+        ("0.0.0.0", "nat", True),
+        ("::", "nat", True),
+        ("0.0.0.0", "unknown", True),
+        ("0.0.0.0", "none", False),
+        ("0.0.0.0", "mirrored", False),
+        ("0.0.0.0", None, False),
+        ("127.0.0.1", "nat", False),
+    ],
+)
+def test_startup_output_wsl_hint_gating(capsys, monkeypatch, host, mode, expected):
+    import lan_access
+    import run
+    from utils.paths import file_manager
+
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: mode)
+    monkeypatch.setattr(file_manager, "_in_container", lambda: False)
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output(host, 8888, host)
+    assert (WSL_HINT in capsys.readouterr().out) is expected
+
+
+def test_startup_output_wsl_hint_skipped_in_container(capsys, monkeypatch):
+    import lan_access
+    import run
+    from utils.paths import file_manager
+
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "unknown")
+    monkeypatch.setattr(file_manager, "_in_container", lambda: True)
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0")
+    assert WSL_HINT not in capsys.readouterr().out
+
+
+def test_wsl_hint_check_skips_container_import_off_wsl(capsys, monkeypatch):
+    # tests/studio/install stubs utils.paths without file_manager.
+    import lan_access
+    import run
+
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: None)
+    monkeypatch.setitem(sys.modules, "utils.paths.file_manager", None)
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0")
+    assert WSL_HINT not in capsys.readouterr().out
+
+
 def test_banner_prints_on_strict_cp1252_stdout(monkeypatch):
     buf = io.BytesIO()
     stdout = io.TextIOWrapper(buf, encoding = "cp1252", errors = "strict")

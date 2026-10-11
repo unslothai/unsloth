@@ -7,7 +7,8 @@
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
-import { useShortcut } from "@/features/settings";
+import { useMonitorFrameStore, useShortcut } from "@/features/settings";
+import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
 import {
   useFloatingPanelOrderStore,
   useFloatingPanelZIndex,
@@ -16,25 +17,13 @@ import { cn } from "@/lib/utils";
 import {
   ExpandIcon,
   DragDropVerticalIcon,
-  Globe02Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
-import {
-  AnimatePresence,
-  motion,
-  useDragControls,
-  useMotionValue,
-} from "motion/react";
-import {
-  type PointerEvent,
-  type ReactElement,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import {
   type ApiMonitorWatch,
@@ -45,11 +34,19 @@ import {
   startWatching,
 } from "./new-traffic";
 import { useApiMonitorOverlayStore } from "./overlay-store";
+import {
+  isFullyCovered,
+  PANEL_MARGIN,
+  PANEL_TOP_MARGIN,
+  placeFloatingPanel,
+} from "./panel-placement";
 import { computeStats } from "./use-api-monitor";
-import { usePanelAnchor } from "./use-panel-anchor";
 
 // Live cadence while the panel is on screen.
 const OPEN_POLL_MS = 1500;
+// The body scrolls, so the grip may shrink below content size (the hardware monitor's floor).
+const MIN_PANEL_WIDTH = 280;
+const MIN_PANEL_HEIGHT = 200;
 // Closed, the poll only has to notice traffic started, so it backs off.
 const IDLE_POLL_MS = 5000;
 // Requests shown in the panel; the rest are one click away on the full page.
@@ -121,7 +118,6 @@ function StatCell({
 export function ApiMonitorOverlay(): ReactElement | null {
   const { isOpen, suppressed, autoOpen, open, close, setAutoOpen } =
     useApiMonitorOverlayStore();
-  const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const onFullPage = pathname === "/api-monitor";
 
@@ -196,9 +192,6 @@ export function ApiMonitorOverlay(): ReactElement | null {
     };
   }, [isOpen, onFullPage, autoOpen]);
 
-  const entries = useMemo(() => data?.entries ?? [], [data]);
-  const stats = useMemo(() => computeStats(entries), [entries]);
-
   useEffect(() => {
     if (data == null) {
       return;
@@ -232,154 +225,186 @@ export function ApiMonitorOverlay(): ReactElement | null {
     }
   }, [onFullPage]);
 
-  const [constraintsElement, setConstraintsElement] =
-    useState<HTMLDivElement | null>(null);
-  const constraintsRef = useMemo(
-    () => ({ current: constraintsElement }),
-    [constraintsElement],
-  );
-  const dragControls = useDragControls();
-
-  // Where the panel sits, and whether it is still allowed to move itself. The
-  // panel keeps clear of the resource monitor until the user drags it; after
-  // that it stays where it was put, even if that is on top of the monitor.
-  const [panelElement, setPanelElement] = useState<HTMLDivElement | null>(null);
-  const [placedByUser, setPlacedByUser] = useState(false);
-  // Bumped when the panel has moved without its anchor changing: the entry animation is a
-  // transform, and the box the stack keeps clear of has to be the one on screen.
-  const [settledAt, setSettledAt] = useState(0);
-  const { anchor, covered, place } = usePanelAnchor(
-    panelElement,
-    placedByUser,
-    settledAt,
-  );
-  // The drag offset, owned here rather than left to motion, so it can be folded back into the
-  // anchor on release. Left as a transform it would be applied on top of every later clamp, and the
-  // published box would stay at the corner the panel was dragged away from.
-  const dragX = useMotionValue(0);
-  const dragY = useMotionValue(0);
-
-  const zIndex = useFloatingPanelZIndex("api-monitor", covered);
-  const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
-
-  function startDrag(event: PointerEvent<HTMLDivElement>): void {
-    event.preventDefault();
-    setPlacedByUser(true);
-    dragControls.start(event);
-  }
-
-  // Written to the node before the offset is zeroed, in that order, so handing
-  // the drag back to left/top cannot show a frame at the corner it started from.
-  function finishDrag(): void {
-    if (!anchor) {
-      // Dragged before the first measurement landed: nothing to fold into, so
-      // leave motion holding the offset rather than snapping the panel back.
-      return;
-    }
-    const landed = place({
-      left: anchor.left + dragX.get(),
-      top: anchor.top + dragY.get(),
-    });
-    panelElement?.style.setProperty("left", `${landed.left}px`);
-    panelElement?.style.setProperty("top", `${landed.top}px`);
-    dragX.set(0);
-    dragY.set(0);
-    setSettledAt(Date.now());
-  }
-
   const visible = isOpen && !onFullPage;
-  const serverStatus = data?.status ?? "idle";
-
-  // A panel that has just opened is the one the user is being shown, so it comes to the front.
-  // Touching either panel afterwards brings that one forward instead, which is the only way out of
-  // a resource monitor resized over the whole viewport.
+  const [panelKey, setPanelKey] = useState(0);
+  const wasVisibleRef = useRef(visible);
+  // Remount on reopen: fresh native size and frame owner.
   useEffect(() => {
-    if (visible) {
-      raisePanel("api-monitor");
+    if (wasVisibleRef.current && !visible) {
+      setPanelKey((current) => current + 1);
     }
-  }, [visible, raisePanel]);
-
+    wasVisibleRef.current = visible;
+  }, [visible]);
   return (
     <AnimatePresence>
       {visible && (
-        <div
-          ref={setConstraintsElement}
-          className="pointer-events-none fixed inset-0"
-          style={{ zIndex }}
-        >
-          <motion.div
-            {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
-            ref={setPanelElement}
-            onPointerDownCapture={() => raisePanel("api-monitor")}
-            drag={true}
-            onDragEnd={finishDrag}
-            onAnimationComplete={() => setSettledAt(Date.now())}
-            dragControls={dragControls}
-            dragListener={false}
-            dragConstraints={constraintsRef}
-            dragElastic={0}
-            dragMomentum={false}
-            initial={{ opacity: 0, scale: 0.94 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.94 }}
-            /* Panel language from the sidebar menu: soft surface, 20px corner, heading font. */
-            className={cn(
-              "menu-soft-surface pointer-events-auto fixed flex w-[calc(400px*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] cursor-default select-none resize flex-col overflow-hidden rounded-[20px] border-0 p-2.5 font-heading ring-0",
-              // The CSS corner until it has been measured, so the first paint
-              // is the corner it has always opened in rather than the top left.
-              anchor ? "top-0 left-0" : "bottom-4 right-4",
-            )}
-            style={
-              anchor
-                ? { left: anchor.left, top: anchor.top, x: dragX, y: dragY }
-                : { x: dragX, y: dragY }
-            }
-          >
-            <div className="flex items-center justify-between gap-2 px-1.5 pb-2 pt-0.5">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <HugeiconsIcon
-                  icon={Globe02Icon}
-                  strokeWidth={1.75}
-                  className="size-icon shrink-0 text-nav-fg"
-                />
-                <span className="truncate text-ui-13p5 font-semibold tracking-[0.025em] text-nav-fg dark:tracking-[0.04em]">
-                  API monitor
-                </span>
-                <span
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    serverStatus === "generating"
-                      ? "animate-pulse bg-blue-500"
-                      : serverStatus === "ready"
-                        ? "bg-emerald-500"
-                        : "bg-muted-foreground",
-                  )}
-                  aria-hidden={true}
-                />
-              </div>
-              <div className="flex shrink-0 items-center gap-0.5">
-                <div
-                  onPointerDown={startDrag}
-                  className="flex size-7 touch-none cursor-grab items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-nav-surface-hover hover:text-foreground active:cursor-grabbing"
-                >
-                  <HugeiconsIcon
-                    icon={DragDropVerticalIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={close}
-                  title="Close"
-                  aria-label="Close API monitor"
-                  className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  <XIcon className="size-3.5" strokeWidth={1.75} />
-                </button>
-              </div>
-            </div>
+        <ApiMonitorPanel
+          key={panelKey}
+          data={data}
+          close={close}
+          setAutoOpen={setAutoOpen}
+        />
+      )}
+    </AnimatePresence>
+  );
+}
 
+function ApiMonitorPanel({
+  data,
+  close,
+  setAutoOpen,
+}: {
+  data: Awaited<ReturnType<typeof getApiMonitor>> | null;
+  close: () => void;
+  setAutoOpen: (value: boolean) => void;
+}): ReactElement {
+  const navigate = useNavigate();
+  const entries = data?.entries ?? [];
+  const stats = computeStats(entries);
+  const serverStatus = data?.status ?? "idle";
+  const isPresent = useIsPresent();
+  const [constraintsElement, setConstraintsElement] =
+    useState<HTMLDivElement | null>(null);
+  const {
+    monitorRef,
+    scrollRef,
+    contentRef,
+    layout,
+    publisher,
+    startDrag,
+    updateDrag,
+    finishDrag,
+  } = useFloatingPanelLayout(
+    constraintsElement,
+    false,
+    // An exiting panel must not stay an obstacle for the one reopening.
+    !isPresent,
+    (size, bounds) => {
+      const initial = placeFloatingPanel(
+        size,
+        [...useMonitorFrameStore.getState().frames.values()],
+        {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        },
+      );
+      return {
+        left: initial.left - bounds.left,
+        top: initial.top - bounds.top,
+      };
+    },
+  );
+  const frames = useMonitorFrameStore((state) => state.frames);
+  const ownFrame = frames.get(publisher);
+  const covered =
+    ownFrame !== undefined &&
+    isFullyCovered(
+      ownFrame,
+      {
+        width: ownFrame.right - ownFrame.left,
+        height: ownFrame.bottom - ownFrame.top,
+      },
+      [...frames]
+        .filter(([owner]) => owner !== publisher)
+        .map(([, frame]) => frame),
+    );
+  const zIndex = useFloatingPanelZIndex("api-monitor", covered);
+  const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
+  useEffect(() => {
+    raisePanel("api-monitor");
+  }, [raisePanel]);
+  return (
+    <div
+      ref={setConstraintsElement}
+      className="pointer-events-none fixed"
+      style={{
+        zIndex,
+        left: PANEL_MARGIN,
+        right: PANEL_MARGIN,
+        top: PANEL_TOP_MARGIN,
+        bottom: PANEL_MARGIN,
+      }}
+    >
+      <motion.div
+        {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
+        ref={monitorRef}
+        data-testid="api-monitor-panel"
+        onPointerDownCapture={() => raisePanel("api-monitor")}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        /* Panel language from the sidebar menu: soft surface, 20px corner, heading font. */
+        className={cn(
+          "menu-soft-surface pointer-events-auto absolute flex max-h-full w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-[20px] border-0 p-2.5 font-heading ring-0",
+          // The CSS corner until it has been measured, so the first paint
+          // is the corner it has always opened in rather than the top left.
+          layout ? "top-0 left-0 resize" : "bottom-0 right-0",
+        )}
+        style={
+          layout
+            ? {
+                left: layout.left,
+                top: layout.top,
+                minWidth: Math.min(MIN_PANEL_WIDTH, layout.maxWidth),
+                minHeight: Math.min(MIN_PANEL_HEIGHT, layout.maxHeight),
+                maxWidth: layout.maxWidth,
+                maxHeight: layout.maxHeight,
+              }
+            : undefined
+        }
+      >
+        <div className="flex shrink-0 items-center justify-between gap-2 px-1.5 pb-2 pt-0.5">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <HugeiconsIcon
+              icon={ApiIcon}
+              strokeWidth={1.75}
+              className="size-icon shrink-0 text-nav-fg"
+            />
+            <span className="truncate text-ui-13p5 font-semibold tracking-[0.025em] text-nav-fg dark:tracking-[0.04em]">
+              API monitor
+            </span>
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                serverStatus === "generating"
+                  ? "animate-pulse bg-blue-500"
+                  : serverStatus === "ready"
+                    ? "bg-emerald-500"
+                    : "bg-muted-foreground",
+              )}
+              aria-hidden={true}
+            />
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <div
+              onPointerDown={startDrag}
+              onPointerMove={updateDrag}
+              onPointerUp={finishDrag}
+              onPointerCancel={finishDrag}
+              onLostPointerCapture={finishDrag}
+              data-testid="api-monitor-drag-handle"
+              className="flex size-7 touch-none cursor-grab items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-nav-surface-hover hover:text-foreground active:cursor-grabbing"
+            >
+              <HugeiconsIcon
+                icon={DragDropVerticalIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={close}
+              title="Close"
+              aria-label="Close API monitor"
+              className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <XIcon className="size-3.5" strokeWidth={1.75} />
+            </button>
+          </div>
+        </div>
+
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+          <div ref={contentRef}>
             <p className="truncate px-1.5 pb-2.5 text-ui-11p5 tracking-nav text-muted-foreground">
               {data?.active_model ?? "No model loaded"}
             </p>
@@ -448,38 +473,37 @@ export function ApiMonitorOverlay(): ReactElement | null {
                 ))
               )}
             </div>
-
-            {/* Through to payloads, filters and per request tokens. */}
-            <button
-              type="button"
-              onClick={() => {
-                close();
-                void navigate({ to: "/api-monitor" });
-              }}
-              className="mt-1 flex h-[calc(33px*var(--ui-space-scale,1))] w-full items-center justify-center gap-[calc(8.5px*var(--ui-space-scale,1))] rounded-full bg-muted/60 text-ui-13p5 font-medium tracking-nav text-nav-fg transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-background/50"
-            >
-              <HugeiconsIcon
-                icon={ExpandIcon}
-                strokeWidth={1.75}
-                className="size-icon shrink-0"
-              />
-              Expand to full monitor
-            </button>
-
-            {/* Closing silences this burst; this is the permanent off. */}
-            <button
-              type="button"
-              onClick={() => {
-                setAutoOpen(false);
-                close();
-              }}
-              className="mt-1.5 w-full rounded-[12px] py-1 text-ui-11 tracking-nav text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              Stop opening this automatically
-            </button>
-          </motion.div>
+          </div>
         </div>
-      )}
-    </AnimatePresence>
+        {/* Through to payloads, filters and per request tokens. */}
+        <button
+          type="button"
+          onClick={() => {
+            close();
+            void navigate({ to: "/api-monitor" });
+          }}
+          className="mt-1 flex shrink-0 h-[calc(33px*var(--ui-space-scale,1))] w-full items-center justify-center gap-[calc(8.5px*var(--ui-space-scale,1))] rounded-full bg-muted/60 text-ui-13p5 font-medium tracking-nav text-nav-fg transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-background/50"
+        >
+          <HugeiconsIcon
+            icon={ExpandIcon}
+            strokeWidth={1.75}
+            className="size-icon shrink-0"
+          />
+          Expand to full monitor
+        </button>
+
+        {/* Closing silences this burst; this is the permanent off. */}
+        <button
+          type="button"
+          onClick={() => {
+            setAutoOpen(false);
+            close();
+          }}
+          className="mt-1.5 shrink-0 w-full rounded-[12px] py-1 text-ui-11 tracking-nav text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          Stop opening this automatically
+        </button>
+      </motion.div>
+    </div>
   );
 }

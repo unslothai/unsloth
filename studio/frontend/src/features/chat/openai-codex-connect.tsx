@@ -4,7 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { openLink } from "@/lib/open-link";
+import { openExternalLink } from "@/lib/open-link";
 import { useEffect, useRef, useState } from "react";
 import {
   cancelCodexOAuthFlow,
@@ -104,7 +104,8 @@ export function OpenAICodexConnect({
       const url = next.authorization_url || next.verification_url;
       if (url) {
         if (!isTrustedCodexAuthUrl(url)) throw new Error("The authorization URL was not trusted.");
-        openLink(url);
+        // Sign-in needs the provider's cookies, which the browser panel does not keep.
+        openExternalLink(url);
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Authorization failed.");

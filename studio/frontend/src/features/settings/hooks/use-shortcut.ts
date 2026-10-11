@@ -147,7 +147,8 @@ export function triggerShortcut(id: ShortcutId): boolean {
   return trigger !== undefined;
 }
 
-// Claims mostly ask whether a modal covers the surface, which shows as aria-hidden or inert.
+// Claims mostly ask whether a modal covers the surface, which shows as aria-hidden or inert,
+// or only as a backdrop portaled to body when the surface holds an aria-live region.
 let modalObserver: MutationObserver | null = null;
 function subscribeTriggers(listener: () => void, watchModals: boolean): () => void {
   triggerListeners.add(listener);
@@ -158,6 +159,7 @@ function subscribeTriggers(listener: () => void, watchModals: boolean): () => vo
       attributes: true,
       attributeFilter: ["aria-hidden", "inert"],
     });
+    modalObserver.observe(document.body, { childList: true });
   }
   return () => {
     triggerListeners.delete(listener);

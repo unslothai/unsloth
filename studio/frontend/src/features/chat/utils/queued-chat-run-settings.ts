@@ -19,14 +19,15 @@ const QUEUED_SETTING_KEYS = [
   "codeToolsEnabled",
   "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
-  "artifactsEnabled",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "bypassPermissions",
   "permissionMode",
+  "sandboxLevel",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
   "ragEnabled",
   "ragSource",
@@ -40,8 +41,10 @@ const QUEUED_SETTING_KEYS = [
   // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
   // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
   "loadedIsGguf",
+  "loadedIsMlx",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
@@ -80,6 +83,20 @@ export function snapshotQueuedChatRunSettings(
     snapshot.activeGgufVariant = null;
   }
   return snapshot;
+}
+
+export function resolveDeferredQueuedModelSettings(
+  settings: QueuedChatRunSettings,
+  resolved: Pick<ChatRuntimeState, "params" | "supportsTools">,
+): QueuedChatRunSettings {
+  return {
+    ...settings,
+    params: {
+      ...settings.params,
+      checkpoint: resolved.params.checkpoint,
+    },
+    supportsTools: resolved.supportsTools,
+  };
 }
 
 /** A queued send may only fill in the model of a row that was written without one. */

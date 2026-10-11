@@ -6,7 +6,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { DRAG_THRESHOLD_PX, markDragging } from "@/features/chat";
+import {
+  DRAG_THRESHOLD_PX,
+  liftCopy,
+  markDragging,
+  placeCue,
+  placeGhost,
+  type RowGhost,
+} from "@/features/chat";
+import { prefersReducedMotion } from "@/features/settings";
 
 export type PinnedDropEdge = "top" | "bottom";
 
@@ -18,6 +26,22 @@ const KEY_ATTR = "data-pinned-drop-key";
 /** Controls with their own press: row buttons other than the row itself, and links. */
 const NO_DRAG_SELECTOR =
   "button:not([data-model-picker-option]), a[href], [role='menuitem']";
+
+const ROW_GHOST_CLASS = "model-picker-row-ghost";
+
+/** Attributes the copy drops, so nothing finds it as an option or drop target. */
+const GHOST_DROPPED_ATTRS = [
+  "id",
+  SCOPE_ATTR,
+  KEY_ATTR,
+  "data-model-picker-option",
+  "data-model-picker-active-option",
+  "aria-current",
+  "data-state",
+  "data-slot",
+] as const;
+
+const SETTLE_MS = 180;
 
 /** How far outside a row the pointer still aims at it. */
 const NEAR_ROW_PX = 12;
@@ -43,6 +67,47 @@ function scrollerOf(element: Element | null): HTMLElement | null {
     }
   }
   return null;
+}
+
+/** The list the copy stays inside, even one too short to scroll. */
+function viewOf(row: HTMLElement): Element {
+  for (let node = row.parentElement; node; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY;
+    if (overflow === "auto" || overflow === "scroll") return node;
+  }
+  return row.parentElement ?? document.documentElement;
+}
+
+/** Marks a row's pill when it is not the wrapper's first child (a fine-tuned row nests it). */
+const ROW_FACE_ATTR = "data-pinned-row-face";
+
+const faceOf = (row: Element): HTMLElement =>
+  row.querySelector<HTMLElement>(`[${ROW_FACE_ATTR}]`) ??
+  (row.firstElementChild as HTMLElement | null) ??
+  (row as HTMLElement);
+
+function settleRow(scope: string, key: string, from: number) {
+  // Two frames: measured after the drop re-renders the list.
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(
+        `[${SCOPE_ATTR}="${CSS.escape(scope)}"][${KEY_ATTR}="${CSS.escape(key)}"]`,
+      );
+      if (!row) return;
+      const delta = from - faceOf(row).getBoundingClientRect().top;
+      if (Math.abs(delta) < 2) return;
+      row.style.transition = "none";
+      row.style.transform = `translateY(${delta}px)`;
+      row.style.zIndex = "1";
+      row.getBoundingClientRect();
+      row.style.transition = `transform ${SETTLE_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1)`;
+      row.style.transform = "";
+      window.setTimeout(() => {
+        row.style.transition = "";
+        row.style.zIndex = "";
+      }, SETTLE_MS + 20);
+    }),
+  );
 }
 
 function edgeAt(rect: DOMRect, y: number): PinnedDropEdge {
@@ -125,6 +190,7 @@ export function usePinnedRowDrag(
   const draggingRef = useRef<string | null>(null);
   const targetRef = useRef<PinnedRowDrop | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
+  const ghost = useRef<RowGhost | null>(null);
   /** The gesture in flight, so a second press cannot overlap it. */
   const press = useRef<{ end: () => void } | null>(null);
 
@@ -138,6 +204,9 @@ export function usePinnedRowDrag(
   const clear = useCallback(() => {
     draggingRef.current = null;
     scroller.current = null;
+    ghost.current?.element.remove();
+    for (const overlay of ghost.current?.cues ?? []) overlay.remove();
+    ghost.current = null;
     markDragging(null, false);
     setDraggingKey(null);
     showTarget(null);
@@ -245,7 +314,10 @@ export function usePinnedRowDrag(
               list.scrollTop += EDGE_STEP_PX;
             }
           }
+          if (ghost.current) placeGhost(ghost.current, at.y);
           showTarget(aim(at.x, at.y));
+          // Redraw the drop line above the copy.
+          if (ghost.current) placeCue(ghost.current);
         };
         const self = {
           end: () => {
@@ -280,6 +352,14 @@ export function usePinnedRowDrag(
             }
             started = true;
             scroller.current = scrollerOf(row);
+            ghost.current = liftCopy(
+              faceOf(row),
+              startY,
+              scroller.current ?? viewOf(row),
+              ROW_GHOST_CLASS,
+              GHOST_DROPPED_ATTRS,
+            );
+            placeGhost(ghost.current, moved.clientY);
             // The picker's own list, not the body: see markDragging.
             markDragging(scroller.current ?? row.parentElement, true);
             try {
@@ -302,8 +382,13 @@ export function usePinnedRowDrag(
           swallowClick();
           if (escaped) return;
           const drop = aim(released.clientX, released.clientY);
+          const from = ghost.current?.element.getBoundingClientRect().top ?? null;
           clear();
-          if (drop) optionsRef.current.onDrop(key, drop);
+          if (!drop) return;
+          optionsRef.current.onDrop(key, drop);
+          if (from !== null && !prefersReducedMotion()) {
+            settleRow(optionsRef.current.scope, key, from);
+          }
         }
 
         function onCancel(aborted: PointerEvent) {

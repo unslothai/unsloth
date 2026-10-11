@@ -28,6 +28,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
     stop_process,
+    wait_for_smoke_page,
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5407"))
@@ -663,6 +664,7 @@ def run_engine(pw, engine: str) -> None:
 def main() -> int:
     server = start_vite(PORT)
     try:
+        wait_for_smoke_page(URL, "smoke-shortcuts-main.tsx", proc = server)
         with sync_playwright() as pw:
             for engine in ENGINES:
                 run_engine(pw, engine)

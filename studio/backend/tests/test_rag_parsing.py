@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 
@@ -50,6 +52,108 @@ def test_pdf_extracts_markdown_table(tmp_path, monkeypatch):
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
     assert "Q2" in text and "$1.5M" in text  # cell values preserved
     assert "#" in text or "|" in text  # Markdown markup (heading or table pipes)
+
+
+def test_pdf_markdown_keeps_text_drawn_over_a_picture(tmp_path, monkeypatch):
+    pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 300), False)
+    pix.set_rect(pix.irect, (40, 70, 120))
+    page.insert_image(pymupdf.Rect(0, 0, 170, page.rect.height), pixmap = pix)
+    for i, line in enumerate(["jane.doe@example.com", "Kubernetes", "Spanish"]):
+        page.insert_text((15, 80 + i * 22), line, fontsize = 11, color = (1, 1, 1))
+    page.insert_text((190, 60), "Experience", fontsize = 16)
+    for i in range(30):
+        page.insert_text((190, 90 + i * 22), f"Led project {i} for customers.", fontsize = 10)
+    pdf = tmp_path / "resume.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "# Experience" in text
+    assert "Led project 29" in text
+    for sidebar in ("jane.doe@example.com", "Kubernetes", "Spanish"):
+        assert sidebar in text
+
+
+def test_pdf_markdown_does_not_render_scanned_pages(tmp_path, monkeypatch):
+    # pymupdf4llm's background-colour probe renders page corners; under a full-page scan that
+    # decodes the whole image while holding the GIL, which starved the event loop until the
+    # desktop watchdog killed the backend (#13094). Text pages keep the probe.
+    pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    doc = pymupdf.open()
+    scan = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 1000, 1300), False)
+    pix.set_rect(pix.irect, (250, 250, 240))
+    scan.insert_image(scan.rect, pixmap = pix, keep_proportion = False)
+    scan.insert_text((60, 120), "Chapter one covers shelter.", fontsize = 10)
+    text_page = doc.new_page()
+    text_page.insert_text((60, 80), "Survival Training", fontsize = 16)
+    text_page.insert_text((60, 120), "Chapter two covers water.", fontsize = 10)
+    pdf = tmp_path / "scan.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    rendered = []
+    real_get_pixmap = pymupdf.Page.get_pixmap
+
+    def recording_get_pixmap(self, *args, **kwargs):
+        rendered.append(self.number)
+        return real_get_pixmap(self, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_pixmap", recording_get_pixmap)
+    pages = parsers.parse(str(pdf))
+    assert [p.page_number for p in pages] == [1, 2]
+    assert "Chapter one covers shelter." in pages[0].text
+    assert "Chapter two covers water." in pages[1].text
+    assert "# Survival Training" in pages[1].text
+    assert 0 not in rendered
+    assert 1 in rendered
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_scan_corner_check_follows_page_rotation(rotation):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2000, 500), False)
+    pix.set_rect(pix.irect, (250, 250, 240))
+    # A strip along the unrotated bottom edge covers two corners at every rotation.
+    page.insert_image(pymupdf.Rect(0, 700, 595, 842), pixmap = pix, keep_proportion = False)
+    inset = doc.new_page()
+    inset.insert_image(pymupdf.Rect(100, 100, 400, 600), pixmap = pix, keep_proportion = False)
+    for number in range(2):
+        doc[number].set_rotation(rotation)
+    assert parsers._image_covers_a_corner(doc, 0)
+    assert not parsers._image_covers_a_corner(doc, 1)
+
+
+def test_scan_corner_check_ignores_small_corner_logos():
+    # A logo is cheap to decode, so its page keeps pymupdf4llm's background probe.
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    logo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 200), False)
+    logo.set_rect(logo.irect, (200, 30, 30))
+    page.insert_image(pymupdf.Rect(0, 0, 60, 60), pixmap = logo)
+    assert not parsers._image_covers_a_corner(doc, 0)
 
 
 def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
@@ -112,7 +216,12 @@ def test_pdf_markdown_receives_page_limit(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc(), range(2)) == ["page", "page"]
-    assert captured == {"page_chunks": True, "show_progress": False, "pages": [0, 1]}
+    assert captured == {
+        "page_chunks": True,
+        "show_progress": False,
+        "ignore_images": True,
+        "pages": [0, 1],
+    }
 
 
 def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
@@ -133,7 +242,7 @@ def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc()) == ["plain markdown"]
-    assert captured == {"page_chunks": True, "show_progress": False}
+    assert captured == {"page_chunks": True, "show_progress": False, "ignore_images": True}
 
 
 def test_pdf_markdown_falls_back_when_lib_missing(tmp_path, monkeypatch):
@@ -337,7 +446,8 @@ _DOCX_XMLNS = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
     'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
     'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
-    'xmlns:v="urn:schemas-microsoft-com:vml"'
+    'xmlns:v="urn:schemas-microsoft-com:vml" '
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
 )
 
 
@@ -443,6 +553,113 @@ def test_docx_reads_one_branch_of_alternate_content(tmp_path):
         "</mc:AlternateContent></w:p>",
     )
     assert text == "Preferred"
+
+
+def _m(text):
+    return f'<m:r><w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>{text}</m:t></m:r>'
+
+
+def test_docx_keeps_equations_where_they_appear(tmp_path):
+    half = f"<m:f><m:fPr><m:ctrlPr><w:rPr><w:i/></w:rPr></m:ctrlPr></m:fPr><m:num>{_m('1')}</m:num><m:den>{_m('2')}</m:den></m:f>"
+    squared = f"<m:sSup><m:e>{_m('v')}</m:e><m:sup>{_m('2')}</m:sup></m:sSup>"
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('The kinetic energy is ')}<m:oMath>{_m('E=')}{half}{_m('m')}{squared}</m:oMath>{_r(' joules.')}</w:p>",
+        f"<w:p><m:oMathPara><m:oMathParaPr/><m:oMath>{_m('F=ma')}</m:oMath><m:oMath>{_m('p=mv')}</m:oMath></m:oMathPara></w:p>",
+    )
+    assert text == "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.\nF=ma\np=mv"
+
+
+def test_docx_table_cells_keep_equations_without_deleted_parts(tmp_path):
+    root = f"<m:rad><m:radPr><m:degHide m:val=\"1\"/></m:radPr><m:deg/><m:e>{_m('x')}</m:e></m:rad>"
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:tbl><w:tr>"
+        f"<w:tc><w:p>{_r('Work')}</w:p></w:tc>"
+        f"<w:tc><w:p><m:oMath>{_m('W=F')}<m:d><m:e>{_m('a+b')}</m:e></m:d>"
+        f'<w:del w:id="1" w:author="a">{_m("+c")}</w:del>{root}</m:oMath></w:p></w:tc>'
+        "</w:tr></w:tbl>",
+    )
+    assert text == "Work | W=F(a+b)\\sqrt{x}"
+
+
+def test_docx_equations_keep_binomials_and_skip_hidden_phantoms(tmp_path):
+    binom = f'<m:d><m:e><m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{_m("n")}</m:num><m:den>{_m("k")}</m:den></m:f></m:e></m:d>'
+    phantom = (
+        f'<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{_m("xyz")}</m:e></m:phant>'
+    )
+    text = _docx_from_xml(
+        tmp_path, f"<w:p><m:oMath>{binom}{_m('a')}{phantom}{_m('b')}</m:oMath></w:p>"
+    )
+    assert text == "({n \\atop k})ab"
+
+
+def test_docx_equations_keep_bars_and_group_characters(tmp_path):
+    mean = f'<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>{_m("x")}</m:e></m:bar>'
+    brace = f"<m:limLow><m:e><m:groupChr><m:e>{_m('a+b')}</m:e></m:groupChr></m:e><m:lim>{_m('n')}</m:lim></m:limLow>"
+    arrow = f'<m:groupChr><m:groupChrPr><m:chr m:val="→"/><m:pos m:val="top"/></m:groupChrPr><m:e>{_m("Δ")}</m:e></m:groupChr>'
+    text = _docx_from_xml(
+        tmp_path, f"<w:p><m:oMath>{mean}{_m('=')}{brace}{_m(',')}{arrow}</m:oMath></w:p>"
+    )
+    assert text == "\\overline{x}=\\underbrace{a+b}_{n},\\overset{→}{Δ}"
+
+
+# Same cases and expected text as the chat attachment reader's test (attachment-preview-text.test.ts).
+_OMML_CASES = [
+    (
+        '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
+        "∑_{i=1}^{n}i",
+    ),
+    ("<m:nary><m:sub>{0}</m:sub><m:sup>{1}</m:sup><m:e>{x}</m:e></m:nary>", "∫_{0}^{1}x"),
+    (
+        "<m:sSubSup><m:e>{x}</m:e><m:sub>{i}</m:sub><m:sup>{2}</m:sup></m:sSubSup><m:sSub><m:e>{a}</m:e><m:sub>{0}</m:sub></m:sSub>",
+        "x_{i}^{2}a_{0}",
+    ),
+    ("<m:sPre><m:sub>{6}</m:sub><m:sup>{14}</m:sup><m:e>{C}</m:e></m:sPre>", "{}_{6}^{14}C"),
+    ("<m:limUpp><m:e>{x}</m:e><m:lim>{def}</m:lim></m:limUpp>", "x^{def}"),
+    ("<m:limLow><m:e>{lim}</m:e><m:lim>{n→∞}</m:lim></m:limLow>", "lim_{n→∞}"),
+    (
+        '<m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{n}</m:num><m:den>{k}</m:den></m:f>'
+        '<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{xyz}</m:e></m:phant>',
+        "{n \\atop k}",
+    ),
+    (
+        "<m:acc><m:e>{θ}</m:e></m:acc><m:rad><m:deg>{3}</m:deg><m:e>{y}</m:e></m:rad>",
+        "θ̂\\sqrt[3]{y}",
+    ),
+    (
+        '<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg>{3}</m:deg><m:e>{x}</m:e></m:rad>'
+        '<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="0"/><m:supHide/></m:naryPr><m:sub>{k}</m:sub><m:sup>{n}</m:sup><m:e>{a}</m:e></m:nary>',
+        "\\sqrt{x}∑_{k}a",
+    ),
+    ("<m:func><m:fName>{sin}</m:fName><m:e>{x}</m:e></m:func>", "sin x"),
+    (
+        "<m:m><m:mr><m:e>{a}</m:e><m:e>{b}</m:e></m:mr><m:mr><m:e>{c}</m:e><m:e>{d}</m:e></m:mr></m:m>",
+        "a & b \\\\ c & d",
+    ),
+    ("<m:eqArr><m:e>{x=1}</m:e><m:e>{y=2}</m:e></m:eqArr>", "x=1\ny=2"),
+    (
+        '<m:d><m:e>{a}</m:e><m:e>{b}</m:e></m:d><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val=""/></m:dPr><m:e>{c}</m:e></m:d>',
+        "(a|b)[c",
+    ),
+    (
+        '<m:bar><m:e>{x}</m:e></m:bar><m:groupChr><m:groupChrPr><m:chr m:val="⏞"/><m:pos m:val="top"/></m:groupChrPr><m:e>{y}</m:e></m:groupChr>'
+        '<m:groupChr><m:groupChrPr><m:chr m:val="←"/></m:groupChrPr><m:e>{z}</m:e></m:groupChr>',
+        "\\underline{x}\\overbrace{y}\\underset{←}{z}",
+    ),
+    (
+        '{a}<w:r><w:t xml:space="preserve"> if </w:t></w:r>'
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>{prompt}</w:sdtContent></w:sdt>{b}",
+        "a if b",
+    ),
+]
+
+
+@pytest.mark.parametrize(("omml", "expected"), _OMML_CASES)
+def test_docx_equation_structures(tmp_path, omml, expected):
+    filled = re.sub(r"\{([^{}]*)\}", lambda match: _m(match.group(1)), omml)
+    text = _docx_from_xml(tmp_path, f"<w:p><m:oMath>{filled}</m:oMath></w:p>")
+    assert text == expected
 
 
 def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
@@ -556,6 +773,63 @@ def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
     assert "Name |  | END" in text
 
 
+def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.opc.constants import CONTENT_TYPE as CT, RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+    from docx.oxml import parse_xml
+
+    def note(kind, note_id, text):
+        return f'<w:{kind} w:id="{note_id}"><w:p><w:r><w:{kind}Ref/></w:r>{_r(" " + text)}</w:p></w:{kind}>'
+
+    def notes(kind, body):
+        return (
+            f"<w:{kind}s {_DOCX_XMLNS}>"
+            f'<w:{kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:{kind}>'
+            f'<w:{kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{kind}>'
+            f"{body}</w:{kind}s>"
+        ).encode()
+
+    def ref(kind, note_id):
+        return f'<w:r><w:{kind}Reference w:id="{note_id}"/></w:r>'
+
+    section = document.element.body[-1]
+    section.addprevious(
+        parse_xml(
+            f"<w:p {_DOCX_XMLNS}><w:del w:id=\"9\">{ref('footnote', 4)}</w:del>"
+            f"{_r('First.')}{ref('footnote', 2)}"
+            f"{_r(' Second.')}{ref('footnote', 1)}{ref('endnote', 1)}"
+            f"{_r(' ' + chr(0xE000) + '7' + chr(0xE001))}</w:p>"
+        )
+    )
+    for kind, content_type, reltype, body in (
+        (
+            "footnote",
+            CT.WML_FOOTNOTES,
+            RT.FOOTNOTES,
+            note("footnote", 1, "Source: LATER")
+            + note("footnote", 2, "Source: EARLIER")
+            + note("footnote", 3, "Source: UNREFERENCED")
+            + note("footnote", 4, "Source: DELETED"),
+        ),
+        ("endnote", CT.WML_ENDNOTES, RT.ENDNOTES, note("endnote", 1, "Source: ENDNOTEBODY")),
+    ):
+        part = Part(
+            PackURI(f"/word/{kind}s.xml"), content_type, notes(kind, body), document.part.package
+        )
+        document.part.relate_to(part, reltype)
+    path = tmp_path / "notes.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == (
+        "First.[1] Second.[2][i] \ue0007\ue001\n"
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n"
+        "Endnotes\n[i] Source: ENDNOTEBODY"
+    )
+
+
 def _parse_html(tmp_path, body):
     from core.rag import parsers
 
@@ -586,7 +860,98 @@ def test_html_block_elements_start_new_lines(tmp_path):
         "<h1>Install <em>guide</em></h1><ul><li>One</li><li>Two <i>items</i></li></ul>"
         "<p>line one<br>line two</p><table><tr><td>cell a</td><td>cell b</td></tr></table>",
     )
-    assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a\ncell b"
+    assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a | cell b"
+
+
+def test_html_table_rows_keep_their_columns(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><th>Plan</th><th>Price</th><th>Support</th><th>Seats</th></tr>"
+        "<tr><td>Starter</td><td>$9</td><td><p>Email</p><p>Chat</p></td><td>1</td></tr>"
+        "<tr><td>Team<td>$49<td><td>10</table><p>After</p>",
+    )
+    assert text == (
+        "Plan | Price | Support | Seats\nStarter | $9 | Email Chat | 1\nTeam | $49 |  | 10\nAfter"
+    )
+
+
+def test_html_table_spans_keep_columns_aligned(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><th>Plan</th><th colspan=2>Price</th></tr>"
+        "<tr><td rowspan=2>Pro</td><td>Monthly</td><td>$20</td></tr>"
+        "<tr><td>Annual</td><td>$200</td></tr></table>",
+    )
+    assert text == "Plan | Price | \nPro | Monthly | $20\n | Annual | $200"
+
+
+def test_html_trailing_rowspan_keeps_columns_aligned(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td>Item</td><td rowspan=2>Notes</td></tr><tr><td>Next</td></tr></table>",
+    )
+    assert text == "Item | Notes\nNext | "
+
+
+def test_html_table_preserves_preformatted_cell_whitespace(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td><pre>a\n b<br>  c</pre></td><td>d</td></tr></table>",
+    )
+    assert text == "a\n b\n  c | d"
+
+
+def test_html_layout_and_nested_tables_keep_their_lines(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td><h1>Title</h1><p>Intro</p>"
+        "<table><tr><td>Name<table><tr><td>x</td><td>y</td></tr></table></td><td>Value</td></tr></table>"
+        "<p>Outro</p></td></tr></table>",
+    )
+    assert text == "Title\nIntro\nName | Value\nx | y\nOutro"
+
+
+def test_html_text_after_a_nested_table_stays_in_its_parent_cell(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td>Before<table><tr><td>x</td><td>y</td></tr></table>After</td>"
+        "<td>Peer</td></tr></table>",
+    )
+    assert text == "Before After | Peer\nx | y"
+
+
+def test_html_table_spans_are_capped_by_the_file_size(tmp_path):
+    html = "<table><tr><td colspan=1000 rowspan=65534>x" + "<tr><td>a" * 2000
+    text = _parse_html(tmp_path, html)
+    assert text.count("a") == 2000 and len(text) < 4 * len(html)
+
+
+def test_html_empty_rows_spend_the_span_budget(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td colspan=50 rowspan=65534>x" + "<tr>" * 100 + "<tr><td>a<td>b</table>",
+    )
+    assert text.splitlines()[-1] == "a | b"
+
+
+def test_html_rowspan_stops_at_its_row_group(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><thead><tr><th rowspan=3>Plan</th><th>Price</th></tr></thead>"
+        "<tbody><tr><td rowspan=0>Team</td><td>$49</td></tr><tr><td>$490</td></tr></tbody>"
+        "<tbody><tr><td>Pro</td><td>$99</td></tr></tbody></table>",
+    )
+    assert text == "Plan | Price\nTeam | $49\n | $490\nPro | $99"
+
+
+def test_html_tables_nested_past_the_depth_cap_read_as_blocks(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td>" * 32 + "<table><tr><td>a<td>b" + "<p>end")
+    assert text == "a\nb\nend"
+
+
+def test_html_stray_cell_end_keeps_words_apart(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td>Total</td>Note</td>Extra</tr></table>")
+    assert text == "Note\nExtra\nTotal"
 
 
 def test_html_legend_and_options_stay_separate_words(tmp_path):

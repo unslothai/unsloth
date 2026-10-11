@@ -4,9 +4,11 @@
 import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
+import { queueParse } from "./parse-queue";
+import { usePdfWorker } from "./use-pdf-worker";
 import { useWidth } from "./use-width";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -198,7 +200,42 @@ function PdfPages({
   );
 }
 
-export default function PdfView({ file, scale }: { file: Blob; scale: number }) {
+/** Waits for a shared parse slot and holds it until `release`, so thumbnails load a few at a time. */
+function useParseSlot(enabled: boolean, file: Blob): { ready: boolean; release: () => void } {
+  const [ready, setReady] = useState<Blob | null>(null);
+  const done = useRef<(() => void) | null>(null);
+  const release = useCallback(() => {
+    done.current?.();
+    done.current = null;
+  }, []);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    void queueParse(
+      () =>
+        new Promise<void>((resolve) => {
+          done.current = resolve;
+          setReady(file);
+        }),
+      () => cancelled,
+    );
+    return () => {
+      cancelled = true;
+      release();
+    };
+  }, [enabled, file, release]);
+  return { ready: !enabled || ready === file, release };
+}
+
+export default function PdfView({
+  file,
+  scale,
+  firstPageOnly = false,
+}: {
+  file: Blob;
+  scale: number;
+  firstPageOnly?: boolean;
+}) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const available = useWidth(container);
@@ -207,16 +244,22 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
   const [aspect, setAspect] = useState(1.294);
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
+  const slot = useParseSlot(firstPageOnly, file);
+  const pdfWorker = usePdfWorker(slot.ready && failed !== file);
+  const options = useMemo(() => (pdfWorker ? { ...PDF_OPTIONS, worker: pdfWorker.worker } : null), [pdfWorker]);
 
   if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
+  if (!slot.ready || !options) return <div className="size-full bg-muted/60" />;
   return (
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       <Document
         file={file}
-        options={PDF_OPTIONS}
+        options={options}
         onLoadSuccess={(document) => {
+          pdfWorker?.loaded.add(document);
+          slot.release();
           setPdf(document);
           setPages(document.numPages);
           void document.getPage(1).then((page) => {
@@ -224,20 +267,23 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
             setAspect(clampAspect(viewport.height / viewport.width));
           });
         }}
-        onLoadError={() => setFailed(file)}
+        onLoadError={() => {
+          slot.release();
+          setFailed(file);
+        }}
         loading={<Spinner className="mx-auto mt-24 size-6" />}
       >
         {available > 0 && pdf && (
           <PdfPages
             key={`${width}:${aspect}`}
             pdf={pdf}
-            pages={Math.min(pages, MAX_PDF_PAGES)}
+            pages={firstPageOnly ? Math.min(pages, 1) : Math.min(pages, MAX_PDF_PAGES)}
             width={width}
             aspect={aspect}
             scrollElement={container}
           />
         )}
-        {available > 0 && pdf && pages > MAX_PDF_PAGES && (
+        {available > 0 && pdf && !firstPageOnly && pages > MAX_PDF_PAGES && (
           <p className="pb-6 text-center text-ui-12 text-muted-foreground">{t("library.preview.documentTruncated")}</p>
         )}
       </Document>

@@ -258,6 +258,10 @@ _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 # onto something else.
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
+    # A 600 s poll deadline while llama-server loads the model: descheduling only delays the poll.
+    ("test_decision_native_gpu.py", "_bare_llama_server"),
+    # A 10 s poll deadline: descheduling only delays the poll, it cannot make the condition false.
+    ("test_npu_chat_route.py", "_wait_for"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
     # A 600-second expiry checked against the wall clock.
     # Reading both sides of that gap late by whole seconds still leaves it true, and it only reaches this scan at all
@@ -273,6 +277,9 @@ BENIGN_TIMING = {
         "test_account_local_model_resolver.py",
         "test_a_warm_scan_queues_behind_another_accounts_scan",
     ),
+    # A poll deadline: FakeSmi.wait_for_call loops until the fake nvidia-smi has logged the expected children and only
+    # asserts `time.monotonic() < deadline` against a 30s budget, so a descheduled worker just polls longer.
+    ("test_gpu_query_cache.py", "wait_for_call"),
 }
 
 

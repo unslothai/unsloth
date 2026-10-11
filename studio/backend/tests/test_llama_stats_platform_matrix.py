@@ -146,7 +146,7 @@ def _scrape_body(body, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(ls.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(ls.urllib.request.OpenerDirector, "open", lambda *a, **k: _Resp())
     return LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())._scrape()
 
 
@@ -184,7 +184,7 @@ def test_scrape_failure_returns_none(monkeypatch):
     def _boom(*a, **k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(ls.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(ls.urllib.request.OpenerDirector, "open", _boom)
     assert LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())._scrape() is None
 
 

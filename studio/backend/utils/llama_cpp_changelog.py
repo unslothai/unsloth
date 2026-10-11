@@ -21,6 +21,9 @@ from utils.auth_safe import auth_safe_open
 from utils.prebuilt.freshness_flow import (
     RELEASE_CACHE_TTL_SECONDS,
     RELEASE_FAILURE_CACHE_TTL_SECONDS,
+    github_rate_limit_remaining,
+    hold_github_api,
+    rate_limit_wait,
 )
 
 logger = structlog.get_logger(__name__)
@@ -80,6 +83,8 @@ def _fetch_release(
 
 
 def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dict]:
+    if github_rate_limit_remaining() > 0:
+        return None
     encoded_tag = urllib.parse.quote(tag, safe = "")
     headers = {
         "Accept": "application/vnd.github+json",
@@ -100,9 +105,15 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
             logger.debug("llama changelog release too large", repo = repo, tag = tag)
             return None
         payload = json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        wait = rate_limit_wait(exc)
+        hold_github_api(wait)
+        logger.debug(
+            "llama changelog fetch failed", repo = repo, tag = tag, error = str(exc), backoff_seconds = wait
+        )
+        return None
     except (
         urllib.error.URLError,
-        urllib.error.HTTPError,
         OSError,
         # A truncated read raises HTTPException, which is not an OSError.
         http.client.HTTPException,
@@ -124,6 +135,9 @@ def _release_for_tag(
     key = (repo, tag)
     # Memory-only, so monotonic throughout: a backward clock step must not be able to extend the TTL. freshness_flow uses wall time because it persists to disk.
     now = time.monotonic()
+    # Retrying into a rate limit only delays the reset; checked before the debounce so the slot is not burnt.
+    if github_rate_limit_remaining() > 0:
+        force_refresh = False
     if force_refresh:
         forced_at = _release_forced_at.get(key)
         if forced_at is not None and now - forced_at < FORCE_REFRESH_MIN_INTERVAL_SECONDS:

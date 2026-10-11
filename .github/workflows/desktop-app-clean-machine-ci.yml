@@ -48,8 +48,10 @@ on:
       - 'studio/package-lock.json'
       - 'studio/frontend/package.json'
       - 'studio/frontend/package-lock.json'
+      - 'studio/.npmrc'
       - 'studio/frontend/.npmrc'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       - 'studio/src-tauri/Cargo.toml'
       - 'studio/src-tauri/Cargo.lock'
       - 'studio/src-tauri/build.rs'
@@ -241,10 +243,15 @@ jobs:
           # installer. Invoke it as src-tauri/src/install.rs does: --tauri, stdin closed,
           # no tty. --tauri rejects a custom studio home (install.sh:102-114).
           SH="$APP/Contents/Resources/install.sh"
+          # Run it from outside the checkout, as the app does: a user launches Unsloth from the
+          # desktop, not from a clone of this repository. Released bundles up to v0.1.902 resolve
+          # `studio` against the cwd when locating setup.sh (fixed with -I in install.sh), so a
+          # run from the checkout installed THIS ref's requirement pins into a released wheel
+          # and preflight read studio_deps_missing (#12656 moved pyjwt).
           rc=0
-          env -u UNSLOTH_STUDIO_HOME \
+          (cd "$RUNNER_TEMP" && env -u UNSLOTH_STUDIO_HOME \
             bash "$SH" --tauri \
-            < /dev/null 2>&1 | tee logs/bundled-install.log || rc=$?
+            < /dev/null 2>&1) | tee logs/bundled-install.log || rc=$?
           echo "bundled installer exit code: $rc"
           [ "$rc" -eq 0 ] || {
             echo "::error::bundled installer exited $rc"
@@ -275,7 +282,8 @@ jobs:
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           APP="$(ls -d /Applications/*Unsloth*.app | head -1)"
           BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
-          "$BIN" > logs/app-stdout.log 2>&1 &
+          # From outside the checkout, like a desktop launch (see the install step).
+          (cd "$RUNNER_TEMP" && exec "$BIN") > logs/app-stdout.log 2>&1 &
           APP_PID=$!
           # 90s: long enough to clear preflight and start the bundled installer.
           for i in $(seq 1 90); do
@@ -551,9 +559,15 @@ jobs:
           echo "bundled installer: $SH"
           # --tauri rejects a custom studio home (install.sh:102-114), so drop the
           # workspace-scoped override; close stdin as install.rs does.
+          SH="$(cd "$(dirname "$SH")" && pwd)/$(basename "$SH")"
+          # Run it from outside the checkout, as the app does: a user launches Unsloth from the
+          # desktop, not from a clone of this repository. Released bundles up to v0.1.902 resolve
+          # `studio` against the cwd when locating setup.sh (fixed with -I in install.sh), so a
+          # run from the checkout installed THIS ref's requirement pins into a released wheel
+          # and preflight read studio_deps_missing (#12656 moved pyjwt).
           rc=0
-          env -u UNSLOTH_STUDIO_HOME \
-            bash "$SH" --tauri < /dev/null 2>&1 | tee logs/bundled-install.log || rc=$?
+          (cd "$RUNNER_TEMP" && env -u UNSLOTH_STUDIO_HOME \
+            bash "$SH" --tauri < /dev/null 2>&1) | tee logs/bundled-install.log || rc=$?
           echo "bundled installer exit code: $rc"
           [ "$rc" -eq 0 ] || {
             echo "::error::bundled installer exited $rc"
@@ -581,8 +595,10 @@ jobs:
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           # The one platform where a hosted runner can give the app a real display, so this
           # is the strongest "does the UI come up" check without self-hosted hardware.
-          xvfb-run -a --server-args="-screen 0 1440x900x24" \
-            "$BIN" > logs/app-stdout.log 2>&1 &
+          # From outside the checkout, like a desktop launch (see the install step).
+          BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+          (cd "$RUNNER_TEMP" && exec xvfb-run -a --server-args="-screen 0 1440x900x24" \
+            "$BIN") > logs/app-stdout.log 2>&1 &
           APP_PID=$!
           for i in $(seq 1 90); do
             kill -0 "$APP_PID" 2>/dev/null || break
@@ -697,7 +713,7 @@ jobs:
         run: python3 scripts/lockfile_supply_chain_audit.py
 
       - name: Install pinned Tauri CLI
-        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+        run: npm ci --prefix studio --no-fund --no-audit
 
       - name: Install frontend dependencies
         working-directory: studio/frontend

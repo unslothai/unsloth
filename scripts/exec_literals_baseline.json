@@ -12,9 +12,9 @@
     {
       "file": "studio/backend/core/inference/diffusion_capture_safe.py",
       "sink": "compile",
-      "digest": "05c1d218ea0c8e6d",
+      "digest": "1f39880672dc563b",
       "count": 1,
-      "reason": "Rebuilds the installed diffusers HunyuanImage forward from its own inspect.getsource with one fixed block swapped; the source is the imported library's code, not user or network input."
+      "reason": "Rebuilds the installed diffusers HunyuanImage / HunyuanVideo 1.5 forward from its own inspect.getsource with fixed blocks swapped (compiled with dont_inherit so this module's future import does not leak in); the source is the imported library's code, not user or network input."
     },
     {
       "file": "studio/backend/core/inference/diffusion_capture_safe.py",

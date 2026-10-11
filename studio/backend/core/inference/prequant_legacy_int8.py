@@ -250,3 +250,27 @@ def _rebuild_standins(ckpt: Any, standins: dict, api: tuple) -> Any:
         elif isinstance(value, stray):
             raise ValueError(f"legacy int8 weight {key!r} is not wrapped for activation quant")
     return ckpt
+
+
+def convert_legacy_int8_weights(module: Any) -> int:
+    """Rebuild a loaded module's v1 int8 weights as pinnable ``Int8Tensor`` in place (torchao <= 0.17).
+
+    All or nothing: any weight failing validation leaves the module unchanged and returns 0."""
+    import torch
+
+    api = _int8_tensor_api()
+    classes = {name: _resolve(name) for name in (*LEGACY_INT8_CLASS_NAMES, _ACT_QUANT)}
+    if api is None or any(value is None for value in classes.values()):
+        return 0
+    rebuilt = []
+    try:
+        for name, submodule in module.named_modules():
+            # Registered parameters only: PadToMinM forwards ``weight`` to its inner Linear.
+            weight = getattr(submodule, "_parameters", {}).get("weight")
+            if isinstance(weight, classes[_LAQT]):
+                rebuilt.append((submodule, _rebuild_weight(name, weight, classes, api)))
+    except Exception:  # noqa: BLE001 -- an unrecognised weight keeps the v1 class everywhere
+        return 0
+    for submodule, weight in rebuilt:
+        submodule.weight = torch.nn.Parameter(weight, requires_grad = False)
+    return len(rebuilt)

@@ -51,6 +51,19 @@ test("the dense-quant class follows the backend's capability answer, not its nam
   for (const host of ["gguf-only", "unknown"] as const) {
     assert.equal(hostRunsDenseQuant(host), false, host);
   }
+  // A Mac only ever reports mlx or cpu; mac + cuda means a browser-derived Mac on a remote host.
+  for (const deviceBackend of ["mlx", "cpu"]) {
+    assert.equal(
+      classifyHost({
+        deviceType: "mac",
+        deviceBackend,
+        budgetKnown: true,
+        denseQuantSupported: true,
+      }),
+      "gguf-only",
+      deviceBackend,
+    );
+  }
   assert.equal(
     classifyHost({
       deviceType: "mac",
@@ -58,7 +71,7 @@ test("the dense-quant class follows the backend's capability answer, not its nam
       budgetKnown: true,
       denseQuantSupported: true,
     }),
-    "gguf-only",
+    "dense-quant",
   );
 });
 
@@ -72,10 +85,20 @@ test("the backends that only run the native engine are gguf-only", () => {
   }
 });
 
+test("a resolved accelerated backend outranks a browser-derived Mac", () => {
+  for (const deviceBackend of ["cuda", "rocm", "xpu"]) {
+    assert.equal(
+      classifyHost({ deviceType: "mac", deviceBackend, budgetKnown: true }),
+      "accelerated",
+      deviceBackend,
+    );
+  }
+});
+
 test("a Mac is gguf-only whatever backend it reports", () => {
   // Apple GPUs report as available and the backend string varies with what torch found, but no
   // Mac can place the Modular Diffusers workflow: video.py refuses the load outright.
-  for (const deviceBackend of ["mlx", "cpu", "cuda", null]) {
+  for (const deviceBackend of ["mlx", "cpu", null]) {
     assert.equal(
       classifyHost({ deviceType: "mac", deviceBackend, budgetKnown: true }),
       "gguf-only",

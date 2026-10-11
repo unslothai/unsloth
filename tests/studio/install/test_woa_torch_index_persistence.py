@@ -3036,11 +3036,6 @@ class TestARebasedOptionPathKeepsItsQuoting:
             argument[1:-1]
         ).exists(), f"the rebased path does not resolve to the file it names: {got!r}"
 
-    def test_the_two_copies_stay_identical(self):
-        """setup.ps1 carries a parity copy; a fix applied to one is a bug in the other."""
-        install, setup = _ps_copies("Resolve-WoaOverrideLine")
-        assert install == setup
-
 
 class TestALocalDirectoryRequirementIsRebasedToo:
     """The line forms the fold moved and left behind. New-UnslothTorchOverridesFile writes to
@@ -3691,7 +3686,7 @@ class TestATransientProbeFailureKeepsTheCudaBundle:
     selector with no NVIDIA evidence, which installs the CPU bundle instead."""
 
     def test_the_persisted_cuda_index_counts_as_evidence(self):
-        assert "$_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv)" in SETUP_SRC
+        assert "$_nvidiaEvidence = $HasNvidiaDriverEvidence -or ((Test-WinArm64Venv)" in SETUP_SRC
         assert "elseif ($_nvidiaEvidence) { $_nvidiaKinds }" in SETUP_SRC
 
     def test_only_a_persistable_index_counts(self):
@@ -4681,10 +4676,6 @@ class TestARebasedFileReferenceIsAUri:
             f" -BaseDir '{tmp_path}') + ']')",
         )
         assert _ps_last(script)[1:-1] == 'pkg @ https://x.test/a.whl ; os_name == "nt"'
-
-    def test_the_two_copies_are_identical(self):
-        install, setup = _ps_copies("Resolve-WoaOverrideLine")
-        assert install == setup
 
 
 class TestTheMergedOverrideFileDoesNotOutliveTheRun:

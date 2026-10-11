@@ -1,19 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  type GeminiAnswerReplayPart,
+  type GeminiContinuationReplayTurn,
+  type GeminiThoughtReplayPart,
+  parseGeminiAnswerReplayParts,
+  parseGeminiContinuationReplayTurns,
+  parseGeminiThoughtReplayParts,
+} from "../gemini-thought-replay.ts";
+import type { ProviderCompactionContentPart } from "../types/api";
+import { providerCompactionPart } from "./provider-compaction.ts";
+
 /** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation is re-sent
  *  with the partial as the final assistant turn plus `continue_final_message`, so the prompt ends mid-sentence
  *  and the new text is appended to the partial. */
 
 /** Why a turn ended before the model was done. `context_window` is a `length` cut the same
  *  request can never fit into, hence its own reason. `empty` is a clean finish that produced
- *  nothing, which is a failure to report rather than an answer. */
+ *  nothing, which is a failure to report rather than an answer. `quote_cut` flags a
+ *  possible mid-quote stop. */
 export type IncompleteReason =
   | "length"
   | "cancelled"
   | "interrupted"
   | "context_window"
-  | "empty";
+  | "empty"
+  | "quote_cut";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
@@ -21,14 +34,17 @@ export type IncompleteInfo = {
 };
 
 /** Whether a finished turn left anything on screen, which is what separates `empty` from a
- *  real answer. Non-text parts (tool calls, images, sources) always count; text has to be
- *  more than whitespace. */
+ *  real answer. Structured parts (tool calls, images, sources) always count; text and
+ *  reasoning have to contain more than whitespace. */
 export function hasRenderableContent(
   content: readonly { type: string; text?: string }[],
 ): boolean {
-  return content.some(
-    (part) => part.type !== "text" || (part.text ?? "").trim().length > 0,
-  );
+  return content.some((part) => {
+    if (part.type === "text" || part.type === "reasoning") {
+      return (part.text ?? "").trim().length > 0;
+    }
+    return true;
+  });
 }
 
 const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
@@ -37,6 +53,7 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "interrupted",
   "context_window",
   "empty",
+  "quote_cut",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -56,6 +73,17 @@ export function resolveIncompleteReason<T extends IncompleteReason | null>(
   contextWindowExceeded: boolean,
 ): T | "context_window" {
   return contextWindowExceeded ? "context_window" : reason;
+}
+
+/** Let a context-window error refine a latched length stop; preserve other latched reasons. */
+export function incompleteReasonAfterError(
+  latched: IncompleteReason | null,
+  fromError: IncompleteReason,
+): IncompleteReason {
+  if (latched === "length" && fromError === "context_window") {
+    return fromError;
+  }
+  return latched ?? fromError;
 }
 
 /** Whether the provider reported this reason rather than the client inferring it; the provider
@@ -96,6 +124,7 @@ const STATUS_REASON: Record<
   // reason, losing the explanation on reload. `context_window` maps here for the same
   // reason. Not `error` either, which would paint a red box over the bar.
   empty: "length",
+  quote_cut: "length",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -115,6 +144,7 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   interrupted: "Response interrupted",
   context_window: "Response filled the model's context window",
   empty: "The model returned an empty response",
+  quote_cut: "This response may have ended early",
 };
 
 /** The user-facing explanation of why a turn stopped. */
@@ -128,6 +158,9 @@ const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
   context_window: "Start a new chat, or shorten this one, to keep going",
   // There is no partial to resume from, so the way out is another attempt.
   empty: "Try again, or pick a different model",
+  // Detection is heuristic, and continuation may repeat the cut.
+  quote_cut:
+    "The model may have emitted a special token while quoting it. Write special tokens with a space inside, like < |im_end|> or < end_of_turn>, ask the model to do the same, and try again",
 };
 
 /** What to do about a turn that stopped early, or `null` when resuming is the answer. */
@@ -222,29 +255,67 @@ export function budgetImpliesTruncation({
   );
 }
 
-/** Whether an assistant turn can be resumed at all. A turn that called a tool cannot: the
- *  continuation runs as a sibling, so the call and its result are absent from the outbound
- *  history. Matches the backend guard. */
+/** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
+  {
+    thought = false,
+    replay = false,
+  }: { thought?: boolean; replay?: boolean } = {},
 ): boolean {
   if (!content) {
-    return false;
+    return replay;
   }
   let hasText = false;
+  let hasReasoning = false;
   for (const part of content) {
     const type = (part as { type?: string })?.type;
     if (type === "text") {
       hasText = hasText || ((part as { text?: string }).text ?? "").length > 0;
       continue;
     }
-    // Reasoning and citations are never replayed, so they neither block nor enable.
-    if (type === "reasoning" || type === "source") {
+    if (type === "reasoning") {
+      hasReasoning =
+        hasReasoning || ((part as { text?: string }).text ?? "").trim().length > 0;
+      continue;
+    }
+    // Citations are never replayed, so they neither block nor enable.
+    if (type === "source") {
       continue;
     }
     return false;
   }
-  return hasText;
+  return hasText || (thought && hasReasoning) || replay;
+}
+
+/** Reasoning is kept only when it all precedes the answer, as reasoning_content does. */
+export function readContinuationSource(
+  content: readonly unknown[] | undefined,
+): { partial: string; reasoning: string } {
+  let partial = "";
+  const thoughts: string[] = [];
+  let ordered = true;
+  for (const part of content ?? []) {
+    const { type, text } = (part ?? {}) as { type?: string; text?: unknown };
+    if (typeof text !== "string") {
+      continue;
+    }
+    if (type === "text") {
+      partial += text;
+    } else if (type === "reasoning") {
+      ordered = ordered && partial.length === 0;
+      thoughts.push(text);
+    }
+  }
+  return { partial, reasoning: ordered ? thoughts.join("\n") : "" };
+}
+
+/** Seed the adapter buffer, leaving <think> open when there is no answer yet. */
+export function continuationSeed(partial: string, thought: string): string {
+  if (!thought) {
+    return partial;
+  }
+  return partial ? `<think>${thought}</think>${partial}` : `<think>${thought}`;
 }
 
 /** The newest Gemini text-part thoughtSignature on an assistant turn, carried so the resumed turn
@@ -314,12 +385,82 @@ export const CONTINUE_INSTRUCTION =
 export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 
 export type ContinuationRequest = {
-  /** The partial answer to resume, exactly as it was rendered. */
+  /** The partial answer exactly as rendered; empty when stopped mid-thought. */
   partial: string;
+  /** Carried only to a backend that resumes a thought. */
+  reasoning?: string;
+  /** Seconds, so the resumed turn keeps its timer. */
+  reasoningDuration?: number;
   /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
    *  original assistant message, so replaying it here keeps the history signed. */
   thoughtSignature?: string;
+  /** Signed Gemini thought-summary parts from the turn being resumed. */
+  thoughtParts?: GeminiThoughtReplayPart[];
+  /** Exact Gemini answer-part boundaries from the turn being resumed. */
+  answerParts?: GeminiAnswerReplayPart[];
+  /** Gemini responses hidden behind the merged continuation bubble, in provider order. */
+  geminiReplayTurns?: GeminiContinuationReplayTurn[];
+  providerCompaction?: ProviderCompactionContentPart;
+  providerCompactionAfterToolCalls?: number;
+  providerCompactionProviderType?: string;
+  providerCompactionModelId?: string;
+  providerCompactionConnectionKey?: string;
 };
+
+type ProviderCompactionContinuationFields = Pick<
+  Required<ContinuationRequest>,
+  | "providerCompaction"
+  | "providerCompactionAfterToolCalls"
+  | "providerCompactionProviderType"
+  | "providerCompactionModelId"
+  | "providerCompactionConnectionKey"
+>;
+
+function providerCompactionFields(
+  value: unknown,
+): ProviderCompactionContinuationFields | Record<string, never> {
+  const fields = value as
+    | {
+        providerCompaction?: unknown;
+        providerCompactionAfterToolCalls?: unknown;
+        providerCompactionProviderType?: unknown;
+        providerCompactionModelId?: unknown;
+        providerCompactionConnectionKey?: unknown;
+      }
+    | undefined;
+  const compaction = providerCompactionPart(fields?.providerCompaction);
+  const boundary = fields?.providerCompactionAfterToolCalls;
+  const providerType = fields?.providerCompactionProviderType;
+  const modelId = fields?.providerCompactionModelId;
+  const connectionKey = fields?.providerCompactionConnectionKey;
+  if (
+    !compaction ||
+    !Number.isInteger(boundary) ||
+    (boundary as number) < 0 ||
+    typeof providerType !== "string" ||
+    !providerType ||
+    typeof modelId !== "string" ||
+    !modelId ||
+    typeof connectionKey !== "string" ||
+    !connectionKey
+  ) {
+    return {};
+  }
+  return {
+    providerCompaction: compaction,
+    providerCompactionAfterToolCalls: boundary as number,
+    providerCompactionProviderType: providerType,
+    providerCompactionModelId: modelId,
+    providerCompactionConnectionKey: connectionKey,
+  };
+}
+
+export function providerCompactionContinuationFields(
+  metadata: unknown,
+): ProviderCompactionContinuationFields | Record<string, never> {
+  const custom = (metadata as { custom?: unknown } | undefined)?.custom;
+  return providerCompactionFields(custom);
+}
 
 /** Read a continuation request out of a run's `runConfig`, if it is one. */
 export function readContinuationRequest(
@@ -328,16 +469,59 @@ export function readContinuationRequest(
   const custom = (runConfig as { custom?: Record<string, unknown> } | undefined)
     ?.custom;
   const request = custom?.[CONTINUATION_RUN_CONFIG_KEY] as
-    | { partial?: unknown; thoughtSignature?: unknown }
+    | {
+        partial?: unknown;
+        reasoning?: unknown;
+        reasoningDuration?: unknown;
+        thoughtSignature?: unknown;
+        thoughtParts?: unknown;
+        answerParts?: unknown;
+        geminiReplayTurns?: unknown;
+        providerCompaction?: unknown;
+        providerCompactionAfterToolCalls?: unknown;
+        providerCompactionProviderType?: unknown;
+        providerCompactionModelId?: unknown;
+        providerCompactionConnectionKey?: unknown;
+      }
     | undefined;
-  const partial = request?.partial;
-  if (typeof partial === "string" && partial.length > 0) {
-    const signature = request?.thoughtSignature;
-    return typeof signature === "string" && signature
-      ? { partial, thoughtSignature: signature }
-      : { partial };
+  const partial = typeof request?.partial === "string" ? request.partial : "";
+  const reasoning =
+    typeof request?.reasoning === "string" && request.reasoning.trim()
+      ? request.reasoning
+      : "";
+  const signature = request?.thoughtSignature;
+  const thoughtParts = parseGeminiThoughtReplayParts(request?.thoughtParts);
+  const answerParts = parseGeminiAnswerReplayParts(request?.answerParts);
+  const geminiReplayTurns = parseGeminiContinuationReplayTurns(
+    request?.geminiReplayTurns,
+  );
+  const hasGeminiReplay = Boolean(
+    (typeof signature === "string" && signature) ||
+      thoughtParts.length > 0 ||
+      answerParts.length > 0 ||
+      geminiReplayTurns.length > 0,
+  );
+  if (!partial && !reasoning && !hasGeminiReplay) {
+    return null;
   }
-  return null;
+  const duration = request?.reasoningDuration;
+  return {
+    partial,
+    ...(reasoning ? { reasoning } : {}),
+    ...(reasoning &&
+    typeof duration === "number" &&
+    Number.isFinite(duration) &&
+    duration >= 0
+      ? { reasoningDuration: duration }
+      : {}),
+    ...(typeof signature === "string" && signature
+      ? { thoughtSignature: signature }
+      : {}),
+    ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+    ...(answerParts.length > 0 ? { answerParts } : {}),
+    ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
+    ...providerCompactionFields(request),
+  };
 }
 
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.

@@ -290,3 +290,8 @@ if (typeof window !== "undefined") {
   });
 }
 
+
+/** Deletes an item from outside the Library, e.g. a sent attachment from its chat's viewer. */
+export function removeLibraryItem(id: string): Promise<void> {
+  return useLibraryStore.getState().removeItem(id, undefined);
+}

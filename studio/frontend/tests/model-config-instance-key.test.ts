@@ -107,7 +107,7 @@ test("every mirrored setting moves the instance key", () => {
     { ...LIVE, customContextLength: 8192 },
     { ...LIVE, maxSeqLength: 4096 },
     { ...LIVE, kvCacheDtype: "f16" },
-    { ...LIVE, mlxKvBits: 4 },
+    { ...LIVE, mlxKvQuant: "4" },
     { ...LIVE, speculativeType: "off" },
     { ...LIVE, specDraftNMax: 4 },
     { ...LIVE, nParallel: 1 },
@@ -143,5 +143,21 @@ test("the model and its quant still key the editor", () => {
   assert.equal(
     modelConfigInstanceKey(MODEL, null, LIVE),
     modelConfigInstanceKey(MODEL, undefined, LIVE),
+  );
+});
+
+test("the arguments the model is running with key the editor", () => {
+  // Another tab relaunching with only different arguments must re-seed, or Apply resends the old list.
+  const running = { ...LIVE, llamaExtraArgs: ["--numa", "distribute"] };
+  const base = modelConfigInstanceKey(MODEL, VARIANT, running);
+  assert.notEqual(
+    modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, llamaExtraArgs: ["--numa", "isolate"] }),
+    base,
+  );
+  assert.notEqual(modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, llamaExtraArgs: [] }), base);
+  assert.notEqual(modelConfigInstanceKey(MODEL, VARIANT, LIVE), base);
+  assert.equal(
+    modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, llamaExtraArgs: [...running.llamaExtraArgs] }),
+    base,
   );
 });

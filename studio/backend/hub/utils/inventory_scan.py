@@ -1025,6 +1025,13 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     # Selected by its own name, so it counts even when the walk grouped no shard of it, and every weight_map entry resolves against the index.
     root_indexes: set[str] = set()
     unusable_root_indexes: set[str] = set()
+    parsed: dict[Path, object] = {}
+
+    def index_shards(index_path: Path):
+        if index_path not in parsed:
+            parsed[index_path] = _read_index_shards(index_path)
+        return parsed[index_path]
+
     for suffix, canonical in _LOADER_WEIGHT_NAMES["base"].items():
         index_path = snapshot_dir / f"{canonical}.index.json"
         try:
@@ -1033,7 +1040,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         except OSError:
             continue
         root_indexes.add(suffix)
-        if _index_cannot_serve_its_shards(index_path, set()):
+        if _index_cannot_serve_its_shards(index_path, set(), index_shards(index_path)):
             unusable_root_indexes.add(suffix)
     for family in groups["base"]:
         # Only the canonical index is probed, so a set behind any other name is one it never opens.
@@ -1046,7 +1053,9 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             present = False
         if not present:
             invisible.add(family)
-        elif _index_cannot_serve_its_shards(index_path, shard_names.get(family, set())):
+        elif _index_cannot_serve_its_shards(
+            index_path, shard_names.get(family, set()), index_shards(index_path)
+        ):
             unloadable.add(family)
     # peft resolves only the singular adapter_model.*, so it never looks at a numbered adapter set.
     invisible |= set(groups["adapter"])
@@ -1067,42 +1076,57 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     )
 
 
-def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> bool:
+def _index_cannot_serve_its_shards(
+    index_path: Path,
+    family_files: set[str],
+    shards: object = None,
+) -> bool:
     """Whether *index_path* would fail to hand ``from_pretrained`` the family in *family_files*. Existing is not enough: the loader parses it and opens every ``weight_map`` name, so a truncated index or one naming a shard never written is as unloadable as no index at all, and the map is also the only list of files read, so one covering part of the numbered family silently drops the rest."""
+    if shards is None:
+        shards = _read_index_shards(index_path)
+    if shards is False:
+        return True
+    named = {shard.name for shard in shards}
+    # Coverage matters only for the family this index describes: the loader opens weight_map and nothing else.
+    return not family_files <= named and not named.isdisjoint(family_files)
+
+
+def _read_index_shards(index_path: Path):
+    """The shards *index_path* names if each is a non-empty file and every numbered set is whole, else False."""
     try:
         if not index_path.is_file() or index_path.stat().st_size <= 0:
-            return True
+            return False
         with index_path.open(encoding = "utf-8") as handle:
             index = json.load(handle)
     except (OSError, UnicodeDecodeError, ValueError, RecursionError):
         # RecursionError escapes every caller's fail-open guard, and the loader parses this index with the same json module, so one too deep to parse there cannot serve its shards here either.
-        return True
+        return False
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weight_map, dict) or not weight_map:
-        return True
+        return False
+    # Per unique shard, not per tensor: a MoE index maps tens of thousands of tensors onto a few dozen files.
+    try:
+        names = set(weight_map.values())
+    except TypeError:
+        return False
     shards: set[PurePosixPath] = set()
-    for shard in weight_map.values():
-        # Names are relative to the index: anything reaching outside is not a shard of this family.
+    for shard in names:
         if not isinstance(shard, str) or not shard:
-            return True
+            return False
+        # Names are relative to the index: anything reaching outside is not a shard of this family.
         parts = PurePosixPath(shard.replace("\\", "/"))
         # is_absolute() is per flavour: PurePosixPath reads "C:/weights/x.safetensors" as a relative "C:" subdirectory, but the join below is a platform Path, so on Windows that name replaces the index directory outright.
         windows = PureWindowsPath(shard)
         if parts.is_absolute() or ".." in parts.parts or windows.is_absolute() or windows.drive:
-            return True
+            return False
         shards.add(parts)
-    named = {shard.name for shard in shards}
-    # Coverage matters only for the family this index describes: the loader opens weight_map and nothing else.
-    if not family_files <= named and not named.isdisjoint(family_files):
-        return True
     for shard in shards:
         try:
-            named = index_path.parent / shard
-            shard_stat = named.stat()
+            shard_stat = (index_path.parent / shard).stat()
             if not stat.S_ISREG(shard_stat.st_mode) or shard_stat.st_size <= 0:
-                return True
+                return False
         except (OSError, ValueError):
-            return True
+            return False
     # A shard names its own total, so an index listing one of a set has to list the whole set: the loader silently drops whatever the map leaves out.
     declared: dict[tuple[str, str, int], set[int]] = {}
     for shard in shards:
@@ -1111,7 +1135,9 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
             continue
         key = (str(shard.parent), shard.name[: match.start()], int(match.group(2)))
         declared.setdefault(key, set()).add(int(match.group(1)))
-    return any(total <= 0 or len(seen) < total for (_d, _p, total), seen in declared.items())
+    if any(total <= 0 or len(seen) < total for (_d, _p, total), seen in declared.items()):
+        return False
+    return shards
 
 
 def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:

@@ -115,7 +115,11 @@ function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
 type Truth = true | false | null;
 
 function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
-  if (isEmptyTest(node, jobKeys)) return true;
+  // Queued plans show before their first job exists, so the panel hides only when both are empty.
+  const queued = panelComponent().body?.statements.flatMap(statement =>
+    ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : []
+  ).find(declaration => declaration.initializer?.getText() === "useQueuedHubEntries()")?.name.getText();
+  if (isEmptyTest(node, jobKeys) || (queued && isEmptyTest(node, queued))) return true;
   if (ts.isParenthesizedExpression(node)) {
     return underAnEmptyList(node.expression, jobKeys);
   }

@@ -79,6 +79,10 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'unsloth-cli.py'
+      - 'unsloth_cli/_inference.py'
+      - 'unsloth_cli/commands/train.py'
+      - 'unsloth_cli/tests/test_train_mlx_ddp_launch.py'
       # The capability verdict is decided across these three: hardware/** measures it,
       # mlx_repair.py says whether a self-heal can still overturn it, and main.py holds
       # it back while one can. main.py is the studio's front door and is edited often,
@@ -135,6 +139,10 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'unsloth-cli.py'
+      - 'unsloth_cli/_inference.py'
+      - 'unsloth_cli/commands/train.py'
+      - 'unsloth_cli/tests/test_train_mlx_ddp_launch.py'
       - 'studio/backend/main.py'
       - 'studio/backend/utils/mlx_repair.py'
       - 'studio/backend/tests/test_mlx_inference_backend.py'
@@ -374,6 +382,14 @@ jobs:
         run: |
           python -m pytest -v --tb=short \
             tests/studio/test_mlx_training_worker_behaviors.py
+
+      - name: MLX CLI DDP tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/studio/backend
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python -m pytest -v --tb=short \
+            unsloth_cli/tests/test_train_mlx_ddp_launch.py
 
       # The inference backend's numerical tests importorskip mlx, so they skip on
       # studio-backend-ci.yml's ubuntu runner and only ever execute here. Run from

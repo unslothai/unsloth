@@ -103,15 +103,41 @@ test("menu surfaces keep whole-pixel padding, margin and width, so the hover pil
   assert.match(helper, /new MutationObserver/);
   assert.match(helper, /window\.setTimeout\(\(\) => observer\.disconnect\(\), ROW_WAIT_MS\)/);
   // The model picker's panel is padded 16px left, 8px right (16px with external providers) so
-  // its scroller can run near the edge; the list's own right inset evens the rows out.
+  // its scroller can run near the edge; the list's own right inset evens the rows out, reaching
+  // into the panel padding for an overlay scrollbar.
   assert.match(
     readSrc("features/model-picker/components/model-selector/pickers.tsx"),
-    /model-list-scroll [^"]*pl-0\.5 pr-1\.5 mr-1 in-data-\[external=true\]:pr-0\.5 in-data-\[external=true\]:mr-0/,
+    /"model-list-scroll [^"]*pl-0\.5",/,
   );
+  const css = readSrc("index.css");
+  assert.match(css, /\.model-list-scroll \{[^}]*margin-right: calc\(var\(--spacing\) - var\(--list-reach\)\);[^}]*padding-right: calc\(var\(--spacing\) \* 1\.5 \+ var\(--list-reach\)\);/);
+  assert.match(css, /\[data-external\] \.model-list-scroll \{[^}]*margin-right: calc\(0px - var\(--list-reach\)\);[^}]*padding-right: calc\(var\(--spacing\) \* 0\.5 \+ var\(--list-reach\)\);/);
   assert.match(readSrc("features/model-picker/components/model-selector.tsx"), /data-external=\{hasExternal \|\| undefined\}/);
   assert.match(
     readSrc("components/ui/dropdown-menu.tsx"),
     /w-\[round\(calc\(var\(--radix-dropdown-menu-trigger-width\)_\+_6px\*var\(--ui-space-scale,1\)\),1px\)\]/,
   );
   assert.match(readSrc("components/app-sidebar.tsx"), /app-user-menu sidebar-menu[^"]*w-\[round\(calc\(16rem\*var\(--ui-space-scale,1\)\),1px\)\]/);
+});
+
+test("a surface is snapped once, however often its ref callback runs again", async () => {
+  const { snapRowInsets } = await import("../src/lib/snap-padding.ts");
+  const computed: Record<string, string> = {
+    paddingLeft: "7.466px",
+    paddingRight: "7.466px",
+    marginLeft: "0px",
+    marginRight: "0px",
+  };
+  const element = { style: {} as Record<string, string>, offsetWidth: 0 };
+  const saved = { window: globalThis.window, getComputedStyle: globalThis.getComputedStyle };
+  Object.assign(globalThis, { window: {}, getComputedStyle: () => computed });
+  try {
+    snapRowInsets(element as unknown as HTMLElement);
+    computed.paddingLeft = "10.333px";
+    computed.paddingRight = "9.5px";
+    snapRowInsets(element as unknown as HTMLElement);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+  assert.deepEqual(element.style, { paddingLeft: "7px", paddingRight: "7px" });
 });

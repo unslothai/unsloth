@@ -4,7 +4,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fallbackTitleFromUserText } from "../src/features/chat/utils/chat-title.ts";
+import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
+
+// chat-title.ts reaches the providers store, so it must load through the resolver.
+registerBundlerResolver();
+installLocalStorageFake();
+Object.assign((globalThis.window as { location: object }).location, {
+  href: "http://localhost/",
+});
+const { fallbackTitleFromUserText } = await import(
+  "../src/features/chat/utils/chat-title.ts"
+);
 import {
   PASTED_TEXT_DEFAULT_MIN_CHARS,
   PASTED_TEXT_PREVIEW_MAX_CHARS,

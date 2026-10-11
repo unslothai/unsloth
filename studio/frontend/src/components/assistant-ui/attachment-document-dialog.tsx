@@ -8,9 +8,16 @@ import {
   attachmentViewerMeta,
 } from "@/components/assistant-ui/attachment-viewer-meta";
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
+import { AttachmentBrowserOpenContext } from "@/components/assistant-ui/attachment-browser-open-context";
+import { filesOpenInBrowser } from "@/features/browser";
 import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
-import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
+import {
+  type MediaViewerActions,
+  type MediaViewerGallery,
+  MediaViewer,
+  ScaleMenu,
+} from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   attachmentBodyText,
@@ -30,6 +37,7 @@ import {
   type FC,
   type PropsWithChildren,
   type ReactNode,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -49,6 +57,11 @@ export const AttachmentViewer: FC<{
   saveAs?: { name: string; contentType: string };
   flush?: boolean;
   extra?: ReactNode;
+  /** The Library's own actions on the attachment, for one it lists. */
+  libraryActions?: Omit<MediaViewerActions, "primary" | "onDownload">;
+  variant?: "card" | "lightbox";
+  gallery?: MediaViewerGallery;
+  itemKey?: string;
   children: ReactNode;
 }> = ({
   trigger,
@@ -63,10 +76,15 @@ export const AttachmentViewer: FC<{
   saveAs,
   flush = true,
   extra,
+  libraryActions,
+  variant,
+  gallery,
+  itemKey,
   children,
 }) => {
   const t = useT();
   const navigate = useNavigate();
+  const openInBrowser = useContext(AttachmentBrowserOpenContext);
   // Mounted on first open: every mounted viewer's project menu refetches the project list.
   const [mounted, setMounted] = useState(open);
   if (open && !mounted) setMounted(true);
@@ -94,11 +112,18 @@ export const AttachmentViewer: FC<{
             .then((blob) => downloadFile(blob, name, contentType || undefined))
             .catch(() => toast.error(t("library.toast.downloadFailed", { name })))
       : undefined,
+    ...libraryActions,
   };
   return (
     <>
       <Slot.Root
-        onClick={() => onOpenChange(true)}
+        onClick={() => {
+          if (openInBrowser && filesOpenInBrowser()) {
+            openInBrowser();
+            return;
+          }
+          onOpenChange(true);
+        }}
         className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
       >
         {trigger}
@@ -115,6 +140,9 @@ export const AttachmentViewer: FC<{
           redactFromReload={redactFromReload}
           extra={extra}
           actions={actions}
+          variant={variant}
+          gallery={gallery}
+          itemKey={itemKey}
         >
           {open && children}
         </MediaViewer>

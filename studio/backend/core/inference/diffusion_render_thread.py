@@ -44,8 +44,17 @@ def _executor(name: str) -> ThreadPoolExecutor:
         return ex
 
 
+def _apply_compile_config() -> None:
+    try:
+        from . import diffusion_compile_config  # noqa: PLC0415
+        diffusion_compile_config.apply()
+    except Exception:  # noqa: BLE001 - never fail a render over a config write
+        pass
+
+
 def run(name: str, fn: Callable[[], Any]) -> Any:
     if threading.get_ident() in _RENDER_THREAD_IDS or not enabled():
+        _apply_compile_config()
         return fn()
     import torch  # noqa: PLC0415
 
@@ -56,6 +65,7 @@ def run(name: str, fn: Callable[[], Any]) -> Any:
 
     def call() -> Any:
         torch.cuda.set_device(device)
+        _apply_compile_config()
         if inference:
             with torch.inference_mode():
                 return fn()

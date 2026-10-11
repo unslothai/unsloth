@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import { useIsAccountOwner } from "@/features/auth";
 import { useMemo } from "react";
 import {
   type StartValidationResult,
@@ -24,11 +25,12 @@ export interface TrainingReadiness {
   configValidation: StartValidationResult;
 }
 
-function deriveTrainingReadiness(
+export function deriveTrainingReadiness(
   state: TrainingConfigState,
   deviceType: string,
+  isOwner: boolean,
 ): TrainingReadiness {
-  const configValidation = validateTrainingConfig(state, deviceType);
+  const configValidation = validateTrainingConfig(state, deviceType, isOwner);
   const hasModel = !!state.selectedModel;
   const hasDataset =
     state.datasetSource === "upload"
@@ -38,6 +40,9 @@ function deriveTrainingReadiness(
         : !!state.dataset;
   const isLoadingModel = state.isLoadingModelDefaults || state.isCheckingVision;
   const modelError = state.modelDefaultsError;
+  // Without its config a decision model has no recipe or checkpoint, so the run would train the wrong one.
+  const decisionConfigMissing =
+    state.modelType === "decision" && modelError !== null;
   const isModelCapabilitiesSettled = hasModel && !isLoadingModel;
   const isIncompatible =
     isModelCapabilitiesSettled && hasIncompatibleTrainingModalities(state);
@@ -56,6 +61,7 @@ function deriveTrainingReadiness(
       !isLoadingModel &&
       !state.isCheckingDataset &&
       !isIncompatible &&
+      !decisionConfigMissing &&
       configValidation.ok,
     isLoadingModel,
     isCheckingDataset: state.isCheckingDataset,
@@ -86,7 +92,7 @@ function readinessEqual(
   );
 }
 
-function createTrainingReadinessSelector(deviceType: string) {
+function createTrainingReadinessSelector(deviceType: string, isOwner: boolean) {
   let cachedReadiness: Readonly<TrainingReadiness> | null = null;
   let cachedState: TrainingConfigState | null = null;
 
@@ -94,7 +100,7 @@ function createTrainingReadinessSelector(deviceType: string) {
     if (state === cachedState && cachedReadiness) {
       return cachedReadiness;
     }
-    const next = deriveTrainingReadiness(state, deviceType);
+    const next = deriveTrainingReadiness(state, deviceType, isOwner);
     if (!(cachedReadiness && readinessEqual(cachedReadiness, next))) {
       cachedReadiness = Object.freeze(next);
     }
@@ -105,9 +111,10 @@ function createTrainingReadinessSelector(deviceType: string) {
 
 export function useTrainingReadiness(): Readonly<TrainingReadiness> {
   const deviceType = usePlatformStore((state) => state.deviceType);
+  const isOwner = useIsAccountOwner();
   const selector = useMemo(
-    () => createTrainingReadinessSelector(deviceType),
-    [deviceType],
+    () => createTrainingReadinessSelector(deviceType, isOwner),
+    [deviceType, isOwner],
   );
   return useTrainingConfigStore(selector);
 }

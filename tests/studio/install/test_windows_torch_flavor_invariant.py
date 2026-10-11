@@ -288,18 +288,18 @@ class TestStepThirteenWiring:
             calls = _calls_in(guard)
             assert [c for c in calls if c in repairs] == repairs
             assert calls[:2] == ["_progress", "_torch_step_label"]
-        # str() is the label coercion around the probe, not a step.
+        # str() coerces the probe label and does not represent a step.
         step13 = [c for c in _calls_in(guards[1]) if c != "str"]
-        # Step 13 also re-selects torchao when a repair moved the torch label, which both the
-        # spec and the leaf are read from, then removes an xFormers the final torch cannot
-        # import (#11545). Nothing else may join the set.
+        # repairs refresh torchao and flash-attn for final torch (#13244), then evict incompatible xFormers (#11545).
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs
             + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
-            + ["_evict_xformers_requiring_another_torch"]
+            + ["_ensure_flash_attn"]
+            + ["_evict_xformers_built_for_another_torch", "_evict_xformers_requiring_another_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
+        assert "_ensure_flash_attn" not in _calls_in(guards[0])
 
     def test_the_invariant_is_wired_in_exactly_once(self):
         body = ast.unparse(_install_stack_ast())
@@ -307,11 +307,7 @@ class TestStepThirteenWiring:
 
 
 def _base_total(**flags) -> int:
-    """Re-execute install_python_stack()'s step-total arithmetic under given flags.
-
-    Read out of the function rather than duplicated, so a step added without a matching
-    total fails here instead of drawing a progress bar past 100%.
-    """
+    """re-execute the source step-total arithmetic so new steps cannot silently push progress past 100%."""
     lines = _STACK_SRC.splitlines()
     start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = "))
     end = next(i for i, line in enumerate(lines) if line.strip().startswith("base_requirements ="))
@@ -410,15 +406,18 @@ class TestManifestRecordsTheFlavor:
         helper = helper[: helper.index("\ndef ", 1)]
         assert 'return _RECORDED_TORCH_TAG or ""' in helper
 
-    def test_a_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
+    def test_a_usable_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
         # The wheel came from a mirror whose leaf names no family, so the previous record
         # describes a venv that no longer exists and would hand a later unpinned run a flavor
-        # to "repair" the mirror's build back to.
+        # to "repair" the mirror's build back to. An unusable FAMILY records the resident build.
         helper = _STACK_SRC[_STACK_SRC.index("def _recordable_torch_flavor_tag(") :]
         helper = helper[: helper.index("\ndef ", 1)]
-        assert "_explicit_unknown_family_torch_index_url() is not None" in helper
-        assert helper.index("_explicit_unknown_family_torch_index_url") < helper.index(
-            "_RECORDED_TORCH_TAG"
+        assert "if _explicit_torch_index_is_unusable():" in helper
+        assert "return _resident_torch_flavor_tag()" in helper
+        assert helper.index("_explicit_torch_index_is_unusable") < helper.index("if resolved:")
+        assert "if _explicit_unknown_family_torch_index_url():" in helper
+        assert helper.index("_explicit_unknown_family_torch_index_url") < helper.rindex(
+            'return _RECORDED_TORCH_TAG or ""'
         ), "the mirror check has to come before the carry-forward"
 
     def test_the_record_is_read_before_the_manifest_is_dropped(self):
@@ -557,7 +556,8 @@ class TestAnUnknownMirrorPinNamesNoFlavor:
     def test_the_expectation_stops_before_the_stale_manifest(self):
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
         body = body[: body.index("\ndef ", 1)]
-        guard = body.index("_explicit_unknown_family_torch_index_url() is not None")
+        guard = body.index("unknown_pin = _explicit_unknown_family_torch_index_url()")
+        assert body.index("if unknown_pin is not None") > guard
         record = body.index("if _RECORDED_TORCH_TAG:")
         assert guard < record, (
             "the guard has to run BEFORE the manifest fallback, or the stale tag is "
@@ -569,7 +569,7 @@ class TestAnUnknownMirrorPinNamesNoFlavor:
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
         body = body[: body.index("\ndef ", 1)]
         assert body.index("UNSLOTH_EXPECTED_TORCH_TAG") < body.index(
-            "_explicit_unknown_family_torch_index_url() is not None"
+            "unknown_pin = _explicit_unknown_family_torch_index_url()"
         ), "the setup handover describes the index this run installed from"
 
 

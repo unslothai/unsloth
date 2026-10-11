@@ -35,8 +35,9 @@ FORK = ilp.DEFAULT_PUBLISHED_REPO
 @pytest.fixture(autouse = True)
 def _no_ambient_backend_env(monkeypatch):
     """A backend exported in the developer's shell would override every case here."""
-    for name in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN"):
+    for name in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN", "UNSLOTH_FORCE_ROCM_TORCH"):
         monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: None)
 
 
 def _marker(tmp_path: Path, **fields) -> Path:
@@ -362,6 +363,209 @@ def test_explicit_rocm_reprobes_and_suppresses_cuda_on_a_mixed_host(monkeypatch)
     assert route.host.has_physical_nvidia is False
     assert route.host.has_rocm is True
     assert route.host.rocm_gfx_target == "gfx1100"
+
+
+_NVIDIA_ONLY_PROFILE = ilp.HostInfo(
+    system = "Linux",
+    machine = "x86_64",
+    is_windows = False,
+    is_linux = True,
+    is_macos = False,
+    is_x86_64 = True,
+    is_arm64 = False,
+    nvidia_smi = "/usr/bin/nvidia-smi",
+    driver_cuda_version = (13, 0),
+    compute_caps = ["86"],
+    visible_cuda_devices = None,
+    has_physical_nvidia = True,
+    has_usable_nvidia = True,
+)
+_MIXED_PROFILE = ilp.dataclasses_replace(
+    _NVIDIA_ONLY_PROFILE,
+    has_rocm = True,
+    rocm_gfx_target = "gfx1201",
+    rocm_gfx_targets = ["gfx1201"],
+)
+
+
+def _stub_amd_probe(monkeypatch, *, amd_present: bool) -> list:
+    probes = []
+
+    def _detect_host(*, probe_rocm_with_nvidia = False):
+        probes.append(probe_rocm_with_nvidia)
+        return _MIXED_PROFILE if (probe_rocm_with_nvidia and amd_present) else _NVIDIA_ONLY_PROFILE
+
+    monkeypatch.setattr(ilp, "detect_host", _detect_host)
+    return probes
+
+
+def _route(backend):
+    return ilp.route_backend_request(
+        backend = backend,
+        published_repo = FORK,
+        published_release_tag = "",
+        host = _NVIDIA_ONLY_PROFILE,
+    )
+
+
+@pytest.mark.parametrize("backend", [None, "auto"])
+def test_auto_follows_rocm_torch_on_a_mixed_host(monkeypatch, backend):
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: True)
+    probes = _stub_amd_probe(monkeypatch, amd_present = True)
+
+    route = _route(backend)
+
+    assert probes == [True]
+    assert route.host.has_rocm is True
+    assert route.host.has_usable_nvidia is False
+    assert route.host.has_physical_nvidia is False
+    assert route.host.rocm_gfx_target == "gfx1201"
+
+
+def test_auto_keeps_cuda_on_a_mixed_host_with_cuda_torch(monkeypatch):
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: False)
+    probes = _stub_amd_probe(monkeypatch, amd_present = True)
+
+    route = _route("auto")
+
+    assert probes == []
+    assert route.host.has_usable_nvidia is True
+    assert route.host.has_rocm is False
+
+
+def test_auto_keeps_cuda_when_rocm_torch_finds_no_amd_gpu(monkeypatch):
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: True)
+    probes = _stub_amd_probe(monkeypatch, amd_present = False)
+
+    route = _route("auto")
+
+    assert probes == [True]
+    assert route.host.has_usable_nvidia is True
+    assert route.host.has_physical_nvidia is True
+    assert route.host.has_rocm is False
+
+
+def _route_auto_with(
+    monkeypatch,
+    *,
+    env = None,
+    override_has_rocm = False,
+    override_rocm_gfx = None,
+):
+    for name in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_ROCM_GFX_REMEMBERED"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: True)
+    probes = _stub_amd_probe(monkeypatch, amd_present = False)
+    route = ilp.route_backend_request(
+        backend = "auto",
+        published_repo = FORK,
+        published_release_tag = "",
+        override_has_rocm = override_has_rocm,
+        override_rocm_gfx = override_rocm_gfx,
+        host = _NVIDIA_ONLY_PROFILE,
+    )
+    assert probes == [True]
+    return route.host
+
+
+def test_auto_follows_rocm_torch_on_the_operators_arch_when_the_probe_misses(monkeypatch):
+    # argparse feeds UNSLOTH_ROCM_GFX_ARCH in as the --rocm-gfx default.
+    host = _route_auto_with(
+        monkeypatch, env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1201"}, override_rocm_gfx = "gfx1201"
+    )
+
+    assert host.has_rocm is True
+    assert host.has_usable_nvidia is False
+    assert host.rocm_gfx_target == "gfx1201"
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        {"override_rocm_gfx": "gfx1201"},
+        {"override_has_rocm": True},
+        {"env": {"UNSLOTH_ROCM_GFX_REMEMBERED": "gfx1201"}},
+    ],
+)
+def test_auto_keeps_cuda_when_only_the_old_marker_names_an_amd_gpu(monkeypatch, stale):
+    host = _route_auto_with(monkeypatch, **stale)
+
+    assert host.has_usable_nvidia is True
+    assert host.has_physical_nvidia is True
+
+
+def test_force_rocm_torch_env_makes_auto_prefer_rocm(monkeypatch):
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: False)
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", " Yes ")
+    probes = _stub_amd_probe(monkeypatch, amd_present = True)
+
+    route = _route("auto")
+
+    assert probes == [True]
+    assert route.host.has_rocm is True
+    assert route.host.has_usable_nvidia is False
+
+
+def test_explicit_cuda_ignores_rocm_torch(monkeypatch):
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: True)
+    probes = _stub_amd_probe(monkeypatch, amd_present = True)
+
+    route = _route("cuda")
+
+    assert probes == []
+    assert route.host.has_usable_nvidia is True
+    assert route.host.has_rocm is False
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("__version__ = '2.11.0+rocm7.1'\nhip = '7.1.52802'\ncuda = None\n", True),
+        ("__version__ = '2.11.0+cu130'\ncuda = '13.0'\nhip = None\n", False),
+        ("hip: Optional[str] = None\n", False),
+        ("__version__ = '2.9.0+rocmsdk20251116'\nhip: Optional[str] = None\n", True),
+        ("__version__ = '2.8.0+rocm6.4'\nhip: Optional[str] = None\n", True),
+    ],
+)
+def test_torch_version_py_names_its_vendor(tmp_path, text, expected):
+    version_py = tmp_path / "version.py"
+    version_py.write_text(text, encoding = "utf-8")
+
+    assert ilp._torch_version_py_is_rocm(version_py) is expected
+
+
+def test_torch_version_py_missing_is_unknown(tmp_path):
+    assert ilp._torch_version_py_is_rocm(tmp_path / "version.py") is None
+
+
+def test_backend_resolver_labels_auto_rocm_on_a_mixed_rocm_torch_host(monkeypatch):
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: True)
+    _stub_amd_probe(monkeypatch, amd_present = True)
+    monkeypatch.setattr(ilp, "load_prebuilt_metadata", lambda install_dir: None)
+
+    def _plans(llama_tag, host, published_repo, published_release_tag):
+        kind = "linux-rocm" if host.has_rocm and not host.has_usable_nvidia else "linux-cuda"
+        plan = ilp.InstallReleasePlan(
+            "latest", "b9925", "b9925", [_choice(kind, f"{kind}.tar.gz")], SimpleNamespace()
+        )
+        return "latest", [plan]
+
+    monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
+    args = SimpleNamespace(
+        published_repo = FORK,
+        published_release_tag = "",
+        has_rocm = False,
+        rocm_gfx = None,
+    )
+
+    payload = ilp.resolve_backends_payload("latest", args = args)
+
+    entries = {entry["backend"]: entry for entry in payload["backends"]}
+    assert entries["auto"]["resolved_backend"] == "rocm"
+    assert entries["rocm"]["resolved_backend"] == "rocm"
+    assert entries["cuda"]["resolved_backend"] == "cuda"
 
 
 def test_backend_resolver_does_not_turn_a_switch_into_a_version_update(monkeypatch):

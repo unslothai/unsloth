@@ -888,6 +888,23 @@ def without_hf_auth():
             os.environ.pop("HF_HUB_DISABLE_IMPLICIT_TOKEN", None)
 
 
+def _is_repo_level_401(error: BaseException, response) -> bool:
+    """A 401 the Hub gave for the repo, not the credential: anonymous reads of a private or
+    missing repo get one too. Refusals of the token itself name it in X-Error-Message."""
+    if type(error).__name__ != "RepositoryNotFoundError":
+        return False
+    from hub.utils.hf_tokens import hub_token_rejections
+
+    rejections = hub_token_rejections()
+    if rejections is not None and rejections.refused:
+        return False
+    try:
+        reason = str(response.headers.get("X-Error-Message") or "").lower()
+    except Exception:
+        reason = ""
+    return not any(marker in reason for marker in ("token", "credential"))
+
+
 def is_hf_authentication_error(error: Exception) -> bool:
     """Return whether an exception chain contains a definitive HF auth failure."""
     seen: set[int] = set()
@@ -897,7 +914,11 @@ def is_hf_authentication_error(error: Exception) -> bool:
         response = getattr(current, "response", None)
         status = getattr(response, "status_code", None)
         try:
-            if status is not None and int(status) == 401:
+            if (
+                status is not None
+                and int(status) == 401
+                and not _is_repo_level_401(current, response)
+            ):
                 return True
         except (TypeError, ValueError):
             pass

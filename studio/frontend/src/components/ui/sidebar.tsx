@@ -38,7 +38,7 @@ import {
   useSidebarWidth,
 } from "@/hooks/use-sidebar-width"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
+import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
@@ -451,13 +451,13 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
           className={cn(
-            "bg-sidebar flex size-full flex-col overflow-hidden border-r border-sidebar-border dark:border-r-0",
+            "bg-sidebar flex size-full flex-col overflow-hidden",
             "group-data-[variant=floating]:ring-sidebar-border group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-sm group-data-[variant=floating]:ring-1",
           )}
         >
           {children}
         </div>
-        {(!collapseToZero || pinned) && (
+        {state === "expanded" && (!collapseToZero || pinned) && (
           <SidebarResizeHandle
             side={side}
             // The shared handle hides itself below `sm`, a viewport rule that
@@ -541,7 +541,7 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar()
 
   return (
     <Button
@@ -556,7 +556,11 @@ function SidebarTrigger({
       }}
       {...props}
     >
-      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon
+        icon={(isMobile ? openMobile : open) ? PanelLeftIcon : LayoutAlignLeftIcon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   )

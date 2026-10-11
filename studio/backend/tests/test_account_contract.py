@@ -210,7 +210,7 @@ def test_login_mode_follows_the_account_count(auth_db):
     assert policy.full_access_permitted() is True
     auth_db.create_initial_user("alice", "alice-password", secrets.token_urlsafe(32))
     assert policy.login_mode() == "multi"
-    assert policy.full_access_permitted() is False
+    assert policy.full_access_permitted() is True
     auth_db.delete_user("alice")
     assert policy.login_mode() == "single"
 

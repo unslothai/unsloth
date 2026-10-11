@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import mxc_probe, os_sandbox, sandbox_windows_mxc
+from core.inference import mxc_probe, mxc_read_grants, os_sandbox, sandbox_windows_mxc
 
 # What Git for Windows' bash prints under an AppContainer before it reads its command (microsoft/mxc#1061).
 MSYS_STARTUP_FAILURE = (
@@ -17,7 +17,10 @@ DLL_INIT_FAILED = 3221225794  # 0xC0000142
 
 
 @pytest.fixture(autouse = True)
-def _fresh_probe_cache():
+def _fresh_probe_cache(monkeypatch):
+    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
+    monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
+    monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
     mxc_probe.invalidate_cache()
     yield
     mxc_probe.invalidate_cache()
@@ -88,6 +91,25 @@ def test_other_failures_keep_the_generic_reason(
     )
     assert available is False
     assert reason == "the live MXC probe did not complete cleanly"
+
+
+# wxc-exec's last line with the fallback off on Windows Server 2025 (windows-latest), which has no BaseContainer.
+NO_BASECONTAINER = (
+    "error: BaseContainer is unavailable on this system and DACL fallback is disabled "
+    "(fallback.allowDaclMutation=false). Run on a system with the BaseContainer API or bfscfg.exe, "
+    "or set fallback.allowDaclMutation=true in your config.\n"
+)
+
+
+@pytest.mark.parametrize("cleanup", ["complete", "uncertain"])
+@pytest.mark.parametrize("executable, kind", [("python.exe", "python"), ("cmd.exe", "terminal")])
+def test_a_missing_builtin_container_is_named(monkeypatch, tmp_path, executable, kind, cleanup):
+    """It refuses before any container exists, so the cleanup state cannot hide it."""
+    available, reason = _run_probe(
+        monkeypatch, tmp_path, executable, kind, NO_BASECONTAINER, 1, cleanup
+    )
+    assert available is False
+    assert reason == mxc_probe.NO_BUILTIN_CONTAINER_REASON
 
 
 def _count_live_probes(monkeypatch, reason):

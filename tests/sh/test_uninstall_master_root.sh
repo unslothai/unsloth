@@ -58,16 +58,21 @@ run_block() {
 
 echo "== an owned master root loses its runtime children =="
 MR="$_TMP_ROOT/portable"
-mkdir -p "$MR"/{studio,llama.cpp,node,whisper.cpp}
-for d in llama.cpp node whisper.cpp; do : > "$MR/$d/.unsloth-studio-owned"; done
+mkdir -p "$MR"/{studio,llama.cpp,node,whisper.cpp,audio.cpp}
+for d in llama.cpp node whisper.cpp audio.cpp; do : > "$MR/$d/.unsloth-studio-owned"; done
 : > "$MR/.llama.cpp.install.lock"
 : > "$MR/.node.install.lock"
+: > "$MR/.audio.cpp.install.lock"
+: > "$MR/.audio.cpp.install.lock.stale.31337"
 run_block "$HOME" "$MR"
 assert_nodir "llama.cpp removed"   "$MR/llama.cpp"
 assert_nodir "node removed"        "$MR/node"
 assert_nodir "whisper.cpp removed" "$MR/whisper.cpp"
+assert_nodir "audio.cpp removed"   "$MR/audio.cpp"
 assert_nodir "llama lock removed"  "$MR/.llama.cpp.install.lock"
 assert_nodir "node lock removed"   "$MR/.node.install.lock"
+assert_nodir "audio.cpp lock removed" "$MR/.audio.cpp.install.lock"
+assert_nodir "stale audio.cpp lock removed" "$MR/.audio.cpp.install.lock.stale.31337"
 assert_dir   "studio root left to the Studio removal" "$MR/studio"
 
 echo "== only a FILE is removed from an install-lock path =="
@@ -94,12 +99,15 @@ assert_dir   "and so is everything under it"        "$MRL/.node.install.lock/kee
 
 echo "== an unmarked tree is somebody else's and is kept =="
 MR2="$_TMP_ROOT/mixed"
-mkdir -p "$MR2"/{llama.cpp,node}
+mkdir -p "$MR2"/{llama.cpp,node,audio.cpp}
 : > "$MR2/node/.unsloth-studio-owned"
 : > "$MR2/llama.cpp/my-own-build"
+# A clone of the audio.cpp repo is named exactly this.
+: > "$MR2/audio.cpp/CMakeLists.txt"
 run_block "$HOME" "$MR2"
 assert_dir   "unmarked llama.cpp kept" "$MR2/llama.cpp"
 assert_dir   "its contents kept"       "$MR2/llama.cpp/my-own-build"
+assert_dir   "unmarked audio.cpp kept" "$MR2/audio.cpp/CMakeLists.txt"
 assert_nodir "marked node removed"     "$MR2/node"
 
 echo "== an emptied master root is pruned, a used one is not =="
