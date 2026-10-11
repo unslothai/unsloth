@@ -218,10 +218,14 @@ def _apply_data_designer_prompt_blank_patch() -> None:
     setattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", True)
 
 
+def _is_none(value: Any) -> bool:
+    return value is None
+
+
 def _apply_data_designer_expression_blank_patch() -> None:
     # An empty string is a real value for a text Expression column ({{ response.question }} on an unanswered
-    # optional field); upstream rejects every empty render, which failed the whole run. Number / bool dtypes
-    # keep the error, since "" cannot be cast.
+    # optional field); data-designer 0.5 fails the run on any empty render and later releases drop the row.
+    # Number / bool dtypes keep that, since "" cannot be cast.
     try:
         from data_designer.engine.column_generators.generators.expression import (  # pyright: ignore[reportMissingImports]
             ExpressionColumnGenerator,
@@ -241,6 +245,7 @@ def _apply_data_designer_expression_blank_patch() -> None:
         env = getattr(env, "__self__", None)
         if env is not None and self.config.dtype == "str":
             env._assert_rendered_text_not_empty = _allow_empty_prompt
+            self._is_empty_rendered_expression = _is_none
 
     ExpressionColumnGenerator.prepare_jinja2_template_renderer = _patched_prepare
     setattr(ExpressionColumnGenerator, "_unsloth_expression_blank_patch_applied", True)

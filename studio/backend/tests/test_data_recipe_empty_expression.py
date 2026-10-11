@@ -152,5 +152,6 @@ def test_number_expression_still_rejects_empty(tmp_path: Path) -> None:
         ],
     }
 
-    with pytest.raises(Exception, match = "template is invalid"):
+    # data-designer 0.5 fails the template; later releases drop the row, leaving none.
+    with pytest.raises(Exception, match = "template is invalid|no valid rows"):
         _preview(tmp_path, recipe, num_records = 1)
