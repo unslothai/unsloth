@@ -194,8 +194,7 @@ def _torch_varlen_beats_segments(
         is_causal,
         n_groups != 1 and _sdpa_flash_takes_gqa(Q),
     )
-    # varlen_attn calls the flash op directly, so honour sdpa_kernel / enable_flash_sdp(False) and a
-    # set_priority order that puts math or efficient first.
+    # varlen_attn calls flash directly: honour a disabled flash backend and math / efficient-first priorities.
     from torch.nn.attention import SDPBackend
 
     if not flash:
