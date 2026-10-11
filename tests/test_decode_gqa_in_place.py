@@ -96,7 +96,13 @@ class _ShapeRecorder(TorchDispatchMode):
         super().__init__()
         self.shapes = []
 
-    def __torch_dispatch__(self, func, types, args = (), kwargs = None):
+    def __torch_dispatch__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
         out = func(*args, **(kwargs or {}))
         for t in out if isinstance(out, (tuple, list)) else (out,):
             if isinstance(t, torch.Tensor):
@@ -167,7 +173,12 @@ def test_llama_decode_scratch_only_on_layer_devices(monkeypatch):
     def attention(self, hidden_states, past_key_value, **kw):
         return hidden_states, past_key_value
 
-    def mlp(self, X, temp_gate = None, temp_up = None):
+    def mlp(
+        self,
+        X,
+        temp_gate = None,
+        temp_up = None,
+    ):
         gates.append(temp_gate)
         return X
 
@@ -199,7 +210,12 @@ def test_gemma2_decode_norm_scratch_only_on_layer_devices(monkeypatch):
     made = []
     empty_like = torch.empty_like
 
-    def recording_empty_like(t, *args, device = None, **kwargs):
+    def recording_empty_like(
+        t,
+        *args,
+        device = None,
+        **kwargs,
+    ):
         made.append(device)
         return empty_like(t, *args, **kwargs)
 
