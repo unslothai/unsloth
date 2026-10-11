@@ -1197,10 +1197,8 @@ for (const mode of ["composer", "queue-row"] as const) {
     const steer = run.items[0];
     assert.equal(target.cancels, 1);
     assert.equal(steer.dispatched, false);
-    // A store notification during cancellation still sees the old run alive.
-    // The queued setTimeout pump has not run yet.
+    // Old run still alive in the store, then idle before the queued pump runs.
     w.handlePromptQueueRunState(run, { chat: true });
-    // Cancellation completes before the pump gets its turn.
     target.running = false;
     w.handlePromptQueueRunState(run, {});
     assert.equal(
