@@ -223,9 +223,8 @@ def _is_none(value: Any) -> bool:
 
 
 def _apply_data_designer_expression_blank_patch() -> None:
-    # An empty string is a real value for a text Expression column ({{ response.question }} on an unanswered
-    # optional field); data-designer 0.5 fails the run on any empty render and later releases drop the row.
-    # Number / bool dtypes keep that, since "" cannot be cast.
+    # "" is a real text Expression value (an unanswered optional field); data-designer 0.5 fails the run on it and
+    # later releases drop the row. Number / bool dtypes keep that, since "" cannot be cast.
     try:
         from data_designer.engine.column_generators.generators.expression import (  # pyright: ignore[reportMissingImports]
             ExpressionColumnGenerator,

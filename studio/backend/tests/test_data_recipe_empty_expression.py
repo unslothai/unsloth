@@ -14,7 +14,6 @@ def fixture_provider():
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             body = self.rfile.read(int(self.headers["Content-Length"])).decode()
-            # Row 1 leaves the optional question blank, as a model with nothing to say does.
             if "row 1" in body:
                 answer = {"question": "", "answer": "A."}
             else:
