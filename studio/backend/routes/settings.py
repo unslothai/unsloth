@@ -89,7 +89,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
-from utils import sandbox_memory_limit, systemone_settings
+from utils import sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -581,6 +581,21 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+
+
+class ToolResultLimitPayload(BaseModel):
+    max_chars: StrictInt = Field(
+        ..., ge = tool_result_limit.MIN_MAX_CHARS, le = tool_result_limit.MAX_MAX_CHARS
+    )
+
+
+class ToolResultLimitResponse(BaseModel):
+    # The cap before a small context window lowers it.
+    max_chars: int
+    default_chars: int = tool_result_limit.DEFAULT_MAX_CHARS
+    min_chars: int = tool_result_limit.MIN_MAX_CHARS
+    max_allowed_chars: int = tool_result_limit.MAX_MAX_CHARS
+    locked_by_environment: bool = False
 
 
 class HuggingFaceTokenPayload(BaseModel):
@@ -1484,6 +1499,46 @@ def update_upload_limit(
             log = logger,
         ) from exc
     return _upload_limit_response(limit_mb)
+
+
+def _tool_result_limit_response() -> ToolResultLimitResponse:
+    return ToolResultLimitResponse(
+        max_chars = tool_result_limit.effective_max_chars(),
+        locked_by_environment = tool_result_limit.locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get("/tool-result-limit", response_model = ToolResultLimitResponse)
+def get_tool_result_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> ToolResultLimitResponse:
+    return _tool_result_limit_response()
+
+
+@_owner_settings_router.put("/tool-result-limit", response_model = ToolResultLimitResponse)
+def update_tool_result_limit(
+    payload: ToolResultLimitPayload, current_subject: str = Depends(get_current_subject)
+) -> ToolResultLimitResponse:
+    """Save how many characters of one tool result the model reads. Applies from the next tool call."""
+    if tool_result_limit.locked_by_environment():
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{tool_result_limit.MAX_CHARS_ENV} is set in the environment Unsloth runs in, which decides this.",
+        )
+    try:
+        max_chars = tool_result_limit.set_max_chars(payload.max_chars)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid tool output limit."),
+            event = "settings.update_tool_result_limit_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.tool_result_limit_updated subject=%s max_chars=%s", current_subject, max_chars
+    )
+    return _tool_result_limit_response()
 
 
 @_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)

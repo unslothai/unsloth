@@ -364,6 +364,23 @@ def test_a_repeating_workspace_block_stops_replaying_itself():
     assert controller.prepare_call(edit).action == "duplicate"
 
 
+def test_mcp_call_can_run_again_after_another_mcp_call_changed_state():
+    """#10348: `list, create, list` on an MCP server must re-list, not answer from a stale duplicate."""
+    name = "mcp__docs__unified_document_manager"
+    controller = ToolLoopController(tools = [_tool(name)])
+    listing = _call(name, {"action": "list"})
+    create = _call(name, {"action": "create", "name": "a.md"})
+
+    controller.record_result(controller.prepare_call(listing), "[]")
+    assert controller.prepare_call(listing).action == "duplicate"
+    controller.record_result(controller.prepare_call(create), "created a.md")
+    relist = controller.prepare_call(listing)
+    assert relist.action == "execute"
+    controller.record_result(relist, '["a.md"]')
+    assert controller.prepare_call(listing).action == "duplicate"
+    assert controller.prepare_call(create).action == "duplicate"
+
+
 def test_failed_call_does_not_block_retry():
     controller = ToolLoopController(tools = [_tool("web_search")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))

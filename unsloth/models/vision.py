@@ -891,6 +891,12 @@ def _offload_embedding_unsupported_platform():
         return "WSL"
     if os.name == "nt":
         return "Windows"
+    # Docker on WSL2 has no WSL_* variables but shares the *-microsoft-standard-WSL2 kernel (unslothai/unsloth#3511).
+    try:
+        if "microsoft" in os.uname().release.lower():
+            return "WSL"
+    except Exception:
+        pass
     return None
 
 
