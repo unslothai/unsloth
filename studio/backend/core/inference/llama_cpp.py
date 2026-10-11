@@ -2716,9 +2716,12 @@ def _parked_host_reading(backend) -> tuple[int, Optional[float]]:
     is None on a build that does not export `n_preempt_total` / `n_resume_total`."""
     try:
         from core.inference.llama_stats import scrape_llama_metrics
-        metrics = scrape_llama_metrics(
-            backend.base_url, timeout_s = 3.0, headers = getattr(backend, "_auth_headers", None)
-        ) or {}
+        metrics = (
+            scrape_llama_metrics(
+                backend.base_url, timeout_s = 3.0, headers = getattr(backend, "_auth_headers", None)
+            )
+            or {}
+        )
         parked = max(0, int(float(metrics.get("preempt_ram_bytes", 0) or 0)) // (1024 * 1024))
     except Exception:
         return 0, None

@@ -578,9 +578,7 @@ class TestExactParksAreCountedAcrossModels:
             },
         )
         assert llama_mod._parked_host_reading(backend) == (2048, 9.0)
-        monkeypatch.setattr(
-            stats, "scrape_llama_metrics", lambda *a, **k: {"preempt_ram_bytes": 0}
-        )
+        monkeypatch.setattr(stats, "scrape_llama_metrics", lambda *a, **k: {"preempt_ram_bytes": 0})
         assert llama_mod._parked_host_reading(backend) == (0, None)
 
     def test_a_park_ending_between_the_readings_is_counted_as_still_to_come(self, monkeypatch):
