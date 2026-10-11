@@ -555,7 +555,7 @@ def _hook_no_placement_ancestors(model):
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
-    """Attach accelerate AlignDevicesHook on a bnb model loaded across multiple devices (or a non-default device). No-op for single-GPU cuda:0, non-bnb, vLLM, or already-dispatched models."""
+    """Attach accelerate AlignDevicesHook on a bnb model loaded across multiple devices (or a non-default device). No-op for single-GPU cuda:0, a distributed rank on its own device, non-bnb, vLLM, or already-dispatched models."""
     if fast_inference:
         return
     # Before the bnb gate: the rebuild happens whatever the quantization. Not under offload, where _embedding_dispatch_device READS this hook to place the ids.
@@ -603,6 +603,9 @@ def _attach_bnb_multidevice_hooks(
 
     default_cuda = torch.device("cuda", 0)
     if all_devs == {default_cuda}:
+        return
+    # A distributed rank holds its whole model on its own card, and the trainer already moves batches there. The hooks would only graph-break the compiled forward on ranks >= 1, so the non-reentrant checkpoint recompute stops matching the forward (#3459).
+    if len(all_devs) == 1 and is_distributed():
         return
 
     try:
@@ -1432,6 +1435,129 @@ def _dynamic_cache_choice(kwargs):
     return requested
 
 
+@functools.lru_cache(maxsize = None)
+def _default_generation_config():
+    return GenerationConfig()
+
+
+@functools.lru_cache(maxsize = None)
+def _static_cache_preallocates():
+    from transformers import StaticCache
+    return "max_batch_size" in inspect.signature(StaticCache.__init__).parameters
+
+
+def _static_cache_bytes(
+    model,
+    input_ids,
+    kwargs,
+    exact = True,
+):
+    """Bytes the static KV cache transformers preallocates for this call, or None when it cannot
+    be sized. Worst case length (prompt + max_new_tokens), whatever length the reply turns out.
+    exact = False skips the layer plan and counts every layer full length: an upper bound."""
+    from transformers import StaticCache
+
+    config = model.config
+    if getattr(config, "is_encoder_decoder", False) or kwargs.get("past_key_values") is not None:
+        return None
+    text_config = config.get_text_config(decoder = True)
+    # transformers fills a caller config's unset fields from the model's before its defaults.
+    configs = (kwargs.get("generation_config"), getattr(model, "generation_config", None))
+
+    def option(name, default = None):
+        if kwargs.get(name) is not None:
+            return kwargs[name]
+        caller, own = configs
+        value = getattr(caller, name, None)
+        # transformers 4.x fills unset caller fields with the global default, not None.
+        if value is not None and value != getattr(_default_generation_config(), name, None):
+            return value
+        if getattr(own, name, None) is not None:
+            return getattr(own, name)
+        return default if value is None else value
+
+    prompt = input_ids.shape[1]
+    max_new_tokens = option("max_new_tokens")
+    if max_new_tokens is not None:
+        length = prompt + max_new_tokens
+    elif kwargs.get("max_length") is not None:
+        length = kwargs["max_length"]
+    else:
+        # Upper bound of _prepare_generated_length: a default max_length counts new tokens.
+        max_length = option("max_length", 20)
+        length = max_length + prompt
+        max_positions = getattr(text_config, "max_position_embeddings", None)
+        if type(max_positions) is int and max_length <= max_positions:
+            length = min(length, max_positions)
+    if type(length) is not int:
+        return None
+    # transformers sizes the cache max_length - 1: the last token is never cached.
+    length = max(length - 1, getattr(model, "_previous_max_cache_length", -1))
+    if _compiles_decode(model):
+        length = _decode_cache_bucket(length)
+    copies = max(option("num_beams", 1), option("num_return_sequences", 1))
+    if not exact or _static_cache_preallocates():
+        # Before transformers 4.56 constructing one allocates it, so count every layer as full.
+        tokens = text_config.num_hidden_layers * length
+    else:
+        # transformers' own layer plan: sliding / chunked windows, shared-KV and linear layers.
+        layers = StaticCache(config = text_config, max_cache_len = length).layers
+        tokens = sum(
+            layer.max_cache_len
+            for layer in layers
+            if type(getattr(layer, "max_cache_len", None)) is int
+        )
+    n_heads = text_config.num_attention_heads
+    kv_heads = getattr(text_config, "num_key_value_heads", None) or n_heads
+    head_dim = getattr(text_config, "head_dim", None) or text_config.hidden_size // n_heads
+    # MLA (DeepSeek) caches keys of nope + rope dims and values of v_head_dim.
+    nope = getattr(text_config, "qk_nope_head_dim", None)
+    rope = getattr(text_config, "qk_rope_head_dim", None)
+    key_dim = nope + rope if type(nope) is int and type(rope) is int else head_dim
+    value_dim = getattr(text_config, "v_head_dim", None) or head_dim
+    itemsize = torch.empty((), dtype = model.dtype).element_size()
+    return input_ids.shape[0] * copies * kv_heads * (key_dim + value_dim) * itemsize * tokens
+
+
+def _static_cache_does_not_fit(model, input_ids, kwargs):
+    """True when the preallocated static cache would take over half the memory this device has
+    left; the rest is for prefill activations and logits. Fails open: unknown keeps static."""
+    try:
+        device = model.device
+        backend = {"cuda": torch.cuda, "xpu": getattr(torch, "xpu", None)}.get(device.type)
+        if backend is None:
+            return False
+        device_map = getattr(model, "hf_device_map", None)
+        if isinstance(device_map, dict) and len(set(map(str, device_map.values()))) > 1:
+            return False
+        # The upper bound settles the common case without building the layer plan (~0.3 ms).
+        need = _static_cache_bytes(model, input_ids, kwargs, exact = False)
+        if need is None:
+            return False
+        # mem_get_info is a driver call (p90 7-10 ms on a busy host), so a cache under 1/16
+        # of the card never pays it.
+        if need * 16 <= backend.get_device_properties(device).total_memory:
+            return False
+        free = backend.mem_get_info(device)[0]
+        if need <= free // 2:
+            return False
+        need = _static_cache_bytes(model, input_ids, kwargs)
+        if need <= free // 2:
+            return False
+        # memory_stats is slow, so allocator-held free blocks are read only when needed.
+        free += backend.memory_reserved(device) - backend.memory_allocated(device)
+    except Exception:
+        return False
+    if need <= free // 2:
+        return False
+    logger.warning_once(
+        f"Unsloth: A static KV cache for this generate call needs {need / 1024**3:.1f} GB, "
+        f"but only {free / 1024**3:.1f} GB is free. Using a dynamic cache instead; "
+        "lower max_new_tokens to keep the static cache."
+    )
+    return True
+
+
 def _uses_flash_attention_for_generation(config):
     language_config_names = (
         "text_config",
@@ -1625,11 +1751,17 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     # Encoder-decoders keep their own pad (T5: pad 0, EOS 1), used to infer the encoder mask and pad finished rows.
     default_pad_token_id = model_eos_token_id
-    if (
-        _is_text_seq2seq_config(self.config)
-        and getattr(self.config, "pad_token_id", None) is not None
-    ):
-        default_pad_token_id = self.config.pad_token_id
+    config_pad_token_id = getattr(self.config, "pad_token_id", None)
+    is_dia = getattr(self.config, "model_type", None) == "dia"
+    if is_dia:
+        # Dia's audio pad fills its delay pattern; EOS there breaks the DAC decode (#2560). transformers 5 moved it to decoder_config.
+        decoder_pad_token_id = getattr(
+            getattr(self.config, "decoder_config", None), "pad_token_id", None
+        )
+        if decoder_pad_token_id is not None:
+            config_pad_token_id = decoder_pad_token_id
+    if (is_dia or _is_text_seq2seq_config(self.config)) and config_pad_token_id is not None:
+        default_pad_token_id = config_pad_token_id
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
 
     try:
@@ -1708,6 +1840,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     force_dynamic_cache = kwargs.get(
         "past_key_values"
     ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
+    # A static cache is sized for the longest reply up front, so on a tight or unified memory
+    # device it can OOM where a growing cache would not (#2590).
+    if not force_dynamic_cache and cache_implementation is not None:
+        force_dynamic_cache = _static_cache_does_not_fit(self, input_ids, kwargs)
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)

@@ -136,6 +136,18 @@ def test_nan_input_returns_none_for_the_stock_path():
     assert dp.to_pil_on_device(VaeImageProcessor(), image) is None
 
 
+@pytest.mark.parametrize("output_type", ["pil", "np", "pt"])
+def test_nan_image_raises_instead_of_saving_blank(output_type):
+    proc = VaeImageProcessor()
+    dp.install(_Pipe(proc))
+    image = _decoded(torch.float32)
+    image[0, :, 3, 5] = float("nan")
+    with pytest.raises(RuntimeError, match = "NaN"):
+        proc.postprocess(image, output_type = output_type)
+    # Latents are not an image: they pass through untouched.
+    assert proc.postprocess(image, output_type = "latent") is image
+
+
 def test_stock_path_still_serves_other_output_types_and_cpu():
     proc = VaeImageProcessor()
     dp.install(_Pipe(proc))

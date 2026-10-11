@@ -28,6 +28,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
+from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 

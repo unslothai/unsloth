@@ -1,8 +1,10 @@
 # Explicit Agent Skill mentions
 
-With Code on and an enabled skill in the effective model's Studio tool catalog,
-Studio reads the complete `SKILL.md` for an explicit `@skill-name` **before the
-first generation**. It does not depend on a model calling `read_skill`. This loads
+With an enabled skill in the effective model's Unsloth Studio tool catalog, Unsloth Studio reads
+the complete `SKILL.md` for an explicit `@skill-name` **before the first
+generation**. With Code off, the composer offers `read_skill` alone, and only for
+a thread whose user messages mention an enabled skill, so a plain chat stays out
+of the tool loop. It does not depend on a model calling `read_skill`. This loads
 instructions, not referenced resources, scripts, or skill creation. Existing
 account discovery, capability, tool selection and permission policy still apply.
 Ask mode waits for the ordinary scoped read approval; Auto permits this read-only
