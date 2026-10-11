@@ -5673,8 +5673,10 @@ class DiffusionBackend:
         Uncached checkpoints are priced from the family table (``exact=False``). Never raises."""
         try:
             from .diffusion_te_prequant import (
+                TE_INT8_CONVROT_BUDGET_SCALE,
                 TE_PREQUANT_BUDGET_SCALE,
                 TE_PREQUANT_COMPONENTS,
+                int8_convrot_te_runs_on,
                 te_candidate_filenames,
                 te_candidate_is_readable,
                 te_prequant_sources_for_base,
@@ -5756,7 +5758,13 @@ class DiffusionBackend:
                 if table is None:
                     return None
                 share = table_priced / max(1, len(sources))
-                total += int(table[1] * (1000.0**3) * TE_PREQUANT_BUDGET_SCALE * share)
+                # MPS only ever takes the int8 ConvRot file, smaller than the fp8 one the default scale prices.
+                scale = (
+                    TE_INT8_CONVROT_BUDGET_SCALE
+                    if int8_convrot_te_runs_on(target)
+                    else TE_PREQUANT_BUDGET_SCALE
+                )
+                total += int(table[1] * (1000.0**3) * scale * share)
             if total <= 0:
                 return None
             return max(1, total // (1024 * 1024)), tuple(sources), uncached == 0
@@ -9593,8 +9601,13 @@ class DiffusionBackend:
                         base_local_dir,
                     )
                 ) // (1024 * 1024)
-                # Never below scanned dense shards: a bad checkpoint falls back to opening them.
-                precast_mib = max(int(precast_mib), scanned_te)
+                from .diffusion_te_prequant import int8_convrot_te_runs_on
+
+                # Never below scanned dense shards: a bad checkpoint falls back to opening them. Not on MPS, where
+                # that failure raises instead (_te_prequant_pipe_kwargs): pricing the dense shards there refused
+                # every Mac that had loaded the dense encoder before (#11792).
+                if not int8_convrot_te_runs_on(target):
+                    precast_mib = max(int(precast_mib), scanned_te)
                 text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
                     precast_mib
                 )
