@@ -287,6 +287,14 @@ def test_extra_args_source_default_is_none():
     assert backend.extra_args_source is None
 
 
+def test_the_load_schema_documents_extra_args_inheritance():
+    """Omitting llama_extra_args reuses the previous same-model load's list, which the
+    chat UI relies on (#5401), so the public schema has to say so and name [] as the
+    way to launch with none; an API caller otherwise carries a stale flag over."""
+    description = LoadRequest.model_fields["llama_extra_args"].description
+    assert "previous" in description and "send [] to launch with none" in description
+
+
 def test_reasoning_budget_schema_contract():
     request = LoadRequest(model_path = "owner/repo")
     assert request.reasoning_budget == -1
