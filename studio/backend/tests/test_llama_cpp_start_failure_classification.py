@@ -239,6 +239,7 @@ class TestOllamaAndFallback:
             out, "/models/Ternary-Bonsai-27B-PQ2_0.gguf", "prism-ml/Ternary-Bonsai-27B-gguf", 1
         )
         assert named in msg
+        assert "download it again" in msg
         assert "not a memory problem" in msg
         assert "another quant" in msg
         assert "GGUF file is valid" not in msg

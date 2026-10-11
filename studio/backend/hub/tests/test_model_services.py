@@ -564,6 +564,8 @@ def test_pick_best_gguf_skips_fork_only_packs_when_a_loadable_quant_exists():
         gguf.pick_best_gguf(["m-Q4_0.gguf", "m-Q2_0.gguf", "m-Q2_g64.gguf", "m-F16.gguf"])
         == "m-Q4_0.gguf"
     )
+    # Only Q2 has the fork's plain layout; a grouped Q4 hides no Q4_0.
+    assert gguf.pick_best_gguf(["m-Q4_0.gguf", "m-Q4_g64.gguf"]) == "m-Q4_0.gguf"
     # Another checkpoint's grouped pack shadows nothing.
     assert (
         gguf.pick_best_gguf(["base-Q2_0.gguf", "instruct-Q2_g64.gguf", "base-F16.gguf"])

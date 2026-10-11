@@ -21979,18 +21979,13 @@ class LlamaCppBackend:
                 if bad_type
                 else "its tensor layout does not match this build's quantization types"
             )
-            # A damaged header also miscounts tensor sizes, so the layout case keeps that cause.
-            damaged = (
-                ""
-                if bad_type
-                else " If the model card says it runs on stock llama.cpp, the file may be damaged: download it again."
-            )
             return LlamaCppBackend._with_startup_diagnostics(
                 "The installed llama.cpp cannot read this GGUF's weights "
                 f"({detail}); this is not a memory problem. The file was likely made for "
                 "a different llama.cpp build: a newer one, or a publisher's own fork. Pick "
                 "another quant of this model, or use the llama.cpp build the "
-                f"model card names.{damaged}",
+                "model card names. If the model card says it runs on stock llama.cpp, "
+                "the file may be damaged: download it again.",
                 output,
                 log_path,
                 secrets,

@@ -314,7 +314,8 @@ def _gguf_stem(filename: str) -> str:
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
 # prism-ml's PQ2_0 / PTQ1_0 are ggml types only its llama.cpp fork defines; the bundled build rejects them (#11259).
 _FORK_ONLY_QUANT_RE = re.compile(r"PT?Q[0-9]", re.IGNORECASE)
-_GROUPED_QUANT_RE = re.compile(r"(Q[0-9]+)(?:_[0-9]+)?_G[0-9]+$", re.IGNORECASE)
+# Q2 only: prism-ml's group-128 Q2_0 is the plain pack a grouped sibling marks as fork-only.
+_GROUPED_QUANT_RE = re.compile(r"(Q2)(?:_0)?_G[0-9]+$", re.IGNORECASE)
 
 
 def _select_quant_match(text: str) -> Optional[re.Match]:
