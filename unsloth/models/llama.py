@@ -2781,7 +2781,7 @@ class FastLlamaModel:
         snapshot = _snapshot_transformers_modules(model_patcher)
         model_patcher.pre_patch()
         _record_pre_patch_changes(snapshot)
-        # A download counter, to see whether environments are breaking or HF is down.
+        # Download counter (environment, VRAM bucket, GPU count); opt out with UNSLOTH_DISABLE_STATISTICS=1.
         get_statistics(kwargs.get("local_files_only", False))
 
         if dtype is None:

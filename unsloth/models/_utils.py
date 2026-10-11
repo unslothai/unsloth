@@ -4053,7 +4053,7 @@ def has_internet(
 
 
 def _get_statistics(statistics = None, force_download = True):
-    # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
+    # Download counter: fetches the tiny public repo unslothai/<statistics> from HF so broken environments show up in its download total. Only per-repo totals are public; HF still sees each request like any download.
     n_cpus = psutil.cpu_count(logical = False)
     keynames = "\n" + "\n".join(os.environ.keys())
     global USE_MODELSCOPE
@@ -4151,7 +4151,7 @@ def _get_statistics(statistics = None, force_download = True):
 
 
 def get_statistics(local_files_only = False):
-    # Basic stats on which environment is in use, and whether HuggingFace is down: a README.md is downloaded from HF, all data public. Disable with UNSLOTH_DISABLE_STATISTICS.
+    # Counts one download each of unslothai/<environment>, repeat, vram-<bucket> and <gpu count>; no model names, prompts or data are sent. Skipped when UNSLOTH_DISABLE_STATISTICS is set (any value), offline, or with local_files_only.
     import os
 
     if (
