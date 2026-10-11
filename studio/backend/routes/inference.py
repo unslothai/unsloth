@@ -73,7 +73,7 @@ from dataclasses import dataclass, fields as dataclass_fields, replace
 
 import re as _re
 from pydantic import BaseModel
-from urllib.parse import quote as _urlquote
+from urllib.parse import quote as _urlquote, unquote as _urlunquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
@@ -3881,6 +3881,26 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
         logger.debug("external_provider.workflow_key_name_probe_failed", exc_info = True)
         return False
     return name == auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME
+
+
+# A UI session, the Deep Research key, or the key `unsloth start` minted for the owner's coding
+# agents. Every other API key, keyless caller and data-recipe key still gets nothing.
+def _request_may_use_saved_provider_key(request: Any) -> bool:
+    if not _request_has_api_key(request) or _request_is_saved_credential_workflow(request):
+        return True
+    token = _request_api_key_token(request)
+    if token is None:
+        return False
+    try:
+        verified = auth_storage.validate_api_key_account(token, touch = False)
+        if verified is None or verified[0].get("role") not in (None, "owner"):
+            return False
+        if verified[0].get("key_name") != auth_storage.UNSLOTH_START_API_KEY_NAME:
+            return False
+        return not auth_storage.is_internal_api_key(token)
+    except Exception:
+        logger.debug("external_provider.start_key_probe_failed", exc_info = True)
+        return False
 
 
 def _request_used_api_key(request: Any) -> bool:
@@ -28901,10 +28921,7 @@ async def _proxy_to_external_provider(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
                 payload.encrypted_api_key,
-                allow_saved_key = (
-                    not _request_has_api_key(request)
-                    or _request_is_saved_credential_workflow(request)
-                ),
+                allow_saved_key = _request_may_use_saved_provider_key(request),
             )
     else:
         api_key = resolve_provider_api_key_or_400(
@@ -30224,6 +30241,19 @@ class _DroppedFrameKeepalive:
         return True
 
 
+_CONNECTION_MODEL_PREFIX = "external::"
+
+
+# The id the chat picker gives a Connection model: external::<connection id>::<url-encoded model>.
+def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
+    if not isinstance(model, str) or not model.startswith(_CONNECTION_MODEL_PREFIX):
+        return None
+    provider_id, _, encoded = model[len(_CONNECTION_MODEL_PREFIX) :].partition("::")
+    if not provider_id or not encoded:
+        return None
+    return provider_id, _urlunquote(encoded)
+
+
 @router.post("/chat/completions")
 @account_access.gpu_busy_route
 async def openai_chat_completions(
@@ -30232,6 +30262,9 @@ async def openai_chat_completions(
     current_subject: str = Depends(get_current_subject),
 ):
     _admit_tool_access(payload)
+    connection = _connection_model_ref(payload.model)
+    if connection is not None and not (payload.provider_id or payload.provider_type):
+        payload.provider_id, payload.external_model = connection
     from auth.authentication import request_admitted_without_credential
 
     if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
@@ -38513,6 +38546,7 @@ async def _responses_non_streaming(
 ) -> JSONResponse:
     """Handle a non-streaming Responses API call."""
     chat_req = _build_chat_request(payload, messages, stream = False)
+    connection = _connection_model_ref(payload.model) is not None
     request_state = getattr(request, "state", None)
     if request_state is None:
         request_state = type("_RequestState", (), {})()
@@ -38533,7 +38567,7 @@ async def _responses_non_streaming(
             via_api_key = _request_used_api_key(request),
             model = payload.model,
             prompt = _monitor_prompt_from_messages(messages),
-            context_length = _monitor_context_length(),
+            context_length = None if connection else _monitor_context_length(),
             subject = current_subject,
         )
     if request_state is not None:
@@ -38543,7 +38577,7 @@ async def _responses_non_streaming(
     inner_perf: dict = {}
     if monitor_id:
         inner_perf["monitor_id"] = monitor_id
-        inner_perf["context_length"] = _monitor_context_length()
+        inner_perf["context_length"] = None if connection else _monitor_context_length()
     try:
         _sink_token = _monitor_perf_sink.set(inner_perf if monitor_id else None)
         try:
@@ -38551,11 +38585,21 @@ async def _responses_non_streaming(
         finally:
             _monitor_perf_sink.reset(_sink_token)
 
-        # openai_chat_completions returns a JSONResponse for non-streaming.
-        if isinstance(result, Response):
+        # openai_chat_completions returns a JSONResponse for non-streaming; the Connection proxy
+        # streams its one JSON body, followed by a [DONE] line.
+        if isinstance(result, StreamingResponse):
+            text = "".join(
+                [c.decode() if isinstance(c, bytes) else c async for c in result.body_iterator]
+            )
+            body = json.JSONDecoder().raw_decode(text.lstrip())[0]
+        elif isinstance(result, Response):
             body = json.loads(result.body.decode())
         else:
             body = result
+        if connection and isinstance(body.get("error"), dict):
+            raise HTTPException(
+                status_code = 502, detail = body["error"].get("message") or "The connection failed."
+            )
 
         choices = body.get("choices", [])
         text = ""
@@ -38569,7 +38613,7 @@ async def _responses_non_streaming(
             msg = choices[0].get("message", {}) or {}
             raw_content = msg.get("content", "") or ""
             raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
-            llama_backend = get_llama_cpp_backend()
+            llama_backend = None if connection else get_llama_cpp_backend()
             reasoning_text, text = _extract_responses_reasoning(
                 raw_text,
                 msg.get("reasoning_content"),
@@ -38633,7 +38677,7 @@ async def _responses_non_streaming(
         _monitor_usage(
             monitor_id,
             usage_data,
-            _monitor_context_length(),
+            None if connection else _monitor_context_length(),
             # Inner monitor suppressed: only the llama-server pass-through carries timings on
             # the body; in-process paths return a ChatCompletion with no field for them.
             timings = (
@@ -38663,11 +38707,27 @@ def _responses_error_code(exc: Exception) -> str:
     return "server_error"
 
 
+async def _sse_data_lines(chunks):
+    pending = ""
+    try:
+        async for chunk in chunks:
+            pending += chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+            *complete, pending = pending.split("\n")
+            for line in complete:
+                yield line
+        if pending:
+            yield pending
+    finally:
+        await chunks.aclose()
+
+
 async def _responses_stream(
     payload: ResponsesRequest,
     messages: list[ChatMessage],
     request: Request,
     monitor_id: Optional[str] = None,
+    current_subject: Optional[str] = None,
+    connection: Optional[tuple[str, str]] = None,
 ):
     """Handle a streaming Responses API call, emitting named SSE events.
 
@@ -38698,7 +38758,24 @@ async def _responses_stream(
     custom_tool_names = _responses_custom_tool_names(payload.tools)
 
     llama_backend = get_llama_cpp_backend()
-    if not llama_backend.is_loaded:
+    upstream = None
+    if connection is not None:
+        # A Connection model: the chat proxy serves it and the converter below relays its stream.
+        chat_req.provider_id, chat_req.external_model = connection
+        chat_req.stream_options = {"include_usage": True}
+        request.state.skip_api_monitor = True
+        upstream = await produce_openai_chat_completions(
+            chat_req, request, current_subject, cancel_on_disconnect = True
+        )
+        if not isinstance(upstream, StreamingResponse):
+            return upstream
+        body = {
+            "tools": chat_req.tools,
+            "tool_choice": chat_req.tool_choice,
+            "response_format": chat_req.response_format,
+        }
+        cancel_event = threading.Event()
+    elif not llama_backend.is_loaded:
         # The direct pass-through is GGUF-only. Non-GGUF /v1/responses streaming
         # isn't a Codex-compatible path today, and wrapping the transformers
         # backend's streaming generator here would re-introduce the
@@ -38715,60 +38792,61 @@ async def _responses_stream(
         )
         raise HTTPException(status_code = _status, detail = _detail)
 
-    # Direct pass-through bypasses the openai_chat_completions tool-image note and image gate.
-    if not llama_backend.is_vision:
-        _omit_tool_images(chat_req.messages)
-        if _messages_have_image(chat_req.messages):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
+    if upstream is None:
+        # Direct pass-through bypasses the openai_chat_completions tool-image note and image gate.
+        if not llama_backend.is_vision:
+            _omit_tool_images(chat_req.messages)
+            if _messages_have_image(chat_req.messages):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Image provided but current GGUF model does not support vision.",
+                )
+
+        # Same bypass, same reason as the image gate: without this the non-streaming half of this
+        # very route folds a Studio tool thread and answers while the streaming half still ships
+        # role="tool" to a template that cannot render it, so one thread's replies depend on which
+        # half the client called.
+        if _folds_studio_tool_history(chat_req, llama_backend):
+            chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
+
+        # Streaming /v1/responses builds the passthrough body directly (bypassing
+        # openai_chat_completions), so apply recommended sampling here too.
+        _fill_recommended_sampling_openai(
+            chat_req,
+            getattr(llama_backend, "model_identifier", None),
+            thinking = _sampling_thinking_mode(llama_backend, chat_req),
+        )
+        body = await _build_openai_passthrough_body_async(
+            chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+        )
+        body["stream_options"] = {"include_usage": True}
+        target_url = f"{llama_backend.base_url}/v1/chat/completions"
+        # The stream's own disconnect event, shared with the cancel/active-generation registries:
+        # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
+        # of tearing the server down mid-response. Entered inside the body generator below, so a
+        # response whose body never starts leaves nothing behind.
+        cancel_event = threading.Event()
+        _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
+        try:
+            reservation, admission_config = await _openai_llama_admission_reserve_async(
+                request = request,
+                llama_backend = llama_backend,
+                # chat_req, not payload: a ResponsesRequest carries `input` and
+                # `max_output_tokens`, so the estimator found no `messages` and fell back to
+                # one equal cache share no matter how large the request really was.
+                payload = chat_req,
             )
-
-    # Same bypass, same reason as the image gate: without this the non-streaming half of this
-    # very route folds a Studio tool thread and answers while the streaming half still ships
-    # role="tool" to a template that cannot render it, so one thread's replies depend on which
-    # half the client called.
-    if _folds_studio_tool_history(chat_req, llama_backend):
-        chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
-
-    # Streaming /v1/responses builds the passthrough body directly (bypassing
-    # openai_chat_completions), so apply recommended sampling here too.
-    _fill_recommended_sampling_openai(
-        chat_req,
-        getattr(llama_backend, "model_identifier", None),
-        thinking = _sampling_thinking_mode(llama_backend, chat_req),
-    )
-    body = await _build_openai_passthrough_body_async(
-        chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
-    )
-    body["stream_options"] = {"include_usage": True}
-    target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    # The stream's own disconnect event, shared with the cancel/active-generation registries:
-    # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
-    # of tearing the server down mid-response. Entered inside the body generator below, so a
-    # response whose body never starts leaves nothing behind.
-    cancel_event = threading.Event()
-    _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
-    try:
-        reservation, admission_config = await _openai_llama_admission_reserve_async(
-            request = request,
-            llama_backend = llama_backend,
-            # chat_req, not payload: a ResponsesRequest carries `input` and
-            # `max_output_tokens`, so the estimator found no `messages` and fell back to
-            # one equal cache share no matter how large the request really was.
-            payload = chat_req,
-        )
-    except LlamaAdmissionQueueFull as exc:
-        _llama_admission_log(
-            "queue-full",
-            snapshot = exc.snapshot,
-            request = request,
-            mode = "responses_stream",
-            completion_id = resp_id,
-            level = "warning",
-        )
-        api_monitor.fail(monitor_id, str(exc))
-        raise _openai_admission_http_exception(exc, status_code = 429)
+        except LlamaAdmissionQueueFull as exc:
+            _llama_admission_log(
+                "queue-full",
+                snapshot = exc.snapshot,
+                request = request,
+                mode = "responses_stream",
+                completion_id = resp_id,
+                level = "warning",
+            )
+            api_monitor.fail(monitor_id, str(exc))
+            raise _openai_admission_http_exception(exc, status_code = 429)
 
     def _responses_admission_failed_sse(exc: Exception, *, code: str) -> str:
         # Emitted in-band after the 200 headers, so flag failed: the middleware must not
@@ -38811,7 +38889,9 @@ async def _responses_stream(
         # helper, not the raw identifier: after an auto-switch to a cached HF GGUF
         # the identifier is the snapshot path while the repo id lives in
         # _openai_advertised_id, so the raw form would stream a snapshot basename.
-        _clean_model = _llama_public_model_id(llama_backend, payload.model) or payload.model
+        _clean_model = payload.model
+        if upstream is None:
+            _clean_model = _llama_public_model_id(llama_backend, payload.model) or payload.model
         full_text = ""
         full_reasoning = ""
         input_tokens = 0
@@ -38819,7 +38899,9 @@ async def _responses_stream(
         # From the chat chunks; applied once before finish, so chunk order does not matter.
         stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
-            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
+            parse_think_markers = _responses_should_parse_think_markers(
+                chat_req, None if upstream is not None else llama_backend
+            ),
             single_block = _response_format_constrains_decoding(chat_req),
         )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
@@ -38939,7 +39021,12 @@ async def _responses_stream(
             if isinstance(u, dict):
                 input_tokens = u.get("prompt_tokens", input_tokens)
                 output_tokens = u.get("completion_tokens", output_tokens)
-            _monitor_usage(monitor_id, u, llama_backend.context_length, timings = timings)
+            _monitor_usage(
+                monitor_id,
+                u,
+                None if upstream is not None else llama_backend.context_length,
+                timings = timings,
+            )
 
         def _ensure_reasoning_open() -> list[str]:
             if reasoning_state["opened"]:
@@ -39218,11 +39305,7 @@ async def _responses_stream(
         # `async with`, explicit aclose of lines_iter BEFORE resp / client so
         # the innermost httpcore byte stream is finalised in this task (not via
         # the asyncgen GC in a sibling task).
-        client = httpx.AsyncClient(
-            timeout = _llama_streaming_generation_timeout(),
-            trust_env = False,
-            verify = _local_ssl_context(),
-        )
+        client = None
         resp = None
         lines_iter = None
         items_iter = None
@@ -39230,89 +39313,97 @@ async def _responses_stream(
         # Tracked per-run event: a client disconnect and a forced reload both land here.
         disconnect_event = cancel_event
         try:
-            req = client.build_request(
-                "POST",
-                target_url,
-                json = body,
-                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-            )
-            first_token_deadline = time.monotonic() + _first_token_timeout_s()
-            try:
-                # Same event the loop below polls: prefill can run for the whole first-token window,
-                # and only the send watcher can end it early.
-                resp = await _send_stream_with_preheader_cancel(
-                    client, req, disconnect_event, request = request
+            if upstream is not None:
+                items_iter = _sse_data_lines(upstream.body_iterator)
+            else:
+                client = httpx.AsyncClient(
+                    timeout = _llama_streaming_generation_timeout(),
+                    trust_env = False,
+                    verify = _local_ssl_context(),
                 )
-                if resp is None:
-                    api_monitor.finish(monitor_id, "cancelled")
-                    return
-            except httpx.RequestError as e:
-                logger.error("responses stream: upstream unreachable: %s", e)
-                api_monitor.fail(monitor_id, _friendly_error(e))
-                # 200 headers already flushed; this is an in-band failure, so the
-                # middleware must not claim a preview-owned model for it.
-                mark_response_failed(getattr(request, "scope", None))
-                yield _sse(
-                    "response.failed",
-                    {
-                        "type": "response.failed",
-                        "response": {
-                            "id": resp_id,
-                            "object": "response",
-                            "created_at": created_at,
-                            "status": "failed",
-                            "model": _clean_model,
-                            "output": [],
-                            "error": {"code": "server_error", "message": _friendly_error(e)},
-                        },
-                    },
+                req = client.build_request(
+                    "POST",
+                    target_url,
+                    json = body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 )
-                return
-
-            if resp.status_code != 200:
-                err_bytes = await resp.aread()
-                err_text = err_bytes.decode("utf-8", errors = "replace")
-                logger.error(
-                    "responses stream upstream error: status=%s body=%s",
-                    resp.status_code,
-                    err_text[:500],
-                )
-                api_monitor.fail(monitor_id, err_text[:500])
-                # 200 headers already flushed; an upstream non-200 is an in-band
-                # failure, so the middleware must not claim a preview-owned model.
-                mark_response_failed(getattr(request, "scope", None))
-                yield _sse(
-                    "response.failed",
-                    {
-                        "type": "response.failed",
-                        "response": {
-                            "id": resp_id,
-                            "object": "response",
-                            "created_at": created_at,
-                            "status": "failed",
-                            "model": _clean_model,
-                            "output": [],
-                            "error": {
-                                "code": _responses_error_code(RuntimeError(err_text)),
-                                "message": _friendly_upstream_error(err_text[:500]),
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
+                try:
+                    # Same event the loop below polls: prefill can run for the whole first-token window,
+                    # and only the send watcher can end it early.
+                    resp = await _send_stream_with_preheader_cancel(
+                        client, req, disconnect_event, request = request
+                    )
+                    if resp is None:
+                        api_monitor.finish(monitor_id, "cancelled")
+                        return
+                except httpx.RequestError as e:
+                    logger.error("responses stream: upstream unreachable: %s", e)
+                    api_monitor.fail(monitor_id, _friendly_error(e))
+                    # 200 headers already flushed; this is an in-band failure, so the
+                    # middleware must not claim a preview-owned model for it.
+                    mark_response_failed(getattr(request, "scope", None))
+                    yield _sse(
+                        "response.failed",
+                        {
+                            "type": "response.failed",
+                            "response": {
+                                "id": resp_id,
+                                "object": "response",
+                                "created_at": created_at,
+                                "status": "failed",
+                                "model": _clean_model,
+                                "output": [],
+                                "error": {"code": "server_error", "message": _friendly_error(e)},
                             },
                         },
-                    },
-                )
-                return
+                    )
+                    return
 
-            lines_iter = resp.aiter_lines()
-            disconnect_watcher = asyncio.create_task(
-                _await_disconnect_then_close(request, resp, disconnect_event)
-            )
-            items_iter = _aiter_llama_stream_items(
-                lines_iter,
-                cancel_event = disconnect_event,
-                request = request,
-                first_token_deadline = first_token_deadline,
-                response = resp,
-                keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
-            )
+                if resp.status_code != 200:
+                    err_bytes = await resp.aread()
+                    err_text = err_bytes.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "responses stream upstream error: status=%s body=%s",
+                        resp.status_code,
+                        err_text[:500],
+                    )
+                    api_monitor.fail(monitor_id, err_text[:500])
+                    # 200 headers already flushed; an upstream non-200 is an in-band
+                    # failure, so the middleware must not claim a preview-owned model.
+                    mark_response_failed(getattr(request, "scope", None))
+                    yield _sse(
+                        "response.failed",
+                        {
+                            "type": "response.failed",
+                            "response": {
+                                "id": resp_id,
+                                "object": "response",
+                                "created_at": created_at,
+                                "status": "failed",
+                                "model": _clean_model,
+                                "output": [],
+                                "error": {
+                                    "code": _responses_error_code(RuntimeError(err_text)),
+                                    "message": _friendly_upstream_error(err_text[:500]),
+                                },
+                            },
+                        },
+                    )
+                    return
+
+                lines_iter = resp.aiter_lines()
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_close(request, resp, disconnect_event)
+                )
+                items_iter = _aiter_llama_stream_items(
+                    lines_iter,
+                    cancel_event = disconnect_event,
+                    request = request,
+                    first_token_deadline = first_token_deadline,
+                    response = resp,
+                    keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
+                )
             async for raw_line in items_iter:
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
@@ -39712,6 +39803,9 @@ async def _responses_stream(
         api_monitor.finish(monitor_id)
         yield _sse(terminal_event, terminal_response)
 
+    if upstream is not None:
+        return _sse_streaming_response(event_generator(), monitor_id = monitor_id)
+
     async def admitted_event_generator():
         # Register for the body's whole lifetime, admission wait included: the run holds a decode
         # slot from here on, so /load and /unload must count it. __exit__ runs from the finally below.
@@ -39837,6 +39931,7 @@ async def openai_responses(
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
     _admit_tool_access(payload)
+    connection = _connection_model_ref(payload.model)
     for history_param in ("previous_response_id", "conversation"):
         if getattr(payload, history_param, None) is not None:
             raise HTTPException(
@@ -39894,23 +39989,24 @@ async def openai_responses(
         # streaming preflights here; non-streaming delegates its complete preflight to chat.
         _responses_has_image = _messages_have_image(m for m in messages if m.role != "tool")
         _responses_image_b64s = _local_image_payloads_from_messages(messages)
-        await _maybe_auto_switch_model(
-            _switch_model_for_payload(payload),
-            request,
-            current_subject,
-            require_vision = _responses_has_image,
-            claim_resident = False,
-            gguf_only = True,
-            image_preflight = (
-                {
-                    "b64": _responses_image_b64s[0],
-                    "b64s": _responses_image_b64s,
-                    "multiple": False,
-                }
-                if _responses_image_b64s
-                else None
-            ),
-        )
+        if connection is None:
+            await _maybe_auto_switch_model(
+                _switch_model_for_payload(payload),
+                request,
+                current_subject,
+                require_vision = _responses_has_image,
+                claim_resident = False,
+                gguf_only = True,
+                image_preflight = (
+                    {
+                        "b64": _responses_image_b64s[0],
+                        "b64s": _responses_image_b64s,
+                        "multiple": False,
+                    }
+                    if _responses_image_b64s
+                    else None
+                ),
+            )
         monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
@@ -39919,11 +40015,13 @@ async def openai_responses(
                 method = request.method,
                 model = payload.model,
                 prompt = _monitor_prompt_from_messages(messages),
-                context_length = _monitor_context_length(),
+                context_length = None if connection else _monitor_context_length(),
                 subject = current_subject,
             )
         try:
-            return await _responses_stream(payload, messages, request, monitor_id)
+            return await _responses_stream(
+                payload, messages, request, monitor_id, current_subject, connection
+            )
         except HTTPException as exc:
             detail = exc.detail
             if not isinstance(detail, str):
@@ -41238,6 +41336,141 @@ async def chat_count_tokens(
     )
 
 
+def _anthropic_connection_error_event(error: Any) -> str:
+    message = error.get("message") if isinstance(error, dict) else None
+    try:
+        code = int(error.get("code"))
+    except (AttributeError, TypeError, ValueError):
+        code = 500
+    status = code if code == 429 or 500 <= code < 600 else 400
+    return build_anthropic_sse_event(
+        "error", anthropic_error_body(message or "The connection failed.", status = status)
+    )
+
+
+async def _anthropic_events_from_openai_sse(lines, message_id: str, model: str):
+    emitter = AnthropicPassthroughEmitter()
+    for event in emitter.start(message_id, model):
+        yield event
+    items = _sse_data_lines(lines)
+    try:
+        async for line in items:
+            data = line[len("data: ") :].strip() if line.startswith("data: ") else ""
+            if data == "[DONE]":
+                break
+            if not data:
+                continue
+            parsed = json.loads(data)
+            if parsed.get("error"):
+                yield _anthropic_connection_error_event(parsed["error"])
+                return
+            for event in emitter.feed_chunk(parsed):
+                yield event
+    finally:
+        await items.aclose()
+    for event in emitter.finish():
+        yield event
+
+
+def _anthropic_message_from_events(events: list[str]) -> dict:
+    message: dict = {}
+    blocks: list[dict] = []
+    partial_json: dict[int, str] = {}
+    for event in events:
+        data = json.loads(event.partition("\ndata: ")[2])
+        if data["type"] == "error":
+            raise HTTPException(
+                status_code = {"invalid_request_error": 400, "rate_limit_error": 429}.get(
+                    data["error"]["type"], 502
+                ),
+                detail = data["error"]["message"],
+            )
+        if data["type"] == "message_start":
+            message = data["message"]
+        elif data["type"] == "content_block_start":
+            blocks.append(dict(data["content_block"]))
+        elif data["type"] == "content_block_delta":
+            block, delta = blocks[data["index"]], data["delta"]
+            if delta["type"] == "text_delta":
+                block["text"] += delta["text"]
+            elif delta["type"] == "thinking_delta":
+                block["thinking"] += delta["thinking"]
+            elif delta["type"] == "input_json_delta":
+                partial_json[data["index"]] = (
+                    partial_json.get(data["index"], "") + delta["partial_json"]
+                )
+        elif data["type"] == "message_delta":
+            message.update(data["delta"])
+            message["usage"] = data["usage"]
+    for index, text in partial_json.items():
+        try:
+            blocks[index]["input"] = json.loads(text)
+        except json.JSONDecodeError:
+            blocks[index]["input"] = {}
+    message["content"] = blocks
+    return message
+
+
+async def _anthropic_messages_via_connection(
+    payload: AnthropicMessagesRequest,
+    request: Request,
+    current_subject: str,
+    provider_id: str,
+    model: str,
+):
+    if payload.max_tokens is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(
+                "max_tokens: field required",
+                status = 400,
+                err_type = "invalid_request_error",
+            ),
+        )
+    _validate_anthropic_client_tools(payload.tools)
+    if _anthropic_requested_studio_tools(payload.tools) or payload.enable_tools is True:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Unsloth server tools are not available with a Connection model.",
+        )
+    fields = {
+        "model": model,
+        "provider_id": provider_id,
+        "external_model": model,
+        "messages": anthropic_messages_to_openai(
+            [m.model_dump() for m in payload.messages], payload.system
+        ),
+        "tools": anthropic_tools_to_openai(payload.tools or []) or None,
+        "tool_choice": anthropic_tool_choice_to_openai(payload.tool_choice),
+        "max_tokens": payload.max_tokens,
+        "stop": payload.stop_sequences or None,
+        "temperature": payload.temperature,
+        "top_p": payload.top_p,
+        "top_k": payload.top_k,
+        "session_id": payload.session_id,
+        "cancel_id": payload.cancel_id,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    reasoning = _anthropic_reasoning_args(payload)
+    fields["enable_thinking"] = reasoning["enable_thinking"]
+    fields["reasoning_effort"] = reasoning["reasoning_effort"]
+    chat_payload = ChatCompletionRequest(
+        **{name: value for name, value in fields.items() if value is not None}
+    )
+    response = await produce_openai_chat_completions(
+        chat_payload, request, current_subject, cancel_on_disconnect = True
+    )
+    if not isinstance(response, StreamingResponse):
+        return response
+    events = _anthropic_events_from_openai_sse(
+        response.body_iterator, f"msg_{uuid.uuid4().hex[:24]}", payload.model
+    )
+    if payload.stream:
+        return _sse_streaming_response(events)
+    return JSONResponse(_anthropic_message_from_events([event async for event in events]))
+
+
 @router.post("/messages/count_tokens")
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
@@ -41251,6 +41484,11 @@ async def anthropic_count_tokens(
     tokenizer, and returns ``{"input_tokens": int}`` only. Unlike /messages,
     max_tokens is NOT required here.
     """
+    if _connection_model_ref(payload.model) is not None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Token counting is not available for a Connection model.",
+        )
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
@@ -41488,6 +41726,11 @@ async def anthropic_messages(
     JSON).
     """
     _admit_tool_access(payload)
+    connection = _connection_model_ref(payload.model)
+    if connection is not None:
+        return await _anthropic_messages_via_connection(
+            payload, request, current_subject, *connection
+        )
     await _route_to_extra_slot(_switch_model_for_payload(payload))
     llama_backend = get_llama_cpp_backend()
 
