@@ -102,7 +102,9 @@ class TestARawStreamForwardsTheServersPark:
         source = inspect.getsource(inference.openai_completions)
         assert source.count("_cmpl_saw_recompute = False") == 1
         assert "_cmpl_saw_recompute |= _park == _OPENAI_PREEMPT_SSE_RECOMPUTED" in source
-        assert source.count("not _cmpl_saw_recompute") == 2, "the event loop and the trailing buffer"
+        assert (
+            source.count("not _cmpl_saw_recompute") == 2
+        ), "the event loop and the trailing buffer"
         assert source.count("yield _OPENAI_PREEMPT_SSE_RECOMPUTED.encode(") == 2
 
     def test_every_raw_loop_asks(self):
