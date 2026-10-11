@@ -8869,8 +8869,8 @@ def _load_dir_offers_file(load_dir: str, filename: str, variant: str) -> bool:
     )
 
 
-def _as_local_scan_folder_request(request, owner_session: bool):
-    """*request* with a repo id (or a repo/file.gguf id) whose GGUF copy sits outside the active hub cache (e.g. a scan folder) rewritten to it."""
+def _as_local_scan_folder_request(request, rewrite_session: bool):
+    """*request* with a repo id (or a repo/file.gguf id) whose GGUF copy sits outside the active hub cache (e.g. a scan folder) rewritten to it, for a locally managed session."""
     from core.inference.local_model_resolver import _is_abs_path_id, resolve_local_gguf
     from core.inference.model_ids import hf_cache_repo_id
     from utils.models.model_config import _gguf_variant_key
@@ -8884,8 +8884,9 @@ def _as_local_scan_folder_request(request, owner_session: bool):
         or _is_abs_path_id(identifier)
     ):
         return request
-    # Owner session only (as _refused_repo_cached_gguf); a native lease names one exact artifact.
-    if not owner_session or getattr(request, "native_path_lease", None):
+    # A locally managed session only (owner UI or API key; managed accounts keep remote
+    # semantics, as _refused_repo_cached_gguf); a native lease names one exact artifact.
+    if not rewrite_session or getattr(request, "native_path_lease", None):
         return request
     # A quant row names the file it showed: the file is the exact artifact, so its variant key
     # decides the lookup and a pinned gguf_variant that disagrees with it cannot win.
@@ -17695,6 +17696,18 @@ def _owner_session(fastapi_request) -> bool:
     return not _request_has_api_key(fastapi_request)
 
 
+def _rewrite_local_session(fastapi_request) -> bool:
+    """A session this install serves locally: the owner's UI session or an API-key client.
+
+    An API key does not disqualify -- the hub-cache path already serves local copies to
+    those sessions, the key can list them, and the sibling Ollama-manifest rewrite
+    (_as_ollama_manifest_request) already serves them too; the scan-folder copy sits behind
+    the same trust boundary. Internal workflow subprocesses qualify like any other local
+    client. Managed accounts keep remote semantics (as _refused_repo_cached_gguf).
+    """
+    return fastapi_request is not None and not account_access.managed_account()
+
+
 async def _run_tracked_load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -18378,7 +18391,7 @@ async def _load_model_impl(
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     _requested_model_id = request.model_path
     request = await asyncio.to_thread(
-        _as_local_scan_folder_request, request, _owner_session(fastapi_request)
+        _as_local_scan_folder_request, request, _rewrite_local_session(fastapi_request)
     )
     # The client keeps the repo id it picked as the checkpoint; only the load reads the copy.
     scan_folder_public_id = (
@@ -19927,7 +19940,7 @@ async def validate_model(
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     # The chat flow validates before /load; offline the remote probe would refuse the id.
     request = await asyncio.to_thread(
-        _as_local_scan_folder_request, request, _owner_session(fastapi_request)
+        _as_local_scan_folder_request, request, _rewrite_local_session(fastapi_request)
     )
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
