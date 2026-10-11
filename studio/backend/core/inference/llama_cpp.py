@@ -4911,12 +4911,10 @@ def _diffusion_auto_ngl(
 ) -> Optional[int]:
     """GPU layers for an Auto-mode diffusion load, or None to keep every layer on the GPU.
 
-    Only a GGUF whose weights cannot fit the device moves: there the all-layers default
-    dies in cudaMalloc, or on Windows spills into shared system memory until RAM and the
-    page file are exhausted (#6456). Everything that loads today is left alone. The split
-    keeps room for the runner's compute buffer (measured at 1.75x its [n_head, N, N] fp32
-    scores) plus the 8% of VRAM its context probe requires free
-    (diffusion-gemma-visual-server.cpp)."""
+    Only a GGUF that cannot fit moves: all layers die in cudaMalloc, or on Windows spill into
+    shared system memory until RAM and the page file run out (#6456). The split leaves room
+    for the compute buffer (measured 1.75x the [n_head, N, N] fp32 scores) and the 8% of VRAM
+    the runner's context probe keeps free (diffusion-gemma-visual-server.cpp)."""
     if not file_bytes or not n_layers or n_layers <= 0 or free_mib <= 0:
         return None
     usable = _vram_usable_mib(
