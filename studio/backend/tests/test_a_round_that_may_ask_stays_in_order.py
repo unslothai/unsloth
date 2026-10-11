@@ -12,7 +12,11 @@ from state.tool_policy import round_may_prompt
 
 
 def _call(name, arguments):
-    return {"id": f"c_{name}", "type": "function", "function": {"name": name, "arguments": arguments}}
+    return {
+        "id": f"c_{name}",
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
 
 
 def _gate(calls, mode, **kw):
@@ -29,7 +33,6 @@ def _gate(calls, mode, **kw):
 def isolation(monkeypatch):
     def set_to(value):
         import core.inference.os_sandbox as os_sandbox
-
         monkeypatch.setattr(os_sandbox, "cached_tool_isolation", lambda _name: value)
 
     return set_to
@@ -70,8 +73,18 @@ def test_off_with_ordinary_calls_overlaps(isolation):
 
 def test_no_confirmation_never_gates():
     calls = [_call("python", "{oops")]
-    assert round_may_prompt(calls, confirm_tool_calls = False, bypass_permissions = False, permission_mode = "ask") is False
-    assert round_may_prompt(calls, confirm_tool_calls = True, bypass_permissions = True, permission_mode = "ask") is False
+    assert (
+        round_may_prompt(
+            calls, confirm_tool_calls = False, bypass_permissions = False, permission_mode = "ask"
+        )
+        is False
+    )
+    assert (
+        round_may_prompt(
+            calls, confirm_tool_calls = True, bypass_permissions = True, permission_mode = "ask"
+        )
+        is False
+    )
     assert _gate(calls, "ask") is True
 
 
@@ -80,12 +93,20 @@ def test_it_agrees_with_the_per_call_decision(isolation):
     isolation(False)
     for mode in ("ask", "auto", "off"):
         for level in ("high", "low"):
-            for name, args in [("python", {"code": "import os"}), ("terminal", {"command": "ls"}),
-                               ("terminal", {"command": "cat ~/.ssh/id_rsa"}),
-                               ("web_search", {"query": "q"}), ("web_search", {"url": "https://a.b"})]:
+            for name, args in [
+                ("python", {"code": "import os"}),
+                ("terminal", {"command": "ls"}),
+                ("terminal", {"command": "cat ~/.ssh/id_rsa"}),
+                ("web_search", {"query": "q"}),
+                ("web_search", {"url": "https://a.b"}),
+            ]:
                 per_call = tool_policy.needs_tool_confirmation(
-                    confirm_tool_calls = True, bypass_permissions = False, permission_mode = mode,
-                    name = name, arguments = args, sandbox_level = level,
+                    confirm_tool_calls = True,
+                    bypass_permissions = False,
+                    permission_mode = mode,
+                    name = name,
+                    arguments = args,
+                    sandbox_level = level,
                 )
                 gated = _gate([_call(name, json.dumps(args))], mode, sandbox_level = level)
                 assert gated is per_call, (mode, level, name, args)
