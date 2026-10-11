@@ -235,6 +235,59 @@ def test_scope_restores_when_train_raises(fake):
     assert fake.current_impl is None
 
 
+def test_reused_padding_free_collator_still_scopes_the_new_trainer(fake):
+    from unsloth.utils import packing
+
+    class Trainer:
+        def train(self):
+            return fake.current_impl
+
+    collator = types.SimpleNamespace(padding_free = True, _unsloth_padding_free_lengths_wrapped = True)
+    trainer = Trainer()
+    trainer.model, trainer.data_collator = _model(), collator
+    packing.enable_padding_free_metadata(trainer.model, trainer)
+    assert trainer.train() == "FA4" and fake.current_impl is None
+
+
+@pytest.mark.parametrize("native_gqa", [True, False])
+def test_probe_repeats_kv_heads_without_enable_gqa(monkeypatch, native_gqa):
+    import torch.nn.attention.varlen as varlen
+
+    seen = []
+
+    def fake_with_gqa(
+        q,
+        k,
+        v,
+        cu_q,
+        cu_k,
+        max_q,
+        max_k,
+        window_size = (-1, -1),
+        enable_gqa = False,
+    ):
+        seen.append((k.shape[1], enable_gqa))
+        return q * (k.float().mean() + v.float().mean()).to(q.dtype)
+
+    def fake_2_11(
+        q,
+        k,
+        v,
+        cu_q,
+        cu_k,
+        max_q,
+        max_k,
+        window_size = (-1, -1),
+    ):
+        seen.append((k.shape[1], None))
+        return q * (k.float().mean() + v.float().mean()).to(q.dtype)
+
+    monkeypatch.setattr(varlen, "varlen_attn", fake_with_gqa if native_gqa else fake_2_11)
+    out, dq, dk, dv = fi._run_case(("varlen", 64, 4, None, torch.float32), "cpu")
+    assert seen == [(2, True)] if native_gqa else seen == [(8, None)]
+    assert dk.shape == dv.shape == (sum([200, 1, 333, 64, 130]), 2, 64)
+
+
 def test_scope_skipped_when_off(fake, monkeypatch):
     monkeypatch.setenv(fi._ENV, "off")
 

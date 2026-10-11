@@ -274,16 +274,15 @@ def enable_sample_packing(
 def enable_padding_free_metadata(model, trainer):
     """Inject seq-length metadata when padding-free batching is enabled without packing."""
     collator = getattr(trainer, "data_collator", None)
-    if (
-        collator is None
-        or getattr(collator, "_unsloth_padding_free_lengths_wrapped", False)
-        or not getattr(collator, "padding_free", False)
-    ):
+    if collator is None or not getattr(collator, "padding_free", False):
+        return
+    # Before the already-wrapped return: a reused collator's new trainer still needs scoping.
+    _scope_flash_attention_impl(model, trainer)
+    if getattr(collator, "_unsloth_padding_free_lengths_wrapped", False):
         return
 
     mark_allow_overlength(model)
     _enable_hf_packed_attention()
-    _scope_flash_attention_impl(model, trainer)
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
     if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):

@@ -10,6 +10,7 @@ UNSLOTH_FLASH_ATTENTION_IMPL = off (default) | auto (FA4 on sm100) | fa4 | fa3 (
 
 import contextlib
 import functools
+import inspect
 import logging
 import os
 
@@ -285,17 +286,22 @@ def _run_case(case, device):
     cu = torch.tensor(
         [0] + torch.tensor(lengths).cumsum(0).tolist(), device = device, dtype = torch.int32
     )
+    # torch 2.11's varlen_attn has no enable_gqa: repeat the K/V heads as the packed path does there.
+    if "enable_gqa" in inspect.signature(varlen_attn).parameters:
+        gqa, k_in, v_in = {"enable_gqa": True}, k, v
+    else:
+        gqa, k_in, v_in = {}, k.repeat_interleave(ratio, dim = 1), v.repeat_interleave(ratio, dim = 1)
     with torch.enable_grad():
         out = varlen_attn(
             q,
-            k,
-            v,
+            k_in,
+            v_in,
             cu,
             cu,
             max(lengths),
             max(lengths),
             window_size = (window - 1, 0) if window else (-1, 0),
-            enable_gqa = True,
+            **gqa,
         )
         out.backward(randn(*out.shape))
     return out.detach(), q.grad, k.grad, v.grad
