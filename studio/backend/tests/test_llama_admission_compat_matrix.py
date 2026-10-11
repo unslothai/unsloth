@@ -227,10 +227,9 @@ class TestOldCallers:
         for name in _TOOL_LOOP_HOOKS:
             assert signature.parameters[name].default is None, f"{name} must be optional"
 
-    def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
-        inserting one silently rebinds the arguments after it for positional callers, with
-        no exception to report it."""
+    def test_admission_parameters_were_appended_rather_than_inserted(self):
+        """No bare ``*`` in these signatures, so inserting a parameter silently rebinds
+        the arguments after it for positional callers. New ones go at the end."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -244,6 +243,11 @@ class TestOldCallers:
         assert hooks == list(
             _TOOL_LOOP_HOOKS
         ), f"the hooks must stay together in order, got {hooks}"
+        plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
+        assert plain[-2:] == [
+            "admission_output_allowance",
+            "on_prompt_fitted",
+        ], f"a parameter was inserted rather than appended; signature ends {plain[-4:]}"
 
     def test_the_sandbox_level_was_appended_rather_than_inserted(self):
         import inspect
@@ -253,7 +257,8 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        assert names[-1] == "sandbox_level"
+        # The wire-cap allowance was appended after it.
+        assert names[-2:] == ["sandbox_level", "admission_output_allowance"]
         assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 
     def test_the_wait_timeout_has_a_sane_default(self):

@@ -76,7 +76,8 @@ class TestTheDefaultChatNoLongerTakesTheWholeCache:
     def test_max_tokens_max_does_not_reserve_the_budget(self):
         cost = self._cost(_chat(max_tokens = self.BUDGET))
         assert cost < self.BUDGET, "Max Tokens = Max still reserves the whole cache"
-        assert cost <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 100
+        # Its FAIR SHARE: charging less than the wire permits is what was unsafe.
+        assert cost <= self.BUDGET // self.CAPACITY
 
     def test_four_default_chats_fit_at_once(self):
         """The change, as the user sees it: four chats on Max have to fit together."""
@@ -193,9 +194,12 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
             cost = self._cost(budget, 4)
             assert cost * 4 <= budget, f"{budget} cache admits only {budget // cost} of 4"
 
-    def test_a_large_cache_is_unchanged(self):
-        """The clamp must bite only where the share is the tighter of the two."""
-        assert self._cost(32768, 4) == self._cost(262144, 4)
+    def test_the_charge_scales_with_the_cache(self):
+        """A bigger cache buys a bigger share: the charge is the share itself, so it must
+        scale or a large cache is priced as a small one. How MANY fit is asserted above."""
+        assert self._cost(262144, 4) > self._cost(32768, 4)
+        for budget in (32768, 262144):
+            assert self._cost(budget, 4) == budget // 4
 
     def test_the_share_only_ever_lowers_the_allowance(self):
         base = _openai_llama_admission_output_allowance(
