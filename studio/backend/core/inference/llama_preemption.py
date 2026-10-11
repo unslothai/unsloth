@@ -68,8 +68,21 @@ DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 # under a prompt that was still going in.
 PENDING_PREFILL_TTL_S = 1200.0
 
-# Bounds churn under contention. _MAX_LENGTH_CONTINUATIONS is a quality cap, not this.
-DEFAULT_MAX_PREEMPT_RESUMES = 32
+# Bounds churn under contention: this many pauses in a row with no new output between them
+# end the turn. A pause after progress is never counted, however many came before it.
+# _MAX_LENGTH_CONTINUATIONS is a quality cap, not this; the resume wait keeps its timeouts.
+DEFAULT_MAX_STALLED_RESUMES = 4
+
+
+def next_stall_count(stalled: int, new_tokens: int) -> int:
+    """Consecutive pauses without output, after one that decoded ``new_tokens``."""
+    return 0 if int(new_tokens or 0) > 0 else max(0, int(stalled or 0)) + 1
+
+
+def resumes_stalled(stalled: int) -> bool:
+    """Whether ``stalled`` pauses in a row without output should end the turn."""
+    return int(stalled or 0) >= DEFAULT_MAX_STALLED_RESUMES
+
 
 # A chat preempted this many times in a row outranks newest-first, so repeatedly losing
 # does not become never finishing.
@@ -1577,7 +1590,7 @@ class ControllerPreemptionPolicy:
     With no loop the turn simply finishes.
     """
 
-    __slots__ = ("_controller", "_gen_id", "_signal", "_resumes", "_loop")
+    __slots__ = ("_controller", "_gen_id", "_signal", "_resumes", "_stalled", "_loop")
 
     def __init__(
         self,
@@ -1591,6 +1604,7 @@ class ControllerPreemptionPolicy:
         self._gen_id = gen_id
         self._signal = signal
         self._resumes = 0
+        self._stalled = 0
         self._loop = loop
 
     def should_preempt(self) -> bool:
@@ -1602,6 +1616,7 @@ class ControllerPreemptionPolicy:
         decoding against it.
         """
         self._resumes = checkpoint.resumes
+        self._stalled = next_stall_count(self._stalled, checkpoint.charged_tokens)
         _log.info(
             "llama preemption paused: gen_id=%s resumes=%s kept_chars=%s kept=%s charged=%s",
             self._gen_id,
@@ -1650,10 +1665,13 @@ class ControllerPreemptionPolicy:
         # None means "caller stated no preference", NOT "wait forever".
         if timeout is None:
             timeout = DEFAULT_RESUME_WAIT_TIMEOUT_S
-        if self._resumes >= DEFAULT_MAX_PREEMPT_RESUMES:
-            # Churning on one chat helps nobody; let it finish and take its room back.
+        if resumes_stalled(self._stalled):
+            # Resumes that decode nothing help nobody; let it finish and take its room back.
             _log.warning(
-                "llama preemption resume-cap: gen_id=%s resumes=%s", self._gen_id, self._resumes
+                "llama preemption resume-stalled: gen_id=%s resumes=%s stalled=%s",
+                self._gen_id,
+                self._resumes,
+                self._stalled,
             )
             return False
         participant = self._controller.participant(self._gen_id)
@@ -1800,6 +1818,7 @@ class ControllerPreemptionPolicy:
         """The next of `n` choices: the same lease, a fresh count of resumes and the ledger
         back to what admission charged, since the last choice's partials are not replayed."""
         self._resumes = 0
+        self._stalled = 0
         self._controller.restart(self._gen_id)
 
     def on_declined(self) -> None:

@@ -190,7 +190,7 @@ def _chosen_victim(controller, gen_id, signal):
 
 def _capped(monkeypatch):
     """Refuse the first pause, so the capped branch is the one under test."""
-    monkeypatch.setattr(preemption, "DEFAULT_MAX_PREEMPT_RESUMES", 0)
+    monkeypatch.setattr(preemption, "DEFAULT_MAX_STALLED_RESUMES", 0)
 
 
 class TestTheRoundLoopHandsTheDecisionBack:

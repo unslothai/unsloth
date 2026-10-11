@@ -36773,6 +36773,7 @@ class LlamaCppBackend:
         preempt_event = None,
         preempt_policy = None,
         _preempt_resumes: int = 0,
+        _preempt_stalled: int = 0,
         # What the attempts this one continues already decoded. Only this generator knows
         # there was more than one upstream request, so its usage adds them back.
         _preempt_earlier_completion_tokens: int = 0,
@@ -37028,6 +37029,7 @@ class LlamaCppBackend:
                 preempt_policy = preempt_policy,
                 on_tokens = on_tokens,
                 _preempt_resumes = _preempt_resumes,
+                _preempt_stalled = _preempt_stalled,
                 _preempt_earlier_completion_tokens = _preempt_earlier_completion_tokens,
                 _preempt_earlier_reasoning = _preempt_earlier_reasoning,
                 repetition_penalty = repetition_penalty,
@@ -37301,10 +37303,15 @@ class LlamaCppBackend:
                     "finish_reason": "length",
                 }
 
-            if _preempt_resumes + 1 > _preemption.DEFAULT_MAX_PREEMPT_RESUMES:
+            # Counted on output, not pauses: a chat that keeps decoding between pauses is
+            # making progress however often it is paused.
+            _stalled_now = _preemption.next_stall_count(_preempt_stalled, checkpoint.charged_tokens)
+            if _preemption.resumes_stalled(_stalled_now):
                 logger.warning(
-                    "llama preemption giving up after %s resumes on a non-tool chat",
+                    "llama preemption giving up after %s resumes, %s without output, on a "
+                    "non-tool chat",
                     _preempt_resumes,
+                    _stalled_now,
                 )
                 yield from _finish_after_giving_up()
                 return
@@ -37403,6 +37410,7 @@ class LlamaCppBackend:
                 preempt_policy = preempt_policy,
                 on_tokens = on_tokens,
                 _preempt_resumes = _preempt_resumes + 1,
+                _preempt_stalled = _stalled_now,
                 _preempt_earlier_completion_tokens = (
                     _preempt_earlier_completion_tokens + _paused_completion_tokens
                 ),
@@ -38188,7 +38196,8 @@ class LlamaCppBackend:
         # A pause is not the model's doing, so it is counted separately: charging a resume
         # to the tool budget would let contention silently shorten an agent run.
         _preempt_resumes = 0
-        _MAX_PREEMPT_RESUMES = _preemption.DEFAULT_MAX_PREEMPT_RESUMES
+        # Pauses in a row with no output between them; see `resumes_stalled`.
+        _preempt_stalled = 0
         if preempt_policy is None:
             preempt_policy = _preemption.NullPreemptionPolicy()
         # `context_truncated` is not idempotent and the per-iteration list is rebuilt by
@@ -41511,12 +41520,15 @@ class LlamaCppBackend:
                     reason = getattr(preempt_event, "reason", None),
                 )
 
-                if _preempt_resumes >= _MAX_PREEMPT_RESUMES:
+                _preempt_stalled = _preemption.next_stall_count(_preempt_stalled, _pre_charged)
+                if _preemption.resumes_stalled(_preempt_stalled):
                     # Churning rather than progressing; the admitted output clamp still
                     # bounds what this request can occupy.
                     logger.warning(
-                        "Not pausing again after %d resumes; finishing the turn instead",
+                        "Not pausing again after %d resumes, %d without output; finishing "
+                        "the turn instead",
                         _preempt_resumes,
+                        _preempt_stalled,
                     )
                     # The break below decodes a whole final pass, so the decision is handed
                     # back first: clearing the signal alone leaves it PREEMPTING.
@@ -42681,13 +42693,15 @@ class LlamaCppBackend:
                     if _gave_up_meta is not None:
                         yield _gave_up_meta
 
-                if _preempt_resumes >= _MAX_PREEMPT_RESUMES:
+                _preempt_stalled = _preemption.next_stall_count(_preempt_stalled, _pre_charged_f)
+                if _preemption.resumes_stalled(_preempt_stalled):
                     # Churning rather than progressing; the admitted output clamp still
                     # bounds what this request can occupy.
                     logger.warning(
-                        "Not pausing the final answer again after %d resumes; finishing "
-                        "the turn instead",
+                        "Not pausing the final answer again after %d resumes, %d without "
+                        "output; finishing the turn instead",
                         _preempt_resumes,
+                        _preempt_stalled,
                     )
                     # Nothing decodes after this, but the participant must not be left
                     # PREEMPTING: a sweep before teardown would count a chosen victim whose
