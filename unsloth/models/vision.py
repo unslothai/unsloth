@@ -1145,7 +1145,11 @@ def _fp8_moe_fast_inference_refusal(config):
             return None
         return scheme[1]
     text_config = getattr(config, "text_config", None) or config
-    if not (_is_sparse_moe_config(config) or getattr(text_config, "num_local_experts", None)):
+    if not (
+        _is_sparse_moe_config(config)
+        or getattr(text_config, "num_local_experts", None)
+        or getattr(text_config, "n_routed_experts", None)
+    ):
         return None
     quant = getattr(config, "quantization_config", None) or getattr(
         text_config, "quantization_config", None

@@ -86,6 +86,9 @@ def test_other_fp8_moe_schemes_are_refused_with_the_zoo_reason(zoo_scheme):
 def test_old_zoo_refuses_every_fp8_moe(old_zoo):
     refusal = _refusal()
     assert "upgrade unsloth_zoo" in refusal(_moe())
+    assert "upgrade unsloth_zoo" in refusal(
+        SimpleNamespace(num_experts = None, n_routed_experts = 64, quantization_config = BLOCK)
+    )
     # Dense FP8, unquantized MoE and bnb MoE are not this gate's business.
     assert refusal(SimpleNamespace(num_experts = None, quantization_config = BLOCK)) is None
     assert refusal(SimpleNamespace(num_experts = 8)) is None
