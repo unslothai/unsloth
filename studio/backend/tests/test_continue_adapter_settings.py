@@ -93,7 +93,6 @@ def test_reports_targets_dropout_and_variant_kept_from_adapter():
 def test_matching_targets_and_all_linear_are_not_reported():
     ignored = _helper()
     assert ignored(_adapter(), 8, 16, None, target_modules = ["model.q_proj", "v_proj"]) == []
-    assert ignored(_adapter(), 8, 16, None, target_modules = ["all-linear"]) == []
     assert (
         ignored(_adapter(target_modules = "all-linear"), 8, 16, None, target_modules = ["q_proj"]) == []
     )
@@ -162,3 +161,10 @@ def test_non_adapter_tokenizer_failure_is_not_masked(monkeypatch):
 
 def test_reports_loftq_request_on_a_continued_adapter():
     assert _helper()(_adapter(), 8, 16, None, use_loftq = True) == ["LoftQ initialization"]
+
+
+def test_reports_all_linear_request_against_explicit_saved_targets():
+    ignored = _helper()
+    expected = ["all-linear targets (adapter has q_proj, v_proj)"]
+    assert ignored(_adapter(), 8, 16, None, target_modules = ["all-linear"]) == expected
+    assert ignored(_adapter(), 8, 16, None, target_modules = "all-linear") == expected

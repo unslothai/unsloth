@@ -377,12 +377,17 @@ def _ignored_adapter_settings(
         ignored.append("LoftQ initialization")
     # A string target is a PEFT regex or "all-linear"; only explicit lists compare cleanly.
     saved_targets = getattr(adapter, "target_modules", None)
-    requested = [m for m in (target_modules or []) if m != "all-linear"]
-    if requested and isinstance(saved_targets, (list, set, tuple)):
-        if {leaf(m) for m in requested} != {leaf(m) for m in saved_targets}:
+    requested_list = target_modules if isinstance(target_modules, (list, tuple)) else []
+    wants_all_linear = target_modules == "all-linear" or "all-linear" in requested_list
+    requested = [m for m in requested_list if m != "all-linear"]
+    if isinstance(saved_targets, (list, set, tuple)) and (requested or wants_all_linear):
+        saved_names = ", ".join(sorted({leaf(m) for m in saved_targets}))
+        if wants_all_linear:
+            ignored.append(f"all-linear targets (adapter has {saved_names})")
+        elif {leaf(m) for m in requested} != {leaf(m) for m in saved_targets}:
             ignored.append(
                 f"target modules {', '.join(sorted({leaf(m) for m in requested}))} "
-                f"(adapter has {', '.join(sorted({leaf(m) for m in saved_targets}))})"
+                f"(adapter has {saved_names})"
             )
     saved_modules = {leaf(m) for m in (getattr(adapter, "modules_to_save", None) or [])}
     missing = [m for m in (modules_to_save or []) if leaf(m) not in saved_modules]
