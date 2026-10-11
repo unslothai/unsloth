@@ -7,6 +7,7 @@ import type { HighlightResult } from "@streamdown/code";
 import {
   memo,
   type RefObject,
+  startTransition,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -1273,6 +1274,7 @@ const skippedByContainment = (element: HTMLElement): boolean =>
   && !element.checkVisibility({ contentVisibilityAuto: true });
 
 const FAR_VIEWPORTS = OVERSCAN_VIEWPORTS + HYSTERESIS_VIEWPORTS + 1;
+const RESIZE_SETTLE_MS = 300;
 
 function useLineWindow(
   code: RefObject<HTMLElement | null>,
@@ -1281,8 +1283,11 @@ function useLineWindow(
   frame: RefObject<HTMLElement | null>,
   lineCount: number,
   enabled: boolean,
+  deferShifts: boolean,
 ): { window: LineWindow | null; pins: LinePins | null; measured: boolean } {
   const [state, setState] = useState<LineWindowState>(UNMEASURED);
+  const viewportSize = useRef("");
+  const resizedAt = useRef(Number.NEGATIVE_INFINITY);
   const current = useRef<LineWindow | null>(null);
   const pinned = useRef<LinePins | null>(null);
   const geometry = useRef<FenceGeometry | null>(null);
@@ -1335,6 +1340,10 @@ function useLineWindow(
     const bounds = known.scroller === null ? null : rectDuringFrame(known.scroller);
     const viewportTop = bounds ? bounds.top : 0;
     const viewportHeight = bounds ? bounds.height : window.innerHeight;
+    const size = `${bounds ? bounds.width : window.innerWidth}x${viewportHeight}`;
+    if (size !== viewportSize.current) resizedAt.current = performance.now();
+    viewportSize.current = size;
+    const resized = performance.now() - resizedAt.current < RESIZE_SETTLE_MS;
     const box = rectDuringFrame(region);
     const reach = viewportHeight * FAR_VIEWPORTS;
     if (
@@ -1359,9 +1368,13 @@ function useLineWindow(
       pinned.current,
     );
     if (next === current.current && samePins(pins, pinned.current)) return;
+    const shifting =
+      deferShifts && current.current !== null && frameRects !== null && !resized;
     current.current = next;
     pinned.current = pins;
-    setState({ measured: true, window: next, pins });
+    const update = { measured: true, window: next, pins };
+    if (shifting) startTransition(() => setState(update));
+    else setState(update);
   };
 
   useLayoutEffect(() => {
@@ -1438,6 +1451,7 @@ export const FenceBody = memo(function FenceBody({
     frame,
     tokens?.length ?? 0,
     windowing,
+    !isIncomplete,
   );
   const languageClass = language === null ? null : `language-${language}`;
 

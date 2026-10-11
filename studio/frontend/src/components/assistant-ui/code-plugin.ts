@@ -80,6 +80,7 @@ export const normalizeLanguage = (language: string): BundledLanguage => {
 // state so each refresh tokenizes only new text, keeping the 250 ms plain-tail cadence.
 export const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
+const REFRESH_SLICE_MS = 8;
 // Shiki's own tokenizer guard is a wall clock: a line that takes longer than `tokenizeTimeLimit`
 // (default 500 ms) is abandoned part-way and the rest of it is emitted as one uncoloured token.
 // Dual themes are two passes with two separate budgets, and only the first pays to compile the
@@ -398,6 +399,7 @@ export function createCodePlugin(
     code: string,
     language: BundledLanguage,
     themes: ThemeNames,
+    budgetMs: number,
   ): HighlightResult => {
     const lang = highlighter.getLoadedLanguages().includes(language)
       ? language
@@ -412,6 +414,34 @@ export function createCodePlugin(
 
     // Commit every newly completed line.
     const lastNewline = code.lastIndexOf("\n");
+    if (lastNewline >= fence.committedLength && budgetMs < Number.POSITIVE_INFINITY) {
+      const deadline = monotonicNow() + budgetMs;
+      while (fence.committedLength <= lastNewline) {
+        const newline = code.indexOf("\n", fence.committedLength);
+        const end =
+          newline > fence.committedLength && code[newline - 1] === "\r"
+            ? newline - 1
+            : newline;
+        const completed = tokenizeFrom(code.slice(fence.committedLength, end));
+        for (const line of completed.tokens) {
+          fence.lines.push(shiftLine(line, fence.committedLength));
+        }
+        fence.state = completed.grammarState;
+        fence.committedLength = newline + 1;
+        fence.liveTokens = null;
+        fence.meta = stripTokens(completed);
+        if (monotonicNow() >= deadline) break;
+      }
+      if (fence.committedLength <= lastNewline) {
+        fence.lastTokenizedAt = monotonicNow();
+        const tail = code.slice(fence.committedLength).split("\n");
+        return {
+          ...(fence.meta as ResultMeta),
+          tokens: [...fence.lines, ...tail.map(plainLine)],
+        };
+      }
+    }
+
     if (lastNewline >= fence.committedLength) {
       // Shiki omits CR from CRLF token content.
       const completedEnd =
@@ -467,10 +497,11 @@ export function createCodePlugin(
     code: string,
     language: BundledLanguage,
     themes: ThemeNames,
+    budgetMs = Number.POSITIVE_INFINITY,
   ): HighlightResult | null => {
     let result: HighlightResult;
     try {
-      result = tokenize(fence, highlighter, code, language, themes);
+      result = tokenize(fence, highlighter, code, language, themes, budgetMs);
     } catch (error) {
       console.error("[Unsloth Code] Failed to highlight code:", error);
       resetFence(fence);
@@ -609,7 +640,8 @@ export function createCodePlugin(
       const key = `${language} ${themeKey(opts.themes[0])} ${themeKey(opts.themes[1])}`;
       const fence = findFence(key, opts.code);
 
-      if (fence.result && fence.code === opts.code) {
+      const partial = fence.committedLength <= fence.code.lastIndexOf("\n");
+      if (fence.result && fence.code === opts.code && !(exact && partial)) {
         const pending = fence.pending;
         if (
           pending !== null &&
@@ -661,22 +693,32 @@ export function createCodePlugin(
       if (!exact && grewLargeFence && elapsed < REFRESH_MS) {
         const result = approximateResult(fence, opts.code);
         queuePending(fence, opts.code, callback);
+        const refresh = (): void => {
+          const pending = fence.pending;
+          fence.trailing = null;
+          fence.pending = null;
+          if (!pending) return;
+          const refreshed = update(
+            fence,
+            highlighter,
+            pending.code,
+            language,
+            themes,
+            REFRESH_SLICE_MS,
+          );
+          if (refreshed) notifyPending(pending, refreshed);
+          if (
+            refreshed
+            && fence.code === pending.code
+            && fence.committedLength <= pending.code.lastIndexOf("\n")
+          ) {
+            fence.pending = pending;
+            fence.trailing = setTimeout(refresh, 0);
+          }
+        };
         fence.trailing = setTimeout(
-          () => {
-            const pending = fence.pending;
-            fence.trailing = null;
-            fence.pending = null;
-            if (!pending) return;
-            const refreshed = update(
-              fence,
-              highlighter,
-              pending.code,
-              language,
-              themes,
-            );
-            if (refreshed) notifyPending(pending, refreshed);
-          },
-          Math.max(0, REFRESH_MS - elapsed),
+          refresh,
+          partial ? 0 : Math.max(0, REFRESH_MS - elapsed),
         );
         return result;
       }
