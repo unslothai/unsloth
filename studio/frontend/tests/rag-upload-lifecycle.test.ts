@@ -23,6 +23,7 @@ type Hook = {
   upload: (files: File[], scope?: ScopeOverride) => Promise<void>;
   retry: (documentId: string) => Promise<void>;
   canRetry: (documentId: string) => boolean;
+  refresh: (opts?: { quiet?: boolean }) => Promise<boolean>;
 };
 
 function deferred<T>() {
