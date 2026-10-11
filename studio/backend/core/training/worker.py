@@ -4627,6 +4627,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 return
             event_queue.put({"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()})
 
+        # Recheck right before the load: the adapter folder may have been edited since start (#13140).
+        base_error = _adapter_base_changed_error(config)
+        if base_error:
+            event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
+            return
+
         # Latest-sidecar models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         try:
             _train_load_in_4bit = _effective_training_load_in_4bit(

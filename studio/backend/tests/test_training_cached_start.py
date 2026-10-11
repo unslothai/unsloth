@@ -708,6 +708,19 @@ def test_worker_refuses_an_adapter_whose_base_changed_after_start(tmp_path):
     assert error is not None and "changed" in error
 
 
+def test_worker_rechecks_the_adapter_base_right_before_the_model_load():
+    import ast
+
+    from core.training import worker
+
+    source = open(worker.__file__, encoding = "utf-8").read()
+    lines = source.splitlines()
+    load_line = next(i for i, line in enumerate(lines) if "success = trainer.load_model(" in line)
+    window = "\n".join(lines[max(0, load_line - 40) : load_line])
+    assert "_adapter_base_changed_error(config)" in window
+    ast.parse(source)
+
+
 def test_adapter_trains_embeddings_reads_saved_modules():
     from core.training import worker
 
