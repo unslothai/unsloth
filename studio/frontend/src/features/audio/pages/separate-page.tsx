@@ -35,6 +35,7 @@ import {
   type SeparateGeneration,
 } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
+import { STEM_SEND_TARGETS } from "../send-targets";
 import { saveAudio } from "../save-audio";
 import {
   SEPARATE_MAX_SECONDS,
@@ -281,12 +282,7 @@ function downloadGroup(group: SeparationGroup) {
   return saveAudio(stemZipName(group.title), null, () => zipStems(files));
 }
 
-const SEND_TARGETS: readonly SendTarget[] = [
-  { id: "transcribe", workflow: "transcribe", label: "Transcribe" },
-  { id: "clone", workflow: "clone", label: "Clone (as reference)" },
-];
-
-/** Keyed by group so each one starts from its own clock. */
+/** keyed by group so each mixer starts from its own clock. */
 function SelectedSeparation({
   group,
   autoFocus,
@@ -331,7 +327,7 @@ function SelectedSeparation({
         stems={stems}
         autoFocus={autoFocus}
         active={active}
-        sendTargets={SEND_TARGETS}
+        sendTargets={STEM_SEND_TARGETS}
         onDownloadStem={(clipId) => {
           const clip = group.stems.find((item) => item.id === clipId);
           const src = sources.srcById[clipId];
@@ -378,6 +374,7 @@ export function SeparateOutput({
   fallbackClip,
   handleDownloadFallbackClip,
   handleDeleteClip,
+  handleDeleteGroup,
   handleArchiveClip,
   handleTogglePin,
   handleClearGallery,
@@ -396,6 +393,7 @@ export function SeparateOutput({
   | "fallbackClip"
   | "handleDownloadFallbackClip"
   | "handleDeleteClip"
+  | "handleDeleteGroup"
   | "handleArchiveClip"
   | "handleTogglePin"
   | "hasMore"
@@ -464,7 +462,16 @@ export function SeparateOutput({
     if (last) await handleArchiveClip(last.id);
   };
   const deleteGroup = async (group: SeparationGroup) => {
-    for (const clip of group.stems) await handleDeleteClip(clip.id);
+    // A clip saved without a run is a group of one.
+    const groupId = group.stems[0]?.group_id;
+    if (!groupId) {
+      for (const clip of group.stems) await handleDeleteClip(clip.id);
+      return;
+    }
+    await handleDeleteGroup(
+      groupId,
+      group.stems.map((clip) => clip.id),
+    );
   };
 
   return (

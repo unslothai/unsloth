@@ -36,6 +36,42 @@ export function audioCppRuntimeProblem(
   return null;
 }
 
+/** setup keeps the old managed runtime when it cannot reach the release. */
+export function audioCppRuntimeUpdate(
+  runtime: AudioCppRuntimeStatus | null | undefined,
+): { installed: string; expected: string } | null {
+  if (!runtime?.available || !runtime.outdated) return null;
+  if (!runtime.release_tag || !runtime.expected_tag) return null;
+  return { installed: runtime.release_tag, expected: runtime.expected_tag };
+}
+
+export type AudioRuntimeNoticeMode =
+  | "update"
+  | "updating"
+  | "checking"
+  | "ask_owner"
+  | "cli";
+
+/** What the outdated-runtime notice offers. The in-app update is owner-only, and the backend
+ *  offers it only for a runtime it can replace; otherwise the notice keeps the CLI route. */
+export function audioRuntimeNoticeMode({
+  isOwner,
+  offered,
+  applying,
+  checked,
+}: {
+  isOwner: boolean;
+  offered: boolean;
+  applying: boolean;
+  /** The update status has loaded; before that the offer is unknown, not absent. */
+  checked: boolean;
+}): AudioRuntimeNoticeMode {
+  if (!isOwner) return "ask_owner";
+  if (applying) return "updating";
+  if (!checked) return "checking";
+  return offered ? "update" : "cli";
+}
+
 /** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
  *  takes it as the caption and YuE2 as the style. The others fall back to the lyrics. */
 const DESCRIBED_MUSIC_FAMILIES = new Set(["minimax_music3", "yue2"]);
@@ -163,8 +199,6 @@ const NATIVE_TTS_AUDIO_TYPES = new Set([
 export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
 export const MOSS_TTS_DEFAULT_SECONDS = 15;
 export const MOSS_TTS_MAX_FRAMES = 32768;
-export const MOSS_TTS_MAX_SECONDS =
-  MOSS_TTS_MAX_FRAMES / MOSS_TTS_FRAMES_PER_SECOND;
 export const MINIMAX_MUSIC_FRAMES_PER_SECOND = 25;
 export const MINIMAX_MUSIC_DEFAULT_SECONDS = 30;
 export const MINIMAX_MUSIC_MAX_FRAMES = 9000;
@@ -519,7 +553,8 @@ export function mergeGalleryPage<T extends { id: string }>(
   if (oldestInPage === -1 && cached.length > 0) {
     return { clips: [...page], stitched: false };
   }
-  const scrollback = oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
+  const scrollback =
+    oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
   const tail = scrollback.filter(
     (clip) => !inPage.has(clip.id) && clip.id !== removedId,
   );
@@ -652,28 +687,4 @@ export function reconcileSttSelection({
     return repoIdForSidecarKey(loadedModel, loadedEngine ?? "transformers");
   }
   return preservePending ? selectedRepo : null;
-}
-
-/**
- * The line said above Generate when the run will load or switch the model first, so the wait is
- * expected: "Loads Kokoro for Speak, about 5 s". Null when nothing will load.
- */
-export function modelLoadNote({
-  model,
-  page,
-  seconds,
-}: {
-  model: string | null;
-  page: string;
-  seconds?: number | null;
-}): string | null {
-  if (!model) return null;
-  const about =
-    seconds !== null &&
-    seconds !== undefined &&
-    Number.isFinite(seconds) &&
-    seconds > 0
-      ? `, about ${Math.max(1, Math.round(seconds))} s`
-      : "";
-  return `Loads ${model} for ${page}${about}`;
 }

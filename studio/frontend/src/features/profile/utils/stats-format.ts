@@ -238,6 +238,15 @@ const PROFILE_COUNT_TEMPLATES = {
       other: "{value} خطوة",
     },
   },
+  he: {
+    token: { one: "טוקן אחד", two: "{value} טוקנים", other: "{value} טוקנים" },
+    message: {
+      one: "הודעה אחת",
+      two: "{value} הודעות",
+      other: "{value} הודעות",
+    },
+    step: { one: "צעד אחד", two: "{value} צעדים", other: "{value} צעדים" },
+  },
 } satisfies Record<Locale, Record<LexicalProfileCountUnit, CountTemplate>>;
 
 type ProfileCountLocale = Locale;

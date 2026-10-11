@@ -20,6 +20,7 @@ import {
   musicBlocker,
   reloadNotice,
   variationsFor,
+  withWaitingEdit,
 } from "../music/music-policy";
 import { parseMusicCapabilities } from "../music/music-types";
 import type {
@@ -112,16 +113,17 @@ export function useMusicGeneration({
     modelName: string | null;
     musicLoaded: boolean;
   }) {
-  const capabilities = useMemo(
-    () =>
-      parseMusicCapabilities(status?.audio_music) ??
-      (musicLoaded ? null : MUSIC_PREVIEW_CAPABILITIES),
-    [status?.audio_music, musicLoaded],
-  );
   const pickedMode = useAudioMusicStore((state) => state.mode);
   const song = useAudioMusicStore((state) => state.song);
   const sfx = useAudioMusicStore((state) => state.sfx);
   const edit = useAudioMusicStore((state) => state.edit);
+  const editWaiting = edit.source !== null;
+  const capabilities = useMemo(() => {
+    const loaded =
+      parseMusicCapabilities(status?.audio_music) ??
+      (musicLoaded ? null : MUSIC_PREVIEW_CAPABILITIES);
+    return loaded && withWaitingEdit(loaded, editWaiting);
+  }, [status?.audio_music, musicLoaded, editWaiting]);
   const rule = capabilities
     ? effectiveMusicMode(capabilities, pickedMode)
     : null;

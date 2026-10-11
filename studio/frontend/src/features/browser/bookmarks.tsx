@@ -340,7 +340,7 @@ export function BookmarkStar({
                 bookmark && "text-primary hover:text-primary [&_path]:fill-current",
               )}
             >
-              <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-4.25" />
+              <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-3.75" />
             </button>
           </PopoverAnchor>
         </TooltipTrigger>

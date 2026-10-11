@@ -27,6 +27,8 @@ This file therefore runs on Linux, macOS and Windows with no accelerator and no 
 from __future__ import annotations
 
 import ast
+import contextlib
+import os
 import sys
 import types
 from pathlib import Path
@@ -56,7 +58,12 @@ def _load(*names, **env):
     """Exec the named top-level functions against `env` and return the namespace."""
     # save.py imports this from models.mistral_format (#12144) and calls it on every merge and
     # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
-    namespace = {"raise_if_merging_mistral_format_view": lambda model, save_method: None, **env}
+    namespace = {
+        "raise_if_merging_mistral_format_view": lambda model, save_method: None,
+        "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
+        "nullcontext": contextlib.nullcontext,
+        **env,
+    }
     for name in names:
         exec(compile(_function_source(name), str(_SAVE_PY), "exec"), namespace)
     return namespace
@@ -239,7 +246,7 @@ def _not_reached(*args, **kwargs):
 
 
 def _routing_environment(monkeypatch, model):
-    calls = {"merge": [], "adapter": [], "prewarm": []}
+    calls = {"merge": [], "adapter": [], "prewarm": [], "convert": []}
 
     zoo = types.ModuleType("unsloth_zoo.saving_utils")
     zoo.merge_and_overwrite_lora = lambda *args, **kwargs: calls["merge"].append(kwargs)
@@ -248,6 +255,7 @@ def _routing_environment(monkeypatch, model):
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
         "unsloth_generic_save",
+        os = os,
         PeftModel = _PeftModel,
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
@@ -260,6 +268,9 @@ def _routing_environment(monkeypatch, model):
         _qwen3_5_vlm_state_dict_for_save = _not_reached,
         _determine_username = lambda repo, old, token: (repo, "owner"),
         unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
+        lora_relative_to_original_base = lambda model: (
+            calls["convert"].append(model) or contextlib.nullcontext()
+        ),
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
         gc = types.SimpleNamespace(collect = lambda: None),
         torch = types.SimpleNamespace(
@@ -348,6 +359,28 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert calls["adapter"] == []
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
+    assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
+
+
+@pytest.mark.parametrize(
+    "save_method, from_modelscope", [("merged_16bit", True), ("merged_4bit_forced", False)]
+)
+def test_modelscope_base_is_fetched_only_when_the_merge_reads_one(
+    monkeypatch, tmp_path, save_method, from_modelscope
+):
+    """#3726: an in-place 4bit merge folds into the loaded weights, so it downloads no 16bit base."""
+    monkeypatch.setenv("UNSLOTH_USE_MODELSCOPE", "1")
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    resolvers = []
+    sys.modules["unsloth_zoo.saving_utils"].merge_and_overwrite_lora = (
+        lambda resolve, **kwargs: resolvers.append(resolve)
+    )
+    namespace = generic_save.__globals__
+    namespace["_modelscope_base_model_name"] = lambda *args, **kwargs: None
+    generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    expected = "_modelscope_base_model_name" if from_modelscope else "get_model_name"
+    assert resolvers == [namespace[expected]]
 
 
 def test_a_model_with_no_adapter_is_unchanged(monkeypatch, tmp_path):

@@ -7,7 +7,10 @@ import vm from "node:vm";
 import ts from "typescript";
 
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
-import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
+import {
+  orderByParentChain,
+  resolveSavedBranchHead,
+} from "../src/features/chat/utils/message-order.ts";
 import { unwrapPastedTextContent } from "../src/features/chat/utils/pasted-text.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -49,7 +52,10 @@ function storedMessages(
   }));
 }
 
-function loadBuilder(chats: Record<string, StoredMessage[]>) {
+function loadBuilder(
+  chats: Record<string, StoredMessage[]>,
+  savedHeads: Record<string, string> = {},
+) {
   const javascript = ts.transpileModule(
     [
       sliceSource(
@@ -75,7 +81,11 @@ function loadBuilder(chats: Record<string, StoredMessage[]>) {
     listStoredChatThreads: async () =>
       Object.keys(chats).map((id) => ({ id })),
     listStoredChatMessages: async (id: string) => chats[id],
+    getStoredChatThread: async () => undefined,
+    settleThreadScopedSettingsForCopy: async () => {},
     ...liveThreadHead,
+    savedBranchHead: (id: string, raw: StoredMessage[]) =>
+      resolveSavedBranchHead(raw, savedHeads[id]),
     orderByParentChain,
     unwrapPastedTextContent,
   } as Record<string, unknown>;
@@ -87,8 +97,9 @@ async function fineTuneMessages(
   chats: Record<string, StoredMessage[]>,
   liveBranch: string[] | null = null,
   openedEarlier: string[] = [],
+  savedHeads: Record<string, string> = {},
 ) {
-  const build = loadBuilder(chats);
+  const build = loadBuilder(chats, savedHeads);
   const unregisters = liveBranch
     ? [...openedEarlier, "open"].map((remoteId) =>
         liveThreadHead.registerLiveThreadView({
@@ -158,6 +169,18 @@ test("chat fine-tune data keeps chats opened earlier on their newest reply", asy
       [
         { role: "user", content: "Name one fruit." },
         { role: "assistant", content: "Pears." },
+      ],
+    ],
+  );
+});
+
+test("chat fine-tune data uses the reply a closed chat was left on", async () => {
+  assert.deepEqual(
+    await fineTuneMessages({ open: regenerated() }, null, [], { open: "a1" }),
+    [
+      [
+        { role: "user", content: "Name one fruit." },
+        { role: "assistant", content: "Apples." },
       ],
     ],
   );

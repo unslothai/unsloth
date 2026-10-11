@@ -19,6 +19,7 @@ export const LOCALES = {
   sv: { label: "Swedish", nativeLabel: "Svenska" },
   hi: { label: "Hindi", nativeLabel: "हिन्दी" },
   ar: { label: "Arabic", nativeLabel: "العربية" },
+  he: { label: "Hebrew", nativeLabel: "עברית" },
 } as const;
 
 export type Locale = keyof typeof LOCALES;
@@ -46,6 +47,7 @@ const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
   sv: () => import("./locales/sv"),
   hi: () => import("./locales/hi"),
   ar: () => import("./locales/ar"),
+  he: () => import("./locales/he"),
 };
 
 /** A catalog exports its own tag with the separator dropped: zh-CN -> zhCN. */

@@ -139,6 +139,9 @@ function harness(
         useChatRuntimeStore: store,
         readPendingAttachmentTargetClaim: () => null,
       },
+      "@/features/chat/hooks/use-rag-tool-disabled": {
+        useRagToolDisabled: () => false,
+      },
       "@/features/chat": {
         chatHistoryClearBoundary: { capture: () => 0 },
         ChatThreadDeletedError: class extends Error {},

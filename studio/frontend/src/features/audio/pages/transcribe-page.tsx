@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
   Download01Icon,
+  SentIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -32,9 +33,14 @@ import {
   AudioSourceInput,
   type AudioSourceInputHandle,
 } from "../components/audio-source-input";
+import { SendToItems } from "../components/clip-card";
 import { Field } from "../components/field";
 import { TranscriptView } from "../components/transcript-view";
-import { TranscriptExportItems, TranscriptGallery } from "../transcript-gallery";
+import {
+  TranscriptExportItems,
+  TranscriptGallery,
+  type TranscriptSendHandlers,
+} from "../transcript-gallery";
 import { TranscriptionProgress } from "../transcription-progress";
 import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioSourceStatus } from "../hooks/audio-source-state";
@@ -237,6 +243,7 @@ export function TranscribeOutput({
   speakerNames,
   renameSpeaker,
   selectRecord,
+  sendHandlersFor,
 }: Pick<
   Transcription,
   | "transcriptionStartedAt"
@@ -260,9 +267,16 @@ export function TranscribeOutput({
   | "renameSpeaker"
   | "selectRecord"
 > &
-  Pick<AudioHostState, "busy" | "active" | "mode">) {
+  Pick<AudioHostState, "busy" | "active" | "mode"> & {
+    sendHandlersFor: TranscriptSendHandlers;
+  }) {
   const language = transcriptDetails.language ?? transcriptRecord?.language;
   const duration = transcriptDetails.duration ?? transcriptRecord?.duration;
+  const sendHandlers = sendHandlersFor({
+    text: transcript,
+    source: transcriptDetails.source ?? transcriptRecord?.source,
+    duration: duration ?? null,
+  });
   return (
     <>
       <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
@@ -326,6 +340,19 @@ export function TranscribeOutput({
                     />
                   </DropdownMenuContent>
                 </DropdownMenu>
+                {Object.keys(sendHandlers).length > 0 ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild={true}>
+                      <Button variant="secondary" size="sm">
+                        <HugeiconsIcon icon={SentIcon} className="mr-2 size-3.5" />
+                        Send to
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <SendToItems handlers={sendHandlers} />
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null}
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-ui-11p5 text-muted-foreground">
                 <span className="min-w-0 truncate">{transcribedName}</span>
@@ -370,6 +397,7 @@ export function TranscribeOutput({
           latest={transcriptRecord}
           canSelect={confirmTranscriptReplacement}
           onSelect={selectRecord}
+          sendHandlersFor={sendHandlersFor}
           onDelete={(ids) => {
             if (
               transcriptRecord &&

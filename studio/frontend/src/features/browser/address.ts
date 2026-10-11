@@ -76,6 +76,11 @@ export function fileNameFromUrl(url: string): string {
   }
 }
 
+/** Bidi controls out, so `x\u202efdp.exe` can't read as `xexe.pdf` where it is shown or saved. */
+export function safeDownloadName(name: string): string {
+  return name.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "_");
+}
+
 export function hostOf(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");

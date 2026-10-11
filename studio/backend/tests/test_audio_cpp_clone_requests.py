@@ -69,6 +69,9 @@ MODELS = {
     "f5": lambda: _model("f5_tts", "F5-TTS-GGUF"),
     "kokoro": lambda: _model("kokoro_tts", "Kokoro-82M-GGUF"),
     "vibevoice": lambda: _model("vibevoice", "VibeVoice-1.5B-GGUF"),
+    "omnivoice": lambda: _model("omnivoice", "OmniVoice-GGUF"),
+    "dots": lambda: _model("dots_tts", "DotTTS-SOAR-GGUF"),
+    "irodori": lambda: _model("irodori_tts", "Irodori-TTS-v4-Small-GGUF"),
 }
 
 
@@ -141,6 +144,11 @@ SPEECH, TASKS = "/v1/audio/speech", "/v1/tasks/run"
      {"reference_text": T}),
     ("f5", {"reference_text": T, "speed": 1.3}, {"speed": 1.3, "reference_text": T, "options": ABSENT}),
     ("f5", {"reference_text": T, "speed": 9}, {"speed": 2.0}),
+    ("omnivoice", {"reference_text": T}, {**BASE, "reference_text": T}),
+    ("dots", {"reference_text": T}, {**BASE, "reference_text": T}),
+    ("dots", {}, BASE),
+    # Irodori refuses a transcript as an unknown option.
+    ("irodori", {"reference_text": T}, BASE),
 ])
 # fmt: on
 def test_clone_request_body(key, kwargs, expect):
@@ -185,7 +193,12 @@ def test_status_fields_name_the_clone_workflow_and_transcript_rule():
     assert (f["audio_workflows"], f["audio_reference_text"]) == (["clone"], "required")
     assert f["audio_required_inputs"] == []
     assert f["audio_clone"]["reference_text_waived"] == [["x_vector_only_mode", ["true"]]]
-    for key, workflows, rt in (("vox", ["speak", "clone"], "optional"), ("kokoro", ["speak"], None)):
+    for key, workflows, rt in (
+        ("vox", ["speak", "clone"], "optional"),
+        ("omnivoice", ["speak", "clone"], "required"),
+        ("irodori", ["speak", "clone"], "unused"),
+        ("kokoro", ["speak"], None),
+    ):
         f = acb.model_info_fields(MODELS[key]())
         assert (f["audio_workflows"], f["audio_reference_text"]) == (workflows, rt)
     cosy = acb.model_info_fields(MODELS["cosy"]())["audio_clone"]

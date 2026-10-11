@@ -6,7 +6,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Literal
 
-ModelType = Literal["text", "vision", "audio", "embeddings"]
+ModelType = Literal["text", "vision", "audio", "embeddings", "decision"]
 
 
 class CheckpointInfo(BaseModel):
@@ -91,6 +91,14 @@ class ModelDetails(BaseModel):
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
+    is_decision: bool = Field(False, description = "Whether model is a decision model")
+    decision_layout: Optional[Literal["laya", "clef", "llm"]] = Field(
+        None,
+        description = "Decision model layout: Laya, Cloudflare Clef, or llm for an LLM trained with a new Clef head",
+    )
+    decision_checkpoints: Optional[List[Dict[str, Any]]] = Field(
+        None, description = "Checkpoints a decision model repo offers for training"
+    )
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp format)")
     is_mlx: bool = Field(
@@ -109,7 +117,7 @@ class ModelDetails(BaseModel):
     )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     model_type: Optional[ModelType] = Field(
-        None, description = "Collapsed model modality: text, vision, audio, or embeddings"
+        None, description = "Collapsed model modality: text, vision, audio, embeddings or decision"
     )
     base_model: Optional[str] = Field(None, description = "Base model if this is a LoRA adapter")
     max_position_embeddings: Optional[int] = Field(
@@ -251,13 +259,18 @@ class GgufVariantsResponse(BaseModel):
     )
 
 
+LocalModelSource = Literal[
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+]
+
+
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
+    source: LocalModelSource = Field(
         ...,
         description = "Discovery source",
     )

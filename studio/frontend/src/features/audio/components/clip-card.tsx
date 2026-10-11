@@ -19,17 +19,17 @@ import { Waveform } from "./waveform";
 
 export type ClipSendHandlers = Partial<Record<AudioWorkflowId, () => void>>;
 
-export function ClipSendToMenu({
-  current,
-  handlers,
-}: {
-  current: AudioWorkflowId;
-  handlers: ClipSendHandlers;
-}) {
-  const targets = AUDIO_WORKFLOWS.filter(
-    (tab) => tab.id !== current && handlers[tab.id],
-  );
-  if (targets.length === 0) return null;
+export function SendToItems({ handlers }: { handlers: ClipSendHandlers }) {
+  return AUDIO_WORKFLOWS.filter((tab) => handlers[tab.id]).map((tab) => (
+    <DropdownMenuItem key={tab.id} onClick={handlers[tab.id]}>
+      <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
+      {tab.label}
+    </DropdownMenuItem>
+  ));
+}
+
+export function ClipSendToMenu({ handlers }: { handlers: ClipSendHandlers }) {
+  if (!Object.values(handlers).some(Boolean)) return null;
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
@@ -41,16 +41,7 @@ export function ClipSendToMenu({
         Send to
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent>
-        {targets.map((tab) => (
-          <DropdownMenuItem key={tab.id} onClick={handlers[tab.id]}>
-            <HugeiconsIcon
-              icon={tab.icon}
-              strokeWidth={1.75}
-              className="size-icon"
-            />
-            {tab.label}
-          </DropdownMenuItem>
-        ))}
+        <SendToItems handlers={handlers} />
       </DropdownMenuSubContent>
     </DropdownMenuSub>
   );
@@ -58,7 +49,7 @@ export function ClipSendToMenu({
 
 const CARD_CLASS = "w-full max-w-xl gap-3 px-5 py-4";
 
-/** Never autoplays; a clip a run just made takes focus on its play button once. */
+/** never autoplays; a new clip focuses its play button once. */
 export function ClipCard({
   title,
   model,

@@ -201,8 +201,8 @@ _WINDOWS_ACCEL_TOKEN = {
     "cpu": "avx2",
     "auto": "avx2",
 }
-# Tokens that mark an accelerator-specific Linux build; "auto"/"cpu" want none of them.
-_LINUX_ACCEL_MARKERS = ("rocm", "vulkan", "cuda", "sycl", "musa")
+# Tokens that mark an accelerator-specific build; "auto"/"cpu" want none of them.
+_ACCEL_MARKERS = ("rocm", "vulkan", "cuda", "sycl", "musa")
 
 _ARCH_TOKENS = {
     "x86_64": ("x86_64", "x64", "amd64"),
@@ -242,6 +242,8 @@ def resolve_release_asset(
     if system == "windows":
         # Filter by host arch: an arm64 host must not install an unrunnable x64 sd-cli. No match returns None so the caller falls back.
         pool = [a for a in zips if "bin-win" in a.lower() and any(t in a.lower() for t in arch)]
+        if accel in ("auto", "cpu"):
+            pool = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
         token = _WINDOWS_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if token in a.lower()]
         if sel:
@@ -258,7 +260,7 @@ def resolve_release_asset(
         marker = _LINUX_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if marker in a.lower()]
     else:
-        sel = [a for a in pool if not any(m in a.lower() for m in _LINUX_ACCEL_MARKERS)]
+        sel = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
     return sel[0] if sel else None
 
 

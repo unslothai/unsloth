@@ -1205,12 +1205,27 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", wedged)
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.5)
     monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
+    before = set(threading.enumerate())
     session = str(tmp_path / "session")
     assert sandbox_linux._model_cache_binds(session) == {}
-    first = len(started)
-    assert first > 0
     assert sandbox_linux._model_cache_binds(session) == {}
-    assert len(started) == first, "a second launch started another worker on the same path"
+    # `started` is filled from the scan workers, which a loaded runner can schedule after
+    # the launch that started them has returned, so counting it between the two launches
+    # reads a slow first-launch worker as a second one. Wait until every worker either
+    # launch started has reached the scan, then compare workers to paths.
+    workers = [
+        t
+        for t in threading.enumerate()
+        if t not in before and t.name.startswith("unsloth-cache-scan-")
+    ]
+    deadline = time.monotonic() + 15
+    while len(started) < len(workers) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert started, "no cache scan was started"
+    assert len(started) == len(
+        set(started)
+    ), "a second launch started another worker on the same path"
+    assert len(workers) == len(started)
 
 
 def test_a_wedged_cache_scan_is_waited_on_twice_then_skipped_at_once(monkeypatch, tmp_path):

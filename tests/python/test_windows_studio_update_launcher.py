@@ -634,27 +634,42 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
 
 
 # Application Control (#8490): Windows can deny the unsigned unsloth.exe while the signed python.exe runs.
-def _blocked_exe_run(interpreter_result, calls = None):
+POLICY_WINERRORS = [1260, 4551]
+
+
+def _blocked_exe_run(
+    interpreter_result,
+    calls = None,
+    *,
+    winerror = 1260,
+):
     def run(argv, **kwargs):
         if calls is not None:
             calls.append((argv, kwargs))
         if str(argv[0]).endswith("unsloth.exe"):
             error = OSError(13, "An Application Control policy has blocked this file")
-            error.winerror = 1260
+            error.winerror = winerror
             raise error
         return interpreter_result(argv, **kwargs)
 
     return run
 
 
-def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, studio, tmp_path):
+@pytest.mark.parametrize("winerror", POLICY_WINERRORS)
+def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(
+    monkeypatch, studio, tmp_path, winerror
+):
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     calls = []
     monkeypatch.setattr(
         studio.subprocess,
         "run",
-        _blocked_exe_run(lambda argv, **_kwargs: types.SimpleNamespace(returncode = 0), calls),
+        _blocked_exe_run(
+            lambda argv, **_kwargs: types.SimpleNamespace(returncode = 0),
+            calls,
+            winerror = winerror,
+        ),
     )
 
     _update(studio)
@@ -681,13 +696,39 @@ def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, st
     assert calls[1][1]["timeout"] > calls[0][1]["timeout"]
 
 
-def test_a_policy_block_with_a_broken_package_still_fails(monkeypatch, studio, tmp_path):
+@pytest.mark.parametrize("winerror", POLICY_WINERRORS)
+def test_installer_setup_survives_a_policy_blocked_launcher(
+    monkeypatch, studio, tmp_path, winerror
+):
+    """install.ps1 runs `unsloth studio setup` on every install, so a refused launcher here fails the install itself."""
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    monkeypatch.setattr(
+        studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(b"MZ-reinstalled")
+    )
+    monkeypatch.setattr(
+        studio.subprocess,
+        "run",
+        _blocked_exe_run(
+            lambda argv, **_kwargs: types.SimpleNamespace(returncode = 0), winerror = winerror
+        ),
+    )
+
+    studio.setup(verbose = False)
+
+    assert launcher.read_bytes() == b"MZ-reinstalled"
+    assert not (scripts / "unsloth.exe.update-backup").exists()
+
+
+@pytest.mark.parametrize("winerror", POLICY_WINERRORS)
+def test_a_policy_block_with_a_broken_package_still_fails(monkeypatch, studio, tmp_path, winerror):
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     monkeypatch.setattr(
         studio.subprocess,
         "run",
-        _blocked_exe_run(lambda argv, **_kwargs: types.SimpleNamespace(returncode = 3)),
+        _blocked_exe_run(
+            lambda argv, **_kwargs: types.SimpleNamespace(returncode = 3), winerror = winerror
+        ),
     )
 
     _shared_setup_3(launcher, studio)
@@ -737,16 +778,38 @@ def test_an_ordinary_launcher_oserror_is_still_a_failure(monkeypatch, studio, tm
     assert (scripts / "unsloth.exe.update-backup").exists()
 
 
-def test_the_policy_block_helper_only_matches_1260(studio):
-    blocked = OSError(13, "blocked")
-    blocked.winerror = 1260
-    assert studio._is_application_control_block(blocked)
+@pytest.mark.parametrize(
+    "winerror, blocked",
+    [
+        (1260, True),
+        (4551, True),
+        # A bad image hash can be a damaged file, which must still fail the update.
+        (577, False),
+        (5, False),
+        (None, False),
+    ],
+)
+def test_the_policy_block_helper_matches_only_policy_refusals(studio, winerror, blocked):
+    error = OSError(13, "refused")
+    if winerror is not None:
+        error.winerror = winerror
+    assert studio._is_application_control_block(error) is blocked
 
-    denied = OSError(13, "denied")
-    denied.winerror = 5
-    assert not studio._is_application_control_block(denied)
 
-    assert not studio._is_application_control_block(OSError(13, "denied"))
+def test_the_policy_block_codes_match_the_backend_code_integrity_table(studio):
+    """The backend recognises the same refusals for llama.cpp; the launcher drifted from it once (4551)."""
+    path = REPO_ROOT / "studio" / "backend" / "utils" / "code_integrity.py"
+    spec = importlib.util.spec_from_file_location("code_integrity_parity_test", path)
+    assert spec is not None and spec.loader is not None
+    code_integrity = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(code_integrity)
+
+    policy_winerrors = {
+        code
+        for code, reason in code_integrity._BLOCK_WINERRORS.items()
+        if reason not in code_integrity._INVALID_HASH_REASONS
+    }
+    assert studio._APPLICATION_CONTROL_WINERRORS == policy_winerrors
 
 
 def test_a_quarantined_away_launcher_falls_back_to_the_interpreter(monkeypatch, studio, tmp_path):

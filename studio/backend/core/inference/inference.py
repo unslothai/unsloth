@@ -1221,6 +1221,7 @@ class InferenceBackend:
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
+        deduplicate_tool_calls: bool = True,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -1308,6 +1309,7 @@ class InferenceBackend:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            deduplicate_tool_calls = deduplicate_tool_calls,
             nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
@@ -1520,41 +1522,61 @@ class InferenceBackend:
                     f"one via tokenizer.chat_template before inference."
                 )
             reasoning_channel_markers = None
-            formatted_prompt = self._apply_chat_template_for_generation(
-                tokenizer,
-                template_messages,
-                tools = tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-                continue_final_message = continue_final_message,
-            )
-
-            # If tools were requested but the (possibly overridden) template ignored
-            # them, fall back to the model's native template (shared with MLX).
             from core.inference.chat_template_helpers import (
+                messages_have_tool_history,
+                render_native_template,
                 render_with_native_template_fallback,
             )
 
-            render_result = render_with_native_template_fallback(
-                formatted_prompt = formatted_prompt,
-                tokenizer = tokenizer,
-                model_info = model_info,
-                active_model_name = self.active_model_name,
-                messages = template_messages,
-                tools = tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-                continue_final_message = continue_final_message,
-                apply_fn = self._apply_chat_template_for_generation,
-                hf_token = model_info.get("hf_token"),
-                return_metadata = True,
-            )
+            try:
+                formatted_prompt = self._apply_chat_template_for_generation(
+                    tokenizer,
+                    template_messages,
+                    tools = tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
+                )
+            except Exception:
+                if not messages_have_tool_history(template_messages):
+                    raise
+                render_result = render_native_template(
+                    model_info = model_info,
+                    active_model_name = self.active_model_name,
+                    messages = template_messages,
+                    tools = tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
+                    apply_fn = self._apply_chat_template_for_generation,
+                    hf_token = model_info.get("hf_token"),
+                    return_metadata = True,
+                )
+                if render_result is None:
+                    raise
+            else:
+                # use the native template shared with MLX when an override ignores requested tools.
+                render_result = render_with_native_template_fallback(
+                    formatted_prompt = formatted_prompt,
+                    tokenizer = tokenizer,
+                    model_info = model_info,
+                    active_model_name = self.active_model_name,
+                    messages = template_messages,
+                    tools = tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
+                    apply_fn = self._apply_chat_template_for_generation,
+                    hf_token = model_info.get("hf_token"),
+                    return_metadata = True,
+                )
             formatted_prompt = render_result.prompt
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
-            # Suppress the tokenizer's BOS only when the template already emitted one.
+            # suppress the tokenizer's BOS only when the template already emitted one.
             add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
@@ -2942,7 +2964,7 @@ class InferenceBackend:
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
-            logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
+            logger.debug(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
 
         try:
             formatted_prompt = render_prompt_with_boundary(
@@ -2975,7 +2997,7 @@ class InferenceBackend:
                 template_type,
                 chat_template_info.get("special_tokens", {}),
             )
-            logger.info(f"Manual template result: {manual_prompt[:200]}...")
+            logger.debug(f"Manual template result: {manual_prompt[:200]}...")
         else:
             logger.info("Using generic chat formatting for base model")
             manual_prompt = self._format_generic_template(manual_messages, {})

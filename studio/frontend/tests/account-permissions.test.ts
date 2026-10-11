@@ -79,6 +79,7 @@ function permissionUi(
       "react/jsx-runtime": stubJsxRuntime(),
       react: {
         useEffect: (effect: () => void) => effect(),
+        useLayoutEffect: (effect: () => void) => effect(),
         // The capability hook starts at null; the menu sees the stubbed answer.
         useState: (initial: unknown) => [initial === null ? capability : initial, () => {}],
         useId: () => "id",
@@ -92,7 +93,8 @@ function permissionUi(
       "radix-ui": {
         DropdownMenu: {
           Item: "DropdownMenuPrimitive.Item",
-          CheckboxItem: "DropdownMenuPrimitive.CheckboxItem",
+          Sub: "DropdownMenuPrimitive.Sub",
+          SubTrigger: "DropdownMenuPrimitive.SubTrigger",
         },
       },
       "@/features/settings": {
@@ -126,7 +128,11 @@ function permissionUi(
         new URL("../src/features/chat/sandbox-level.ts", import.meta.url),
         {},
       ),
-      "@/components/ui/dropdown-menu": { DropdownMenuItem: "DropdownMenuItem" },
+      "@/components/ui/dropdown-menu": {
+        DropdownMenuItem: "DropdownMenuItem",
+        DropdownMenuSeparator: "DropdownMenuSeparator",
+        DropdownMenuSubContent: "DropdownMenuSubContent",
+      },
       "@/lib/chevron-icons": {},
       "@/lib/sparkles-icon": { SparklesGlyph: "SparklesGlyph" },
       "@/lib/shield-alert-icon": { ShieldAlertGlyph: "ShieldAlertGlyph" },
@@ -219,12 +225,22 @@ for (const [name, capability] of [
   });
 }
 
-function menuSwitch(ui: ReturnType<typeof permissionUi>, onOsSandboxMissing?: () => void) {
+function sandboxPicker(ui: ReturnType<typeof permissionUi>, onOsSandboxMissing?: () => void) {
   const label = ui.component.PermissionMenuLabel({ sandboxControls: true, onOsSandboxMissing });
   const [heading, control] = label.props.children as [StubElement, StubElement];
-  const rendered = (control.type as (props: unknown) => StubElement)(control.props);
-  const [checkbox, help] = rendered.props.children as [StubElement, StubElement];
-  return { heading, checkbox, help };
+  const sub = (control.type as (props: unknown) => StubElement)(control.props);
+  const [chip, content] = sub.props.children as [StubElement, StubElement];
+  // Heading (with Learn more beside it), then the levels.
+  const [pickerHeading, levels] = content.props.children as [StubElement, StubElement[]];
+  const [, learnMore] = pickerHeading.props.children as [StubElement, StubElement];
+  // Listed weakest first; the stub JSX runtime drops keys, so rows go by position.
+  // Disabled leads the list only under Full access.
+  const order = levels.length === 3 ? ["off", "low", "high"] : ["low", "high"];
+  assert.equal(levels.length, order.length);
+  const level = (value: string) => levels[order.indexOf(value)];
+  // The ticked row is the level in effect.
+  const active = order.find((_, i) => (levels[i].props.children as unknown[])[1] !== null);
+  return { heading, chip, level, active, learnMore };
 }
 
 test("the menu heading says Permissions and has no switch where Settings shows its own", () => {
@@ -235,71 +251,74 @@ test("the menu heading says Permissions and has no switch where Settings shows i
   assert.equal(control, null);
 });
 
-for (const [name, capability, level, mode, checked, disabled] of [
-  ["High with a working OS sandbox", OS_SANDBOX, "high", "auto", true, false],
-  ["High saved but no OS sandbox", NO_OS_SANDBOX, "high", "auto", false, false],
-  ["Low", OS_SANDBOX, "low", "auto", false, false],
-  ["Full access", OS_SANDBOX, "high", "full", true, true],
+for (const [name, capability, level, mode, active, disabled] of [
+  ["High with a working OS sandbox", OS_SANDBOX, "high", "auto", "high", false],
+  ["High saved but no OS sandbox", NO_OS_SANDBOX, "high", "auto", "low", false],
+  ["Low", OS_SANDBOX, "low", "auto", "low", false],
+  ["Full access", OS_SANDBOX, "high", "full", "off", true],
 ] as const) {
-  test(`the Sandbox switch for ${name}`, () => {
+  test(`the Sandbox picker for ${name}`, () => {
     const ui = permissionUi(true, mode, "single", capability, level);
-    const { checkbox } = menuSwitch(ui);
-    assert.equal(checkbox.props.checked, checked);
-    assert.equal(checkbox.props.disabled, disabled);
+    const picker = sandboxPicker(ui);
+    assert.equal(picker.active, active);
+    // The chip still opens, so Full access users can see why the sandbox is off.
+    assert.equal(picker.chip.props.disabled, undefined);
+    assert.equal(picker.level("low").props.disabled, disabled);
+    assert.equal(picker.level("high").props.disabled, disabled);
   });
 }
 
-test("sliding to High without an OS sandbox opens the install popup and keeps Low", async () => {
+test("under Full access, Disabled is ticked and picking it or a locked level changes nothing", async () => {
+  const ui = permissionUi(true, "full", "single", OS_SANDBOX, "high");
+  const picker = sandboxPicker(ui);
+  assert.equal(picker.level("off").props.disabled, false);
+  (picker.level("off").props.onSelect as () => void)();
+  await tick();
+  assert.deepEqual(ui.levels, []);
+  assert.deepEqual(ui.popups, []);
+});
+
+test("picking High without an OS sandbox opens the install popup and keeps Low", async () => {
   const ui = permissionUi(true, "auto", "single", NO_OS_SANDBOX, "low");
-  const { checkbox } = menuSwitch(ui);
-  // Not prevented: the menu closes so the popup can take focus.
-  let prevented = false;
-  (checkbox.props.onSelect as (event: { preventDefault: () => void }) => void)({
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
-  assert.equal(prevented, false);
-  (checkbox.props.onCheckedChange as (next: boolean) => void)(true);
+  (sandboxPicker(ui).level("high").props.onSelect as () => void)();
   await tick();
   assert.deepEqual(ui.popups, [true]);
   assert.deepEqual(ui.levels, []);
 
   const local: string[] = [];
-  const own = menuSwitch(permissionUi(true, "auto", "single", NO_OS_SANDBOX, "low"), () =>
+  const own = sandboxPicker(permissionUi(true, "auto", "single", NO_OS_SANDBOX, "low"), () =>
     local.push("popup"),
   );
-  (own.checkbox.props.onCheckedChange as (next: boolean) => void)(true);
+  (own.level("high").props.onSelect as () => void)();
   await tick();
   assert.deepEqual(local, ["popup"]);
 });
 
-test("sliding to High with a working OS sandbox applies it; sliding to Low keeps the menu open", async () => {
+test("picking High with a working OS sandbox applies it; picking Low applies at once", async () => {
   const ui = permissionUi(true, "auto", "single", OS_SANDBOX, "low");
-  const { checkbox } = menuSwitch(ui);
-  (checkbox.props.onCheckedChange as (next: boolean) => void)(true);
+  (sandboxPicker(ui).level("high").props.onSelect as () => void)();
   await tick();
   assert.deepEqual(ui.levels, ["high"]);
   assert.deepEqual(ui.popups, []);
 
   const high = permissionUi(true, "auto", "single", OS_SANDBOX, "high");
-  const on = menuSwitch(high).checkbox;
-  let prevented = false;
-  (on.props.onSelect as (event: { preventDefault: () => void }) => void)({
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
-  assert.equal(prevented, true);
-  (on.props.onCheckedChange as (next: boolean) => void)(false);
+  (sandboxPicker(high).level("low").props.onSelect as () => void)();
+  await tick();
   assert.deepEqual(high.levels, ["low"]);
 });
 
-test("the question mark next to the switch opens Settings > Sandbox at Permissions", async () => {
+test("picking the level already in effect changes nothing", async () => {
+  const ui = permissionUi(true, "auto", "single", OS_SANDBOX, "high");
+  (sandboxPicker(ui).level("high").props.onSelect as () => void)();
+  await tick();
+  assert.deepEqual(ui.levels, []);
+  assert.deepEqual(ui.popups, []);
+});
+
+test("Learn more beside the picker heading opens Settings > Sandbox at Permissions", async () => {
   const ui = permissionUi(true, "auto", "single", OS_SANDBOX);
-  const { help } = menuSwitch(ui);
-  assert.equal(help.props["aria-label"], "settings.sandbox.levelHelp");
-  (help.props.onSelect as () => void)();
+  const { learnMore } = sandboxPicker(ui);
+  (learnMore.props.onSelect as () => void)();
   await tick();
   assert.deepEqual(ui.opened, [["sandbox", "sandbox-permissions"]]);
 });

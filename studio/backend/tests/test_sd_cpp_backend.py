@@ -1323,25 +1323,29 @@ def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
     assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
-def test_supports_graph_cut_needs_both_flags_and_fails_closed(monkeypatch):
-    # The opposite default to the H3 gate: sd-cli exits non-zero on an unknown option, so "cannot tell" must not emit these.
+def test_graph_cut_options_support_legacy_and_current_builds_and_fail_closed(monkeypatch):
+    # unknown flags fail closed because sd-cli rejects them.
     monkeypatch.setattr(
         bk,
         "_sd_cpp_probe_output",
         lambda *_a: "  --max-vram         budget\n  --stream-layers    residency\n",
     )
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is True
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram", "--stream-layers"}
 
-    # --stream-layers is a no-op without --max-vram, so half a build is not a build to emit on.
+    # current builds stream automatically and reject the removed --stream-layers flag.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --max-vram budget\n")
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram"}
+
+    # --stream-layers requires --max-vram, so a partial advertisement emits neither.
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --stream-layers    residency\n")
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: _PRE_H3_HELP)
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
-    assert bk.sd_cpp_supports_graph_cut(None) is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
+    assert bk.sd_cpp_graph_cut_options(None) == frozenset()
 
 
 def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
@@ -2110,7 +2114,7 @@ def test_generate_treats_zero_strength_controlnet_as_disabled(cn_strength):
 
 
 def test_generate_rejects_image_conditioned_on_native_engine():
-    # img2img / inpaint / reference / upscale are diffusers-only; a native call with an init image gets a clean ValueError, not a silent txt2img.
+    # image-conditioned generation is diffusers-only; native calls must fail, not use txt2img.
     b = _loaded_backend(engine = _FakeEngine())
     with pytest.raises(ValueError, match = "not yet supported on the native"):
         b.generate(prompt = "x", steps = 4, seed = 1, init_image = "data:image/png;base64,AAAA")
@@ -2121,14 +2125,28 @@ def test_status_native_reports_supports_controlnet_false():
     assert b.status()["supports_controlnet"] is False
 
 
+def test_native_negative_prompt_reaches_sd_cli_only_when_cfg_runs():
+    klein = _loaded_backend("flux.2-klein")
+    assert klein.status()["supports_negative_prompt"] is True
+    kw = dict(prompt = "a fox", negative_prompt = "text", width = 256, height = 256, steps = 4, seed = 1)
+    out = klein.generate(guidance = 4.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt == "text"
+    assert out["negative_prompt"] == "text"
+    out = klein.generate(guidance = 1.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+    flux = _loaded_backend("flux.1")
+    assert flux.status()["supports_negative_prompt"] is False
+    out = flux.generate(guidance = 3.5, **kw)
+    assert flux._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+
 def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirror(
     monkeypatch, tmp_path
 ):
-    """Repointing the tables at unsloth mirrors would re-pull tens of GB on upgrade.
-
-    The HF cache is keyed by repo id, so an install that already holds the byte-identical repack
-    has it filed under the OLD id: the mirror's namespace is empty, the fetch re-downloads, and an
-    offline load fails outright over bytes already on disk."""
+    """reuse repo-id-keyed legacy caches to avoid redownloads and keep offline loads working."""
     from core.inference.diffusion_families import prefer_cached_legacy_source
     from core.inference.sd_cpp_backend import _fetch_repo_map
 

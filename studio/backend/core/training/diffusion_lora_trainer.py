@@ -89,19 +89,15 @@ def compute_sdxl_add_time_ids(resolution: int) -> tuple[int, int, int, int, int,
 def _load_image_tensor(
     path: str, resolution: int, center_crop: bool, random_flip: bool, rng: random.Random
 ) -> tuple[Any, tuple[int, int, int, int, int, int]]:
-    """Load an image to a normalised CxHxW tensor in [-1, 1] (resize shorter side to
-    ``resolution``, crop to a square, optional horizontal flip). No torchvision.
-
-    Returns ``(tensor, add_time_ids)`` where add_time_ids is the SDXL micro-conditioning
-    (original_h, original_w, crop_top, crop_left, target_h, target_w) for THIS sample, so
-    the U-Net is told the real original size and crop offset (not a fixed uncropped
-    square). EXIF orientation is applied first so rotated phone photos train upright."""
+    """CxHxW pixels in [-1, 1] with SDXL time ids for the EXIF-oriented crop."""
     import numpy as np
     import torch
     from PIL import Image, ImageOps
 
-    # Honour EXIF orientation before any geometry, or rotated photos train sideways.
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    from core.inference.mcp_images import flattened_rgb
+
+    # apply EXIF orientation before geometry so rotated photos train upright.
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     original_w, original_h = img.size
     scale = resolution / min(original_w, original_h)
     resized_w = max(resolution, round(original_w * scale))
@@ -116,7 +112,7 @@ def _load_image_tensor(
     crop_left = left
     if random_flip and rng.random() < 0.5:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        # A flip mirrors the crop's left origin, so report the mirrored offset (as diffusers does).
+        # mirror the crop origin after a flip to match diffusers.
         crop_left = max(0, resized_w - resolution - left)
     arr = np.asarray(img, dtype = np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
@@ -127,17 +123,14 @@ def _load_image_tensor(
 def _load_image_tensor_planned(
     path: str, resolution: int, center_crop: bool, u_left: float, u_top: float, flip: bool
 ) -> tuple[Any, tuple[int, int, int, int, int, int]]:
-    """Deterministic variant of ``_load_image_tensor`` for the latent cache: the crop comes
-    as unit fractions (mapped uniformly over the same inclusive integer range ``randint``
-    draws from) and the flip as a bool. Geometry (EXIF transpose, LANCZOS short-side resize,
-    the SDXL ``add_time_ids`` from the original size + actual crop offset) matches
-    ``_load_image_tensor`` exactly; ``center_crop`` reproduces the legacy floor-div center
-    bit-for-bit. The flip does not change time_ids (only the mirrored crop_left does)."""
+    """cache loader preserving ``_load_image_tensor`` crop, flip, and legacy center semantics."""
     import numpy as np
     import torch
     from PIL import Image, ImageOps
 
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    from core.inference.mcp_images import flattened_rgb
+
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     original_w, original_h = img.size
     scale = resolution / min(original_w, original_h)
     resized_w = max(resolution, round(original_w * scale))

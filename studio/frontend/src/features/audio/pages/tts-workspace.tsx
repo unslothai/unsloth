@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import {
   AudioWave01Icon,
   Copy01Icon,
+  FloppyDiskIcon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
@@ -445,7 +446,6 @@ function ClipBadge({ text }: { text: string | null | undefined }) {
 }
 
 export function TtsOutput({
-  workflow,
   clips,
   selectedClip,
   selectedClipSrc,
@@ -470,6 +470,7 @@ export function TtsOutput({
   onUseTextAgain,
   handleCopyPrompt,
   sendHandlersFor,
+  onSaveVoice,
   pending,
   freshClipId,
   onFreshClipFocused,
@@ -505,6 +506,7 @@ export function TtsOutput({
     handleClearGallery: () => Promise<void>;
     onUseTextAgain: (clip: AudioGalleryClip) => void;
     sendHandlersFor: (clip: AudioGalleryClip) => ClipSendHandlers;
+    onSaveVoice: (clip: AudioGalleryClip) => void;
     pending: {
       title: string;
       status: string;
@@ -517,7 +519,7 @@ export function TtsOutput({
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
-    /** A short tag after a clip's text, such as the voice a clone used. */
+    /** short tag after a clip's text, such as the voice a clone used. */
     clipBadge?: (
       clip: AudioGalleryClip,
       place: "selected" | "history",
@@ -574,7 +576,15 @@ export function TtsOutput({
       onAddToProject={(projectId) => addAudioClipToProject(clip.id, projectId)}
       leadingItems={
         <>
-          <ClipSendToMenu current={workflow} handlers={sendHandlersFor(clip)} />
+          <ClipSendToMenu handlers={sendHandlersFor(clip)} />
+          <DropdownMenuItem onClick={() => onSaveVoice(clip)}>
+            <HugeiconsIcon
+              icon={FloppyDiskIcon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+            Save as voice…
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={() => onUseTextAgain(clip)}>
             <HugeiconsIcon
               icon={SparklesIcon}

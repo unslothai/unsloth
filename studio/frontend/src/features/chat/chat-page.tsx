@@ -137,6 +137,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -283,7 +284,9 @@ import {
   createAnnotationsFile,
 } from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { savedBranchHead } from "./utils/branch-head";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
@@ -455,7 +458,7 @@ function savedUsageFor(
   }
   // llama.cpp stops at the window, so a count past it is stale; MLX runs past it, so its count stands.
   const limit = store.loadedIsGguf ? store.loadedContextLength : null;
-  if (typeof limit === "number" && limit > 0 && (usage.totalTokens ?? 0) > limit) {
+  if (typeof limit === "number" && limit > 0 && (usage.contextTokens ?? usage.totalTokens ?? 0) > limit) {
     return null;
   }
   return usage;
@@ -484,6 +487,7 @@ function messageHasImage(message: MessageRecord): boolean {
 function sendDocumentAnnotations(
   aui: ReturnType<typeof useAui>,
   annotations: DocumentAnnotations,
+  files: File[] = [],
 ): Promise<boolean> {
   const composer = aui.composer();
   const drafted = () => {
@@ -493,8 +497,21 @@ function sendDocumentAnnotations(
   // Text or files the user staged are their next message: the annotations join it unsent.
   const before = drafted();
   const hasDraft = before.text || before.attachments > 0;
-  return composer
-    .addAttachment(createAnnotationsFile(annotations))
+  // Extra files first, after the draft check, so they don't count as a draft. They're optional:
+  // one the model can't take (a screenshot on a text-only model) is skipped.
+  let extras = 0;
+  return files
+    .reduce(
+      (staged, file) =>
+        staged.then(() =>
+          composer.addAttachment(file).then(
+            () => void extras++,
+            () => undefined,
+          ),
+        ),
+      Promise.resolve(),
+    )
+    .then(() => composer.addAttachment(createAnnotationsFile(annotations)))
     .then(() => {
       const form = [
         ...document.querySelectorAll<HTMLFormElement>("form.aui-composer-root"),
@@ -513,7 +530,7 @@ function sendDocumentAnnotations(
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           const now = drafted();
-          if (now.text || now.attachments > 1) return;
+          if (now.text || now.attachments > 1 + extras) return;
           form.requestSubmit();
         }),
       );
@@ -582,7 +599,7 @@ const SingleContent = memo(function SingleContent({
     setInAppLinkHandler(openUrlInBrowser);
     useBrowserStore.setState({
       requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
-      sendAnnotations: (annotations) => sendDocumentAnnotations(aui, annotations),
+      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
       attachToChat: (file) =>
         aui
           .composer()
@@ -1263,7 +1280,8 @@ function CompareShell({
         {/* Symmetric: the extra right inset mirrored the viewport's one-sided
             scrollbar gutter, which is now reserved on both edges. */}
         <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
+          {/* unsloth-composer-shell: the size container the single composer's narrow layout queries. */}
+          <div className="unsloth-composer-shell mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.
@@ -2844,9 +2862,7 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
-  // A ?new=<nonce> chat has no thread in the URL before or after its first send, and for the first render the
-  // store still holds the PREVIOUS chat's id until ThreadNewChatSwitch blanks it, so latch on having seen it
-  // blanked for this nonce.
+  // ?new=<nonce> lacks a URL thread; wait for ThreadNewChatSwitch to clear stale activeThreadId.
   const newChatBlankedRef = useRef<string | null>(null);
   if (
     search.new &&
@@ -2858,6 +2874,17 @@ export function ChatPage({
     search.new && newChatBlankedRef.current === search.new
       ? persistedActiveThreadId
       : null;
+  // leaving Chat clears activeThreadId and restores it later, so the shown thread id is latched.
+  const newChatIdentityBlankedRef = useRef<string | null>(null);
+  if (search.new && activeThreadId === null) {
+    newChatIdentityBlankedRef.current = search.new;
+  }
+  // re-latch after every blank: a nonce whose chat was deleted while hidden comes back on a fresh thread.
+  const newChatRef = useRef<{ nonce: string; threadId: string } | null>(null);
+  if (search.new && activeThreadId && newChatIdentityBlankedRef.current === search.new) {
+    newChatRef.current = { nonce: search.new, threadId: activeThreadId };
+    newChatIdentityBlankedRef.current = null;
+  }
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -3376,6 +3403,50 @@ export function ChatPage({
   useEffect(() => {
     clearAutoOpenedArtifacts();
   }, [artifactViewKey]);
+
+  const newChat = newChatRef.current;
+  const newChatShownId =
+    newChat && view.mode === "single" && view.newThreadNonce === newChat.nonce ? newChat.threadId : null;
+  const projectChatBlankedRef = useRef<{ projectId: string; nonce: string } | null>(null);
+  if (view.mode === "project" && activeThreadId === null) {
+    projectChatBlankedRef.current = { projectId: view.projectId, nonce: projectNewThreadNonce };
+  }
+  const projectChatRef = useRef<{ projectId: string; nonce: string; threadId: string } | null>(null);
+  const projectChatBlanked = projectChatBlankedRef.current;
+  if (
+    view.mode === "project" &&
+    activeThreadId &&
+    projectChatBlanked?.projectId === view.projectId &&
+    projectChatBlanked.nonce === projectNewThreadNonce &&
+    (projectChatRef.current?.projectId !== view.projectId ||
+      projectChatRef.current.nonce !== projectNewThreadNonce)
+  ) {
+    projectChatRef.current = {
+      projectId: view.projectId,
+      nonce: projectNewThreadNonce,
+      threadId: activeThreadId,
+    };
+  }
+  const projectChat = projectChatRef.current;
+  const projectChatShownId =
+    projectChat &&
+    view.mode === "project" &&
+    projectChat.projectId === view.projectId &&
+    projectChat.nonce === projectNewThreadNonce
+      ? projectChat.threadId
+      : null;
+  const shownChatKey =
+    view.mode === "single"
+      ? `single:${view.threadId ?? newChatShownId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
+      : view.mode === "project"
+        ? projectChatShownId
+          ? `single:${projectChatShownId}`
+          : `project:${view.projectId}:${projectNewThreadNonce}`
+        : artifactViewKey;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
+  useLayoutEffect(() => {
+    useBrowserStore.getState().closeChatPages();
+  }, [shownChatKey]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
@@ -4168,10 +4239,9 @@ export function ChatPage({
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    // Prefer the explicit save; fall back to the last non-compare view so the composer + menu path
-    // also returns where the user started.
+    // the composer and menu exit paths rely on the last non-compare view.
     const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
-    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    // direct compare URLs have no saved view, so return to a fresh chat.
     if (!saved) {
       navigate({ to: "/chat" });
       return;
@@ -4184,10 +4254,13 @@ export function ChatPage({
       void listStoredChatMessages(threadId)
         .then((messages) => {
           const store = useChatRuntimeStore.getState();
-          const usage = savedUsageFor(messages, store) ?? estimateContextUsage(messages);
+          const branch = orderBySelectedBranch(
+            messages,
+            savedBranchHead(threadId, messages),
+          );
+          const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
           if (!usage) return;
-          // Key by the thread this restore read, like the history loader: the await above can outlast a
-          // switch away, and an unkeyed write would file this usage under the incoming thread.
+          // key usage by the restored thread because this read can outlast a thread switch.
           store.setThreadContextUsage(threadId, usage);
           if (store.activeThreadId === threadId) {
             store.setContextUsage(usage);
@@ -4697,16 +4770,22 @@ export function ChatPage({
           </div>
           <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
-            view.mode === "single" &&
+            (view.mode === "single" ||
+              (view.mode === "project" && activeThreadId != null)) &&
             (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
-                used={contextUsage?.totalTokens ?? null}
+                used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
                 cached={contextUsage?.cachedTokens}
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}
-                completionTokens={contextUsage?.completionTokens}
+                // A tool turn's completionTokens sums every pass; the context holds only the last one.
+                completionTokens={
+                  contextUsage?.contextTokens !== undefined
+                    ? contextUsage.contextTokens - contextUsage.promptTokens
+                    : contextUsage?.completionTokens
+                }
                 isMlx={isServedByMlx(
                   Boolean(loadedIsGguf),
                   platformDeviceType,

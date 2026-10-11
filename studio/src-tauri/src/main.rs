@@ -3,6 +3,9 @@
 mod app_layout;
 mod app_menu;
 mod browser_capture;
+#[cfg(target_os = "macos")]
+mod browser_context_downloads;
+mod browser_downloads;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -30,6 +33,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod shell_path;
 mod staged_update;
 mod update;
 mod webview_permissions;
@@ -2172,7 +2176,7 @@ fn main() {
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
-    let _ = fix_path_env::fix();
+    shell_path::fix_path();
 
     setup_logging();
     log_panics();
@@ -2240,6 +2244,7 @@ fn main() {
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
+        .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
             browser_webview::browser_view_supported,
@@ -2248,10 +2253,20 @@ fn main() {
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,
             browser_webview::browser_view_find,
+            browser_webview::browser_view_annotate,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
             browser_webview::browser_view_mute,
             browser_capture::browser_capture,
+            browser_downloads::browser_download_save,
+            browser_downloads::browser_download_reveal,
+            browser_downloads::browser_download_open,
+            browser_downloads::browser_download_exists,
+            browser_downloads::browser_download_forget,
+            browser_downloads::browser_download_decide,
+            browser_downloads::browser_download_folder,
+            browser_downloads::browser_download_folder_pick,
+            browser_downloads::browser_download_folder_reset,
             browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,

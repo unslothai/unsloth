@@ -24,6 +24,7 @@ import {
   type AudioGalleryCursor,
   clearAudioGallery,
   deleteAudioClip,
+  deleteAudioGroup,
   fetchClipBlob,
   fetchClipObjectUrl,
   listAudioGallery,
@@ -293,6 +294,22 @@ export function useAudioGallery({
     [dropClip, refreshGallery],
   );
 
+  const handleDeleteGroup = useCallback(
+    async (groupId: string, ids: readonly string[]) => {
+      try {
+        await deleteAudioGroup(groupId);
+        for (const id of ids) dropClip(id);
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not delete the stems.",
+        );
+      }
+      // Either way, so a run the server only partly removed shows what is left.
+      await refreshGallery();
+    },
+    [dropClip, refreshGallery],
+  );
+
   const handleArchiveClip = useCallback(
     async (id: string) => {
       try {
@@ -519,6 +536,7 @@ export function useAudioGallery({
     loadMore,
     selectClip,
     handleDeleteClip,
+    handleDeleteGroup,
     handleArchiveClip,
     handleTogglePin,
     historyReorder,

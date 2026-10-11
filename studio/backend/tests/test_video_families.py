@@ -525,7 +525,7 @@ def test_the_a14b_row_prices_both_experts_not_one():
 
     fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert fam.is_moe
-    names = {entry[-1] for entry in fam.prequant_filenames}
+    names = {entry[-1] for entry in fam.prequant_filenames if entry[0] == "nvfp4"}
     assert len(names) == 2
     measured = video_family_prequant_resident_gb(fam, "nvfp4")
     assert measured == pytest.approx(16.2)

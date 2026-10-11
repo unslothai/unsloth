@@ -75,3 +75,40 @@ test("encoder-first plans download the checkpoint first without mutating the pla
   assert.deepEqual(original, [assets, model, decoder]);
   assert.deepEqual(checkpointFirst([assets, decoder]), [assets, decoder]);
 });
+
+test("the download manager names companion files, falling back to required assets", () => {
+  assert.equal(
+    assetLabel(
+      {
+        repoId: "Qwen/Qwen-Image-2.1",
+        bytes: 0,
+        files: [
+          "text_encoder/model-00001-of-00004.safetensors",
+          "vae/diffusion_pytorch_model.safetensors",
+        ],
+      },
+      "Required assets",
+    ),
+    "Encoder & decoder",
+  );
+  assert.equal(
+    assetLabel(
+      {
+        repoId: "Qwen/Qwen-Image-2.1",
+        bytes: 0,
+        files: ["scheduler/config.json"],
+      },
+      "Required assets",
+    ),
+    "Required assets",
+  );
+  assert.equal(
+    assetLabel({ repoId: "Qwen/Qwen-Image-2.1", bytes: 0 }, "Required assets"),
+    "Required assets",
+  );
+  // Without a fallback the dialog keeps naming the repo.
+  assert.equal(
+    assetLabel({ repoId: "Qwen/Qwen-Image-2.1", bytes: 0 }),
+    "Qwen-Image-2.1",
+  );
+});

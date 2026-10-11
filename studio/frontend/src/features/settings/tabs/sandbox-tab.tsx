@@ -3,6 +3,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
@@ -22,12 +23,15 @@ import {
 } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { RefreshIcon } from "@hugeicons/core-free-icons";
+import { ShieldIcon } from "@/lib/shield-cog-icon";
+import { cn } from "@/lib/utils";
+import { ArrowUpRight01Icon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type HostPrepJob,
+  type SandboxMemoryStatus,
   type SandboxSettingsUpdate,
   type SandboxStatus,
   type SandboxToolStatus,
@@ -97,12 +101,124 @@ function ToolRow({
   );
   return (
     <SettingsRow label={label} description={description}>
-      <Badge variant={view.isolated ? "secondary" : "outline"}>
+      <Badge
+        variant="outline"
+        // Grey and sized like the dropdown pills.
+        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
+      >
+        {view.isolated ? <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} /> : null}
         {view.isolated
           ? t("settings.sandbox.osIsolation", { backend: view.backendLabel })
           : t("settings.sandbox.softwareSafeguards")}
       </Badge>
     </SettingsRow>
+  );
+}
+
+function MemoryLimitRow({
+  memory,
+  saving,
+  error,
+  onSave,
+}: {
+  memory: SandboxMemoryStatus;
+  saving: boolean;
+  error: string | null;
+  onSave: (memoryLimitGb: number) => void;
+}) {
+  const t = useT();
+  const shown = memory.lockedByEnvironment ? memory.limitGb : memory.savedGb;
+  const [draft, setDraft] = useState(shown === null ? "" : String(shown));
+  const [invalid, setInvalid] = useState(false);
+  const submit = () => {
+    const value = Number(draft.trim());
+    if (
+      !Number.isInteger(value) ||
+      value < memory.minGb ||
+      value > memory.maxGb
+    ) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    if (value !== memory.savedGb) onSave(value);
+  };
+  const note = memory.lockedByEnvironment
+    ? t("settings.sandbox.memoryLocked")
+    : invalid
+      ? t("settings.sandbox.memoryInvalid", {
+          min: String(memory.minGb),
+          max: String(memory.maxGb),
+        })
+      : error;
+  return (
+    <SettingsRow
+      label={t("settings.sandbox.memoryLabel")}
+      description={t("settings.sandbox.memoryDescription", {
+        defaultSize: String(memory.defaultGb),
+      })}
+      below={
+        note ? (
+          <span
+            className={cn(
+              NOTE_CLASS,
+              memory.lockedByEnvironment
+                ? "text-muted-foreground"
+                : "text-destructive",
+            )}
+          >
+            {note}
+          </span>
+        ) : null
+      }
+    >
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="number"
+            min={memory.minGb}
+            max={memory.maxGb}
+            step={1}
+            value={draft}
+            disabled={memory.lockedByEnvironment}
+            aria-label={t("settings.sandbox.memoryLabel")}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submit();
+            }}
+            className="h-8 w-24"
+          />
+          <span className="text-xs font-medium text-muted-foreground">
+            GB
+          </span>
+        </div>
+        {memory.lockedByEnvironment ? null : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={saving}
+            onClick={submit}
+          >
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        )}
+      </div>
+    </SettingsRow>
+  );
+}
+
+const SANDBOX_LEVEL_TEXT = {
+  off: { name: "settings.sandbox.levelOff", detail: "settings.sandbox.levelFullAccessNote" },
+  low: { name: "settings.sandbox.levelLow", detail: "settings.sandbox.levelLowDetail" },
+  high: { name: "settings.sandbox.levelHigh", detail: "settings.sandbox.levelHighDetail" },
+} as const satisfies Record<string, { name: TranslationKey; detail: TranslationKey }>;
+
+/** "Name: detail", so the text clearly describes the selected option. */
+function SelectedOptionDescription({ name, detail }: { name: string; detail: string }) {
+  return (
+    <>
+      <span className="font-medium text-foreground">{name}:</span> {detail}
+    </>
   );
 }
 
@@ -133,11 +249,9 @@ function PermissionsSection() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
 
-  const levelDescription = disabled
-    ? t("settings.sandbox.levelFullAccessNote")
-    : checked
-      ? t("settings.sandbox.levelHighDescription")
-      : t("settings.sandbox.levelLowDescription");
+  // Full access turns the sandbox off: show Disabled and lock Low and High.
+  const activeLevel = disabled ? "off" : checked ? "high" : "low";
+  const levels = disabled ? (["off", "low", "high"] as const) : (["low", "high"] as const);
 
   return (
     <SettingsSection
@@ -145,33 +259,59 @@ function PermissionsSection() {
       title={t("settings.general.permissions.sectionTitle")}
       description={t("settings.sandbox.permissionsIntro")}
     >
-      {/* The selected level, explained in full. */}
       <SettingsRow
-        label={t(`settings.general.permissions.names.${activePermission.value}`)}
-        description={t(`settings.general.permissions.details.${activePermission.value}`)}
+        label={t("settings.sandbox.permissionLabel")}
+        description={
+          <SelectedOptionDescription
+            name={t(`settings.general.permissions.names.${activePermission.value}`)}
+            detail={t(`settings.general.permissions.details.${activePermission.value}`)}
+          />
+        }
       >
         <PermissionModeDropdown sandboxControls={false} />
       </SettingsRow>
       <SettingsRow
         label={t("settings.sandbox.levelLabel")}
-        description={<span id={levelDescriptionId}>{levelDescription}</span>}
-      >
-        <span className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">
-            {checked ? t("settings.sandbox.levelHigh") : t("settings.sandbox.levelLow")}
+        description={
+          <span id={levelDescriptionId}>
+            <SelectedOptionDescription
+              name={t(SANDBOX_LEVEL_TEXT[activeLevel].name)}
+              detail={t(SANDBOX_LEVEL_TEXT[activeLevel].detail)}
+            />
           </span>
-          <Switch
-            checked={checked}
-            disabled={disabled}
-            aria-label={t("settings.sandbox.levelLabel")}
-            aria-describedby={levelDescriptionId}
-            onCheckedChange={(next) =>
-              void pickSandboxLevel(next ? "high" : "low", setSandboxLevel, () =>
-                setSetupOpen(true),
-              )
-            }
-          />
-        </span>
+        }
+      >
+        {/* Same toggle as Follow-up behavior. */}
+        <div
+          className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+          role="group"
+          aria-label={t("settings.sandbox.levelLabel")}
+          aria-describedby={levelDescriptionId}
+        >
+          {levels.map((level) => {
+            const selected = level === activeLevel;
+            return (
+              <button
+                key={level}
+                type="button"
+                aria-pressed={selected}
+                disabled={disabled && !selected}
+                onClick={() => {
+                  if (selected || level === "off") return;
+                  void pickSandboxLevel(level, setSandboxLevel, () => setSetupOpen(true));
+                }}
+                className={cn(
+                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                  selected
+                    ? "hub-tab-toggle-pill cursor-default text-foreground"
+                    : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
+                )}
+              >
+                {t(SANDBOX_LEVEL_TEXT[level].name)}
+              </button>
+            );
+          })}
+        </div>
       </SettingsRow>
       {/* Its own instance: the chat-page root dialog is not mounted on every page. */}
       <SandboxSetupDialog
@@ -185,18 +325,33 @@ function PermissionsSection() {
   );
 }
 
+const SANDBOX_DOCS_URL = "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth";
+
 export function SandboxTab() {
   const t = useT();
   const isOwner = useIsAccountOwner();
   return (
     <div className="settings-page">
       <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.sandbox.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.sandbox.title")}
-        </h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1
+            data-settings-label={t("settings.sandbox.title")}
+            className="text-xl font-semibold font-heading"
+          >
+            {t("settings.sandbox.title")}
+          </h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
+          <a
+            href={SANDBOX_DOCS_URL}
+            target="_blank"
+            rel="noreferrer"
+            title={t("settings.sandbox.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("settings.sandbox.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
         <p
           data-settings-label={t("settings.sandbox.description")}
           className="text-xs text-muted-foreground"
@@ -457,7 +612,29 @@ function OsSandboxSections() {
         </p>
       ) : (
         <>
-          <SettingsSection title={t("settings.sandbox.toolsSection")}>
+          <SettingsSection
+            title={t("settings.sandbox.toolsSection")}
+            action={
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground"
+                // A read started mid-save can see the old value and would drop the save's answer.
+                disabled={loading || saving}
+                onClick={() => {
+                  setLoading(true);
+                  void refresh(true);
+                }}
+              >
+                {loading ? (
+                  <Spinner />
+                ) : (
+                  <HugeiconsIcon strokeWidth={1.75} icon={Refresh01Icon} />
+                )}
+                {t("settings.sandbox.refresh")}
+              </Button>
+            }
+          >
             {status ? (
               <>
                 <ToolRow
@@ -562,32 +739,21 @@ function OsSandboxSections() {
                     </div>
                   </SettingsRow>
                 ) : null}
+                {status.memory ? (
+                  <MemoryLimitRow
+                    // A saved or reloaded value resets the draft.
+                    key={`${status.memory.savedGb}:${status.memory.limitGb}`}
+                    memory={status.memory}
+                    saving={saving}
+                    error={actionError}
+                    onSave={(memoryLimitGb) => void save({ memoryLimitGb })}
+                  />
+                ) : null}
               </>
             ) : null}
-            <div className="flex items-center justify-end gap-2 py-2">
-              {error ? (
-                <span className={`${NOTE_CLASS} text-destructive`}>
-                  {error}
-                </span>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                // A read started mid-save can see the old value and would drop the save's answer.
-                disabled={loading || saving}
-                onClick={() => {
-                  setLoading(true);
-                  void refresh(true);
-                }}
-              >
-                {loading ? (
-                  <Spinner />
-                ) : (
-                  <HugeiconsIcon strokeWidth={1.75} icon={RefreshIcon} />
-                )}
-                {t("settings.sandbox.refresh")}
-              </Button>
-            </div>
+            {error ? (
+              <p className="pb-2 text-xs text-destructive">{error}</p>
+            ) : null}
           </SettingsSection>
 
           {windows && view ? (
@@ -638,9 +804,27 @@ function OsSandboxSections() {
                 </div>
               ) : (
                 <>
+                  {view.builtinInUse ? (
+                    <SettingsRow
+                      label={t("settings.sandbox.builtinLabel")}
+                      description={t("settings.sandbox.builtinDescription")}
+                    >
+                      <Badge
+                        variant="outline"
+                        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
+                      >
+                        <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} />
+                        {t("settings.sandbox.builtinInUse")}
+                      </Badge>
+                    </SettingsRow>
+                  ) : null}
                   <SettingsRow
                     label={t("settings.sandbox.optInLabel")}
-                    description={t("settings.sandbox.optInDescription")}
+                    description={
+                      view.builtinInUse
+                        ? t("settings.sandbox.optInNotNeeded")
+                        : t("settings.sandbox.optInDescription")
+                    }
                   >
                     <div className="flex flex-col items-end gap-1">
                       <Switch

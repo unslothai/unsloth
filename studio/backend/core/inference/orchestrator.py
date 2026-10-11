@@ -257,6 +257,11 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_int8_prefill_reason",
     "chat_template_override_requested",
     "chat_template_override_reason",
+    "speculative_type",
+    "spec_draft_n_max",
+    "spec_draft_model",
+    "spec_drafter_kind",
+    "spec_fallback_reason",
 )
 
 
@@ -2006,6 +2011,10 @@ class InferenceOrchestrator:
         mlx_distributed: bool = False,
         mlx_kv_quant: Optional[str] = None,
         mlx_int8_prefill: bool = False,
+        speculative_type: Optional[str] = None,
+        spec_draft_n_max: Optional[int] = None,
+        spec_draft_model: Optional[str] = None,
+        spec_drafters_allowed: Optional[list] = None,
         chat_template_override: Optional[str] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
@@ -2051,6 +2060,13 @@ class InferenceOrchestrator:
             self.loading_models.discard(model_name)
             logger.info("Load cancelled before worker start: %s", model_name)
             return False
+        # The audio.cpp update sets this before it scans loading_models, so a load registering after
+        # the scan is refused here rather than started from the tree being replaced.
+        if getattr(config, "audio_cpp", None) is not None:
+            from core.inference.audio_cpp_server import UPDATE_IN_PROGRESS
+            if UPDATE_IN_PROGRESS.is_set():
+                self.loading_models.discard(model_name)
+                raise RuntimeError("The audio runtime is being updated. Try again in a moment.")
 
         try:
             needed_major = "5" if needs_transformers_5(model_name) else "4"
@@ -2072,6 +2088,10 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_quant": mlx_kv_quant,
                 "mlx_int8_prefill": bool(mlx_int8_prefill),
+                "speculative_type": speculative_type,
+                "spec_draft_n_max": spec_draft_n_max,
+                "spec_draft_model": spec_draft_model,
+                "spec_drafters_allowed": spec_drafters_allowed,
                 "chat_template_override": chat_template_override,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
@@ -2753,6 +2773,7 @@ class InferenceOrchestrator:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         tool_loop: bool = False,
+        recall_reachable: bool = False,
         anchor_ids = None,
         replay_boundary: bool = True,
         recall_done: bool = False,
@@ -2761,8 +2782,8 @@ class InferenceOrchestrator:
     ) -> dict:
         """Fit one MLX prompt into the served window under the policy GGUF uses.
 
-        Only a ``tool_loop`` turn that carries tools may reset the epoch: no other MLX turn
-        is offered ``search_conversation``. ``request_branch`` is the client's transcript and
+        A ``tool_loop`` turn carrying tools may reset the epoch; a plain turn only when a later
+        one can search (``recall_reachable``). ``request_branch`` is the client's transcript and
         ``live_branch`` that plus the loop's replies and tool results; both default to the prompt.
         Never raises: a failed fit returns the request unchanged.
         """
@@ -2838,8 +2859,9 @@ class InferenceOrchestrator:
 
             can_reset = _can_reset_epoch(
                 thread_id,
-                calls_tools,
-                tools_withheld = _memory_tool_withheld(thread_id, tools),
+                calls_tools if tool_loop else recall_reachable,
+                # A plain turn carries no catalogue to read; the route answered for it.
+                tools_withheld = tool_loop and _memory_tool_withheld(thread_id, tools),
             )
             sticky, sticky_is_checkpoint = (
                 _sticky_compaction_state(
@@ -2867,7 +2889,7 @@ class InferenceOrchestrator:
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             if not truncation:
-                return unchanged
+                return {**unchanged, "boundary_applied": True}
 
             recall = _archive_and_recall(
                 fitted,
@@ -2901,6 +2923,7 @@ class InferenceOrchestrator:
                 "events": [*recall["events"], {"type": "context_truncated", **truncation}],
                 "recalled": bool(recall["recalled"]),
                 "anchored": list(recall["anchored"]),
+                "boundary_applied": True,
             }
         except Exception as exc:
             logger.warning("Could not preflight the MLX context window: %s", exc)
@@ -3075,6 +3098,7 @@ class InferenceOrchestrator:
         seed: Optional[int] = None,
         caller_image_indexes: "tuple[int, ...]" = (),
         mcp_image = None,
+        deduplicate_tool_calls: bool = True,
         context_overflow: Optional[str] = None,
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
@@ -3233,8 +3257,9 @@ class InferenceOrchestrator:
                 request_branch = _request_branch,
                 live_branch = live_branch,
             )
-            # The saved boundary describes the original transcript, so it applies once.
-            _sticky_boundary_applied = True
+            # The saved boundary applies once, in the first fit that runs (not resumed or failed).
+            if result.get("boundary_applied"):
+                _sticky_boundary_applied = True
             if result.get("recalled"):
                 _conversation_recall_done = True
                 for message in result.get("anchored") or ():
@@ -3256,6 +3281,7 @@ class InferenceOrchestrator:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            deduplicate_tool_calls = deduplicate_tool_calls,
             nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,

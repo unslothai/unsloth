@@ -106,6 +106,40 @@ class ExportStatusResponse(BaseModel):
         None,
         description = "Error message of the most recently finished op, if it failed",
     )
+    decision: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "{layout, adapter_only} when the loaded checkpoint is a decision model",
+    )
+
+
+class DecisionExportInfo(BaseModel):
+    """GGUF export options for a decision model (Clef or Laya) checkpoint."""
+
+    is_decision: bool = Field(True, description = "True for a decision model checkpoint")
+    layout: Literal["clef", "laya"] = Field(..., description = "Decision checkpoint layout")
+    adapter_only: bool = Field(
+        False,
+        description = "True for a Clef folder holding LoRA adapters only (merged at export time)",
+    )
+    eligible: Optional[bool] = Field(
+        None,
+        description = "False when llama.cpp cannot serve this model; None when only the export can tell",
+    )
+    reason: Optional[str] = Field(None, description = "Why the checkpoint is not eligible")
+    quantizations: List[str] = Field(..., description = "Allowed GGUF quantizations, default first")
+    default_quantization: str = Field(..., description = "Default GGUF quantization")
+    output_dir: str = Field(..., description = "Where the GGUF files are written (<run folder>/gguf)")
+    existing_export: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Content of an earlier gguf/export.json, if valid",
+    )
+
+
+class ExportDecisionInfoResponse(BaseModel):
+    """Decision-model export info for a checkpoint path; decision is None for any other model."""
+
+    checkpoint_path: str
+    decision: Optional[DecisionExportInfo] = None
 
 
 class ExportOperationResponse(BaseModel):
@@ -256,6 +290,20 @@ class ConvertQ4NXRequest(BaseModel):
         "its config.json and tokenizer files.",
     )
     hf_token: Optional[str] = Field(None, description = "Hugging Face token for gated repos")
+
+
+class ExportDiffusionLoRARequest(BaseModel):
+    """Copy an image-generation LoRA from the Images catalog into an export folder."""
+
+    lora_id: str = Field(
+        ..., description = "Local adapter id as listed by /api/models/diffusion-loras"
+    )
+    save_directory: str = Field(..., description = "Directory the adapter is copied into")
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):

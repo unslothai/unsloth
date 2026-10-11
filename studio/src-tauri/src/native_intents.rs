@@ -565,12 +565,17 @@ pub fn reveal_path_token(
 ) -> Result<(), String> {
     ensure_main_window(&webview)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Reveal)?;
+    reveal_in_file_manager(&entry.canonical_path)
+}
+
+/// Show `path` in Finder or Explorer with the file selected; elsewhere, open its folder.
+pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        if entry.canonical_path.is_file() {
+        if path.is_file() {
             return std::process::Command::new("open")
                 .arg("-R")
-                .arg(&entry.canonical_path)
+                .arg(path)
                 .spawn()
                 .map(|_| ())
                 .map_err(|e| format!("Failed to reveal path: {e}"));
@@ -578,9 +583,9 @@ pub fn reveal_path_token(
     }
     #[cfg(target_os = "windows")]
     {
-        if entry.canonical_path.is_file() {
+        if path.is_file() {
             let mut select_arg = std::ffi::OsString::from("/select,");
-            select_arg.push(entry.canonical_path.as_os_str());
+            select_arg.push(path.as_os_str());
             return std::process::Command::new("explorer")
                 .arg(select_arg)
                 .spawn()
@@ -588,7 +593,7 @@ pub fn reveal_path_token(
                 .map_err(|e| format!("Failed to reveal path: {e}"));
         }
     }
-    let target = reveal_target(&entry.canonical_path);
+    let target = reveal_target(path);
     crate::process::open_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
 }
 

@@ -110,6 +110,26 @@ def seed_audio(account) -> dict[str, str]:
     return {"audio_id": record["id"]}
 
 
+@seeder("media-audio-group")
+def seed_audio_group(account) -> dict[str, str]:
+    from core.inference import audio_gallery
+    from utils.account_context import run_as
+
+    meta = {
+        "prompt": SENTINEL,
+        "model": "media/none",
+        "audio_type": "audiocpp_sep",
+        "workflow": "separate",
+        "role": "vocals",
+        "group_id": "matrixgroup",
+        "sample_rate": 8000,
+        "duration_s": 0.008,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    run_as(account, audio_gallery.save, _wav_bytes(), meta)
+    return {"group_id": "matrixgroup"}
+
+
 @seeder("media-audio-converted")
 def seed_converted_audio(account) -> dict[str, str]:
     import tempfile
@@ -360,6 +380,7 @@ FACTORIES = {
         "media-audio", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/audio/gallery/{audio_id}": Factory("media-audio"),
+    "routes.inference:DELETE:/audio/gallery/group/{group_id}": Factory("media-audio-group"),
     "routes.inference:POST:/audio/gallery/{audio_id}/move": Factory(
         "media-audio", {"after_id": None}, fragment = SENTINEL
     ),

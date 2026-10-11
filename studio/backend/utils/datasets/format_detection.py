@@ -89,8 +89,28 @@ def _inspect_conversation_column(rows: list[dict], column_name: str) -> dict | N
     return None
 
 
+def _has_message_prompt_completion(rows: list[dict], column_names: list[str]) -> bool:
+    if not {"prompt", "completion"} <= set(column_names):
+        return False
+    for column_name in ("prompt", "completion"):
+        inspected = _inspect_conversation_column(rows, column_name)
+        if inspected and inspected["format"] in {"sharegpt", "chatml"}:
+            return True
+    return False
+
+
+def has_message_prompt_completion(dataset) -> bool:
+    rows = _sample_dataset_rows(dataset)
+    return bool(rows) and _has_message_prompt_completion(
+        rows, _get_dataset_column_names(dataset, rows[0])
+    )
+
+
 def _detect_conversation_column(rows: list[dict], column_names: list[str]) -> dict | None:
     column_name_set = set(column_names)
+    if _has_message_prompt_completion(rows, column_names):
+        return None
+
     unknown_exact = None
     for column_name in CONVERSATION_COLUMNS:
         if column_name not in column_name_set:
@@ -409,7 +429,6 @@ def detect_custom_format_heuristic(dataset):
         for col in content_columns
         if col not in system_named and is_non_metadata_column(col) and has_keyword(col, user_words)
     ]
-
     assistant_candidates = []
     for col in assistant_potential:
         score = score_column(col, assistant_words, "assistant", len(assistant_potential))
@@ -521,6 +540,15 @@ def detect_custom_format_heuristic(dataset):
                 mapping[col] = "system"
                 break
 
+    if has_message_prompt_completion(dataset):
+        mapping = {
+            col: role
+            for col, role in mapping.items()
+            if role == "system" and col not in CONVERSATION_COLUMNS
+        }
+        mapping.update({"prompt": "user", "completion": "assistant"})
+        has_user = has_assistant = True
+
     if has_user and has_assistant:
         return mapping
 
@@ -528,7 +556,6 @@ def detect_custom_format_heuristic(dataset):
 
 
 def detect_multimodal_dataset(dataset):
-    """Detect multimodal data (images and/or audio) in a dataset. Two passes per modality, a column-name keyword heuristic then value-type inspection, returning is_image/is_audio flags, detected columns, modality types and detected audio/text/speaker columns."""
     sample = next(iter(dataset))
     column_names = list(sample.keys())
 

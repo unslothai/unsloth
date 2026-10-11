@@ -58,6 +58,7 @@ class ExportOrchestrator:
         self.current_checkpoint: Optional[str] = None
         self.is_vision: bool = False
         self.is_peft: bool = False
+        self.decision: Optional[Dict[str, Any]] = None
 
         # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
@@ -87,6 +88,7 @@ class ExportOrchestrator:
     def _clear_account_result(self):
         self.current_checkpoint = None
         self.is_vision = self.is_peft = False
+        self.decision = None
         self._last_op = None
         self.clear_logs()
 
@@ -559,6 +561,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     raise
 
                 try:
@@ -568,6 +571,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     op_success, op_message = False, str(exc)
                     return False, str(exc)
 
@@ -575,6 +579,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = resp.get("checkpoint")
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
+                    self.decision = resp.get("decision")
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
                     op_success, op_message = True, resp.get("message", "Loaded successfully")
                     return True, op_message
@@ -584,6 +589,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     op_success, op_message = False, error
                     return False, error
             finally:
@@ -753,6 +759,7 @@ class ExportOrchestrator:
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
+                self.decision = None
                 return True
 
             self._active_op_kind = "cleanup"
@@ -775,6 +782,7 @@ class ExportOrchestrator:
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
+                self.decision = None
                 return success
             finally:
                 self._record_op_finished(success, "", None)

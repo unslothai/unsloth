@@ -323,7 +323,7 @@ def png_payloads_per_result(
     return []
 
 
-def flattened_rgb(image):
+def flattened_rgb(image, background = None):
     """RGB with any transparency composited onto white (black for light ink), not dropped.
 
     ``convert("RGB")`` keeps whatever colour sits UNDER the alpha, and a tool that
@@ -351,10 +351,12 @@ def flattened_rgb(image):
     # Browser canvas exports are RGBA even when opaque; skip the composite (same pixels).
     if alpha.getextrema()[0] == 255:
         return rgba.convert("RGB")
-    # Alpha-weighted: light ink (dark-mode logos, white text) goes onto black, not white.
-    ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
-    light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0
-    canvas = Image.new("RGB", rgba.size, (0, 0, 0) if light else (255, 255, 255))
+    if background is None:
+        # Alpha-weighted: light ink (dark-mode logos, white text) goes onto black, not white.
+        ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
+        light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0
+        background = (0, 0, 0) if light else (255, 255, 255)
+    canvas = Image.new("RGB", rgba.size, background)
     canvas.paste(rgba, mask = alpha)
     return canvas
 

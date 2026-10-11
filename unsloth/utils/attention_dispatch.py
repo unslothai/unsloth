@@ -452,7 +452,10 @@ def run_attention(
     q_len = context.q_len
     head_dim = context.head_dim
     kv_seq_len = context.kv_seq_len
-    requires_grad = context.requires_grad
+    # Eval forwards can backpropagate (LoRA-GA calibration); xformers' inference GQA layout cannot.
+    requires_grad = context.requires_grad or (
+        torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
+    )
     sliding_window = context.sliding_window
     # A non-positive window means "no local attention", not "a window of nothing": a config spelling
     # it 0 would put the mask's lower bound above its causal upper bound.

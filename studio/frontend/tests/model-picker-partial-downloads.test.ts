@@ -456,7 +456,11 @@ test("a partial pick carries no load identity", () => {
     "a routed loadId is still read as downloaded",
   );
   // And the route still forwards whatever the pick gives it.
-  assert.ok(PICKERS.includes("loadId: meta.loadId ?? undefined,"));
+  assert.ok(PICKERS.includes("audioPickSearch(id, { ...meta, task: pickedTask })"));
+  assert.match(
+    read("../src/features/audio/route-search.ts"),
+    /loadId: pick\.loadId \?\? undefined,/,
+  );
 });
 
 test("configure carries the same rule, because Run replays its metadata", () => {

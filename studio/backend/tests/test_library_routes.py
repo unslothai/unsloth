@@ -706,6 +706,113 @@ def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     assert forgotten == [video, video]
 
 
+def _audio_clip(prompt: str, **extra) -> str:
+    from core.inference import audio_gallery
+
+    meta = {"model": "htdemucs", "audio_type": "audiocpp_sep", "sample_rate": 44100}
+    meta |= {"duration_s": 2.5, "prompt": prompt, "created_at": 1_700_000_000}
+    return audio_gallery.save(b"RIFF0000WAVE", {**meta, **extra})["id"]
+
+
+def test_an_edit_source_recording_is_not_listed(client, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    source = _audio_clip("The old words", workflow = "edit", role = "source")
+    edited = _audio_clip("The new words.", workflow = "edit", role = "output", source_clip_id = source)
+    items = _items(client)[0]
+    assert f"audio:{source}" not in items
+    assert items[f"audio:{edited}"]["name"] == "The new words.wav"
+    assert items[f"audio:{edited}"]["audio"]["workflow"] == "edit"
+
+
+def test_separated_stems_are_named_by_stem_and_carry_their_run(client, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items, library._upload_items))
+    vocals = _audio_clip("song.mp3", workflow = "separate", role = "vocals", group_id = "g1")
+    drums = _audio_clip("song.mp3", workflow = "separate", role = "drums", group_id = "g1")
+    (upload,) = _upload(client, ("notes.txt", b"hi", "text/plain"))
+    items = _items(client)[0]
+    assert (items[f"audio:{vocals}"]["name"], items[f"audio:{drums}"]["name"]) == (
+        "song - Vocals.wav",
+        "song - Drums.wav",
+    )
+    assert items[f"audio:{vocals}"]["audio"] == {
+        "workflow": "separate",
+        "role": "vocals",
+        "groupId": "g1",
+        "durationS": 2.5,
+        "model": "htdemucs",
+        "mode": None,
+        "variation": None,
+    }
+    assert items[upload]["audio"] is None
+
+
+def test_music_variations_and_edits_get_distinct_names(client, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+
+    def song(
+        role,
+        variation,
+        mode = "song",
+    ):
+        settings = {"mode": mode, "variation": variation}
+        return _audio_clip("Rainy jazz", workflow = "music", role = role, settings = settings)
+
+    first, second = song("variation", 1), song("variation", 2)
+    edit, sfx = song("edit", None, "edit"), song("output", None, "sfx")
+    items = _items(client)[0]
+    names = [items[f"audio:{clip}"]["name"] for clip in (first, second, edit, sfx)]
+    assert names == [
+        "Rainy jazz (1).wav",
+        "Rainy jazz (2).wav",
+        "Rainy jazz (edit).wav",
+        "Rainy jazz.wav",
+    ]
+    assert [items[f"audio:{clip}"]["audio"]["mode"] for clip in (first, sfx)] == ["song", "sfx"]
+    assert [items[f"audio:{clip}"]["audio"]["variation"] for clip in (second, edit)] == [2, None]
+
+
+def test_a_long_prompt_keeps_its_stem_suffix(client, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    clip = _audio_clip("word " * 40 + ".wav", workflow = "separate", role = "vocals")
+    name = _items(client)[0][f"audio:{clip}"]["name"]
+    assert name.endswith(" - Vocals.wav") and len(name) <= 60 + len(" - Vocals.wav")
+
+
+def test_a_clip_made_with_a_local_model_hides_its_path_from_an_api_key(
+    client, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    local = str(tmp_path / "models" / "my-tts.gguf")
+    clip = _audio_clip("Hi", workflow = "speak", model = local)
+    assert _items(client)[0][f"audio:{clip}"]["audio"]["model"] == local
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    keyed = client.get("/api/library").json()["items"]
+    assert local not in json.dumps(keyed)
+    assert keyed[0]["audio"]["workflow"] == "speak"
+
+
+def test_storage_counts_what_the_audio_page_keeps_outside_its_clips(client, monkeypatch):
+    from core.inference import audio_gallery, transcript_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    listed = _audio_clip("Kept")
+    # An Edit's hidden original, a saved voice and a transcript: on disk, in no item.
+    _audio_clip("Original", workflow = "edit", role = "source")
+    voices = audio_gallery.gallery_dir() / "voices"
+    voices.mkdir()
+    (voices / "voice.wav").write_bytes(b"v" * 1000)
+    (transcript_gallery.gallery_dir() / "t.json").write_bytes(b"t" * 500)
+    body = client.get("/api/library").json()
+    (item,) = body["items"]
+    assert item["id"] == f"audio:{listed}"
+    hidden = sum(
+        path.stat().st_size
+        for path in audio_gallery.gallery_dir().iterdir()
+        if path.is_file() and listed not in path.name
+    )
+    assert body["unlistedBytes"] == {"audio": hidden + 1000 + 500}
+
+
 def test_the_listing_reports_the_library_disk_and_the_sources_on_it(client, monkeypatch):
     from utils.paths.storage_roots import exports_root
 

@@ -23,7 +23,7 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # The desktop app hands this process a GUI environment, and a GUI environment has
-# no ~/.bashrc in it. `fix_path_env::fix()` in src-tauri/src/main.rs spawns the
+# no ~/.bashrc in it. `shell_path::fix_path()` in src-tauri spawns the
 # login shell and then takes PATH out of it and nothing else, so an AMD host's
 # HSA_OVERRIDE_GFX_VERSION / ROCM_PATH / USE_CK are dropped on the desktop path
 # and kept on the `unsloth studio` one. #9926 is that difference: identical model
@@ -41,6 +41,16 @@ try:
     _import_rocm_env()
 except Exception:
     pass
+
+# normalize allocator booleans before torch parses them; spawned workers inherit the environment.
+from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
+
+for _name, _old, _new in _normalize_allocator_conf():
+    print(
+        f"Unsloth: {_name}={_old!r} has noncanonical boolean casing, which PyTorch rejects; "
+        f"using {_new!r}.",
+        file = sys.stderr,
+    )
 
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
@@ -332,6 +342,7 @@ from routes import (
     data_recipe_router,
     datasets_router,
     export_router,
+    external_import_router,
     inference_router,
     inference_studio_router,
     mcp_servers_router,
@@ -793,6 +804,13 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001 -- the first tool call probes instead
         _lifespan_log.warning("could not start the sandbox warm-up", exc_info = True)
 
+    # Windows AMD driver with the ROCm/TheRock#7221 idle-eviction bug: one log line, plus gpu.driver_warning.
+    try:
+        from utils.hardware.hardware import start_amd_driver_check
+        start_amd_driver_check()
+    except Exception:  # noqa: BLE001 -- a warning, never a startup failure
+        _lifespan_log.debug("could not start the AMD driver check", exc_info = True)
+
     try:
         from hub.services.models.account_access import adopt_unnamed_public_proofs
         from utils.hub_settings import operator_hf_endpoint
@@ -1012,6 +1030,10 @@ async def lifespan(app: FastAPI):
     from core.inference.llama_http import aclose as _close_llama_http
 
     await _close_llama_http()
+
+    from core.systemone.laya_runtime import shutdown as shutdown_decisions
+
+    await asyncio.to_thread(shutdown_decisions)
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
@@ -1379,7 +1401,12 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/export",
     "/api/library",
     "/api/browser",
+    # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
+    "/api/auth",
     "/mcp",
+    # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
+    # prefix let an unauthenticated client stream an unbounded body into memory.
+    "/api/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
@@ -1394,14 +1421,21 @@ _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
 _STT_MULTIPART_UPLOAD_PATHS = (
     "/v1/audio/transcriptions",
     "/api/inference/audio/transcriptions",
+    "/v1/audio/translations",
+    "/api/inference/audio/translations",
 )
 _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/v1/videos",
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+# RAG document uploads (knowledge base, thread, project): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
+_RAG_DOCUMENT_UPLOAD_RE = _re.compile(
+    r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
+)
 # Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
-_AUDIO_INPUT_UPLOAD_PATH = "/api/inference/audio/inputs"
+_AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1409,7 +1443,7 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 # Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
-    _AUDIO_INPUT_UPLOAD_PATH,
+    *_AUDIO_INPUT_UPLOAD_PATHS,
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
@@ -1433,8 +1467,15 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         )
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
-    if path.rstrip("/") == _AUDIO_INPUT_UPLOAD_PATH:
+    if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         return AUDIO_INPUT_MAX_BYTES
+    if _RAG_DOCUMENT_UPLOAD_RE.match(path):
+        from core.rag import config as _rag_config
+
+        # RAG_MAX_UPLOAD_BYTES=0 means no cap, as the route treats it.
+        if _rag_config.MAX_UPLOAD_BYTES <= 0:
+            return sys.maxsize
+        return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1450,7 +1491,7 @@ def _get_request_body_max_bytes(path: str) -> int:
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):
         return STT_AUDIO_JSON_MAX_BYTES
-    # multipart headroom over the raw stt cap for the openai transcription route on both mounts
+    # multipart headroom over the raw stt cap for the openai transcription/translation routes
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
@@ -1508,6 +1549,7 @@ class MaxBodyMiddleware:
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
         chunked_upload_exact_paths: tuple = (),
+        upload_passthrough_pattern = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1519,11 +1561,18 @@ class MaxBodyMiddleware:
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
         # The subset of those allowed to omit Content-Length; the rest still get a 411.
         self.chunked_upload_exact_paths = chunked_upload_exact_paths
+        # Uploads whose path carries an id (RAG documents), matched by a compiled pattern.
+        self.upload_passthrough_pattern = upload_passthrough_pattern
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
-        return path.rstrip("/") in self.upload_passthrough_exact_paths or any(
-            path.startswith(p) for p in self.upload_passthrough_prefixes
+        return (
+            path.rstrip("/") in self.upload_passthrough_exact_paths
+            or any(path.startswith(p) for p in self.upload_passthrough_prefixes)
+            or (
+                self.upload_passthrough_pattern is not None
+                and self.upload_passthrough_pattern.match(path) is not None
+            )
         )
 
     def _upload_passthrough_max_bytes(self, path: str) -> int:
@@ -1553,7 +1602,12 @@ class MaxBodyMiddleware:
             return
         method = scope.get("method", "").upper()
         path = scope.get("path", "")
-        if method not in ("POST", "PUT", "PATCH") or not any(
+        # Under `--root-path /x`, uvicorn keeps the prefix in `path`; match on the route path the router sees.
+        root_path = scope.get("root_path") or ""
+        if root_path and path.startswith(root_path):
+            path = path[len(root_path) :] or "/"
+        # DELETE too: several routes take a JSON body on DELETE (delete-cached, bulk thread delete).
+        if method not in ("POST", "PUT", "PATCH", "DELETE") or not any(
             path.startswith(p) for p in self.protected_prefixes
         ):
             await self.app(scope, receive, send)
@@ -1569,7 +1623,7 @@ class MaxBodyMiddleware:
                     declared = None
                 break
 
-        if self._is_upload_passthrough(path):
+        if method != "DELETE" and self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
             if declared is not None:
                 if declared > upload_max_bytes:
@@ -1631,6 +1685,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
+    upload_passthrough_pattern = _RAG_DOCUMENT_UPLOAD_RE,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -1765,6 +1820,7 @@ app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(external_import_router, prefix = "/api/import", tags = ["import"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
@@ -2244,6 +2300,7 @@ def _get_cached_system_gpu_info(
     """Return training and inference GPU info with bounded live-probe churn."""
     import time
     from utils.hardware import (
+        amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
@@ -2358,6 +2415,7 @@ def _get_cached_system_gpu_info(
             "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
             if aggregate_basis_matches
             else None,
+            **amd_driver_warning_report(),
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp bundle can
@@ -2583,6 +2641,29 @@ def get_system_info(
     )
 
     memory = psutil.virtual_memory()
+    memory_total = memory.total
+    memory_available = memory.available
+    memory_percent = memory.percent
+    # The picker's RAM tiers compare against available_gb: publish the cgroup-capped view.
+    try:
+        from utils import host_memory
+
+        _budgets = host_memory.cgroup_memory_budgets()
+        _headroom_mib = host_memory.cgroup_headroom_mib(_budgets)
+        _limit_mib = host_memory.cgroup_limit_mib(_budgets)
+        if _limit_mib is not None:
+            memory_total = min(memory_total, _limit_mib * 1024**2)
+        if _headroom_mib is not None:
+            memory_available = min(memory_available, _headroom_mib * 1024**2)
+        if _limit_mib is not None or _headroom_mib is not None:
+            memory_available = min(memory_available, memory_total)
+            memory_percent = (
+                round((memory_total - memory_available) / memory_total * 100, 1)
+                if memory_total
+                else memory_percent
+            )
+    except Exception as e:
+        logger.debug(f"Failed to read the cgroup memory limit: {e}")
 
     # Corrects psutil's 1000x-too-small Apple Silicon M4+ reading (issue #8519).
     cpu_freq_mhz = cpu_frequency_mhz()
@@ -2636,9 +2717,9 @@ def get_system_info(
             "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
-            "total_gb": round(memory.total / 1024**3, 2),
-            "available_gb": round(memory.available / 1024**3, 2),
-            "percent_used": memory.percent,
+            "total_gb": round(memory_total / 1024**3, 2),
+            "available_gb": round(memory_available / 1024**3, 2),
+            "percent_used": memory_percent,
             "process_used_mb": process_used_mb,
         },
         "disk": {

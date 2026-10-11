@@ -43,12 +43,14 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
 
-# Fresh spawned interpreter: re-apply the process-wide network injections.
+# Fresh spawned interpreter: re-apply the process-wide network injections and CPU thread caps.
+from utils.cpu_threads import install_openblas_runtime_cap
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
 activate_happy_eyeballs()
+install_openblas_runtime_cap()
 
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
@@ -1180,6 +1182,20 @@ if sys.platform == "win32":
     del _add_rocm_dll_dirs_worker
 
 
+def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> bool:
+    # Clef ships joint_head_config.json next to its Qwen3.5 backbone; Laya never does.
+    marker = "joint_head_config.json"
+    try:
+        if (Path(model_load_target) / marker).is_file():
+            return True
+        from huggingface_hub import HfApi
+
+        siblings = HfApi(token = hf_token).model_info(model_load_target).siblings or ()
+        return any(getattr(s, "rfilename", None) == marker for s in siblings)
+    except Exception:
+        return False
+
+
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
     return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
@@ -1620,6 +1636,108 @@ def _parse_mem_fraction_env(env_value: str | None) -> float | None:
     # Two-sided on purpose: NaN loses every comparison, so this rejects it. A one-sided `override <= 0.0 or override >
     # 1.0` would pass NaN to set_per_process_memory_fraction.
     return override if 0.0 < override <= 1.0 else None
+
+
+def _training_vram_budget_fraction(
+    budget_gb: float | None,
+    denominator_bytes: int,
+    current: float = 1.0,
+) -> float | None:
+    """The memory fraction that holds this process to ``budget_gb``, never looser than ``current``
+    (the OOM guard's cap); None when there is no budget or no total to divide by."""
+    try:
+        budget = float(budget_gb)
+    except (TypeError, ValueError):
+        return None
+    if not (budget > 0) or denominator_bytes <= 0:
+        return None
+    return min(current, budget * 1024**3 / denominator_bytes)
+
+
+def _apply_training_vram_budget(
+    torch_mod: Any, single_gb: float | None, per_device_gb: list | None, gpu_ids: list | None
+) -> dict[int, float]:
+    """Cap each visible device at its own budget; returns {ordinal: fraction} for what was set."""
+    applied: dict[int, float] = {}
+    if not torch_mod.cuda.is_available():
+        return applied
+    get_fraction = getattr(torch_mod.cuda, "get_per_process_memory_fraction", None)
+    divides_by_props = _allocator_divides_by_props_total(getattr(torch_mod, "__version__", ""))
+    for index in range(torch_mod.cuda.device_count()):
+        budget = _device_budget_gb(single_gb, per_device_gb, index, gpu_ids)
+        if not budget:
+            continue
+        props = torch_mod.cuda.get_device_properties(index)
+        denominator = int(getattr(props, "total_memory", 0) or 0)
+        if not divides_by_props:
+            denominator = int(torch_mod.cuda.mem_get_info(index)[1])
+        current = get_fraction(index) if get_fraction is not None else 1.0
+        fraction = _training_vram_budget_fraction(budget, denominator, current)
+        if fraction is None:
+            continue
+        torch_mod.cuda.set_per_process_memory_fraction(fraction, index)
+        applied[index] = fraction
+        logger.info(
+            "Training VRAM budget: set_per_process_memory_fraction(%.4f, cuda:%d), "
+            "%.1f GiB of %.1f GiB",
+            fraction,
+            index,
+            fraction * denominator / 1024**3,
+            denominator / 1024**3,
+        )
+    return applied
+
+
+def _device_budget_gb(
+    single_gb: float | None,
+    per_device_gb: list | None,
+    ordinal: int,
+    gpu_ids: list | None = None,
+) -> float | None:
+    """The budget for torch device ``ordinal``. ``per_device_gb`` is indexed by physical GPU id, so
+    the ordinal goes through ``gpu_ids`` (the CUDA_VISIBLE_DEVICES narrowing) first; when it is
+    given, a missing or null entry means no cap on that card."""
+    if not per_device_gb:
+        return single_gb
+    physical = gpu_ids[ordinal] if gpu_ids and ordinal < len(gpu_ids) else ordinal
+    try:
+        return per_device_gb[int(physical)]
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def _offload_plan_shape(config: dict) -> dict:
+    """The per-device batch and LoRA rank an Auto offload plan sizes its training reserve for."""
+    return {"batch_size": config.get("batch_size"), "lora_rank": config.get("lora_r")}
+
+
+def _visible_gpu_count() -> int:
+    """GPUs the load spreads over when no ids were resolved (a UUID / MIG mask is inherited as is)."""
+    try:
+        import torch
+        return torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:
+        return 0
+
+
+def _with_vram_budget_hint(config: dict, message: str) -> str:
+    """Point a run that does not fit at its own VRAM budget, the one cause the generic advice omits."""
+    budget = config.get("offload_vram_gb")
+    per_device = [gb for gb in config.get("offload_vram_gb_per_device") or [] if gb]
+    lower = (message or "").lower()
+    if not (budget or per_device) or not any(
+        k in lower for k in ("out of memory", "out of vram", "does not fit")
+    ):
+        return message
+    cap = (
+        f"a {budget:g} GiB VRAM budget"
+        if budget and not per_device
+        else "per-GPU VRAM budgets (" + ", ".join(f"{gb:g}" for gb in per_device) + " GiB)"
+    )
+    return (
+        f"{message}\nThis run is capped at {cap}. Raise or clear the "
+        "VRAM budget under Training Hyperparameters > Memory."
+    )
 
 
 def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
@@ -3413,7 +3531,19 @@ def run_mlx_training_process(
 
     try:
         try:
-            _run_mlx_training(event_queue, stop_queue, config)
+            if config.get("is_decision"):
+                # Its own pipeline, as on the torch path, behind the same security gate.
+                security_error = _model_load_security_error(
+                    config, model_load_target, _worker_hf_token(config)
+                )
+                if security_error:
+                    event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                else:
+                    _download_decision_checkpoint(event_queue, config)
+                    from core.training.decision_trainer import run_decision_training
+                    run_decision_training(event_queue, stop_queue, config)
+            else:
+                _run_mlx_training(event_queue, stop_queue, config)
         finally:
             try:
                 stop_queue.put({"type": _MLX_WORKER_COMPLETE})
@@ -3463,6 +3593,45 @@ def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
         return recorded_local_base(model_name)
     except Exception:
         return None, True
+
+
+def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
+    from core.systemone import laya_runtime
+    from core.systemone.catalog import Checkpoint
+    from utils.hf_xet_fallback import start_watchdog
+    from utils.paths import is_local_path
+
+    model_name = config["model_name"]
+    # An LLM that gets a new decision head downloads through FastModel's own loader in the trainer.
+    if is_local_path(model_name) or config.get("decision_layout") == "llm":
+        return
+    hf_token = _worker_hf_token(config)
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+    _send_status(event_queue, "Loading decision model...")
+    # Under the stall watchdog, so the parent can retry a stalled Xet download over HTTP.
+    event_queue.put({"type": "model_load_started", "ts": time.time()})
+    watchdog_stop = start_watchdog(
+        repo_ids = [model_name],
+        on_stall = lambda msg: event_queue.put({"type": "stall", "message": msg, "ts": time.time()}),
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
+    )
+    try:
+        laya_runtime._checkpoint_dir(
+            Checkpoint(
+                "base",
+                model_name,
+                config.get("model_subfolder") or None,
+                "",
+                layout = config.get("decision_layout") or "laya",
+            )
+        )
+    except Exception as exc:
+        # The trainer's own load reports it.
+        logger.info("Could not download %s ahead of the trainer: %s", model_name, exc)
+    finally:
+        watchdog_stop.set()
+        event_queue.put({"type": "model_load_completed", "ts": time.time()})
 
 
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -3554,7 +3723,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     mark_log_record_continuations()
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
+    gpu_ids = config.get("resolved_gpu_ids")
+    if config.get("is_decision") and gpu_ids and len(gpu_ids) > 1:
+        gpu_ids = gpu_ids[:1]
+        event_queue.put(
+            {
+                "type": "warning",
+                "message": f"Decision models train on one GPU; using GPU {gpu_ids[0]}.",
+                "ts": time.time(),
+            }
+        )
+    apply_gpu_ids(gpu_ids, backend = config.get("device_backend"))
 
     if not _validate_training_worker_config(config, event_queue):
         return
@@ -3643,44 +3822,51 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
-    try:
-        from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+    # Laya decision models are ModernBERT encoders: none of these apply.
+    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
+    if (
+        not config.get("is_decision")
+        or config.get("decision_layout") in ("clef", "llm")
+        or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
+    ):
+        try:
+            from utils.ssm_runtime import resolved_model_wants_causal_conv1d
 
-        wants_causal_conv1d = resolved_model_wants_causal_conv1d(
-            model_name,
-            model_load_target,
-            _worker_hf_token(config),
-        )
-        _ensure_causal_conv1d_fast_path(
-            event_queue,
-            model_name,
-            required = wants_causal_conv1d,
-        )
-        _install_fast_path_hooks(
-            event_queue,
-            model_name,
-            install_causal_conv1d = wants_causal_conv1d,
-        )
-        _ensure_mamba_ssm(event_queue, model_name)
-        _ensure_flash_attn_for_long_context(
-            event_queue,
-            int(config.get("max_seq_length", 2048)),
-        )
-    except Exception as exc:
-        event_queue.put(
-            {
-                "type": "error",
-                "error": (
-                    f"Please choose another model to train, since "
-                    f"a fast-path kernel library "
-                    f"(causal-conv1d / mamba-ssm) failed to install "
-                    f"with error: {exc}"
-                ),
-                "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
-            }
-        )
-        return
+            wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+                model_name,
+                model_load_target,
+                _worker_hf_token(config),
+            )
+            _ensure_causal_conv1d_fast_path(
+                event_queue,
+                model_name,
+                required = wants_causal_conv1d,
+            )
+            _install_fast_path_hooks(
+                event_queue,
+                model_name,
+                install_causal_conv1d = wants_causal_conv1d,
+            )
+            _ensure_mamba_ssm(event_queue, model_name)
+            _ensure_flash_attn_for_long_context(
+                event_queue,
+                int(config.get("max_seq_length", 2048)),
+            )
+        except Exception as exc:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": (
+                        f"Please choose another model to train, since "
+                        f"a fast-path kernel library "
+                        f"(causal-conv1d / mamba-ssm) failed to install "
+                        f"with error: {exc}"
+                    ),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
+            return
 
     # No start-method override: Dataset.map() imports Pool from `multiprocess`, so forcing stdlib multiprocessing onto
     # "fork" never reached it; the guard now asks multiprocess.
@@ -4109,6 +4295,60 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
+    # and two runs on one card can each take their share.
+    # ── 2b. Training VRAM budget ──
+    # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
+    _wants_budget = bool(
+        (config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"))
+        and config.get("offload_layers") == "auto"
+        and config.get("training_type", "LoRA/QLoRA") in ("LoRA/QLoRA", "Continued Pretraining")
+        and not config.get("is_decision")
+        and not config.get("is_embedding")
+    )
+    # Vision / audio loads on several GPUs cannot offload at load, and LoRA setup allocates adapters before it swaps:
+    # a cap would OOM either step, so those runs offload Auto uncapped.
+    _budget_unsupported = (
+        _wants_budget
+        and (len(gpu_ids) if gpu_ids else _visible_gpu_count()) > 1
+        and bool(config.get("is_dataset_image") or config.get("is_dataset_audio"))
+    )
+
+    if _budget_unsupported:
+        logger.info(
+            "Training VRAM budget not applied: multi-GPU vision / audio runs offload at LoRA setup"
+        )
+        # An out-of-memory error then must not blame a cap that was never set.
+        config["offload_vram_gb"] = None
+        config["offload_vram_gb_per_device"] = None
+    elif _wants_budget:
+        try:
+            import torch as _torch_budget
+            _apply_training_vram_budget(
+                _torch_budget,
+                config.get("offload_vram_gb"),
+                config.get("offload_vram_gb_per_device"),
+                gpu_ids,
+            )
+        except Exception as _budget_err:
+            logger.warning("Could not apply the training VRAM budget: %s", _budget_err)
+
+    if config.get("is_decision", False):
+        try:
+            _download_decision_checkpoint(event_queue, config)
+            from core.training.decision_trainer import run_decision_training
+            run_decision_training(event_queue, stop_queue, config)
+        except Exception as exc:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(exc),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
+        return
+
     # Embedding models use a different pipeline (FastSentenceTransformer + SentenceTransformerTrainer +
     # MultipleNegativesRankingLoss), so branch early.
     if config.get("is_embedding", False):
@@ -4369,6 +4609,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 actual_model_repo_id = config.get("actual_model_repo_id"),
                 model_revision = model_revision,
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                offload_layers = config.get("offload_layers", 0),
+                prefetch_depth = config.get("prefetch_depth", 2),
+                offload_plan_shape = _offload_plan_shape(config),
             )
             fallback_error = (
                 _model_cache_fallback_error(config, trainer.model_load_error)
@@ -4435,6 +4678,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         actual_model_repo_id = config.get("actual_model_repo_id"),
                         model_revision = model_revision,
                         use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                        offload_layers = config.get("offload_layers", 0),
+                        prefetch_depth = config.get("prefetch_depth", 2),
+                        offload_plan_shape = _offload_plan_shape(config),
                     )
         finally:
             _load_watchdog_stop.set()
@@ -4443,7 +4689,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             if trainer.should_stop:
                 event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
-                error_msg = trainer.training_progress.error or "Failed to load model"
+                error_msg = _with_vram_budget_hint(
+                    config, trainer.training_progress.error or "Failed to load model"
+                )
                 event_queue.put(
                     {
                         "type": "error",
@@ -4537,7 +4785,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 event_queue.put(
                     {
                         "type": "error",
-                        "error": trainer.training_progress.error or "Failed to prepare model",
+                        "error": _with_vram_budget_hint(
+                            config, trainer.training_progress.error or "Failed to prepare model"
+                        ),
                         "stack": "",
                         "ts": time.time(),
                     }
@@ -4688,7 +4938,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             event_queue.put(
                 {
                     "type": "error",
-                    "error": _oom_msg,
+                    "error": _with_vram_budget_hint(config, _oom_msg),
                     "stack": traceback.format_exc(limit = 20),
                     "ts": time.time(),
                 }
@@ -4856,6 +5106,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
                     "status_message": progress.status_message,
+                    "offload": getattr(progress, "offload", None),
                     "ts": time.time(),
                 }
             )

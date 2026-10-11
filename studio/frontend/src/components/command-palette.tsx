@@ -130,6 +130,7 @@ const WORKSPACES: {
     id: "switchToAudio",
     icon: AudioWave01Icon,
     labelKey: "shell.navigation.audio",
+    aliases: ["speech", "tts", "voice", "music", "transcribe"],
   },
   {
     id: "switchToExport",

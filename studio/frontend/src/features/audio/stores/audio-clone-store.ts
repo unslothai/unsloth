@@ -10,13 +10,13 @@ import {
 
 const AUDIO_CLONE_STORAGE_KEY = "unsloth_audio_clone_v1";
 
-// Clone sends the reference's first 30 s, so a longer clip's full text would not match it.
-function referenceTranscript(next: AudioSourceSelection | null): string {
+// clone sends the reference's first 30 s, so a longer clip's full text would not match it.
+export function referenceTranscript(next: AudioSourceSelection | null): string {
   if (!next || (next.durationS ?? 0) > REFERENCE_MAX_SECONDS) return "";
   return next.transcript || "";
 }
 
-/** Also holds every page's tool values, not just Clone's. */
+/** also holds every page's tool values, not just clone's. */
 interface AudioCloneState {
   reference: AudioSourceSelection | null;
   referenceText: string;

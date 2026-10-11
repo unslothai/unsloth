@@ -33,9 +33,9 @@ import {
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
-  Shield01Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { ShieldCogIcon } from "@/lib/shield-cog-icon";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -215,7 +215,7 @@ const TABS: TabDef[] = [
   {
     id: "sandbox",
     labelKey: "settings.tabs.sandbox",
-    icon: Shield01Icon,
+    icon: ShieldCogIcon,
   },
   {
     id: "api-keys",

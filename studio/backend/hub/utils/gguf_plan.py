@@ -314,20 +314,33 @@ def _audio_cpp_package_plans(siblings: Sequence) -> Optional[dict[str, GgufVaria
     return plans
 
 
-def _with_audio_cpp_voices(plan: GgufVariantPlan, siblings: Sequence) -> GgufVariantPlan:
-    """*plan* plus the voice embeddings audio.cpp reads beside its GGUF (``<dir>/embeddings/*``), as
-    PocketTTS publishes them. A GGUF with no such folder beside it is returned unchanged."""
+def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVariantPlan:
+    """*plan* plus what audio.cpp reads beside its GGUF: the voice embeddings in ``<dir>/embeddings/``
+    (PocketTTS) and a companion model in the same repo (MioTTS's MioCodec). Otherwise unchanged."""
     dirs = {name.rpartition("/")[0] for name in plan.main_filenames}
     if len(dirs) != 1:
         return plan
     prefix = f"{next(iter(dirs))}/embeddings/".lstrip("/")
-    extras = tuple(
-        file
+    by_name = {
+        name: sibling
         for sibling in siblings
         if isinstance(name := getattr(sibling, "rfilename", None), str)
-        and name.startswith(prefix)
-        and name.lower().endswith(".safetensors")
-        and (file := expected_file_from_sibling(sibling)) is not None
+    }
+    wanted = {
+        name
+        for name in by_name
+        if name.startswith(prefix) and name.lower().endswith(".safetensors")
+    }
+    try:
+        from core.inference.audio_cpp_models import companion_files
+    except Exception:
+        companion_files = None
+    if companion_files is not None:
+        wanted.update(companion_files(min(plan.main_filenames), by_name))
+    extras = tuple(
+        file
+        for name, sibling in by_name.items()
+        if name in wanted and (file := expected_file_from_sibling(sibling)) is not None
     )
     if not extras:
         return plan
@@ -408,7 +421,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             *mtp_expected,
             *dflash_expected,
         )
-        plans[quant] = _with_audio_cpp_voices(
+        plans[quant] = _with_audio_cpp_extras(
             plan_from_expected_files(
                 quant,
                 expected_files,

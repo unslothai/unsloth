@@ -170,14 +170,12 @@ for (const [name, file, inline] of [
   });
 }
 
-test("sidebar inline: an unchanged IME Enter does not close the input", () => {
+test("sidebar inline: a separate idle Pinyin Enter closes an unchanged input", () => {
   const f = fixture("components/app-sidebar.tsx", true, false);
   f.compose(true);
   f.key("Enter", true);
   f.compose(false);
   f.key("Enter", false, 229);
-  assert.deepEqual(f.effects, []);
-  f.key("Enter");
   assert.deepEqual(f.effects, ["prevent", "close"]);
 });
 
@@ -249,9 +247,29 @@ test("focus change clears a recent compositionend so the next idle Pinyin Enter 
 
 test("a keyCode 13 candidate-confirming Enter inside an open composition is swallowed once", () => {
   const state = newInputImeState();
-  inputImeHandlers(state).onCompositionStart();
+  const ime = inputImeHandlers(state);
+  ime.onCompositionStart();
   assert.equal(imeOwnsInputKeydown(plainEnter(13, 2000), state), true);
-  assert.equal(imeOwnsInputKeydown(plainEnter(13, 5000), state), false);
+  ime.onCompositionEnd({ timeStamp: 2010 });
+  assert.equal(imeOwnsInputKeydown(plainEnter(229, 2100), state), false);
+});
+
+test("a Chrome-order composition does not swallow the next idle Pinyin Enter", () => {
+  const state = newInputImeState();
+  const ime = inputImeHandlers(state);
+  ime.onCompositionStart();
+  assert.equal(
+    imeOwnsInputKeydown(
+      {
+        ...plainEnter(229, 1000),
+        nativeEvent: { isComposing: true },
+      },
+      state,
+    ),
+    true,
+  );
+  ime.onCompositionEnd({ timeStamp: 1010 });
+  assert.equal(imeOwnsInputKeydown(plainEnter(229, 1100), state), false);
 });
 
 test("every rename input resets IME state on focus and blur", () => {
