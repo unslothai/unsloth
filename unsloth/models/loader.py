@@ -62,7 +62,7 @@ from .loader_utils import (
     _is_offline_related_error,
     raise_if_fast_inference_under_fsdp2,
 )
-import os, contextlib, sys
+import os, contextlib, functools, sys
 
 try:
     from huggingface_hub import get_token
@@ -956,7 +956,45 @@ def _vllm_unavailable_error():
     )
 
 
+def _diffusion_peft_kwargs(model, args, kwargs):
+    """FastLanguageModel.get_peft_model's arguments, bound against its own signature so positional ones keep
+    their meaning, for FastDiffusionModel.get_peft_model. Omitted ones stay omitted (profile defaults apply)."""
+    import inspect
+
+    bound = inspect.signature(FastLlamaModel.get_peft_model).bind(model, *args, **kwargs)
+    arguments = dict(bound.arguments)
+    arguments.pop("model", None)
+    arguments.update(arguments.pop("kwargs", {}))
+    return arguments
+
+
 class FastLanguageModel(FastLlamaModel):
+    # Text-diffusion models load through FastModel's slow path; these route them there for the PEFT / mode helpers.
+    @staticmethod
+    @functools.wraps(FastLlamaModel.get_peft_model)
+    def get_peft_model(model, *args, **kwargs):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.get_peft_model(
+                model, **_diffusion_peft_kwargs(model, args, kwargs)
+            )
+        return FastLlamaModel.get_peft_model(model, *args, **kwargs)
+
+    @staticmethod
+    @functools.wraps(FastLlamaModel.for_inference)
+    def for_inference(model):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.for_inference(model)
+        return FastLlamaModel.for_inference(model)
+
+    @staticmethod
+    @functools.wraps(FastLlamaModel.for_training)
+    def for_training(model, use_gradient_checkpointing = None):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            if use_gradient_checkpointing is None:
+                use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
+            return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
+        return FastLlamaModel.for_training(model, use_gradient_checkpointing)
+
     @staticmethod
     @tokenizers_v1_on_return
     @_offline_aware_load

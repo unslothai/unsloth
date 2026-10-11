@@ -30,6 +30,7 @@ from .diffusion_profiles import (
     restore_rotary_buffers,
     unwrap_diffusion_model,
 )
+from .diffusion_samplers import DiffusionGenerationCancelled
 from .llama import logger
 from .loader_utils import (
     planner_config_overrides,
@@ -40,7 +41,13 @@ from .loader_utils import (
     resolve_unsloth_device_map,
 )
 
-__all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
+__all__ = [
+    "FastDiffusionModel",
+    "DIFFUSION_MODEL_TYPES",
+    "DiffusionGenerationCancelled",
+    "is_diffusion_model",
+    "is_diffusion_model_type",
+]
 
 # transformers model_type strings routed to this slow path.
 DIFFUSION_MODEL_TYPES = ("diffusion_gemma", "diffusion_gemma4")
@@ -67,6 +74,18 @@ def is_diffusion_model_type(model_types):
         model_types = (model_types,)
     known = DIFFUSION_MODEL_TYPES + diffusion_model_types()
     return any(mt in known for mt in model_types)
+
+
+def is_diffusion_model(model):
+    """True for a model loaded through FastDiffusionModel, PEFT / DDP wrapped or not."""
+    if model is None:
+        return False
+    base = unwrap_diffusion_model(model)
+    return any(
+        getattr(candidate, "_unsloth_slow_diffusion", False)
+        or getattr(candidate, "_unsloth_diffusion_profile", None) is not None
+        for candidate in (model, base)
+    )
 
 
 def _refuse_tied_lora_merge(model):
@@ -476,6 +495,15 @@ class FastDiffusionModel:
         if getattr(model, "_unsloth_full_finetuning", False):
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             return model
+        # Refuse what this transformers-only path cannot honour instead of silently training plain LoRA.
+        if kwargs.get("use_dora"):
+            raise ValueError(
+                "Unsloth: DoRA is not supported for text-diffusion models yet. Use use_dora = False."
+            )
+        if kwargs.get("loftq_config"):
+            raise ValueError(
+                "Unsloth: LoftQ is not supported for text-diffusion models yet. Use loftq_config = None."
+            )
         from peft import LoraConfig, get_peft_model as peft_get_peft_model
 
         profile = resolve_diffusion_profile(getattr(model, "config", None))
@@ -484,8 +512,7 @@ class FastDiffusionModel:
                 profile.lora_target_modules if profile is not None else DIFFUSION_LORA_TARGETS
             )
 
-        # use_dora, and any other LoraConfig kwarg outside this allowlist, is silently dropped: Unsloth does
-        # not reach this path today, so it is untested on diffusion models.
+        # Other Unsloth-only kwargs (offload_layers, finetune_* flags, ...) do not apply to this path.
         lora_kwargs = dict(
             r = r,
             lora_alpha = lora_alpha,
@@ -493,6 +520,7 @@ class FastDiffusionModel:
             bias = bias,
             target_modules = target_modules,
             task_type = task_type,  # None: diffusion has no standard CAUSAL_LM head
+            use_rslora = bool(kwargs.get("use_rslora", False)),
             **{k: v for k, v in kwargs.items() if k in ("modules_to_save", "init_lora_weights")},
         )
         # Exclude the vision tower's custom (non-Linear) modules that share suffix names.
@@ -532,9 +560,7 @@ class FastDiffusionModel:
     @staticmethod
     def for_inference(model):
         model.eval()
-        for _, m in model.named_modules():
-            if hasattr(m, "gradient_checkpointing"):
-                m.gradient_checkpointing = False
+        _disable_gradient_checkpointing(model)
         return model
 
     @staticmethod
@@ -542,4 +568,48 @@ class FastDiffusionModel:
         model.train()
         if use_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
+        elif not use_gradient_checkpointing:
+            _disable_gradient_checkpointing(model)
+        model._unsloth_gradient_checkpointing = use_gradient_checkpointing
         return model
+
+    @staticmethod
+    def generate_text(
+        model,
+        tokenizer,
+        prompt = None,
+        messages = None,
+        max_new_tokens = 256,
+        steps = None,
+        block_length = None,
+        temperature = 0.0,
+        stop_callback = None,
+        **kwargs,
+    ):
+        """One completion as text via the family's diffusion sampler (see diffusion_samplers.generate_text)."""
+        from .diffusion_samplers import generate_text
+        return generate_text(
+            model,
+            tokenizer,
+            prompt = prompt,
+            messages = messages,
+            max_new_tokens = max_new_tokens,
+            steps = steps,
+            block_length = block_length,
+            temperature = temperature,
+            stop_callback = stop_callback,
+            **kwargs,
+        )
+
+
+def _disable_gradient_checkpointing(model):
+    # gradient_checkpointing_disable reaches LLaDA's own set_activation_checkpointing through the profile bridge.
+    disable = getattr(model, "gradient_checkpointing_disable", None)
+    if callable(disable):
+        try:
+            disable()
+        except (AttributeError, ValueError):
+            pass
+    for _, m in model.named_modules():
+        if hasattr(m, "gradient_checkpointing"):
+            m.gradient_checkpointing = False
