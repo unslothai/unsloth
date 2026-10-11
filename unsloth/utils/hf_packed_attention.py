@@ -118,8 +118,7 @@ def _torch_varlen(device):
         _TORCH_VARLEN.append(fn)
         _TORCH_VARLEN_GQA[:] = [native_gqa]
     fn = _TORCH_VARLEN[0]
-    # varlen_attn runs flash directly: a disabled flash SDPA backend keeps the xformers / flash-attn / sdpa path.
-    if fn is None or torch.version.hip is not None or not torch.backends.cuda.flash_sdp_enabled():
+    if fn is None or torch.version.hip is not None:
         return None
     ok = _TORCH_VARLEN_DEVICES.get(device.index)
     if ok is None:
@@ -131,8 +130,11 @@ def _torch_varlen(device):
 _SDPA_MATH = []
 
 
-def _sdpa_picks_math(query, key) -> bool:
-    """A math-first sdpa_kernel priority leaves flash enabled; keep the math path it asks for."""
+def _sdpa_requested(query, key) -> bool:
+    """Deterministic mode, a disabled flash SDPA backend or a math-first sdpa_kernel priority asks for
+    SDPA itself, so no varlen kernel (torch's, xformers or flash-attn) may replace it."""
+    if torch.are_deterministic_algorithms_enabled():
+        return True
     if not _SDPA_MATH:
         from torch.nn.attention import SDPBackend
         from .attention_dispatch import _sdpa_backend_state
@@ -140,7 +142,7 @@ def _sdpa_picks_math(query, key) -> bool:
         _SDPA_MATH[:] = [int(SDPBackend.MATH), _sdpa_backend_state]
     math, backend_state = _SDPA_MATH
     n_heads, n_kv_heads = query.shape[1], key.shape[1]
-    _, choice = backend_state(
+    flash, choice = backend_state(
         str(query.device),
         query.dtype,
         query.shape[-1],
@@ -149,7 +151,7 @@ def _sdpa_picks_math(query, key) -> bool:
         True,
         n_heads != n_kv_heads,
     )
-    return choice == math
+    return not flash or choice == math
 
 
 def _sdpa_packed_varlen(
@@ -220,10 +222,9 @@ def _sdpa_packed_varlen(
         and kwargs.get("past_key_values") is None
         and n_heads % key.shape[1] == 0
         and not _sliding_or_softcapped(module, kwargs)
+        and not _sdpa_requested(query, key)
     ):
         torch_varlen = _torch_varlen(query.device)
-        if torch_varlen is not None and _sdpa_picks_math(query, key):
-            torch_varlen = None
         backend = select_attention_backend(use_varlen = True)
         # Flash-2 varlen backward faults past int32 indexing. Keyed on training / grad mode, not
         # requires_grad, so a reentrant checkpoint's no_grad forward and its recompute agree.

@@ -432,19 +432,6 @@ def test_a_refusing_torch_varlen_hands_the_call_back(monkeypatch):
     assert hpa._TORCH_VARLEN == [None]
 
 
-@_CUDA
-def test_a_disabled_flash_backend_keeps_torch_varlen_off(monkeypatch):
-    from torch.nn.attention import SDPBackend, sdpa_kernel
-
-    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [lambda *args, **kwargs: None])
-    monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
-    device = torch.device("cuda", 0)
-    assert hpa._torch_varlen(device) is not None
-    with sdpa_kernel([SDPBackend.MATH]):
-        assert hpa._torch_varlen(device) is None
-    assert hpa._torch_varlen(device) is not None
-
-
 def test_torch_varlen_kill_switch(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TORCH_VARLEN", "0")
     monkeypatch.setattr(hpa, "_TORCH_VARLEN", [])
@@ -454,10 +441,14 @@ def test_torch_varlen_kill_switch(monkeypatch):
 
 
 @_CUDA
-def test_a_math_first_priority_keeps_torch_varlen_off(monkeypatch):
+@pytest.mark.parametrize("policy", ["math_only", "flash_disabled", "math_first", "deterministic"])
+def test_an_sdpa_policy_keeps_every_varlen_kernel_off(monkeypatch, policy):
+    """The wrapped sdpa runs, not torch varlen nor the xformers / flash-attn dispatch; outside, varlen runs."""
+    import contextlib
     from torch.nn.attention import SDPBackend, sdpa_kernel
+    from unsloth.utils import attention_dispatch as ad
 
-    if "set_priority" not in inspect.signature(sdpa_kernel).parameters:
+    if policy == "math_first" and "set_priority" not in inspect.signature(sdpa_kernel).parameters:
         pytest.skip("this torch has no sdpa_kernel(set_priority = True)")
     calls = []
 
@@ -467,21 +458,37 @@ def test_a_math_first_priority_keeps_torch_varlen_off(monkeypatch):
 
     monkeypatch.setattr(hpa, "_TORCH_VARLEN", [spy])
     monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
+    monkeypatch.setattr(ad, "run_attention", lambda **kwargs: calls.append(2) or kwargs["Q"])
     seen, orig = _calls()
     hpa._ORIG_SDPA[0] = orig
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     lengths = [3, 3]
     q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16)
+    k = torch.randn(1, 2, 6, 64, device = "cuda", dtype = torch.bfloat16)
     module = types.SimpleNamespace(is_causal = True)
 
     def run():
         return hpa._sdpa_packed_varlen(
-            module, q, q, q, _block_causal(lengths, "cuda"),
+            module, q, k, k, _block_causal(lengths, "cuda"),
             packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
         )
 
-    with sdpa_kernel([SDPBackend.MATH, SDPBackend.FLASH_ATTENTION], set_priority = True):
-        run()
-    assert calls == []
+    if policy == "math_only":
+        context = sdpa_kernel([SDPBackend.MATH])
+    elif policy == "flash_disabled":
+        context = sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH])
+    elif policy == "math_first":
+        context = sdpa_kernel([SDPBackend.MATH, SDPBackend.FLASH_ATTENTION], set_priority = True)
+    else:
+        context = contextlib.nullcontext()
+        deterministic = torch.are_deterministic_algorithms_enabled()
+        torch.use_deterministic_algorithms(True)
+    try:
+        with context:
+            assert run() == ("orig", None)
+    finally:
+        if policy == "deterministic":
+            torch.use_deterministic_algorithms(deterministic)
+    assert calls == [] and len(seen) == 1
     run()
     assert calls == [1]
