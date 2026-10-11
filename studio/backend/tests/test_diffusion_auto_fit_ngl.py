@@ -118,19 +118,22 @@ def test_fit_reads_the_runner_device(monkeypatch):
     assert backend._diffusion_fit_ngl("/m.gguf", "", 4096, pinned = False) is None
 
 
-def test_fit_leaves_an_ngl_override_and_waits_for_a_killed_runner(monkeypatch):
+def test_fit_leaves_an_ngl_override_alone(monkeypatch):
     backend = _fit_host(monkeypatch, [(0, 7_800, 8_188)])
-    settled = []
-    monkeypatch.setattr(
-        LlamaCppBackend,
-        "_wait_for_vram_settle",
-        staticmethod(lambda **kw: settled.append(kw["since_kill"])),
-    )
-    backend._last_kill_monotonic = 123.0
     assert backend._diffusion_fit_ngl("/m.gguf", "0", 4096, pinned = False) == 8
-    assert settled == [123.0]
     monkeypatch.setenv("NGL", "0")
     assert backend._diffusion_fit_ngl("/m.gguf", "0", 4096, pinned = False) is None
+
+
+def test_diffusion_load_settles_vram_outside_the_lock():
+    # The fit reads free VRAM; a just-killed runner still holds it. Waiting under the
+    # lock would block /unload for the whole settle.
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    branch = src[src.index("if self._is_diffusion:") :]
+    settle = branch.index("self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)")
+    assert settle < branch.index("with self._lock:") < branch.index("_start_diffusion_server(")
 
 
 def test_unpinned_multi_gpu_never_cuts_a_load_that_fits_a_card(monkeypatch):
@@ -236,6 +239,12 @@ def test_fitted_launch_pins_the_context_it_was_sized_for(monkeypatch, tmp_path):
         assert backend._effective_context_length == 4096
     cmd, _backend = _launch(monkeypatch, tmp_path, [(0, 7_800, 8_188)], n_ctx = 2048)
     assert (_ngl(cmd), _maxtok(cmd)) == ("11", "2048")
+
+
+def test_zero_layer_fit_runs_on_the_cpu(monkeypatch, tmp_path):
+    cmd, backend = _launch(monkeypatch, tmp_path, [(0, 0, 8_188)])
+    assert (_ngl(cmd), cmd[cmd.index("--gpu") + 1]) == ("0", "")
+    assert backend._gpu_offload_active is False
 
 
 def test_auto_launch_that_fits_is_unchanged(monkeypatch, tmp_path):

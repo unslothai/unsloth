@@ -19437,8 +19437,6 @@ class LlamaCppBackend:
             # Vulkan ordinals are not the CUDA ids the runner's mask takes.
             if binary and self._is_vulkan_backend(binary):
                 return None
-            # A runner killed for this load still reads as used until the driver reclaims it.
-            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
             rows = self._get_gpu_memory(binary)
             file_bytes = self._get_gguf_size_bytes(model_path)
             sysmem_fallback = self._sysmem_fallback_risk(binary)
@@ -19554,6 +19552,11 @@ class LlamaCppBackend:
             # shared memory instead of refusing.
             if fit_ngl is not None and not 0 < maxtok <= 8192:
                 maxtok = _DIFFUSION_FIT_CTX
+            # Nothing fits: run on the CPU like a manual zero-layer split, not on a
+            # GPU context the card may not have room for.
+            if fit_ngl == 0:
+                holds_no_gpu = True
+                gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = True)
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -25211,6 +25214,9 @@ class LlamaCppBackend:
                 # diffusion runner ignores the budget, so a previous llama-server's
                 # fraction would relaunch a healthy diffusion server on every Apply.
                 self._vram_fraction_launched = None
+                # Outside the lock, as for llama-server: the Auto layer fit reads free VRAM,
+                # which a just-killed runner still holds until the driver reclaims it.
+                self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
