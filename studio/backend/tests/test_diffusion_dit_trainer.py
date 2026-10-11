@@ -534,6 +534,7 @@ def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
 @pytest.mark.parametrize(
     "capability, lowp",
     [
+        ((7, 5), set()),
         ((8, 0), set()),
         ((8, 6), set()),
         ((8, 9), {"fp8"}),
@@ -543,16 +544,26 @@ def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
     ],
 )
 def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp):
-    # Only sm89+ is offered fp8 and only sm100+ mxfp8; an explicit mxfp8 below sm100 is refused before any load.
+    # fp8 is offered (and an explicit request accepted) only on sm89+, mxfp8 only on sm100+; anything else is refused
+    # by the child and by the pre-eviction preflight alike, before any load.
+    import core.training.diffusion_train_common as dtc
+    from core.training.diffusion_train_common import training_precision_preflight_error
+
     _patch_capability(monkeypatch, capability)
+    monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda _f: None)
+    monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda _f: None)
     modes, _ = train_precision_modes()
-    assert {m for m in modes if m in ("fp8", "mxfp8")} == lowp
-    cfg = types.SimpleNamespace(base_precision = "mxfp8", mixed_precision = "bf16", base_model = "x")
-    if "mxfp8" in lowp:
-        assert _resolve_base_precision(cfg, None, "cuda") == "mxfp8"
-    else:
-        with pytest.raises(ValueError, match = "Blackwell"):
-            _resolve_base_precision(cfg, None, "cuda")
+    assert {m for m in modes if m in ("fp8", "mxfp8")} == (lowp if capability >= (8, 0) else set())
+    for mode, floor in (("fp8", "sm89"), ("mxfp8", "Blackwell")):
+        cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
+        reason = training_precision_preflight_error("flux.1", mode)
+        if mode in lowp:
+            assert _resolve_base_precision(cfg, None, "cuda") == mode
+            assert reason is None
+        else:
+            with pytest.raises(ValueError, match = floor):
+                _resolve_base_precision(cfg, None, "cuda")
+            assert reason and floor in reason
 
 
 @pytest.mark.parametrize("device", ["cpu", "mps", "xpu"])

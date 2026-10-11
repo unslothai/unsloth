@@ -148,7 +148,10 @@ def test_resolve_base_precision_explicit_int8_gates_on_torchao(monkeypatch):
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
 
-    # The gate is int8-specific: explicit bf16/fp8 pass through regardless of torchao.
+    # The gate is int8-specific: explicit bf16/fp8 pass through regardless of torchao (fp8 on an sm89 GPU).
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
     assert dit._resolve_base_precision(_cfg(base_precision = "bf16"), spec, "cuda") == "bf16"
     assert dit._resolve_base_precision(_cfg(base_precision = "fp8"), spec, "cuda") == "fp8"
@@ -1073,3 +1076,37 @@ def test_dit_accelerator_gate_survives_a_torch_without_every_probe(monkeypatch):
     # A working probe still clears the gate even when its neighbours are broken.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     assert dit_accelerator_missing_reason("flux.1") is None
+
+
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+def test_lowp_probe_failure_falls_back_before_touching_the_model(monkeypatch, mode):
+    # An arch whose float8 / MX GEMM fails (unverified sm89 / sm120 paths) must fall back to bf16 at load, not mid-run.
+    def broken_probe(convert, transformer):
+        raise RuntimeError("CUBLAS_STATUS_NOT_SUPPORTED")
+
+    monkeypatch.setattr(dit, "_probe_lowp", broken_probe)
+    m = _block_model()
+    before = [type(x) for x in m.modules()]
+    events = []
+    apply = dit._apply_fp8_training if mode == "fp8" else dit._apply_mxfp8_training
+    assert apply(m, events.append, "flux.1") is False
+    assert [type(x) for x in m.modules()] == before
+    assert not any(getattr(x, "_studio_lowp", None) for x in m.modules())
+    assert "CUBLAS_STATUS_NOT_SUPPORTED" in events[0]["message"] and mode in events[0]["message"]
+
+
+def test_lowp_probe_skips_off_cuda_and_raises_on_a_failing_gemm():
+    import torch
+
+    calls = []
+    dit._probe_lowp(lambda probe: calls.append(probe), _block_model())  # CPU model: no probe
+    assert calls == []
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+
+    def failing_convert(probe):
+        probe.ff.forward = lambda x: (_ for _ in ()).throw(RuntimeError("scaled_mm unsupported"))
+
+    with pytest.raises(RuntimeError, match = "scaled_mm unsupported"):
+        dit._probe_lowp(failing_convert, _block_model().cuda())
+    dit._probe_lowp(lambda probe: None, _block_model().cuda())  # a working GEMM passes

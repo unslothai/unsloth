@@ -818,8 +818,8 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     rejected before teardown: the bf16-GPU requirement; no accelerator at all (which covers nf4
     too); the dense precisions needing CUDA; the torchao precisions against a ROCm build, which
     clears the stub test and hands the sm100 floor an AMD gfx version; explicit int8 needing a
-    FUNCTIONAL torchao; explicit fp8/mxfp8 against the Windows-ROCm stub; explicit mxfp8 needing
-    Blackwell. Add a gate there, add it here. Never raises."""
+    FUNCTIONAL torchao; explicit fp8/mxfp8 against the Windows-ROCm stub; explicit fp8 needing
+    sm89+ and mxfp8 Blackwell. Add a gate there, add it here. Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
@@ -862,6 +862,18 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
             )
         # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, AFTER a full dense load.
         # Re-check here so a stale client fails fast before eviction.
+        # fp8 needs sm89+: below it the first float8 _scaled_mm raises inside the loop, after eviction.
+        if mode == "fp8":
+            try:
+                import torch
+                fp8_ok = torch.cuda.get_device_capability() >= (8, 9)
+            except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported, fail fast
+                fp8_ok = False
+            if not fp8_ok:
+                return (
+                    "base_precision='fp8' needs an Ada, Hopper or Blackwell (sm89+) GPU; this GPU is "
+                    "older. Use base_precision='bf16', 'int8', 'nf4', or 'auto'."
+                )
         if mode == "mxfp8":
             try:
                 import torch
