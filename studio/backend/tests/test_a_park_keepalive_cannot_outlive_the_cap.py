@@ -288,6 +288,14 @@ class TestALineSourceAndABatch:
         with pytest.raises(httpx.ReadTimeout):
             asyncio.run(self._relay(items, monkeypatch, cap = 0.5))
 
+    def test_a_park_in_the_first_tokens_chunk_is_read(self, monkeypatch):
+        # The first output and the park that follows it arrive in one chunk: without reading
+        # that park, every keepalive after it looked like progress and the cap never fired.
+        items = [b'data: {"choices":[{"text":"a"}]}\n\n: preempted\n\n']
+        items += [b": preempt-keepalive\n\n"] * 200
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(self._relay(items, monkeypatch, cap = 0.3))
+
     def test_the_last_prompt_resuming_ends_the_park(self, monkeypatch):
         items = [b'data: {"choices":[{"text":"a"}]}\n\n', b": preempted 0\n\n: preempted 1\n\n"]
         items += [b": resumed 0\n\n", b": resumed 1\n\n", b'data: {"choices":[{"text":"b"}]}\n\n']

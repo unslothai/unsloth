@@ -1556,7 +1556,7 @@ class TestParkingIsOffUntilTheLaunchAsksForIt:
 class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
     """The exact launch used to append ``--preempt-ram -1`` for an auto-fit context, before the
     running server had confirmed the mode, and every way the attempt is abandoned keeps that argv
-    (the refusal rung relaunches the same command; a build ignoring the variable never relaunches).
+    (a build ignoring the variable never relaunches; the refusal rung now relaunches on the host-bounded budget).
     A server with no exact concurrency then parked into unbounded host RAM. So the launch names the
     unsized budget for a pool it cannot measure, and judges that figure after launch."""
 
@@ -1575,15 +1575,18 @@ class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
         assert marked < judged
         assert "self._exact_pool_unknown = False" not in source[marked:judged]
 
-    def test_the_refusal_rung_relaunches_the_same_argv_with_only_the_env_changed(self):
-        # Why a generated flag had to go: the fallback rebuilds nothing.
+    def test_the_refusal_rung_relaunches_on_the_host_bounded_budget(self):
+        # The exact budget is sized whole, exempt from the host bound because exact mode judges
+        # a short budget itself. The plain server the refusal leaves behind is not exact, so its
+        # budget is bounded to the host before the relaunch, as the preflight shortage does.
         drop = inspect.getsource(LlamaCppBackend._drop_exact_after_refusal)
         assert "apply_child_env(env, on = False)" in drop
         spawn = inspect.getsource(LlamaCppBackend.load_model)
         rung = spawn.index("if not _did_exact_retry and self._drop_exact_after_refusal(")
-        window = spawn[rung : rung + 900]
+        window = spawn[rung : rung + 1400]
         assert "continue" in window
-        assert "run_cmd" not in window.split("continue")[0]
+        before = window.split("continue")[0]
+        assert "_rebound_named_parking_budget(run_cmd, _exact_budget)" in before
 
     def test_a_short_budget_is_reported_as_the_mode_running_short_not_as_absent(self):
         # The child keeps the mode after a late shortfall, so the warning, and the `on`

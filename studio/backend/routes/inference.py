@@ -5131,8 +5131,13 @@ async def _aiter_llama_stream_items(
             if last_item_at is None:
                 notice = None
                 if isinstance(item, (bytes, bytearray)):
-                    # Keep the first chunk's unfinished tail, or the next event is misread.
-                    post_buffer = re.split(rb"\r\n\r\n|\n\n|\r\r", bytes(item))[-1]
+                    # Keep the first chunk's unfinished tail, or the next event is misread, and
+                    # read the notices it completed: a park can follow the first token in it.
+                    first_events = re.split(rb"\r\n\r\n|\n\n|\r\r", bytes(item))
+                    post_buffer = first_events.pop()
+                    for event in first_events:
+                        if event.strip() and _server_park_sse(event) is not None:
+                            own_parks.feed_line(event)
             elif isinstance(item, (bytes, bytearray)):
                 post_buffer += item
                 events = re.split(rb"\r\n\r\n|\n\n|\r\r", post_buffer)

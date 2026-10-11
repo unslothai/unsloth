@@ -2651,7 +2651,7 @@ def _parked_host_mib(backend) -> int:
 
 
 def _exact_host_free_mib(backend) -> Optional[int]:
-    """Host RAM free for this backend's exact parks: what the others certified as `on` is theirs.
+    """Host RAM free for this backend's exact parks: what the other parking servers may take is theirs.
     A park budget is only a cap, allocated when a slot parks, so two exact models measured
     against the same free reading could both pass and then exhaust it together. What a neighbour
     has already parked is gone from the free reading, so only the rest of its budget is held."""
@@ -2660,13 +2660,22 @@ def _exact_host_free_mib(backend) -> Optional[int]:
         return None
     held = 0
     for other in _serving_backends_snapshot():
-        if other is backend or getattr(other, "_exact_concurrency", None) != _exact.EXACT_STATE_ON:
+        if other is backend:
+            continue
+        # Every neighbour that may park: an exact one up to the writes it certified, any other
+        # up to the budget it was launched with.
+        if getattr(other, "_exact_concurrency", None) == _exact.EXACT_STATE_ON:
+            commitment = getattr(other, "_exact_parking_writes", 0)
+        elif getattr(other, "_server_launched_parking", False):
+            commitment = getattr(other, "_launched_parking_mib", 0)
+        else:
             continue
         try:
-            writes = max(0, int(getattr(other, "_exact_parking_writes", 0) or 0))
+            commitment = max(0, int(commitment or 0))
         except (TypeError, ValueError):
             continue
-        held += max(0, writes - _parked_host_mib(other))
+        if commitment:
+            held += max(0, commitment - _parked_host_mib(other))
     return max(0, int(free) - held)
 
 
@@ -32278,6 +32287,11 @@ class LlamaCppBackend:
                             output = _startup_output,
                         ):
                             _did_exact_retry = True
+                            if _exact_budget is not None:
+                                # Sized whole for exact parks, which judge a short budget
+                                # themselves; the plain server left behind gets the host-bounded one,
+                                # as the preflight shortage fallback does.
+                                _rebound_named_parking_budget(run_cmd, _exact_budget)
                             logger.warning(
                                 "llama-server refused exact concurrency (exit code %s); "
                                 "retrying once without it, as the setting is auto. "
@@ -33990,6 +34004,13 @@ class LlamaCppBackend:
                 # Asked to park even where auto cannot confirm it: such a child still parks, so
                 # its silence is read through the park probe, while admission stays fair share.
                 self._server_launched_parking = self._server_preempts_kv
+                # The cap this child may park up to, read off the argv that spawned: a neighbour
+                # loading in exact mode has to leave room for it.
+                self._launched_parking_mib = (
+                    _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
+                    if self._server_launched_parking
+                    else None
+                )
                 if self._server_preempts_kv:
                     self._server_preempts_kv = self._server_confirms_parking()
                 _preemption.note_server_parking(self._server_preempts_kv and kv_cache_unified, self)

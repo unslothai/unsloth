@@ -382,6 +382,31 @@ class TestExactParksAreCountedAcrossModels:
         monkeypatch.setattr(stats, "scrape_llama_metrics", lambda *a, **k: None)
         assert llama_mod._parked_host_mib(backend) == 0
 
+    def test_a_plain_parking_neighbour_holds_its_launched_budget(self, monkeypatch):
+        # Default-on parking hands an ordinary load a host-bounded budget it may still fill.
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        plain = self._backend(exact.EXACT_STATE_OFF, None)
+        plain._server_launched_parking = True
+        plain._launched_parking_mib = 3_000
+        idle = self._backend(exact.EXACT_STATE_OFF, None)
+        idle._server_launched_parking = False
+        idle._launched_parking_mib = 5_000
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, plain, idle])
+        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        assert llama_mod._exact_host_free_mib(me) == 7_000
+
+    def test_the_launch_records_the_budget_it_spawned_with(self):
+        import inspect
+
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert (
+            "self._launched_parking_mib = ( _named_preempt_ram_mib(_last_spawn_cmd or cmd, env) "
+            "if self._server_launched_parking else None )"
+        ) in source
+
     def test_every_exact_host_check_asks_for_this_backends_share(self):
         import inspect
         source = inspect.getsource(LlamaCppBackend.load_model)
