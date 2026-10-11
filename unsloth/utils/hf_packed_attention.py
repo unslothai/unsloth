@@ -58,13 +58,16 @@ def _mask_is_block_causal(
     verdict = False
     if int(cu_seqlens[-1].item()) == total:
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to(torch.int64)
+        # output_size: no host sync to size the result.
         segment = torch.repeat_interleave(
             torch.arange(lengths.numel(), device = attention_mask.device),
             lengths.to(attention_mask.device),
+            output_size = total,
         )
         position = torch.arange(total, device = attention_mask.device)
-        # Row blocks keep the reference to _MASK_CHECK_ROWS x T, not a second T x T mask.
-        verdict = True
+        # Row blocks keep the reference to _MASK_CHECK_ROWS x T, not a second T x T mask; one host sync
+        # for the whole mask, since each sync costs a time slice on a shared GPU.
+        mismatch = torch.zeros((), dtype = torch.bool, device = attention_mask.device)
         for start in range(0, total, _MASK_CHECK_ROWS):
             rows = slice(start, min(start + _MASK_CHECK_ROWS, total))
             expected = (segment[rows, None] == segment[None, :]) & (
@@ -73,9 +76,8 @@ def _mask_is_block_causal(
             if window is not None:
                 # transformers' sliding_window_overlay: kv_idx > q_idx - sliding_window.
                 expected &= position[None, :] > position[rows, None] - window
-            if not torch.equal(attention_mask[0, 0, rows], expected):
-                verdict = False
-                break
+            mismatch |= (attention_mask[0, 0, rows] != expected).any()
+        verdict = not bool(mismatch)
     if cacheable:
         _MASK_CHECK[window] = [weakref.ref(attention_mask), (cu_seqlens, key), verdict]
     return verdict
