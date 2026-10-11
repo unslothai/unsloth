@@ -14,7 +14,6 @@ import os
 import platform
 import plistlib
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -138,8 +137,6 @@ def _build_app(tmp_path: Path, name: str, plist: dict, stub: str) -> tuple[Path,
 
 @needs_rosetta
 def test_app_bundle_launches_natively(tmp_path: Path) -> None:
-    if shutil.which("open") is None:
-        pytest.skip("no Launch Services `open`")
     old_app, old_data = _build_app(tmp_path, "old", _old_plist(), _old_stub())
     new_app, new_data = _build_app(tmp_path, "new", _plist(), _heredoc("STUB_EOF"))
     subprocess.run(["open", "-n", str(old_app)], check = True)
@@ -150,6 +147,6 @@ def test_app_bundle_launches_natively(tmp_path: Path) -> None:
     assert new == "0 arm64", f"fixed bundle ran {new!r} (pre-fix bundle ran {old!r})"
     if not old.startswith("1 "):
         pytest.skip(
-            f"Launch Services ran the pre-fix bundle natively here ({old!r}): "
+            reason = f"Launch Services ran the pre-fix bundle natively here ({old!r}): "
             "this host does not reproduce the Rosetta launch, only the fixed result is shown"
         )
