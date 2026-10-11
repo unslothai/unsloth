@@ -349,3 +349,16 @@ class TestWorkflow:
         )["run"]
         assert run.index("prebuilt_wheels_check_binaries.py") < run.index('python -m venv "$smoke"')
         assert '"$TORCH_SPEC" $TORCH_INDEX_ARGS' in run
+
+    def test_only_win_arm64_switches_msvc_to_the_conforming_preprocessor(self, workflow):
+        for job in ("warm", "build"):
+            step = next(
+                s
+                for s in workflow["jobs"][job]["steps"]
+                if s.get("name", "").startswith("Activate the MSVC")
+            )
+            assert step["env"]["NVCC_APPEND_ARM64"] == (
+                "${{ matrix.platform == 'win_arm64' && ' -Xcompiler=/Zc:preprocessor' || '' }}"
+            )
+            assert "'CL=/Zc:preprocessor'" in step["run"]
+            assert "'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64" in step["run"]

@@ -300,6 +300,7 @@ jobs:
         env:
           MSVC_COMPONENT: ${{ matrix.platform == 'win_arm64' && 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' || 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }}
           VCVARS: ${{ matrix.platform == 'win_arm64' && 'vcvarsarm64.bat' || 'vcvars64.bat' }}
+          NVCC_APPEND_ARM64: ${{ matrix.platform == 'win_arm64' && ' -Xcompiler=/Zc:preprocessor' || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -329,7 +330,10 @@ jobs:
           # flash-attn's softmax.h and mamba's selective-scan kernels use M_LOG2E, which MSVC's
           # <cmath> only defines under _USE_MATH_DEFINES (measured: `identifier "M_LOG2E" is
           # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
-          'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # CUDA 13.4's CCCL stops with C1189 under MSVC's traditional preprocessor (measured on
+          # windows-11-arm); CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
+          if ($env:NVCC_APPEND_ARM64) { 'CL=/Zc:preprocessor' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
           Write-Host "Visual Studio at $vs"
 
       # compiler_check=content: the default keys on nvcc.exe's mtime, which can differ per runner and
@@ -676,6 +680,7 @@ jobs:
         env:
           MSVC_COMPONENT: ${{ matrix.platform == 'win_arm64' && 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' || 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }}
           VCVARS: ${{ matrix.platform == 'win_arm64' && 'vcvarsarm64.bat' || 'vcvars64.bat' }}
+          NVCC_APPEND_ARM64: ${{ matrix.platform == 'win_arm64' && ' -Xcompiler=/Zc:preprocessor' || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -705,7 +710,10 @@ jobs:
           # flash-attn's softmax.h and mamba's selective-scan kernels use M_LOG2E, which MSVC's
           # <cmath> only defines under _USE_MATH_DEFINES (measured: `identifier "M_LOG2E" is
           # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
-          'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # CUDA 13.4's CCCL stops with C1189 under MSVC's traditional preprocessor (measured on
+          # windows-11-arm); CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
+          if ($env:NVCC_APPEND_ARM64) { 'CL=/Zc:preprocessor' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
           Write-Host "Visual Studio at $vs"
 
       # compiler_check=content: the default keys on nvcc.exe's mtime, which can differ per runner and
