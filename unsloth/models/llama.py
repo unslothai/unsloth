@@ -548,7 +548,7 @@ class _LazyDeviceScratch(list):
     def __getitem__(self, index):
         buffer = list.__getitem__(self, index)
         if buffer is None:
-            buffer = self._make(torch.device(index))
+            buffer = self._make(torch.device(DEVICE_TYPE_TORCH, index))
             list.__setitem__(self, index, buffer)
         return buffer
 

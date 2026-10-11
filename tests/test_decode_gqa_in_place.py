@@ -202,7 +202,7 @@ def test_llama_decode_scratch_only_on_layer_devices(monkeypatch):
     seen = _record_to(monkeypatch)
     forward(self, torch.zeros(1, 1, dtype = torch.long), past, torch.full((1, 1), 5))
     # Every layer is on device 0, so devices 1-3 must never receive a scratch copy.
-    assert {d.index for d in seen if d.type != "cpu"} <= {0}, seen
+    assert {d.index for d in seen if d.index is not None} == {0}, seen
     assert len(gates) == layers and all(g is gates[0] for g in gates)
 
 
@@ -227,6 +227,7 @@ def test_gemma2_decode_norm_scratch_only_on_layer_devices(monkeypatch):
 
     monkeypatch.setattr(torch, "empty_like", recording_empty_like)
     monkeypatch.setattr(g2, "DEVICE_COUNT", 3)
+    monkeypatch.setattr(llama, "DEVICE_TYPE_TORCH", "cpu")
     monkeypatch.setattr(g2, "HAS_FLASH_ATTENTION_SOFTCAPPING", False)
     monkeypatch.setattr(g2, "Gemma2Attention_fast_forward_inference", attention)
     monkeypatch.setattr(g2, "fast_rms_layernorm_inference_gemma", lambda ln, x, w: x)
