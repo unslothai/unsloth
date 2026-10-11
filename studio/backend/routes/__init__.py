@@ -15,10 +15,12 @@ from routes.data_recipe import router as data_recipe_router
 from routes.export import router as export_router
 from routes.training_history import router as training_history_router
 from routes.chat_history import router as chat_history_router
+from routes.external_import import router as external_import_router
 from routes.providers import router as providers_router
 
 from routes.openai_codex_auth import router as openai_codex_auth_router
 from routes.mcp_servers import router as mcp_servers_router
+from routes.skills import router as skills_router
 from routes.rag import router as rag_router
 from routes.research_runs import router as research_runs_router
 from routes.chat_generation_runs import router as chat_generation_runs_router
@@ -37,9 +39,11 @@ __all__ = [
     "export_router",
     "training_history_router",
     "chat_history_router",
+    "external_import_router",
     "providers_router",
     "openai_codex_auth_router",
     "mcp_servers_router",
+    "skills_router",
     "rag_router",
     "research_runs_router",
     "chat_generation_runs_router",

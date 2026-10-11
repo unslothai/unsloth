@@ -49,7 +49,7 @@ def test_a_fresh_start_reports_the_transport_the_backend_resolved(monkeypatch):
     monkeypatch.setattr(
         download_lifecycle.download_registry,
         "download_transport_unavailable_reason",
-        lambda transport: "hf_xet is not installed" if transport == "xet" else None,
+        lambda transport, **_kw: "hf_xet is not installed" if transport == "xet" else None,
     )
     use_xet, _reason = download_lifecycle.resolve_requested_use_xet("xet", True)
     assert use_xet is False, "the downgrade this reports is what the client must be told"
@@ -62,7 +62,7 @@ def test_an_available_xet_request_is_left_alone(monkeypatch):
     monkeypatch.setattr(
         download_lifecycle.download_registry,
         "download_transport_unavailable_reason",
-        lambda transport: None,
+        lambda transport, **_kw: None,
     )
     use_xet, _reason = download_lifecycle.resolve_requested_use_xet("xet", True)
     assert download_lifecycle.resolve_transport(use_xet) == "xet"

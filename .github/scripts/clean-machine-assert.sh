@@ -6,7 +6,8 @@
 #            "passed" because masking silently failed, or because the installer
 #            quietly installed Xcode CLT behind our back.
 #   notools       The trace recorded no compiler/git/brew invocation (trace mode),
-#                 except uv's exact optional libpython self-ID operation.
+#                 except uv's exact optional libpython self-ID operation, and git
+#                 fetching only the git+ remotes of $UNSLOTH_ALLOW_GIT_FROM.
 #   nodylibtool   No install_name_tool invocation escaped the CLT-absent guard.
 #   dylibpatch    A CLT-present control observed only exact libpython self-ID patches.
 #   nobuild  Wheels-only: no "Building wheel" from pip, no "Building <pkg>==<ver>"
@@ -39,6 +40,156 @@ _decode_trace_arg() { # encoded, destination variable
     _decoded+=$_byte
   done
   printf -v "$2" '%s' "$_decoded"
+}
+
+# The git+ remotes named by the requirement files in $UNSLOTH_ALLOW_GIT_FROM, one per line,
+# without a trailing .git. The files are the source of truth, so a re-pinned remote follows.
+_allowed_git_remotes() {
+  for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
+    [ -f "$_req" ] || { echo "::error::UNSLOTH_ALLOW_GIT_FROM names a missing file: $_req" >&2; continue; }
+    # The revision is what follows the LAST @, so ssh://git@host/repo.git@SHA keeps its user.
+    sed -n \
+      -e 's/^[^#]*git+\([a-z][a-z0-9+.-]*:\/\/[^#[:space:]]*\)@[^@\/#[:space:]]*\([#[:space:]].*\)\{0,1\}$/\1/p' \
+      -e 't' \
+      -e 's/^[^#]*git+\([a-z][a-z0-9+.-]*:\/\/[^#[:space:]]*\).*/\1/p' "$_req"
+  done | sed 's/\.git$//' | sort -u
+}
+
+# The commits those requirement files pin (the 40-hex revision after the last @).
+_allowed_git_pins() {
+  for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
+    [ -f "$_req" ] || continue
+    sed -n 's/^[^#]*git+[a-z][a-z0-9+.-]*:\/\/[^#[:space:]]*@\([0-9a-f]\{40\}\)\([#[:space:]].*\)\{0,1\}$/\1/p' "$_req"
+  done | sort -u
+}
+
+# Every remote a traced git command line names: URLs, including `-c remote.origin.url=URL`.
+_git_line_remotes() {
+  printf '%s\n' "$1" | grep -oE '[a-z][a-z0-9+.-]*://[^[:space:]]+|[[:alnum:]_.-]+@[[:alnum:].-]+:[^[:space:]]+' \
+    | sed 's/\.git$//'
+}
+
+# Every `submodule update` with these arguments ran inside one of uv's checkouts, read from
+# the working directories the git wrapper records beside the trace. It fetches what that
+# checkout's .gitmodules names, which is the pinned requirement's own content only there.
+# No record, or any run elsewhere, is a no.
+_ran_in_uv_checkout() { # the traced argument string
+  _ran_under "$1" "${UV_CACHE_DIR%/}/git-v0/checkouts/"
+}
+
+# Every run of these arguments (at least one) had its working directory under $2.
+_ran_under() { # the traced argument string, a directory prefix ending in /
+  [ -n "${UV_CACHE_DIR:-}" ] && [ -f "$TRACE.git-cwd" ] || return 1
+  _seen=false
+  while IFS=$'\t' read -r _cwd _args; do
+    [ "$_args" = "$1" ] || continue
+    _seen=true
+    case "$_cwd" in "$2"?*) ;; *) return 1 ;; esac
+    case "$_cwd" in *..*) return 1 ;; esac
+  done < "$TRACE.git-cwd"
+  [ "$_seen" = true ]
+}
+
+# Every run of these arguments was in a uv checkout named after a prefix of $2.
+_in_checkout_of() { # the traced argument string, a full commit
+  _ran_in_uv_checkout "$1" || return 1
+  while IFS=$'\t' read -r _cwd _args; do
+    [ "$_args" = "$1" ] || continue
+    _short=${_cwd##*/}
+    [ ${#_short} -ge 7 ] || return 1
+    case "$_short" in *[!0-9a-f]*) return 1 ;; esac
+    case "$2" in "$_short"*) ;; *) return 1 ;; esac
+  done < "$TRACE.git-cwd"
+}
+
+# A git line naming no remote is allowed only in the exact shapes uv's git source uses to
+# check out a pinned commit from its own cache: nothing that can reach the network (a bare
+# `fetch origin` reads its URL from config) and nothing outside $UV_CACHE_DIR.
+_is_uv_git_cache_op() { # the traced argument string
+  _cache="${UV_CACHE_DIR%/}/git-v0"
+  case "$1" in
+    # uv initialises its database and resolves the pin in its own cache; the same commands
+    # anywhere else (the project directory, say) are not uv's.
+    init|rev-parse|"rev-parse "*) _ran_under "$1" "$_cache/" ; return ;;
+    "submodule update --recursive --init") _ran_in_uv_checkout "$1"; return ;;
+    "reset --hard "*)
+      # The commit the requirement files pin (the workflow passes the INSTALLED package's,
+      # which on an overlay-free leg can trail this checkout's), run in the uv checkout
+      # named after it.
+      _commit=${1#reset --hard }
+      case "$_commit" in *[!0-9a-f]*|"") return 1 ;; esac
+      [ ${#_commit} -eq 40 ] || return 1
+      printf '%s\n' "$(_allowed_git_pins)" | grep -qxF -- "$_commit" || return 1
+      _in_checkout_of "$1" "$_commit"
+      return ;;
+    "clone --local "*)
+      [ -n "${UV_CACHE_DIR:-}" ] || return 1
+      set -f; set -- $1; set +f
+      [ $# -eq 4 ] || return 1
+      case "$3" in "$_cache"/db/*) ;; *) return 1 ;; esac
+      case "$4" in "$_cache"/checkouts/*) ;; *) return 1 ;; esac
+      case "$3$4" in *..*) return 1 ;; esac
+      return 0 ;;
+  esac
+  return 1
+}
+
+# Whether $1 is one of the allowed remotes in $2, ignoring a trailing .git.
+_is_allowed_git_remote() {
+  [ -n "$1" ] && printf '%s\n' "$2" | grep -qxF -- "${1%.git}"
+}
+
+# A git line that names a remote must be one of the two argv shapes uv's git source emits,
+# parsed as git would read them rather than by URL-looking substrings (an option VALUE such
+# as --server-option=URL is not the repository):
+#   fetch [--tags|--force|--update-head-ok|--no-tags|--quiet|--depth=N]... URL REFSPEC...
+#   -c remote.origin.url=URL submodule update [--init|--recursive]...
+# The repository must be an allowed remote and every refspec a `src:refs/...` mapping, so no
+# other option (--all, --upload-pack, a second -c) and no other subcommand (push) passes.
+_is_allowed_remote_git_line() { # the traced argument string, the allowed remotes
+  _line=$1
+  _allowed=$2
+  set -f
+  set -- $1
+  set +f
+  _origin=""
+  if [ "${1:-}" = "-c" ]; then
+    case "${2:-}" in remote.origin.url=*) _origin=${2#remote.origin.url=}; shift 2 ;; *) return 1 ;; esac
+  fi
+  case "${1:-}" in
+    fetch)
+      [ -z "$_origin" ] || return 1
+      shift
+      _repo=""
+      for _word in "$@"; do
+        if [ -z "$_repo" ]; then
+          case "$_word" in
+            --tags|--force|--update-head-ok|--no-tags|--quiet) continue ;;
+            --depth=[0-9]*) case "${_word#--depth=}" in *[!0-9]*) return 1 ;; esac; continue ;;
+            -*) return 1 ;;
+          esac
+          _repo=$_word
+          continue
+        fi
+        case "$_word" in
+          -*|*://*|*@*:*) return 1 ;;
+          ?*:refs/*) ;;
+          *) return 1 ;;
+        esac
+      done
+      _is_allowed_git_remote "$_repo" "$_allowed"
+      return ;;
+    submodule)
+      _is_allowed_git_remote "$_origin" "$_allowed" || return 1
+      [ "${2:-}" = "update" ] || return 1
+      shift 2
+      for _word in "$@"; do
+        case "$_word" in --init|--recursive) ;; *) return 1 ;; esac
+      done
+      _ran_in_uv_checkout "$_line"
+      return ;;
+  esac
+  return 1
 }
 
 _is_uv_libpython_self_id_patch() { # argc, operation, source, destination, extra
@@ -160,6 +311,26 @@ for check in "$@"; do
         # git is legitimate under --local (unsloth-zoo comes from a git URL), so that
         # leg allow-lists it via UNSLOTH_ALLOW_TOOLS.
         allow="${UNSLOTH_ALLOW_TOOLS:-}"
+        # A default install with a working git fetches its pinned git+ requirements with it
+        # (the Diffusers main build: a clone records a ref, the archive fallback does not).
+        # That is git, but only for those remotes, so it is allowed structurally: a git line
+        # that names a remote must be uv's fetch or submodule shape against one of the
+        # requirement files' remotes (_is_allowed_remote_git_line), and one naming none must
+        # be one of uv's own cache operations (_is_uv_git_cache_op), counted only when some
+        # line did fetch an allowed remote. `--version` is the installer's probe.
+        # Any other remote, any other remoteless git, or git that fetched nothing allowed is
+        # still a hit.
+        allowed_remotes=$(_allowed_git_remotes)
+        git_fetched_allowed=false
+        if [ -n "$allowed_remotes" ]; then
+          while IFS=$'\t' read -r tool rest; do
+            [ "$tool" = "git" ] || continue
+            case "$rest" in fetch\ *) ;; *) continue ;; esac
+            if _is_allowed_remote_git_line "$rest" "$allowed_remotes"; then
+              git_fetched_allowed=true
+            fi
+          done < "$TRACE"
+        fi
         hits=""
         while IFS=$'\t' read -r tool argc_or_rest arg1 arg2 arg3 extra; do
           [ -n "$tool" ] || continue
@@ -177,6 +348,20 @@ for check in "$@"; do
             continue
           fi
           case " $allow " in *" $tool "*) continue ;; esac
+          if [ "$tool" = "git" ] && [ -n "$allowed_remotes" ]; then
+            git_rest="$argc_or_rest"
+            for _field in "$arg1" "$arg2" "$arg3" "$extra"; do
+              [ -n "$_field" ] && git_rest="$git_rest	$_field"
+            done
+            if [ "$git_rest" = "--version" ]; then
+              continue
+            fi
+            if [ -n "$(_git_line_remotes "$git_rest")" ]; then
+              _is_allowed_remote_git_line "$git_rest" "$allowed_remotes" && continue
+            elif [ "$git_fetched_allowed" = true ] && _is_uv_git_cache_op "$git_rest"; then
+              continue
+            fi
+          fi
           # `xcode-select -p` only ASKS whether a toolchain is selected and the fix is
           # carrying on without one, so it is not USE. `--install` stays a hit.
           if [ "$tool" = "xcode-select" ]; then

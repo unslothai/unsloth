@@ -42,7 +42,7 @@ REFINED = "Which small dog breeds suit a flat with no garden?"
 @pytest.fixture
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "thread-1",

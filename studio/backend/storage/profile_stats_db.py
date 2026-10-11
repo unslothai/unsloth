@@ -25,6 +25,8 @@ from loggers import get_logger
 
 from storage.api_usage_db import canonical_api_subject
 from storage.studio_db import count_chat_message_attachments, get_connection
+from utils.account_context import current_account_id
+from utils.paths import studio_db_path
 
 logger = get_logger(__name__)
 
@@ -43,7 +45,7 @@ RECENT_RUNS = 5
 CACHE_TTL_SECONDS = 20.0
 
 _cache_lock = threading.Lock()
-_cache: dict[str, Any] = {"fingerprint": None, "expires_at": 0.0, "payload": None}
+_cache: dict[str, dict[str, Any]] = {}
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -613,15 +615,24 @@ def compute_profile_stats(
     subject = canonical_api_subject(subject)
     conn = get_connection()
     try:
-        fingerprint = (_fingerprint(conn, subject), days, tz_offset_minutes, tz_name)
+        # The path is in the fingerprint, so a reused account id cannot read another database.
+        fingerprint = (
+            str(studio_db_path()),
+            _fingerprint(conn, subject),
+            days,
+            tz_offset_minutes,
+            tz_name,
+        )
         now = time.monotonic()
+        account_id = current_account_id()
         with _cache_lock:
+            cached = _cache.get(account_id)
             if (
-                _cache["payload"] is not None
-                and _cache["fingerprint"] == fingerprint
-                and _cache["expires_at"] > now
+                cached is not None
+                and cached["fingerprint"] == fingerprint
+                and cached["expires_at"] > now
             ):
-                return _cache["payload"]
+                return cached["payload"]
 
         started = time.perf_counter()
         fold = _fold_messages(conn, zone)
@@ -712,17 +723,16 @@ def compute_profile_stats(
         )
 
         with _cache_lock:
-            _cache["fingerprint"] = fingerprint
-            _cache["expires_at"] = time.monotonic() + CACHE_TTL_SECONDS
-            _cache["payload"] = payload
+            _cache[account_id] = {
+                "fingerprint": fingerprint,
+                "expires_at": time.monotonic() + CACHE_TTL_SECONDS,
+                "payload": payload,
+            }
         return payload
     finally:
         conn.close()
 
 
 def invalidate_profile_stats_cache() -> None:
-    """Drop the memoised payload (used by tests and after history wipes)."""
     with _cache_lock:
-        _cache["fingerprint"] = None
-        _cache["expires_at"] = 0.0
-        _cache["payload"] = None
+        _cache.pop(current_account_id(), None)

@@ -24,6 +24,18 @@ export function resolveEstimateContext(
   return customContextLength ?? activeLoadedContext ?? 0;
 }
 
+export function resolveMlxEstimateContext(contextPin: number | null): number {
+  return contextPin && contextPin > 0 ? contextPin : 0;
+}
+
+export function resolveMlxServedWindow(
+  loadedContext: number | null,
+  fittedContext: number | null,
+  nativeWindow: number | null,
+): number | null {
+  return fittedContext ?? loadedContext ?? nativeWindow;
+}
+
 /** Which MODEL an estimate belongs to, for deciding whether shown numbers still do. Not the same
  *  question as "did anything change" -- that is the full request key, and a slider step must
  *  keep the old figures up and mark them stale. A change here means the numbers describe a
@@ -59,4 +71,14 @@ export function resolveEstimateSourceIdentity(
     tokenIdentity,
     nativePathToken ?? null,
   ]);
+}
+
+export function shouldRequestMemoryEstimate(opts: {
+  isGguf: boolean;
+  isAppleUnifiedMemory: boolean;
+  classifiedIsDiffusion: boolean | undefined;
+}): boolean {
+  const { isGguf, isAppleUnifiedMemory, classifiedIsDiffusion } = opts;
+  if (isGguf) return classifiedIsDiffusion === false;
+  return isAppleUnifiedMemory && classifiedIsDiffusion !== true;
 }

@@ -3,8 +3,12 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
+  isHfCacheSnapshotPath,
+  isOllamaLinkPath,
+  isStandaloneGgufPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  publicModelId,
 } from "@/features/hub/lib/model-identity";
 import { looksLikeLocalPath } from "@/lib/local-path";
 
@@ -12,6 +16,7 @@ import { looksLikeLocalPath } from "@/lib/local-path";
 export {
   isNativeFileLabel,
   isOllamaLinkPath,
+  isOllamaModelId,
   isStandaloneGgufPath,
   ggufVariantsMatch,
   modelDisplayName,
@@ -50,6 +55,31 @@ function parseVersionedModelStorageKey(
   }
 }
 
+/** False when an OpenAI API auto-switch can never load this model, so its remembered settings stay
+ *  off the server. local_model_resolver serves GGUF and non-GGUF weights alike but never a bare LoRA
+ *  adapter or a materialized Ollama link; a row for anything else it refuses is inert. */
+export function apiAutoSwitchMayLoad(
+  ids: readonly string[],
+  isLora: boolean,
+): boolean {
+  return !isLora && !ids.some(isOllamaLinkPath);
+}
+
+/** The repo id a cached repo's settings are keyed by when it loads from its snapshot directory with
+ *  no quant, else null. /status reports that path while the picker keys the repo id, and the backend
+ *  folds the two spellings only for a quant, so a bare snapshot-path row would outrank the picker's
+ *  and survive its Forget. */
+export function cachedRepoConfigId(
+  modelId: string,
+  ggufVariant: string | null | undefined,
+): string | null {
+  return !ggufVariant &&
+    !isStandaloneGgufPath(modelId) &&
+    isHfCacheSnapshotPath(modelId)
+    ? publicModelId(modelId)
+    : null;
+}
+
 export function modelStorageKey(
   modelId: string,
   ggufVariant?: string | null,
@@ -83,7 +113,7 @@ export function ggufVariantFromStorageKey(key: string): string | null {
 const BPW_SUFFIX = /-[0-9]+(?:\.[0-9]+)?bpw$/i;
 // One source for the anchored test and the scan below. Mirrors _GGUF_QUANT_RE in gguf.py.
 const QUANT_TOKEN_SOURCE =
-  "(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)";
+  "(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?|Q[0-9]+_K|BF16|F16|F32)";
 const KNOWN_QUANT = new RegExp(`^${QUANT_TOKEN_SOURCE}$`, "i");
 const QUANT_TOKEN = new RegExp(QUANT_TOKEN_SOURCE, "gi");
 const MAX_QUANT_SUFFIX_LEN = 64;

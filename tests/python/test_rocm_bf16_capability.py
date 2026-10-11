@@ -1,3 +1,4 @@
+import ast
 import inspect
 import types
 from pathlib import Path
@@ -124,16 +125,57 @@ def _fake_torch(
     )
 
 
-def _namespace(fake_torch, device_type):
-    from unsloth.device_type import hip_visible_archs
-    return {
+def _device_type_imports() -> list[str]:
+    """What _gpu_init.py imports from .device_type, read from its source, so a name the chain
+    starts using (#11615's arch_lacks_buffer_ops) reaches this namespace without a hand edit."""
+    tree = ast.parse(GPU_INIT.read_text(encoding = "utf-8"))
+    return [
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module == "device_type"
+        for alias in node.names
+    ]
+
+
+def _namespace(fake_torch, device_type, workarounds):
+    import unsloth.device_type as dt
+
+    overrides = {
         "torch": fake_torch,
         "inspect": inspect,
         "DEVICE_TYPE": device_type,
-        "arch_lacks_bf16": arch_lacks_bf16,
-        # Reads unsloth.device_type's own `torch`, not this fake, so the caller must monkeypatch.
-        "hip_visible_archs": hip_visible_archs,
+        # Recorded, not run: the real one writes Triton and Inductor settings into os.environ.
+        "apply_gfx101x_triton_workaround": lambda *a, **k: workarounds.append((a, k)),
     }
+    # hip_visible_archs reads unsloth.device_type's own `torch`, not this fake, so the caller
+    # must monkeypatch it.
+    namespace = {
+        name: getattr(dt, name) for name in _device_type_imports() if name not in overrides
+    }
+    namespace.update(overrides)
+    return namespace
+
+
+def test_the_conftest_stub_carries_every_name_gpu_init_imports():
+    """tests/conftest.py installs a stub unsloth.device_type when the real one cannot load, and
+    `import unsloth` then imports these names from it. #11615 added two it did not have."""
+    tree = ast.parse((REPO_ROOT / "tests" / "conftest.py").read_text(encoding = "utf-8"))
+    stub = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_install_device_type_stub"
+    )
+    provided = {
+        target.attr
+        for node in ast.walk(stub)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "stub"
+    }
+    missing = sorted(set(_device_type_imports()) - provided)
+    assert not missing, f"the device_type stub lacks {missing}, so import unsloth fails under it"
 
 
 def _run_chain(monkeypatch, fake_torch, device_type):
@@ -142,8 +184,10 @@ def _run_chain(monkeypatch, fake_torch, device_type):
     monkeypatch.setattr(dt, "torch", fake_torch, raising = False)
     source = GPU_INIT.read_text(encoding = "utf-8")
     body = _CHAIN_START + source.split(_CHAIN_START, 1)[1].split(_CHAIN_END, 1)[0]
-    namespace = _namespace(fake_torch, device_type)
+    workarounds = []
+    namespace = _namespace(fake_torch, device_type, workarounds)
     exec(compile(body, str(GPU_INIT), "exec"), namespace)
+    namespace["_workarounds"] = workarounds
     return namespace
 
 
@@ -223,3 +267,21 @@ def test_importing_unsloth_twice_is_stable(monkeypatch):
     namespace = _run_chain(monkeypatch, fake, "hip")
     assert namespace["SUPPORTS_BFLOAT16"] is False
     assert fake.cuda.is_bf16_supported() is False
+
+
+@pytest.mark.parametrize(
+    "archs,device_type,applied",
+    [
+        (["gfx1010"], "hip", True),
+        (["gfx1100", "gfx1012:xnack-"], "hip", True),
+        (["gfx1030"], "hip", False),
+        (["gfx1100"], "hip", False),
+        (["gfx1010"], "cuda", False),
+    ],
+)
+def test_the_chain_turns_triton_buffer_ops_off_only_for_a_visible_gfx101x(
+    monkeypatch, archs, device_type, applied
+):
+    """#11615 put the RDNA1 buffer-op workaround inside this chain; RDNA2 (gfx103x) must not match."""
+    namespace = _run_chain(monkeypatch, _fake_torch(archs), device_type)
+    assert len(namespace["_workarounds"]) == (1 if applied else 0)

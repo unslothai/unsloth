@@ -1,0 +1,320 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""ComfyUI models-folder discovery and loose single-file diffusion checkpoints.
+
+Role folders hold many loose ``.safetensors`` with no ``config.json``; each denoiser is listed as its
+own row when its header says DiT. Text-encoder / VAE folders are resolved but nothing loads from
+them yet. No torch: called on every listing.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Optional
+
+from utils.paths.path_utils import is_appledouble_metadata
+
+# ``unet`` / ``clip`` are ComfyUI's legacy names, still read.
+DIT_FOLDERS = ("diffusion_models", "unet", "checkpoints")
+TEXT_ENCODER_FOLDERS = ("text_encoders", "clip")
+VAE_FOLDERS = ("vae",)
+_ROLE_FOLDERS = DIT_FOLDERS + TEXT_ENCODER_FOLDERS + VAE_FOLDERS
+_COMFY_ONLY_FOLDERS = frozenset(
+    {
+        *_ROLE_FOLDERS,
+        "loras",
+        "clip_vision",
+        "controlnet",
+        "upscale_models",
+        "embeddings",
+        "style_models",
+        "model_patches",
+        "audio_encoders",
+        "latent_upscale_models",
+    }
+)
+EXTRA_MODEL_PATHS_FILE = "extra_model_paths.yaml"
+_MAX_EXTRA_PATHS_BYTES = 256 * 1024
+
+_SHARD_RE = re.compile(r"-\d{3,}-of-\d{3,}(?:\.[^.]+)?\.safetensors$", re.IGNORECASE)
+
+
+@dataclass(frozen = True)
+class ComfyLayout:
+    models_dir: Optional[Path]
+    dit_dirs: tuple[Path, ...] = ()
+    text_encoder_dirs: tuple[Path, ...] = ()
+    vae_dirs: tuple[Path, ...] = ()
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _is_comfy_models_dir(path: Path) -> bool:
+    try:
+        names = {entry.name for entry in os.scandir(path) if entry.is_dir()}
+    except OSError:
+        return False
+    if not names & set(DIT_FOLDERS):
+        return False
+    return len(names & _COMFY_ONLY_FOLDERS) >= 2
+
+
+def _split_paths(value) -> list[str]:
+    if isinstance(value, str):
+        return [line.strip() for line in value.splitlines() if line.strip()]
+    if isinstance(value, (list, tuple)):
+        return [
+            str(v).strip() for v in value if isinstance(v, (str, os.PathLike)) and str(v).strip()
+        ]
+    return []
+
+
+def read_extra_model_paths(yaml_path: Path) -> dict[str, list[Path]]:
+    """``{role: [paths]}`` from ``extra_model_paths.yaml``, relative paths against ``base_path`` else
+    the yaml's folder (ComfyUI's semantics). Never raises."""
+    out: dict[str, list[Path]] = {}
+    try:
+        if yaml_path.stat().st_size > _MAX_EXTRA_PATHS_BYTES:
+            return out
+        import yaml
+        with open(yaml_path, "r", encoding = "utf-8-sig") as handle:
+            config = yaml.safe_load(handle)
+    except Exception:  # noqa: BLE001 - a broken user yaml must not break the listing
+        return out
+    if not isinstance(config, dict):
+        return out
+    yaml_dir = yaml_path.resolve().parent
+    for section in config.values():
+        if not isinstance(section, dict):
+            continue
+        base: Optional[Path] = None
+        raw_base = section.get("base_path")
+        if isinstance(raw_base, str) and raw_base.strip():
+            base = Path(os.path.expandvars(os.path.expanduser(raw_base.strip())))
+            if not base.is_absolute():
+                base = yaml_dir / base
+        for role, value in section.items():
+            if role in ("base_path", "is_default") or role not in _ROLE_FOLDERS:
+                continue
+            for entry in _split_paths(value):
+                path = Path(os.path.expandvars(os.path.expanduser(entry)))
+                if not path.is_absolute():
+                    path = (base or yaml_dir) / path
+                out.setdefault(role, []).append(Path(os.path.normpath(path)))
+    return out
+
+
+def _dedupe_dirs(paths: Iterable[Path]) -> tuple[Path, ...]:
+    seen: set[str] = set()
+    out: list[Path] = []
+    for path in paths:
+        if not _is_dir(path):
+            continue
+        try:
+            key = os.path.normcase(os.path.realpath(path))
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return tuple(out)
+
+
+def _allowed(path: Path) -> bool:
+    """Yaml paths are user input: same system-folder denylist as scan folders."""
+    try:
+        from hub.storage.scan_folders import is_denied_system_path
+        return not is_denied_system_path(os.path.realpath(path))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def comfy_layout(folder: Path) -> Optional[ComfyLayout]:
+    folder = Path(folder)
+    models_dir: Optional[Path] = None
+    yaml_path: Optional[Path] = None
+    if _is_comfy_models_dir(folder):
+        models_dir = folder
+        candidate = folder.parent / EXTRA_MODEL_PATHS_FILE
+        if candidate.is_file():
+            yaml_path = candidate
+    else:
+        if _is_dir(folder / "models") and _is_comfy_models_dir(folder / "models"):
+            models_dir = folder / "models"
+        candidate = folder / EXTRA_MODEL_PATHS_FILE
+        try:
+            if candidate.is_file():
+                yaml_path = candidate
+        except OSError:
+            yaml_path = None
+    if models_dir is None and yaml_path is None:
+        return None
+    extra = read_extra_model_paths(yaml_path) if yaml_path is not None else {}
+
+    def _role(names: tuple[str, ...]) -> tuple[Path, ...]:
+        local = [models_dir / name for name in names] if models_dir is not None else []
+        listed = [p for name in names for p in extra.get(name, ()) if _allowed(p)]
+        return _dedupe_dirs([*local, *listed])
+
+    layout = ComfyLayout(
+        models_dir = models_dir,
+        dit_dirs = _role(DIT_FOLDERS),
+        text_encoder_dirs = _role(TEXT_ENCODER_FOLDERS),
+        vae_dirs = _role(VAE_FOLDERS),
+    )
+    if not (layout.dit_dirs or layout.text_encoder_dirs or layout.vae_dirs):
+        return None
+    return layout
+
+
+_MAX_SUBDIR_DEPTH = 3
+_MAX_SUBDIRS = 200
+
+
+def _plain_subdirs(root: Path) -> list[Path]:
+    out: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack and len(out) < _MAX_SUBDIRS:
+        current, depth = stack.pop()
+        if depth >= _MAX_SUBDIR_DEPTH:
+            continue
+        try:
+            with os.scandir(current) as entries:
+                children = sorted(
+                    Path(e.path)
+                    for e in entries
+                    if not e.name.startswith(".") and e.is_dir(follow_symlinks = False)
+                )
+        except OSError:
+            continue
+        for child in children:
+            if any((child / m).exists() for m in ("config.json", "model_index.json")):
+                continue
+            out.append(child)
+            stack.append((child, depth + 1))
+    return out[:_MAX_SUBDIRS]
+
+
+def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
+    layout = comfy_layout(folder)
+    if layout is None:
+        return ()
+    roots: list[Path] = []
+    for root in layout.dit_dirs:
+        roots.append(root)
+        roots.extend(_plain_subdirs(root))
+    return tuple(roots)
+
+
+def comfy_role_dirs(folder: Path) -> frozenset[str]:
+    layout = comfy_layout(folder)
+    if layout is None:
+        return frozenset()
+    dirs = [*layout.dit_dirs, *layout.text_encoder_dirs, *layout.vae_dirs]
+    if layout.models_dir is not None:
+        dirs += [layout.models_dir / name for name in _COMFY_ONLY_FOLDERS]
+    out: set[str] = set()
+    for path in dirs:
+        try:
+            out.add(os.path.normcase(os.path.realpath(path)))
+        except OSError:
+            continue
+    return frozenset(out)
+
+
+def is_loose_checkpoint_candidate(path: Path) -> bool:
+    name = path.name
+    lower = name.lower()
+    if not lower.endswith(".safetensors") or is_appledouble_metadata(path):
+        return False
+    if _SHARD_RE.search(lower) or lower in ("adapter_model.safetensors",):
+        return False
+    return True
+
+
+def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = None) -> list[Path]:
+    """Loose ``.safetensors`` in ``folder`` offered as diffusion models, sorted; empty for a folder
+    that is itself one model. Never raises."""
+    try:
+        for marker in (
+            "config.json",
+            "adapter_config.json",
+            "model_index.json",
+            "modular_model_index.json",
+        ):
+            if (folder / marker).exists():
+                return []
+        files: list[Path] = []
+        folder_real = Path(os.path.realpath(folder))
+        with os.scandir(folder) as entries:
+            for index, entry in enumerate(entries, start = 1):
+                if entry_limit is not None and index > entry_limit:
+                    break
+                path = Path(entry.path)
+                try:
+                    # The loader refuses a file resolving outside its folder (resolve_local_gguf_child).
+                    if (
+                        is_loose_checkpoint_candidate(path)
+                        and entry.is_file()
+                        and folder_real in Path(os.path.realpath(path)).parents
+                    ):
+                        files.append(path)
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    if not files:
+        return []
+    offered = []
+    for path in sorted(files):
+        try:
+            if _offer_loose_checkpoint(path):
+                offered.append(path)
+        except Exception:  # noqa: BLE001 - an unreadable header is not a listing failure
+            continue
+    return offered
+
+
+def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
+    """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3)."""
+    if image_fam is not None and not image_fam.pipeline_only:
+        return True
+    if video_fam is None or video_fam.is_moe:
+        return False
+    if not getattr(video_fam, "modular_workflow", None):
+        return True
+    from core.inference.video_minimax_h3_comfy import is_h3_comfy_name
+
+    return bool(is_h3_comfy_name(filename))
+
+
+def _offer_loose_checkpoint(path: Path) -> bool:
+    """Header decides (supported-family DiT only); an unclassifiable header falls back to the name."""
+    from core.inference import diffusion_content
+    from core.inference.diffusion_families import detect_family
+    from core.inference.video_families import detect_video_family
+
+    if not diffusion_content.offer_as_dit(str(path)):
+        return False
+    info = diffusion_content.inspect_checkpoint(str(path))
+    if info.role == diffusion_content.ROLE_DIT:
+        if not info.family:
+            return False
+        if info.page == diffusion_content.PAGE_VIDEO:
+            return _single_file_loadable(
+                None, detect_video_family("", override = info.family), path.name
+            )
+        return _single_file_loadable(detect_family("", override = info.family), None, path.name)
+    return _single_file_loadable(
+        detect_family(path.name), detect_video_family(path.name), path.name
+    )

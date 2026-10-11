@@ -65,12 +65,8 @@ export function hasIncompatibleTrainingModalities(
 export function validateS3Source(
   config: TrainingConfigState,
 ): StartValidationResult {
-  if (
-    config.modelType === "vision" ||
-    config.modelType === "audio" ||
-    config.isVisionModel ||
-    config.isAudioModel
-  ) {
+  // Audio manifests are rewritten to downloaded paths (#4539); image references are not.
+  if (config.modelType === "vision" || config.isVisionModel) {
     return {
       ok: false,
       errorKey: "studio.training.validation.s3MultimodalUnsupported",
@@ -162,6 +158,7 @@ function validateDatasetSelection(
 export function validateTrainingConfig(
   config: TrainingConfigState,
   deviceType?: string,
+  isOwner = true,
 ): StartValidationResult {
   if (!config.selectedModel) {
     return {
@@ -196,6 +193,12 @@ export function validateTrainingConfig(
     return {
       ok: false,
       errorKey: "studio.params.notSupportedAppleSilicon",
+    };
+  }
+  if (config.modelType === "decision" && !isOwner) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.decisionOwnerOnly",
     };
   }
 

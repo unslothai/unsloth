@@ -20,6 +20,20 @@ export interface PreStreamRunReservationOptions {
 
 const reservations = new Map<symbol, PreStreamRunReservation>();
 const reservationByThreadId = new Map<string, symbol>();
+const listeners = new Set<() => void>();
+
+export function subscribePreStreamRunReservations(
+  listener: () => void,
+): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function notifyReservationsChanged(): void {
+  for (const listener of [...listeners]) listener();
+}
 
 export function preStreamRunThreadIdsForAdapter(
   unstableThreadId: string | null | undefined,
@@ -85,6 +99,7 @@ export function reservePreStreamRun(
   for (const threadId of ids) {
     reservationByThreadId.set(threadId, token);
   }
+  notifyReservationsChanged();
   return token;
 }
 
@@ -101,37 +116,50 @@ export function listLocalPreStreamRunReservations(): LocalPreStreamRunReservatio
     }));
 }
 
+function cancelPreStreamReservation(token: symbol): boolean {
+  const reservation = reservations.get(token);
+  if (!reservation || reservation.cancelled) return false;
+  reservation.cancelled = true;
+  try {
+    reservation.cancel?.(
+      [...reservation.threadIds].filter((id) => id !== DEFAULT_THREAD_ID),
+    );
+  } catch {
+    // A response may have ended between the user's gesture and cancellation.
+  }
+  reservation.cancel = undefined;
+  for (const id of reservation.threadIds) {
+    if (reservationByThreadId.get(id) === token)
+      reservationByThreadId.delete(id);
+  }
+  if (!reservation.claimed) reservations.delete(token);
+  notifyReservationsChanged();
+  return true;
+}
+
 export function cancelPreStreamRunReservations(
   tokens: Iterable<symbol>,
 ): number {
   let cancelled = 0;
   for (const token of new Set(tokens)) {
-    const reservation = reservations.get(token);
-    if (!reservation || !reservation.usesLocalModel || reservation.cancelled) {
-      continue;
-    }
-    reservation.cancelled = true;
-    cancelled += 1;
-    try {
-      reservation.cancel?.(
-        [...reservation.threadIds].filter(
-          (threadId) => threadId !== DEFAULT_THREAD_ID,
-        ),
-      );
-    } catch {
-      // The run may have ended between the confirmation snapshot and cancellation.
-    }
-    reservation.cancel = undefined;
-    for (const threadId of reservation.threadIds) {
-      if (reservationByThreadId.get(threadId) === token) {
-        reservationByThreadId.delete(threadId);
-      }
-    }
-    if (!reservation.claimed) {
-      reservations.delete(token);
-    }
+    // Model unload and app-wide stop actions remain local-model-only.
+    if (
+      reservations.get(token)?.usesLocalModel &&
+      cancelPreStreamReservation(token)
+    )
+      cancelled += 1;
   }
   return cancelled;
+}
+
+/** A composer steering gesture may cancel its own local or external response. */
+export function cancelPreStreamRunForThreadIds(
+  threadIds: readonly string[],
+): boolean {
+  // An unresolved composer must never target the shared default reservation.
+  if (threadIds.length === 0) return false;
+  const token = findPreStreamRunReservation(threadIds);
+  return token ? cancelPreStreamReservation(token) : false;
 }
 
 export function claimPreStreamRunReservation(token: symbol): boolean {
@@ -168,6 +196,7 @@ export function adoptPreStreamRunReservation(
     reservation.threadIds.add(threadId);
     reservationByThreadId.set(threadId, token);
   }
+  notifyReservationsChanged();
   return true;
 }
 
@@ -182,6 +211,7 @@ export function releasePreStreamRunReservation(token: symbol): boolean {
       reservationByThreadId.delete(threadId);
     }
   }
+  notifyReservationsChanged();
   return true;
 }
 

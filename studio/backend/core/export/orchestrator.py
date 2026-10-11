@@ -6,6 +6,14 @@ subprocess spawned on first checkpoint load and reused for later exports. Switch
 checkpoints that need different transformers versions kills the old subprocess and spawns a new
 one. Pattern follows core/inference/orchestrator.py."""
 
+from core.training.account_jobs import (
+    account_process_spec,
+    init_job_owner,
+    job_control,
+    job_read,
+    owned_job,
+    validate_job_paths,
+)
 import atexit
 import structlog
 from collections import deque
@@ -40,6 +48,7 @@ class ExportOrchestrator:
     routes/export.py needs minimal changes."""
 
     def __init__(self):
+        init_job_owner(self, self.is_export_active, self.cancel_export, self._clear_account_result)
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
@@ -49,6 +58,7 @@ class ExportOrchestrator:
         self.current_checkpoint: Optional[str] = None
         self.is_vision: bool = False
         self.is_peft: bool = False
+        self.decision: Optional[Dict[str, Any]] = None
 
         # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
@@ -72,6 +82,15 @@ class ExportOrchestrator:
 
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
+
+    # ------------------------------------------------------------------
+
+    def _clear_account_result(self):
+        self.current_checkpoint = None
+        self.is_vision = self.is_peft = False
+        self.decision = None
+        self._last_op = None
+        self.clear_logs()
 
     def _append_log(self, entry: Dict[str, Any]) -> None:
         line = entry.get("line")
@@ -98,6 +117,7 @@ class ExportOrchestrator:
             self._log_buffer.clear()
             self._run_start_seq = self._log_seq
 
+    @job_read(lambda self, cursor: ([], cursor))
     def get_logs_since(self, cursor: int) -> Tuple[List[Dict[str, Any]], int]:
         with self._log_lock:
             new_entries = [entry for entry in self._log_buffer if entry["seq"] > cursor]
@@ -105,10 +125,12 @@ class ExportOrchestrator:
             return new_entries, new_entries[-1]["seq"]
         return [], cursor
 
+    @job_read(lambda self: 0)
     def get_current_log_seq(self) -> int:
         with self._log_lock:
             return self._log_seq
 
+    @job_read(lambda self: 0)
     def get_run_start_seq(self) -> int:
         with self._log_lock:
             return self._run_start_seq
@@ -141,13 +163,16 @@ class ExportOrchestrator:
                 "error": None if success else (message or None),
             }
 
+    @job_read(lambda self: None)
     def get_last_op(self) -> Optional[Dict[str, Any]]:
         with self._op_lock:
             return dict(self._last_op) if self._last_op is not None else None
 
+    @job_read(lambda self: None)
     def get_active_op_kind(self) -> Optional[str]:
         return self._active_op_kind
 
+    @job_control
     def cancel_export(self) -> bool:
         """Terminate the in-flight export subprocess immediately.
 
@@ -184,6 +209,12 @@ class ExportOrchestrator:
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
+        # Export does not evict loaded models; at least free an idle resident H3 sd-server.
+        try:
+            from core.inference.video_minimax_h3 import release_h3_native_servers
+            release_h3_native_servers("export subprocess starting")
+        except Exception as exc:  # noqa: BLE001 - never block an export on this
+            logger.warning("Could not release the idle video sd-server for export: %s", exc)
         # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
         # would kill the export for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress
@@ -212,7 +243,7 @@ class ExportOrchestrator:
         # sweep has taken its snapshot, and the worker adopted below would then outlive
         # Studio holding the model in memory.
         if is_process_shutting_down():
-            raise RuntimeError("Studio is shutting down; not starting an export subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an export subprocess")
 
         with (
             child_environment_for_spawn(cache_env),
@@ -221,18 +252,24 @@ class ExportOrchestrator:
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
 
+            process_args, process_kwargs = account_process_spec(
+                "core.export.worker",
+                "run_export_process",
+                cache_env,
+                {
+                    "cmd_queue": self._cmd_queue,
+                    "resp_queue": self._resp_queue,
+                    "config": config,
+                },
+            )
             # Kept in a local as well as on self: a concurrent _shutdown_subprocess can
             # see a process that has not finished starting, decide it is not alive and
             # clear self._proc, and every read below would then be off a None while the
             # worker is alive and unadopted.
             _spawned_proc = _CTX.Process(
                 target = run_without_native_path_secret,
-                args = ("core.export.worker", "run_export_process", cache_env),
-                kwargs = {
-                    "cmd_queue": self._cmd_queue,
-                    "resp_queue": self._resp_queue,
-                    "config": config,
-                },
+                args = process_args,
+                kwargs = process_kwargs,
                 daemon = True,
             )
             self._proc = _spawned_proc
@@ -266,7 +303,7 @@ class ExportOrchestrator:
                         "export worker (pid %s) survived the reap; leaving it adopted",
                         _spawned_proc.pid,
                     )
-            raise RuntimeError("Studio is shutting down; not starting an export subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an export subprocess")
         logger.info("Export subprocess started (pid=%s)", _spawned_proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
@@ -434,23 +471,41 @@ class ExportOrchestrator:
             except (EOFError, OSError, ValueError):
                 return events
 
+    # ------------------------------------------------------------------
+
+    @owned_job()
     def load_checkpoint(
         self,
         checkpoint_path: str,
         max_seq_length: int = 2048,
-        load_in_4bit: bool = True,
+        load_in_4bit: Optional[bool] = True,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
         hf_token: HfTokenArg = None,
         allow_ambient: bool = True,
         subject: Optional[str] = None,
+        base_model: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
         Always spawns a fresh subprocess to ensure a clean Python interpreter.
+        ``base_model`` pins an already authorized adapter base; the worker then ignores the
+        adapter config, which its owner can rewrite after the check.
+        ``load_in_4bit = None`` picks 16-bit for an unquantized full fine-tune, else 4-bit.
         """
+        validate_job_paths({"checkpoint_path": checkpoint_path})
+        if load_in_4bit is None:
+            from utils.models.checkpoints import is_unquantized_full_finetune
+            load_in_4bit = not is_unquantized_full_finetune(checkpoint_path, hf_token)
+            if not load_in_4bit:
+                logger.info(
+                    "Full fine-tune checkpoint %s has no quantization_config - "
+                    "loading in 16-bit for export",
+                    checkpoint_path,
+                )
         sub_config = {
             "checkpoint_path": checkpoint_path,
+            "base_model": base_model,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "trust_remote_code": trust_remote_code,
@@ -459,6 +514,11 @@ class ExportOrchestrator:
             "hf_token": hf_token,
             "allow_ambient": allow_ambient,
         }
+        from utils.hardware import get_device, gpu_ids_with_torch_kernels
+
+        # Prevent export from sharding onto GPUs with missing kernels (#11870).
+        sub_config["resolved_gpu_ids"] = gpu_ids_with_torch_kernels()
+        sub_config["device_backend"] = get_device().value
 
         with self._lock:
             # Fresh log buffer so the UI sees only this run's output.
@@ -501,6 +561,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     raise
 
                 try:
@@ -510,6 +571,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     op_success, op_message = False, str(exc)
                     return False, str(exc)
 
@@ -517,6 +579,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = resp.get("checkpoint")
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
+                    self.decision = resp.get("decision")
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
                     op_success, op_message = True, resp.get("message", "Loaded successfully")
                     return True, op_message
@@ -526,6 +589,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     op_success, op_message = False, error
                     return False, error
             finally:
@@ -542,6 +606,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
+        install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -553,6 +618,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "private": private,
                 "compressed_method": compressed_method,
+                "install_missing_dependencies": install_missing_dependencies,
             },
         )
 
@@ -586,7 +652,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
-        gguf_shard_size: Optional[str] = None,
+        npu_q4nx: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -599,7 +665,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "imatrix_file": imatrix_file,
                 "private": private,
-                "gguf_shard_size": gguf_shard_size,
+                "npu_q4nx": npu_q4nx,
             },
         )
 
@@ -612,6 +678,7 @@ class ExportOrchestrator:
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
+        adapter_format: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
@@ -624,15 +691,18 @@ class ExportOrchestrator:
                 "private": private,
                 "gguf": gguf,
                 "gguf_outtype": gguf_outtype,
+                "adapter_format": adapter_format,
             },
         )
 
+    @owned_job(continuation = True)
     def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
         """Send an export command and wait for the result.
 
         Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
         dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
+        validate_job_paths(params)
         with self._lock:
             if not self._ensure_subprocess_alive():
                 return (
@@ -682,12 +752,14 @@ class ExportOrchestrator:
                 self._active_op_kind = None
                 self._export_active = False
 
+    @job_control
     def cleanup_memory(self) -> bool:
         with self._lock:
             if not self._ensure_subprocess_alive():
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
+                self.decision = None
                 return True
 
             self._active_op_kind = "cleanup"
@@ -710,15 +782,19 @@ class ExportOrchestrator:
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
+                self.decision = None
                 return success
             finally:
                 self._record_op_finished(success, "", None)
                 self._active_op_kind = None
                 self._export_active = False
 
-    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:
+    def scan_checkpoints(self, outputs_dir: Optional[str] = None) -> List[Tuple[str, list]]:
         """Scan for checkpoints — runs locally, no ML imports."""
+        outputs_dir = outputs_dir if outputs_dir is not None else str(outputs_root())
+        validate_job_paths({"output_dir": outputs_dir})
         from utils.models.checkpoints import scan_checkpoints
+
         return scan_checkpoints(outputs_dir = outputs_dir)
 
 

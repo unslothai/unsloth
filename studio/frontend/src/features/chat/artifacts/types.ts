@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export type ChatArtifactSource = "tool" | "fence";
-export type ChatArtifactSurface = "panel" | "overlay";
 
 export interface ChatArtifact {
   id: string;
@@ -26,11 +25,47 @@ export interface ChatArtifactInput {
   isStreaming?: boolean;
 }
 
-const DEFAULT_ARTIFACT_TITLE = "HTML canvas";
+const DEFAULT_ARTIFACT_TITLE = "HTML preview";
 
 export function normalizeArtifactTitle(title?: string | null): string {
   const trimmed = title?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_ARTIFACT_TITLE;
+}
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  mdash: "\u2014",
+  ndash: "\u2013",
+  middot: "\u00b7",
+  hellip: "\u2026",
+};
+
+export function htmlDocumentTitle(code: string): string | null {
+  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(code);
+  if (!match) return null;
+  const title = match[1]
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (entity, body: string) => {
+      if (body[0] === "#") {
+        const point =
+          body[1]?.toLowerCase() === "x"
+            ? Number.parseInt(body.slice(2), 16)
+            : Number.parseInt(body.slice(1), 10);
+        return Number.isFinite(point) && point > 0 && point <= 0x10ffff
+          ? String.fromCodePoint(point)
+          : entity;
+      }
+      return NAMED_ENTITIES[body.toLowerCase()] ?? entity;
+    })
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return title || null;
 }
 
 export function hashArtifactCode(code: string): string {
@@ -39,15 +74,6 @@ export function hashArtifactCode(code: string): string {
     hash = ((hash << 5) + hash) ^ code.charCodeAt(i);
   }
   return (hash >>> 0).toString(36);
-}
-
-// The canvas source view keys its Streamdown on this. Streamdown memoizes a code fence on its
-// node's line/column span, ignoring the text, so equal-line-count canvases keep the old source.
-// Tool artifact IDs omit the code, so hash it in.
-export function buildArtifactSourceKey(
-  artifact: Pick<ChatArtifact, "id" | "code">,
-): string {
-  return `${artifact.id}:${hashArtifactCode(artifact.code)}`;
 }
 
 export function createArtifactId(input: ChatArtifactInput): string {
@@ -89,5 +115,5 @@ export function getArtifactFilename(
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
-  return `${slug || "canvas"}.html`;
+  return `${slug || "page"}.html`;
 }

@@ -505,7 +505,7 @@ if __name__ == "__main__":
 
 
 def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp_path):
-    """_gpu_init.py runs fix_torchao_torch_symbol_skew() immediately before
+    """_gpu_init.py runs fix_torchao_torch_symbol_skew() before
     this one, so a gate asking only `hasattr` would read its placeholders as a
     healthy torch and stage nothing, in exactly the environments vLLM's
     inspector child needs it."""

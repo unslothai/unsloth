@@ -2,14 +2,19 @@ import ast
 from pathlib import Path
 
 
+_HELPERS = ("_packed_base", "_is_packed_state")
+
+
 def _load_function(name):
     # Extract a function from kernels/utils.py without importing unsloth (which needs a GPU / torch / bitsandbytes).
     source = Path(__file__).parents[2] / "unsloth" / "kernels" / "utils.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     funcs = [
-        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == name
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name in (name, *_HELPERS)
     ]
-    assert len(funcs) == 1, (name, funcs)
+    assert [f.name for f in funcs].count(name) == 1, (name, funcs)
     namespace = {"getattr": getattr, "_FP8_WEIGHT_DTYPES": ()}
     module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)

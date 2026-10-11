@@ -1326,6 +1326,14 @@ class TestFallbackCheckpointDtype:
         model.config = type("cfg", (), {"_name_or_path": str(tmp_path)})()
         assert S._fallback_checkpoint_extra_bytes(model) == 0
 
+    def test_a_supplied_state_dict_is_what_gets_sized(self, sized_from_parameters, tmp_path):
+        torch = sized_from_parameters
+        model = torch.nn.Linear(8, 8, dtype = torch.bfloat16)
+        model.config = type("cfg", (), {"_name_or_path": str(tmp_path)})()
+        state_dict = {k: v.float() for k, v in model.state_dict().items()}
+        n_parameters = sum(p.numel() for p in model.parameters())
+        assert S._fallback_checkpoint_extra_bytes(model, state_dict) == n_parameters * 2
+
     def test_an_unmeasurable_model_adds_nothing(self):
         assert S._fallback_checkpoint_extra_bytes(_FakeModel()) == 0
 
@@ -1937,7 +1945,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
 
         source = inspect.getsource(S.unsloth_save_pretrained_gguf)
         fallback = source.split("Saving directly without LoRA merge")[1]
-        assert "self.save_pretrained(save_directory)" in fallback
+        assert "self.save_pretrained(save_directory" in fallback
         assert "merge_and_overwrite_lora" not in fallback
 
     def test_an_export_writing_no_merge_is_not_charged_the_reserve(self, split):
@@ -3397,7 +3405,7 @@ class TestTheGgufPreflightIsToldTheModelDtype:
         monkeypatch.setattr(
             S,
             "_fallback_checkpoint_extra_bytes",
-            lambda model: asked.append(None) or 0,
+            lambda model, *_: asked.append(None) or 0,
         )
         wrong = estimate(quantization_methods = ["f16", "q4_k_m"], first_conversion = "f16")
         right = estimate(quantization_methods = ["f16", "q4_k_m"], first_conversion = "bf16")
@@ -3472,7 +3480,7 @@ class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
         monkeypatch.setattr(
             S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
         )
-        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
@@ -3565,7 +3573,7 @@ class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", estimate)
         monkeypatch.setattr(S, "free_bytes", lambda path: 1000 * GB)
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
-        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         return asked
 
@@ -3666,7 +3674,7 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
             lambda path: state["conversion_free"] if str(path) == self.WORK else 1000 * GB,
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
-        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: self.WORK)
         monkeypatch.setattr(S, "_hub_cache_directory", lambda: self.CACHE)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
@@ -3695,6 +3703,23 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
     def test_room_for_both_keeps_it(self, state):
         state.update(conversion_free = self.BASE + self.CONVERSION)
         assert self._preflight() == ("model", True)
+
+    def test_a_supplied_state_dict_reaches_both_sizing_helpers(self, state, monkeypatch):
+        state.update(conversion_free = self.BASE + self.CONVERSION)
+        state_dict = {"lm_head.weight": "trained"}
+        seen = []
+        monkeypatch.setattr(
+            S, "_fallback_checkpoint_extra_bytes", lambda model, sd: seen.append(sd) or 0
+        )
+        monkeypatch.setattr(
+            S,
+            "_gguf_model_input_directory",
+            lambda model, directory, sd: seen.append(sd) or directory,
+        )
+        S._preflight_gguf_disk(
+            _FakeModel(), "model", "f32", first_conversion = "f32", state_dict = state_dict
+        )
+        assert seen == [state_dict, state_dict]
 
     def test_a_cache_elsewhere_is_not_charged_here(self, state):
         """The premise reversed: only a cache on THIS disk costs the pre-warm."""
@@ -3768,7 +3793,7 @@ class TestACacheOnAnotherFilesystemIsNotChargedToTheOutputDisk:
             S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
         )
         monkeypatch.setattr(S, "_hub_cache_directory", lambda: self.ELSEWHERE)
-        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)

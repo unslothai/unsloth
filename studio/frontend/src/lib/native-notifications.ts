@@ -5,7 +5,7 @@ import { isTauri } from "@/lib/api-base";
 
 const MAX_BODY_LENGTH = 200;
 const MAX_SENT_KEYS = 200;
-const HF_TOKEN_PATTERN = /\bhf_[A-Za-z0-9]{20,}\b/g;
+const HF_TOKEN_PATTERN = /\bhf_(?:oauth_)?[A-Za-z0-9]{20,}\b/g;
 const GITHUB_TOKEN_PATTERN = /\bghp_[A-Za-z0-9_]{20,}\b/g;
 const GITHUB_PAT_PATTERN = /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g;
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9_-]{20,}\b/g;
@@ -20,7 +20,7 @@ const WHITESPACE_PATTERN = /\s+/g;
 const LOCAL_PATH_PATTERN = /^(?:\/|~[\\/]|\.{1,2}[\\/]|[A-Za-z]:[\\/]|\\\\)/;
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
 const SENSITIVE_TOKEN_PATTERN =
-  /\bhf_[A-Za-z0-9]{20,}\b|\bghp_[A-Za-z0-9_]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-[A-Za-z0-9_-]{20,}\b/;
+  /\bhf_(?:oauth_)?[A-Za-z0-9]{20,}\b|\bghp_[A-Za-z0-9_]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-[A-Za-z0-9_-]{20,}\b/;
 
 type PermissionState = "unknown" | "granted" | "denied";
 

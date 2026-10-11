@@ -9,6 +9,9 @@ Classification paths: (1) canonical gcnArchName, (2) alternate-spelling attr,
 Fraction selection: the unified-Linux reserve crossover, the discrete cap, the
 Windows budget-exact 1.0, and the UNSLOTH_ROCM_MEM_FRACTION override.
 
+The guard reaches the policy through _gpu_memory_fraction; its ROCm arm is what this
+file pins, and the backend-neutral half lives in test_gpu_mem_fraction_env.py.
+
 Regression: Strix Halo (gfx1151) was misclassified as discrete on Radeon wheels
 that set props.name="Radeon 8060S Graphics" but no gcnArchName, applying the
 wrong headroom factor on a 128 GiB unified-memory pool.
@@ -16,6 +19,7 @@ wrong headroom factor on a 128 GiB unified-memory pool.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -286,7 +290,8 @@ class TestMemFractionSelection:
         the guard calls the helper, sizes against the allocator's own total, and tags the
         log off the parsed override rather than the raw string."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
-        assert "_mem_fraction = _rocm_memory_fraction(" in source
+        # The one policy entry point; its "rocm" arm delegates to _rocm_memory_fraction.
+        assert "_mem_fraction = _gpu_memory_fraction(" in source
         # totalGlobalMem is what the allocator multiplies the fraction by from torch
         # 2.10 on, so the reserve is only the intended size when the guard divides by
         # the same number. Before 2.10 the allocator divides by the driver's total.
@@ -301,9 +306,11 @@ class TestMemFractionSelection:
         Scoped to the byte arm: discrete and win32 take a flat fraction, which no
         denominator gap can distort."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
-        assert "_driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])" in source
+        assert "mem_get_info(_mem_index)[1]" in source
         assert "if not _allocator_divides_by_props_total(" in source
-        assert "sys.platform, _env_raw, _driver_total or None" in source
+        # Whitespace-insensitive because the formatter wraps this call; what is pinned is
+        # that the cap is still solved against the driver's total, not the layout.
+        assert re.search(r'sys\.platform,\s*"rocm",\s*_env_raw,\s*_driver_total or None', source)
         assert "but this torch caps" in source
 
 

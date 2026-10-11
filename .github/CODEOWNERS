@@ -264,6 +264,8 @@
 /studio/setup.sh @danielhanchen
 /studio/setup.ps1 @danielhanchen
 /studio/setup.bat @danielhanchen
+/studio/audio_cpp_prebuilt_pins.json @danielhanchen
+/studio/install_audio_cpp_prebuilt.py @danielhanchen
 /studio/install_manifest.py @danielhanchen
 /studio/install_python_stack.py @danielhanchen
 /studio/install_llama_prebuilt.py @danielhanchen
