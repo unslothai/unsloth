@@ -150,8 +150,8 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               Give this project context
             </p>
             <p className="max-w-sm text-sm text-muted-foreground">
-              Upload PDFs, docs, or text. Every chat in this project can use
-              them.
+              Add documents, spreadsheets, slides, e-books, email, text or
+              code. Every chat in this project can use them.
             </p>
           </div>
           <Button

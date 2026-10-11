@@ -84,6 +84,7 @@ from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
     install_wheel,
+    is_windows_wheel_env,
     probe_torch_wheel_env,
     url_exists,
 )
@@ -1345,7 +1346,9 @@ def _attempt_package_install(
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
-    env = probe_torch_wheel_env(timeout = 30)
+    env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    # Windows is wheel-only: a PyPI fallback there is a source build needing MSVC + the CUDA toolkit.
+    wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     if wheel_url_builder is not None:
         wheel_url = wheel_url_builder(env)
     else:
@@ -1381,17 +1384,23 @@ def _attempt_package_install(
             return True
         if outcome == "rejected":
             logger.warning(
-                "%s wheel installed but is not importable; falling back to PyPI",
+                "%s wheel installed but is not importable; %s",
                 display_name,
+                "removing it" if wheel_only else "falling back to PyPI",
             )
             wheel_rejected = True
     elif wheel_available is None:
         _send_status(
             event_queue,
-            f"Could not check the {display_name} prebuilt wheel; installing from PyPI.",
+            f"Could not check the {display_name} prebuilt wheel; "
+            + ("skipping it." if wheel_only else "installing from PyPI."),
         )
     else:
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
+
+    if wheel_only:
+        logger.info("%s: no usable prebuilt wheel for Windows; skipping", display_name)
+        return False
 
     is_hip = env and env.get("hip_version")
     if is_hip and not shutil.which("hipcc"):
@@ -1484,20 +1493,11 @@ def _attempt_package_install(
                 f"{snippet}",
             )
         else:
-            if sys.platform == "win32":
-                # No prebuilt wheel and no source toolchain on Windows -- expected for packages like causal-conv1d.
-                # Log at info so users aren't alarmed by what looks like an error.
-                logger.info(
-                    "%s is not available on Windows (no prebuilt wheel); skipping",
-                    display_name,
-                )
-                logger.debug("Install output:\n%s", result.stdout)
-            else:
-                logger.error(
-                    "Failed to install %s from PyPI:\n%s",
-                    display_name,
-                    result.stdout,
-                )
+            logger.error(
+                "Failed to install %s from PyPI:\n%s",
+                display_name,
+                result.stdout,
+            )
         return False
 
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without installing anything.
@@ -1536,9 +1536,6 @@ def _ensure_causal_conv1d_fast_path(
         required = _model_wants_causal_conv1d(model_name)
     if not required:
         return
-    if sys.platform == "win32":
-        logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
-        return
 
     _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(CAUSAL_CONV1D))
 
@@ -1559,6 +1556,11 @@ def _flash_linear_attention_importable() -> bool:
 
 def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
     if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+        return
+
+    if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
+        # mamba_ssm imports triton at load and the wheel goes in --no-deps.
+        _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
         return
 
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
@@ -1938,9 +1940,6 @@ def _install_fast_path_hooks(
         return wrapper
 
     def _causal_conv1d_install(eq: Any) -> bool:
-        if sys.platform == "win32":
-            logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
-            return False
         ok = _install_package_wheel_first(event_queue = eq, **_pinned_kernel_kwargs(CAUSAL_CONV1D))
         return bool(ok)
 
@@ -1971,7 +1970,7 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
         return False
     if max_seq_length < _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
         return False
-    return sys.platform.startswith("linux")
+    return sys.platform.startswith("linux") or sys.platform == "win32"
 
 
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:

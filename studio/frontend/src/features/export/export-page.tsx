@@ -95,6 +95,7 @@ import {
 } from "./export-navigation-cache";
 import { confirmLlmCompressorInstallIfNeeded } from "./hooks/use-llm-compressor-consent";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
+import { saveDirectoryField } from "./lib/save-directory";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
@@ -348,7 +349,7 @@ export function ExportPage() {
 
   // Apply the ?run= deep link once its run appears in the checkpoint list: select the run and
   // default to GGUF. The main checkpoint is auto-selected below, after the model-change effect.
-  const { run: preselectRun } = useSearch({ from: "/export" });
+  const { run: preselectRun, imageLora: preselectImageLora } = useSearch({ from: "/export" });
   const appliedRunRef = useRef<string | null>(null);
   useEffect(() => {
     if (!preselectRun) {
@@ -737,7 +738,10 @@ export function ExportPage() {
     sourceBaseModelName,
     sourceMode,
   ]);
-  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
+  const { inputValue: saveDirectoryInput, saveDirectory } = saveDirectoryField(
+    customSaveDirectory,
+    defaultSaveDirectory,
+  );
   // Each merged format uploads a full model to the repo root, so several to one repo would collide.
   // GGUF method exporting an adapter checkpoint as a GGUF LoRA; reuses the LoRA export path.
   const ggufAsLora =
@@ -1990,6 +1994,7 @@ export function ExportPage() {
                   destination={destination}
                   onDestinationChange={setDestination}
                   saveDirectory={saveDirectory}
+                  saveDirectoryInput={saveDirectoryInput}
                   defaultSaveDirectory={defaultSaveDirectory}
                   saveDirectoryOverridden={!!customSaveDirectory}
                   onSaveDirectoryChange={setCustomSaveDirectory}
@@ -2051,7 +2056,7 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
-        <ImageLoraExportCard />
+        <ImageLoraExportCard preselect={preselectImageLora} />
         <Q4nxConvertCard />
       </main>
     </div>

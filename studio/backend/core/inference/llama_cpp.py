@@ -478,8 +478,8 @@ from core.inference.mcp_images import (
 )
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
-    _WORKSPACE_TOOLS,
     ToolLoopController,
+    _reruns_after_new_work,
     append_deferred_nudges,
     awaiting_approval_status,
     deferred_nudge_text,
@@ -15031,6 +15031,7 @@ class LlamaCppBackend:
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
+        unsized_ids: list[int] = []
         try:
             from utils.hardware import gpu_query
 
@@ -15062,6 +15063,9 @@ class LlamaCppBackend:
                         idx = int(parts[0])
                         free_mib = int(parts[1])
                     except ValueError:
+                        # Jetson answers "[N/A]": no dedicated VRAM (#4862).
+                        if parts[0].isdigit() and (allowed is None or int(parts[0]) in allowed):
+                            unsized_ids.append(int(parts[0]))
                         continue
                     # Total parsed separately: a two-column line or a non-integer
                     # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
@@ -15099,6 +15103,43 @@ class LlamaCppBackend:
             return rocm_gpus
 
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
+        gpus = LlamaCppBackend._get_gpu_memory_torch(binary, for_llama_server)
+        if gpus or not (for_llama_server and unsized_ids):
+            return gpus
+        return LlamaCppBackend._tegra_unified_memory_rows(unsized_ids)
+
+    @staticmethod
+    def _tegra_unified_memory_rows(gpu_ids: list[int]) -> list[tuple[int, int, int]]:
+        """Price a Jetson's GPU from system RAM when nvidia-smi answers ``[N/A]`` and
+        torch cannot see it (a generic aarch64 wheel), so the context is still capped
+        (#4862). llama-server only: it runs on JetPack's CUDA, torch-backed callers do not."""
+        from utils.tegra import is_tegra
+
+        if not is_tegra():
+            return []
+        avail = LlamaCppBackend._available_system_memory_mib()
+        if avail is None:
+            return []
+        cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
+        # Same policy as the torch integrated branch: a cgroup-bound pool publishes no total.
+        total = (
+            0
+            if cgroup_mib is not None and cgroup_mib <= avail
+            else LlamaCppBackend._total_system_memory_mib() or 0
+        )
+        free = _apply_igpu_host_reserve_mib(avail, True)
+        LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+        # Torch never saw these, so record them as integrated or the pool is credited twice.
+        LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = set(
+            gpu_ids
+        )
+        return [(idx, free, total) for idx in sorted(gpu_ids)]
+
+    @staticmethod
+    def _get_gpu_memory_torch(
+        binary: Optional[str], for_llama_server: bool
+    ) -> list[tuple[int, int, int]]:
+        """The torch arm of ``_get_gpu_memory``."""
         try:
             import torch
 
@@ -16592,6 +16633,11 @@ class LlamaCppBackend:
             # unified" question, and a discrete card next to an APU still has a pool of
             # its own, so re-ask per row rather than forfeit a fit that is really there.
             shared |= {idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])}
+        # Integrated CUDA SoCs (Jetson, DGX Spark) too. Cache only: _get_gpu_memory filled it.
+        _integrated = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+            LlamaCppBackend._integrated_cuda_mask_key(), ()
+        )
+        shared |= {idx for idx, _free in rows if idx in _integrated}
         # --no-kv-offload puts the WHOLE cache in host RAM whatever the layer placement
         # says (llama-kv-cache.cpp upgrades a layer's buffer type only inside
         # `if (offload)`), so free VRAM may not pay for it. Resolved off the same
@@ -17878,6 +17924,7 @@ class LlamaCppBackend:
           ctx_checkpoints -- --ctx-checkpoints: N snapshots per slot. An SWA
                              model snapshots its window; a hybrid recurrent one
                              snapshots its WHOLE recurrent state (see path 2).
+                             They live in host RAM, never VRAM.
           flash_attn      -- False pads variable-width V tensors to the model max.
 
         Returns 0 if metadata is insufficient.
@@ -18691,9 +18738,8 @@ class LlamaCppBackend:
         n_parallel). Unit-testable with synthetic VRAM maps.
         ``exact`` stops after the first candidate, for a caller that accepts only
         ``n_parallel`` itself and would re-price every lower count just to discard it.
-        ``ctx_checkpoints`` mirrors --ctx-checkpoints, which allocates N SWA/recurrent
-        snapshots PER SLOT; omitting it under-prices every candidate, so the caller that
-        re-fits context off this predicate would spend bytes already promised to them.
+        ``ctx_checkpoints`` mirrors --ctx-checkpoints: N host-RAM snapshots per slot,
+        passed only when the GPUs share that pool (unified memory), else 0.
         ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
@@ -18777,7 +18823,8 @@ class LlamaCppBackend:
 
         ``kv_on_gpu`` mirrors ``--kv-offload`` (default on); when False the KV
         cache lives in CPU RAM and the requested context is honored verbatim.
-        Other keyword args mirror ``_estimate_kv_cache_bytes``.
+        Other keyword args mirror ``_estimate_kv_cache_bytes``; pass ``ctx_checkpoints``
+        only against a unified-memory budget, since the snapshots live in host RAM.
 
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
@@ -22443,6 +22490,21 @@ class LlamaCppBackend:
                     "Ollama instead."
                 )
 
+        # GGUF converted for another llama.cpp format revision (#8513: pre-#24908 MiniMax-M3 lacks indexer keys).
+        missing_key = re.search(r"key not found in model:\s*([\w.\-]+)", scan_tail, re.IGNORECASE)
+        if missing_key:
+            return LlamaCppBackend._with_startup_diagnostics(
+                f"This GGUF is missing the metadata key '{_short(missing_key.group(1))}', "
+                "which the installed llama.cpp requires to load it. The file was made "
+                "for a different llama.cpp version of this model's format, usually an "
+                "older or pre-release one; this is not a memory problem. Download an "
+                "updated GGUF of this model, or update llama.cpp if the file is newer "
+                "than this build.",
+                output,
+                log_path,
+                secrets,
+            )
+
         # 127 without any loader line above is not specific to a library: it is
         # also what a shell wrapper entrypoint reports when its exec target is
         # gone (_llama_lib_dir supports those, as does a custom
@@ -25677,7 +25739,7 @@ class LlamaCppBackend:
                     if server_caps.get("ctx_checkpoints_flag")
                     else 0
                 )
-                # Recurrent snapshots are host-only; SWA keeps its existing VRAM fit policy.
+                # Snapshots are host RAM (copied device-to-host): only a host-RAM pool pays.
                 _fit_ctx_checkpoints = (
                     0 if self._rollback_state_bytes(1) > 0 else _requested_ctx_checkpoints
                 )
@@ -25980,6 +26042,7 @@ class LlamaCppBackend:
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
                 _shared_gpu_ids: set[int] = set()
+                _placement_ctx_checkpoints = 0
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
                 # the same reason as _detected_gpus: the except path (--fit on) falls
@@ -26350,6 +26413,29 @@ class LlamaCppBackend:
                             return 0
                         return _host_pinned_candidate - _base_host_pinned
 
+                    # Checkpoints are host RAM: a discrete card never holds them, but a
+                    # unified-memory GPU's "VRAM" is that same pool, so it still pays. ANY
+                    # shared candidate keeps the charge: Auto may later pick that one alone.
+                    _gpu_ids_now = [idx for idx, _free in gpus]
+                    _placement_ctx_checkpoints = (
+                        _fit_ctx_checkpoints
+                        if _fit_ctx_checkpoints
+                        and _gpu_ids_now
+                        and (
+                            bool(_shared_gpu_ids)
+                            or (
+                                not is_vulkan_backend
+                                and (
+                                    self._amd_apu_wants_unified_memory(_gpu_ids_now)
+                                    or (
+                                        self._integrated_cuda_probe_is_free()
+                                        and self._integrated_cuda_unified_memory(_gpu_ids_now)
+                                    )
+                                )
+                            )
+                        )
+                        else 0
+                    )
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
@@ -26833,10 +26919,8 @@ class LlamaCppBackend:
                         )
 
                     def _kv_bytes(ctx: int, ctx_checkpoints: int = 0) -> int:
-                        # Checkpoints default OFF: the placement paths price the SWA
-                        # snapshots themselves, so charging them again here would shrink
-                        # the context they just chose. The load-mode fit, which has no
-                        # such term, passes the effective count in.
+                        # Checkpoints default OFF: placement prices them itself, and only
+                        # on unified memory. The load-mode host figure passes a count.
                         return self._estimate_kv_cache_bytes(
                             ctx,
                             cache_type_kv,
@@ -27464,7 +27548,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
-                                        ctx_checkpoints = _fit_ctx_checkpoints,
+                                        ctx_checkpoints = _placement_ctx_checkpoints,
                                     )
                                 )
                                 if _ctx_wo <= 0:
@@ -27545,7 +27629,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
-                                        ctx_checkpoints = _fit_ctx_checkpoints,
+                                        ctx_checkpoints = _placement_ctx_checkpoints,
                                     )
                                 )
                                 if (
@@ -27896,7 +27980,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
-                                    ctx_checkpoints = _fit_ctx_checkpoints,
+                                    ctx_checkpoints = _placement_ctx_checkpoints,
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
@@ -28122,7 +28206,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
-                                    ctx_checkpoints = _fit_ctx_checkpoints,
+                                    ctx_checkpoints = _placement_ctx_checkpoints,
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
@@ -28638,7 +28722,7 @@ class LlamaCppBackend:
                             split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
-                            ctx_checkpoints = _fit_ctx_checkpoints,
+                            ctx_checkpoints = _placement_ctx_checkpoints,
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel
@@ -28673,7 +28757,7 @@ class LlamaCppBackend:
                                     mtp_bytes_for_slots = (lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)),
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
-                                    ctx_checkpoints = _fit_ctx_checkpoints,
+                                    ctx_checkpoints = _placement_ctx_checkpoints,
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
@@ -40840,7 +40924,7 @@ class LlamaCppBackend:
                     for _tc in tool_calls if deduplicate_tool_calls else ():
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                        if _fn.get("name") in _WORKSPACE_TOOLS:
+                        if _reruns_after_new_work(_fn.get("name")):
                             if _key == _last_workspace_key:
                                 continue
                             if _key in _seen_keys:
