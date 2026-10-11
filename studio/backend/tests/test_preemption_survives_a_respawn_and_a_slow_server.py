@@ -199,6 +199,35 @@ class TestAParkedResumeWaitsThroughAMovingPool:
         first.release()
 
     @pytest.mark.asyncio
+    async def test_a_released_lease_leaves_the_slot_line_at_once(self):
+        # A turn that gave up releases its lease; its resume, still waiting on a moving cache,
+        # used to keep its ticket ahead of every later resumer until its hard deadline.
+        queue = LlamaAdmissionQueue("k")
+        first = await _lease(queue, tokens = 1000)
+        assert first.preempt() is True
+        second = await _lease(queue, tokens = 1000)
+        task = asyncio.ensure_future(
+            first.resume_async(1200, poll_s = 0.01, timeout_s = 0.15, progress = _ticking())
+        )
+        await asyncio.sleep(0.1)
+        assert len(queue._unpark_tickets) == 1
+        first.release()
+        started = time.monotonic()
+        assert await asyncio.wait_for(task, timeout = 2.0) is False
+        assert time.monotonic() - started < 0.5, "the released resume kept waiting"
+        assert len(queue._unpark_tickets) == 0
+        second.release()
+
+    def test_the_outer_wait_matches_the_inner_bound_and_cancels_on_giving_up(self):
+        import inspect
+
+        from core.inference import llama_preemption
+
+        source = inspect.getsource(llama_preemption.ControllerPreemptionPolicy.await_resume)
+        assert "future.result(timeout = timeout * _MAX_REPARK_WAIT_MULTIPLE + 5.0)" in source
+        assert "future.cancel()" in source
+
+    @pytest.mark.asyncio
     async def test_resume_async_without_a_signature_keeps_the_old_flat_bound(self):
         queue = LlamaAdmissionQueue("k")
         first = await _lease(queue, tokens = 1000)
