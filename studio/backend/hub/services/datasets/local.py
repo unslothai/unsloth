@@ -324,6 +324,7 @@ def _upload_destination(filename: str) -> tuple[str, Path, int, str]:
 
 
 def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResponse:
+    from core.training.account_jobs import account_path
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -337,6 +338,8 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
+    # A managed account may only import files inside its own workspace, as the RAG/seed/library drops check.
+    account_path(grant.canonical_path)
     filename, stored_path, max_bytes, max_label = _upload_destination(grant.canonical_path.name)
     if grant.size_bytes is not None and grant.size_bytes > max_bytes:
         raise _upload_too_large(max_label)
