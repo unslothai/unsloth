@@ -667,39 +667,38 @@ class _FreezeNewTorchForCoreUpdate:
         return False
 
 
-# torchao's cpp is built for one torch release AND CUDA major; a mismatch loses kernels, not the
-# import. Map: 2.9->0.14.0, 2.10 cu<=12->0.16.0, 2.10 cu>=13->0.17.0, 2.11->0.17.0, 2.12+->0.18.0.
-# torchao ships per accelerator, so the caller pins the index to the resident torch.
+# torchao cpp extensions match one torch and CUDA release; mismatches disable kernels or crash.
+# torch 2.9 needs 0.15 because 0.14 breaks supported Diffusers and Transformers (#13244).
+# use the resident accelerator index because PyPI follows the latest PyTorch CUDA major.
 _TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
+_TORCHAO_TORCH_29_SPEC = "torchao==0.15.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
 _TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
 _TORCHAO_TORCH_211_SPEC = "torchao==0.17.0"
 _TORCHAO_TORCH_212_PLUS_SPEC = "torchao==0.18.0"
+# torch 2.10 cannot load 0.16's CUDA 12 cpp on this major or newer.
 _TORCHAO_CUDA13_MIN_MAJOR = 13
 
 
 def _cuda_major_from_torch_version(torch_version: str) -> int | None:
-    """Extract the CUDA major from a torch local version tag, e.g. '2.10.0+cu130'
-    -> 13, '2.10.0+cu128' -> 12. Returns None for rocm/cpu/tagless builds."""
+    """return the CUDA major from a torch local tag, or None for rocm, cpu, and tagless builds."""
     local = str(torch_version).split("+", 1)
     if len(local) < 2 or not local[1].startswith("cu"):
         return None
-    digits = re.sub(r"[^0-9].*", "", local[1][2:])  # 'cu130' -> '130'
+    digits = re.sub(r"[^0-9].*", "", local[1][2:])
     if not digits:
         return None
-    return int(digits) // 10  # '130' -> 13, '128' -> 12, '118' -> 11
+    return int(digits) // 10
 
 
 def _select_torchao_spec(torch_version: str | None) -> str:
-    """Map an installed torch version string (e.g. '2.10.0+cu130') to the torchao
-    pip spec whose cpp extensions match it. Falls back to _TORCHAO_DEFAULT_SPEC for
-    torch <=2.9, a non-2.x major, or an unparseable/missing version. Pure function.
-    """
+    """select the torchao spec whose cpp extension matches the installed torch version."""
     if not torch_version:
         return _TORCHAO_DEFAULT_SPEC
-    release = str(torch_version).split("+", 1)[0]  # drop +cu130/+rocm6.4/+cpu
+    release = str(torch_version).split("+", 1)[0]
     parts = release.split(".")
     try:
+        # ignore the minor's prerelease suffix.
         minor_str = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else ""
         major, minor = int(parts[0]), int(minor_str)
     except (IndexError, ValueError):
@@ -707,19 +706,21 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     if major != 2:
         return _TORCHAO_DEFAULT_SPEC
     if minor >= 12:
-        return _TORCHAO_TORCH_212_PLUS_SPEC  # newest known build; covers 2.12+
+        return _TORCHAO_TORCH_212_PLUS_SPEC
     if minor == 11:
-        return _TORCHAO_TORCH_211_SPEC  # 0.17.0's cpp is built for exactly this minor
+        return _TORCHAO_TORCH_211_SPEC
     if minor == 10:
+        # torchao 0.16's CUDA 12 cpp crashes on CUDA 13; 0.17 skips its mismatched cpp.
         cuda_major = _cuda_major_from_torch_version(str(torch_version))
         if cuda_major is not None and cuda_major >= _TORCHAO_CUDA13_MIN_MAJOR:
             return _TORCHAO_TORCH_210_CUDA13_SPEC
         return _TORCHAO_TORCH_210_SPEC
+    if minor == 9:
+        return _TORCHAO_TORCH_29_SPEC
     return _TORCHAO_DEFAULT_SPEC
 
 
-# torchcodec <=0.11 is built against one torch minor and declares no torch requirement, so pip
-# cannot catch a mismatch; 0.12+ is ABI-stable for torch >=2.11. Mirrors pyproject audio-torch2xx.
+# torchcodec 0.11 and older target one torch minor; 0.12 is ABI-stable with torch 2.11+.
 _TORCHCODEC_DEFAULT_SPEC = "torchcodec>=0.10.0,<0.11.0"
 _TORCHCODEC_ABI_STABLE_SPEC = "torchcodec>=0.12.0"
 _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
@@ -7714,12 +7715,25 @@ def _flash_attn_importable() -> bool:
 
 
 def _remove_rejected_flash_attn() -> bool:
-    """Uninstall a flash-attn that installed but will not import. True iff it is gone.
-
-    uv gets --python as well as --system: --system ALONE would remove from the system
-    Python, leaving the rejected wheel in the venv while setup reported it gone.
-    """
+    """remove rejected flash-attn and return whether it is gone; uv pairs --system with --python."""
     return _uninstall_distribution("flash-attn")
+
+
+def _remove_stale_flash_attn() -> None:
+    """remove stale flash-attn before xformers imports it and breaks every Diffusers pipeline."""
+    if _remove_rejected_flash_attn():
+        _step(
+            "warning",
+            "flash-attn was built for another torch or CUDA and does not import; removed it",
+            _cyan,
+        )
+    else:
+        _step(
+            "warning",
+            "flash-attn was built for another torch or CUDA and could not be removed; "
+            "uninstall flash-attn manually",
+            _cyan,
+        )
 
 
 def _ensure_flash_attn() -> None:
@@ -7733,9 +7747,12 @@ def _ensure_flash_attn() -> None:
         return
 
     env = probe_torch_wheel_env()
+    # a failed flash-attn probe proves staleness only when torch still imports.
+    stale = env is not None and _installed_distribution_version("flash-attn") is not None
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_available:
+        # installing a distribution invalidates caches keyed on the action counter.
         _count_install_action()
         outcome = install_prebuilt(
             wheel_url,
@@ -7747,13 +7764,12 @@ def _ensure_flash_attn() -> None:
             ),
             use_uv = USE_UV,
             uv_needs_system = UV_NEEDS_SYSTEM,
+            reinstall = stale,
         )
         if outcome == "installed":
             return
         if outcome == "rejected":
-            # Remove it before giving up. Left installed, unsloth/models/_utils.py finds
-            # it by metadata (_package_available) and then imports the native module
-            # in process, so a wheel that killed the probe would kill training too.
+            # metadata detection imports rejected wheels in the training process.
             if _remove_rejected_flash_attn():
                 _step(
                     "warning",
@@ -7761,13 +7777,15 @@ def _ensure_flash_attn() -> None:
                     _cyan,
                 )
             else:
-                # Still importable in process, unlike never having installed it.
+                # the rejected native module remains discoverable and may terminate training.
                 _step(
                     "warning",
                     "flash-attn wheel is not importable on this GPU and could not be "
                     "removed; uninstall flash-attn manually before training",
                     _cyan,
                 )
+        elif stale:
+            _remove_stale_flash_attn()
         _step("warning", "Continuing without flash-attn", _cyan)
         return
 
@@ -7781,6 +7799,8 @@ def _ensure_flash_attn() -> None:
         )
     else:
         _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+    if stale:
+        _remove_stale_flash_attn()
 
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
@@ -11769,9 +11789,12 @@ def install_python_stack() -> int:
         if _torch_after_repair and _torch_after_repair != _torch_before_repair:
             _note(
                 f"torch moved from {_torch_before_repair or 'unknown'} to "
-                f"{_torch_after_repair} during the repair -- re-selecting torchao"
+                f"{_torch_after_repair} during the repair -- re-selecting torchao and "
+                "flash-attn"
             )
             _install_torchao_for_torch(_torch_after_repair)
+            # resync flash-attn because the repair can invalidate the wheel selected earlier.
+            _ensure_flash_attn()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()

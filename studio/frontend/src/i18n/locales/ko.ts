@@ -2482,6 +2482,15 @@ export const ko = {
         "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       autoCompactKeywords:
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "도구 출력 길이",
+      toolResultLimitDescription: "모델이 읽는 Python 또는 터미널 결과 하나의 문자 수입니다. 기본값은 {count}입니다.",
+      toolResultLimitHint: "더 긴 출력은 모델이 나눠서 읽을 수 있는 파일에 저장됩니다. 더 높은 제한은 Unsloth에서 실행되는 모델에 적용되며, 컨텍스트 창이 작으면 여전히 더 적게 받습니다. API 모델은 낮추지 않는 한 기본값을 유지합니다.",
+      toolResultLimitDefault: "{count} (기본값)",
+      toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS로 설정됨",
+      toolResultLimitLoadError: "도구 출력 길이를 불러오지 못했습니다.",
+      toolResultLimitSaveError: "도구 출력 길이를 저장하지 못했습니다.",
+      toolResultLimitKeywords:
+        "출력 결과 잘림 제한 문자 길이 tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "접힘",
         auto: "실행 중 펼치기",
