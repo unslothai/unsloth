@@ -16,6 +16,7 @@ const {
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  kimiSearchExcludesThinking,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -557,4 +558,24 @@ test("preserve thinking is available only for explicit llama.cpp connections", (
   for (const provider of [undefined, null, "custom", "vllm", "ollama", "openai", "anthropic", "openrouter"]) {
     assert.equal(providerSupportsPreserveThinking(provider), false);
   }
+});
+
+test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they were (#8735)", () => {
+  const k3 = getExternalReasoningCapabilities("kimi", "kimi-k3");
+  assert.equal(k3.supportsReasoning, true);
+  assert.equal(k3.reasoningStyle, "reasoning_effort");
+  assert.equal(k3.supportsReasoningOff, false);
+  assert.deepEqual([...k3.reasoningEffortLevels], ["low", "high", "max"]);
+  assert.equal(clampReasoningEffortToLevels("xhigh", k3.reasoningEffortLevels), "max");
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k3"), 1048576);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k3")?.presencePenalty, false);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k3"), false);
+
+  const k26 = getExternalReasoningCapabilities("kimi", "kimi-k2.6");
+  assert.equal(k26.reasoningStyle, "enable_thinking");
+  assert.equal(k26.supportsReasoningOff, true);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k2.6")?.presencePenalty, true);
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6"), 32768);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k2.6"), true);
+  assert.equal(kimiSearchExcludesThinking("openai", "kimi-k3"), false);
 });

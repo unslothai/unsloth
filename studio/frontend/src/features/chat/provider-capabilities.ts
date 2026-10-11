@@ -242,6 +242,8 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   // DeepSeek (deepseek-flash / deepseek-v4-pro).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
+  // max_completion_tokens up to 1M (https://platform.kimi.ai/docs/guide/kimi-k3-quickstart).
+  { providerType: "kimi", prefixes: ["kimi-k3"], cap: 1048576 },
 ];
 
 /** The connection's effective Max Tokens ceiling for one model. A documented per-model cap
@@ -408,6 +410,17 @@ export function providerSupportsBuiltinWebSearch(
     providerType === "anthropic" ||
     providerType === "openrouter" ||
     providerType === "kimi"
+  );
+}
+
+/** Kimi keeps the Search and Think pills exclusive ($web_search wanted thinking off), except on
+ *  kimi-k3, which always reasons and has no off switch to trade. */
+export function kimiSearchExcludesThinking(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    providerType === "kimi" && modelId?.trim().toLowerCase() !== "kimi-k3"
   );
 }
 
@@ -798,6 +811,10 @@ export function getProviderCapabilities(
       topK: false,
     };
   }
+  // kimi-k3 fixes presence_penalty too and the docs ask for it to be omitted.
+  if (providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3") {
+    return { ...PROVIDER_CAPABILITIES.kimi, presencePenalty: false };
+  }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
 }
 
@@ -1020,7 +1037,15 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
 function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
   // Kimi has a boolean thinking toggle, not an effort scale: k2.6 on by default and
   // toggleable, k2-thinking always on, k2.5 and others none.
-  // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}.
+  // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}. k3 always reasons
+  // and takes reasoning_effort low|high|max instead.
+  if (modelId === "kimi-k3") {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "high", "max"],
+    });
+  }
   if (modelId === "kimi-k2-thinking") {
     return withEnableThinkingStyle({
       supportsReasoning: true,
