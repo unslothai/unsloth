@@ -54,13 +54,14 @@ def _rope_embedding_QK(
     half_head_dim = head_dim // 2
     mask = col_offsets < half_head_dim
 
-    if HAS_ROPE_INDICES and EVICT_INDICES:
-        rot_position = tl.load(
-            rope_embedding_indices + row_position,
-            eviction_policy = "evict_first",
-        ).to(tl.int32)
-    elif HAS_ROPE_INDICES:
-        rot_position = tl.load(rope_embedding_indices + row_position).to(tl.int32)
+    if HAS_ROPE_INDICES:
+        if EVICT_INDICES:
+            rot_position = tl.load(
+                rope_embedding_indices + row_position,
+                eviction_policy = "evict_first",
+            ).to(tl.int32)
+        else:
+            rot_position = tl.load(rope_embedding_indices + row_position).to(tl.int32)
     else:
         rot_position = row_position % seqlen
 
