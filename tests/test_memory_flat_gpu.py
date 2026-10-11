@@ -22,7 +22,11 @@ import pytest
 
 from real_accelerator import has_real_cuda
 
-pytestmark = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+# `gpu`: deselected by the default addopts, CI runs it in the `-m 'gpu or slow'` leg.
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU"),
+]
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _RUNNER = os.path.join(_ROOT, "tests", "_shared", "tiny_sft_runner.py")
