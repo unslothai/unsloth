@@ -583,3 +583,27 @@ def test_diffusion_gemma_gets_the_latest_transformers_prompt_when_5_5_lacks_it(m
     # Sidecar not provisioned yet: the hardcoded routing still counts as handling it.
     monkeypatch.setattr(tl, "_config_model_types", lambda tier: frozenset())
     assert tl._hardcoded_tier_ships("diffusion_gemma")
+
+
+def test_formatting_retries_in_one_process_when_workers_cannot_pickle():
+    from utils.datasets.chat_templates import _map_with_pickle_fallback
+
+    class Data:
+        calls = []
+
+        def map(self, function, **kwargs):
+            Data.calls.append(kwargs.get("num_proc"))
+            if kwargs.get("num_proc"):
+                raise TypeError("cannot pickle 'SSLContext' object")
+            return "mapped"
+
+    assert _map_with_pickle_fallback(Data(), len, {"num_proc": 4, "desc": "x"}) == "mapped"
+    assert Data.calls == [4, None]
+    with pytest.raises(ValueError):
+        _map_with_pickle_fallback(
+            type(
+                "D", (), {"map": lambda self, f, **k: (_ for _ in ()).throw(ValueError("bad row"))}
+            )(),
+            len,
+            {"num_proc": 4},
+        )
