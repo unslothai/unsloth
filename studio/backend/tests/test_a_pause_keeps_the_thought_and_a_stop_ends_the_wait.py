@@ -538,9 +538,10 @@ def test_the_thought_before_a_pause_survives_a_resumed_turn_that_calls_a_tool(mo
 
 
 @pytest.mark.parametrize("parallel", ["0", "1"])
-def test_two_spellings_of_one_call_run_once_in_a_parallel_round(monkeypatch, parallel):
-    # `kernel` heals to {"query": "kernel"}. The ledger keys on the healed call; the parallel
-    # gate keyed on the arguments as they arrived, so both ran.
+@pytest.mark.parametrize("first", ["kernel", {"q": "kernel"}], ids = ["healed", "alias"])
+def test_two_spellings_of_one_call_run_once_in_a_parallel_round(monkeypatch, parallel, first):
+    # `kernel` heals to {"query": "kernel"}, and `q` is an accepted alias of `query`. The ledger
+    # keys on the healed, canonical call; the parallel gate keyed on less, so both ran.
     import json as _json
 
     monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", parallel)
@@ -554,7 +555,7 @@ def test_two_spellings_of_one_call_run_once_in_a_parallel_round(monkeypatch, par
                 "arguments": args if isinstance(args, str) else _json.dumps(args),
             },
         }
-        for i, args in enumerate(["kernel", {"query": "kernel"}])
+        for i, args in enumerate([first, {"query": "kernel"}])
     ]
     frame = (
         "data: "
