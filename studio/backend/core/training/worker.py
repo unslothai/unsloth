@@ -172,6 +172,11 @@ def _untrainable_model_format_error(config: dict) -> str | None:
             or config.get("is_decision", False)
             or _uses_mlx_training_backend()
         ):
+            if config.get("is_dataset_image") or config.get("is_dataset_audio"):
+                return (
+                    "Continuing a saved adapter on an image or audio dataset is not supported "
+                    "yet. Start from its base model instead."
+                )
             return None
         return "Adapter models are inference-only and cannot be trained as base models."
     return None

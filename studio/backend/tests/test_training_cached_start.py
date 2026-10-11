@@ -573,6 +573,24 @@ def test_adapter_trains_embeddings_reads_saved_modules():
     assert not worker._adapter_trains_embeddings(SimpleNamespace())
 
 
+@pytest.mark.parametrize("dataset_flag", ["is_dataset_image", "is_dataset_audio"])
+def test_start_refuses_adapter_continuation_on_multimodal_data(tmp_path, dataset_flag):
+    route = _load_route_module(f"training_route_adapter_{dataset_flag}")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), **{dataset_flag: True})
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_adapter_multimodal_unsupported"
+
+    from core.training import worker
+
+    error = worker._untrainable_model_format_error(
+        {"model_format": "adapter", "training_type": "LoRA/QLoRA", dataset_flag: True}
+    )
+    assert error is not None and "image or audio" in error
+
+
 def test_start_rejects_missing_local_model(tmp_path):
     route = _load_route_module("training_route_reject_missing_local_model")
     request = _request(model_name = str(tmp_path / "missing-model"))

@@ -941,6 +941,18 @@ def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None
         account_access.require_model_access(reference, repo_type)
 
 
+def _refuse_multimodal_adapter_continuation(request: TrainingStartRequest) -> None:
+    # The modality probes read the adapter, not its base, so an image or audio run would be
+    # formatted as text. Refuse it until the base is resolved for those probes (#13140).
+    if request.is_dataset_image or request.is_dataset_audio:
+        raise _training_start_error(
+            400,
+            "training_adapter_multimodal_unsupported",
+            "Continuing a saved adapter on an image or audio dataset is not supported yet. "
+            "Start from its base model instead.",
+        )
+
+
 def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
     """A continued adapter also loads the base it names. Check that base the way the adapter
     was checked, or a public adapter could open a private base from the shared cache (#13140)."""
@@ -1194,6 +1206,7 @@ def _reject_untrainable_model_request(
                     "training_remote_model_adapter_weights_missing",
                     "Adapter repository is missing adapter_model weights.",
                 )
+            _refuse_multimodal_adapter_continuation(request)
             _authorize_adapter_base(request.model_name, hf_token)
             return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _is_decision_checkpoint(request):
@@ -1233,6 +1246,7 @@ def _reject_untrainable_model_request(
                 "training_local_model_adapter_config_missing",
                 "Adapter directory is missing adapter_config.json.",
             )
+        _refuse_multimodal_adapter_continuation(request)
         _authorize_adapter_base(str(path), hf_token)
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     try:
