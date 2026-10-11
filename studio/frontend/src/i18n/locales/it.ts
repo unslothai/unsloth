@@ -2485,6 +2485,15 @@ export const it = {
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "Lunghezza dell'output degli strumenti",
+      toolResultLimitDescription: "Caratteri di un risultato Python o Terminale che il modello legge. Il valore predefinito è {count}.",
+      toolResultLimitHint: "L'output più lungo viene salvato in un file che il modello può leggere a parti. Un limite più alto si applica ai modelli eseguiti in Unsloth, e le finestre di contesto piccole ricevono comunque meno. I modelli API mantengono il valore predefinito a meno che tu non lo abbassi.",
+      toolResultLimitDefault: "{count} (predefinito)",
+      toolResultLimitLocked: "Impostato da UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Impossibile caricare la lunghezza dell'output degli strumenti.",
+      toolResultLimitSaveError: "Impossibile salvare la lunghezza dell'output degli strumenti.",
+      toolResultLimitKeywords:
+        "output risultato troncare troncato limite caratteri lunghezza tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Compresso",
         auto: "Espandi durante l’esecuzione",
