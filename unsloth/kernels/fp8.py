@@ -464,18 +464,36 @@ fp8_block_matmul = (
 )
 
 
+def _rocm_fp8e4nv_kernel_supported(device):
+    # AMD triton compiles fp8e4nv (OCP e4m3fn) natively on CDNA4 (gfx950) and RDNA4 (gfx12);
+    # CDNA3 (gfx942, MI300X / MI325X) is fnuz-native and gets software-emulated conversions plus
+    # an fp16-emulated tl.dot from triton 3.4 on. Older triton (torch <= 2.7 ROCm) rejects fp8e4nv
+    # on most archs, and CDNA2 / RDNA2 / RDNA3 (gfx90a, gfx10xx, gfx11xx incl. Strix Halo) are not
+    # supported fp8 targets upstream, so those take the torch dequant path.
+    try:
+        if Version(triton.__version__) < Version("3.4.0"):
+            return False
+        arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0].lower()
+    except Exception:
+        return False
+    return arch in ("gfx942", "gfx950") or arch.startswith("gfx12")
+
+
 @functools.lru_cache(maxsize = None)
 def _fp8_device_lacks_kernel(device):
     # A device's capability cannot change, so look it up once. Tests that simulate another
     # card must call _fp8_device_lacks_kernel.cache_clear().
-    return torch.version.hip is None and torch.cuda.get_device_capability(device) < (8, 9)
+    if torch.version.hip is not None:
+        return not _rocm_fp8e4nv_kernel_supported(device)
+    return torch.cuda.get_device_capability(device) < (8, 9)
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
     """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
 
     triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
-    L40S, L4) does support it. ROCm lists fp8e4nv always and its capability is gfx-derived.
+    L40S, L4) does support it. ROCm's capability is gfx-derived, so it is gated on the gfx arch
+    and triton version instead (_rocm_fp8e4nv_kernel_supported).
 
     kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
     which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn

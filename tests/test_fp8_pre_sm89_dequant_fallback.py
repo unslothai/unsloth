@@ -12,6 +12,8 @@ on any CUDA GPU including the pre-sm89 ones under discussion, which cannot compi
 they are asserted to select. Only the value comparison needs real fp8 hardware, and it skips.
 """
 
+import types
+
 import pytest
 import torch
 
@@ -47,6 +49,8 @@ def _route(
     weight,
     scale,
     hip = None,
+    gcn_arch = None,
+    triton_version = None,
 ):
     """Return "triton" or "torch" for a simulated device.
 
@@ -72,6 +76,11 @@ def _route(
     monkeypatch.setattr(fp8, "weight_dequant_block", _stub)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
     monkeypatch.setattr(torch.version, "hip", hip)
+    if gcn_arch is not None:
+        props = types.SimpleNamespace(gcnArchName = gcn_arch)
+        monkeypatch.setattr(torch.cuda, "get_device_properties", lambda *a, **k: props)
+    if triton_version is not None:
+        monkeypatch.setattr(fp8.triton, "__version__", triton_version)
     fp8._blockwise_weight_dequant_any_shape(weight, scale, BLOCK, torch.bfloat16)
     return "triton" if calls else "torch"
 
@@ -101,12 +110,48 @@ def test_float8_e5m2_is_never_diverted(monkeypatch, capability):
     assert _route(monkeypatch, capability, weight, scale) == "triton"
 
 
-@pytest.mark.parametrize("capability", [(8, 0), (9, 0), (11, 5)])
-def test_rocm_is_never_diverted(monkeypatch, capability):
-    # get_device_capability is gfx-derived on ROCm, not an SM number, and AMD's triton backend
-    # lists fp8e4nv unconditionally, so the NVIDIA-only guard must not fire there.
+@pytest.mark.parametrize(
+    "gcn_arch, capability, triton_version, expected",
+    [
+        ("gfx950", (9, 5), "3.5.0", "triton"),  # MI350X / MI355X: OCP fp8 native
+        ("gfx1201", (12, 0), "3.5.0", "triton"),  # RX 9070 XT (RDNA4): OCP fp8 native
+        ("gfx942:sramecc+:xnack-", (9, 4), "3.5.0", "triton"),  # MI300X: emulated e4m3fn, correct
+        ("gfx942:sramecc+:xnack-", (9, 4), "3.2.0", "torch"),  # torch 2.6 ROCm: no fp8e4nv
+        ("gfx950", (9, 5), "3.3.1", "torch"),  # before the arch-wide fp8 support
+        ("gfx90a:sramecc+:xnack-", (9, 0), "3.5.0", "torch"),  # MI210 / MI250X (CDNA2)
+        ("gfx1100", (11, 0), "3.5.0", "torch"),  # RX 7900 XTX (RDNA3)
+        ("gfx1151", (11, 5), "3.5.0", "torch"),  # Strix Halo (RDNA3.5)
+        ("gfx1030", (10, 3), "3.5.0", "torch"),  # RX 6900 XT (RDNA2)
+    ],
+)
+def test_rocm_routes_on_gfx_arch_not_capability(
+    monkeypatch, gcn_arch, capability, triton_version, expected
+):
+    # get_device_capability is gfx-derived on ROCm (gfx1151 reports 11.5, above any sm89 cut), so
+    # the guard keys on the arch: archs AMD triton cannot compile fp8e4nv for take the torch path.
     weight, scale = _make()
-    assert _route(monkeypatch, capability, weight, scale, hip = "6.2.0") == "triton"
+    route = _route(
+        monkeypatch,
+        capability,
+        weight,
+        scale,
+        hip = "6.4.0",
+        gcn_arch = gcn_arch,
+        triton_version = triton_version,
+    )
+    assert route == expected
+
+
+def test_rocm_unknown_arch_takes_the_torch_path(monkeypatch):
+    # A missing or unreadable gcnArchName must fall back, not compile a kernel that may not exist.
+    from unsloth.kernels import fp8
+
+    def _boom(*a, **k):
+        raise RuntimeError("no device properties")
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", _boom)
+    weight, scale = _make()
+    assert _route(monkeypatch, (9, 4), weight, scale, hip = "6.4.0") == "torch"
 
 
 @pytest.mark.parametrize(
@@ -268,3 +313,30 @@ def test_grouped_fp8_eval_uses_the_fallback_on_pre_sm89(monkeypatch):
 
     assert calls, "grouped eval bypassed the guarded dequant on a pre-sm89 device"
     assert torch.isfinite(out.float()).all()
+
+
+@pytest.mark.parametrize("gcn_arch", ["gfx1151", "gfx90a:sramecc+:xnack-"])
+def test_rocm_forward_without_fp8e4nv_skips_act_quant(monkeypatch, gcn_arch):
+    # The block forward quantizes the activation to e4m3fn in triton (act_quant) before the fp8 gemm;
+    # on an arch without fp8e4nv both must be skipped for dequant plus a 16-bit matmul.
+    from unsloth.kernels import fp8
+
+    def _no_kernel(*a, **k):
+        raise AssertionError("fp8e4nv triton kernel launched on an arch without fp8e4nv")
+
+    monkeypatch.setattr(fp8, "act_quant", _no_kernel)
+    monkeypatch.setattr(fp8, "fp8_block_matmul", _no_kernel)
+    monkeypatch.setattr(fp8, "weight_dequant_block", _no_kernel)
+    monkeypatch.setattr(torch.version, "hip", "6.4.0")
+    props = types.SimpleNamespace(gcnArchName = gcn_arch)
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda *a, **k: props)
+    monkeypatch.setattr(fp8.triton, "__version__", "3.5.0")
+
+    weight, scale = _make()
+    X = torch.randn(4, 256, device = "cuda", dtype = torch.bfloat16)
+    out = fp8.FP8BlockQuantLinear.apply(X, weight, scale)
+    W = (
+        weight.float()
+        * scale.repeat_interleave(BLOCK[0], 0).repeat_interleave(BLOCK[1], 1)
+    ).to(torch.bfloat16)
+    torch.testing.assert_close(out, X @ W.T)
