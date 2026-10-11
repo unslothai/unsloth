@@ -101,6 +101,7 @@ def _fit_host(
     )
     monkeypatch.setattr(LlamaCppBackend, "_get_gguf_size_bytes", staticmethod(lambda _p: _Q4))
     monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
+    monkeypatch.delenv("NGL", raising = False)
     backend = LlamaCppBackend()
     backend._n_layers, backend._n_heads = 30, 16
     return backend
@@ -113,6 +114,21 @@ def test_fit_reads_the_runner_device(monkeypatch):
     # A token that is not a physical index (UUID, CPU mask) is left alone.
     assert backend._diffusion_fit_ngl("/m.gguf", "GPU-abc", 4096, pinned = False) is None
     assert backend._diffusion_fit_ngl("/m.gguf", "", 4096, pinned = False) is None
+
+
+def test_fit_leaves_an_ngl_override_and_waits_for_a_killed_runner(monkeypatch):
+    backend = _fit_host(monkeypatch, [(0, 7_800, 8_188)])
+    settled = []
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_wait_for_vram_settle",
+        staticmethod(lambda **kw: settled.append(kw["since_kill"])),
+    )
+    backend._last_kill_monotonic = 123.0
+    assert backend._diffusion_fit_ngl("/m.gguf", "0", 4096, pinned = False) == 8
+    assert settled == [123.0]
+    monkeypatch.setenv("NGL", "0")
+    assert backend._diffusion_fit_ngl("/m.gguf", "0", 4096, pinned = False) is None
 
 
 def test_unpinned_multi_gpu_never_cuts_a_load_that_fits_a_card(monkeypatch):
@@ -212,8 +228,10 @@ def _maxtok(cmd):
 def test_fitted_launch_pins_the_context_it_was_sized_for(monkeypatch, tmp_path):
     # Auto-sized (0 / past the zoo's 8192 clamp): the split priced 4096, so send that.
     for n_ctx in (0, 32768):
-        cmd, _backend = _launch(monkeypatch, tmp_path, [(0, 7_800, 8_188)], n_ctx = n_ctx)
+        cmd, backend = _launch(monkeypatch, tmp_path, [(0, 7_800, 8_188)], n_ctx = n_ctx)
         assert (_ngl(cmd), _maxtok(cmd)) == ("8", "4096")
+        # Recorded too, for a runner that never reports the MAXTOK it resolved.
+        assert backend._effective_context_length == 4096
     cmd, _backend = _launch(monkeypatch, tmp_path, [(0, 7_800, 8_188)], n_ctx = 2048)
     assert (_ngl(cmd), _maxtok(cmd)) == ("11", "2048")
 

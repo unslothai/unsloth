@@ -19429,13 +19429,16 @@ class LlamaCppBackend:
         self, model_path: str, gpu: str, maxtok: int, *, pinned: bool
     ) -> Optional[int]:
         """Auto-mode ``--ngl`` for the runner's device ``gpu``, or None to keep its default."""
-        if not gpu.isdigit():
+        # An NGL in the environment is the zoo runner's own override: leave it in charge.
+        if not gpu.isdigit() or "NGL" in os.environ:
             return None
         try:
             binary = self._find_llama_server_binary()
             # Vulkan ordinals are not the CUDA ids the runner's mask takes.
             if binary and self._is_vulkan_backend(binary):
                 return None
+            # A runner killed for this load still reads as used until the driver reclaims it.
+            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
             rows = self._get_gpu_memory(binary)
             file_bytes = self._get_gguf_size_bytes(model_path)
             sysmem_fallback = self._sysmem_fallback_risk(binary)
@@ -19546,6 +19549,11 @@ class LlamaCppBackend:
                     gpu,
                 )
                 fit_ngl = None
+            # Pin the context the split was sized for. Left to auto-size, the runner's second
+            # probe pass sizes against host RAM, which on Windows the driver backs with
+            # shared memory instead of refusing.
+            if fit_ngl is not None and not 0 < maxtok <= 8192:
+                maxtok = _DIFFUSION_FIT_CTX
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -19572,11 +19580,6 @@ class LlamaCppBackend:
             )
         elif fit_ngl is not None:
             cmd += ["--ngl", str(fit_ngl)]
-            # Pin the context the split was sized for. Left to auto-size, the runner's second
-            # probe pass sizes against host RAM, which on Windows the driver backs with
-            # shared memory instead of refusing.
-            if not 0 < maxtok <= 8192:
-                cmd[cmd.index("--maxtok") + 1] = str(_DIFFUSION_FIT_CTX)
             logger.warning(
                 "DiffusionGemma does not fit GPU %s: keeping %d of %s layers on it and the "
                 "rest on CPU, which is much slower for block diffusion. A smaller quant "
