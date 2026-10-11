@@ -225,7 +225,12 @@ class TestALineSourceAndABatch:
     """`aiter_lines` yields a blank separator after every event, and a batch parks per prompt."""
 
     @staticmethod
-    async def _relay(items, monkeypatch, cap, window = 30.0):
+    async def _relay(
+        items,
+        monkeypatch,
+        cap,
+        window = 30.0,
+    ):
         import routes.inference as inference
 
         monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", cap)
