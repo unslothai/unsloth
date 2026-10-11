@@ -2113,7 +2113,8 @@ def get_exact_concurrency_setting(
     return _exact_concurrency_response()
 
 
-@router.put("/exact-concurrency", response_model = ExactConcurrencyResponse)
+# Machine-wide: a managed account switching it on can make every later load fail.
+@_owner_settings_router.put("/exact-concurrency", response_model = ExactConcurrencyResponse)
 def update_exact_concurrency_setting(
     payload: ExactConcurrencyPayload, current_subject: str = Depends(get_current_subject)
 ) -> ExactConcurrencyResponse:

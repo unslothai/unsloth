@@ -103,3 +103,28 @@ def test_a_managed_account_cannot_replace_the_transformers_sidecar(monkeypatch):
         response = client.post("/api/inference/install-latest-transformers", json = {})
     assert response.status_code == 403
     assert swaps == []
+
+
+def test_a_managed_account_cannot_switch_exact_concurrency(monkeypatch):
+    from routes import settings as settings_routes
+
+    written = []
+    monkeypatch.setattr(settings_routes, "set_exact_concurrency", written.append)
+    monkeypatch.setattr(
+        settings_routes,
+        "_exact_concurrency_response",
+        lambda: settings_routes.ExactConcurrencyResponse(
+            exact_concurrency = "on", effective = "on", env_override = None, active = "off",
+            reload_required = True, parking_available = True, parking_prerequisite = None,
+        ),
+    )
+
+    def _settings_app(app):
+        app.include_router(settings_routes.router, prefix = "/api/settings")
+
+    with _client(ALICE, _settings_app) as client:
+        assert client.put("/api/settings/exact-concurrency", json = {"exact_concurrency": "on"}).status_code == 403
+    assert written == []
+    with _client(OWNER, _settings_app) as client:
+        assert client.put("/api/settings/exact-concurrency", json = {"exact_concurrency": "on"}).status_code == 200
+    assert written == ["on"]

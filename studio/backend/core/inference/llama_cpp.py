@@ -37790,6 +37790,8 @@ class LlamaCppBackend:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         last_chunk_at: Optional[float] = None
         last_prefill_progress: Optional[float] = None
+        # When the current park before the first token began; keepalives renew only up to the cap.
+        parked_since: Optional[float] = None
         prefill_sse_buffer = ""
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -37818,8 +37820,18 @@ class LlamaCppBackend:
                         prefill_sse_buffer = prefill_sse_buffer[match.end() :]
                         if event.startswith((": preempt", ": resumed")):
                             # Parked by the server before its first token, and the parked
-                            # keepalive says it is alive: a wait is not a stall.
-                            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                            # keepalive says it is alive: a wait is not a stall, for as long as
+                            # the park cap allows, since a wedged park keeps sending them.
+                            now = time.monotonic()
+                            if event.startswith(": resumed"):
+                                parked_since = None
+                            elif parked_since is None:
+                                parked_since = now
+                            first_token_deadline = now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                            if parked_since is not None:
+                                first_token_deadline = min(
+                                    first_token_deadline, parked_since + _SERVER_PARK_STALL_CAP_S
+                                )
                             continue
                         if LlamaCppBackend._sse_event_has_generated_output(event):
                             starts_output = True
