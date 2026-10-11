@@ -89,10 +89,21 @@ def test_old_zoo_refuses_every_fp8_moe(old_zoo):
     # Dense FP8, unquantized MoE and bnb MoE are not this gate's business.
     assert refusal(SimpleNamespace(num_experts = None, quantization_config = BLOCK)) is None
     assert refusal(SimpleNamespace(num_experts = 8)) is None
-    assert refusal(SimpleNamespace(num_experts = 8, quantization_config = {"quant_method": "bitsandbytes"})) is None
-    assert refusal(SimpleNamespace(num_experts = 8, quantization_config = {"quant_method": "mxfp4"})) is None
+    assert (
+        refusal(
+            SimpleNamespace(num_experts = 8, quantization_config = {"quant_method": "bitsandbytes"})
+        )
+        is None
+    )
+    assert (
+        refusal(SimpleNamespace(num_experts = 8, quantization_config = {"quant_method": "mxfp4"}))
+        is None
+    )
     # FP8 attention with unquantized experts: vLLM keeps them 16-bit and they are shared as on main.
-    assert refusal(_moe(weight_block_size = None, modules_to_not_convert = ["model.layers.0.mlp.experts"])) is None
+    assert (
+        refusal(_moe(weight_block_size = None, modules_to_not_convert = ["model.layers.0.mlp.experts"]))
+        is None
+    )
     assert "upgrade" in refusal(_moe(modules_to_not_convert = ["model.layers.0.mlp.shared_experts"]))
 
 

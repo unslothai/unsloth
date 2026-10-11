@@ -1164,7 +1164,10 @@ def _fp8_moe_fast_inference_refusal(config):
         for key in ("modules_to_not_convert", "ignore", "ignored_layers", "exclude_modules")
         for entry in (quant.get(key, None) or ())
     ]
-    if any(isinstance(entry, str) and re.search(r"(^|[.:*])experts($|[.$*])", entry) for entry in skipped):
+    if any(
+        isinstance(entry, str) and re.search(r"(^|[.:*])experts($|[.$*])", entry)
+        for entry in skipped
+    ):
         return None
     return "this unsloth_zoo cannot share FP8 MoE experts with vLLM (upgrade unsloth_zoo)"
 
