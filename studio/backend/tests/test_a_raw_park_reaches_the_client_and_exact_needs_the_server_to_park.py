@@ -362,7 +362,7 @@ class TestTheNamedBudgetIsJudged:
         assert "_exact_cap = _named_preempt_ram_mib(" in window
         assert "_exact_cap = _PREEMPT_RAM_DEFAULT_MIB" in window
         assert "_exact_writes = min(_exact_cap, _exact_writes)" in window
-        assert "_available_host_memory_mib()" in window
+        assert "_exact_host_free_mib(self)" in window
         assert "_exact_writes > _host_free_mib" in window
         assert "self._exact_host_short = (_exact_writes, _host_free_mib)" in window
         assert "if _exact_setting == _exact.EXACT_AUTO: _exact_wanted = False" in window
