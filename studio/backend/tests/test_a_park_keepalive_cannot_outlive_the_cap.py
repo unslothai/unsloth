@@ -212,6 +212,9 @@ class TestAByteStreamParkedAfterItsFirstToken:
 
     def test_a_park_inside_the_cap_still_answers(self, monkeypatch):
         items = [b'data: {"choices":[{"text":"a"}]}\n\n', b": preempted\n\n: preempt-"]
-        items += [b"keepalive\n\n"] * 5 + [b": resumed\n\n", b'data: {"choices":[{"text":"b"}]}\n\n']
+        items += [b"keepalive\n\n"] * 5 + [
+            b": resumed\n\n",
+            b'data: {"choices":[{"text":"b"}]}\n\n',
+        ]
         seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0))
         assert seen[-1].endswith(b'"b"}]}\n\n')

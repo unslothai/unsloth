@@ -5132,7 +5132,9 @@ async def _aiter_llama_stream_items(
                 if not kinds:
                     # Only part of an event: it continues whatever the stream was doing.
                     notice = _OPENAI_PREEMPT_SSE_KEEPALIVE if park_since is not None else None
-                elif all(k in (_OPENAI_PREEMPT_SSE_PAUSED, _OPENAI_PREEMPT_SSE_KEEPALIVE) for k in kinds):
+                elif all(
+                    k in (_OPENAI_PREEMPT_SSE_PAUSED, _OPENAI_PREEMPT_SSE_KEEPALIVE) for k in kinds
+                ):
                     notice = _OPENAI_PREEMPT_SSE_KEEPALIVE
                 else:
                     notice = None
