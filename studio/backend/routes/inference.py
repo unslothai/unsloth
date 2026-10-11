@@ -2928,6 +2928,10 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     def _gguf_refresh_residency(controller, *, force: bool = False) -> None:
         if not _residency_applies:
             return
+        # The server parks slots itself and Studio plans nothing, so a reading decides
+        # nothing and its erases would destroy the prefix cache the server reuses.
+        if _server_parks_raw_streams(llama_backend):
+            return
         now = time.monotonic()
         if not force and now - _gguf_slots_seen["at"] < 1.0:
             return
@@ -3034,6 +3038,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
             # synchronous with a three second timeout, and the server keeps decoding while
             # it is out, so a count held back behind it can outrun the reaction headroom.
             victims = controller.observe(completion_id, generated)
+            if _server_parks_raw_streams(llama_backend):
+                # The server parks slots itself: no reading, no planning, no erase here.
+                return
             # A solo chat has nobody to preempt and nobody waiting for its cells, so the
             # round trip can decide nothing there. Admission and the resume wait pass
             # `force`, so both fresh-read barriers still read. Contended, it is read even
@@ -3374,6 +3381,10 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
         ):
             # A generation that never armed holds nobody else's cells, and with preemption off, or
             # on a non-unified cache, this erased prefix caches. The unregister above is unconditional.
+            return
+        if _server_parks_raw_streams(llama_backend):
+            # The server parks and restores slots itself; erasing idle ones would only
+            # throw away its prefix cache.
             return
         base = str(getattr(llama_backend, "base_url", "") or "")
         if not base:
