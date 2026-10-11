@@ -105,7 +105,6 @@ def test_env_opt_out(ddp_env, monkeypatch):
         lambda: _lora(_llama(num_local_experts = 4)),
         # modules_to_save: a full trainable copy Unsloth's fused paths may bypass.
         lambda: _lora(_llama(), modules_to_save = ["lm_head"]),
-        # LoRA on lm_head / embeddings.
         lambda: _lora(_llama(), target_modules = ["q_proj", "lm_head"]),
         lambda: _lora(_llama(), target_modules = ["q_proj", "embed_tokens"]),
         # Full fine-tuning goes through transformers' own rule.
@@ -196,7 +195,6 @@ def test_non_lora_peft_type_keeps_default(ddp_env):
 
 
 def test_modules_to_save_config_keeps_default(ddp_env):
-    # Isolates the modules_to_save rule from the tensor-name rules.
     model = _lora(_llama())
     cfg = next(iter(model.peft_config.values()))
     object.__setattr__(cfg, "modules_to_save", ["score"])
@@ -237,7 +235,6 @@ def test_lora_on_an_output_head_alias_keeps_default(ddp_env):
 
 
 def test_dora_defaults_to_false(ddp_env):
-    # DoRA magnitude vectors run on every forward, like lora_A / lora_B.
     assert _helper()(_args(), _lora(_llama(), use_dora = True)) is False
 
 
@@ -251,7 +248,6 @@ def test_reused_args_redecides(ddp_env):
     args = _args()
     helper = _helper()
     assert helper(args, _lora(_llama())) is False
-    # Same args, now a MoE model: the earlier automatic False must not stick.
     assert helper(args, _lora(_llama(num_local_experts = 4))) is None
 
 
