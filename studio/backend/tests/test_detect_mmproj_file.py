@@ -27,7 +27,9 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
     for k, v in fields.items():
         kb = k.encode("utf-8")
         body += struct.pack("<Q", len(kb)) + kb
-        if isinstance(v, int):
+        if isinstance(v, list):
+            body += struct.pack("<IIQ", 9, 7, len(v)) + bytes(v)
+        elif isinstance(v, int):
             body += struct.pack("<II", 4, v)
         else:
             vb = v.encode("utf-8")
@@ -489,6 +491,39 @@ def test_gemma4_finetune_pairs_by_functional_metadata(tmp_path, projection_dim, 
     assert detect_mmproj_file(str(model)) == expected
     if projection_dim:
         assert mmproj_matches_model_family(str(model), str(projector)) == (projection_dim == 5376)
+
+
+@pytest.mark.parametrize("arch", ["qwen35", "qwen35moe"])
+@pytest.mark.parametrize(
+    "projection_dim, deepstack, paired",
+    [(2048, [False, False], True), (1024, [False, False], False), (2048, [False, True], False)],
+)
+def test_qwen35_projector_from_another_quantizer_pairs_by_function(
+    tmp_path, arch, projection_dim, deepstack, paired
+):
+    """#6305: an LM Studio Qwen3.6 weight next to Unsloth's projector; Qwen3-VL's deepstack one stays out."""
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": arch,
+            "general.basename": "Qwen_Qwen3.6",
+            f"{arch}.embedding_length": 2048,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Qwen3.6-35B-A3B",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+            "clip.projector_type": "qwen3vl_merger",
+            "clip.vision.projection_dim": projection_dim,
+            "clip.vision.is_deepstack_layers": deepstack,
+        },
+    )
+    assert detect_mmproj_file(str(model)) == (str(projector.resolve()) if paired else None)
+    assert mmproj_matches_model_family(str(model), str(projector)) == paired
 
 
 def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
