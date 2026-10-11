@@ -228,19 +228,12 @@ def install_torchao_windows_rocm_stub() -> None:
                 sys.modules[_tao_name] = _make_mod_stub(_tao_name)
 
 
-# First torchao release exporting ``FqnToConfig``; earlier ones name the same class ``ModuleFqnToConfig``.
 _FQN_TO_CONFIG_SINCE = (0, 15)
 
 
 def alias_torchao_fqn_to_config() -> None:
-    """Give torchao < 0.15 the ``FqnToConfig`` name diffusers >= 0.41 and transformers import.
-
-    Studio pairs torch <= 2.9 with torchao 0.14 (its cpp extension matches that torch), and
-    diffusers 0.41 imports ``from torchao.quantization import FqnToConfig`` unguarded, so every
-    LoRA loader and every model that imports ``diffusers.loaders.peft`` (MiniMax-H3 among them)
-    failed with "cannot import name 'FqnToConfig'". torchao 0.15 renamed the class and kept
-    ``ModuleFqnToConfig = FqnToConfig``; this is the same alias the other way round. No-op on a
-    stubbed, absent, or already-new torchao, and it imports torchao only when an alias is due."""
+    """diffusers 0.41 imports ``FqnToConfig`` from torchao unguarded; torchao < 0.15 (Studio's torch <= 2.8
+    pairing) names it ``ModuleFqnToConfig``, and 0.15 keeps ``ModuleFqnToConfig = FqnToConfig``."""
     if is_stubbed("torchao"):
         return
     try:
