@@ -7,6 +7,7 @@
 
 __all__ = [
     "patch_trl_tool_chat_templates",
+    "with_trl_known_chat_template",
 ]
 
 import copy
@@ -297,6 +298,47 @@ def _wrap_get_training_chat_template(original, trl_module):
 
     get_training_chat_template._unsloth_tool_template_patched = True
     return get_training_chat_template
+
+
+def with_trl_known_chat_template(processing_class):
+    """A copy whose chat_template is the TRL-known one rendering conversations and tool calls identically, for
+    processes that run TRL without Unsloth (AsyncGRPO's rollout worker). Returns the input when TRL already knows the
+    template or no single family matches."""
+    try:
+        import trl.chat_template_utils as trl_module
+    except Exception:
+        return processing_class
+    template = _template_of(processing_class)
+    if template is None:
+        return processing_class
+    original = getattr(
+        trl_module.add_response_schema, "__wrapped__", trl_module.add_response_schema
+    )
+    tokenizer = _tokenizer_of(processing_class)
+    try:
+        original(_template_copy(tokenizer, template))
+        return processing_class
+    except Exception:
+        pass
+    conversation = {
+        name for name, _ in _matching_families(trl_module, tokenizer, template, "conversation")
+    }
+    found = {}
+    for name, known in _matching_families(trl_module, tokenizer, template, "completion"):
+        if name in conversation and _parser_for(original, tokenizer, known) is not None:
+            found.setdefault(known, name)
+    if len(found) != 1:
+        return processing_class
+    ((known, name),) = found.items()
+    clone = copy.copy(processing_class)
+    clone.chat_template = known
+    if clone is not tokenizer and getattr(clone, "tokenizer", None) is tokenizer:
+        clone.tokenizer = copy.copy(tokenizer)
+        clone.tokenizer.chat_template = known
+    logger.info(
+        f"Unsloth: the rollout process uses TRL's `{name}`, which renders this chat template identically."
+    )
+    return clone
 
 
 def _rebind(name, original, replacement):
