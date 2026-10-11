@@ -128,6 +128,30 @@ def _torch_varlen(device):
     return fn if ok else None
 
 
+_SDPA_MATH = []
+
+
+def _sdpa_picks_math(query, key) -> bool:
+    """A math-first sdpa_kernel priority leaves flash enabled; keep the math path it asks for."""
+    if not _SDPA_MATH:
+        from torch.nn.attention import SDPBackend
+        from .attention_dispatch import _sdpa_backend_state
+
+        _SDPA_MATH[:] = [int(SDPBackend.MATH), _sdpa_backend_state]
+    math, backend_state = _SDPA_MATH
+    n_heads, n_kv_heads = query.shape[1], key.shape[1]
+    _, choice = backend_state(
+        str(query.device),
+        query.dtype,
+        query.shape[-1],
+        n_heads,
+        n_kv_heads,
+        True,
+        n_heads != n_kv_heads,
+    )
+    return choice == math
+
+
 def _sdpa_packed_varlen(
     module,
     query,
@@ -178,7 +202,9 @@ def _sdpa_packed_varlen(
         and q_len > 0
         and query.is_cuda
         and query.device == key.device == value.device
-        and key.shape[2] == q_len
+        and key.shape[0] == value.shape[0] == 1
+        and key.shape[1] == value.shape[1]
+        and key.shape[2] == value.shape[2] == q_len
         # Not MLA (192 / 128) nor Gemma-4 global (512).
         and key.shape[-1] == value.shape[-1] == head_dim
         and head_dim <= 256
@@ -196,6 +222,8 @@ def _sdpa_packed_varlen(
         and not _sliding_or_softcapped(module, kwargs)
     ):
         torch_varlen = _torch_varlen(query.device)
+        if torch_varlen is not None and _sdpa_picks_math(query, key):
+            torch_varlen = None
         backend = select_attention_backend(use_varlen = True)
         # Flash-2 varlen backward faults past int32 indexing. Keyed on training / grad mode, not
         # requires_grad, so a reentrant checkpoint's no_grad forward and its recompute agree.

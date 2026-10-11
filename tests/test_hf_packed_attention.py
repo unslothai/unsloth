@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """Packed rows on the transformers modeling path run varlen attention, and nothing else changes."""
 
+import inspect
 import types
 
 import pytest
@@ -122,6 +123,7 @@ _CUDA = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
         "module_softcap",
         "not_causal",
         "positional",
+        "kv_batched",
     ],
 )
 def test_packed_calls_that_varlen_cannot_express_fall_back(monkeypatch, why):
@@ -164,16 +166,19 @@ def test_packed_calls_that_varlen_cannot_express_fall_back(monkeypatch, why):
         mask = None
     q = torch.randn(B, 4, 6, D, device = device, dtype = dtype)
     v = torch.randn(B, 4, 6, v_width, device = device, dtype = dtype)
+    k = q
+    if why == "kv_batched":
+        k, v = q.expand(2, -1, -1, -1), v.expand(2, -1, -1, -1)
     before = dict(hpa.HF_PACKED_ATTENTION_STATS)
     if why == "autocast_dtype":
         with torch.autocast("cuda", dtype = torch.float16):
-            out = hpa._sdpa_packed_varlen(module, q, q, v, mask, dropout = dropout, **kwargs)
+            out = hpa._sdpa_packed_varlen(module, q, k, v, mask, dropout = dropout, **kwargs)
     elif why == "not_causal":
-        out = hpa._sdpa_packed_varlen(module, q, q, v, mask, is_causal = False, **kwargs)
+        out = hpa._sdpa_packed_varlen(module, q, k, v, mask, is_causal = False, **kwargs)
     elif why == "positional":
-        out = hpa._sdpa_packed_varlen(module, q, q, v, mask, 0.0, **kwargs)
+        out = hpa._sdpa_packed_varlen(module, q, k, v, mask, 0.0, **kwargs)
     else:
-        out = hpa._sdpa_packed_varlen(module, q, q, v, mask, dropout = dropout, **kwargs)
+        out = hpa._sdpa_packed_varlen(module, q, k, v, mask, dropout = dropout, **kwargs)
     if why == "none":
         assert out[0].shape == (1, 6, 4, D) and seen == []
         assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 1
@@ -446,3 +451,37 @@ def test_torch_varlen_kill_switch(monkeypatch):
     monkeypatch.setattr(hpa, "_TORCH_VARLEN_GQA", [])
     assert hpa._torch_varlen(torch.device("cuda", 0)) is None
     assert hpa._TORCH_VARLEN == [None]
+
+
+@_CUDA
+def test_a_math_first_priority_keeps_torch_varlen_off(monkeypatch):
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    if "set_priority" not in inspect.signature(sdpa_kernel).parameters:
+        pytest.skip("this torch has no sdpa_kernel(set_priority = True)")
+    calls = []
+
+    def spy(q, *args, **kwargs):
+        calls.append(1)
+        return torch.zeros_like(q)
+
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [spy])
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
+    seen, orig = _calls()
+    hpa._ORIG_SDPA[0] = orig
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths = [3, 3]
+    q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16)
+    module = types.SimpleNamespace(is_causal = True)
+
+    def run():
+        return hpa._sdpa_packed_varlen(
+            module, q, q, q, _block_causal(lengths, "cuda"),
+            packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
+        )
+
+    with sdpa_kernel([SDPBackend.MATH, SDPBackend.FLASH_ATTENTION], set_priority = True):
+        run()
+    assert calls == []
+    run()
+    assert calls == [1]
