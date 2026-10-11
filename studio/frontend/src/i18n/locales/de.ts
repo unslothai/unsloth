@@ -2142,6 +2142,10 @@ export const de = {
           "PyTorch ist ein reiner CPU-Build ({version}), daher können die GPUs unten nicht genutzt werden. Reparieren Sie die Installation, um die GPU-Unterstützung wiederherzustellen.",
         mismatchUnavailable:
           "PyTorch ({version}) kann die GPUs unten nicht initialisieren, daher sind sie nicht nutzbar. Prüfen Sie den Grafiktreiber oder reparieren Sie die Installation.",
+        driverIdleEvict:
+          "Der AMD-Treiber {version} hat einen bekannten Fehler, der Windows einfrieren kann, wenn eine AMD-GPU im Leerlauf ist, meist mit mehr als einer GPU. Aktualisieren Sie auf Adrenalin 26.9.2 oder neuer.",
+        driverIdleEvictDetails: "Details",
+        dismissNotice: "Ausblenden",
         unusableDevice: "nicht nutzbar",
         unknownDevice: "Unbekannte GPU",
         deviceWithIndex: "GPU {index}",

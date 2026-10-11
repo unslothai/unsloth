@@ -2101,6 +2101,10 @@ export const it = {
           "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) non riesce a inizializzare le GPU sottostanti, quindi non possono essere usate. Controlla il driver della GPU o ripara l'installazione.",
+        driverIdleEvict:
+          "Il driver AMD {version} ha un bug noto che può bloccare Windows quando una GPU AMD resta inattiva, soprattutto con più di una GPU. Aggiorna ad Adrenalin 26.9.2 o successivo.",
+        driverIdleEvictDetails: "Dettagli",
+        dismissNotice: "Ignora",
         unusableDevice: "non utilizzabile",
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",

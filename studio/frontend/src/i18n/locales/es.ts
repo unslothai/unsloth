@@ -2137,6 +2137,10 @@ export const es = {
           "PyTorch es una compilación solo para CPU ({version}), por lo que las GPU de abajo no se pueden usar. Repare la instalación para restaurar la compatibilidad con GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) no puede inicializar las GPU de abajo, por lo que no se pueden usar. Revise el controlador de la GPU o repare la instalación.",
+        driverIdleEvict:
+          "El controlador de AMD {version} tiene un error conocido que puede congelar Windows cuando una GPU de AMD está inactiva, sobre todo con más de una GPU. Actualiza a Adrenalin 26.9.2 o posterior.",
+        driverIdleEvictDetails: "Detalles",
+        dismissNotice: "Descartar",
         unusableDevice: "no utilizable",
         unknownDevice: "GPU desconocida",
         deviceWithIndex: "GPU {index}",

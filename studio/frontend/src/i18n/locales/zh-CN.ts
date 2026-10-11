@@ -2084,6 +2084,10 @@ export const zhCN = {
         noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
         mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
         mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",
+        driverIdleEvict:
+          "AMD 驱动 {version} 存在已知缺陷，AMD GPU 空闲时可能导致 Windows 卡死，多 GPU 环境下最常见。请更新到 Adrenalin 26.9.2 或更高版本。",
+        driverIdleEvictDetails: "详情",
+        dismissNotice: "关闭",
         unusableDevice: "不可用",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",

@@ -2194,6 +2194,10 @@ export const he = {
           "גרסת PyTorch מותאמת ל-CPU בלבד ({version}), ולכן לא ניתן להשתמש ב-GPUs שלמטה. תקן את ההתקנה כדי לשחזר תמיכה ב-GPU.",
         mismatchUnavailable:
           "גרסת PyTorch ({version}) אינה יכולה לאתחל את ה-GPUs שלמטה, ולכן לא ניתן להשתמש בהם. בדוק את מנהל ההתקן (Driver), או תקן את ההתקנה.",
+        driverIdleEvict:
+          "במנהל ההתקן של AMD {version} יש באג ידוע שעלול להקפיא את Windows כשמעבד גרפי של AMD במצב סרק, בעיקר כשיש יותר ממעבד גרפי אחד. עדכנו ל-Adrenalin 26.9.2 ומעלה.",
+        driverIdleEvictDetails: "פרטים",
+        dismissNotice: "סגירה",
         unusableDevice: "אינו שמיש",
         unknownDevice: "GPU לא ידוע",
         deviceWithIndex: "GPU {index}",

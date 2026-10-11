@@ -2116,6 +2116,10 @@ export const hi = {
           "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
         mismatchUnavailable:
           "PyTorch ({version}) नीचे दिए गए GPU को आरंभ नहीं कर पा रहा है, इसलिए उनका उपयोग नहीं किया जा सकता। GPU ड्राइवर जाँचें या इंस्टॉलेशन की मरम्मत करें।",
+        driverIdleEvict:
+          "AMD ड्राइवर {version} में एक ज्ञात बग है जिससे AMD GPU के निष्क्रिय रहने पर Windows फ़्रीज़ हो सकता है, ज़्यादातर एक से अधिक GPU होने पर। Adrenalin 26.9.2 या नए संस्करण में अपडेट करें।",
+        driverIdleEvictDetails: "विवरण",
+        dismissNotice: "खारिज करें",
         unusableDevice: "अनुपयोगी",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",

@@ -2153,6 +2153,10 @@ export const en = {
           "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
         mismatchUnavailable:
           "PyTorch ({version}) cannot initialise the GPUs below, so they cannot be used. Check the GPU driver, or repair the installation.",
+        driverIdleEvict:
+          "AMD driver {version} has a known bug that can freeze Windows when an AMD GPU sits idle, most often with more than one GPU. Update to Adrenalin 26.9.2 or later.",
+        driverIdleEvictDetails: "Details",
+        dismissNotice: "Dismiss",
         unusableDevice: "unusable",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
