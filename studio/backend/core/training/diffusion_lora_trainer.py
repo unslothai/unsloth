@@ -540,6 +540,10 @@ def run_diffusion_lora_training(
             rng_streams = rng_streams,
         )
         resumed = restored.step if restored is not None else 0
+        scaler_state = restored.progress.get("grad_scaler") if restored is not None else None
+        if scaler.is_enabled() and isinstance(scaler_state, dict) and scaler_state:
+            # Continue at the scale the run had backed off to, not 2**16, which would overflow again.
+            scaler.load_state_dict(scaler_state)
         # Bound HERE: the checkpoint scan and the periodic saves both need it, and the two earlier
         # assignments live inside early-return branches.
         out_dir = Path(cfg.output_dir).expanduser()
@@ -574,7 +578,7 @@ def run_diffusion_lora_training(
                 on_event = on_event,
                 sampler = index_sampler,
                 rng_streams = rng_streams,
-                progress = {"running_loss": running_loss},
+                progress = {"running_loss": running_loss, "grad_scaler": scaler.state_dict()},
                 # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them
                 # before this run produced anything, so cancelling a retrain destroyed the thing being retrained.
                 discard_existing = False,
@@ -662,9 +666,12 @@ def run_diffusion_lora_training(
                 # An fp16 overflow step is skipped by the scaler; its inf norm is not a chart point.
                 if not math.isfinite(grad_norm):
                     grad_norm = None
+            scale_before = scaler.get_scale() if scaler.is_enabled() else None
             scaler.step(optimizer)
             scaler.update()
-            lr_sched.step()
+            # An overflow step lowers the scale and skips the update; the schedule must not run ahead of the weights.
+            if scale_before is None or scaler.get_scale() >= scale_before:
+                lr_sched.step()
 
             running_loss += step_loss
             done = opt_step + 1

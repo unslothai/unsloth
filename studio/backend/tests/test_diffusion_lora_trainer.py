@@ -683,6 +683,7 @@ def test_sdxl_warns_when_an_unused_accelerator_leaves_it_on_the_cpu(monkeypatch,
     Image.new("RGB", (64, 64)).save(data / "a.png")
     monkeypatch.setattr(sdxl, "_assert_trusted_base_model", lambda *_a, **_k: None)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
     cfg = DiffusionLoraConfig(
         base_model = "stabilityai/stable-diffusion-xl-base-1.0",
         data_dir = str(data),
