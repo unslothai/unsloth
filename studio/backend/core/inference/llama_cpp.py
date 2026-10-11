@@ -21905,9 +21905,7 @@ class LlamaCppBackend:
                     "Ollama instead."
                 )
 
-        # A required GGUF key is absent: the file was converted for a different
-        # llama.cpp format of this architecture (pre-release MiniMax-M3 GGUFs lack
-        # the indexer keys llama.cpp#24908 made mandatory, #8513). Not memory.
+        # GGUF converted for another llama.cpp format revision (#8513: pre-#24908 MiniMax-M3 lacks indexer keys).
         missing_key = re.search(r"key not found in model:\s*([\w.\-]+)", scan_tail, re.IGNORECASE)
         if missing_key:
             return LlamaCppBackend._with_startup_diagnostics(

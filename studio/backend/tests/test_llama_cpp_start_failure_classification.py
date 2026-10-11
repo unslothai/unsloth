@@ -207,7 +207,7 @@ class TestOllamaAndFallback:
         assert "not a memory problem" in msg
         assert "updated GGUF" in msg
         assert "GGUF file is valid" not in msg
-        assert "minimax-m3.attention.indexer.head_count\n" in msg  # output tail kept
+        assert "minimax-m3.attention.indexer.head_count\n" in msg
 
     def test_generic_oom_keeps_memory_message(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big")
