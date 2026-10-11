@@ -42,7 +42,6 @@ test("a far transcript drops both viewport scroll listeners and resumes when nea
     /followOffset\.current\?\.\(\s*false,/,
     "offset observer kept offscreen",
   );
-  // Parked at the edge nearest the reader: above it renders its tail, below it its head.
   assert.match(
     far,
     /box\.bottom <= scroll\.getBoundingClientRect\(\)\.top\s*\?\s*1e9\s*:\s*-1e9/,
@@ -77,7 +76,6 @@ test("a far transcript drops both viewport scroll listeners and resumes when nea
     /callback\(instance\.scrollElement\?\.scrollTop \?\? 0, false\);\s*stop = observeElementOffset\(instance,/,
     "resubscribing does not seed the current offset first",
   );
-  // TanStack's debounced scroll-end callback survives unsubscribe; a stopped observer must not win.
   assert.match(
     observe,
     /if \(current === generation\) callback\(offset, isScrolling\)/,
@@ -108,7 +106,6 @@ test("a far transcript corrects a resize above the reader by its size change, no
     "virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta) => {",
     "useLayoutEffect(",
   );
-  // TanStack's correction is offset + adjustments - scrollTop; a far transcript's offset is stale.
   assert.match(
     adjust,
     /if \(nearby\.current\) return true;(?:\s*\/\/[^\n]*)*\s*adjustAbove\(delta\);\s*return false;/,

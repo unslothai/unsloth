@@ -561,7 +561,6 @@ export function ReasoningTranscript({
         stopJumpWatch = onViewportJump(scroll, () => {
           const box = element.getBoundingClientRect();
           const view = scroll.getBoundingClientRect();
-          // A zero box is a closed folded round (display: none): it stays asleep.
           if (
             box.height > 0 &&
             box.bottom > view.top - view.height &&
