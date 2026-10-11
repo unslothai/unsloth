@@ -29,3 +29,23 @@ def test_a_llama_server_child_still_does(monkeypatch):
     monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: _Llama())
     assert settings._exact_concurrency_reload_required("auto") is True
     assert settings._exact_concurrency_reload_required("off") is False
+
+
+class _Idle:
+    is_active = False
+    is_diffusion = False
+    requested_exact_concurrency = "auto"
+
+
+def test_an_extra_slot_loaded_under_the_old_setting_still_does(monkeypatch):
+    # The unrouted primary is idle (or already matches); an extra model slot was loaded under
+    # the previous setting and keeps it for every chat routed to it.
+    import core.inference.llama_cpp as llama_mod
+
+    extra = _Llama()
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: _Idle())
+    monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [extra])
+    assert settings._exact_concurrency_reload_required("auto") is True
+    assert settings._exact_concurrency_reload_required("off") is False
+    extra.is_diffusion = True
+    assert settings._exact_concurrency_reload_required("auto") is False

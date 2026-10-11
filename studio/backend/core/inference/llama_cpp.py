@@ -2542,6 +2542,10 @@ def _neighbour_parking_commitments(backend) -> tuple[list, bool]:
     ``unlimited`` is a neighbour on `--preempt-ram -1`, which may take all of it."""
     commitments, unlimited = [], False
     for other in _parking_neighbours(backend):
+        if getattr(other, "_process", None) is None:
+            # No server: a load that failed after launching, or one since stopped, parks
+            # nothing, whatever its launch flags still say.
+            continue
         if getattr(other, "_exact_concurrency", None) == _exact.EXACT_STATE_ON:
             commitment = getattr(other, "_exact_parking_writes", 0)
         elif getattr(other, "_server_launched_parking", False):
@@ -2562,14 +2566,20 @@ def _neighbour_parking_commitments(backend) -> tuple[list, bool]:
 def _free_less_commitments_mib(commitments: list) -> Optional[int]:
     """Available host RAM less what ``commitments`` have not parked yet. A neighbour's parked
     figure is read on both sides of the free sample and the smaller kept, so a park that began
-    or ended between the two readings is counted as still to come rather than twice as free."""
-    before = [_parked_host_mib(other) for other, _ in commitments]
+    or ended between the two readings is counted as still to come rather than twice as free.
+    Where the server counts its parks and resumes, any change between the readings counts the
+    whole commitment as to come: a resume and a fresh park in between leave both figures equal
+    while the free sample held the RAM they moved."""
+    before = [_parked_host_reading(other) for other, _ in commitments]
     free = _available_host_memory_mib()
     if free is None:
         return None
     held = 0
-    for (other, commitment), parked in zip(commitments, before):
-        held += max(0, commitment - min(parked, _parked_host_mib(other)))
+    for (other, commitment), (parked, moves) in zip(commitments, before):
+        parked_after, moves_after = _parked_host_reading(other)
+        if moves is not None and moves_after is not None and moves != moves_after:
+            parked = 0
+        held += max(0, commitment - min(parked, parked_after))
     return max(0, int(free) - held)
 
 
@@ -2700,17 +2710,29 @@ _EXACT_HOST_SHORT_AFTER_LOAD = (
 )
 
 
-def _parked_host_mib(backend) -> int:
-    """Host RAM ``backend``'s server holds in parked sequences now (`preempt_ram_bytes`), 0 when
-    the reading is missing, which counts its whole commitment as still to come."""
+def _parked_host_reading(backend) -> tuple[int, Optional[float]]:
+    """``(MiB parked, parks plus resumes so far)`` from one `/metrics` read. The parked figure is
+    0 when the reading is missing, which counts the whole commitment as still to come; the count
+    is None on a build that does not export `n_preempt_total` / `n_resume_total`."""
     try:
         from core.inference.llama_stats import scrape_llama_metrics
         metrics = scrape_llama_metrics(
             backend.base_url, timeout_s = 3.0, headers = getattr(backend, "_auth_headers", None)
-        )
-        return max(0, int(float((metrics or {}).get("preempt_ram_bytes", 0) or 0)) // (1024 * 1024))
+        ) or {}
+        parked = max(0, int(float(metrics.get("preempt_ram_bytes", 0) or 0)) // (1024 * 1024))
     except Exception:
-        return 0
+        return 0, None
+    if "n_preempt_total" not in metrics or "n_resume_total" not in metrics:
+        return parked, None
+    try:
+        return parked, float(metrics["n_preempt_total"]) + float(metrics["n_resume_total"])
+    except (TypeError, ValueError):
+        return parked, None
+
+
+def _parked_host_mib(backend) -> int:
+    """Host RAM ``backend``'s server holds in parked sequences now (`preempt_ram_bytes`)."""
+    return _parked_host_reading(backend)[0]
 
 
 def _exact_host_free_mib(backend) -> Optional[int]:

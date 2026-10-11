@@ -2061,21 +2061,37 @@ def _exact_concurrency_active() -> str:
     return str(getattr(backend, "exact_concurrency", EXACT_STATE_OFF) or EXACT_STATE_OFF)
 
 
-def _exact_concurrency_reload_required(effective: str) -> bool:
-    """True when a child is running under a setting the next load would not repeat. Compared against
-    what that child was ASKED for: an `auto` that came up `unavailable` is still this setting."""
+def _resident_llama_backends() -> list:
+    """The primary backend and every extra model slot serving beside it."""
+    backends = []
     try:
         from routes.inference import get_llama_cpp_backend
-        backend = get_llama_cpp_backend()
+        backends.append(get_llama_cpp_backend())
     except Exception:
-        return False
-    if not getattr(backend, "is_active", False):
-        return False
-    # A diffusion runner is not llama-server: it records `off` because it cannot apply the
-    # setting, and reloading it would record `off` again.
-    if getattr(backend, "is_diffusion", False):
-        return False
-    return str(getattr(backend, "requested_exact_concurrency", EXACT_OFF)) != effective
+        pass
+    try:
+        from core.inference.llama_cpp import _serving_backends_snapshot
+        backends += [b for b in _serving_backends_snapshot() if all(b is not o for o in backends)]
+    except Exception:
+        pass
+    return backends
+
+
+def _exact_concurrency_reload_required(effective: str) -> bool:
+    """True when a child is running under a setting the next load would not repeat. Compared against
+    what that child was ASKED for: an `auto` that came up `unavailable` is still this setting.
+    Every resident model is asked, not only the primary: an extra slot loaded under the old
+    setting keeps it for every chat routed there."""
+    for backend in _resident_llama_backends():
+        if not getattr(backend, "is_active", False):
+            continue
+        # A diffusion runner is not llama-server: it records `off` because it cannot apply the
+        # setting, and reloading it would record `off` again.
+        if getattr(backend, "is_diffusion", False):
+            continue
+        if str(getattr(backend, "requested_exact_concurrency", EXACT_OFF)) != effective:
+            return True
+    return False
 
 
 def _exact_parking_prerequisite() -> Optional[str]:

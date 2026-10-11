@@ -337,6 +337,7 @@ class TestExactParksAreCountedAcrossModels:
         backend = object.__new__(LlamaCppBackend)
         backend._exact_concurrency = state
         backend._exact_parking_writes = writes
+        backend._process = object()
         return backend
 
     def test_an_exact_neighbour_holds_its_parks(self, monkeypatch):
@@ -347,7 +348,7 @@ class TestExactParksAreCountedAcrossModels:
         neighbour = self._backend(exact.EXACT_STATE_ON, 8_000)
         stock = self._backend(exact.EXACT_STATE_OFF, 4_000)
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, neighbour, stock])
-        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         assert llama_mod._exact_host_free_mib(me) == 2_000
         assert llama_mod._exact_host_shortfall_after_load(8_000, 2_000) == (8_000, 2_000)
         # Alone, the same model fits.
@@ -364,7 +365,9 @@ class TestExactParksAreCountedAcrossModels:
         neighbour = self._backend(exact.EXACT_STATE_ON, 8_000)
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, neighbour])
         monkeypatch.setattr(
-            llama_mod, "_parked_host_mib", lambda backend: 6_000 if backend is neighbour else 0
+            llama_mod,
+            "_parked_host_reading",
+            lambda backend: (6_000 if backend is neighbour else 0, None),
         )
         assert llama_mod._exact_host_free_mib(me) == 8_000
 
@@ -395,7 +398,7 @@ class TestExactParksAreCountedAcrossModels:
         idle._server_launched_parking = False
         idle._launched_parking_mib = 5_000
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, plain, idle])
-        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         assert llama_mod._exact_host_free_mib(me) == 7_000
 
     def test_the_launch_records_the_budget_it_spawned_with(self):
@@ -415,7 +418,7 @@ class TestExactParksAreCountedAcrossModels:
         unlimited._server_launched_parking = True
         unlimited._launched_parking_mib = -1
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, unlimited])
-        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         assert llama_mod._exact_host_free_mib(me) == 0
 
     def test_the_host_readings_are_the_containers(self, monkeypatch):
@@ -439,7 +442,7 @@ class TestExactParksAreCountedAcrossModels:
         helper._server_launched_parking = True
         helper._launched_parking_mib = 4_000
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me])
-        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         monkeypatch.setattr(llama_mod, "_parking_backends", __import__("weakref").WeakSet())
         llama_mod._note_parking_backend(helper)
         assert llama_mod._exact_host_free_mib(me) == 6_000
@@ -458,11 +461,27 @@ class TestExactParksAreCountedAcrossModels:
         monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 100_000)
         exact_one = self._backend(exact.EXACT_STATE_ON, 30_000)
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [exact_one])
-        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         alone = llama_mod._host_bounded_parking_mib(10**9)
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [])
         assert alone < llama_mod._host_bounded_parking_mib(10**9)
         assert llama_mod._neighbour_parking_commitments(None) == ([], False)
+
+    def test_a_neighbour_whose_server_is_gone_reserves_nothing(self, monkeypatch):
+        # A required exact load that failed its post-launch check kills its child and raises,
+        # leaving its launch flags behind.
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        dead = self._backend(exact.EXACT_STATE_ON, 8_000)
+        dead._server_launched_parking = True
+        dead._launched_parking_mib = 8_000
+        dead._process = None
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, dead])
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
+        assert llama_mod._exact_host_free_mib(me) == 10_000
+        assert llama_mod._neighbour_parking_commitments(me) == ([], False)
 
     def test_ordinary_neighbours_reserve_their_budgets_too(self, monkeypatch):
         # Each ordinary budget is allocated only when it parks, so four sized off the same free
@@ -471,7 +490,7 @@ class TestExactParksAreCountedAcrossModels:
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
         monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 100_000)
-        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         neighbours = []
         for _ in range(3):
             plain = self._backend(exact.EXACT_STATE_OFF, None)
@@ -489,7 +508,7 @@ class TestExactParksAreCountedAcrossModels:
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
         monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 100_000)
-        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         me = self._backend(exact.EXACT_STATE_OFF, None)
         me._server_launched_parking = True
         me._launched_parking_mib = 25_000
@@ -513,9 +532,56 @@ class TestExactParksAreCountedAcrossModels:
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", free)
         monkeypatch.setattr(
-            llama_mod, "_parked_host_mib", lambda b: state["parked"] if b is neighbour else 0
+            llama_mod,
+            "_parked_host_reading",
+            lambda b: (state["parked"] if b is neighbour else 0, None),
         )
         assert llama_mod._exact_host_free_mib(me) == 2_000
+
+    def test_a_resume_and_a_fresh_park_between_the_readings_are_caught(self, monkeypatch):
+        # Parked 6 GiB, resumed before the free sample, parked 6 GiB again before the second
+        # read: both parked figures say 6 GiB while the free sample held those 6 GiB.
+        from core.inference import llama_exact as exact
+
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        neighbour = self._backend(exact.EXACT_STATE_ON, 8_000)
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, neighbour])
+        state = {"moves": 4.0}
+
+        def free():
+            state["moves"] += 2.0
+            return 10_000
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", free)
+        monkeypatch.setattr(
+            llama_mod,
+            "_parked_host_reading",
+            lambda b: (6_000, state["moves"]) if b is neighbour else (0, None),
+        )
+        assert llama_mod._exact_host_free_mib(me) == 2_000
+        # Nothing moved: the parked 6 GiB is already out of the free reading.
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 4_000)
+        assert llama_mod._exact_host_free_mib(me) == 2_000
+
+    def test_the_reading_carries_the_servers_park_counters(self, monkeypatch):
+        import core.inference.llama_stats as stats
+
+        backend = self._backend("on", 8_000)
+        backend._port = 1
+        monkeypatch.setattr(
+            stats,
+            "scrape_llama_metrics",
+            lambda *a, **k: {
+                "preempt_ram_bytes": 2 * 1024 * 1024 * 1024,
+                "n_preempt_total": 5.0,
+                "n_resume_total": 4.0,
+            },
+        )
+        assert llama_mod._parked_host_reading(backend) == (2048, 9.0)
+        monkeypatch.setattr(
+            stats, "scrape_llama_metrics", lambda *a, **k: {"preempt_ram_bytes": 0}
+        )
+        assert llama_mod._parked_host_reading(backend) == (0, None)
 
     def test_a_park_ending_between_the_readings_is_counted_as_still_to_come(self, monkeypatch):
         from core.inference import llama_exact as exact
@@ -531,7 +597,9 @@ class TestExactParksAreCountedAcrossModels:
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", free)
         monkeypatch.setattr(
-            llama_mod, "_parked_host_mib", lambda b: state["parked"] if b is neighbour else 0
+            llama_mod,
+            "_parked_host_reading",
+            lambda b: (state["parked"] if b is neighbour else 0, None),
         )
         assert llama_mod._exact_host_free_mib(me) == 2_000
 
