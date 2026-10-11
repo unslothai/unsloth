@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from core._torchao_stub import (
+    alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -395,6 +396,7 @@ def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
 install_xformers_windows_rocm_stub()
 hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
+alias_torchao_fqn_to_config()
 install_torchao_int_mm_patch()
 
 
