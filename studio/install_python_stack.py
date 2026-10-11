@@ -685,8 +685,14 @@ class _FreezeNewTorchForCoreUpdate:
         fd, name = tempfile.mkstemp(prefix = "unsloth-torch-overrides-", suffix = ".txt")
         with os.fdopen(fd, "w", encoding = "utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
+        safe = _uv_safe_path(name)
+        if any(ch.isspace() for ch in safe):
+            # uv splits UV_OVERRIDE on whitespace: with no short name for a spaced %TEMP% the
+            # file cannot be named, so resolve unfrozen as before rather than fail the update.
+            Path(name).unlink(missing_ok = True)
+            return self
         self._path = Path(name)
-        os.environ["UV_OVERRIDE"] = _uv_safe_path(self._path)
+        os.environ["UV_OVERRIDE"] = safe
         global _TORCH_FREEZE_ACTIVE
         _TORCH_FREEZE_ACTIVE = True
         return self

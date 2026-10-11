@@ -7239,7 +7239,7 @@ if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL"
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
     # An existing home never takes 2.13 unasked, even when its torch could not be read or kept.
     # The PyPI check reads unsloth's metadata, so a --package other than unsloth keeps the default.
-    if [ "$PACKAGE_NAME" = "unsloth" ] \
+    if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
        && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
        && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
         _CU130_NEW_INSTALL_ROUTE=true

@@ -183,6 +183,26 @@ def test_core_update_freeze_restores_an_unset_override(monkeypatch, mod):
     assert "UV_OVERRIDE" not in mod.os.environ
 
 
+def test_core_update_freeze_stands_down_without_a_space_free_override_path(
+    monkeypatch, tmp_path, mod
+):
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: False)
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0+cu130"])
+    spaced = tmp_path / "John Smith"
+    spaced.mkdir()
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(spaced))
+    # No 8.3 short name: uv_safe_path hands the spaced path back.
+    monkeypatch.setattr(mod, "_uv_safe_path", lambda path: str(path))
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    with mod._FreezeNewTorchForCoreUpdate() as freeze:
+        assert "UV_OVERRIDE" not in mod.os.environ
+        assert mod._TORCH_FREEZE_ACTIVE is False
+    assert freeze._path is None
+    assert list(spaced.iterdir()) == []
+
+
 def test_both_core_updates_run_under_the_freeze():
     source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
     assert (

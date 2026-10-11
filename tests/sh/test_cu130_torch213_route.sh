@@ -117,6 +117,8 @@ assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.13" "torch>=2.13.
 PACKAGE_NAME="unsloth-fork"; _run_block false ""; PACKAGE_NAME="unsloth"
 assert_eq "--package other than unsloth: fresh home keeps the old default" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
 assert_eq "--package other than unsloth: window still wide" "torch>=2.4,<2.15.0" "$_PRESERVE_TORCH_CONSTRAINT"
+PACKAGE_NAME="Unsloth"; _run_block false ""; PACKAGE_NAME="unsloth"
+assert_eq "--package Unsloth is unsloth" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
 for gate in unreachable capped; do
     case "$gate" in
         unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;
