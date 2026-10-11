@@ -282,15 +282,19 @@ class TestBackwardsCompatible:
 class TestMatrix:
     def test_defaults_are_both_torch_minors_on_cp313(self):
         include = prebuilt_wheels.build_matrix()
-        assert len(include) == 6
+        # 3 packages x 2 torch minors, on each of the two platforms.
+        assert len(include) == 12
         assert {cell["torch"] for cell in include} == {"2.13.0", "2.14.0"}
         assert {cell["python_tag"] for cell in include} == {"cp313"}
         assert {cell["package"] for cell in include} == set(prebuilt_wheels.SPECS)
+        assert {cell["platform"] for cell in include} == {"linux_x86_64", "win_amd64"}
+        for platform in ("linux_x86_64", "win_amd64"):
+            assert len([cell for cell in include if cell["platform"] == platform]) == 6
 
     def test_extra_interpreters_are_separate_cells(self):
         include = prebuilt_wheels.build_matrix(pythons = "3.11,3.12,3.13")
-        assert len(include) == 18
-        assert len({cell["wheel_name"] for cell in include}) == 18
+        assert len(include) == 36
+        assert len({cell["wheel_name"] for cell in include}) == 36
 
     def test_one_torch_minor_at_a_time(self):
         include = prebuilt_wheels.build_matrix(torches = "2.14.0")
@@ -623,8 +627,11 @@ class TestWorkflow:
 
     def test_the_build_runs_on_the_older_ubuntu(self, workflow):
         """The wheels are tagged linux_x86_64, which pip installs without a glibc check, so the
-        runner's glibc is the real compatibility floor."""
-        assert workflow["jobs"]["build"]["runs-on"] == "ubuntu-22.04"
+        runner's glibc is the real compatibility floor. The runner now comes from the cell."""
+        assert workflow["jobs"]["build"]["runs-on"] == "${{ matrix.runner }}"
+        assert prebuilt_wheels.PLATFORMS["linux_x86_64"]["runner"] == "ubuntu-22.04"
+        for cell in prebuilt_wheels.build_matrix(platforms = "linux_x86_64"):
+            assert cell["runner"] == "ubuntu-22.04"
 
     def test_the_gpu_job_uses_a_label_that_already_exists(self, workflow):
         """Never invent a runner label: a job with one queues until the run is cancelled."""
@@ -697,6 +704,7 @@ class TestWarmSlices:
                 "UW_PACKAGES": "flash-attn,mamba-ssm",
                 "UW_TORCH_VERSIONS": "2.13.0",
                 "UW_PYTHON_VERSIONS": "",
+                "UW_PLATFORMS": "linux_x86_64",
             },
             check = True,
             capture_output = True,
@@ -709,13 +717,22 @@ class TestWarmSlices:
             == str(prebuilt_wheels.SPECS["flash-attn"]["shards"])
         )
         assert values["count"] == "2"
+        assert values["gpu_count"] == "2"
+        assert (
+            json.loads(values["gpu_matrix"])["include"] == json.loads(values["matrix"])["include"]
+        )
 
 
 class TestWarmWiring:
     def test_warm_and_build_hash_the_same_compiles(self, workflow):
         warm, build = workflow["jobs"]["warm"], workflow["jobs"]["build"]
         assert warm["env"] == build["env"]
-        assert warm["runs-on"] == build["runs-on"] == "ubuntu-22.04"
+        assert warm["runs-on"] == build["runs-on"] == "${{ matrix.runner }}"
+        assert (
+            warm["env"]["PYTORCH_NVCC"]
+            == build["env"]["PYTORCH_NVCC"]
+            == "${{ matrix.pytorch_nvcc }}"
+        )
 
     def test_the_build_waits_for_warm_but_not_on_its_success(self, workflow):
         warm, build = workflow["jobs"]["warm"], workflow["jobs"]["build"]
