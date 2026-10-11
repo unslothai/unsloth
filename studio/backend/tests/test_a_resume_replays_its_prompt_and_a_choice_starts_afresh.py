@@ -19,7 +19,7 @@ pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 def _controller(key: str) -> preemption.PreemptionController:
     controller = preemption.PreemptionController(key)
-    # An 8192-cell cache with a 2048-token batch: the solo ceiling is 6142.
+    # An 8192-cell cache with a 2048-token batch: the solo ceiling is 8125.
     controller.configure(budget = 8192, kv_unified = True, slots = 4, draft_tokens = 2, batch_tokens = 2048)
     return controller
 
@@ -27,8 +27,8 @@ def _controller(key: str) -> preemption.PreemptionController:
 class TestAResumeIsSizedByWhatItReplays:
     def test_before_the_first_token_the_replay_is_the_prompt(self):
         controller = _controller("http://replay-first")
-        participant = controller.register("chat", tokens = 5600 + 1024, prompt_tokens = 5600)
-        assert participant.replay_tokens() == 5600
+        participant = controller.register("chat", tokens = 7000 + 2048, prompt_tokens = 7000)
+        assert participant.replay_tokens() == 7000
         # The charge does not fit alone, the prompt does.
         assert controller.cannot_ever_fit(participant.tokens) is True
         assert controller.cannot_ever_fit(participant.replay_tokens()) is False

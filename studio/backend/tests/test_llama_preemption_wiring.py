@@ -389,14 +389,25 @@ class TestALoneChatStillNeedsRoomForItsOwnBatch:
         controller.configure(budget = 16384, kv_unified = True, slots = 4, draft_tokens = 6, **kw)
         return controller
 
-    def test_the_solo_ceiling_leaves_a_batch_clear(self):
+    def test_the_solo_ceiling_leaves_the_next_decode_step_clear(self):
+        """87 clear cells (drafts plus the estimate margin) left no room for the step after."""
         controller = self._controller(batch_tokens = 2048)
         controller.register("only", tokens = 100, signal = PreemptSignal())
         # Alone, so `others` is zero and only the solo ceiling can refuse it.
-        assert (
-            controller.room_for("only", 16297) is False
-        ), "87 cells is not enough for a 2048 token prefill batch"
+        assert controller.room_for("only", 16297) is False
+        assert controller.cannot_ever_fit(16297) is True
         assert controller.room_for("only", 14000) is True
+
+    def test_a_lone_replay_is_not_charged_a_whole_batch(self):
+        """Prefill is chunked by n_batch and each chunk's cells are part of the history, so a
+        7000 token replay needs about 7001 of 8192 cells alone, not 7000 plus 2048."""
+        controller = PreemptionController("solo-replay")
+        controller.configure(budget = 8192, kv_unified = True, slots = 4, batch_tokens = 2048)
+        controller.register("only", tokens = 100, signal = PreemptSignal())
+        assert controller.cannot_ever_fit(7000) is False
+        assert controller.room_for("only", 7000) is True
+        # Still bounded: the estimate margin and the next decode step stay clear.
+        assert controller.cannot_ever_fit(8192 - 64) is True
 
     def test_a_backend_without_a_stated_batch_is_unchanged(self):
         """No batch figure, no new reservation: the old margin still applies."""

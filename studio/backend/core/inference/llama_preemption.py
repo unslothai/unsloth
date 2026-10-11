@@ -774,15 +774,13 @@ class PreemptionController:
     def _solo_ceiling_locked(self) -> int:
         """The cache less what a lone chat still needs clear to keep running.
 
-        Its own drafts and the estimate error, and ALSO one prefill batch: being alone
-        removes the need for reaction headroom, not llama-server's need to fit the next
-        batch. Without it a lone chat filled all but 87 of 16384 cells and its own next
-        prefill failed as `Context size has been exceeded`.
+        Its own drafts, the estimate error and the next decode step. Not a prefill batch:
+        prefill is chunked by n_batch and each chunk's cells are part of the history, so a
+        lone replay of W needs W cells plus the step after, not W plus a batch. Charging the
+        batch ended a 7000 token chat at 8192 cells that fits alone. Without the decode step
+        a lone chat filled all but 87 of 16384 cells and had nowhere to put the next token.
         """
-        margin = max(
-            self._draft_tokens + max(64, self._budget // SOLO_MARGIN_DIVISOR),
-            self._batch_tokens + self._draft_tokens,
-        )
+        margin = self._draft_tokens + 1 + max(64, self._budget // SOLO_MARGIN_DIVISOR)
         return max(1, self._budget - margin)
 
     def outgrew_the_shared_ceiling(self, want: int) -> bool:
