@@ -752,8 +752,21 @@ class TestEnsureFlashAttn:
 
 
 class TestInstallPythonStackFlashAttnIntegration:
-    def _run_install(self, *, no_torch: bool, is_macos: bool, is_windows: bool) -> int:
+    def _run_install(
+        self,
+        *,
+        no_torch: bool,
+        is_macos: bool,
+        is_windows: bool,
+        flavor_moves_torch: bool = False,
+    ) -> int:
         flash_attn_calls = 0
+        torch_version = ["2.13.0+cpu"]
+
+        def fix_flavor(tag):
+            if flavor_moves_torch:
+                torch_version[0] = "2.13.0+cu130"
+            return True
 
         def fake_run(cmd, **kw):
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -778,6 +791,10 @@ class TestInstallPythonStackFlashAttnIntegration:
             mock.patch("pathlib.Path.is_dir", return_value = True),
             mock.patch("pathlib.Path.is_file", return_value = True),
             mock.patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}, clear = False),
+            mock.patch.object(ips, "_ensure_expected_torch_flavor", side_effect = fix_flavor),
+            mock.patch.object(
+                ips, "_probe_installed_torch_version", side_effect = lambda: torch_version[0]
+            ),
         ):
             ips.install_python_stack()
 
@@ -805,3 +822,11 @@ class TestInstallPythonStackFlashAttnIntegration:
         )[1]
         moved = moved.split("_evict_xformers_built_for_another_torch(", 1)[0]
         assert "_ensure_flash_attn()" in moved
+
+    def test_flash_attn_is_rechecked_when_the_windows_flavor_invariant_moves_torch(self):
+        assert (
+            self._run_install(
+                no_torch = False, is_macos = False, is_windows = True, flavor_moves_torch = True
+            )
+            == 2
+        )

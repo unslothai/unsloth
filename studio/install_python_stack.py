@@ -12750,8 +12750,13 @@ def install_python_stack() -> int:
     if IS_WINDOWS and not NO_TORCH:
         _progress(_torch_step_label("flavor"))
         torch_flavor_tag = _expected_torch_flavor_tag()
+        _torch_before_flavor = str(_probe_installed_torch_version() or "")
         if not _ensure_expected_torch_flavor(torch_flavor_tag):
             return 1
+        _torch_after_flavor = str(_probe_installed_torch_version() or "")
+        if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
+            # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
+            _ensure_flash_attn()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
