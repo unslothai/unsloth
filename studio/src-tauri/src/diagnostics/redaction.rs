@@ -609,12 +609,14 @@ mod tests {
                 "",
             ),
         ];
-        for (input, secret, kept) in cases {
+        // Failures name the case by index: printing a fixture secret trips CodeQL's
+        // cleartext-logging rule.
+        for (i, (input, secret, kept)) in cases.iter().enumerate() {
             let mut report = RedactionReport::default();
             let redacted = redact_text(input, &mut report);
-            assert!(!redacted.contains(secret), "{secret} leaked: {redacted}");
-            assert!(redacted.contains(kept), "expected {kept:?} in {redacted}");
-            assert!(report.replacements > 0, "{input}");
+            assert!(!redacted.contains(secret), "case {i}: secret survived redaction");
+            assert!(redacted.contains(kept), "case {i}: expected {kept:?} to survive");
+            assert!(report.replacements > 0, "case {i}: nothing was redacted");
         }
     }
 
