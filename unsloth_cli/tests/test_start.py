@@ -5417,6 +5417,35 @@ def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
     ]
 
 
+def test_write_openclaw_config_clears_per_agent_path_overrides_in_keyed_entries(tmp_path):
+    # OpenClaw 2026.10.1 moved agents.list to agents.entries keyed by agent id.
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"workspace": "/old/default"},
+                    "entries": {
+                        "main": {
+                            "workspace": "/old/main-workspace",
+                            "agentDir": "/old/main-agent",
+                            "model": "keep/me",
+                        },
+                        "reviewer": {"workspace": "/old/reviewer-workspace"},
+                    },
+                }
+            }
+        )
+    )
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    agents = json.loads(path.read_text())["agents"]
+    assert agents["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert agents["entries"] == {"main": {"model": "keep/me"}, "reviewer": {}}
+    assert "list" not in agents
+
+
 def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "openclaw.json"
     path.write_text(

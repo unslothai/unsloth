@@ -448,12 +448,21 @@ p = sys.argv[2]
 cfg = json.load(open(p)) if os.path.exists(p) else {}
 agents = cfg.setdefault("agents", {})
 agents.setdefault("defaults", {})["skipBootstrap"] = True
-lst = [a for a in agents.get("list", []) if a.get("id") != "ci"]
-agent = {"id": "ci", "contextInjection": "never"}
+# OpenClaw 2026.10.1 rejects the legacy agents.list array ("agents.list moved to
+# keyed agents.entries") and refuses to start. Keyed entries are read since at least
+# 2026.8.1, so always write entries: fold any legacy list in the way `openclaw doctor
+# --fix` does (id becomes the key) and never leave a list behind.
+entries = agents.get("entries")
+entries = dict(entries) if isinstance(entries, dict) else {}
+for item in agents.pop("list", None) or []:
+    if isinstance(item, dict) and str(item.get("id") or "").strip():
+        rest = {k: v for k, v in item.items() if k != "id"}
+        entries.setdefault(str(item["id"]).strip(), rest)
+agent = {"contextInjection": "never"}
 if mode == "notools":
     agent["tools"] = {"deny": ["*"]}
-lst.append(agent)
-agents["list"] = lst
+entries["ci"] = agent
+agents["entries"] = entries
 with open(p, "w") as fh:
     json.dump(cfg, fh, indent=2)
 print(f"[openclaw] agent ci tools = {agent.get('tools', 'default')}")
