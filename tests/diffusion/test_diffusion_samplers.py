@@ -231,6 +231,15 @@ def test_diffusion_profile_name_and_flag():
 
     model = torch.nn.Linear(2, 2)
     assert not is_diffusion_model(model) and not is_diffusion_model(None)
+    # Autoregressive Nemotron shares no profile; Nemotron-Labs-Diffusion matches by architecture.
+    model.config = SimpleNamespace(model_type = "nemotron", architectures = ["NemotronForCausalLM"])
+    assert not is_diffusion_model(model)
+    model.config = SimpleNamespace(
+        model_type = "nemotron", architectures = ["NemotronLabsDiffusionModel"]
+    )
+    assert is_diffusion_model(model)
+    assert diffusion_profile_name(model) == "nemotron_labs_diffusion"
+    del model.config
     model._unsloth_slow_diffusion = True
     model._unsloth_diffusion_profile = "llada"
     assert is_diffusion_model(model)

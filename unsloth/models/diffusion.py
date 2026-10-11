@@ -77,15 +77,18 @@ def is_diffusion_model_type(model_types):
 
 
 def is_diffusion_model(model):
-    """True for a model loaded through FastDiffusionModel, PEFT / DDP wrapped or not."""
+    """True for a text-diffusion model: loaded through FastDiffusionModel, or with a config a DiffusionProfile
+    matches. PEFT / DDP wrapped or not."""
     if model is None:
         return False
     base = unwrap_diffusion_model(model)
-    return any(
+    if any(
         getattr(candidate, "_unsloth_slow_diffusion", False)
         or getattr(candidate, "_unsloth_diffusion_profile", None) is not None
         for candidate in (model, base)
-    )
+    ):
+        return True
+    return resolve_diffusion_profile(getattr(base, "config", None)) is not None
 
 
 def _refuse_tied_lora_merge(model):
