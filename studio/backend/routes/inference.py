@@ -8892,9 +8892,9 @@ def _as_local_scan_folder_request(request, owner_session: bool):
     repo_file = _repo_file_gguf_id(identifier)
     if repo_file is not None:
         repo_id, file_name = repo_file
+        # _gguf_variant_key never comes back empty for a *.gguf name (a quant-less
+        # file falls back to its stem/family), so the file id always has a key to look up.
         file_variant = _gguf_variant_key(file_name)
-        if not file_variant:
-            return request
         wanted = f"{repo_id}:{file_variant}"
     else:
         repo_id = identifier
