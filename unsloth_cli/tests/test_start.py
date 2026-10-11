@@ -5411,34 +5411,22 @@ def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
 
     agents = json.loads(path.read_text())["agents"]
     assert agents["defaults"]["workspace"] == str(tmp_path / "workspace")
-    # OpenClaw 2026.10.1 rejects agents.list, so it is migrated the way `openclaw doctor --fix` does.
-    assert "list" not in agents
-    assert agents["entries"] == {"main": {"model": "keep/me"}, "reviewer": {}}
-    assert agents["ownership"] == "explicit"
-    assert agents["defaults"]["systemAgent"] == {"agentId": "main"}
-    assert agents["defaults"]["heartbeat"] == {"agentId": "main"}
+    assert agents["list"] == [
+        {"id": "main", "default": True, "model": "keep/me"},
+        {"id": "reviewer"},
+    ]
 
 
-@pytest.mark.parametrize(
-    "agents_in, entries_out, ownership",
-    [
-        ({"list": [{"id": "solo", "model": "m"}]}, {"solo": {"model": "m"}}, None),
-        ({"list": [{"id": "a"}, {"id": "a"}]}, {"a": {}, "a-2": {}}, "explicit"),
-        ({"list": [{"id": "x"}], "entries": {"kept": {}}}, {"kept": {}}, None),
-    ],
-)
-def test_write_openclaw_config_migrates_legacy_agent_list(
-    tmp_path, agents_in, entries_out, ownership
-):
+def test_write_openclaw_config_points_a_legacy_agent_list_at_openclaw_doctor(tmp_path, capsys):
     path = tmp_path / "openclaw.json"
-    path.write_text(json.dumps({"agents": agents_in}))
+    path.write_text(json.dumps({"agents": {"list": [{"id": "main"}]}}))
 
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
 
-    agents = json.loads(path.read_text())["agents"]
-    assert "list" not in agents
-    assert agents["entries"] == entries_out
-    assert agents.get("ownership") == ownership
+    out = capsys.readouterr().out
+    assert "legacy agents.list" in out
+    assert "openclaw doctor --fix" in out
+    assert f'OPENCLAW_CONFIG_PATH="{path}"' in out
 
 
 def test_write_openclaw_config_clears_per_agent_path_overrides_in_keyed_entries(tmp_path):

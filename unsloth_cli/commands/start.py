@@ -4708,40 +4708,6 @@ def _openclaw_provider(
     }
 
 
-def _migrate_openclaw_agent_list(agents: dict) -> None:
-    """Rewrite a legacy ``agents.list`` as keyed ``agents.entries``, as ``openclaw doctor --fix`` does.
-
-    OpenClaw reads keyed entries since 2026.8 and 2026.10.1 rejects the list outright. Each item's
-    ``id`` becomes its key (duplicates get ``-2``, ``-3``); the retired ``default`` marker becomes
-    explicit ownership, which OpenClaw requires once a roster has more than one agent.
-    """
-    agent_list = agents.pop("list", None)
-    if not isinstance(agent_list, list):
-        return
-    if isinstance(agents.get("entries"), dict):
-        return  # OpenClaw drops the list when canonical entries already exist
-    entries: dict = {}
-    owner = None
-    for item in agent_list:
-        if not isinstance(item, dict):
-            continue
-        requested = str(item.get("id") or "").strip() or "agent"
-        key, suffix = requested, 2
-        while key in entries:
-            key, suffix = f"{requested}-{suffix}", suffix + 1
-        config = {k: v for k, v in item.items() if k not in ("id", "default")}
-        if item.get("default") is True and owner is None:
-            owner = key
-        entries[key] = config
-    agents["entries"] = entries
-    if len(entries) > 1:
-        owner = owner or next(iter(entries))
-        agents.setdefault("ownership", "explicit")
-        defaults = _subdict(agents, "defaults")
-        _subdict(defaults, "systemAgent").setdefault("agentId", owner)
-        _subdict(defaults, "heartbeat").setdefault("agentId", owner)
-
-
 def write_openclaw_config(
     base: str,
     key: str,
@@ -4802,14 +4768,24 @@ def write_openclaw_config(
         workspace_path = str(workspace)
     defaults["workspace"] = workspace_path
     # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This config is itself an isolated Unsloth copy, so remove stale explicit paths and let OpenClaw resolve every listed agent beneath the managed defaults/state directory.
-    # OpenClaw 2026.10.1 refuses a legacy agents.list ("moved to keyed agents.entries"); fold it in first.
-    _migrate_openclaw_agent_list(agents)
+    # OpenClaw 2026.10.1 keys agents by id under agents.entries; older configs carry an agents.list array.
+    agent_list = agents.get("list")
     agent_entries = agents.get("entries")
+    listed = list(agent_list) if isinstance(agent_list, list) else []
     if isinstance(agent_entries, dict):
-        for agent_config in agent_entries.values():
-            if isinstance(agent_config, dict):
-                agent_config.pop("workspace", None)
-                agent_config.pop("agentDir", None)
+        listed += list(agent_entries.values())
+    for agent_config in listed:
+        if isinstance(agent_config, dict):
+            agent_config.pop("workspace", None)
+            agent_config.pop("agentDir", None)
+    if isinstance(agent_list, list):
+        # 2026.10.1 rejects agents.list. Converting it (id normalization, ownership, channel bindings,
+        # workspace pins) is OpenClaw's own migration, so point at it rather than half-reimplement it.
+        typer.echo(
+            f"Note: {path} still has the legacy agents.list, which OpenClaw 2026.10.1+ rejects. "
+            f'Migrate it with: OPENCLAW_CONFIG_PATH="{path}" OPENCLAW_STATE_DIR="{path.parent}" '
+            "openclaw doctor --fix"
+        )
     # Unauthenticated loopback gateway: without auth.mode=none the client will not open the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")
     gateway.setdefault("mode", "local")
