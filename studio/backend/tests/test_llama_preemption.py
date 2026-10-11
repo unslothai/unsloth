@@ -14,6 +14,8 @@ from core.inference.llama_admission import (
 )
 from core.inference.llama_preemption import (
     DEFAULT_PREEMPT_BUFFER_MIN_TOKENS,
+    DEFAULT_RESUME_WAIT_TIMEOUT_S,
+    MAX_RESUME_WAIT_MULTIPLE,
     PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS,
     ParticipantState,
     PreemptionController,
@@ -792,3 +794,13 @@ class TestAChoiceInFlightIsCountedOnce:
         controller.note_resident(ceiling)
         more = controller.plan_preemptions(needed = 0)
         assert more and "d" not in [v.gen_id for v in more], "the cache holds more than d frees"
+
+
+def test_the_two_resume_waits_share_one_hard_backstop():
+    # The admission wait is nested inside the preemptor's: a smaller multiplier there gave up at
+    # 30 minutes inside a two-hour outer wait, and two hours is what one slow answer needs.
+    from core.inference import llama_admission
+
+    assert llama_admission._MAX_REPARK_WAIT_MULTIPLE == MAX_RESUME_WAIT_MULTIPLE
+    bound = DEFAULT_RESUME_WAIT_TIMEOUT_S * MAX_RESUME_WAIT_MULTIPLE
+    assert bound >= 2 * (8192 / 2.3), f"the backstop is {bound}s, shorter than two answers"

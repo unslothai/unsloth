@@ -72,9 +72,10 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
-# The only thing that bounds a pool churning forever without ever fitting this particular
-# lease, since the wait itself resets on every drain. Matches MAX_RESUME_WAIT_MULTIPLE.
-_MAX_REPARK_WAIT_MULTIPLE = 20
+# How much longer than its patience a reparking lease may wait while the pool is visibly
+# draining. Matches the preemptor's MAX_RESUME_WAIT_MULTIPLE; the two waits are the same wait,
+# and at 20 this one gave up at 30 minutes inside an outer wait bounded at two hours.
+_MAX_REPARK_WAIT_MULTIPLE = 80
 
 
 def _executor_workers() -> int:

@@ -101,7 +101,8 @@ SOLO_MARGIN_DIVISOR = 200
 DEFAULT_RESUME_WAIT_TIMEOUT_S = 90.0
 
 # Absolute bound on one resume wait, in stall timeouts, for the one case the stall clock
-# cannot see: a cache that keeps moving but never has room for THIS chat.
+# cannot see: a cache that keeps moving but never has room for THIS chat. 80 x 90s = 2 hours:
+# 30 minutes is shorter than one legitimate answer at the 2.3 tok/s measured on the 35B.
 MAX_RESUME_WAIT_MULTIPLE = 80
 
 
