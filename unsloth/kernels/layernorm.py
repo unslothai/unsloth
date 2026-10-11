@@ -22,9 +22,9 @@ from unsloth_zoo.patching_utils import (
 @triton.jit
 def layernorm_forward(
     Y,
-    Y_row_stride,
+    Y_row_stride: tl.constexpr,  # n_cols
     X,
-    X_row_stride,
+    X_row_stride: tl.constexpr,  # n_cols
     W,
     b,
     r,
@@ -66,9 +66,9 @@ def layernorm_forward(
 @triton.jit
 def layernorm_backward(
     dY,
-    dY_row_stride,
+    dY_row_stride: tl.constexpr,  # n_cols
     X,
-    X_row_stride,
+    X_row_stride: tl.constexpr,  # n_cols
     W,
     b,
     r,
