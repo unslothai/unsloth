@@ -4035,6 +4035,8 @@ export const ptBR = {
     selection: {
       startChat: "Iniciar chat",
       move: "Mover",
+      selectAll: "Selecionar tudo",
+      countOfTotal: "{count} de {total} selecionadas",
       clear: "Limpar seleção",
     },
     menu: {

@@ -1736,6 +1736,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "username": row["username"],
             "role": row["role"],
             "is_active": int(row["account_active"]),
+            "expires_at": row["expires_at"],
         }
         return record, secret
     finally:

@@ -3995,6 +3995,8 @@ export const ko = {
     selection: {
       startChat: "채팅 시작",
       move: "이동",
+      selectAll: "모두 선택",
+      countOfTotal: "{total}개 중 {count}개 선택됨",
       clear: "선택 해제",
     },
     menu: {
