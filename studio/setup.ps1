@@ -9043,7 +9043,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # or the startup repair, keeps the resident release like install.sh; UPGRADE=1 asks for newer.
     if (-not $WinArm64Venv -and -not $_cudaKeptRelease -and $cudaForce.Count -gt 0 -and $env:UNSLOTH_TORCH_UPGRADE -ne "1") {
         $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
-        if ($_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.\d+\.\d+)')) { $_cudaKeptRelease = $Matches[1] }
+        if ($_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.\d+\.\d+)(\+\S*)?\s*$')) { $_cudaKeptRelease = $Matches[1] }
     }
     if (-not $WinArm64Venv -and $_cudaKeptRelease -match '^\d+\.\d+(\.\d+)?$') {
         $_keptMinor = [int](($_cudaKeptRelease -split '\.')[1])

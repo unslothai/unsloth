@@ -10693,12 +10693,13 @@ main()
     }
 
     # An existing home never takes 2.13 unasked; UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) asks.
+    # The PyPI check reads unsloth's metadata, so a `--package` other than unsloth keeps the default.
     function Resolve-Cu130TorchRoute {
-        param([string]$IndexUrl, [string]$PythonExe, [Parameter(Mandatory = $true)][string]$DefaultSpec, [bool]$ExistingInstall)
+        param([string]$IndexUrl, [string]$PythonExe, [Parameter(Mandatory = $true)][string]$DefaultSpec, [bool]$ExistingInstall, [string]$PackageName = "unsloth")
         $result = [pscustomobject]@{ PreserveSpec = $DefaultSpec; NewInstall = $false }
         if (-not (Test-Cu130Torch213Platform -IndexUrl $IndexUrl -PythonExe $PythonExe)) { return $result }
         $result.PreserveSpec = "torch>=2.4,<$($script:Cu130TorchCeiling)"
-        if ((-not $ExistingInstall -or $env:UNSLOTH_TORCH_UPGRADE -eq '1') -and
+        if ($PackageName -eq "unsloth" -and (-not $ExistingInstall -or $env:UNSLOTH_TORCH_UPGRADE -eq '1') -and
                 (Test-PypiUnslothAdmitsTorch -Want "2.13.0")) {
             $result.NewInstall = $true
         }
@@ -11179,7 +11180,7 @@ main()
         $_cu130NewInstallRoute = $false
         if (-not $SkipTorch -and -not $ROCmIndexUrl) {
             $_cu130Route = Resolve-Cu130TorchRoute -IndexUrl $TorchIndexUrl -PythonExe $VenvPython `
-                -DefaultSpec $_pinTorchSpec -ExistingInstall ([bool]$script:ExistingInstall)
+                -DefaultSpec $_pinTorchSpec -ExistingInstall ([bool]$script:ExistingInstall) -PackageName $PackageName
             $_preserveTorchSpec = $_cu130Route.PreserveSpec
             $_cu130NewInstallRoute = $_cu130Route.NewInstall
         }

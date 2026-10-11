@@ -150,6 +150,9 @@ try {
     $r = Resolve-Cu130TorchRoute -IndexUrl $cu130 -PythonExe "py" -DefaultSpec $default -ExistingInstall $true
     Check "UNSLOTH_TORCH_UPGRADE=1 opts an existing install in" ($r.NewInstall)
     Remove-Item Env:UNSLOTH_TORCH_UPGRADE
+    Reset-Stubs
+    $r = Resolve-Cu130TorchRoute -IndexUrl $cu130 -PythonExe "py" -DefaultSpec $default -ExistingInstall $false -PackageName "unsloth-fork"
+    Check "--package other than unsloth: no route, window still wide, no fetch" ((-not $r.NewInstall) -and $r.PreserveSpec -eq "torch>=2.4,<2.15.0" -and $script:Fetches -eq 0)
     $script:FetchFails = $true
     $r = Resolve-Cu130TorchRoute -IndexUrl $cu130 -PythonExe "py" -DefaultSpec $default -ExistingInstall $false
     Check "PyPI down: no route, window still wide" ((-not $r.NewInstall) -and $r.PreserveSpec -eq "torch>=2.4,<2.15.0")
@@ -222,6 +225,11 @@ try {
     Check "a migrated venv freezes its trio for the core install" ($install -match '(?s)\$script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe \$VenvPython\s*\$_migOverrides = @\(\)\s*if \(\$script:TorchOverridesFile\) \{ \$_migOverrides = @\("--overrides", \$script:TorchOverridesFile\) \}.*?-Label "install unsloth \(migrated\)" \{ & \$script:UvExe pip install --python \$VenvPython @_migOverrides ')
     Check "a migrated CUDA venv keeps its release for the flavor repair" ($install -match '(?s)\$_migTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$VenvPython.*?\$script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion \$_migTorchVer -Constraint \$_migWindow.*?\$env:UNSLOTH_KEPT_TORCH = \$script:PrevTorchPin\.Release\.PublicBase')
     Check "setup.ps1 keeps the resident release on a forced reinstall with no handoff" ($setup -match '(?s)-not \$_cudaKeptRelease -and \$cudaForce\.Count -gt 0 -and \$env:UNSLOTH_TORCH_UPGRADE -ne "1"\) \{\s*\$_residentProbe = Invoke-BoundedPythonProbe .*?print\(m\.version\(.torch.\)\).*?\$_cudaKeptRelease = \$Matches\[1\]')
+    $probeRe = [regex]::Match($setup, "_residentProbe\.Output -match '([^']+)'").Groups[1].Value
+    foreach ($t in @(@("2.11.0+cu130", "2.11.0"), @("2.14.0", "2.14.0"), @("2.13.0+cu130`r", "2.13.0"), @("2.14.0rc1", $null), @("2.15.0.dev20261001+cu130", $null), @("2.14.0a0+git1234", $null))) {
+        $got = if ($t[0] -match $probeRe) { $Matches[1] } else { $null }
+        Check ("resident probe reads '" + $t[0].Trim() + "' as " + $(if ($t[1]) { $t[1] } else { "no release" })) ($got -eq $t[1])
+    }
     Check "setup.ps1 falls back to the bounded trio, never a bare torch" ($setup -match '(?s)not installable from this CUDA index -- using the supported release" "Yellow"\s*#[^\n]*\n\s*\$cudaTorchSpec = "torch>=2\.4,<2\.12\.0"; \$cudaVisionSpec = "torchvision>=0\.19,<0\.27\.0"; \$cudaAudioSpec = "torchaudio>=2\.4,<2\.12\.0"')
     Check "setup.ps1 re-reads torch before installing triton" ($setup -match '(?s)\$_tritonTorchProbe = Invoke-BoundedPythonProbe.*?\$_tritonSpec = Get-TritonWindowsSpec -TorchVersion.*?substep "installing Triton for Windows\.\.\."')
     Check "setup.ps1 pairs every kept torch 2.12+ with torchaudio 2.11" (
