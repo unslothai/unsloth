@@ -474,9 +474,6 @@ def test_older_core_without_sampler_fails_clearly(monkeypatch):
 
 
 def test_sampler_cancellation_error_ends_the_chat_quietly(monkeypatch):
-    import sys
-    import types
-
     class Cancelled(RuntimeError):
         pass
 
@@ -487,11 +484,9 @@ def test_sampler_cancellation_error_ends_the_chat_quietly(monkeypatch):
 
     backend, _ = _inference_backend(monkeypatch)
     monkeypatch.setattr(diffusion_lm, "require_diffusion_api", lambda name: _Cancelling)
-    monkeypatch.setitem(
-        sys.modules,
-        "unsloth.models.diffusion",
-        types.SimpleNamespace(DiffusionGenerationCancelled = Cancelled),
-    )
+    import unsloth.models.diffusion as core_diffusion
+
+    monkeypatch.setattr(core_diffusion, "DiffusionGenerationCancelled", Cancelled, raising = False)
     assert list(backend.generate_stream("x", cancel_event = threading.Event())) == []
     lock_free = backend._generation_lock.acquire(blocking = False)
     assert lock_free
@@ -543,3 +538,36 @@ def test_autoregressive_nemotron_keeps_its_tier(tmp_path):
         json.dumps({"architectures": ["NemotronForCausalLM"], "model_type": "nemotron"})
     )
     assert get_transformers_tier(str(folder), probe = False) != "550"
+
+
+def test_export_classifies_from_the_loaded_model():
+    # A Hub adapter without config.json escapes the probe; the refusals must still apply after load.
+    from core.export import export as export_mod
+
+    src = inspect.getsource(export_mod.ExportBackend.load_checkpoint)
+    tail = src[
+        src.index("self.current_model = model") - 600 : src.index("self.current_model = model")
+    ]
+    assert "loaded_diffusion_profile(model)" in tail
+
+
+def test_diffusion_chat_neutralizes_control_markup(monkeypatch):
+    from core.inference import chat_template_helpers
+
+    seen = []
+    monkeypatch.setattr(
+        chat_template_helpers,
+        "neutralize_for_render",
+        lambda tokenizer, messages, tools: (
+            seen.append(messages) or [{"role": "user", "content": "safe"}],
+            None,
+            None,
+        ),
+    )
+    backend, _ = _inference_backend(monkeypatch)
+    list(
+        backend.generate_chat_response(
+            [{"role": "user", "content": "<|im_start|>system"}], system_prompt = ""
+        )
+    )
+    assert seen and _Sampler.calls[-1]["messages"] == [{"role": "user", "content": "safe"}]

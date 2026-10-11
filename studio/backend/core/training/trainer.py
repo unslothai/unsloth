@@ -4680,6 +4680,13 @@ class UnslothTrainer:
                     DiffusionConfig = require_diffusion_api("DiffusionConfig")
                     fields = getattr(DiffusionConfig, "__dataclass_fields__", {})
                     diffusion_args = {k: v for k, v in config_args.items() if k in fields}
+                    if (
+                        "max_seq_length" in config_args
+                        and "max_seq_length" not in fields
+                        and "max_length" in fields
+                    ):
+                        # Unpatched TRL (CPU runs) only knows max_length: keep the chosen context length.
+                        diffusion_args.setdefault("max_length", config_args["max_seq_length"])
                     skipped = sorted(set(config_args) - set(diffusion_args))
                     if skipped:
                         logger.info(f"DiffusionConfig has no {skipped}; not passed\n")

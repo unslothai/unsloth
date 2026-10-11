@@ -2383,15 +2383,24 @@ class InferenceBackend:
         the sampler polls ``cancel_event`` between denoising steps."""
         from utils.models.diffusion_lm import require_diffusion_api
 
+        if messages:
+            # Same choke point as the left-to-right renderer: role / turn markup inside message text is
+            # neutralised before the sampler renders the chat template.
+            from core.inference.chat_template_helpers import neutralize_for_render
+            tokenizer = model_info["tokenizer"]
+            messages, _, _ = neutralize_for_render(
+                getattr(tokenizer, "tokenizer", tokenizer), messages, None
+            )
         generate_text = getattr(require_diffusion_api("FastDiffusionModel"), "generate_text", None)
         if generate_text is None:
             raise RuntimeError(
                 "Unsloth: chatting with a text-diffusion model needs a newer Unsloth "
                 "(FastDiffusionModel.generate_text). Update with `unsloth studio update`."
             )
-        cancelled_error = getattr(
-            sys.modules.get("unsloth.models.diffusion"), "DiffusionGenerationCancelled", ()
-        )
+        try:
+            from unsloth.models.diffusion import DiffusionGenerationCancelled as cancelled_error
+        except ImportError:  # an older core: no cancellation error to catch
+            cancelled_error = ()
         with self._generation_lock:
             if _adapter_state is not None:
                 self._apply_adapter_state(_adapter_state)

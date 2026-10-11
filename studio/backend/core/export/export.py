@@ -980,6 +980,12 @@ class ExportBackend:
                     f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
                 )
 
+            # A Hub adapter has no config.json for the probe, but core loads a diffusion base through its
+            # diffusion path: classify from what loaded, so the merged / GGUF refusals still apply.
+            if not self.diffusion_lm_profile and not _IS_MLX:
+                from utils.models.diffusion_lm import loaded_diffusion_profile
+                self.diffusion_lm_profile = loaded_diffusion_profile(model)
+
             # The MLX GGUF LoRA converter honors the approved load decision.
             self.trust_remote_code = bool(trust_remote_code)
             self.current_model = model
