@@ -158,7 +158,8 @@ class DiffusionGemmaProfile(DiffusionProfile):
             diffusion_logits = diffusion_logits.float().scatter_add(
                 2, canvas_ids.unsqueeze(-1), bump[:, :, None].expand(-1, block_size, 1)
             )
-        compiled = compile_loss(args, device)
+        # Eager under "auto": compiled chunks were 5-10% slower per step on DiffusionGemma-26B-A4B (B200) at equal memory.
+        compiled = compile_loss(args, device, auto = False)
         # Sum / count instead of a mean: an all-ignored batch gives 0 (with grad), not NaN, and needs no branch.
         diffusion_sum, _, diffusion_count = chunked_cross_entropy(
             diffusion_logits, diffusion_target, compiled = compiled

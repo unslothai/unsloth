@@ -47,9 +47,16 @@ def diffusion_compile_mode(args):
     )
 
 
-def compile_loss(args, device):
+def compile_loss(
+    args,
+    device,
+    auto = True,
+):
+    """`auto` = False keeps "auto" eager for objectives where compiled chunks measured no faster."""
     mode = diffusion_compile_mode(args)
-    return mode in ("loss", "full") or (mode == "auto" and torch.device(device).type == "cuda")
+    return mode in ("loss", "full") or (
+        auto and mode == "auto" and torch.device(device).type == "cuda"
+    )
 
 
 def _rows_per_chunk(n, vocab):

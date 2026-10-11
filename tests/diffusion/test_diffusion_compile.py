@@ -148,6 +148,14 @@ def test_compile_mode_parsing(monkeypatch):
     assert diffusion_compile_mode(SimpleNamespace(diffusion_compile = "loss")) == "loss"
     with pytest.raises(ValueError, match = "diffusion_compile"):
         diffusion_compile_mode(SimpleNamespace(diffusion_compile = "fast"))
+    from unsloth.models.diffusion_loss import compile_loss
+
+    auto, loss = (
+        SimpleNamespace(diffusion_compile = "auto"),
+        SimpleNamespace(diffusion_compile = "loss"),
+    )
+    assert compile_loss(auto, "cuda") and not compile_loss(auto, "cpu")
+    assert not compile_loss(auto, "cuda", auto = False) and compile_loss(loss, "cuda", auto = False)
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "1")
     assert diffusion_compile_mode(SimpleNamespace(diffusion_compile = True)) is None
 
