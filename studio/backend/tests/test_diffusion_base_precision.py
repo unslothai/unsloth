@@ -630,6 +630,48 @@ def test_fp8_module_filter():
     assert dit._fp8_module_filter(nn.LayerNorm(64), "transformer_blocks.0.norm") is False
 
 
+def test_float8_filters_stay_inside_the_repeated_blocks():
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ff = nn.Linear(64, 64, bias = False)
+
+    class Model(nn.Module):
+        _repeated_blocks = ["Block"]
+
+        def __init__(self):
+            super().__init__()
+            self.time_mod_proj = nn.Linear(64, 64 * 6, bias = False)
+            self.blocks = nn.ModuleList([Block(), Block()])
+
+    m = Model()
+    for base in (dit._fp8_module_filter, dit._mx_module_filter):
+        f = dit._in_repeated_blocks(m, base)
+        assert f(m.blocks[1].ff, "blocks.1.ff") is True
+        # Top-level linears run eager, where torchao's frozen-weight grad_weight GEMM raises for M % 16 != 0.
+        assert f(m.time_mod_proj, "time_mod_proj") is False
+        assert f(m.blocks[0].ff, "blocks.0.ff.lora_A.default") is False
+    # No _repeated_blocks: the historical unrestricted filter.
+    assert (
+        dit._in_repeated_blocks(nn.Linear(64, 64), dit._fp8_module_filter) is dit._fp8_module_filter
+    )
+
+
+def test_mx_input_hook_mirrors_autocast():
+    import torch
+
+    x = torch.ones(2, 4)
+    assert dit._autocast_mx_input(None, (x,)) is None  # CPU / no autocast: untouched
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA autocast")
+    xc = x.cuda()
+    assert dit._autocast_mx_input(None, (xc,)) is None
+    with torch.autocast("cuda", dtype = torch.bfloat16):
+        (out,) = dit._autocast_mx_input(None, (xc,))
+        assert out.dtype == torch.bfloat16
+        assert dit._autocast_mx_input(None, (xc.bfloat16(),)) is None
+
+
 # ── _should_compile fp8 branch ────────────────────────────────────────────────
 def test_should_compile_fp8_branch():
     # fp8 is only competitive compiled, so auto arms compile for it on a dense (non-bnb) cuda base.

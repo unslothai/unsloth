@@ -404,6 +404,23 @@ def _fp8_training_config():
         return Float8LinearConfig(pad_inner_dim = True)
 
 
+def _in_repeated_blocks(transformer, module_filter):
+    """Restrict a float8 / MX module filter to the repeated blocks (the regionally compiled ones).
+
+    torchao's float8 / MX linear backward always computes grad_weight, even for a frozen base
+    weight; only AOTAutograd prunes it, so outside the compiled region it runs eager and raises
+    when the token count is not a multiple of 16 / 32 (Krea 2's M=1 modulation, FLUX.2's
+    non-contiguous x_embedder input at batch 2). The top-level embedders are a sliver of the
+    FLOPs, so they stay bf16. A model without ``_repeated_blocks`` keeps the unrestricted filter."""
+    names = set(getattr(transformer, "_repeated_blocks", None) or ())
+    prefixes = tuple(
+        f"{fqn}." for fqn, mod in transformer.named_modules() if mod.__class__.__name__ in names
+    )
+    if not prefixes:
+        return module_filter
+    return lambda mod, fqn: fqn.startswith(prefixes) and module_filter(mod, fqn)
+
+
 def _apply_fp8_training(transformer, on_event) -> bool:
     """Convert the frozen base linears to torchao float8 training compute (dynamic scaling; weights
     stay bf16 in memory). Applied AFTER add_adapter so the filter can exclude the LoRA modules.
@@ -412,7 +429,7 @@ def _apply_fp8_training(transformer, on_event) -> bool:
         from torchao.float8 import convert_to_float8_training
         convert_to_float8_training(
             transformer,
-            module_filter_fn = _fp8_module_filter,
+            module_filter_fn = _in_repeated_blocks(transformer, _fp8_module_filter),
             config = _fp8_training_config(),
         )
         return True
@@ -456,6 +473,20 @@ def _mxfp8_training_config():
         return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL)
 
 
+def _autocast_mx_input(module, args):
+    import torch
+
+    x = args[0] if args else None
+    if (
+        isinstance(x, torch.Tensor)
+        and x.dtype == torch.float32
+        and x.is_cuda
+        and torch.is_autocast_enabled("cuda")
+    ):
+        return (x.to(torch.get_autocast_dtype("cuda")), *args[1:])
+    return None
+
+
 def _apply_mxfp8_training(transformer, on_event) -> bool:
     """Swap the frozen base linears to torchao MX float8 training compute (mxfp8, the
     Blackwell-native block-scaled format; the swap is in place and the weights stay bf16 in
@@ -466,11 +497,14 @@ def _apply_mxfp8_training(transformer, on_event) -> bool:
     bf16 with a warning."""
     try:
         from torchao.quantization import quantize_
-        quantize_(
-            transformer,
-            _mxfp8_training_config(),
-            filter_fn = _mx_module_filter,
-        )
+
+        keep = _in_repeated_blocks(transformer, _mx_module_filter)
+        converted = [m for fqn, m in transformer.named_modules() if keep(m, fqn)]
+        quantize_(transformer, _mxfp8_training_config(), filter_fn = keep)
+        # The MX linear asserts bf16 input and sits above autocast, so an fp32 LayerNorm output (FLUX.2's bias-free
+        # ff.linear_in) raised at step 1: cast it the way autocast would for a plain F.linear.
+        for mod in converted:
+            mod.register_forward_pre_hook(_autocast_mx_input)
         return True
     except Exception as exc:  # noqa: BLE001 -- mxfp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}")
@@ -1819,6 +1853,13 @@ def _maybe_compile_transformer(
                 dynamo_cfg.suppress_errors = True
         # dynamic=True matches the inference speed layer: on torch 2.10 / B200 the dynamic=False specialisation failed
         # with CUBLAS_STATUS_EXECUTION_FAILED.
+        try:
+            # torch 2.12 / 2.13 inductor cannot prove (k*a + k*b) % (a + b) == 0 and raises CantSplit in the compiled
+            # backward of the dynamic joint-stream cat (FLUX.1 fp8 crashed at step 1); probe-gated, a no-op elsewhere.
+            from core.inference.diffusion_inductor_backports import install as _install_backports
+            _install_backports()
+        except Exception:  # noqa: BLE001 -- the backport is best-effort
+            pass
         fn(fullgraph = not base_is_bnb, dynamic = True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
