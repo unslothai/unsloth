@@ -57,8 +57,13 @@ class EngineAdapter:
         return {"VLLM_API_KEY" if self.name == "vllm" else "UNSLOTH_ENGINE_API_KEY": key}
 
     def environment(self, gpu_count):
-        if self.name == "vllm" and gpu_count > 1:
-            return {"VLLM_HOST_IP": "127.0.0.1"}
+        if self.name == "vllm":
+            # vLLM 0.30+ DeepSeek-OCR encoder kernel reads a plain-float LOG2E global, a NameError on
+            # Triton 3.7 (unslothai/unsloth#3911). The knob only lifts that error and is not in the cache key.
+            env = {"TRITON_ALLOW_NON_CONSTEXPR_GLOBALS": "1"}
+            if gpu_count > 1:
+                env["VLLM_HOST_IP"] = "127.0.0.1"
+            return env
         if self.name == "sglang" and gpu_count > 1:
             # Else SGLang rejects GPUs whose free memory differs >10%; KV pools size from the minimum anyway.
             return {
@@ -204,6 +209,11 @@ class EngineAdapter:
             *parallel_args,
             *precision_args,
             *tool_args,
+            *(
+                ["--max-num-seqs", str(options["max_num_seqs"])]
+                if self.name == "vllm" and options.get("max_num_seqs")
+                else []
+            ),
             *(["--trust-remote-code"] if trust_remote_code else []),
             *self.extra_args,
             "--host",
