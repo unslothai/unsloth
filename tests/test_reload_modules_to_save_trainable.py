@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""A reloaded adapter keeps training its `modules_to_save` (#3108).
-
-FastLanguageModel.from_pretrained(<checkpoint>) loads the adapter with is_trainable=True, then
-patch_peft_model runs prepare_model_for_kbit_training, which freezes every non-LoRA weight. That
-froze the embed_tokens / lm_head copies, so resume_from_checkpoint failed with "loaded state dict
-contains a parameter group that doesn't match the size of optimizer's group".
-"""
+"""A reloaded adapter keeps training its modules_to_save after kbit prep froze them (#3108)."""
 
 import ast
 import pathlib

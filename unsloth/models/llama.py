@@ -253,14 +253,9 @@ def _offload_frozen_module_for_training(
 
 
 def _unfreeze_modules_to_save(model) -> None:
-    """Re-enable gradients on the active trainable copies of every ModulesToSaveWrapper, as PEFT and
-    FastModel (patch_modules_to_save) do.
-
-    prepare_model_for_kbit_training freezes every non-LoRA weight, so an adapter reloaded with
-    `modules_to_save` (embed_tokens / lm_head, a classifier's score) silently stopped training them
-    and a resumed optimizer state no longer matched its parameter groups (#3108). Dtype only, never
-    device: get_peft_model places the copies afterwards.
-    """
+    """Re-train each ModulesToSaveWrapper's active copy, as PEFT and FastModel do: kbit prep
+    froze it, so a reloaded adapter dropped embed_tokens / lm_head and resume_from_checkpoint
+    failed (#3108). Dtype only, never device."""
     for module in model.modules():
         if not isinstance(module, ModulesToSaveWrapper) or getattr(
             module, "disable_adapters", False
