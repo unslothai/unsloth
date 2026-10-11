@@ -214,6 +214,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "ExportBaseModelRequest",
         "ExportGGUFRequest",
         "ConvertQ4NXRequest",
+        "ExportDiffusionLoRARequest",
         "ExportLoRAAdapterRequest",
         "LlmCompressorExportProbeResponse",
         "ExportDecisionInfoResponse",

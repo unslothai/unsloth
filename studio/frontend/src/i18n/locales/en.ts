@@ -2153,6 +2153,10 @@ export const en = {
           "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
         mismatchUnavailable:
           "PyTorch ({version}) cannot initialise the GPUs below, so they cannot be used. Check the GPU driver, or repair the installation.",
+        driverIdleEvict:
+          "AMD driver {version} has a known bug that can freeze Windows when an AMD GPU sits idle, most often with more than one GPU. Update to Adrenalin 26.9.2 or later.",
+        driverIdleEvictDetails: "Details",
+        dismissNotice: "Dismiss",
         unusableDevice: "unusable",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
@@ -2521,6 +2525,15 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      toolResultLimit: "Tool output length",
+      toolResultLimitDescription: "Characters of one Python or Terminal result the model reads. Default is {count}.",
+      toolResultLimitHint: "Longer output is saved to a file the model can read in parts. A higher limit applies to models running in Unsloth, and small context windows still get less. API models keep the default unless you lower it.",
+      toolResultLimitDefault: "{count} (default)",
+      toolResultLimitLocked: "Set by UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Failed to load the tool output length.",
+      toolResultLimitSaveError: "Failed to save the tool output length.",
+      toolResultLimitKeywords:
+        "tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Collapsed",
         auto: "Expand while running",
@@ -4021,6 +4034,9 @@ export const en = {
     selection: {
       startChat: "Start chat",
       move: "Move",
+      // The bar's count, with the select all link beside it; {total} is everything currently shown.
+      selectAll: "Select all",
+      countOfTotal: "{count} of {total} selected",
       clear: "Clear selection",
     },
     menu: {

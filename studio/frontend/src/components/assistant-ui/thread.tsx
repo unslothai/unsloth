@@ -2794,7 +2794,7 @@ const Composer: FC<{
   const setMentionOpen = useCallback((open: boolean) => {
     mentionOpenRef.current = open;
   }, []);
-  const { inputProps, isComposing, isComposingRef } =
+  const { inputProps, isComposing, isComposingRef, imeSessionOpenRef } =
     useImeComposerInputHandlers({
       submitOnEnter: true,
       skipEnterRef: mentionConsumesEnterRef,
@@ -3827,11 +3827,15 @@ const Composer: FC<{
   }, [draftKey, pasteDraftKey]);
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
-    justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+    justSentRef.current = armSentTextGuard(
+      texts,
+      draftKeyRef.current,
+      imeSessionOpenRef.current,
+    );
     // Here, not beside send(): handleSubmit returns early on the three queueing
     // paths, which empty the composer too.
     setIsWritingExpanded(false);
-  }, []);
+  }, [imeSessionOpenRef]);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
@@ -5954,6 +5958,7 @@ function useImeComposerInputHandlers({
     },
     isComposing,
     isComposingRef: composingRef,
+    imeSessionOpenRef,
   };
 }
 

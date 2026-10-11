@@ -53,27 +53,29 @@ def _load_module(monkeypatch):
         ("2.10.0.dev20250804+cu130", "torchao==0.17.0"),
         ("2.10.0.dev20250804+cu128", "torchao==0.16.0"),
         ("2.10rc1", "torchao==0.16.0"),
-        # 2.11 -> 0.17.0, whose cpp is built for it.
+        # torchao 0.17.0 cpp is built for torch 2.11.
         ("2.11.0+cu130", "torchao==0.17.0"),
         ("2.11.0", "torchao==0.17.0"),
         ("2.11.1+cu126", "torchao==0.17.0"),
-        # 2.12+ -> 0.18.0, whose release CI is pinned to 2.13. 0.17.0's upstream table stops
-        # at 2.11, so leaving this range there ran it outside its declared window.
+        # torchao 0.18.0 CI targets torch 2.13; torchao 0.17.0 supports only through torch 2.11.
         ("2.12.0", "torchao==0.18.0"),
         ("2.12.1+cu130", "torchao==0.18.0"),
         ("2.13.0+cu132", "torchao==0.18.0"),
         ("2.14.0+cu130", "torchao==0.18.0"),
         ("2.14.0+xpu", "torchao==0.18.0"),
         ("2.99.0", "torchao==0.18.0"),
-        # The CUDA-13 branch belongs to 2.10 alone; it must not leak upward.
+        # CUDA 13 selection applies only to torch 2.10.
         ("2.12.0+cu126", "torchao==0.18.0"),
         ("2.12.0.dev20260801+cu132", "torchao==0.18.0"),
-        # torch <=2.9 keeps today's pin (already a correct match for 2.9.0).
-        ("2.9.0+cu128", "torchao==0.14.0"),
-        ("2.9.1", "torchao==0.14.0"),
+        # torchao 0.15.0 is the floor for diffusers 0.41's unconditional import (#13244).
+        ("2.9.0+cu126", "torchao==0.15.0"),
+        ("2.9.0+cu128", "torchao==0.15.0"),
+        ("2.9.1", "torchao==0.15.0"),
+        ("2.9.1+rocm6.4", "torchao==0.15.0"),
+        # torch <= 2.8 retains the 0.14.0 pin.
         ("2.8.0", "torchao==0.14.0"),
         ("2.4.0", "torchao==0.14.0"),
-        # Unparseable / missing / non-2.x major -> conservative default.
+        # malformed, missing, and non-2.x versions use the conservative default.
         (None, "torchao==0.14.0"),
         ("", "torchao==0.14.0"),
         ("garbage", "torchao==0.14.0"),
@@ -87,10 +89,10 @@ def test_select_torchao_spec(monkeypatch, torch_version, expected):
 
 
 def test_default_spec_matches_table(monkeypatch):
-    """The default/floor stays the historical pin so older torch is unchanged."""
+    """the historical default keeps older torch versions unchanged."""
     mod = _load_module(monkeypatch)
     assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.14.0"
-    assert mod._select_torchao_spec("2.9.0") == mod._TORCHAO_DEFAULT_SPEC
+    assert mod._select_torchao_spec("2.8.0") == mod._TORCHAO_DEFAULT_SPEC
 
 
 def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
@@ -130,8 +132,7 @@ def test_the_torchao_index_follows_the_resident_torch_build(monkeypatch, torch_v
     assert got == (f"https://download.pytorch.org/whl/{leaf}" if leaf else None)
 
 
-# torchao per leaf, from the live listings. Only leaves that do NOT cover every release this
-# selector can ask for; everything absent serves its whole range.
+# only leaves missing a selected release are listed; omitted leaves cover their whole range.
 _TORCHAO_INDEX_GAPS = {
     "cu118": ({m: f"0.{m}.0" for m in range(3, 12)}, range(5, 8)),
     "cu129": (
@@ -143,15 +144,7 @@ _TORCHAO_INDEX_GAPS = {
 
 
 def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
-    """A pin that could not be served would fail an install, because this step is fatal.
-
-    Four cells cannot be served, and none of them is predictable from a rule: cu118 stops at
-    torchao 0.11.0, rocm7.0 carries 0.16.0 alone, and cu129 has 0.14.1 where the 2.9 row asks
-    for 0.14.0 exactly -- a hole in the MIDDLE of its range, which no floor could describe.
-    All four resolve from the default index, which is where they came from before this step
-    pinned anything, so the retry makes them identical to today rather than broken. Recording
-    them here means a fifth cannot appear unnoticed.
-    """
+    """the default-index retry must cover every leaf missing its selected torchao release."""
     mod = _load_module(monkeypatch)
     starved = set()
     for leaf, (published, torch_minors) in _TORCHAO_INDEX_GAPS.items():
@@ -162,17 +155,16 @@ def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
             if wanted not in published.values():
                 starved.add((leaf, minor, wanted))
     assert starved == {
-        # cu118 tops out at torchao 0.11.0, so every torch it serves wants more than it has.
+        # cu118 lacks every selected torchao release for torch 2.5 through 2.7.
         ("cu118", 5, "0.14.0"),
         ("cu118", 6, "0.14.0"),
         ("cu118", 7, "0.14.0"),
-        # cu129 publishes 0.14.1, not 0.14.0, and stops at 0.17.0.
+        # cu129 lacks torchao 0.14.0 and releases after 0.17.0.
         ("cu129", 8, "0.14.0"),
-        ("cu129", 9, "0.14.0"),
         ("cu129", 12, "0.18.0"),
         ("cu129", 13, "0.18.0"),
-        # rocm7.0 publishes 0.16.0 alone, which is what its torch 2.10 row already wants.
-        ("rocm7.0", 9, "0.14.0"),
+        # rocm7.0 provides only torchao 0.16.0.
+        ("rocm7.0", 9, "0.15.0"),
     }, sorted(starved)
 
 
@@ -183,9 +175,7 @@ def _torchao_installer_source():
 
 
 def test_the_torchao_step_pins_the_index_and_retries_without_it():
-    """cu129 serves torch to 2.13 but stops at torchao 0.17.0, and a leaf added upstream
-    after this ships can lag a release, so the pin must not be able to fail an install.
-    Unlike torchcodec the retry stays FATAL if it also fails: torchao is not optional."""
+    """a lagging accelerator leaf retries the default index, but failure there remains fatal."""
     body = _torchao_installer_source()
     assert "index = None if default_index else _torch_accelerator_index_url(torch_version)" in body
     assert '"--index-url", index, spec' in body
@@ -688,7 +678,7 @@ def test_real_or_stub_replaces_a_stub_inherited_from_run_py(monkeypatch, consume
 
 
 def test_real_or_stub_keeps_the_stub_when_torchao_is_not_loadable(monkeypatch):
-    """torch <= 2.9 pairs with torchao 0.14, which transformers 5 rejects: never load it."""
+    """torch <= 2.8 pairs with torchao 0.14, which transformers 5 rejects; never load it."""
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
     monkeypatch.setattr(_stub, "torchao_export_loadable", lambda: False)
     monkeypatch.delitem(sys.modules, "torchao", raising = False)
