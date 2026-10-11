@@ -3,9 +3,9 @@
 
 """`studio update` torch repairs on the cu130 torch 2.13 route keep the resident release.
 
-install.sh gives new Linux x86_64 cu130 Python 3.13 installs torch 2.13; a repair on that
-route must not move an existing install to another torch, and every other route must get
-exactly the specs it got before.
+install.sh and install.ps1 give new Linux x86_64 and Windows x64 cu130 Python 3.13 installs
+torch 2.13; a repair on that route must not move an existing install to another torch, and every
+other route must get exactly the specs it got before.
 """
 
 from __future__ import annotations
@@ -36,9 +36,11 @@ def _route(
     machine = "x86_64",
     py = (3, 13),
     torch = None,
+    woa = False,
 ):
     monkeypatch.setattr(mod.sys, "platform", platform)
     monkeypatch.setattr(mod.platform, "machine", lambda: machine)
+    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: woa)
     monkeypatch.setattr(mod.sys, "version_info", (*py, 0, "final", 0))
     monkeypatch.setattr(mod, "_resident_torch_release", lambda: torch)
 
@@ -53,8 +55,9 @@ def _route(
         ("2.14.0", ("torch==2.14.0", "torchvision==0.29.*", "torchaudio==2.11.*")),
     ],
 )
-def test_a_resident_release_is_kept(monkeypatch, mod, resident, expected):
-    _route(monkeypatch, mod, torch = resident)
+@pytest.mark.parametrize("host", [{"platform": "linux"}, {"platform": "win32", "machine": "AMD64"}])
+def test_a_resident_release_is_kept(monkeypatch, mod, resident, expected, host):
+    _route(monkeypatch, mod, torch = resident, **host)
     assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == expected
     assert mod._cuda_repair_torch_specs(CU130, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC) == expected
 
@@ -75,7 +78,10 @@ def test_no_keepable_release_repairs_to_the_default_range(monkeypatch, mod, resi
         ("https://download.pytorch.org/whl/cu126", {}),
         ("https://download.pytorch.org/whl/cpu", {}),
         ("https://download.pytorch.org/whl/rocm7.2", {}),
-        (CU130, {"platform": "win32"}),
+        # Windows on ARM, native or an emulated x64 interpreter: not this route.
+        (CU130, {"platform": "win32", "machine": "ARM64", "woa": True}),
+        (CU130, {"platform": "win32", "machine": "AMD64", "woa": True}),
+        (CU130, {"platform": "win32", "machine": "AMD64", "py": (3, 12)}),
         (CU130, {"platform": "darwin"}),
         (CU130, {"machine": "aarch64"}),
         (CU130, {"py": (3, 12)}),
@@ -128,7 +134,9 @@ def test_both_cuda_repairs_use_the_route_aware_specs(mod):
         ("linux", "2.12.1", False),
         ("linux", "2.11.0", False),
         ("linux", None, False),
-        ("win32", "2.13.0", False),
+        ("win32", "2.13.0", True),
+        ("win32", "2.14.0", True),
+        ("win32", "2.11.0", False),
         ("darwin", "2.13.0", False),
     ],
 )
@@ -136,6 +144,7 @@ def test_core_update_freezes_only_torch_past_the_released_ceiling(
     monkeypatch, tmp_path, mod, platform, resident, pinned
 ):
     monkeypatch.setattr(mod.sys, "platform", platform)
+    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: False)
     monkeypatch.setattr(mod, "_resident_torch_release", lambda: resident)
     monkeypatch.setattr(
         mod,
@@ -217,3 +226,17 @@ def test_inherited_relative_includes_still_resolve(monkeypatch, tmp_path, mod):
         "--constraint=/abs/c.txt",
         "-r https://example.com/r.txt",
     ]
+
+
+def test_core_update_freeze_leaves_windows_on_arm_to_its_own_overrides(monkeypatch, tmp_path, mod):
+    # install.ps1 writes the WoA UV_OVERRIDE; a second trio pin here would conflict with it.
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: True)
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.14.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.14.0+cu134"])
+    inherited = tmp_path / "woa-overrides.txt"
+    inherited.write_text("torch>=2.4\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(inherited))
+    with mod._FreezeNewTorchForCoreUpdate():
+        assert mod.os.environ["UV_OVERRIDE"] == str(inherited)
+        assert mod._TORCH_FREEZE_ACTIVE is False

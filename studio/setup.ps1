@@ -8760,6 +8760,19 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
+# The x64 spec once torch is installed: triton-windows pairs torch 2.13 with 3.7 and 2.14 with 3.8,
+# one triton minor per torch minor; every earlier release keeps <3.7.
+function Get-TritonWindowsSpec {
+    param([string]$TorchVersion, [bool]$WinArm64 = $false)
+    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
+    if ($TorchVersion -match '^2\.(\d+)\.') {
+        switch ([int]$Matches[1]) {
+            13 { return "triton-windows>=3.7,<3.8" }
+            14 { return "triton-windows>=3.8,<3.9" }
+        }
+    }
+    return "triton-windows<3.7"
+}
 # The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
@@ -8808,7 +8821,7 @@ if ($ROCmIndexUrl) {
         if (-not ($ROCmTorchSpec -match 'torch>=2\.11' -and $_keptMinor -lt 11)) {
             $ROCmTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
             $ROCmVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-            $ROCmAudioSpec  = "torchaudio==2.$($_keptMinor).*"
+            $ROCmAudioSpec  = "torchaudio==2.$([Math]::Min($_keptMinor, 11)).*"
             $_rocmKeptActive = $true
         }
     }
@@ -8972,7 +8985,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
         $cpuTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
         $cpuVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-        $cpuAudioSpec  = "torchaudio==2.$($_keptMinor).*"
+        $cpuAudioSpec  = "torchaudio==2.$([Math]::Min($_keptMinor, 11)).*"
         $_cpuKeptActive = $true
     }
     while ($true) {
@@ -9031,7 +9044,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
         $cudaTorchSpec = "torch==$($env:UNSLOTH_KEPT_TORCH)"
         $cudaVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-        $cudaAudioSpec = "torchaudio==2.$($_keptMinor).*"
+        # torchaudio 2.11 is the last release (stable ABI), so newer torch minors pair with it.
+        $cudaAudioSpec = "torchaudio==2.$([Math]::Min($_keptMinor, 11)).*"
         $_cudaKeptActive = $true
     }
     while ($true) {
@@ -9121,7 +9135,13 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         }
     }
 
-    # Triton for Windows enables torch.compile (without it training can hang).
+    # Triton for Windows enables torch.compile (without it training can hang). Paired with the
+    # torch this step left in the venv, read from its metadata rather than by importing it.
+    $_tritonTorchProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
+    if ($_tritonTorchProbe.Ok) {
+        $_tritonTorchVer = @($_tritonTorchProbe.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($_tritonTorchVer.Count -gt 0) { $_tritonSpec = Get-TritonWindowsSpec -TorchVersion $_tritonTorchVer[-1] -WinArm64 ([bool]$WinArm64Venv) }
+    }
     substep "installing Triton for Windows..."
     if ($script:UnslothVerbose) {
         Fast-Install $_tritonSpec

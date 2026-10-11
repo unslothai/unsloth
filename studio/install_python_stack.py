@@ -563,17 +563,27 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.12.0",
 )
 
-# The install.sh _cu130_torch213_route: a repair keeps a resident 2.9-2.14 release.
+# The install.sh _cu130_torch213_route and install.ps1's Test-Cu130Torch213Platform: a repair
+# keeps a resident 2.9-2.14 release.
 _CU130_PRESERVE_TORCH_CEILING_MINOR = 15
 _CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2.9.0
+
+
+def _is_native_x86_64() -> bool:
+    """Linux x86_64, or Windows x64 on an x64 machine. An emulated x64 Python on Windows on ARM
+    is excluded: install.ps1 keys its torch 2.13 route on the machine as well as the interpreter."""
+    if platform.machine().lower() not in ("x86_64", "amd64"):
+        return False
+    if sys.platform.startswith("linux"):
+        return True
+    return sys.platform == "win32" and not _is_windows_arm64()
 
 
 def _is_cu130_torch213_route(index_url: str | None) -> bool:
     return (
         bool(index_url)
         and _torch_index_leaf(index_url) == "cu130"
-        and sys.platform.startswith("linux")
-        and platform.machine().lower() in ("x86_64", "amd64")
+        and _is_native_x86_64()
         and sys.version_info[:2] == (3, 13)
     )
 
@@ -634,9 +644,10 @@ class _FreezeNewTorchForCoreUpdate:
 
     A released unsloth declares a torch ceiling (2026.9.11: <2.13.0), and a with-deps upgrade
     honours it: on a torch 2.13 install `studio update` swapped torch for PyPI's 2.12.1 and lost
-    the matching prebuilt kernels. install.sh freezes the trio the same way for every with-deps
-    unsloth install (_build_unsloth_torch_overrides). Scoped to Linux with torch >= 2.13, the
-    releases past that ceiling, so every other install resolves exactly as before.
+    the matching prebuilt kernels. install.sh and install.ps1 freeze the trio the same way for
+    every with-deps unsloth install. Scoped to Linux and native Windows x64 with torch >= 2.13,
+    the releases past that ceiling, so every other install resolves exactly as before; Windows
+    on ARM keeps its own UV_OVERRIDE (_woa_overrides_are_load_bearing).
     """
 
     def __enter__(self):
@@ -644,7 +655,10 @@ class _FreezeNewTorchForCoreUpdate:
         self._previous = os.environ.get("UV_OVERRIDE")
         release = _resident_torch_release()
         if not (
-            sys.platform.startswith("linux")
+            (
+                sys.platform.startswith("linux")
+                or (sys.platform == "win32" and not _is_windows_arm64())
+            )
             and release is not None
             and int(release.split(".")[1]) >= 13
         ):
