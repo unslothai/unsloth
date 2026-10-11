@@ -1961,11 +1961,11 @@ async def stream_with_studio_tools(
                         (item.get("function") or {}).get("arguments"),
                     )
                 )
-        _round_one_shot = [
-            (item.get("function") or {}).get("name", "")
-            for item in calls
-            if (item.get("function") or {}).get("name", "") in _one_shot
+        # Named as `prepare_call` names them, so a padded or malformed name is the same tool.
+        _round_names = [
+            str((item.get("function") or {}).get("name") or "").strip() for item in calls
         ]
+        _round_one_shot = [name for name in _round_names if name in _one_shot]
         parallel_round = (
             parallel_tool_calls_enabled()
             and len(calls) > 1

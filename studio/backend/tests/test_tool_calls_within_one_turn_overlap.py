@@ -546,6 +546,26 @@ class TestTheLocalGgufLoopOverlapsToo:
         assert ran == ["same"], "the duplicate ran, so the round was overlapped"
         assert [e.get("type") for e in events].count("tool_end") == 1
 
+    def test_a_padded_one_shot_name_is_the_same_tool(self, monkeypatch):
+        # `prepare_call` strips the name, so ` render_html ` is render_html: the round may not
+        # overlap, or both launch before either records the one-shot as spent.
+        ran: list = []
+
+        def _execute(name, arguments, **_kwargs):
+            ran.append(arguments.get("html"))
+            return "rendered"
+
+        _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "render_html", {"html": "<p>a</p>"}),
+                ("call_b", " render_html ", {"html": "<p>b</p>"}),
+            ],
+            _execute,
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+        )
+        assert ran == ["<p>a</p>"], f"{ran}: the one-shot ran twice in one round"
+
     def test_the_search_cap_counts_launches_and_keeps_the_capped_calls_in_place(self, monkeypatch):
         from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN, RAG_SEARCH_TOOLS
 

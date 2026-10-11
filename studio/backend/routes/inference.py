@@ -4898,6 +4898,8 @@ async def _aiter_llama_stream_items(
     prefill_buffer = b""
     # A byte stream frames its own events: a notice can arrive split or beside others.
     post_buffer = b""
+    # Which of this request's prompts are parked: a batch is parked while any prompt is.
+    own_parks = ServerParkNotices()
     item_task: Optional[asyncio.Future] = None
     park_since: Optional[float] = None
     # The first-item deadline is excused the same way, bounded from the deadline it first
@@ -4919,9 +4921,10 @@ async def _aiter_llama_stream_items(
         resume ends that park, so a later one is measured from its own start."""
         nonlocal first_token_deadline, park_since
         now = time.monotonic()
-        if notice is not None and notice not in (
-            _OPENAI_PREEMPT_SSE_PAUSED,
-            _OPENAI_PREEMPT_SSE_KEEPALIVE,
+        if (
+            notice is not None
+            and notice not in (_OPENAI_PREEMPT_SSE_PAUSED, _OPENAI_PREEMPT_SSE_KEEPALIVE)
+            and not own_parks.parked
         ):
             park_since = None
             first_token_deadline = max(first_token_deadline, now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
@@ -5062,7 +5065,12 @@ async def _aiter_llama_stream_items(
                 raise httpx.ReadTimeout(timed_out_message) from exc
             finally:
                 item_task = None
+            if isinstance(item, str) and not item.strip():
+                # The separator a line source yields after every event: never progress.
+                yield item
+                continue
             if last_item_at is None and _server_park_sse(item) is not None:
+                own_parks.feed_line(item)
                 # A park notice before any token is not the first token: the request was parked
                 # during its prefill, and the prefill it resumes into still needs the first-token
                 # window, not the stall clock. The window is renewed by each notice, up to the park
@@ -5089,6 +5097,7 @@ async def _aiter_llama_stream_items(
                 for event in events:
                     if (_notice := _server_park_sse(event)) is not None:
                         # A byte chunk can carry a park notice beside other events.
+                        own_parks.feed_line(event)
                         _park_renews_first_window(_notice)
                         if park_above is not None:
                             park_above.feed_line(event)
@@ -5128,18 +5137,25 @@ async def _aiter_llama_stream_items(
                 post_buffer += item
                 events = re.split(rb"\r\n\r\n|\n\n|\r\r", post_buffer)
                 post_buffer = events.pop()
-                kinds = [_server_park_sse(event) for event in events if event.strip()]
+                events = [event for event in events if event.strip()]
+                kinds = [_server_park_sse(event) for event in events]
+                for event, kind in zip(events, kinds):
+                    if kind is not None:
+                        own_parks.feed_line(event)
                 if not kinds:
                     # Only part of an event: it continues whatever the stream was doing.
                     notice = _OPENAI_PREEMPT_SSE_KEEPALIVE if park_since is not None else None
-                elif all(
-                    k in (_OPENAI_PREEMPT_SSE_PAUSED, _OPENAI_PREEMPT_SSE_KEEPALIVE) for k in kinds
-                ):
+                elif all(k is not None for k in kinds) and own_parks.parked:
                     notice = _OPENAI_PREEMPT_SSE_KEEPALIVE
                 else:
                     notice = None
             else:
                 notice = _server_park_sse(item)
+                if notice is not None:
+                    own_parks.feed_line(item)
+                    # A resume while another prompt of the batch is still parked is not one.
+                    if own_parks.parked:
+                        notice = _OPENAI_PREEMPT_SSE_KEEPALIVE
             now = time.monotonic()
             if notice in (_OPENAI_PREEMPT_SSE_PAUSED, _OPENAI_PREEMPT_SSE_KEEPALIVE):
                 # Parked after its first token: the keepalives say it is alive, but only up to
@@ -38702,6 +38718,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
+                _cmpl_parks = ServerParkNotices()
                 # Bound, not inlined: teardown must aclose() this before bytes_iter.
                 items_iter = _aiter_llama_stream_items(
                     bytes_iter,
@@ -38736,6 +38753,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                             mark_response_failed(getattr(request, "scope", None))
                         _park = _server_park_sse(event)
                         if _park is not None:
+                            _cmpl_parks.feed_line(event)
+                            if _park == _OPENAI_PREEMPT_SSE_RESUMED and _cmpl_parks.parked:
+                                # Another prompt of the batch is still parked: not resumed yet.
+                                _park = _OPENAI_PREEMPT_SSE_KEEPALIVE
                             yield _park.encode("utf-8")
                             continue
                         if (

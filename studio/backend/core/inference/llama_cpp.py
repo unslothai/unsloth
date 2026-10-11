@@ -41936,8 +41936,9 @@ class LlamaCppBackend:
                         _round_keys.append(tool_controller.call_key(_tc or {}))
                     except Exception:
                         _round_keys.append(_round_call_key(_nm, _fn.get("arguments")))
-                    if _nm in _one_shot:
-                        _round_one_shot.append(_nm)
+                    # Named as `prepare_call` names them, so a padded name is the same tool.
+                    if str(_nm or "").strip() in _one_shot:
+                        _round_one_shot.append(str(_nm or "").strip())
                 _parallel_round = (
                     _parallel_tool_calls_enabled()
                     and len(tool_calls or []) > 1
