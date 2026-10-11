@@ -58,17 +58,17 @@ def _write_minimal_gguf(path: Path) -> str:
 
 
 @pytest.mark.parametrize(
-    "cache_type,extra_args,env_cache,expected_warning",
+    "cache_type,extra_args,env_cache,expected_warning,launched",
     [
-        ("iq4_nl", None, None, ("iq4_nl", "auto", -1, True)),
-        ("IQ4_NL", None, None, ("iq4_nl", "auto", -1, True)),
-        ("q8_0", None, None, ("q8_0", "auto", -1, False)),
-        ("iq4_nl", ["--cache-type-k", "q8_0"], None, None),
-        (None, None, "f32", None),
+        ("iq4_nl", None, None, ("iq4_nl", "auto", -1, True), ("q4_0", "q4_0")),
+        ("IQ4_NL", None, None, ("iq4_nl", "auto", -1, True), ("q4_0", "q4_0")),
+        ("q8_0", None, None, ("q8_0", "auto", -1, False), ("q8_0", "q8_0")),
+        ("iq4_nl", ["--cache-type-k", "q8_0"], None, None, ("q8_0", "q8_0")),
+        (None, None, "f32", None, (None, None)),
     ],
 )
 def test_load_path_warns_only_for_its_own_cache_type(
-    monkeypatch, tmp_path, cache_type, extra_args, env_cache, expected_warning
+    monkeypatch, tmp_path, cache_type, extra_args, env_cache, expected_warning, launched
 ):
     backend = llama_cpp.LlamaCppBackend()
     gguf = _write_minimal_gguf(tmp_path / "model.gguf")
@@ -104,10 +104,12 @@ def test_load_path_warns_only_for_its_own_cache_type(
     monkeypatch.setattr(llama_cpp, "_kv_cache_gpu_fallback_warning", record)
 
     real_popen = subprocess.Popen
+    argv = []
 
     def fake_popen(cmd, **kwargs):
         if not cmd or str(cmd[0]) != "/fake/llama-server":
             return real_popen(cmd, **kwargs)
+        argv[:] = [str(a) for a in cmd]
         return type(
             "Process",
             (),
@@ -138,3 +140,10 @@ def test_load_path_warns_only_for_its_own_cache_type(
         assert warnings == []
     else:
         assert warnings == [expected_warning]
+
+    def last(flag):
+        idx = [i for i, a in enumerate(argv) if a == flag]
+        return argv[idx[-1] + 1] if idx else None
+
+    # iq4_nl runs its attention on the CPU of a CUDA launch; q4_0 is the same size (#10336).
+    assert (last("--cache-type-k"), last("--cache-type-v")) == launched
