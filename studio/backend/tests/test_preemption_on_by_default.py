@@ -420,8 +420,12 @@ class TestExactParksAreCountedAcrossModels:
 
     def test_the_host_readings_are_the_containers(self, monkeypatch):
         # A cgroup limit below the host's RAM: parking may only plan against what it can charge.
-        monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 3_000))
-        monkeypatch.setattr(LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 8_000))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 3_000)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 8_000)
+        )
         assert llama_mod._available_host_memory_mib() == 3_000
         assert llama_mod._total_host_memory_mib() == 8_000
 
