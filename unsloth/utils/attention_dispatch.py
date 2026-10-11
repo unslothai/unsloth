@@ -144,22 +144,17 @@ _VARLEN_CUDNN_MAX_MEAN_LEN = 1024
 
 
 @functools.lru_cache(maxsize = 64)
-def _sdpa_picks_cudnn(
-    device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa, backends
-):
+def _sdpa_choice(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa, backends):
     try:
-        from torch.nn.attention import SDPBackend
-
         q = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
         k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
-        choice = torch._fused_sdp_choice(q, k, k, is_causal = is_causal, enable_gqa = enable_gqa)
-        return choice == int(SDPBackend.CUDNN_ATTENTION)
+        return int(torch._fused_sdp_choice(q, k, k, is_causal = is_causal, enable_gqa = enable_gqa))
     except Exception:
-        return True
+        return -1
 
 
 def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa):
-    """(flash SDPA enabled, SDPA would pick cuDNN) for these shapes. Both reads break a dynamo graph."""
+    """(flash SDPA enabled, SDPBackend SDPA would pick) for these shapes. Both reads break a dynamo graph."""
     cuda = torch.backends.cuda
     backends = (
         cuda.flash_sdp_enabled(),
@@ -168,10 +163,10 @@ def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal,
         cuda.math_sdp_enabled(),
         tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
     )
-    cudnn = _sdpa_picks_cudnn(
+    choice = _sdpa_choice(
         device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa, backends
     )
-    return backends[0], cudnn
+    return backends[0], choice
 
 
 if hasattr(torch.compiler, "assume_constant_result"):
@@ -190,7 +185,7 @@ def _torch_varlen_beats_segments(
     runs = sum(1 for i, length in enumerate(lengths) if i == 0 or lengths[i - 1] != length)
     if runs <= 1:
         return False
-    flash, cudnn = _sdpa_backend_state(
+    flash, choice = _sdpa_backend_state(
         str(Q.device),
         Q.dtype,
         Q.shape[-1],
@@ -199,10 +194,17 @@ def _torch_varlen_beats_segments(
         is_causal,
         n_groups != 1 and _sdpa_flash_takes_gqa(Q),
     )
-    # varlen_attn calls the flash op directly, so honour sdpa_kernel / enable_flash_sdp(False).
+    # varlen_attn calls the flash op directly, so honour sdpa_kernel / enable_flash_sdp(False) and a
+    # set_priority order that puts math or efficient first.
+    from torch.nn.attention import SDPBackend
+
     if not flash:
         return False
-    return not cudnn or sum(lengths) / len(lengths) <= _VARLEN_CUDNN_MAX_MEAN_LEN
+    if choice == int(SDPBackend.FLASH_ATTENTION):
+        return True
+    if choice == int(SDPBackend.CUDNN_ATTENTION):
+        return sum(lengths) / len(lengths) <= _VARLEN_CUDNN_MAX_MEAN_LEN
+    return False
 
 
 def _torch_varlen_packed(

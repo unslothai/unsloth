@@ -125,18 +125,20 @@ def test_bidirectional_mha_head_dim_256_runs(monkeypatch):
         ("CUDNN_ATTENTION", (1500, 2000, 1800), 5300, False),  # mean 1767: cuDNN per segment wins
         ("FLASH_ATTENTION", (1500, 2000, 1800), 5300, True),  # same kernel, fewer launches
         ("FLASH_ATTENTION", (2048, 2048), 4096, False),  # one run: one batched call already
+        ("MATH", (300, 700, 24), 1100, False),  # caller's priority picked math
+        ("EFFICIENT_ATTENTION", (300, 700, 24), 1100, False),
     ],
 )
 def test_varlen_only_where_it_beats_segments(monkeypatch, backend, lengths, total, expect_varlen):
     from torch.nn.attention import SDPBackend as B
 
     monkeypatch.setattr(torch, "_fused_sdp_choice", lambda *a, **k: int(getattr(B, backend)))
-    ad._sdpa_picks_cudnn.cache_clear()
+    ad._sdpa_choice.cache_clear()
     qkv = [torch.zeros(1, 4, total, 64, device = "cuda", dtype = torch.bfloat16) for _ in range(3)]
     try:
         _, calls = _run(monkeypatch, True, lengths, total, 4, 4, qkv)
     finally:
-        ad._sdpa_picks_cudnn.cache_clear()
+        ad._sdpa_choice.cache_clear()
     assert calls == ([(-1, 0)] if expect_varlen else [])
 
 
@@ -163,6 +165,7 @@ def test_scale_is_forwarded(monkeypatch):
         "deterministic",
         "int32_overflow",
         "flash_sdp_disabled",
+        "math_priority",
     ],
 )
 def test_ineligible_calls_keep_the_segment_path(monkeypatch, case):
@@ -186,6 +189,11 @@ def test_ineligible_calls_keep_the_segment_path(monkeypatch, case):
     if case == "flash_sdp_disabled":
         with sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
             _, calls = _run(monkeypatch, True, (10, 14), 24, 4, 4, qkv, **kwargs)
+    elif case == "math_priority":
+        ad._sdpa_choice.cache_clear()
+        with sdpa_kernel([SDPBackend.MATH, SDPBackend.FLASH_ATTENTION], set_priority = True):
+            _, calls = _run(monkeypatch, True, (10, 14), 24, 4, 4, qkv, **kwargs)
+        ad._sdpa_choice.cache_clear()
     else:
         _, calls = _run(monkeypatch, True, (10, 14), 24, 4, 4, qkv, **kwargs)
     assert calls == []
