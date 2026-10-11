@@ -2597,9 +2597,17 @@ def _nvfp4_diffusion_enabled() -> bool:
 
 
 def _checkpoint_quant_formats() -> list[str]:
-    """FP8 / NVFP4 checkpoint formats the Hub's Recommended filter may list. Torch-free."""
+    """FP8 / NVFP4 checkpoint formats the Hub's Recommended filter may list. Torch-free.
+
+    Only on a CUDA backend: nvidia-smi still sees the cards under a CPU-only torch or a
+    CUDA_VISIBLE_DEVICES mask that hides them all, and neither can load these checkpoints."""
     try:
+        from utils.hardware import get_device
+        from utils.hardware.hardware import _backend_label
         from utils.hardware.nvidia import get_checkpoint_quant_formats
+
+        if _backend_label(get_device()) != "cuda":
+            return []
         return get_checkpoint_quant_formats()
     except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
         return []

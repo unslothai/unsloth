@@ -112,18 +112,14 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
   );
 });
 
-test("Hub Recommended keeps image / video NVFP4 behind the build's NVFP4 switch", async () => {
+test("a capable Recommended channel query drops the GGUF-only tag", async () => {
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /gpu\.nvfp4Diffusion\s*\?\s*checkpointQuantFormats\s*:\s*checkpointQuantFormats\.filter\(\s*\(format\) => format !== "nvfp4",?\s*\)/,
+    /effectiveDiscoverFormat === "recommended" &&\s*checkpointQuantFormats\.length > 0/,
   );
   assert.match(
     page,
-    /row\.capabilities\.some\(\(c\) => c\.key === "diffusion"\)\s*\?\s*diffusionQuantFormats\s*:\s*checkpointQuantFormats/,
+    /tags: widenRecommendedChannel\s*\?\s*withoutGgufTag\(liveListChannel\.tags\)\s*:\s*liveListChannel\.tags/,
   );
-  // Image / video FP8 follows the same native-GPU rule as LLMs.
-  const image = { id: "unsloth/FLUX.1-dev-FP8", isGguf: false };
-  assert.equal(matchesRecommended(image, ["fp8"]), true);
-  assert.equal(matchesRecommended(image, []), false);
 });

@@ -67,3 +67,17 @@ def test_compute_cap_is_a_cached_static_query():
         )
         == nvidia.gpu_query.STATIC
     )
+
+
+@pytest.mark.parametrize(
+    ("backend", "expected"),
+    [("cuda", ["fp8", "nvfp4"]), ("cpu", []), ("rocm", []), ("xpu", []), ("mlx", [])],
+)
+def test_system_route_reports_formats_only_on_a_cuda_backend(monkeypatch, backend, expected):
+    """A CPU-only torch or a mask hiding every card still leaves nvidia-smi seeing them."""
+    import main
+    from utils.hardware import hardware
+
+    _smi(monkeypatch, "12.0\n")
+    monkeypatch.setattr(hardware, "_backend_label", lambda _device: backend)
+    assert main._checkpoint_quant_formats() == expected

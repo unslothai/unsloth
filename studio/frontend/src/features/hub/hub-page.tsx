@@ -152,6 +152,13 @@ const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 // Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
 const MIN_ICONLESS_MODEL_LIKES = 30;
 
+function withoutGgufTag(
+  tags: readonly string[] | undefined,
+): readonly string[] | undefined {
+  const kept = tags?.filter((tag) => tag !== "gguf");
+  return kept?.length ? kept : undefined;
+}
+
 async function waitForRunConfigRefresh(
   refresh: Promise<void>,
   signal: AbortSignal,
@@ -848,15 +855,21 @@ export function ModelsPage() {
     [checkpointQuantFormats, gpu.nvfp4Diffusion],
   );
 
+  // A GGUF-tagged channel query would never fetch the FP8 / NVFP4 rows Recommended admits here.
+  const widenRecommendedChannel =
+    effectiveDiscoverFormat === "recommended" &&
+    checkpointQuantFormats.length > 0;
   const listChannel = useMemo<HfModelSearchChannel | null>(() => {
     if (!liveListChannel) return null;
     return {
       owner: liveListChannel.owner,
-      tags: liveListChannel.tags,
+      tags: widenRecommendedChannel
+        ? withoutGgufTag(liveListChannel.tags)
+        : liveListChannel.tags,
       query: liveListChannel.query,
       idSuffix: liveListChannel.idSuffix,
     };
-  }, [liveListChannel]);
+  }, [liveListChannel, widenRecommendedChannel]);
 
   const {
     results,
