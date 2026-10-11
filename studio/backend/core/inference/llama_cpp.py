@@ -9010,7 +9010,10 @@ class LlamaCppBackend:
     def server_may_park(self) -> bool:
         """Whether the running llama-server can hold a slot parked, confirmed or not: what
         decides that a silent stream may be a park rather than a stall."""
-        if not (getattr(self, "_server_preempts_kv", False) or getattr(self, "_server_launched_parking", False)):
+        if not (
+            getattr(self, "_server_preempts_kv", False)
+            or getattr(self, "_server_launched_parking", False)
+        ):
             return False
         if not getattr(self, "_kv_cache_unified", False):
             return False

@@ -5106,7 +5106,9 @@ def _raw_park_grace(llama_backend, *, streaming: bool = True) -> Optional[Callab
     non-streaming response hears no notices, so it always takes the aggregate reading."""
     if not getattr(llama_backend, "server_may_park", False):
         return None
-    probe = getattr(llama_backend, "_server_park_grace" if streaming else "_server_park_grace_any", None)
+    probe = getattr(
+        llama_backend, "_server_park_grace" if streaming else "_server_park_grace_any", None
+    )
     return probe if callable(probe) else None
 
 

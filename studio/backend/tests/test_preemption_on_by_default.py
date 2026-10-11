@@ -245,7 +245,12 @@ class TestAnUnconfirmedParkIsStillReadAsAPark:
     """A swap build without the ``/props`` report still parks when the launch asked it to."""
 
     @staticmethod
-    def _backend(*, launched, confirmed, notices = False):
+    def _backend(
+        *,
+        launched,
+        confirmed,
+        notices = False,
+    ):
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend._server_launched_parking = launched
         backend._server_preempts_kv = confirmed
@@ -276,7 +281,9 @@ class TestAnUnconfirmedParkIsStillReadAsAPark:
         backend = self._backend(launched = True, confirmed = True, notices = True)
         backend._port = 1
         backend._api_key = None
-        monkeypatch.setattr(llama_stats, "scrape_llama_metrics", lambda *a, **k: {"requests_preempted": 1.0})
+        monkeypatch.setattr(
+            llama_stats, "scrape_llama_metrics", lambda *a, **k: {"requests_preempted": 1.0}
+        )
         assert _raw_park_grace(backend)() is False, "a stream hears its own notice instead"
         assert _raw_park_grace(backend, streaming = False)() is True
 
@@ -298,7 +305,6 @@ class TestEachServerAnswersForItself:
             assert preemption.preemption_enabled() is True, "an unknown route takes the fallback"
         finally:
             import routes.inference as routes_inference
-
             preemption.set_routed_backend(routes_inference.get_llama_cpp_backend)
 
     def test_every_launch_writes_its_own_entry(self):
