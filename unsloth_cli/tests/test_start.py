@@ -1293,6 +1293,22 @@ def test_subagent_model_id_uses_loaded_variant(monkeypatch):
     assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
 
 
+def _kept_model_status(url):
+    # Primary Qwen3-4B at Q4_K_M, Qwen3-1.7B kept alongside at Q8_0.
+    if "model=unsloth%2FQwen3-1.7B-GGUF" in url:
+        return {"is_gguf": True, "active_model": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0"}
+    return {"is_gguf": True, "active_model": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "Q4_K_M"}
+
+
+def test_subagent_model_id_pins_the_kept_model_quant(monkeypatch):
+    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: _kept_model_status(url))
+
+    entry = {"id": "unsloth/Qwen3-1.7B-GGUF"}
+    assert start._subagent_model_id(BASE, "key", entry, entry["id"], None) == (
+        "unsloth/Qwen3-1.7B-GGUF:Q8_0"
+    )
+
+
 def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
     def raise_error(*args, **kwargs):
         raise OSError("connection refused")
@@ -1516,7 +1532,7 @@ def fake_studio(tmp_path, monkeypatch):
         calls.append((method, url, payload))
         if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": state["models"]}
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
         if url.endswith("/api/auth/api-keys"):
             if method == "GET":
@@ -1606,7 +1622,7 @@ def test_connect_prints_the_running_models_load_warning(fake_studio, monkeypatch
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": MODEL["id"], "memory_warning": notice}
         return http_json(method, url, token, payload, timeout, error)
 
@@ -1629,7 +1645,7 @@ def test_connect_skips_the_load_warning_of_another_active_model(fake_studio, mon
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {
                 "is_gguf": True,
                 "active_model": "unsloth/Other-GGUF",
@@ -1643,6 +1659,24 @@ def test_connect_skips_the_load_warning_of_another_active_model(fake_studio, mon
 
     assert result.exit_code == 0, result.output
     assert "Warning: Not enough disk space" not in result.output
+
+
+def test_connect_prints_the_load_warning_of_a_kept_model(fake_studio, monkeypatch):
+    notice = "Not enough disk space to download BF16, so Q4_1 was loaded instead."
+    http_json = start._http_json
+
+    def kept_model_warns(method, url, token, *args, **kwargs):
+        if url.split("?")[0].endswith("/api/inference/status"):
+            if "model=" in url:
+                return {"is_gguf": True, "active_model": MODEL["id"], "memory_warning": notice}
+            return {"is_gguf": True, "active_model": "unsloth/Other-GGUF"}
+        return http_json(method, url, token, *args, **kwargs)
+
+    monkeypatch.setattr(start, "_http_json", kept_model_warns)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
+
+    assert result.exit_code == 0, result.output
+    assert f"Warning: {notice}" in result.stderr
 
 
 def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
@@ -1756,6 +1790,38 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     assert "spawn an Unsloth agent or local agent" in skill
     assert "In plan mode" in skill
     assert "Ask Claude to spawn an Unsloth or local agent." in result.output
+
+
+@pytest.mark.parametrize("suffix", ["", ":Q8_0"])
+def test_connect_claude_as_subagent_attaches_to_a_kept_model(
+    fake_studio, tmp_path, monkeypatch, suffix
+):
+    fake = start._http_json
+    models = [
+        {"id": "unsloth/Qwen3-4B-GGUF", "context_length": 32768},
+        {"id": "unsloth/Qwen3-1.7B-GGUF", "context_length": 32768},
+    ]
+
+    def http_json(method, url, token, *args, **kwargs):
+        if url.endswith("/api/inference/loaded-models"):
+            return {"object": "list", "data": models}
+        if "/api/inference/status" in url:
+            return _kept_model_status(url)
+        return fake(method, url, token, *args, **kwargs)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--as-subagent", "--no-launch", "--model", "unsloth/Qwen3-1.7B-GGUF" + suffix],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Switching" not in result.output
+    assert not any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
+    assert "model unsloth/Qwen3-1.7B-GGUF:Q8_0" in result.output
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_MODEL"] == "unsloth/Qwen3-1.7B-GGUF:Q8_0"
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -2972,7 +3038,7 @@ def _fake_path_resident(
             if state["after"] == "unreachable":
                 raise TimeoutError("timed out")
             return {"data": [{"id": state["listed"], "loaded": state["after"] != "gone"}]}
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "active_model": listed_id, "model_identifier": "ref:0123"}
         if url.endswith("/api/inference/load"):
             if load_error is not None:
@@ -4051,7 +4117,7 @@ def test_connect_gguf_only_agents_reject_non_gguf_model(fake_studio, monkeypatch
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "unsloth/Qwen3-0.6B"}
         return inner(method, url, token, payload, timeout, error)
 
@@ -4797,7 +4863,7 @@ def test_resolve_model_warns_on_same_repo_quant_switch(monkeypatch, capsys):
         timeout = 30,
         error = None,
     ):
-        assert url.endswith("/api/inference/status"), url
+        assert url.split("?")[0].endswith("/api/inference/status"), url
         return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
 
     monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
@@ -4842,6 +4908,111 @@ def test_resolve_model_same_quant_prints_no_switch_warning(monkeypatch, capsys):
     assert "Reusing loaded model: owner/model-GGUF:Q8_0" in out
 
 
+def test_resolve_model_reuses_a_kept_model_at_its_quant(monkeypatch, capsys):
+    models = [
+        {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
+        {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
+    ]
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: _kept_model_status(url))
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda *a, **k: pytest.fail("a kept model at the requested quant must not be reloaded"),
+    )
+
+    entry = start._resolve_model(
+        BASE, "key", "unsloth/Qwen3-1.7B-GGUF", start.LoadOptions(gguf_variant = "Q8_0")
+    )
+
+    assert entry is models[1]
+    out = capsys.readouterr().out
+    assert "Switching" not in out
+    assert "unloads" not in out
+    assert "Reusing loaded model: unsloth/Qwen3-1.7B-GGUF:Q8_0" in out
+
+
+def test_resolve_model_loads_a_kept_model_at_another_quant(monkeypatch, capsys):
+    models = [
+        {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
+        {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
+    ]
+    payloads, gated = [], []
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "loaded", "model": model}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: _kept_model_status(url))
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(
+        BASE,
+        "key",
+        "unsloth/Qwen3-1.7B-GGUF",
+        start.LoadOptions(gguf_variant = "Q4_K_M"),
+        preload_check = lambda *args: gated.append(args),
+    )
+
+    assert payloads == [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"}]
+    assert gated, "the kept model is at Q8_0, so the Q4_K_M load must pass the preload gate"
+    out = capsys.readouterr().out
+    assert (
+        "Switching the Unsloth server from unsloth/Qwen3-1.7B-GGUF:Q8_0 to "
+        "unsloth/Qwen3-1.7B-GGUF:Q4_K_M." in out
+    )
+    assert "Qwen3-4B" not in out
+
+
+def test_resolve_model_reloading_a_kept_model_does_not_announce_the_primary(monkeypatch, capsys):
+    models = [
+        {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
+        {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
+    ]
+    payloads = []
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "loaded", "model": model}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: _kept_model_status(url))
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(
+        BASE, "key", "unsloth/Qwen3-1.7B-GGUF", start.LoadOptions(max_seq_length = 16384)
+    )
+
+    out = capsys.readouterr().out
+    assert "Switching" not in out
+    assert "Qwen3-4B" not in out
+    assert payloads == [
+        {"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 16384}
+    ]
+
+
+def test_resolve_model_reload_option_keeps_the_running_quant(monkeypatch):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+    payloads = []
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "loaded", "model": model}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(
+        start, "_http_json", lambda *a, **k: {"is_gguf": True, "gguf_variant": "Q8_0"}
+    )
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(max_seq_length = 8192))
+
+    assert payloads == [
+        {"model_path": "owner/model-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 8192}
+    ]
+
+
 def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 
@@ -4853,7 +5024,7 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         assert url.endswith("/api/inference/loaded-models"), url
         return {"data": models}
@@ -4893,7 +5064,7 @@ def _other_account_studio(
     ):
         if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": state["models"]}
-        assert url.endswith("/api/inference/status"), url
+        assert url.split("?")[0].endswith("/api/inference/status"), url
         if state["models"]:
             return {"is_gguf": True, "active_model": "owner/model-GGUF", "gguf_variant": "Q4_K_M"}
         return {"loaded": [], "loading": [], "yours": False}
@@ -4992,7 +5163,7 @@ def test_resolve_model_failed_load_stays_quiet_when_model_gone(monkeypatch, caps
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         assert url.endswith("/api/inference/loaded-models"), url
         return {"data": []}
@@ -5227,7 +5398,7 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "transformers-model"}
         return inner(method, url, token, payload, timeout, error)
 
@@ -5533,7 +5704,7 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
-    assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -6000,7 +6171,7 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     # --no-launch prints an append-safe base command (no --model before a subcommand a
     # driver may append); the model is forced by the inline pin above.
     assert _launch_command(result.output) == ["opencode"]
-    assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
 def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypatch):
@@ -6289,7 +6460,7 @@ def test_connect_hermes_no_launch(fake_studio, tmp_path):
     assert config["model"]["provider"] == "custom:unsloth"
     assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
     assert config["model"]["default"] == MODEL["id"]
-    assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
 # ── Pi (OpenAI-compatible /v1, key in config, ~/.pi relocated via HOME) ──
@@ -6353,7 +6524,7 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     assert config["providers"]["unsloth"]["models"] == [
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
-    assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
     assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
     settings = json.loads((home / ".pi" / "agent" / "settings.json").read_text())
     assert settings == {"packages": ["npm:pi-mine"]}
@@ -7143,6 +7314,22 @@ def test_vibe_sends_recommended_temperature(fake_studio, monkeypatch, argv, stat
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
     captured = _capture_launch(monkeypatch, ["vibe", *argv])
     assert json.loads(captured["env"]["VIBE_MODELS"])[0].get("temperature") == expected
+
+
+def test_vibe_sends_the_kept_models_recommended_temperature(fake_studio, monkeypatch):
+    def status(
+        base,
+        key,
+        model_id = None,
+    ):
+        if model_id == MODEL["id"]:
+            return {"active_model": MODEL["id"], "inference": {"temperature": 0.6}}
+        return {"active_model": "unsloth/Other-GGUF", "inference": {"temperature": 1.0}}
+
+    monkeypatch.setattr(start, "_inference_status", status)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
+    captured = _capture_launch(monkeypatch, ["vibe"])
+    assert json.loads(captured["env"]["VIBE_MODELS"])[0].get("temperature") == 0.6
 
 
 def test_vibe_install_hint_per_os(monkeypatch):
@@ -9482,7 +9669,7 @@ def test_codex_preload_gate_checks_direct_path_identity(fake_studio, monkeypatch
     ):
         if url.endswith("/api/inference/loaded-models"):
             return {"data": [{"id": "foo-Q4_K_M", "loaded": True}]}
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {
                 "is_gguf": True,
                 "gguf_variant": "Q4_K_M",
@@ -9542,7 +9729,7 @@ def test_codex_preload_gate_runs_for_a_mistyped_resident_variant(fake_studio, mo
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         if "/api/models/gguf-variants" in url:
             probed.append(url)
@@ -9570,7 +9757,7 @@ def test_codex_preload_gate_defers_to_the_resident_model(fake_studio, monkeypatc
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         if "/api/models/gguf-variants" in url:
             pytest.fail("the resident model already serves this request")
@@ -9597,7 +9784,7 @@ def test_codex_preload_gate_still_runs_for_a_different_variant(fake_studio, monk
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         if "/api/models/gguf-variants" in url:
             probed.append(url)
@@ -9994,6 +10181,33 @@ def test_require_gguf_for_agent_reads_the_servers_status(monkeypatch, capsys):
     )
 
 
+def test_require_gguf_for_agent_reads_the_requested_models_slot(monkeypatch, capsys):
+    def http_json(method, url, key, **_):
+        if "model=unsloth%2FQwen3-1.7B-GGUF" in url:
+            return {"is_gguf": True, "active_model": "unsloth/Qwen3-1.7B-GGUF"}
+        return {"is_gguf": False, "active_model": "unsloth/Qwen3-0.6B"}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    start._require_gguf_for_agent(
+        start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/Qwen3-1.7B-GGUF"
+    )
+
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda method, url, key, **_: (
+            {"is_gguf": False, "active_model": "unsloth/Qwen3-0.6B"}
+            if "model=unsloth%2FQwen3-0.6B" in url
+            else {"is_gguf": True, "active_model": "unsloth/Qwen3-4B-GGUF"}
+        ),
+    )
+    with pytest.raises(typer.Exit):
+        start._require_gguf_for_agent(
+            start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/Qwen3-0.6B"
+        )
+    assert "Claude Code needs a GGUF model" in capsys.readouterr().err
+
+
 def test_claude_preflight_rejects_non_gguf_repo(monkeypatch, capsys):
     _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
     with pytest.raises(typer.Exit):
@@ -10125,7 +10339,7 @@ def test_claude_post_connect_failure_tears_down_auto_served(fake_studio, monkeyp
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "transformers-model"}
         return inner(method, url, token, payload, timeout, error)
 
@@ -10151,7 +10365,7 @@ def test_claude_post_connect_failure_spares_an_attached_server(fake_studio, monk
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "transformers-model"}
         return inner(method, url, token, payload, timeout, error)
 
@@ -10332,7 +10546,7 @@ def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, m
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             raise urllib.error.HTTPError(url, 500, "Failed to get status", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -10357,7 +10571,7 @@ def test_a_status_body_without_is_gguf_still_launches(fake_studio, monkeypatch, 
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"model_identifier": MODEL["id"]}
         return inner(method, url, token, payload, timeout, error)
 
