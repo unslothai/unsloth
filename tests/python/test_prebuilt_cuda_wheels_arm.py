@@ -252,6 +252,11 @@ class TestCudaRedist:
                 "libcublas",
             ):
                 assert component in step["run"].split(), component
+            # torch's cpp_extension links from lib\x64 on every Windows.
+            assert (
+                "New-Item -ItemType Junction -Path 'C:\\cuda\\lib\\x64' -Target 'C:\\cuda\\lib\\arm64'"
+                in step["run"]
+            )
 
 
 def _elf(machine: int, glibc: str = "2.34") -> bytes:
