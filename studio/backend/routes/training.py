@@ -941,6 +941,31 @@ def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None
         account_access.require_model_access(reference, repo_type)
 
 
+def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
+    """A continued adapter also loads the base it names. Check that base the way the adapter
+    was checked, or a public adapter could open a private base from the shared cache (#13140)."""
+    from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
+    from utils.models.model_config import get_base_model_from_lora_identifier
+
+    base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
+    if not base or is_local_path(base):
+        return
+    _authorize_cache_fallback(base)
+    repo_id = canonical_model_repo_id(base)
+    if cached_read_refused(
+        hf_token,
+        repo_id = repo_id,
+        is_cached = lambda: repo_cache_has_usable_snapshot("model", repo_id),
+        offline = hf_env_offline(),
+    ):
+        raise _hf_preflight_error(
+            422,
+            "hf_model_access_denied",
+            "Hugging Face denied access to this adapter's cached base model. "
+            "Add a token with repository access.",
+        )
+
+
 def _is_decision_checkpoint(request: TrainingStartRequest) -> bool:
     # A Laya or Clef checkpoint, not an LLM that is trained with a new decision head.
     return bool(request.is_decision) and request.decision_layout != "llm"
@@ -1169,6 +1194,7 @@ def _reject_untrainable_model_request(
                     "training_remote_model_adapter_weights_missing",
                     "Adapter repository is missing adapter_model weights.",
                 )
+            _authorize_adapter_base(request.model_name, hf_token)
             return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _is_decision_checkpoint(request):
         folder = path / request.model_subfolder if request.model_subfolder else path
@@ -1207,6 +1233,7 @@ def _reject_untrainable_model_request(
                 "training_local_model_adapter_config_missing",
                 "Adapter directory is missing adapter_config.json.",
             )
+        _authorize_adapter_base(str(path), hf_token)
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     try:
         has_gguf = _detect_local_gguf(path) is not None

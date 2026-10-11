@@ -529,6 +529,50 @@ def test_start_refuses_adapter_dir_where_runner_builds_a_fresh_adapter(tmp_path,
     assert exc_info.value.detail["code"] == "training_model_adapter_not_trainable"
 
 
+@pytest.mark.parametrize("refused", [True, False])
+def test_start_checks_the_cached_base_a_local_adapter_names(tmp_path, refused):
+    route = _load_route_module(f"training_route_adapter_base_{refused}")
+    (tmp_path / "adapter_config.json").write_text('{"base_model_name_or_path": "org/private-base"}')
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+    asked = []
+
+    def fake_refused(
+        hf_token,
+        *,
+        repo_id,
+        is_cached,
+        offline = False,
+        repo_type = "model",
+    ):
+        asked.append(repo_id)
+        return refused
+
+    with patch.object(route, "cached_read_refused", side_effect = fake_refused):
+        if refused:
+            with pytest.raises(HTTPException) as exc_info:
+                route._reject_untrainable_model_request(request)
+            assert exc_info.value.status_code == 422
+            assert exc_info.value.detail["code"] == "hf_model_access_denied"
+        else:
+            route._reject_untrainable_model_request(request)
+    assert "org/private-base" in asked
+
+
+def test_adapter_trains_embeddings_reads_saved_modules():
+    from core.training import worker
+
+    def model(**fields):
+        return SimpleNamespace(peft_config = {"default": SimpleNamespace(**fields)})
+
+    assert worker._adapter_trains_embeddings(model(modules_to_save = ["lm_head"]))
+    assert worker._adapter_trains_embeddings(
+        model(modules_to_save = None, modules_to_tie = ["model.embed_tokens"])
+    )
+    assert not worker._adapter_trains_embeddings(model(modules_to_save = None))
+    assert not worker._adapter_trains_embeddings(SimpleNamespace())
+
+
 def test_start_rejects_missing_local_model(tmp_path):
     route = _load_route_module("training_route_reject_missing_local_model")
     request = _request(model_name = str(tmp_path / "missing-model"))
@@ -1165,10 +1209,17 @@ def test_untrainable_gate_allows_remote_adapter_for_lora():
     route = _load_route_module("training_route_remote_adapter_lora")
     request = _request(model_format = "adapter")
 
-    with patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"):
+    with (
+        patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"),
+        patch(
+            "utils.models.model_config.get_base_model_from_lora_identifier",
+            return_value = None,
+        ) as base_lookup,
+    ):
         result = route._reject_untrainable_model_request(request)
 
     assert result.model_name == "unsloth/test"
+    base_lookup.assert_called_once()
 
 
 def test_remote_format_probe_flags_adapter_repo_without_weights():

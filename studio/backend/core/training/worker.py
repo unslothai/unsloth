@@ -150,6 +150,16 @@ def _uses_mlx_training_backend() -> bool:
     return should_use_mlx_training_backend()
 
 
+def _adapter_trains_embeddings(model) -> bool:
+    """Whether a loaded adapter already trains embed_tokens or lm_head in full (#13140)."""
+    for adapter in (getattr(model, "peft_config", None) or {}).values():
+        saved = list(getattr(adapter, "modules_to_save", None) or [])
+        saved += list(getattr(adapter, "modules_to_tie", None) or [])
+        if any(str(m).rsplit(".", 1)[-1] in ("embed_tokens", "lm_head") for m in saved):
+            return True
+    return False
+
+
 def _untrainable_model_format_error(config: dict) -> str | None:
     model_format = str(config.get("model_format") or "").strip().lower()
     if model_format == "gguf":
@@ -4806,6 +4816,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     }
                 )
             return
+
+        if is_cpt and not cpt_trains_embeddings:
+            # A continued adapter keeps its own modules_to_save, so it may train them anyway.
+            cpt_trains_embeddings = _adapter_trains_embeddings(getattr(trainer, "model", None))
 
         lr_default = "5e-5" if is_cpt else "2e-4"
         try:
