@@ -17,6 +17,7 @@ const pending = () => ({
   controller: new AbortController(),
   readers: 1,
   startedAt: performance.now(),
+  authEpoch: 0,
 });
 
 test("settings replay prevents later readers from joining the pre-replay request", async () => {

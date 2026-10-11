@@ -54,7 +54,8 @@ test("the shared read keeps the deadline and abort handling the pairing relies o
   assert.match(get, /combineAbortSignals\(\[timeout\.signal, options\.signal\]\)/);
   assert.match(get, /options\.share\s*\?\s*await shareThreadRead\(threadId, signal\)/);
   const share = slice(API, "function shareThreadRead", "\n}");
-  assert.match(share, /if \(!shared \|\| performance\.now\(\) - shared\.startedAt > THREAD_READ_JOIN_MS\) \{/, "only a read started inside the join window is shared");
+  assert.match(share, /\|\| performance\.now\(\) - shared\.startedAt > THREAD_READ_JOIN_MS/, "only a read started inside the join window is shared");
+  assert.match(share, /\|\| shared\.authEpoch !== authEpoch/, "a read started under another auth session is never joined");
   assert.match(share, /if \(joined\.readers === 0\) joined\.controller\.abort\(signal\.reason\)/);
   assert.match(share, /reject\(abortError\(signal\)\)/);
 });

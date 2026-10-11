@@ -27,6 +27,7 @@ type Pending = {
 
 function harness() {
   const pending: Pending[] = [];
+  const auth = { epoch: 1 };
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
@@ -36,6 +37,7 @@ function harness() {
         {},
       ),
       "@/features/auth": {
+        getAuthSessionEpoch: () => auth.epoch,
         authFetch: (url: string, init?: RequestInit) =>
           new Promise((resolve, reject) => {
             const entry: Pending = {
@@ -81,7 +83,7 @@ function harness() {
     },
   );
   const requests = () => pending.filter((p) => p.url.endsWith("/api/chat/threads/t1") && !p.init?.method);
-  return { module, pending, requests };
+  return { module, pending, requests, auth };
 }
 
 const row: Row = { id: "t1", title: "T" };
@@ -207,4 +209,17 @@ test("a message save in another thread leaves this thread's shared read joinable
   assert.equal(requests().length, 1);
   requests()[0].resolve(200, row);
   await tick();
+});
+
+test("a read started under one auth session is never joined by the next", async () => {
+  const { module, requests, auth } = harness();
+  const before = module.getChatThread("t1", { share: true });
+  auth.epoch += 1;
+  const after = module.getChatThread("t1", { share: true });
+  await tick();
+  assert.equal(requests().length, 2);
+  requests()[0].resolve(200, { id: "t1", title: "first session" });
+  requests()[1].resolve(200, row);
+  assert.deepEqual(await before, { id: "t1", title: "first session" });
+  assert.deepEqual(await after, row);
 });

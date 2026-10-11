@@ -8,6 +8,8 @@ export type InFlightThreadRead = {
   controller: AbortController;
   readers: number;
   startedAt: number;
+  // Auth session it was read under: a read never answers a later session.
+  authEpoch: number;
 };
 
 export const inFlightThreadReads = new Map<string, InFlightThreadRead>();

@@ -213,12 +213,18 @@ function shareThreadRead(
 ): Promise<ThreadRecord | null> {
   if (signal?.aborted) return Promise.reject(abortError(signal));
   let shared = inFlightThreadReads.get(threadId);
-  if (!shared || performance.now() - shared.startedAt > THREAD_READ_JOIN_MS) {
+  const authEpoch = getAuthSessionEpoch();
+  if (
+    !shared
+    || shared.authEpoch !== authEpoch
+    || performance.now() - shared.startedAt > THREAD_READ_JOIN_MS
+  ) {
     const controller = new AbortController();
     const started: InFlightThreadRead = {
       controller,
       readers: 0,
       startedAt: performance.now(),
+      authEpoch,
       promise: readThreadRecord(threadId, controller.signal),
     };
     const forget = () => {

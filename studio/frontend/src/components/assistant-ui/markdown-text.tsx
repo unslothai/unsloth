@@ -1203,7 +1203,7 @@ function FenceBlock({
       const options = fenceHighlightOptions(body, languageToken);
       const inline =
         tokens
-        && (!tokenizesOffThread(body, Boolean(isIncomplete))
+        && (!settlesOffThread(body, Boolean(isIncomplete), options)
           || code.cached(options) !== null);
       if (inline && !isIncomplete) code.highlightExact(options, () => {});
       else code.highlight(inline ? options : fenceHighlightOptions("", languageToken), () => {});
