@@ -42,7 +42,9 @@ def fake_torchao(monkeypatch):
     return use
 
 
-@pytest.mark.parametrize("version", ["0.14.0", "0.14.1", "0.13.0", "0.14.0+cu126", "0.14.0.dev20251001"])
+@pytest.mark.parametrize(
+    "version", ["0.14.0", "0.14.1", "0.13.0", "0.14.0+cu126", "0.14.0.dev20251001"]
+)
 def test_an_old_torchao_gains_the_new_name(fake_torchao, version):
     quant = fake_torchao(version)
     _torchao_stub.alias_torchao_fqn_to_config()
@@ -84,7 +86,9 @@ def test_an_old_torchao_is_aliased_on_the_first_diffusers_import_not_before(monk
     (pkg / "__init__.py").write_text("")
     (pkg / "quantization" / "__init__.py").write_text("class ModuleFqnToConfig:\n    pass\n")
     (tmp_path / "diffusers").mkdir()
-    (tmp_path / "diffusers" / "__init__.py").write_text("from torchao.quantization import FqnToConfig\n")
+    (tmp_path / "diffusers" / "__init__.py").write_text(
+        "from torchao.quantization import FqnToConfig\n"
+    )
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(_torchao_stub.importlib.metadata, "version", lambda name: "0.14.0")
 
@@ -126,7 +130,9 @@ def test_an_existing_fqn_to_config_is_kept(fake_torchao):
     assert quant.FqnToConfig is sentinel
 
 
-@pytest.mark.parametrize("module", ["run", "core.inference.diffusion", "core.training.diffusion_train_common"])
+@pytest.mark.parametrize(
+    "module", ["run", "core.inference.diffusion", "core.training.diffusion_train_common"]
+)
 def test_every_diffusers_importer_aliases_after_the_rocm_stub(module):
     """Static order check: each module-level hook block runs the alias right after the torchao stub."""
     import importlib.util
