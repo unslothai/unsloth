@@ -4033,6 +4033,107 @@ def test_a_fit_on_load_raises_the_micro_batch_only_when_the_fitter_spills(
     assert _ubatch_values(cmd) == expect_ub, cmd
 
 
+def _fit_on_moe(
+    tmp_path,
+    footprint_mib,
+    *,
+    kv_mib = 256,
+    memory = None,
+):
+    _mib = 1024 * 1024
+    size_mib = footprint_mib - 512 - 320 - kv_mib
+    backend, gguf = _moe_backend(
+        tmp_path, size_gib = size_mib / 1024, memory = memory or [(0, 90_000, 98_000)]
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: kv_mib * _mib
+    backend._estimate_compute_buffer_bytes = lambda **_k: 512 * _mib
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    return backend, gguf
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        ([], {}, ["2048"]),
+        (["--fit-target", "512"], {}, []),
+        ([], {"LLAMA_ARG_FIT_TARGET": "512"}, []),
+    ],
+    ids = ["default_margin", "argv_lower_target", "env_lower_target"],
+)
+def test_a_lower_fit_target_is_the_fitters_margin(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    """A pass-through (or inherited) --fit-target below the 1024 MiB default is what the
+    fitter keeps free, so a footprint inside free less 512 MiB stays resident."""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 89_200)
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        ([], {}, ["2048"]),
+        (["--no-kv-offload"], {}, []),
+        ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "1"}, []),
+    ],
+    ids = ["kv_on_gpu", "argv_no_kv_offload", "env_no_kv_offload"],
+)
+def test_a_host_only_kv_cache_is_not_charged_to_the_fitter(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    """--no-kv-offload keeps the KV cache in host RAM, so it cannot push an otherwise
+    resident MoE over the fitter's VRAM budget."""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 90_000, kv_mib = 2048)
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        ([], {}, []),
+        (["--device", "CUDA0"], {}, ["2048"]),
+        ([], {"LLAMA_ARG_DEVICE": "CUDA0"}, ["2048"]),
+        (["--split-mode", "none"], {}, ["2048"]),
+    ],
+    ids = ["both_cards", "argv_device", "env_device", "split_mode_none"],
+)
+def test_a_pass_through_device_restriction_is_not_pooled(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    """Free memory pooled over every card is not what a pass-through --device or
+    --split-mode none child can use, so the residency check cannot vouch for it."""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 88_700, memory = [(0, 46_000, 49_000), (1, 46_000, 49_000)])
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)["cmd"]
+
+    assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+def test_smart_offload_keeps_a_fit_on_moe_counted_as_spilled(
+    tmp_path, _discrete_linux_host, monkeypatch
+):
+    """UNSLOTH_SMART_OFFLOAD can pin experts to CPU with --fit off against Unsloth's
+    tighter budget after this decision, so the fitter's budget does not vouch for it."""
+    monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1)["cmd"]
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+
+
 def test_a_spilled_dense_model_keeps_the_default_micro_batch(tmp_path, _discrete_linux_host):
     backend, gguf = _moe_backend(tmp_path, moe = False, **_SPILLED)
     cmd = _launch(backend, gguf)["cmd"]

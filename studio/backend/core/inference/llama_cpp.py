@@ -27884,20 +27884,62 @@ class LlamaCppBackend:
                     def _fitter_keeps_model_resident() -> bool:
                         if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
                             return False
+                        # The smart-offload planner below may still pin experts to CPU
+                        # with --fit off against Unsloth's tighter budget: unpriced here.
+                        from core.inference.offload_planner import smart_offload_enabled
+
+                        if smart_offload_enabled(os.environ):
+                            return False
                         _on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
                         if not _on:
                             return False
-                        _margin_mib = max(
-                            self._fit_target_margin_mib(
-                                auto_fit = False,
-                                fit_target_delta_mib = _fit_target_delta_mib,
-                                supports_fit_target = bool(server_caps.get("supports_fit_target")),
-                            ),
-                            fit_target_margin_in(extra_args, os.environ) or 0.0,
+                        # What the child really gets: a gpu_ids pin strips the device
+                        # flags and their env twins, while a pass-through --device,
+                        # --split-mode none or fixed layer count re-places the load.
+                        _child_extras = (
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
                         )
+                        _child_env = dict(os.environ)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_child_env)
+                        if _pass_through_overrides_placement(
+                            _child_extras,
+                            _child_env,
+                            len(_on),
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = gpu_indices,
+                        ):
+                            return False
+                        # Effective --fit-target, last wins: a pass-through value, else the
+                        # one _ctx_integrity_flags emits (it beats the env twin), else
+                        # LLAMA_ARG_FIT_TARGET, else llama.cpp's default.
+                        _supports_fit_target = bool(server_caps.get("supports_fit_target"))
+                        _auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
+                        _managed_mib = self._fit_target_margin_mib(
+                            auto_fit = _auto_fit,
+                            fit_target_delta_mib = _fit_target_delta_mib,
+                            supports_fit_target = _supports_fit_target,
+                        )
+                        _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        if _margin_mib is None:
+                            _emits = _supports_fit_target and (
+                                _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
+                            )
+                            _margin_mib = (
+                                _managed_mib
+                                if _emits
+                                else fit_target_margin_in((), _child_env) or _managed_mib
+                            )
                         _need = (
                             model_size_fit
-                            + _kv_bytes(effective_ctx)
+                            # --no-kv-offload keeps the KV cache in host RAM.
+                            + (
+                                _kv_bytes(effective_ctx)
+                                if _kv_offload_from_args(_child_extras, _child_env)
+                                else 0
+                            )
                             + _mtp_bytes(effective_ctx)
                             + _cc_bytes(effective_ctx, len(_on))
                             + (len(_on) - 1) * _pipeline_overhead_bytes
