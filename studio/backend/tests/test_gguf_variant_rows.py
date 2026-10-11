@@ -142,6 +142,19 @@ def test_loader_mirror_agrees_with_the_hub_key():
     assert [_gguf_variant_key(p) for p in corpus] == [gguf_variant_key(p) for p in corpus]
 
 
+def test_packed_and_grouped_quants_keep_their_own_key_in_both_copies():
+    # prism-ml/Ternary-Bonsai-*-gguf ships all three beside each other.
+    files = {
+        "Ternary-Bonsai-8B-PQ2_0.gguf": "PQ2_0",
+        "Ternary-Bonsai-8B-Q2_0.gguf": "Q2_0",
+        "Ternary-Bonsai-8B-Q2_0_g64.gguf": "Q2_0_g64",
+        "Ternary-Bonsai-2-27B-PTQ1_0.gguf": "PTQ1_0",
+    }
+    for path, key in files.items():
+        assert gguf_variant_key(path) == key
+        assert _gguf_variant_key(path) == key
+
+
 # --------------------------------------------------------------------------------------
 # Rows
 # --------------------------------------------------------------------------------------
@@ -461,6 +474,31 @@ def test_a_genuine_split_keeps_every_shard_in_the_plan():
     assert len(plan.main_filenames) == 3
     assert set(plan.target_filenames) == plan.main_filenames
     assert plan.download_size_bytes == 30
+
+
+def test_a_quant_shipped_whole_and_split_plans_only_the_set_the_loader_opens():
+    """Qwen/Qwen2.5-Coder-7B-Instruct-GGUF ships Q4_K_M both as one file and as two shards."""
+    from routes.models import _one_shard_family_of
+    from utils.models.model_config import _group_gguf_variant_files
+
+    split = [
+        ("qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf", 3_993_201_376),
+        ("qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf", 689_872_288),
+    ]
+    files = [*split, ("qwen2.5-coder-7b-instruct-q4_k_m.gguf", 4_683_073_536)]
+    opened = _gguf_files_for_variant([path for path, _ in files], "Q4_K_M")
+    assert opened[: len(split)] == [path for path, _ in split]
+
+    plan = build_gguf_variant_plans([_Sibling(path, size) for path, size in files])["q4_k_m"]
+    assert set(plan.target_filenames) == plan.main_filenames == {path for path, _ in split}
+    assert plan.download_size_bytes == plan.main_size_bytes == 4_683_073_664
+
+    row = (split[0][0], 4_683_073_664)
+    assert group_gguf_variant_files(files) == {"q4_k_m": row}
+    assert _group_gguf_variant_files([(p, "q4_k_m", s) for p, s in files]) == {"q4_k_m": row}
+    assert [e[0] for e in _one_shard_family_of([(p, None, s) for p, s in files])] == [
+        path for path, _ in split
+    ]
 
 
 def test_a_qualified_key_is_an_explicit_checkpoint_request():
@@ -1096,7 +1134,8 @@ def test_the_load_guard_sees_the_alias_the_delete_accepts():
 def test_every_branch_derives_the_default_from_the_root_rows():
     """Remote, cached and partial-local all answer /gguf-variants, so all three have to define a
     bare repo id the way _match_variant(None, ...) and local_model_resolver do -- the ROOT
-    checkpoint -- or the automatic default depends on which branch served the request."""
+    checkpoint -- or the automatic default depends on which branch served the request. Cached
+    rows derive it once more after download-state reconciliation can demote the original default."""
     import inspect
     import types
 
@@ -1111,7 +1150,7 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
     # No branch may call pick_best_gguf on the raw filenames any more.
     source = inspect.getsource(service)
-    assert source.count("pick_best_gguf(_default_variant_candidates(") == 3
+    assert source.count("pick_best_gguf(_default_variant_candidates(") == 5
     assert "pick_best_gguf(filenames)" not in source
 
 

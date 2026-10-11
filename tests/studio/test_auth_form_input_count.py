@@ -314,12 +314,17 @@ def test_auth_flow_routes_do_not_mount_global_settings():
 def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
     if shutil.which("node") is None:
         pytest.skip("node not available")
-    probe = subprocess.run(
-        ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
-    )
+    # A timeout is a SKIP: the first `node` of a job on a Windows runner pays for image
+    # scanning and a cold file cache, and 5s was not enough for a `--version` there.
+    try:
+        probe = subprocess.run(
+            ["node", "--experimental-strip-types", "--version"],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("node did not answer --version in time on this runner")
     if probe.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
 
@@ -335,6 +340,11 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
             let access = null, refresh = null, passwordChange = false;
             export const apiUrl = (path) => path;
             export const isTauri = false;
+            // Read by the Tauri transport-failure path before it asks the native health
+            // check. This stub is the web build (isTauri false), where that path is never
+            // taken, but the import is unconditional and an ES module import of a name the
+            // stub does not export is a SyntaxError at instantiation, not at call time.
+            export const getApiPort = () => null;
             export const accountTransitionPending = () => false;
             export const reset = (a = null, r = null) => { access = a; refresh = r; passwordChange = false; };
             export const clearAuthTokens = () => { access = null; refresh = null; };
@@ -406,6 +416,7 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         cwd = tmp_path,
         capture_output = True,
         text = True,
-        timeout = 30,
+        # The same cold-start allowance as the probe above, plus the work itself.
+        timeout = 180,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"

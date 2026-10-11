@@ -116,7 +116,7 @@ function LabelTile({
 
   return (
     // Named group: a bare one would also match the scroller and reveal every tile's Remove.
-    <div className="group/tile flex flex-col overflow-hidden rounded-[10px] border border-border transition-colors hover:border-foreground/20">
+    <div className="group/tile flex flex-col overflow-hidden rounded-[10px] border border-border transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]">
       <div className="relative aspect-square w-full overflow-hidden bg-muted">
         {thumb ? (
           <img src={thumb} alt={record.filename} className="size-full object-cover" />
@@ -132,7 +132,7 @@ function LabelTile({
               onClick={remove}
               disabled={deleting}
               aria-label="Remove image"
-              className="absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-full bg-background/85 text-muted-foreground opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-background hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100"
+              className="absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-full bg-background/85 text-muted-foreground opacity-0 any-pointer-coarse:opacity-100 shadow-sm backdrop-blur-sm transition-opacity hover:bg-background hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100"
             >
               {deleting ? (
                 <Spinner className="size-3" />
@@ -153,7 +153,7 @@ function LabelTile({
           rows={2}
           spellCheck={false}
           placeholder="Describe this image..."
-          className="min-h-[2.75rem] rounded-sm px-2 py-1.5 text-ui-11! leading-snug md:text-ui-11!"
+          className="min-h-[calc(2.75rem*var(--ui-space-scale,1))] rounded-sm px-2 py-1.5 text-ui-11! leading-snug md:text-ui-11!"
           aria-label={`Caption for ${record.filename}`}
         />
         {/* No leading-none: truncate's overflow would crop the descenders. */}
@@ -290,7 +290,7 @@ export function DatasetLabelingGrid({
       {/* Two columns at any width: the column is fixed, so viewport breakpoints do not apply. */}
       {/* auto-rows-min: past max-h the height is definite and auto rows split it, flattening every
           tile until its thumbnail collapses. */}
-      <div className="hover-scrollbar grid max-h-[420px] auto-rows-min grid-cols-2 gap-2.5 overflow-y-auto pb-0.5 pr-1">
+      <div className="hover-scrollbar grid max-h-[calc(420px*var(--ui-space-scale,1))] auto-rows-min grid-cols-2 gap-2.5 overflow-y-auto pb-0.5 pr-1">
         {pageRecords.map((r) => (
           <LabelTile
             key={r.filename}

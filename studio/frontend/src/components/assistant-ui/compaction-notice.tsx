@@ -19,7 +19,7 @@ import {
  *
  * Rendered once per COMPACTION, gated by the caller, not once per compacted turn: a
  * thread past its window refits on every request, so per-turn would mean a notice on
- * every reply forever. The caller shows this only when the eviction boundary moved.
+ * every reply forever. The caller shows this when the boundary moved or a checkpoint started.
  */
 export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
   truncation,
@@ -48,11 +48,15 @@ export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
           This conversation got long, so it was compacted.
         </span>{" "}
         <span>
-          Older messages were dropped from the model&apos;s context to make room. {detail}
+          {truncation.summarized
+            ? "The provider summarized older messages to make room."
+            : "Older messages were dropped from the model's context to make room."}{" "}
+          {detail}
         </span>
         <span>
           {" "}
-          ({dropped} {dropped === 1 ? "message" : "messages"} dropped here
+          ({dropped} {dropped === 1 ? "message" : "messages"}{" "}
+          {truncation.summarized ? "summarized" : "dropped"} here
           {recalled > 0
             ? `, ${recalled} earlier ${recalled === 1 ? "passage" : "passages"} recalled`
             : ""}

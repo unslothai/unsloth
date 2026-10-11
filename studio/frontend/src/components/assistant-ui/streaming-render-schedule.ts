@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import remend from "remend";
-import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
+import { type BlockProps } from "streamdown";
+import {
+  parseMarkdownBlockDetails,
+  parseMarkdownIntoBlocks,
+} from "../../lib/parse-markdown-blocks.ts";
 
 // How far behind the live edge a block has to be before it can be retained.
 // The block list interleaves "\n\n" separators, so this is about four
@@ -50,13 +54,84 @@ const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
-// Inside a block marked did not lex as code, the container markers and their indentation
-// have already been accounted for, so the label may sit behind any mix of them.
-// A block quote marker may be followed by nothing, but a list marker needs whitespace after
-// it or no list opens -- `-[label]:` is ordinary prose, not a bullet holding a definition.
-const LINK_DEFINITION_LINE_RE =
-  /^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\d{1,9}[.)])[ \t]+))*\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
+// Marked's `def` label, `[^\]]+`: a miss is committed away and Marked emits no
+// token for a label it has already seen, so err toward a false positive, which
+// only costs retention. `\n` is in the class because Marked normalises label
+// whitespace, `\\[\s\S]` because `.` rejected a label whose line ends in a
+// backslash, `u` because without it `{1,999}` bounds 499 emoji. 999 is
+// CommonMark's cap; unbounded would make every `[` an O(n) start position.
+const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
+// Widest match in UTF-16 units: 999 times `\` plus an astral code point, plus `[`.
+const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
+
+// Odd backslash run: `[a\]b]:` keeps its escaped `]` in the label, `[a]b]:` does not.
+function isEscaped(text: string, index: number): boolean {
+  let slashes = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
+// Same predicate as the regex over the whole reply (it has no anchor or lookaround), scanned from
+// the rare `]:` rather than from every `[` (unslothai/unsloth#10529). Two bounds keep each
+// terminator cheap: a match opens with `[`, and its label admits no bare `]`, so the window starts
+// after the last unescaped one. Both cursors only advance and their lookaheads are CACHED --
+// re-asking `indexOf` past -1 rescans the tail while advancing nothing, measured slower than no
+// skip at all (282ms -> 881ms), and `lastIndexOf` is unbounded backwards. Per 500k reply:
+// `]: ` 289ms -> 3.6ms, `[]: ` 338ms -> 7.1ms.
+function hasLinkDefinition(text: string): boolean {
+  let bracket = text.indexOf("[");
+  let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
+  let close = -1;
+  let nextClose = text.indexOf("]");
+  for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
+    while (nextBracket >= 0 && nextBracket <= end) {
+      bracket = nextBracket;
+      nextBracket = text.indexOf("[", bracket + 1);
+    }
+    while (nextClose >= 0 && nextClose < end) {
+      close = nextClose;
+      nextClose = text.indexOf("]", close + 1);
+    }
+    let start = end < LINK_DEFINITION_WINDOW ? 0 : end - LINK_DEFINITION_WINDOW;
+    if (close > start && !isEscaped(text, close)) {
+      start = close + 1;
+    }
+    // `start`, not `bracket`: the class admits `[` inside a label, so the last one can fail where
+    // an earlier matches (`[a[]:` matches from 0, not 2). Skip test only.
+    if (bracket < start || bracket > end) {
+      continue;
+    }
+    if (LINK_DEFINITION_RE.test(text.slice(start, end + 2))) {
+      return true;
+    }
+  }
+  return false;
+}
+// A label may sit behind any mix of container markers. A list marker needs
+// whitespace after it or no list opens: `-[label]:` is prose, not a bullet.
+const CONTAINER_PREFIX = "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
+const LINK_DEFINITION_LINE_RE = new RegExp(
+  `^${CONTAINER_PREFIX}${LINK_DEFINITION_RE.source}`,
+  `m${LINK_DEFINITION_RE.flags}`,
+);
+// The probe plus exactly what Marked stores after the label, which is what has to
+// move the remount key. Must be spelled as Marked spells it, never as "the rest of
+// the line": this feeds a React key, so anything captured that Marked does not
+// store remounts the subtree once per character of it. Angle destinations run to
+// their `>` and may hold spaces; a bare one runs to whitespace and KEEPS a `>`
+// (`[g]: https://x.test/a>b`). At most one title, on the destination's line or the
+// one below but never both, and padding may precede the break.
+//
+// Residual: a wrapped title stops the key at its opening line, so the link keeps
+// its old title until the message settles.
+const LINK_DEFINITION_DESTINATION = "(?:<[^>\\n]*>?|[^\\s]*)";
+const LINK_DEFINITION_TITLE = "[\"'(][^\\n]*[\"')]";
+const LINK_DEFINITION_KEY_RE = new RegExp(
+  `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n${CONTAINER_PREFIX})?${LINK_DEFINITION_DESTINATION}` +
+    `(?:[ \\t]+${LINK_DEFINITION_TITLE}|[ \\t]*\\n${CONTAINER_PREFIX}${LINK_DEFINITION_TITLE})?`,
+  `g${LINK_DEFINITION_LINE_RE.flags}`,
+);
 // The two block shapes whose body is literal code: an opening fence, and an indent that
 // reaches column four -- four spaces, or a tab, which advances to the same column.
 const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
@@ -72,10 +147,120 @@ function isCodeBlock(block: string): boolean {
   const backtick = BACKTICK_OPENER_RE.exec(block);
   return backtick === null || !backtick[1].includes("`");
 }
+// Must admit exactly what `LINK_DEFINITION_RE` admits: a label resolves only when BOTH ends
+// carry it, so a narrower cap here made the wider one there unreachable (unslothai/unsloth#9540).
 const LINK_REFERENCE_RE =
-  /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
-// Still the first line of a single block, for `updateLinkDefinitionParity` below.
-const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
+  /!?\[(?:\\[\s\S]|[^\]\\]){1,999}\]\[(?:\\[\s\S]|[^\]\\]){0,999}\]/u;
+// Label side as above, plus `[` and the optional `!`; the reference side needs no `!`.
+const LINK_REFERENCE_WINDOW = 999 * 3 + 3;
+// The `[` at the seam restarts escape parity, so the reference label is ONE candidate: the text
+// up to the first unescaped `]`. Tested once here instead of from every `[` in the window.
+const LINK_REFERENCE_LABEL_RE = /^(?:\\[\s\S]|[^\]\\]){0,999}$/u;
+
+function unescapedClose(text: string, from: number): number {
+  for (let i = text.indexOf("]", from); i >= 0; i = text.indexOf("]", i + 1)) {
+    if (!isEscaped(text, i)) {
+      return i;
+    }
+  }
+  return -1;
+}
+// Same predicate as the regex over the whole reply, scanned from the rare `][` as
+// `hasLinkDefinition` scans from `]:`. Neither label admits a bare `]`, which bounds a candidate.
+function hasLinkReference(text: string): boolean {
+  let bracket = text.indexOf("[");
+  let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
+  let close = -1;
+  let nextClose = text.indexOf("]");
+  let after = -1;
+  for (let mid = text.indexOf("]["); mid >= 0; mid = text.indexOf("][", mid + 1)) {
+    // No empty label, so the opener is at `mid - 2` or earlier. Forward: `lastIndexOf` is not.
+    while (nextBracket >= 0 && nextBracket <= mid - 2) {
+      bracket = nextBracket;
+      nextBracket = text.indexOf("[", bracket + 1);
+    }
+    while (nextClose >= 0 && nextClose < mid) {
+      if (!isEscaped(text, nextClose)) {
+        close = nextClose;
+      }
+      nextClose = text.indexOf("]", nextClose + 1);
+    }
+    if (after < mid + 2) {
+      after = unescapedClose(text, mid + 2);
+      if (after < 0) {
+        // Nothing closes from here on, so no later seam can either. Returning rather than
+        // caching -1, which sits behind every later seam and rescans the tail: quadratic.
+        return false;
+      }
+    }
+    if (after - mid - 2 > LINK_REFERENCE_WINDOW) {
+      continue;
+    }
+    let start = mid < LINK_REFERENCE_WINDOW ? 0 : mid - LINK_REFERENCE_WINDOW;
+    if (close > start) {
+      start = close + 1;
+    }
+    if (bracket < start || bracket > mid - 2) {
+      continue;
+    }
+    // After the opener test, so a seam with no opener pays neither.
+    if (!LINK_REFERENCE_LABEL_RE.test(text.slice(mid + 2, after))) {
+      continue;
+    }
+    // `start`, not `bracket`: the class admits `[` inside a label, so an earlier one can
+    // match where the last one fails. Skip test only, as in `hasLinkDefinition`.
+    if (LINK_REFERENCE_RE.test(text.slice(start, after + 1))) {
+      return true;
+    }
+  }
+  return false;
+}
+// A shortcut `[label]` or collapsed `[label][]` resolves against a definition too. Code spans,
+// inline links and the like are deliberately not excluded: that only adds false positives.
+const SHORTCUT_REFERENCE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+const DEFINITION_LABEL_RE = /\[((?:\\[\s\S]|[^\]\\]){1,999})\]:/u;
+
+// micromark's `normalizeIdentifier`, so `[SS]` finds `[\u1E9E]:` as the renderer does.
+function normalizeLabel(label: string): string {
+  return label
+    .replace(/[\t\n\r ]+/g, " ")
+    .replace(/^ | $/g, "")
+    .toLowerCase()
+    .toUpperCase();
+}
+
+function hasShortcutReference(
+  prose: string,
+  references: string,
+  definitions: readonly string[],
+): boolean {
+  const labels = new Set<string>();
+  // Marked's tokens as well: an unmatched `[` line before a definition widens the regex's label.
+  for (const definition of [
+    ...definitions,
+    ...(prose.match(LINK_DEFINITION_KEY_RE) ?? []),
+  ]) {
+    const label = DEFINITION_LABEL_RE.exec(definition)?.[1];
+    if (label !== undefined) {
+      labels.add(normalizeLabel(label));
+    }
+  }
+  labels.delete("");
+  if (labels.size === 0) {
+    return false;
+  }
+  // Marked's definitions, not a regex: `[1]: <broken` is prose whose `[1]` is a reference.
+  const uses = normalizeLineEndings(references);
+  for (const match of uses.matchAll(SHORTCUT_REFERENCE_RE)) {
+    if (
+      !isEscaped(uses, match.index) &&
+      labels.has(normalizeLabel(match[1]))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -85,13 +270,28 @@ const HTML_TAG_START_RE = /[a-zA-Z/]/;
 // paying for exactly the one split it already paid for before any of this existed.
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
+let splitReferenceProse = "";
+let splitDefinitions: readonly string[] = [];
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
     splitMarkdown = markdown;
-    splitBlocks = parseMarkdownIntoBlocks(markdown);
+    const details = parseMarkdownBlockDetails(markdown);
+    splitBlocks = details.blocks;
+    splitReferenceProse = details.referenceProse.join("\n\n");
+    splitDefinitions = details.definitions;
   }
   return splitBlocks;
+}
+
+function referenceProseOf(markdown: string): string {
+  blocksOf(markdown);
+  return splitReferenceProse;
+}
+
+function definitionsOf(markdown: string): readonly string[] {
+  blocksOf(markdown);
+  return splitDefinitions;
 }
 
 // Which replies have to be lexed in one piece.
@@ -112,14 +312,27 @@ function blocksOf(markdown: string): readonly string[] {
 // `document` when blocks would have done only costs that reply its per-code-block Copy and
 // Download controls -- which is what this path did for EVERY reply containing a `]:` substring
 // before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
+// Normalised because `\r` counts against `{1,999}` and the `\n` it replaces does
+// not, so the scope would otherwise follow the reply's line ending. NOT for
+// `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
+// a normalised copy misses it and costs a CRLF reply two splits per render.
+// A shortcut reference can be any `[label]`, so a definition alone is enough to pay for the split.
 function documentProse(markdown: string): string | null {
-  if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
+  if (!hasLinkDefinition(normalizeLineEndings(markdown))) {
     return null;
   }
-  const prose = blocksOf(markdown)
-    .filter((block) => !isCodeBlock(block))
-    .join("\n");
-  return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
+  const prose = normalizeLineEndings(
+    blocksOf(markdown)
+      .filter((block) => !isCodeBlock(block))
+      .join("\n"),
+  );
+  return LINK_DEFINITION_LINE_RE.test(prose) &&
+    (hasLinkReference(prose) ||
+      hasShortcutReference(
+        prose,
+        referenceProseOf(markdown),
+        definitionsOf(markdown),
+      ))
     ? prose
     : null;
 }
@@ -133,10 +346,7 @@ export function markdownRenderKey(markdown: string): string {
   if (prose === null) {
     return "blocks";
   }
-  return `document:${prose
-    .split("\n")
-    .filter((line) => LINK_DEFINITION_LINE_RE.test(line))
-    .join("\n")}`;
+  return `document:${(prose.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
 }
 
 export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
@@ -229,9 +439,10 @@ const createRepairParity = (
 // Marked keeps link reference definitions in one document-wide map and emits no token for a label
 // it has already seen, so a definition retained while its twin is still live would be lexed apart
 // and shown as a literal line. Keeping every definition in the live tail makes the two lexes agree.
-// Marked reads a fenced block as code, so those do not count.
+// Same test as `documentProse`: a bare `[...]:` probe also caught `list[str]:` in a list-nested
+// fence or `d["key"]: int`, stalling the tail into the sticky full-document path (#10529).
 function updateLinkDefinitionParity(parity: RepairParity, text: string): void {
-  if (!FENCED_CODE_BLOCK_RE.test(text) && LINK_DEFINITION_RE.test(text)) {
+  if (!isCodeBlock(text) && LINK_DEFINITION_LINE_RE.test(text)) {
     parity.linkDefinition = true;
   }
 }
@@ -766,6 +977,31 @@ export type IncrementalMarkdownRender = {
   parseMarkdownIntoBlocks: (markdown: string) => string[];
 };
 
+const INCOMPLETE_LINK_REPAIR = "](streamdown:incomplete-link)";
+
+export function hasIncompleteLinkRepair(
+  source: string,
+  repaired?: string,
+): boolean {
+  // Only an unclosed `[` gets the placeholder, so bracket-free replies skip the remend pass.
+  if (!source.includes("[")) return false;
+  const after = repaired ?? remend(source);
+  return (
+    after.split(INCOMPLETE_LINK_REPAIR).length >
+    source.split(INCOMPLETE_LINK_REPAIR).length
+  );
+}
+
+// Skips only remend's link pass, whose placeholder renders as "[blocked]"; every other repair still runs.
+export const LITERAL_LINK_REMEND = { links: false, images: false } as const;
+
+export function repairStreamingMarkdown(source: string): string {
+  const repaired = remend(source);
+  return hasIncompleteLinkRepair(source, repaired)
+    ? remend(source, LITERAL_LINK_REMEND)
+    : repaired;
+}
+
 // Marker facts the retained prefix carries into the tail repair.
 type RetainedContext = {
   multilineKatex: boolean;
@@ -833,12 +1069,26 @@ function repairContextPrefix(context: RetainedContext): string {
   );
 }
 
-function repairTail(tail: string, context: RetainedContext): string {
+function repairTail(
+  tail: string,
+  context: RetainedContext,
+  options?: typeof LITERAL_LINK_REMEND,
+): string {
   const prefix = repairContextPrefix(context);
   if (!prefix) {
-    return remend(tail);
+    return remend(tail, options);
   }
-  return remend(prefix + tail).slice(prefix.length);
+  return remend(prefix + tail, options).slice(prefix.length);
+}
+
+function repairTailKeepingLinks(
+  tail: string,
+  context: RetainedContext,
+  repaired = repairTail(tail, context),
+): string {
+  return hasIncompleteLinkRepair(tail, repaired)
+    ? repairTail(tail, context, LITERAL_LINK_REMEND)
+    : repaired;
 }
 
 // Where remend believes a fence is open. It toggles on any ``` run, wherever on the line that run
@@ -1205,7 +1455,7 @@ export class IncrementalMarkdownCache {
   private renderFullDocument(markdown: string): IncrementalMarkdownRender {
     this.resetIncrementalState(markdown);
     this.fullDocumentMode = true;
-    return this.render(remend(markdown));
+    return this.render(repairStreamingMarkdown(markdown));
   }
 
   // The text handed to the cache is not always an extension of the last one: `preprocessLaTeX`
@@ -1310,8 +1560,11 @@ export class IncrementalMarkdownCache {
 
     this.updateTail(markdown);
 
-    const repaired =
-      this.repairOpenFence() ?? repairTail(this.tail, this.context);
+    const repaired = repairTailKeepingLinks(
+      this.tail,
+      this.context,
+      this.repairOpenFence() ?? undefined,
+    );
 
     // globally scoped definitions must stay in the same rendered document as
     // their uses, so neither construct can retain an independently parsed prefix.
@@ -1320,14 +1573,16 @@ export class IncrementalMarkdownCache {
     // full-document mode -- answer without it, and the precise scope costs a lex of everything
     // received so far. Reaching this point means the reply is still a retention candidate,
     // which is the only case where the answer is used.
+    // `updateLinkDefinitionParity` never commits a block `documentProse` would read as a
+    // definition, so with no `]:` left in the tail the whole-reply lex can only say `blocks`.
     if (
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
       FOOTNOTE_DEFINITION_RE.test(repaired) ||
-      markdownRenderScope(markdown) === "document"
+      (hasLinkDefinition(this.tail) &&
+        markdownRenderScope(markdown) === "document")
     ) {
       return this.renderFullDocument(markdown);
     }
-
     const blocks = parseMarkdownIntoBlocks(repaired);
 
     const candidateCount = Math.max(0, blocks.length - ROLLBACK_BLOCKS);
@@ -1360,7 +1615,7 @@ export class IncrementalMarkdownCache {
       committedText,
     );
     const nextTail = this.tail.slice(commit.length);
-    const nextMarkdown = repairTail(nextTail, nextContext);
+    const nextMarkdown = repairTailKeepingLinks(nextTail, nextContext);
 
     // A repeating reply can leave the tail unchanged once a block is retained.
     // Streamdown would then see the Markdown it already holds and skip the

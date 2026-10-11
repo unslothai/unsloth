@@ -19,6 +19,7 @@ from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import (
     _reject_unsupported_content_parts,
+    _request_has_video,
     disable_openai_auto_switch_for_request,
     load_model_for_preview,
     openai_chat_completions,
@@ -127,6 +128,8 @@ def _sanitize_preview_payload(
             "bypass_permissions": False,
             "confirm_tool_calls": False,
             "session_id": None,
+            # A streamed body outlives tools_force_disabled(), so no thread archive may be reachable.
+            "thread_id": None,
             "rag_scope": None,
             "openai_code_exec_container_id": None,
             "anthropic_code_exec_container_id": None,
@@ -159,6 +162,12 @@ async def _serve_chat(
 ):
     path = _resolve_or_4xx(run, checkpoint)
     _reject_unsupported_content_parts(payload)
+    # A checkpoint cannot read a clip: refuse before the load the refusal would otherwise follow.
+    if _request_has_video(payload):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Video input is only supported on a local GGUF model with video support.",
+        )
     is_lora = (path / "adapter_config.json").exists()
     payload = _sanitize_preview_payload(payload, is_lora)
     scope = getattr(request, "scope", None)

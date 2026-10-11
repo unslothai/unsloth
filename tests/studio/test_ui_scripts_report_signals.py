@@ -94,3 +94,20 @@ def test_the_guard_reads_real_files() -> None:
     for name in WRAPPERS:
         assert (SCRIPTS / name).is_file(), name
         assert len(_body(name)) > 400, name
+
+
+def test_a_wall_budget_in_a_wrapper_comes_with_a_total():
+    """A wrapper's STUDIO_UI_WALL_TIMEOUT_S is a cap on the whole invocation.
+
+    It stopped being one when playwright_chat_ui.py started restarting that budget on
+    every step, so a run that keeps reporting progress runs past it. Three browsers share
+    one step here, so the cap is what keeps a wedged first browser from taking the other
+    two with it. STUDIO_UI_TOTAL_TIMEOUT_S is the ceiling no progress report moves."""
+    for name in WRAPPERS:
+        text = (SCRIPTS / name).read_text(encoding = "utf-8")
+        wall = re.search(r"STUDIO_UI_WALL_TIMEOUT_S=(\d+)", text)
+        if wall is None:
+            continue
+        total = re.search(r"STUDIO_UI_TOTAL_TIMEOUT_S=(\d+)", text)
+        assert total is not None, f"{name} caps the wall but not the run"
+        assert total.group(1) == wall.group(1), name

@@ -21,9 +21,14 @@ BeforeAll {
     $script:SetupPs1 = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
 
-    $src = Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-UvOfflineRequested'
-    if (-not $src) { throw "Test-UvOfflineRequested is gone from setup.ps1." }
-    . ([scriptblock]::Create($src))
+    # Test-UvEnvFlag is where the boolish set lives and Test-UvOfflineRequested is one of
+    # its callers, so both come across. PowerShell does not hoist: a callee left behind is
+    # a command-not-found inside the body, not a wrong answer.
+    foreach ($name in @('Test-UvEnvFlag', 'Test-UvOfflineRequested')) {
+        $src = Get-FunctionSource -Path $script:SetupPs1 -Name $name
+        if (-not $src) { throw "$name is gone from setup.ps1." }
+        . ([scriptblock]::Create($src))
+    }
 
     $script:SetupText = Get-Content -Raw -LiteralPath $script:SetupPs1
     $script:SavedOffline = $env:UV_OFFLINE

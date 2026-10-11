@@ -63,7 +63,7 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
   assert.match(adapter, /function fillStoppedAssistantReplay\(/);
   assert.match(
     adapter,
-    /return fillStoppedAssistantReplay\(\s*message,\s*serializeAssistantReplayMessages\(/,
+    /const serialized = fillStoppedAssistantReplay\(\s*message,\s*serializeAssistantReplayMessages\(/,
   );
   assert.match(adapter, /function stoppedAssistantReplayText\(/);
   assert.match(adapter, /incompleteLabel\(info\?\.reason \?\? fromStatus\)/);
@@ -142,6 +142,6 @@ test("the send and token-count paths prune through the same helper", () => {
   );
   assert.match(
     adapter,
-    /const survivingMessages = pruneOutboundHistory\(\s*messages,\s*!isExternalRequest,\s*\);/,
+    /const survivingMessages = pruneOutboundHistory\(\s*messages,\s*replayReasoning\);/,
   );
 });

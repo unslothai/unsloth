@@ -168,7 +168,7 @@ def test_native_image_http_generation_and_count(monkeypatch, vision):
         assert url.startswith("data:image/png;base64,")
         assert Image.open(BytesIO(base64.b64decode(url.split(",", 1)[1]))).size == (2, 2)
     else:
-        assert sent == counted_content == f"capture {TOOL_RESULT_IMAGE_OMITTED}"
+        assert sent == counted_content == f"capture\n{TOOL_RESULT_IMAGE_OMITTED}"
 
 
 def test_text_only_tool_image_keeps_the_server_tool_permission_gate(monkeypatch):

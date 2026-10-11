@@ -99,3 +99,69 @@ def test_a_datasets_without_the_torchcodec_flag_returns_a_bool():
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = v
+
+
+def test_a_torchcodec_that_raises_anything_at_import_is_marked_unusable():
+    # A damaged wheel can raise AttributeError or SyntaxError rather than ImportError. The
+    # installer's probe reports every import failure as "broken, soundfile takes over", so
+    # the runtime must treat every shape the same way or that promise is false.
+    import importlib.abc
+    import importlib.machinery
+    import sys
+    import types
+
+    from utils.datasets import audio_decode
+
+    class _Raising(importlib.abc.Loader):
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            raise AttributeError("module 'torchcodec' has no attribute '_core'")
+
+    class _Finder(importlib.abc.MetaPathFinder):
+        def find_spec(
+            self,
+            name,
+            path,
+            target = None,
+        ):
+            if name == "datasets.features._torchcodec":
+                return importlib.machinery.ModuleSpec(name, _Raising())
+            return None
+
+    fake_config = types.SimpleNamespace(TORCHCODEC_AVAILABLE = True)
+    fake_audio = types.ModuleType("datasets.features.audio")
+    fake_audio.Audio = type("Audio", (), {"decode_example": None, "encode_example": None})
+    fake_datasets = types.ModuleType("datasets")
+    fake_datasets.config = fake_config
+    fake_features = types.ModuleType("datasets.features")
+    fake_features.__path__ = []
+
+    keys = (
+        "datasets",
+        "datasets.features",
+        "datasets.features.audio",
+        "datasets.features._torchcodec",
+    )
+    saved = {k: sys.modules.get(k) for k in keys}
+    sys.modules["datasets"] = fake_datasets
+    sys.modules["datasets.features"] = fake_features
+    sys.modules["datasets.features.audio"] = fake_audio
+    sys.modules.pop("datasets.features._torchcodec", None)
+    finder = _Finder()
+    sys.meta_path.insert(0, finder)
+    installed_before = audio_decode._installed
+    try:
+        audio_decode.ensure_audio_decoding()
+        assert (
+            fake_config.TORCHCODEC_AVAILABLE is False
+        ), "an AttributeError at import left torchcodec marked usable"
+    finally:
+        sys.meta_path.remove(finder)
+        audio_decode._installed = installed_before
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v

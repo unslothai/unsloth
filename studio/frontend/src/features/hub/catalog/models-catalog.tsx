@@ -56,6 +56,8 @@ export interface ModelsCatalogState {
   manualFetchAvailable: boolean;
   hasActiveFilters: boolean;
   typeFilterActive: boolean;
+  /** Format dots only add information when the list mixes formats. */
+  showFormatDots: boolean;
 }
 
 export interface ModelsCatalogPagination {
@@ -119,6 +121,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     hasMore,
     hasActiveFilters,
     typeFilterActive,
+    showFormatDots,
   } = state;
   const { scrollRef, sentinelRef, isLoadingMore } = pagination;
   const {
@@ -432,6 +435,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 onSwitchDevice={onSwitchDevice}
                 view={discoverView}
                 selectedId={selectedId}
+                showFormatDots={showFormatDots}
               />
             </div>
           ) : (
@@ -476,6 +480,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 columns={discoverView === "two" ? 2 : 1}
                 sort={inventorySort}
                 onInventoryChange={onInventoryChange}
+                showFormatDots={showFormatDots}
               />
             </div>
           ) : (

@@ -95,6 +95,7 @@ _stub_unless_installed(
     types.SimpleNamespace(
         BaseModel = _BaseModel,
         Field = _field,
+        PrivateAttr = _field,
         model_validator = _model_validator,
     ),
 )

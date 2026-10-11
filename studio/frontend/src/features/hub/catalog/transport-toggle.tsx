@@ -53,7 +53,7 @@ export function TransportToggle() {
   return (
     <fieldset
       aria-label="Download transport"
-      className="hub-tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-ui-11"
+      className="hub-tag-soft m-0 inline-flex h-[calc(26px*var(--ui-space-scale,1))] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-ui-11"
     >
       {OPTIONS.map((opt) => {
         const active = mode === opt.value;
@@ -79,7 +79,7 @@ export function TransportToggle() {
                   if (!disabled) setMode(opt.value);
                 }}
                 className={cn(
-                  "inline-flex h-[22px] items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
+                  "inline-flex h-[calc(22px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
                   disabled
                     ? "cursor-not-allowed text-muted-foreground/45"
                     : active

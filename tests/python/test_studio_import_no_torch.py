@@ -404,6 +404,8 @@ class TestFormatConversionNoTorchVenv:
 
             # Test convert_chatml_to_alpaca with a simple dataset
             class FakeDataset:
+                column_names = ['messages']
+
                 def map(self, fn, **kw):
                     result = fn({{
                         'messages': [[

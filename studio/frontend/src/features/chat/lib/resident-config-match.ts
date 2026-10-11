@@ -2,30 +2,46 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "@/features/model-picker";
+import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
 
 import {
   parseGpuLayersOverride,
   resolveTensorParallel,
   stripManagedOffloadFlags,
 } from "./llama-extra-args-normalize";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
+import {
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
 
 /** The resident load's own invocation, as `/api/inference/status` echoes it. */
 type ResidentRuntime = Pick<
   InferenceStatusResponse,
+  | "engine"
+  | "engine_parallelism"
+  | "engine_precision"
+  | "context_length"
   | "requested_context_length"
   | "cache_type_kv"
-  | "mlx_kv_bits_requested"
+  | "mlx_kv_quant_requested"
+  | "mlx_int8_prefill_requested"
   | "speculative_type"
   | "spec_draft_n_max"
+  | "spec_draft_model"
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
   | "requested_load_mode"
   | "requested_spec_draft_cache_type"
   | "requested_ctx_checkpoints"
+  | "reasoning_budget"
+  | "reasoning_budget_message"
+  | "requested_reasoning_budget"
+  | "requested_reasoning_budget_message"
   | "requested_cache_ram"
   | "tensor_parallel"
   | "disable_vision"
@@ -37,6 +53,7 @@ type ResidentRuntime = Pick<
   | "requested_gpu_ids"
   | "gpu_ids"
   | "is_gguf"
+  | "is_mlx"
   | "is_diffusion"
   | "diffusion_requested_ngl"
   | "diffusion_split_supported"
@@ -56,13 +73,13 @@ function sameList(
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
-/** Placement is a set, not an order: the backend narrows and reorders it at fit time. */
-function sameGpuSet(
+/** Placement is an ordered list: position decides which card the model is given first,
+ *  so the same set in a different order is a different placement and must reload. */
+function sameGpuPlacement(
   left: readonly number[] | null | undefined,
   right: readonly number[] | null | undefined,
 ): boolean {
-  const sort = (ids: readonly number[]) => [...ids].sort((a, b) => a - b);
-  return sameList(sort(left ?? []), sort(right ?? []));
+  return sameList(left ?? [], right ?? []);
 }
 
 /** What a config field resolves to when left unset. These four are not per-model, so omitting them
@@ -85,6 +102,8 @@ export type StandingConfigDefaults = {
     ids: number[] | null,
     savedIndexKind: GpuIndexKind | null | undefined,
   ) => number[] | null;
+  /** `defaultEngineGpuIds`: where an optional engine loads when the config picks no GPU. */
+  defaultEngineGpuIds?: number[];
   /** `resolveLoadMaxSeqLength` bound to the inputs `performLoad` gives it, so the comparison is
    *  against the n_ctx the load would send. An unset length is not simply 0: for a GGUF re-pick
    *  it resolves to the resident context. */
@@ -93,8 +112,7 @@ export type StandingConfigDefaults = {
    *  `_resolve_parallel_slots` stores the server-wide default as `requested_parallel_slots`, so
    *  an unset ask is never null on the status side and comparing directly reloaded every pick. */
   parallelSlots: number | null;
-  /** `splitRatio` as the store holds it now, which is what the load sends. Never a config field:
-   *  `applyPerModelConfigToRuntime` clears it, so any remembered config asks for the default. */
+  /** Current store ratio, used only when a staged config does not state its own. */
   splitRatio: number[] | null;
   /** `normalizeSpeculativeType`, passed rather than imported: it lives on the chat runtime store,
    *  which reaches React, and this module is a leaf so the node suite can drive it. A copy here
@@ -108,9 +126,6 @@ export type StandingConfigDefaults = {
 type SettingCheck = {
   /** Placement, which the backend rewrites wholesale on a preserved CPU fallback. */
   placement?: true;
-  /** One of the two fields `_mlx_runtime_settings_match` compares. The non-GGUF branch of /load
-   *  checks identity and those, then answers already_loaded, so nothing else here may decide
-   *  against a safetensors or MLX resident. */
   mlxComparable?: true;
   /** Placement the diffusion branch of `_runtime_matches_intent` replaces wholesale with one
    *  `_diffusion_manual_ngl` comparison. */
@@ -173,12 +188,17 @@ export function residentSpeculativeNeedsRepair(
     | "spec_dflash_retry_pending"
     | "spec_dspark_sidecar_absent"
     | "spec_drafter_kind"
+    | "is_mlx"
   >,
   resolvedSpeculativeType: string | null,
   /** Whether the load carries a `gguf_path`, which the route sets from the identifier alone:
    *  `source.gguf_path if model_identifier.lower().endswith(".gguf") else None`. */
   sendsGgufPath = false,
 ): boolean {
+  // Every arm below is llama.cpp's; an identical MLX load dedupes.
+  if (status.is_mlx === true) {
+    return false;
+  }
   const mode = resolvedSpeculativeType ?? "auto";
   // Two arms that record no fallback reason, so the reason check below cannot see them. The probe
   // arm is not gated on a mode; the DFlash one is, as the backend gates it.
@@ -240,10 +260,6 @@ const requestedGpuMemoryMode = (
 const cleanTemplate = (value: string | null | undefined): string | null =>
   value?.trim() ? value : null;
 
-/** Mirrors the fields `_runtime_matches_intent` reloads for, plus the MLX pair
- *  `_mlx_runtime_settings_match` compares. Nearly every check is unconditionally pinned: a
- *  config reaches here only after `applyModelLoadConfigToRuntime` resolved each field with `??
- *  null`, so an unset field asks for the default. Only `llamaExtraArgs` is optional. */
 const SETTING_CHECKS: SettingCheck[] = [
   {
     // Resolved, not compared raw: an unset length is Auto, which the load sends as 0 for a cross-model
@@ -263,19 +279,39 @@ const SETTING_CHECKS: SettingCheck[] = [
     mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
-      (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null),
+      (c.mlxKvQuant ?? null) === normalizeMlxKvQuant(s.mlx_kv_quant_requested),
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      Boolean(c.mlxInt8Prefill) === (s.mlx_int8_prefill_requested === true),
   },
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
     // it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s, standing) =>
-      (standing.normalizeSpeculative(c.speculativeType) ??
-        standing.speculativeType) ===
-      (standing.normalizeSpeculative(s.speculative_type) ??
-        standing.speculativeType),
+    agrees: (c, s, standing) => {
+      const unset = resolveSpeculativeType(
+        null,
+        standing.speculativeType ?? "auto",
+        s.is_mlx === true,
+      );
+      const mode = (value: string | null | undefined) => {
+        const resolved = standing.normalizeSpeculative(value) ?? unset;
+        return s.is_mlx === true ? mlxSpeculativeMode(resolved) : resolved;
+      };
+      return mode(c.speculativeType) === mode(s.speculative_type);
+    },
   },
   {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.specDraftModel ?? null) === (s.spec_draft_model ?? null),
+  },
+  {
+    mlxComparable: true,
     // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
     // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
     // as the status carries a count only when a depth-consuming load recorded an override.
@@ -289,8 +325,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Unknown default: null against the status's resolved count is a reload, the safe direction.
-    // defaultParallelSlots is the EFFECTIVE count, so a build that clamps to one slot reloads.
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       (c.nParallel ?? standing.parallelSlots) ===
@@ -334,6 +369,24 @@ const SETTING_CHECKS: SettingCheck[] = [
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
+  },
+  {
+    // The status echoes the EFFECTIVE budget, so a default control against a server the
+    // environment shaped reads as a reload: the safe direction, like the rest.
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.reasoningBudget ?? -1) ===
+      (s.requested_reasoning_budget ?? s.reasoning_budget ?? -1),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.reasoningBudgetMessage ?? "") ===
+      (s.requested_reasoning_budget_message ??
+        s.reasoning_budget_message ??
+        ""),
   },
   {
     // Not nullable, so it always has an opinion; a status omitting it ran without.
@@ -426,39 +479,30 @@ const SETTING_CHECKS: SettingCheck[] = [
         s.is_diffusion === true && reconciled?.length
           ? [Math.min(...reconciled)]
           : reconciled;
-      if (sameGpuSet(pick, s.requested_gpu_ids)) {
+      if (sameGpuPlacement(pick, s.requested_gpu_ids)) {
         return true;
       }
       // Either pool, as matches_gpu_ids accepts either: fitting may narrow the request to the smallest
       // subset that holds the model. Guarded on a non-empty echo, since an absent one is no
       // placement rather than Automatic.
-      return Boolean(s.gpu_ids?.length) && sameGpuSet(pick, s.gpu_ids);
+      return Boolean(s.gpu_ids?.length) && sameGpuPlacement(pick, s.gpu_ids);
     },
   },
   {
-    // The split is placement the config cannot carry: the applier clears splitRatio, so a remembered
-    // config asks for the default distribution while a resident manual load may run a custom one.
-    //
-    // Judged on the mode the RESIDENT server ran, not the one this pick would send. Since
-    // unslothai/unsloth#10884 an auto tensor-parallel load reports a split of its own, chosen by
-    // the planner, and the store never holds one in auto -- applyInferenceStatusToStore nulls it
-    // unless the mode is manual. Comparing the two sides there compares a field the applier
-    // cleared against a server legitimately running the planner's ratio, and declines to adopt a
-    // resident model that is exactly what was asked for. A manual load's custom ratio is still a
-    // real disagreement, and a server too old to report its mode is still compared, so nothing
-    // that used to reload stops reloading.
-    //
-    // Only when the store is holding NO ratio, though. applyInferenceStatusToStore keeps
-    // prevState.splitRatio whenever a gpu-memory edit is pending, so a ratio set under Manual
-    // survives the switch to Auto, and the load path sends store.splitRatio in either mode. Since
-    // this PR the backend honours that ratio in auto too, so adopting on the mode alone would drop
-    // a placement change the user had made and the server would have applied.
+    // A remembered split is dropped with its GPU pick; auto loads may report a planner split unasked.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
-    agrees: (_c, s, standing) =>
-      (s.gpu_memory_mode === "auto" && standing.splitRatio == null) ||
-      sameList(standing.splitRatio, s.tensor_split),
+    agrees: (c, s, standing) => {
+      const split = c.tensorSplit !== undefined
+        ? reconcileTensorSplit(
+            c.tensorSplit,
+            c.selectedGpuIds,
+            standing.reconcileGpuIds(c.selectedGpuIds ?? null, c.selectedGpuIndexKind),
+          )
+        : standing.splitRatio;
+      return (s.gpu_memory_mode === "auto" && split == null) || sameList(split, s.tensor_split);
+    },
   },
   {
     // A managed override the backend would reject outright. Folding it into "no override" here would
@@ -561,6 +605,34 @@ export function residentRuntimeMatchesConfig(
   if (!config) {
     return true;
   }
+  if ((status.engine ?? "auto") !== (config.engine ?? "auto")) return false;
+  if (status.engine === "vllm" || status.engine === "sglang") {
+    if (
+      (status.engine_precision ?? "auto") !== (config.enginePrecision ?? "auto") ||
+      (status.engine_parallelism ?? "tensor") !== (config.engineParallelism ?? "tensor")
+    )
+      return false;
+    if (
+      config.maxSeqLength != null &&
+      config.maxSeqLength > 0 &&
+      config.maxSeqLength !==
+        (status.requested_context_length ?? status.context_length)
+    ) {
+      return false;
+    }
+    const requested = standing.reconcileGpuIds(
+      config.selectedGpuIds ?? null,
+      config.selectedGpuIndexKind,
+    ) ?? standing.defaultEngineGpuIds ?? [0];
+    if (
+      !sameGpuPlacement(
+        requested,
+        status.requested_gpu_ids ?? status.gpu_ids ?? [0],
+      )
+    ) {
+      return false;
+    }
+  }
   const placementPreserved =
     // A virtualised Metal device pins every GGUF request to the CPU before either comparator runs, so
     // placement cannot tell two requests apart there.
@@ -571,8 +643,6 @@ export function residentRuntimeMatchesConfig(
   const diffusion = status.is_diffusion === true;
   return SETTING_CHECKS.every(
     (check) =>
-      // The non-GGUF branch of /load checks identity and the MLX pair, then answers already_loaded, so
-      // no llama.cpp invocation field may decide against one.
       (status.is_gguf === false && !check.mlxComparable) ||
       (diffusion && check.chatOnly) ||
       (diffusion && check.ggufPlacement) ||
@@ -582,3 +652,4 @@ export function residentRuntimeMatchesConfig(
       check.agrees(config, status, standing),
   );
 }
+

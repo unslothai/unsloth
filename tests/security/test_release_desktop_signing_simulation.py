@@ -30,6 +30,7 @@ import pytest
 import yaml
 
 from unsloth_pwsh_runner import run_pwsh
+from windows_console_stub import console_stub_bytes
 
 
 # Only PATHEXT maps a bare name onto the `.exe` the verify step insists on, so checks needing a *passing* resolution are
@@ -385,8 +386,14 @@ def test_verify_fails_when_the_binary_cannot_start(sandbox):
 
 @needs_pathext
 def test_verify_fails_when_the_binary_exits_non_zero(sandbox):
+    # A pip-style launcher that starts and exits 3, not a renamed System32 tool: a Microsoft
+    # binary at trusted-signing-cli.exe is an AV heuristic.
+    stub = console_stub_bytes(3)
+    if stub is None:
+        pytest.skip("no distlib console launcher to build a runnable stub from")
     directory = sandbox["runner_temp"] / "trusted-signing-cli"
-    _real_exe_on_path(directory, pathlib.Path(os.environ["SystemRoot"], "System32", "where.exe"))
+    directory.mkdir(parents = True)
+    (directory / "trusted-signing-cli.exe").write_bytes(stub)
 
     code, out = run_step(sandbox["verify"], {**sandbox["env"], "PATH": _path_with(directory)})
 

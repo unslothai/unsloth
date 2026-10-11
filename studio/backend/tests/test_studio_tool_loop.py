@@ -24,6 +24,7 @@ from core.inference.studio_tool_loop import (
     ToolLoopRun,
     stream_with_studio_tools,
 )
+from core.inference.tool_loop_controller import _reject_json_constant
 
 
 def _shared_setup_1():
@@ -136,6 +137,9 @@ def _run(
     tools = None,
     tool_choice = None,
     messages = None,
+    supports_vision = False,
+    mcp_image = None,
+    continue_final_message = False,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -159,9 +163,12 @@ def _run(
                 session_id = "s1",
                 thread_id = "t1",
                 tool_choice = tool_choice,
+                supports_vision = supports_vision,
+                continue_final_message = continue_final_message,
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
+            mcp_image = mcp_image,
         )
         async for line in agen:
             out.append(line)
@@ -241,6 +248,92 @@ def test_structured_call_executes_and_continues(executed):
     follow_up = transport.requests[1]["messages"]
     assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
     assert follow_up[-1]["content"] == "RESULT<web_search>"
+
+
+def test_provider_compaction_replaces_history_before_tool_follow_up(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {},
+                    _toolEvent = {
+                        "type": "compaction_block",
+                        "encrypted_content": "opaque-current",
+                    },
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"current"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    # ExternalProviderClient synthesizes this control frame after sanitizing the provider stream.
+    transport.sanitizes_provider_frames = True
+    _run(
+        transport,
+        messages = [
+            {"role": "system", "content": "Keep this instruction."},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "current question"},
+        ],
+    )
+
+    follow_up = transport.requests[1]["messages"]
+    assert follow_up[0] == {"role": "system", "content": "Keep this instruction."}
+    assert follow_up[1] == {
+        "role": "assistant",
+        "content": "",
+        "extra_content": {"openai_responses_compaction": "opaque-current"},
+    }
+    serialized = json.dumps(follow_up)
+    assert "old question" not in serialized
+    assert "current question" not in serialized
+    assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
+
+
+def test_a_resumed_reply_does_not_merge_over_the_compaction_it_follows(executed):
+    summary = {"type": "compaction", "content": "Earlier conversation summary"}
+    native = {"anthropic": {"content": [summary, {"type": "text", "text": " rest"}]}}
+    call = {"index": 0, "id": "call_a", "function": {"name": "web_search", "arguments": "{}"}}
+    transport = FakeTransport(
+        [
+            [
+                _sse({}, _toolEvent = {"type": "compaction_block", "content": summary["content"]}),
+                _sse({"content": " rest", "extra_content": native, "tool_calls": [call]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    transport.sanitizes_provider_frames = True
+    _run(
+        transport,
+        messages = [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "A partial"},
+        ],
+        continue_final_message = True,
+    )
+
+    follow_up = transport.requests[1]["messages"]
+    assert [message["role"] for message in follow_up] == ["assistant", "assistant", "tool"]
+    assert follow_up[0]["extra_content"]["anthropic"]["content"] == [summary]
 
 
 def test_a_conversation_search_here_gets_the_active_branch(executed):
@@ -599,6 +692,138 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
     assert [call["name"] for call in executed] == ["web_search"]
 
 
+def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch):
+    from core.inference.mcp_image import McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+    disclosure = {"server": "Trace", "tool": "lookup", "size_bytes": 3}
+    shared = {"disclosure": disclosure, "image": image.approved_for("r1")}
+    asked: list = []
+    monkeypatch.setattr(
+        loop_mod, "mcp_image_share", lambda name, args, image: shared if image else None
+    )
+    monkeypatch.setattr(
+        loop_mod, "begin_tool_decision", lambda session, approval: asked.append(approval) or 1
+    )
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "allow"
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    call = {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}
+    turns = [
+        [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+        [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+    ]
+    lines = _run(FakeTransport(turns), mcp_image = image, bypass_permissions = True)
+
+    start = _events(lines, "tool_start")[0]
+    assert start["awaiting_confirmation"] is True and start["image_disclosure"] == disclosure
+    assert len(asked) == 1 and executed[0]["mcp_image"] == image.approved_for("r1")
+    executed.clear()
+    lines = _run(FakeTransport(turns), bypass_permissions = True)
+    assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
+    assert "mcp_image" not in executed[0]
+
+
+def test_settled_image_call_is_replayed_and_deduped_with_sent_arguments(executed, monkeypatch):
+    from core.inference.mcp_image import ATTACHED_IMAGE, McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+    shared = {
+        "disclosure": {"server": "Trace", "tool": "lookup", "size_bytes": 3},
+        "image": image.approved_for("r1"),
+    }
+
+    def settle(_name, arguments, _image):
+        arguments["image"] = ATTACHED_IMAGE
+        return shared
+
+    monkeypatch.setattr(loop_mod, "mcp_image_share", settle)
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow")
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *_args: None)
+    call = {"index": 0, "function": {"name": "python", "arguments": "{}"}}
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [{**call, "id": "c1"}]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"tool_calls": [{**call, "id": "c2"}]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [PY], mcp_image = image, bypass_permissions = True)
+
+    assert len(executed) == 1
+    replayed = next(
+        message
+        for message in reversed(transport.requests[1]["messages"])
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert json.loads(replayed["tool_calls"][0]["function"]["arguments"]) == {
+        "image": ATTACHED_IMAGE
+    }
+
+
+def test_settled_image_call_keeps_signed_provider_replay_exact(executed, monkeypatch):
+    from core.inference.mcp_image import ATTACHED_IMAGE, McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+
+    def settle(_name, arguments, _image):
+        arguments["image"] = ATTACHED_IMAGE
+        return {
+            "disclosure": {"server": "Trace", "tool": "lookup", "size_bytes": 3},
+            "image": image.approved_for("r1"),
+        }
+
+    monkeypatch.setattr(loop_mod, "mcp_image_share", settle)
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow")
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *_args: None)
+    call = {
+        "index": 0,
+        "id": "c1",
+        "function": {"name": "python", "arguments": "{ }"},
+        "extra_content": {"google": {"thought_signature": "SIG-A"}},
+    }
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [PY], mcp_image = image, bypass_permissions = True)
+
+    assert executed[0]["arguments"] == {"image": ATTACHED_IMAGE}
+    replayed = next(
+        message
+        for message in reversed(transport.requests[1]["messages"])
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )["tool_calls"][0]
+    assert replayed["function"]["arguments"] == "{ }"
+    assert replayed["extra_content"] == {"google": {"thought_signature": "SIG-A"}}
+
+
+def test_the_model_is_told_about_the_attached_image(executed, monkeypatch):
+    from core.inference.mcp_image import McpImage
+
+    monkeypatch.setattr(
+        loop_mod, "mcp_image_targets", lambda names: [("mcp__srv1__lookup", "image")]
+    )
+    turns = [[_sse({"content": "ok"}), _sse(finish = "stop"), _DONE]]
+    messages = [{"role": "user", "content": "what anime is this?"}]
+    transport = FakeTransport(turns)
+    _run(transport, messages = messages, mcp_image = McpImage(mime = "image/png", data = b"IMG"))
+    sent = transport.requests[0]["messages"][-1]["content"]
+    assert sent.startswith("what anime is this?\n\n[The user attached an image")
+    assert 'mcp__srv1__lookup with {"image": "attached_image"}' in sent
+    assert messages == [{"role": "user", "content": "what anime is this?"}]
+    transport = FakeTransport(turns)
+    _run(transport, messages = messages)
+    assert transport.requests[0]["messages"][-1]["content"] == "what anime is this?"
+
+
 def test_full_access_disables_the_sandbox_at_execution(executed):
     transport = _shared_setup_1()
     _run(transport, tools = [PY], bypass_permissions = True)
@@ -611,6 +836,24 @@ def test_sandbox_stays_on_by_default(executed):
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
+    # without approval, the executor keeps the jail even for a host path.
+    assert "host_access_approved" not in executed[0]
+
+
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_only_an_approved_call_is_marked_approved(executed, monkeypatch, verdict):
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: object())
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: verdict
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
+    _run(_shared_setup_1(), tools = [PY], permission_mode = "auto", confirm_calls = True)
+
+    if verdict == "allow":
+        assert executed[0]["host_access_approved"] is True
+    else:
+        assert executed == []
 
 
 # ── Forced tool choice ────────────────────────────────────────────
@@ -998,6 +1241,82 @@ def test_gemini_thought_signature_is_replayed_on_the_assistant_turn(executed):
     assert json.loads(call["function"]["arguments"]) == {"query": "u"}
 
 
+def test_gemini_part_replay_ledgers_accumulate_across_a_tool_turn(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "reasoning_content": "signed thought",
+                        "extra_content": {
+                            "google": {
+                                "thought": True,
+                                "thought_signature": "SIG-T",
+                                "thought_part": {
+                                    "text": "signed thought",
+                                    "thought_signature": "SIG-T",
+                                },
+                            }
+                        },
+                    }
+                ),
+                _sse(
+                    {
+                        "reasoning_content": " unsigned thought",
+                        "extra_content": {
+                            "google": {"thought_part": {"text": " unsigned thought"}}
+                        },
+                    }
+                ),
+                _sse(
+                    {
+                        "content": "answer ",
+                        "extra_content": {"google": {"answer_part": {"text": "answer "}}},
+                    }
+                ),
+                _sse(
+                    {
+                        "content": "tail",
+                        "extra_content": {"google": {"answer_part": {"text": "tail"}}},
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"u"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    transport.preserves_reasoning = True
+    _run(transport)
+
+    assistant = [
+        message
+        for message in transport.requests[1]["messages"]
+        if message.get("role") == "assistant"
+    ][-1]
+    assert assistant["extra_content"]["google"]["thought_parts"] == [
+        {"text": "signed thought", "thought_signature": "SIG-T"},
+        {"text": " unsigned thought"},
+    ]
+    assert assistant["extra_content"]["google"]["answer_parts"] == [{"text": "answer tail"}]
+    assert "thought_signature" not in assistant["extra_content"]["google"]
+
+
 def _call_delta(index, call_id, name, arguments):
     return {
         "index": index,
@@ -1130,6 +1449,52 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     assert len(_events(lines, "tool_end")) == 2
 
 
+@pytest.mark.parametrize("heals", [False, True])
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        '{"query": "b',
+        '{"query":' + "1" * 4301 + "}",
+        "[" * 100_000,
+        '{"query":NaN}',
+    ],
+    ids = ["cut-off", "digit-limit", "nesting-limit", "nan-constant"],
+)
+def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed, heals, fragment):
+    """llama-server parses every replayed tool_call's arguments, so an unparseable one 500s the next turn."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            _call_delta(0, "call_a", "web_search", '{"query":"a"}'),
+                            _call_delta(1, "call_b", "web_search", fragment),
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = heals,
+    )
+    _run(transport, max_calls = 1)
+
+    assert [call["name"] for call in executed] == ["web_search"]
+    assert len(transport.requests) == 2
+    replayed = transport.requests[1]["messages"]
+    exhausted = [
+        call
+        for message in replayed
+        if message.get("role") == "assistant"
+        for call in message.get("tool_calls") or []
+        if call["id"] == "call_b"
+    ][0]
+    json.loads(exhausted["function"]["arguments"], parse_constant = _reject_json_constant)
+
+
 def test_unlimited_budget_runs_past_the_old_fixed_turn_cap(executed):
     """ "Max" means max: the sentinel used to fall back to 25 provider turns.
 
@@ -1258,3 +1623,116 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     _run(transport)
 
     assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+
+
+# ── MCP images ────────────────────────────────────────────────────
+
+
+def _mcp_image_transport() -> FakeTransport:
+    return FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_img",
+                                "function": {
+                                    "name": "mcp__fs__read_media_file",
+                                    "arguments": '{"path":"cat.png"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "A tabby cat."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+
+@pytest.fixture
+def mcp_image_result(monkeypatch):
+    import base64
+    import io
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **kwargs: "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+    )
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+
+
+def test_mcp_images_reach_a_vision_provider_as_their_own_user_turn(mcp_image_result):
+    transport = _mcp_image_transport()
+
+    _run(
+        transport,
+        tools = [_tool("mcp__fs__read_media_file")],
+        supports_vision = True,
+    )
+
+    follow_up = transport.requests[1]["messages"]
+    assert [message["role"] for message in follow_up[-3:]] == ["assistant", "tool", "user"]
+    assert "__MCP_IMAGES__" not in follow_up[-2]["content"]
+    assert follow_up[-1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_mcp_images_are_not_sent_to_a_text_only_provider(mcp_image_result):
+    transport = _mcp_image_transport()
+
+    _run(transport, tools = [_tool("mcp__fs__read_media_file")])
+
+    follow_up = transport.requests[1]["messages"]
+    assert follow_up[-1]["role"] == "tool"
+    assert "__MCP_IMAGES__" not in follow_up[-1]["content"]
+
+
+@pytest.mark.parametrize("preserve", [True, False])
+def test_reasoning_replay_during_tool_rounds_is_opt_in(executed, preserve):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"reasoning_content": "First "}),
+                _sse({"reasoning_content": "thought."}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"unsloth"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    transport.preserves_reasoning = preserve
+    _run(transport)
+    assistant = transport.requests[1]["messages"][-2]
+    assert assistant.get("reasoning_content") == ("First thought." if preserve else None)
+    assert assistant["tool_calls"][0]["function"]["name"] == "web_search"
+    assert transport.requests[1]["messages"][-1]["role"] == "tool"

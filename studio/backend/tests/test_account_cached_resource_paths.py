@@ -143,7 +143,12 @@ def test_a_cache_fallback_after_a_refused_remote_probe_needs_a_grant(
     from routes import training
     from models.training import TrainingStartRequest
 
-    def refused(model_name, hf_token):
+    def refused(
+        model_name,
+        hf_token,
+        load_in_4bit = True,
+        is_embedding = False,
+    ):
         raise HTTPException(status_code = 422, detail = {"code": "hf_model_access_denied"})
 
     monkeypatch.setattr(training, "_remote_untrainable_model_format", refused)

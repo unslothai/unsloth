@@ -35,7 +35,30 @@ on:
   pull_request:
     paths:
       - 'tests/studio/studiobench/**'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
+      - 'studio/setup.sh'
+      # setup.sh's fresh-install path runs install_python_stack.py (setup.sh:2014) and
+      # install_llama_prebuilt.py, so the chain from install.sh --local reaches these too.
+      - 'studio/prebuilt_core.py'
+      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
+      # last executed edge of the installer chain that was not listed here.
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studiobench-ci.yml'
+      # The liveness job boots Studio through boot-studio-api-only.sh, which runs this
+      # checkout's unsloth CLI (unsloth_cli:app). The selftests run pytest
+      # tests/studio/studiobench from the repo root, which loads tests/conftest.py, the
+      # tests package and the tests/_shared helpers.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
       # The harness drives the shipped frontend through the real backend, so a
       # change to either can break it without touching a file under tests/.
       - 'studio/frontend/**'
@@ -56,13 +79,42 @@ on:
       - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
+    paths:
+      - 'tests/studio/studiobench/**'
+      - 'studio/nvidia_probe.py'
+      - 'studio/setup.sh'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - '.github/workflows/studiobench-ci.yml'
+      # The liveness job boots Studio through boot-studio-api-only.sh, which runs this
+      # checkout's unsloth CLI (unsloth_cli:app). The selftests run pytest
+      # tests/studio/studiobench from the repo root, which loads tests/conftest.py, the
+      # tests package and the tests/_shared helpers.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'studio/frontend/**'
+      - 'studio/backend/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
 
 concurrency:
   # Unique per commit on main, so a merge burst cannot cancel a pending run
   # before it starts. Matches studio-ui-smoke.yml, for the reasons documented there.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

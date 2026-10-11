@@ -4,6 +4,10 @@
 import { authFetch } from "@/features/auth";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
 import { useEffect, useSyncExternalStore } from "react";
+import { refreshContextUsage } from "../utils/refresh-context-usage";
+import { SKILL_MENTION_PATTERN } from "./skill-tools";
+
+export { SKILL_MENTION_PATTERN } from "./skill-tools";
 
 export type SkillRecord = {
   name: string;
@@ -12,13 +16,23 @@ export type SkillRecord = {
   enabled: boolean;
   valid: boolean;
   shadowed: boolean;
+  linked?: boolean;
   shadowed_by?: "agents" | "claude" | "bundled" | null;
   error?: string | null;
   license?: string | null;
   compatibility?: string | null;
   metadata?: Record<string, string> | null;
   allowed_tools?: string | null;
+  path?: string | null;
 };
+
+export type SkillDraft = {
+  name: string;
+  description: string;
+  instructions: string;
+};
+
+export type SkillManifest = SkillRecord & { instructions: string };
 
 type SkillsSnapshot = {
   skills: readonly SkillRecord[];
@@ -35,6 +49,8 @@ const EMPTY_SNAPSHOT: SkillsSnapshot = {
 };
 let snapshot = EMPTY_SNAPSHOT;
 let requestGeneration = 0;
+// increment only on sign-out so a prior account's response cannot be published.
+let sessionEpoch = 0;
 let lastFetchedAt = 0;
 let pending: Promise<readonly SkillRecord[]> | null = null;
 const listeners = new Set<() => void>();
@@ -77,7 +93,7 @@ export function listSkills(force = false): Promise<readonly SkillRecord[]> {
     .then((response) => parseResponse<SkillRecord[]>(response))
     .then((skills) => {
       if (!Array.isArray(skills)) {
-        throw new Error("Could not load Agent Skills.");
+        throw new Error("Could not load skills.");
       }
       return skills;
     })
@@ -98,7 +114,7 @@ export function listSkills(force = false): Promise<readonly SkillRecord[]> {
           error:
             error instanceof Error
               ? error.message
-              : "Could not load Agent Skills.",
+              : "Could not load skills.",
         });
       }
       throw error;
@@ -135,15 +151,80 @@ export async function setSkillEnabled(
     error: null,
   });
   channel?.postMessage("changed");
-  void import("../utils/refresh-context-usage").then(
-    ({ refreshContextUsage }) => refreshContextUsage({ invalidate: true }),
-  );
+  void refreshContextUsage({ invalidate: true });
   return updated;
 }
 
-// Spec skill names only, ending at a word boundary: `@example.com`, `@3pm`, `@Probe` are not mentions.
-export const SKILL_MENTION_PATTERN =
-  /(^|\s)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;:!?)\]'"]+(?:$|\s))/g;
+/** set every skill state; null restores fresh-install defaults. */
+export async function setAllSkillsEnabled(
+  enabled: boolean | null,
+): Promise<readonly SkillRecord[]> {
+  const epoch = sessionEpoch;
+  const response = await authFetch("/api/skills", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  const skills = await parseResponse<SkillRecord[]>(response);
+  if (epoch !== sessionEpoch) return skills;
+  // invalidate older reads before publishing the server's post-change list.
+  requestGeneration += 1;
+  lastFetchedAt = Date.now();
+  publish({ skills, loading: false, initialized: true, error: null });
+  channel?.postMessage("changed");
+  void refreshContextUsage({ invalidate: true });
+  return skills;
+}
+
+export const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+export function isValidSkillName(name: string): boolean {
+  return SKILL_NAME_PATTERN.test(name) && !name.includes("--");
+}
+
+async function skillsMutated(): Promise<void> {
+  channel?.postMessage("changed");
+  void refreshContextUsage({ invalidate: true });
+  await listSkills(true).catch(() => undefined);
+}
+
+export async function createSkill(draft: SkillDraft): Promise<SkillRecord> {
+  const response = await authFetch("/api/skills", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  const created = await parseResponse<SkillRecord>(response);
+  await skillsMutated();
+  return created;
+}
+
+export async function getSkillManifest(name: string): Promise<SkillManifest> {
+  const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`);
+  return parseResponse<SkillManifest>(response);
+}
+
+export async function updateSkill(
+  name: string,
+  draft: Omit<SkillDraft, "name">,
+): Promise<SkillRecord> {
+  const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  const updated = await parseResponse<SkillRecord>(response);
+  await skillsMutated();
+  return updated;
+}
+
+export async function deleteSkill(name: string): Promise<void> {
+  const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  await parseResponse<unknown>(response);
+  await skillsMutated();
+}
 
 // authFetch has no deadline, so a hung /api/skills must not stall the send.
 const SETTLE_TIMEOUT_MS = 3000;
@@ -195,6 +276,7 @@ export function useSkillsCatalog(): SkillsSnapshot {
 // The snapshot is module state, so a sign-out must drop it or the next account inherits it.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    sessionEpoch += 1;
     requestGeneration += 1;
     pending = null;
     lastFetchedAt = 0;
@@ -204,7 +286,5 @@ if (typeof window !== "undefined") {
 
 channel?.addEventListener("message", () => {
   void listSkills(true).catch(() => undefined);
-  void import("../utils/refresh-context-usage").then(
-    ({ refreshContextUsage }) => refreshContextUsage({ invalidate: true }),
-  );
+  void refreshContextUsage({ invalidate: true });
 });

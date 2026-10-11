@@ -120,8 +120,9 @@ def test_optimizer_constructs_against_the_installed_bitsandbytes():
 @pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
 @pytest.mark.parametrize("projected", [True, False])
 @pytest.mark.parametrize("initial_value", [0.0, 1.0])
-def test_default_optimizer_updates_match_adamw(projected, initial_value):
-    pytest.importorskip("bitsandbytes")
+@pytest.mark.parametrize("weight_decay", [0.0, 0.1])
+def test_default_optimizer_updates_match_adamw(projected, initial_value, weight_decay):
+    bnb = pytest.importorskip("bitsandbytes")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     requires_bnb_optimizer(device)
     param = nn.Parameter(torch.full((2, 2), initial_value, device = device))
@@ -129,8 +130,10 @@ def test_default_optimizer_updates_match_adamw(projected, initial_value):
     group = {"params": [param]}
     if projected:
         group.update(rank = 2, scale = 1.0, quant = False)
-    optimizer = _adamw_mod.QGaLoreAdamW8bit([group], lr = 0.1, weight_decay = 0.0)
-    reference_optimizer = torch.optim.AdamW([reference], lr = 0.1, weight_decay = 0.0)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit([group], lr = 0.1, weight_decay = weight_decay)
+    # Unprojected steps delegate to bitsandbytes, whose CUDA kernel decays AFTER the update.
+    reference_cls = torch.optim.AdamW if projected else bnb.optim.AdamW8bit
+    reference_optimizer = reference_cls([reference], lr = 0.1, weight_decay = weight_decay)
     # A diagonal gradient keeps full-rank projection aligned with the AdamW reference.
     gradient = torch.diag(torch.tensor([2.0, 1.0], device = device))
     for weight, opt in [(param, optimizer), (reference, reference_optimizer)]:
@@ -171,6 +174,81 @@ def test_removed_bitsandbytes_options_are_rejected(name, value):
         pytest.skip("This bitsandbytes version still supports the option")
     with pytest.raises(ValueError, match = name):
         _adamw_mod.QGaLoreAdamW8bit([nn.Parameter(torch.ones(2))], **{name: value})
+
+
+@pytest.mark.parametrize("out_features,in_features", [(4, 3), (3, 4)])
+def test_projected_step_preserves_full_rank_gradients(out_features, in_features):
+    bnb = pytest.importorskip("bitsandbytes")
+    try:
+        probe = nn.Parameter(torch.ones(2))
+        probe.grad = torch.zeros_like(probe)
+        bnb.optim.AdamW32bit([probe], lr = 0.0).step()
+    except Exception as exc:
+        pytest.skip(
+            reason = f"bitsandbytes build lacks CPU optimizer kernels (older releases): {exc}"
+        )
+    model = nn.Linear(in_features, out_features, bias = False)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit(
+        [{"params": list(model.parameters()), "rank": 1, "quant": False}],
+        lr = 0.01,
+        weight_decay = 0.0,
+    )
+    inputs = torch.arange(2 * in_features, dtype = torch.float32).reshape(2, in_features)
+    for _ in range(2):
+        optimizer.zero_grad(set_to_none = False)
+        model(inputs).square().mean().backward()
+        expected_grad = model.weight.grad.clone()
+        optimizer.step()
+        torch.testing.assert_close(model.weight.grad, expected_grad)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+@pytest.mark.parametrize("quant", [True, False])
+def test_resume_from_weights_only_checkpoint_matches_uninterrupted(quant):
+    """unslothai/unsloth#729: transformers resumes with torch.load(weights_only=True, map_location="cpu")."""
+    import io
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+
+    def make(weight, bias):
+        weight = nn.Parameter(weight.clone())
+        bias = nn.Parameter(bias.clone())
+        projected = {"params": [weight], "rank": 4, "update_proj_gap": 2, "quant": quant}
+        projected.update(queue_size = 2, cos_threshold = 0.0)
+        optimizer = _adamw_mod.QGaLoreAdamW8bit([projected, {"params": [bias]}], lr = 1e-2)
+        return weight, bias, optimizer
+
+    def step(weight, bias, optimizer, i):
+        # svd_lowrank draws from the global RNG, so each step reseeds it.
+        torch.manual_seed(i)
+        weight.grad = torch.randn(weight.shape, device = device)
+        bias.grad = torch.randn(bias.shape, device = device)
+        optimizer.step()
+
+    torch.manual_seed(0)
+    weight, bias, optimizer = make(
+        torch.randn(128, 64, device = device), torch.randn(64, device = device)
+    )
+    for i in range(3):
+        step(weight, bias, optimizer, i)
+    buffer = io.BytesIO()
+    torch.save(optimizer.state_dict(), buffer)
+    assert isinstance(optimizer.state[weight]["projector"], GaLoreProjector)
+    buffer.seek(0)
+    saved = torch.load(buffer, map_location = "cpu", weights_only = True)
+
+    weight2, bias2, resumed = make(weight.detach(), bias.detach())
+    resumed.load_state_dict(saved)
+    projector = resumed.state[weight2]["projector"]
+    assert projector.ortho_matrix.device == weight2.device
+    for i in range(3, 7):
+        step(weight, bias, optimizer, i)
+        step(weight2, bias2, resumed, i)
+    assert torch.equal(weight, weight2)
+    assert torch.equal(bias, bias2)
+    # The adaptive schedule widened the gap after resume, so its saved queue was used.
+    assert projector.update_proj_gap == optimizer.state[weight]["projector"].update_proj_gap == 4
 
 
 # ======================================================================
@@ -244,17 +322,46 @@ class TestGaLoreProjector:
         proj = GaLoreProjector(
             rank = 4,
             update_proj_gap = 10,
-            cos_threshold = 0.0,  # Very low threshold → always triggers
+            cos_threshold = 0.9,
             gamma_proj = 2.0,
             queue_size = 2,
         )
-        # Near-identical gradients keep cosine similarity high.
+        # Near-identical gradients keep the subspace, so |cos| stays near 1.
         base_grad = torch.randn(16, 8)
         for i in range(5):
             grad = base_grad + torch.randn_like(base_grad) * 0.001
             proj.project(grad, step = i * 10)
 
-        assert proj.update_proj_gap > 10
+        assert proj.update_proj_gap > 10, list(proj.queue)
+
+    @staticmethod
+    def _scheduled_gap(monkeypatch, bases, cos_threshold):
+        """Drive the schedule with a fixed sequence of orthogonal bases, one per SVD."""
+        sequence = iter(bases)
+        monkeypatch.setattr(
+            GaLoreProjector,
+            "_compute_orthogonal",
+            staticmethod(lambda *args, **kwargs: next(sequence)),
+        )
+        proj = GaLoreProjector(
+            rank = 2, update_proj_gap = 1, cos_threshold = cos_threshold, gamma_proj = 2.0, queue_size = 2
+        )
+        grad = torch.zeros(8, 8)  # square -> right-side basis (rank, 8)
+        for step in range(len(bases)):
+            if step % proj.update_proj_gap == 0:
+                proj.project(grad, step = step)
+        return proj.update_proj_gap
+
+    def test_adaptive_scheduling_ignores_a_sign_flipped_basis(self, monkeypatch):
+        # A negated basis is the same subspace; a raw dot product reads it as cos = -1.
+        basis = torch.eye(8)[:2]
+        assert self._scheduled_gap(monkeypatch, [basis, -basis, basis], cos_threshold = 0.9) == 2
+
+    def test_adaptive_scheduling_still_rejects_a_rotated_basis(self, monkeypatch):
+        eye = torch.eye(8)
+        assert (
+            self._scheduled_gap(monkeypatch, [eye[:2], eye[2:4], eye[4:6]], cos_threshold = 0.4) == 1
+        )
 
     def test_scale_applied(self):
         """project_back applies the scale factor."""
@@ -572,30 +679,6 @@ class TestQGaLoreIntegration:
         param_names = list(sig.parameters.keys())
         assert "betas" in param_names, "betas not in QGaLoreAdamW8bit.__init__ params"
         assert "eps" in param_names, "eps not in QGaLoreAdamW8bit.__init__ params"
-
-    def test_weight_decay_uses_saved_data(self):
-        """Weight decay should apply standard decoupled AdamW decay on current weights."""
-        _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
-
-        p = torch.nn.Parameter(torch.ones(4, 4))
-        p._saved_data = torch.ones(4, 4) * 2.0  # Pre-update weights
-        # Simulate project-back: p.data = p._saved_data + projected update.
-        p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)  # p.data is now 3.0
-
-        group = {"weight_decay": 0.1, "lr": 1.0, "_wd_saved": 0.1}
-
-        # Decoupled weight decay must use p.data, not p._saved_data.
-        p.data.add_(
-            p.data,
-            alpha = -group["lr"] * group["_wd_saved"],
-        )
-
-        del p._saved_data  # Clean up after all uses, matching fixed code
-
-        # 3.0 - (1.0 * 0.1 * 3.0) = 2.7
-        assert torch.allclose(
-            p.data, torch.tensor(2.7)
-        ), "Weight decay didn't use p.data for decoupled decay!"
 
     def test_params_float_after_weight_quant_step(self):
         """After a step with weight_quant=True, parameters must remain floating point."""

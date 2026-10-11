@@ -479,6 +479,7 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict | None:
             for r in conn.execute(
                 "SELECT id, step_position AS stepPosition, document_id AS documentId, "
                 "chunk_id AS chunkId, filename, page, score, snippet, "
+                "COALESCE(kind, 'knowledge_base') AS kind, "
                 "fetched_at AS fetchedAt FROM research_document_sources "
                 "WHERE run_id = ? ORDER BY id",
                 (run_id,),
@@ -998,8 +999,9 @@ def finish(
             else status
         )
         actual_error = None if actual_status == "cancelled" else error
+        # A cancelled run stores no report: a stop is the user asking for nothing back.
         report_text = None
-        if actual_status == "completed" and event_payload:
+        if actual_status in {"completed", "failed"} and event_payload:
             candidate = event_payload.get("report")
             if isinstance(candidate, str):
                 report_text = candidate
@@ -1287,12 +1289,13 @@ def upsert_document_source(
         conn.execute(
             """INSERT INTO research_document_sources
                (run_id, step_position, source_key, document_id, chunk_id, filename,
-                page, score, snippet, fetched_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                page, score, snippet, fetched_at, kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(run_id, source_key) DO UPDATE SET
                step_position=excluded.step_position, document_id=excluded.document_id,
                chunk_id=excluded.chunk_id, filename=excluded.filename, page=excluded.page,
-               score=excluded.score, snippet=excluded.snippet, fetched_at=excluded.fetched_at""",
+               score=excluded.score, snippet=excluded.snippet, fetched_at=excluded.fetched_at,
+               kind=excluded.kind""",
             (
                 run_id,
                 position,
@@ -1304,6 +1307,7 @@ def upsert_document_source(
                 float(source["score"]) if isinstance(source.get("score"), (int, float)) else None,
                 str(source.get("text") or source.get("snippet") or "")[:4000],
                 fetched_at,
+                "mcp" if source.get("kind") == "mcp" else None,
             ),
         )
         conn.commit()

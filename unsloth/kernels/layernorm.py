@@ -13,7 +13,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_gpu_device
+from .utils import calculate_settings, long_indexing, torch_gpu_device
 from unsloth_zoo.patching_utils import (
     patch_layernorm,
 )
@@ -31,9 +31,12 @@ def layernorm_forward(
     mu,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     row_idx = tl.program_id(0)
+    if LONG_INDEXING:
+        row_idx = row_idx.to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -72,10 +75,13 @@ def layernorm_backward(
     mu,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     # Approximately follows karpathy/llm.c doc/layernorm/layernorm.md
     row_idx = tl.program_id(0)
+    if LONG_INDEXING:
+        row_idx = row_idx.to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -104,7 +110,10 @@ class Fast_Layernorm(torch.autograd.Function):
     def forward(ctx, X, W, b, eps):
         shape = X.shape
         dim = shape[-1]
-        X = X.view(-1, dim)
+        X = X.reshape(-1, dim).contiguous()
+        # The kernels read W and b at unit stride, and these are the ones saved for backward.
+        W = W.contiguous()
+        b = b.contiguous()
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
         device = X.device
@@ -124,6 +133,7 @@ class Fast_Layernorm(torch.autograd.Function):
                 mu,
                 n_cols,
                 eps,
+                LONG_INDEXING = long_indexing(X, Y, block = BLOCK_SIZE),
                 BLOCK_SIZE = BLOCK_SIZE,
                 num_warps = num_warps,
             )
@@ -137,7 +147,7 @@ class Fast_Layernorm(torch.autograd.Function):
     def backward(ctx, dY):
         shape = dY.shape
         dim = shape[-1]
-        dY = dY.view(-1, dim)
+        dY = dY.reshape(-1, dim).contiguous()
         X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
 
@@ -153,6 +163,7 @@ class Fast_Layernorm(torch.autograd.Function):
                 mu,
                 n_cols,
                 ctx.eps,
+                LONG_INDEXING = long_indexing(dY, X, block = ctx.BLOCK_SIZE),
                 BLOCK_SIZE = ctx.BLOCK_SIZE,
                 num_warps = ctx.num_warps,
             )

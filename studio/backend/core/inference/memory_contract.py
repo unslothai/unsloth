@@ -86,9 +86,11 @@ def build_memory_estimate(
     quant_file_bytes: int,
     native_context: Optional[int] = None,
     gpu_floor_bytes: Optional[int] = None,
+    floor_can_offload: bool = False,
     context_is_pinned: bool = True,
     inherited_device_pin: bool = False,
     spec_unpriced: bool = False,
+    context_fitted: Optional[int] = None,
     moe_offload_unmodelled: bool = False,
     gpu_bytes: Any = _UNSET,
     compute_bytes: Any = _UNSET,
@@ -131,6 +133,7 @@ def build_memory_estimate(
         quant_file_bytes = quant,
         resident_files_bytes = resident,
         kv_bytes = int(getattr(breakdown, "kv_bytes", 0) or 0),
+        kv_checkpoint_bytes = int(getattr(breakdown, "kv_checkpoint_bytes", 0) or 0),
         compute_bytes = (
             int(getattr(breakdown, "compute_bytes", 0) or 0)
             if isinstance(compute_bytes, _Unset)
@@ -154,6 +157,7 @@ def build_memory_estimate(
             else (None if gpu_bytes is None else int(gpu_bytes))
         ),
         gpu_floor_bytes = None if gpu_floor_bytes is None else int(gpu_floor_bytes),
+        floor_can_offload = bool(floor_can_offload),
         kv_estimable = bool(getattr(breakdown, "kv_estimable", True)),
         kv_on_gpu = bool(getattr(breakdown, "kv_on_gpu", True)),
         n_ctx = (
@@ -162,6 +166,7 @@ def build_memory_estimate(
             else int(n_ctx or 0)
         ),
         native_context = native_context,
+        context_fitted = context_fitted,
         cache_type_kv = getattr(breakdown, "cache_type_kv", None),
         n_parallel = int(getattr(breakdown, "n_parallel", 1) or 1),
         layer_count = getattr(breakdown, "layer_count", None),
@@ -185,6 +190,7 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         # The aggregate meaning. See the module docstring.
         "weights_bytes": estimate.resident_files_bytes,
         "kv_bytes": estimate.kv_bytes,
+        "kv_checkpoint_bytes": estimate.kv_checkpoint_bytes,
         "compute_bytes": estimate.compute_bytes,
         "drafter_runtime_bytes": estimate.drafter_runtime_bytes,
         "drafter_runtime_gpu_bytes": estimate.drafter_runtime_gpu_bytes,
@@ -196,6 +202,10 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         "kv_estimable": estimate.kv_estimable,
         "kv_on_gpu": estimate.kv_on_gpu,
         "n_ctx": estimate.n_ctx,
+        "context_fitted": estimate.context_fitted,
+        "context_is_pinned": estimate.context_is_pinned,
+        "gpu_floor_bytes": estimate.gpu_floor_bytes,
+        "floor_can_offload": estimate.floor_can_offload,
         "cache_type_kv": estimate.cache_type_kv,
         "n_parallel": estimate.n_parallel,
         "layer_count": estimate.layer_count,

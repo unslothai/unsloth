@@ -64,9 +64,9 @@ test("the chat renderer's rehypePlugins pipeline carries the allowedTags merge i
     "PRECONDITION: the chat renderer relies on the allowedTags sanitizer",
   );
   assert.ok(
-    /const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport\(STREAMDOWN_ALLOWED_TAGS\);/.test(
+    /withDataImageSupport\(STREAMDOWN_ALLOWED_TAGS,/.test(
       MARKDOWN_TEXT,
-    ) && MARKDOWN_TEXT.includes("rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}"),
+    ) && MARKDOWN_TEXT.includes("rehypePlugins={rehypePlugins}"),
     "the passed pipeline must be derived from the defaults AND carry the allowedTags merge",
   );
 });

@@ -2,12 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { isAudioCppFolderId } from "../../audio/audio-cpp-catalog";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
   DEFAULT_STT_MODEL,
   type DefaultSttModel,
   STT_MODELS,
+  STT_MODEL_LANGUAGES,
   STT_MODEL_REPOS,
   type SttModel,
   migrateVoiceSettings,
@@ -26,11 +28,9 @@ export interface RecentDictation {
   chatId?: string;
 }
 
-// Dictation history is kept in full; the list view paginates. QUOTA_TRIM_KEEP is
-// the emergency floor if localStorage runs out of room (see persist wrapper).
+// pagination keeps full history; quota failures trim it to QUOTA_TRIM_KEEP.
 const QUOTA_TRIM_KEEP = 200;
-// Cap stored transcript length so a few long dictations cannot bloat the
-// persisted blob and trip a synchronous localStorage quota error on save.
+// transcript caps prevent synchronous localStorage quota failures.
 const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
@@ -42,7 +42,8 @@ export function isSttModelId(value: string): boolean {
   const normalized = value.trim();
   return (
     (STT_MODELS as readonly string[]).includes(normalized) ||
-    HF_REPO_ID.test(normalized)
+    HF_REPO_ID.test(normalized) ||
+    isAudioCppFolderId(normalized)
   );
 }
 
@@ -58,24 +59,24 @@ export function getSttModelRepo(model: SttModel): string {
   return STT_MODEL_REPOS[model as DefaultSttModel] ?? normalizeSttModel(model);
 }
 
-// All curated models are multilingual. Custom `.en` checkpoints are treated as
-// English-only so a later language change falls back safely.
-export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set([]);
+// Curated models are multilingual except the ones STT_MODEL_LANGUAGES limits.
+// Custom `.en` checkpoints are treated as English-only so a later language
+// change falls back safely.
 
 /** Whether a model can honor the selected dictation language. */
 export function isSttModelLanguageCompatible(
   model: SttModel,
   language: string,
 ): boolean {
-  const isEnglishOnly =
-    ENGLISH_ONLY_STT_MODELS.has(model) ||
-    getSttModelRepo(model).toLowerCase().endsWith(".en");
-  if (!isEnglishOnly) {
+  const allowed =
+    STT_MODEL_LANGUAGES.get(model) ??
+    (getSttModelRepo(model).toLowerCase().endsWith(".en") ? ["en"] : null);
+  if (!allowed) {
     return true;
   }
   const normalized = language.trim().replaceAll("_", "-").toLowerCase();
-  // Auto sends no forced language, which English-only checkpoints accept.
-  return normalized === "auto" || normalized.split("-", 1)[0] === "en";
+  // Auto sends no forced language, which every checkpoint accepts.
+  return normalized === "auto" || allowed.includes(normalized.split("-", 1)[0]);
 }
 
 export type DictationEngine = "browser" | "model" | "custom";
@@ -94,31 +95,31 @@ export type TtsEngine = "system" | "studio" | "custom";
 
 /**
  * Whether a model id is curated. Whisper ids run GGML through whisper.cpp,
- * mtmd ids run through llama.cpp, and custom repos are safetensors on
- * Transformers.
+ * mtmd ids run through llama.cpp, audiocpp ids run through audio.cpp, and
+ * custom repos are safetensors on Transformers.
  */
 export function isCuratedSttModel(model: SttModel): boolean {
   return (STT_MODELS as readonly string[]).includes(model.trim());
 }
 
 export interface VoiceSettingsState {
-  /** Input device for dictation. "default" = system default microphone. */
+  /** input device; "default" selects the system microphone. */
   micDeviceId: string;
   setMicDeviceId: (value: string) => void;
 
-  /**
-   * "browser": Web Speech API. "model": local transcription; the model decides
-   * the backend (whisper.cpp for curated GGML, Transformers for custom repos).
-   */
+  /** "browser" uses Web Speech API; "model" chooses the local backend from the model. */
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
 
-  /** STT model to use when dictationEngine is "model". */
+  /** STT model used when dictationEngine is "model". */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
-  /** "cpu" holds the dictation model in system RAM instead of the GPU. Sent
-   *  with every load and transcribe, so a change applies on the next load. */
+  /** quant for a package folder `sttModel`; "" uses its resident or default quant. */
+  sttGgufVariant: string;
+  setSttGgufVariant: (value: string) => void;
+
+  /** "cpu" keeps the model in system RAM; loads and transcriptions apply the current value. */
   sttDevice: SttDevice;
   setSttDevice: (value: SttDevice) => void;
 
@@ -127,11 +128,11 @@ export interface VoiceSettingsState {
   sttProviderModel: string;
   setSttProviderModel: (value: string) => void;
 
-  /** bcp 47 tag for speech recognition, or "auto" for engine-specific detection. */
+  /** BCP 47 tag, or "auto" for engine-specific language detection. */
   dictationLanguage: string;
   setDictationLanguage: (value: string) => void;
 
-  /** Exact spellings applied to matching transcript words and phrases. */
+  /** exact spellings applied to matching transcript words and phrases. */
   dictionary: string[];
   addDictionaryEntry: (value: string) => void;
   updateDictionaryEntry: (index: number, value: string) => void;
@@ -163,6 +164,10 @@ export interface VoiceSettingsState {
   /** Voice name sent to the custom endpoint; blank input defaults to alloy. */
   ttsProviderVoice: string;
   setTtsProviderVoice: (value: string) => void;
+
+  /** Saved Audio voice id the "studio" engine speaks in; "" for the model's own voice. */
+  ttsStudioVoiceId: string;
+  setTtsStudioVoiceId: (value: string) => void;
 
   /** speechSynthesis voiceURI, or "default" for the system voice. */
   ttsVoiceURI: string;
@@ -229,16 +234,21 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       sttModel: DEFAULT_STT_MODEL,
       setSttModel: (value) =>
         set((state) => {
-          const sttModel = normalizeSttModel(value);
-          return {
-            sttModel: isSttModelLanguageCompatible(
-              sttModel,
-              state.dictationLanguage,
-            )
-              ? sttModel
-              : DEFAULT_STT_MODEL,
-          };
+          const normalized = normalizeSttModel(value);
+          const sttModel = isSttModelLanguageCompatible(
+            normalized,
+            state.dictationLanguage,
+          )
+            ? normalized
+            : DEFAULT_STT_MODEL;
+          // a quant belongs to the model it was selected for.
+          return sttModel === state.sttModel
+            ? { sttModel }
+            : { sttModel, sttGgufVariant: "" };
         }),
+
+      sttGgufVariant: "",
+      setSttGgufVariant: (sttGgufVariant) => set({ sttGgufVariant }),
 
       sttDevice: DEFAULT_STT_DEVICE,
       setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
@@ -250,15 +260,15 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
 
       dictationLanguage: "auto",
       setDictationLanguage: (dictationLanguage) =>
-        set((state) => ({
-          dictationLanguage,
-          sttModel: isSttModelLanguageCompatible(
-            state.sttModel,
-            dictationLanguage,
-          )
-            ? state.sttModel
-            : DEFAULT_STT_MODEL,
-        })),
+        set((state) =>
+          isSttModelLanguageCompatible(state.sttModel, dictationLanguage)
+            ? { dictationLanguage }
+            : {
+                dictationLanguage,
+                sttModel: DEFAULT_STT_MODEL,
+                sttGgufVariant: "",
+              },
+        ),
 
       dictionary: [],
       addDictionaryEntry: (value) =>
@@ -341,6 +351,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       ttsProviderVoice: "",
       setTtsProviderVoice: (ttsProviderVoice) => set({ ttsProviderVoice }),
 
+      ttsStudioVoiceId: "",
+      setTtsStudioVoiceId: (ttsStudioVoiceId) => set({ ttsStudioVoiceId }),
+
       ttsVoiceURI: "default",
       setTtsVoiceURI: (ttsVoiceURI) => set({ ttsVoiceURI }),
 
@@ -380,6 +393,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
           sttModel,
+          sttGgufVariant:
+            sttModel === savedSttModel
+              ? asString(saved?.sttGgufVariant, "")
+              : "",
           sttDevice: normalizeSttDevice(saved?.sttDevice),
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),
@@ -400,6 +417,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ttsProviderId: asString(saved?.ttsProviderId, ""),
           ttsProviderModel: asString(saved?.ttsProviderModel, ""),
           ttsProviderVoice: asString(saved?.ttsProviderVoice, ""),
+          ttsStudioVoiceId: asString(saved?.ttsStudioVoiceId, ""),
           ttsVoiceURI: asString(saved?.ttsVoiceURI, "default"),
           ttsRate: clampNumber(saved?.ttsRate, 0.5, 2, 1),
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),

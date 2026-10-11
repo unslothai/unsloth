@@ -8,20 +8,47 @@ a backend that cannot exist.
 
 Upward, the one that bit: the route must still serve a request driven by a bare double. #8700 added
 an unguarded ``context_length`` read and updated five of eight test files, giving 19 failures split
-between ``AttributeError`` and 20-second timeouts, neither naming the attribute. The canary below
-fails in one place instead, with the attribute in the message.
+between ``AttributeError`` and 20-second timeouts, neither naming the attribute. The canaries below
+fail in one place instead, with the attribute in the message: one drives /chat/completions, and one
+checks that /status can answer every runtime field it mirrors off the backend.
 """
 
 from __future__ import annotations
 
 import pytest
 from fastapi import FastAPI
+from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
+from models.inference import _InferenceRuntimeFields
 import routes.inference as inference_route
 
 from .llama_backend_double import FakeLlamaCppBackend
+
+
+def test_status_runtime_fields_survive_a_double_that_answers_none():
+    """A runtime field that rejects None needs a real value on the shared double.
+
+    The chat-completions canary does not reach /status, the one route that mirrors every
+    `_InferenceRuntimeFields` name off the backend, so a field added to that model and nowhere
+    else is served as None and rejected by its own response. That arrived as three red
+    multi-account tests asserting `{"detail":"Failed to get status"}`, naming neither the field
+    nor the double. This fails here instead, with the field in the message.
+    """
+    fields = inference_route._llama_runtime_fields(FakeLlamaCppBackend())
+    # Supplied by the route, not the backend; _llama_runtime_fields excuses it for that reason.
+    fields["requires_trust_remote_code"] = False
+
+    try:
+        _InferenceRuntimeFields(**fields)
+    except ValidationError as error:
+        rejected = sorted({str(item["loc"][0]) for item in error.errors()})
+        raise AssertionError(
+            f"/status cannot answer {rejected} from a backend double: the field is not Optional, "
+            "so None is not a value it accepts. Give it the value LlamaCppBackend.__init__ uses "
+            "in FakeLlamaCppBackend, rather than to one test's fake."
+        ) from None
 
 
 def test_the_double_claims_nothing_the_real_backend_lacks():

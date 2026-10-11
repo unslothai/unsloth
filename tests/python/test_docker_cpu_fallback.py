@@ -275,6 +275,24 @@ class TestStudioImageAllowsCpu:
             re.M,
         ), "Dockerfile.studio does not bundle its own entrypoint"
 
+    def test_the_studio_image_keeps_the_base_entrypoint_directive(self):
+        """The bundled file replaces the base's copy at the SAME path and the base's
+        ENTRYPOINT directive stays: a second ENTRYPOINT or a different destination
+        would let the two images drift apart again."""
+        studio = open(_STUDIO_DF, encoding = "utf-8").read()
+        base = open(_BASE_DF, encoding = "utf-8").read()
+        dest = re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", base, re.M)
+        assert dest == ["/usr/local/bin/unsloth-entrypoint"], dest
+        assert re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", studio, re.M) == dest
+        # The copy alone proves nothing: the base must still RUN that file, or the
+        # inherited ENTRYPOINT no longer translates UNSLOTH_IMAGE_ALLOW_CPU.
+        assert re.findall(r"^\s*ENTRYPOINT\s+(.+?)\s*$", base, re.M) == [
+            '["/usr/local/bin/unsloth-entrypoint"]'
+        ], "base Dockerfile no longer runs the bundled entrypoint"
+        assert not re.search(
+            r"^\s*ENTRYPOINT\b", studio, re.M
+        ), "Dockerfile.studio must inherit the base ENTRYPOINT, not declare its own"
+
     def test_the_base_training_image_keeps_the_strict_check(self):
         """FastLanguageModel genuinely needs a GPU, so :core must NOT default it."""
         body = open(_BASE_DF, encoding = "utf-8").read()

@@ -3,11 +3,13 @@
 
 "use client";
 
+import type { HighlightResult } from "@streamdown/code";
 import {
   memo,
   type RefObject,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -15,7 +17,15 @@ import { flushSync } from "react-dom";
 
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
+import {
+  isBlankLine,
+  type LineWindow,
+  lineIsWindowed,
+  plainLineText,
+  selectLineWindow,
+} from "./code-fence-window";
 import { normalizeLanguage } from "./code-plugin";
+import { WINDOW_CAP_LINES } from "./code-fence-window";
 
 /*
  * MONOTONIC fence highlighting: a fence renders as a plain shell until the first time it comes near
@@ -348,9 +358,18 @@ const scheduleGrammarWarm = (): void => {
 };
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("beforeprint", upgradeEverythingForPrint);
+  window.addEventListener("beforeprint", () => {
+    upgradeEverythingForPrint();
+    setPrinting(true);
+  });
+  window.addEventListener("afterprint", () => setPrinting(false));
   window.matchMedia?.("print")?.addEventListener?.("change", (event) => {
-    if (event.matches) upgradeEverythingForPrint();
+    if (event.matches) {
+      upgradeEverythingForPrint();
+      setPrinting(true);
+    } else {
+      setPrinting(false);
+    }
   });
 }
 
@@ -571,3 +590,425 @@ export function useFenceReached(
 }
 
 export const DeferredFenceShell = memo(FenceShell);
+
+/*
+ * The highlighted body, rendered here rather than by streamdown.
+ *
+ * Streamdown's `CodeBlockBody` maps the whole token array every render and memoizes on
+ * `prev.result === next.result`, reference equality, while `code-plugin.ts` returns a fresh object
+ * every call, so the memo never hits and every line and token rebuilds each frame. The spans are
+ * the cost, not the tokenizer: #10779 kept calling the highlighter, stopped rendering the tokens
+ * and still doubled the frame rate, and `scripts/coal-span-census.mjs` shows Shiki's tokens are
+ * already maximally coalesced, so merging cannot help.
+ *
+ * So: one memoized component per line (a committed line's identity is stable, so `memo` bails),
+ * plus a line window past `WINDOW_CAP_LINES` (see `code-fence-window.ts`).
+ *
+ * The DOM is streamdown's element for element and class for class, because
+ * `playwright_code_block_flicker.py` reads computed styles off this subtree and a perf change that
+ * also moved the rendering could not be attributed.
+ */
+
+export type FenceTokens = HighlightResult;
+type TokenLine = HighlightResult["tokens"][number];
+type FenceToken = TokenLine[number];
+
+/* Streamdown's own class lists, copied verbatim. The `bg-[var(--sdm-bg,inherit]` spellings are
+ * unbalanced in streamdown 2.5's build and therefore generate no rule at all; they are reproduced
+ * as they are because the goal is the same DOM, not a tidier one. */
+/*
+ * The one deliberate difference from streamdown's line class: it writes a raw pixel text utility,
+ * which `tests/studio/test_ui_font_scale_contract.py` forbids anywhere in frontend source, comments
+ * included, because a fixed size ignores the UI font preference. `text-ui-13` scales with it.
+ * Moot in the thread either way: `index.css` gives that pseudo-element `display: none`.
+ */
+const LINE_CLASS =
+  "block before:content-[counter(line)] before:inline-block before:[counter-increment:line] before:w-6 before:mr-4 before:text-ui-13 before:text-right before:text-muted-foreground/50 before:font-mono before:select-none";
+const CODE_CLASS = "[counter-increment:line_0] [counter-reset:line]";
+const PRE_CLASS =
+  "bg-[var(--sdm-bg,inherit] dark:bg-[var(--shiki-dark-bg,var(--sdm-bg,inherit)]";
+const TOKEN_CLASS =
+  "text-[var(--sdm-c,inherit)] dark:text-[var(--shiki-dark,var(--sdm-c,inherit))]";
+const TOKEN_BG_CLASS =
+  "bg-[var(--sdm-tbg)] dark:bg-[var(--shiki-dark-bg,var(--sdm-tbg))]";
+
+/*
+ * THE `language-x` CLASS, WHICH IS NOT DECORATION. `remark-rehype` puts `language-<info>` on the
+ * `<code>` of a fenced block, streamdown passes that `className` straight through to BOTH the body
+ * div and the `<pre>`, and dropping it was measured as the only DOM difference between this body
+ * and the one it replaces. Nothing in the tree selects on it today, which is exactly why it would
+ * have gone unnoticed: it is a published rendering contract, user stylesheets and future probes
+ * reach for it, and `math-block-marker.ts` already relies on the same `language-` convention one
+ * layer up. The token is the FIRST word of the info string, so ```python startLine=10 is
+ * `language-python`, which is what `languageToken` already holds.
+ */
+const joinClasses = (...parts: (string | null)[]): string =>
+  parts.filter((part): part is string => Boolean(part)).join(" ");
+
+/* `rootStyle` arrives as a CSS declaration string. Parsed the way streamdown parses it, splitting
+ * on the FIRST colon only, so a `url(data:...)` value survives. */
+const parseDeclarations = (text: string): Record<string, string> => {
+  const style: Record<string, string> = {};
+  for (const declaration of text.split(";")) {
+    const colon = declaration.indexOf(":");
+    if (colon <= 0) continue;
+    const property = declaration.slice(0, colon).trim();
+    const value = declaration.slice(colon + 1).trim();
+    if (property && value) style[property] = value;
+  }
+  return style;
+};
+
+const tokenStyle = (
+  token: FenceToken,
+): { style: Record<string, string>; hasBackground: boolean } => {
+  const style: Record<string, string> = {};
+  let hasBackground = Boolean(token.bgColor);
+  if (token.color) style["--sdm-c"] = token.color;
+  if (token.bgColor) style["--sdm-tbg"] = token.bgColor;
+  if (token.htmlStyle) {
+    for (const [property, value] of Object.entries(token.htmlStyle)) {
+      if (property === "color") style["--sdm-c"] = value;
+      else if (property === "background-color") {
+        style["--sdm-tbg"] = value;
+        hasBackground = true;
+      } else style[property] = value;
+    }
+  }
+  return { style, hasBackground };
+};
+
+/**
+ * One line of a fence.
+ *
+ * Memoized on the default shallow comparison, which is all it needs: `line` is the array
+ * `code-plugin.ts` committed and never touches again, and `windowed` only changes when the reader
+ * moves far enough for the window to move. A fence growing by a character re-renders its last line
+ * and nothing else.
+ */
+export const FenceLine = memo(function FenceLine({
+  line,
+  windowed,
+  inline = false,
+}: {
+  line: TokenLine;
+  windowed: boolean;
+  inline?: boolean;
+}) {
+  if (!inline && isBlankLine(line)) {
+    return <span className={LINE_CLASS}>{"\n"}</span>;
+  }
+  if (!windowed) {
+    // One text node for the whole line. Same characters, same block box, same height: the only
+    // thing this line has given up is its colour, and it is off screen.
+    return (
+      <span className={inline ? "inline" : LINE_CLASS}>
+        {plainLineText(line)}
+      </span>
+    );
+  }
+  return (
+    <span className={inline ? "inline" : LINE_CLASS}>
+      {line.map((token, index) => {
+        const { style, hasBackground } = tokenStyle(token);
+        return (
+          <span
+            className={
+              hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS
+            }
+            key={index}
+            style={style}
+            {...token.htmlAttrs}
+          >
+            {token.content}
+          </span>
+        );
+      })}
+    </span>
+  );
+});
+
+// One scroll listener and one frame for every windowed fence: each measurement reads layout, so a
+// listener per fence makes scrolling cost more than the rendering the window avoids. Same shape
+// `watchScrolling` uses for the reach latch, coalesced into a frame.
+const windowedFences = new Set<() => void>();
+let windowFrame = 0;
+let windowWatched = false;
+
+/*
+ * A print puts the whole document on the page, so the whole fence is coloured;
+ * `upgradeEverythingForPrint` makes the same argument for a deferred fence.
+ *
+ * This one REVERTS where the latch does not: the tokens are already in `fence.lines`, so
+ * re-windowing costs element creation only, and not reverting would let one Ctrl+P un-window every
+ * huge fence for the life of the tab. Both doors, as above: `beforeprint` for Ctrl+P, the media
+ * query for `page.pdf()` and devtools emulation, which do not fire it.
+ */
+let printing = false;
+
+const remeasureWindows = (): void => {
+  windowFrame = 0;
+  for (const measure of windowedFences) measure();
+};
+
+/** Is a print in progress? While it is, every fence renders every line highlighted. */
+export const fencePrinting = (): boolean => printing;
+
+/*
+ * Synchronous, and inside `flushSync`, for the same reason `latchNow` is: a normally scheduled
+ * update lands after the next paint, and there is no next paint before the print snapshot.
+ */
+const setPrinting = (value: boolean): void => {
+  // BEFORE the window check: a print that starts while a fence still shows its shell has no window
+  // to remeasure, but the state must still be recorded or the tokens arrive mid-preview and window
+  // it. Only the flush is skipped when there is nothing to remeasure.
+  if (printing === value) return;
+  printing = value;
+  if (windowFrame !== 0) {
+    cancelAnimationFrame(windowFrame);
+    windowFrame = 0;
+  }
+  if (windowedFences.size === 0) return;
+  flushSync(remeasureWindows);
+};
+
+const scheduleRemeasure = (): void => {
+  if (windowFrame !== 0 || windowedFences.size === 0) return;
+  windowFrame = requestAnimationFrame(remeasureWindows);
+};
+
+const watchWindows = (): void => {
+  if (windowWatched || typeof document === "undefined") return;
+  windowWatched = true;
+  // Capturing, because scroll does not bubble but does capture, so this one listener sees the
+  // thread scroller AND the nested reasoning pane.
+  document.addEventListener("scroll", scheduleRemeasure, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("resize", scheduleRemeasure, { passive: true });
+};
+
+const unwatchWindows = (): void => {
+  if (!windowWatched || windowedFences.size > 0 || typeof document === "undefined") {
+    return;
+  }
+  windowWatched = false;
+  document.removeEventListener("scroll", scheduleRemeasure, { capture: true });
+  window.removeEventListener("resize", scheduleRemeasure);
+  if (windowFrame !== 0) {
+    cancelAnimationFrame(windowFrame);
+    windowFrame = 0;
+  }
+};
+
+/**
+ * Which lines of this fence carry token spans, or `null` for all of them.
+ *
+ * The geometry is read here and the decision is made in `code-fence-window.ts`, which is a
+ * JSX-free module so that a test can RUN the arithmetic rather than regex this file.
+ */
+function useLineWindow(
+  code: RefObject<HTMLElement | null>,
+  /*
+     * The fence's outermost element, and the ONLY thing it is used for is finding the scrolling
+     * ancestor. `scrollerOf` starts at `parentElement` and tests `overflow-y`, and a code block
+     * carries `overflow-x: auto`, which makes `overflow-y` compute to `auto` as well
+     * (css-overflow-3: a non-visible value on one axis forces the other off `visible`). Walking up
+     * from the `<code>` would therefore be one `scrollHeight` away from rooting the whole window
+     * calculation inside the fence's own horizontal scroller. Starting outside the block skips
+     * both of them, and it is the element the reach latch already measures against.
+     */
+  frame: RefObject<HTMLElement | null>,
+  lineCount: number,
+  enabled: boolean,
+): LineWindow | null {
+  const [lineWindow, setLineWindow] = useState<LineWindow | null>(null);
+  // The rendered window, read by `measure` without making it an effect dependency: the effect
+  // registers a listener, and rebuilding that on every window move would defeat the coalescing.
+  const current = useRef<LineWindow | null>(null);
+  const lines = useRef(lineCount);
+  lines.current = lineCount;
+  const hasBody = lineCount > 0;
+  const measure = useRef<() => void>(() => {});
+
+  measure.current = () => {
+    const node = code.current;
+    const outer = frame.current;
+    if (!node || !outer) return;
+    // Under the cap a window can never apply, so no layout read is needed. A streaming fence that
+    // grows past the cap re-registers through the ResizeObserver.
+    if (lines.current <= WINDOW_CAP_LINES && current.current === null) return;
+    // See `setPrinting`: the whole document is on the page, so the whole fence is coloured.
+    if (printing) {
+      if (current.current === null) return;
+      current.current = null;
+      setLineWindow(null);
+      return;
+    }
+    const scroller = scrollerOf(outer);
+    const bounds = scroller?.getBoundingClientRect();
+    const rect = node.getBoundingClientRect();
+    const count = lines.current;
+    const next = selectLineWindow({
+      lineCount: count,
+      // MEASURED, never assumed. `index.css` pins `line-height: 1.55` on the code block, but the
+      // font size is a `--ui-font-scale` multiple inside a container query, so the pixel height is
+      // not knowable from here. Every line is rendered, so the mean IS the line height.
+      lineHeight: count > 0 ? rect.height / count : 0,
+      contentTop: rect.top,
+      viewportTop: bounds ? bounds.top : 0,
+      viewportHeight: bounds ? bounds.height : window.innerHeight,
+      previous: current.current,
+    });
+    // `selectLineWindow` hands the previous object straight back when nothing moved, so this is an
+    // identity check and an ordinary scroll costs no render at all.
+    if (next === current.current) return;
+    current.current = next;
+    setLineWindow(next);
+  };
+
+  /*
+     * IN A LAYOUT EFFECT, AND KEYED ON THE BODY EXISTING.
+     * Two things go wrong with a passive effect keyed on `enabled` alone, and the browser probe
+     * caught both. A fence renders the plain shell until its grammar chunk lands, so at mount there
+     * is no `<code>` to measure and no element for the ResizeObserver to watch; keyed only on
+     * `enabled` the effect never runs again once the tokens arrive, and the window stayed off until
+     * the reader happened to scroll (measured: 30,861 spans still mounted). And a passive effect
+     * lands after the paint, so the frame that introduces a 20,000 line fence paints every span in
+     * it before the window takes them away. Layout effects run after mutation and before paint, so
+     * the first painted frame is already windowed.
+     */
+  useLayoutEffect(() => {
+    if (!enabled) {
+      current.current = null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLineWindow(null);
+      return;
+    }
+    const run = () => measure.current();
+    windowedFences.add(run);
+    watchWindows();
+    run();
+    /*
+       * The fence's own growth moves nothing the scroll listener would notice: a streamed line
+       * lands below the viewport and the reader has not moved. A ResizeObserver on the code
+       * element is what sees it, and it also covers the font finishing loading, the thread column
+       * changing width, and the reasoning pane expanding.
+       */
+    /*
+       * OBSERVED ON THE WRAPPER, NOT ON THE `<code>`.
+       * A `<code>` is `display: inline`, and ResizeObserver does not observe an element with no
+       * principal box: the callback simply never fires. Measured, not read off the spec -- with the
+       * observer on the `<code>` a fence streamed past 3,000 lines and 23,139 spans and the window
+       * never once engaged, because the only thing that ever called `measure` was the one call this
+       * effect makes, back when the fence was one line long. The wrapper is a flex container, it
+       * grows by exactly what the code grows by, and it is already resolved here.
+       */
+    let resize: ResizeObserver | undefined;
+    const box = frame.current;
+    if (box && typeof ResizeObserver !== "undefined") {
+      resize = new ResizeObserver(scheduleRemeasure);
+      resize.observe(box);
+    }
+    return () => {
+      resize?.disconnect();
+      windowedFences.delete(run);
+      unwatchWindows();
+    };
+    // `hasBody` and not `lineCount`: the count changes on every streamed line and re-registering
+    // per line would throw away the coalescing this exists for. The transition that matters is the
+    // shell becoming a real body, and it happens once.
+  }, [enabled, hasBody, code, frame]);
+
+  return enabled ? lineWindow : null;
+}
+
+/**
+ * A fence's body, highlighted, with the spans bounded to what is on screen.
+ *
+ * Falls back to the plain shell whenever there are no tokens to render, which is the window
+ * between a fence appearing and its grammar chunk arriving. That is the same markup the deferred
+ * shell uses and the same markup streamdown's own unhighlighted fallback uses, so the fence does
+ * not change shape when the colours land.
+ */
+export const FenceBody = memo(function FenceBody({
+  isIncomplete,
+  language,
+  result,
+  source,
+  windowing,
+}: {
+  /** Streamdown's unclosed-fence flag, reproduced as `data-incomplete` on the wrapper. */
+  isIncomplete: boolean | undefined;
+  language: string | null;
+  result: FenceTokens | null;
+  source: string;
+  /** False keeps every line highlighted however long the fence is, which is what main does. */
+  windowing: boolean;
+}) {
+  const code = useRef<HTMLElement | null>(null);
+  const frame = useRef<HTMLDivElement | null>(null);
+  const tokens = result?.tokens ?? null;
+  const lineWindow = useLineWindow(code, frame, tokens?.length ?? 0, windowing);
+  const languageClass = language === null ? null : `language-${language}`;
+
+  const rootStyle = useMemo(() => {
+    const style: Record<string, string> = {};
+    if (!result) return style;
+    if (result.bg) style["--sdm-bg"] = result.bg;
+    if (result.fg) style["--sdm-fg"] = result.fg;
+    if (result.rootStyle) Object.assign(style, parseDeclarations(result.rootStyle));
+    return style;
+  }, [result]);
+
+  // No tokens yet, or a result carrying no lines at all. Both fall back to the plain shell, which
+  // is one line tall for an empty body where a `<code>` with no children is nothing at all.
+  if (!tokens || tokens.length === 0) {
+    return <FenceShell language={language} source={source} />;
+  }
+
+  return (
+    <div
+      className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
+      data-incomplete={isIncomplete || undefined}
+      data-language={language ?? undefined}
+      data-streamdown="code-block"
+      ref={frame}
+      // Streamdown declares both inline. `index.css` then forces `content-visibility: visible`
+      // back on for code blocks, because WebKit before Safari 26 cannot find-in-page skipped
+      // content, but the declaration is reproduced so the computed cascade is identical to the one
+      // `playwright_code_block_flicker.py` reads.
+      style={{ containIntrinsicSize: "auto 200px", contentVisibility: "auto" }}
+    >
+      <div
+        className="flex h-8 items-center text-muted-foreground text-xs"
+        data-language={language ?? undefined}
+        data-streamdown="code-block-header"
+      >
+        <span className="ml-1 font-mono lowercase">{language}</span>
+      </div>
+      <div
+        className={joinClasses(
+          languageClass,
+          "overflow-x-auto rounded-md border border-border bg-background p-4 text-sm",
+        )}
+        data-language={language ?? undefined}
+        data-streamdown="code-block-body"
+        data-unsloth-fence-windowed={lineWindow === null ? undefined : "true"}
+      >
+        <pre className={joinClasses(languageClass, PRE_CLASS)} style={rootStyle}>
+          <code className={CODE_CLASS} ref={code}>
+            {tokens.map((line, index) => (
+              <FenceLine
+                key={index}
+                line={line}
+                windowed={lineIsWindowed(lineWindow, index)}
+              />
+            ))}
+          </code>
+        </pre>
+      </div>
+    </div>
+  );
+});

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD polkit Policy Configuration 1.0//EN" "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+  <vendor>Unsloth AI</vendor>
+  <vendor_url>https://unsloth.ai/</vendor_url>
+  <icon_name>unsloth-studio</icon_name>
+  <action id="ai.unsloth.studio.update">
+    <description>Update Unsloth</description>
+    <message>Authentication is required to update Unsloth.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/unsloth-studio</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--install-debian-update</annotate>
+  </action>
+</policyconfig>

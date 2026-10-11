@@ -3,14 +3,14 @@
 
 import pytest
 from real_accelerator import (
-    has_real_accelerator,
+    has_real_cuda,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 pytestmark = pytest.mark.gpu
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("layout", ["contiguous", "columns", "rows", "expanded"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -47,7 +47,7 @@ def test_rmsnorm_backward_gradient_layout(gemma, layout, dtype):
     torch.testing.assert_close(actual_inputs.grad, reference_inputs.grad, rtol = 2e-2, atol = 1e-2)
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_rmsnorm_forward_column_strided_input(gemma, dtype):
@@ -77,7 +77,7 @@ def test_rmsnorm_forward_column_strided_input(gemma, dtype):
     torch.testing.assert_close(source.grad, reference_source.grad, rtol = 2e-2, atol = 1e-2)
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("layout", ["contiguous", "columns", "expanded"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])

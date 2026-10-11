@@ -202,6 +202,7 @@ _chunked_cross_entropy_forward = triton.heuristics(
 def _cross_entropy_backward(
     logits_ptr,
     logits_row_stride: tl.constexpr,
+    dlogits_ptr,
     dloss_ptr,
     dloss_row_stride: tl.constexpr,
     logsumexp_ptr,
@@ -232,6 +233,7 @@ def _cross_entropy_backward(
     block_idx = tl.program_id(1)
 
     logits_ptr += row_idx * triton_cast(logits_row_stride, tl.int64)
+    dlogits_ptr += row_idx * triton_cast(logits_row_stride, tl.int64)
     dloss_ptr += row_idx * dloss_row_stride
     col_offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
@@ -273,7 +275,7 @@ def _cross_entropy_backward(
         y = y * (1.0 - partial * partial)
 
     # If y == 0 then dC/dx = 0, and it is already masked to 0, so dloss = 0.
-    tl.store(logits_ptr + col_offsets, dloss * y, mask = mask)
+    tl.store(dlogits_ptr + col_offsets, dloss * y, mask = mask)
 
 
 _cross_entropy_backward = triton.jit(_cross_entropy_backward)
@@ -298,7 +300,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         vocab_size: int
         n_rows, vocab_size = logits.shape
         device = logits.device
-        labels = labels.to(device)
+        logits = logits.contiguous()
+        labels = labels.to(device).contiguous()
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
         n_chunks: int = div + (mod != 0)
@@ -381,6 +384,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         n_rows: int
         vocab_size: int
         n_rows, vocab_size = logits.shape
+        # Preserve saved logits for other losses and repeated backward calls.
+        dlogits = torch.empty_like(logits)
 
         BLOCK_SIZE: int = 4096
         div: int
@@ -397,6 +402,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             ](
                 logits,
                 logits.stride(0),
+                dlogits,
                 dlosses,
                 dlosses.stride(0),
                 logsumexp,
@@ -410,7 +416,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 num_warps = 8,
             )
         return (
-            logits,
+            dlogits,
             None,
             None,
             None,
@@ -436,8 +442,8 @@ def fast_cross_entropy_loss(
 
     device = logits.device
     loss = Fast_CrossEntropyLoss.apply(
-        logits.view(batch * seq_len, d),
-        labels.view(-1),
+        logits.reshape(batch * seq_len, d),
+        labels.reshape(-1),
         logit_softcapping,
         logit_scaling,
     )

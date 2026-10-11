@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -11,6 +12,7 @@ from hub.utils.gguf import (
     bare_quant_alias,
     drop_shadowed_appledouble_siblings,
     extract_quant_label,
+    gguf_shard_set,
     gguf_variant_family,
     gguf_variant_key,
     is_big_endian_gguf_path,
@@ -107,17 +109,97 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
 
 
 def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
-    """The separate MTP drafter to fetch with every variant: the repo-root ``mtp-*.gguf`` copy unsloth ships for llama.cpp ``-hf`` auto-discovery (Gemma 4). Same pick as the loader's drafter resolution (root-level ``mtp-`` prefix, first in sort order) so download and load resolve the same file; the higher-precision ``MTP/`` subdir copies are for explicit selection and are not auto-fetched. None for repos with the head baked into the main GGUF (Qwen)."""
+    """Choose the root MTP drafter used by normal llama.cpp discovery, or the loader-compatible nested sidecar required by Qwen3.8 Flash Next."""
+    from utils.models.drafters import (
+        is_published_drafter_filename,
+        split_listing_is_complete,
+    )
+
+    gguf_names = [name for sibling in siblings if (name := _gguf_rfilename(sibling))]
+
+    def _complete(name: str) -> bool:
+        # Match detect_mtp_file's launchability gate. A half-published family
+        # must step aside before preference ranking so a complete fallback can
+        # be selected instead of making the plan omit MTP entirely.
+        return split_listing_is_complete(gguf_names, name)
+
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
         (
             s
             for s in siblings
-            if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("mtp-")
+            if (name := _gguf_rfilename(s))
+            and "/" not in name
+            and is_published_drafter_filename(name, kind = "mtp", allow_legacy_suffix = False)
+            and _complete(name)
         ),
         key = lambda s: getattr(s, "rfilename"),
     )
-    return candidates[0] if candidates else None
+    if candidates:
+        return candidates[0]
+
+    # The remote planner cannot read an undownloaded GGUF header to prove
+    # ``qwen4exp`` the way the loader can. This family token is part of every
+    # main weight and every sidecar in the sole repo that needs the fallback,
+    # and boundary matching keeps future names such as Flash-Next2 out.
+    flash_next = any(
+        re.search(r"(?:^|[/_-])qwen3\.8-flash-next(?:$|[/_.-])", name, re.IGNORECASE)
+        for sibling in siblings
+        if (name := _gguf_rfilename(sibling)) and not is_mtp_drafter_path(name)
+    )
+    if not flash_next:
+        return None
+
+    from utils.models.drafters.preference import mtp_preference_key
+
+    nested = [
+        sibling
+        for sibling in siblings
+        if (name := _gguf_rfilename(sibling))
+        and "/" in name.replace("\\", "/")
+        and is_mtp_drafter_path(name)
+        and is_published_drafter_filename(name.replace("\\", "/").rsplit("/", 1)[-1], kind = "mtp")
+        and _complete(name)
+    ]
+    return (
+        min(nested, key = lambda sibling: mtp_preference_key(sibling.rfilename)) if nested else None
+    )
+
+
+def mtp_plan_files(siblings: Sequence) -> tuple[ExpectedFile, ...]:
+    """Every shard of the MTP sidecar selected by the loader-compatible preference rule."""
+    from utils.models.drafters import (
+        is_published_drafter_filename,
+        split_listing_is_complete,
+    )
+
+    selected = preferred_mtp_sibling(siblings)
+    selected_name = _gguf_rfilename(selected) if selected is not None else None
+    if selected_name is None:
+        return ()
+    family = gguf_variant_family(selected_name)
+    nested = "/" in selected_name.replace("\\", "/")
+    files = tuple(
+        sorted(
+            (
+                file
+                for sibling in siblings
+                if (name := _gguf_rfilename(sibling))
+                and gguf_variant_family(name) == family
+                and is_mtp_drafter_path(name)
+                and is_published_drafter_filename(
+                    name.replace("\\", "/").rsplit("/", 1)[-1],
+                    kind = "mtp",
+                    allow_legacy_suffix = nested,
+                )
+                and (file := expected_file_from_sibling(sibling)) is not None
+            ),
+            key = lambda file: file.path,
+        )
+    )
+    if not files or not split_listing_is_complete([file.path for file in files], selected_name):
+        return ()
+    return files
 
 
 def preferred_dflash_sibling(
@@ -189,9 +271,99 @@ def dflash_plan_files(
     return eligible[best]
 
 
+def _audio_cpp_package_plans(siblings: Sequence) -> Optional[dict[str, GgufVariantPlan]]:
+    """Plans for an audio.cpp package repo (MiniMax Music 3, YuE2): each variant is a component mix
+    plus the config, tokenizer and sidecar files the package loads with. Files every mix shares
+    are companions, so deleting one mix never counts them as its own weights."""
+    try:
+        from core.inference.audio_cpp_models import package_variant_files
+    except Exception:
+        return None
+    by_name = {
+        name: sibling
+        for sibling in siblings
+        if isinstance(name := getattr(sibling, "rfilename", None), str)
+    }
+    packages = package_variant_files(by_name)
+    if not packages:
+        return None
+    shared = set.intersection(*(set(files) for files in packages.values()))
+    plans: dict[str, GgufVariantPlan] = {}
+    for key, files in packages.items():
+        expected = tuple(
+            file
+            for name in files
+            if (file := expected_file_from_sibling(by_name[name])) is not None
+        )
+        main_files = tuple(
+            file for file in expected if is_gguf_filename(file.path) and file.path not in shared
+        )
+        companions = tuple(file for file in expected if file.path in shared)
+        plans[key.lower()] = GgufVariantPlan(
+            main_filenames = frozenset(file.path for file in main_files),
+            target_filenames = tuple(file.path for file in expected),
+            main_hashes = frozenset(file.sha256 for file in main_files if file.sha256),
+            required_hashes = frozenset(file.sha256 for file in expected if file.sha256),
+            companion_hashes = frozenset(file.sha256 for file in companions if file.sha256),
+            mmproj_filenames = frozenset(),
+            mmproj_hashes = frozenset(),
+            expected_files = expected,
+            main_size_bytes = sum(max(0, int(file.size or 0)) for file in main_files),
+            download_size_bytes = sum(max(0, int(file.size or 0)) for file in expected),
+        )
+    return plans
+
+
+def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVariantPlan:
+    """*plan* plus what audio.cpp reads beside its GGUF: the voice embeddings in ``<dir>/embeddings/``
+    (PocketTTS) and a companion model in the same repo (MioTTS's MioCodec). Otherwise unchanged."""
+    dirs = {name.rpartition("/")[0] for name in plan.main_filenames}
+    if len(dirs) != 1:
+        return plan
+    prefix = f"{next(iter(dirs))}/embeddings/".lstrip("/")
+    by_name = {
+        name: sibling
+        for sibling in siblings
+        if isinstance(name := getattr(sibling, "rfilename", None), str)
+    }
+    wanted = {
+        name
+        for name in by_name
+        if name.startswith(prefix) and name.lower().endswith(".safetensors")
+    }
+    try:
+        from core.inference.audio_cpp_models import companion_files
+    except Exception:
+        companion_files = None
+    if companion_files is not None:
+        wanted.update(companion_files(min(plan.main_filenames), by_name))
+    extras = tuple(
+        file
+        for name, sibling in by_name.items()
+        if name in wanted and (file := expected_file_from_sibling(sibling)) is not None
+    )
+    if not extras:
+        return plan
+    hashes = frozenset(file.sha256 for file in extras if file.sha256)
+    from dataclasses import replace
+
+    return replace(
+        plan,
+        target_filenames = (*plan.target_filenames, *(file.path for file in extras)),
+        required_hashes = plan.required_hashes | hashes,
+        companion_hashes = plan.companion_hashes | hashes,
+        expected_files = (*plan.expected_files, *extras),
+        download_size_bytes = plan.download_size_bytes
+        + sum(max(0, int(file.size or 0)) for file in extras),
+    )
+
+
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     # Family grouping keeps the family holding the lexicographically first name, which is the "._" one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local discovery no main GGUF to load.
     siblings = drop_shadowed_appledouble_siblings(list(siblings))
+    package_plans = _audio_cpp_package_plans(siblings)
+    if package_plans is not None:
+        return package_plans
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
     all_mmproj_filenames = frozenset(
@@ -202,8 +374,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     all_mmproj_hashes = frozenset(h for h in (sibling_sha256(s) for s in all_mmproj) if h)
     companion = preferred_mmproj_sibling(siblings)
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
-    mtp_sibling = preferred_mtp_sibling(siblings)
-    mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
+    mtp_expected = mtp_plan_files(siblings)
     common_companions_expected = (companion_expected,) if companion_expected is not None else ()
 
     for sibling in siblings:
@@ -247,14 +418,17 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         expected_files = (
             *main_expected,
             *common_companions_expected,
-            *((mtp_expected,) if mtp_expected is not None else ()),
+            *mtp_expected,
             *dflash_expected,
         )
-        plans[quant] = plan_from_expected_files(
-            quant,
-            expected_files,
-            all_mmproj_filenames = all_mmproj_filenames,
-            all_mmproj_hashes = all_mmproj_hashes,
+        plans[quant] = _with_audio_cpp_extras(
+            plan_from_expected_files(
+                quant,
+                expected_files,
+                all_mmproj_filenames = all_mmproj_filenames,
+                all_mmproj_hashes = all_mmproj_hashes,
+            ),
+            siblings,
         )
     return plans
 
@@ -278,12 +452,12 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
 
 
 def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
-    """Narrow a variant's weight files to the single shard family a load would read. A repo can ship one quant twice under names that share a variant key, the same BF16 as ``QwQ-32B-BF16-*`` and ``QwQ-32B.BF16-*``, or one Q6_K under both ``Q6_K/`` and ``<model>-Q6_K/``; fetching both doubles the download and leaves the variant permanently short of its expected bytes, because the loader only ever opens one. Keep the family holding the lexicographically first file, the shard the lister advertises and the loader opens. A genuinely split GGUF is one family, so all of its shards survive untouched."""
+    """Narrow a variant's weight files to the one shard set the loader opens (see ``group_gguf_variant_files``); a genuine split keeps every shard."""
     if len(main_files) < 2:
         return tuple(main_files)
-    families: dict[str, list[ExpectedFile]] = {}
+    families: dict[tuple[str, int], list[ExpectedFile]] = {}
     for file in main_files:
-        families.setdefault(gguf_variant_family(file.path), []).append(file)
+        families.setdefault(gguf_shard_set(file.path), []).append(file)
     if len(families) < 2:
         return tuple(main_files)
     chosen = min(families.values(), key = lambda group: min(file.path for file in group))
