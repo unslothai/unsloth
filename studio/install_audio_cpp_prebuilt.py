@@ -260,12 +260,49 @@ def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+def _nvidia_gpu_present() -> bool:
+    """An NVIDIA card, also one whose driver reports no CUDA version (wedged, partial)."""
+    if shutil.which("nvidia-smi"):
+        return True
+    try:
+        return sys.platform.startswith("linux") and bool(os.listdir("/proc/driver/nvidia/gpus"))
+    except OSError:
+        return False
+
+
+def _amd_gpu_present() -> bool:
+    """An AMD display adapter (PCI vendor 0x1002), read as install_llama_prebuilt routes llama.cpp
+    to Vulkan: Linux DRM sysfs, the Windows display-adapter registry."""
+    if sys.platform.startswith("linux"):
+        for path in glob.glob("/sys/class/drm/card*/device/vendor"):
+            try:
+                if Path(path).read_text(encoding = "utf-8").strip().lower() == "0x1002":
+                    return True
+            except (OSError, UnicodeDecodeError):
+                continue
+        return False
+    if sys.platform != "win32":
+        return False
+    try:
+        if __package__:
+            from .install_llama_prebuilt import windows_amd_gpu_in_registry
+        else:
+            from install_llama_prebuilt import windows_amd_gpu_in_registry  # type: ignore[no-redef]
+        return bool(windows_amd_gpu_in_registry())
+    except Exception:  # noqa: BLE001 - no registry answer: keep the CPU build
+        return False
+
+
 def detect_accelerator() -> str:
     system = platform.system().lower()
     if system == "darwin":
         return "metal"
     if nvidia_driver_cuda_version() is not None:
         return "cuda"
+    # No HIP bundle is published, so an AMD GPU runs the Vulkan one (#13042). Never beside an
+    # NVIDIA card: Vulkan could enumerate it first.
+    if _amd_gpu_present() and not _nvidia_gpu_present():
+        return "vulkan"
     return "cpu"
 
 
@@ -792,16 +829,34 @@ def _run_staged(server: Path, arg: str, env: dict, timeout: float) -> subprocess
     )
 
 
+class NoVulkanDevice(RuntimeError):
+    """The staged Vulkan server loads but enumerates no Vulkan GPU, so every model load would fail."""
+
+
+# `--list-devices` prints one `Vulkan:<n> "<name>" [GPU]` row per device ggml-vulkan accepts.
+_VULKAN_DEVICE_ROW = re.compile(r"^Vulkan:\d+\s", re.MULTILINE)
+
+
 def smoke_test_staged_server(
     server: Path,
     *,
     backend: str,
     extra_dirs: Sequence[Path] = (),
+    require_vulkan_device: bool = False,
 ) -> Optional[str]:
     """Start the staged server once with ``--help``: a bundle this host cannot load (a newer glibc, a
     missing DLL) raises here, before it replaces a working tree. Returns its ``--version`` text
-    (build and enabled backends) when it prints one."""
+    (build and enabled backends) when it prints one. ``require_vulkan_device`` raises
+    ``NoVulkanDevice`` unless ``--list-devices`` shows a Vulkan GPU."""
     env = _loader_env(server, extra_dirs)
+    if require_vulkan_device:
+        try:
+            listed = _run_staged(server, "--list-devices", env, SMOKE_TIMEOUT_SECONDS)
+            rows = (listed.stdout or "") if listed.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            rows = ""
+        if not _VULKAN_DEVICE_ROW.search(rows):
+            raise NoVulkanDevice("the Vulkan build finds no Vulkan GPU on this host")
     try:
         result = _run_staged(server, "--help", env, SMOKE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
@@ -863,10 +918,22 @@ def install(
                 "Move it away or pass a different --install-dir."
             )
     with core.install_lock(core.install_lock_path(target)):
-        return _install_locked(target, accelerator, token, force)
+        try:
+            return _install_locked(target, accelerator, token, force)
+        except NoVulkanDevice as exc:
+            # Only an auto request checks for a device. Forced, so the record notes the detected
+            # Vulkan host and later runs keep this CPU build without another Vulkan download.
+            print(f"audio.cpp: {exc}; installing the CPU build", flush = True)
+            return _install_locked(target, accelerator, token, True, vulkan_unusable = True)
 
 
-def _install_locked(target: Path, requested: str, token: Optional[str], force: bool) -> Path:
+def _install_locked(
+    target: Path,
+    requested: str,
+    token: Optional[str],
+    force: bool,
+    vulkan_unusable: bool = False,
+) -> Path:
     _sweep_retired_trees(target)
     detected = detect_accelerator() if requested == "auto" else None
     existing = read_install_record(target)
@@ -883,7 +950,9 @@ def _install_locked(target: Path, requested: str, token: Optional[str], force: b
         )
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     try:
-        accel, repo, release, chosen = resolve_for_request(requested, detected, token)
+        accel, repo, release, chosen = resolve_for_request(
+            requested, "cpu" if vulkan_unusable else detected, token
+        )
     except (ReleaseLookupUnavailable, GitHubRateLimited) as exc:
         # The lookup could not answer, which says nothing about the tree on disk. Keep a complete one
         # unless this run asked for something it is not (--force, another explicit accelerator).
@@ -956,7 +1025,10 @@ def _install_locked(target: Path, requested: str, token: Optional[str], force: b
             server.chmod(server.stat().st_mode | 0o111)
         backend = _backend_of(chosen)
         version = smoke_test_staged_server(
-            server, backend = backend, extra_dirs = _cuda_runtime_dirs(backend)
+            server,
+            backend = backend,
+            extra_dirs = _cuda_runtime_dirs(backend),
+            require_vulkan_device = requested == "auto" and backend == "vulkan",
         )
         (tree / OWNERSHIP_MARKER).touch()
         record = {

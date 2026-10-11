@@ -1178,3 +1178,200 @@ def test_the_fork_release_covers_every_host(system, machine, accel, driver, pref
     assert got == f"audio-{_FORK_T}-bin-{want}"
     rt = M.cudart_asset_for(_FORK_ASSETS, got)
     assert rt == (f"audio-{_FORK_T}-cudart-windows-x64-{cudart}.zip" if cudart else None)
+
+
+# #13042: an AMD GPU auto-installs the Vulkan bundle, and the CPU one when Vulkan finds no GPU
+
+
+def _fake_host(
+    monkeypatch,
+    tmp_path,
+    *,
+    vendors = (),
+    smi = False,
+    cuda = None,
+    proc_nvidia = False,
+):
+    for i, vendor in enumerate(vendors):
+        f = tmp_path / "drm" / f"card{i}" / "device" / "vendor"
+        f.parent.mkdir(parents = True)
+        f.write_text(vendor + "\n")
+    monkeypatch.setattr(M.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(M.sys, "platform", "linux")
+    monkeypatch.setattr(
+        M.glob,
+        "glob",
+        lambda pattern: sorted(str(p) for p in (tmp_path / "drm").glob("card*/device/vendor")),
+    )
+    monkeypatch.setattr(M.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if smi else None)
+    monkeypatch.setattr(M, "nvidia_driver_cuda_version", lambda: cuda)
+    real_listdir = M.os.listdir
+    monkeypatch.setattr(
+        M.os,
+        "listdir",
+        lambda p: (["0000:01:00.0"] if proc_nvidia else [])
+        if p == "/proc/driver/nvidia/gpus"
+        else real_listdir(p),
+    )
+
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        (dict(vendors = ("0x1002",)), "vulkan"),
+        (dict(vendors = ("0x8086", "0x1002")), "vulkan"),
+        (dict(vendors = ("0x8086",)), "cpu"),
+        (dict(), "cpu"),
+        (dict(vendors = ("0x1002",), smi = True, cuda = (12, 8)), "cuda"),
+        # An NVIDIA card nvidia-smi or the driver lists without a CUDA version keeps the CPU build.
+        (dict(vendors = ("0x1002",), smi = True), "cpu"),
+        (dict(vendors = ("0x1002",), proc_nvidia = True), "cpu"),
+    ],
+)
+def test_linux_amd_gpu_is_detected_as_vulkan(monkeypatch, tmp_path, host, expected):
+    _fake_host(monkeypatch, tmp_path, **host)
+    assert M.detect_accelerator() == expected
+
+
+def test_windows_amd_gpu_is_detected_from_the_registry(monkeypatch):
+    import types
+
+    fake = types.ModuleType("install_llama_prebuilt")
+    monkeypatch.setitem(sys.modules, "install_llama_prebuilt", fake)
+    monkeypatch.setattr(M.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(M.sys, "platform", "win32")
+    monkeypatch.setattr(M.shutil, "which", lambda name: None)
+    monkeypatch.setattr(M, "nvidia_driver_cuda_version", lambda: None)
+    fake.windows_amd_gpu_in_registry = lambda: True
+    assert M.detect_accelerator() == "vulkan"
+    fake.windows_amd_gpu_in_registry = lambda: False
+    assert M.detect_accelerator() == "cpu"
+    fake.windows_amd_gpu_in_registry = lambda: 1 / 0
+    assert M.detect_accelerator() == "cpu"
+
+
+@pytest.mark.parametrize(
+    "listed, has_device",
+    [
+        (
+            _Ran(
+                0,
+                stdout = 'available_devices=2\nVulkan:0 "AMD Radeon RX 9070 XT" [GPU]\nCPU:0 "x" [CPU]\n',
+            ),
+            True,
+        ),
+        (_Ran(0, stdout = 'available_devices=1\nCPU:0 "x" [CPU]\n'), False),
+        (_Ran(127, stderr = "error while loading shared libraries: libvulkan.so.1"), False),
+        (OSError("bad image"), False),
+        (M.subprocess.TimeoutExpired("audiocpp_server", 30), False),
+    ],
+)
+def test_the_vulkan_check_needs_a_listed_vulkan_gpu(monkeypatch, tmp_path, listed, has_device):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd[1])
+        if cmd[1] == "--list-devices":
+            if isinstance(listed, BaseException):
+                raise listed
+            return listed
+        return _Ran(0, stdout = "audio.cpp vk\nbackends: cpu,vulkan" if cmd[1] == "--version" else "")
+
+    monkeypatch.setattr(M.subprocess, "run", run)
+    server = tmp_path / M.SERVER_NAME
+    if has_device:
+        assert (
+            SMOKE(server, backend = "vulkan", require_vulkan_device = True)
+            == "audio.cpp vk\nbackends: cpu,vulkan"
+        )
+    else:
+        with pytest.raises(M.NoVulkanDevice):
+            SMOKE(server, backend = "vulkan", require_vulkan_device = True)
+    calls.clear()
+    # Not asked (an explicit request, another backend): devices are never listed.
+    SMOKE(server, backend = "vulkan")
+    assert "--list-devices" not in calls
+
+
+VK_ZIP = f"audio-{FORK_TAG}-bin-windows-x64-vulkan.zip"
+
+
+def _vulkan_host(monkeypatch, tmp_path, pins, *, device):
+    cpu = _release(tmp_path / "cpu", CPU_ZIP)
+    vk = _release(tmp_path / "vk", VK_ZIP)
+    _pin_release(pins, cpu)
+    _pin_release(pins, vk)
+    asked = []
+
+    def resolve(accel, token):
+        asked.append(accel)
+        rel = vk if accel == "vulkan" else cpu
+        return FORK, rel, rel["assets"][0]["name"]
+
+    _stub_install_io(monkeypatch)
+    checked = []
+
+    def smoke(
+        server,
+        *,
+        backend,
+        extra_dirs = (),
+        require_vulkan_device = False,
+    ):
+        checked.append((backend, require_vulkan_device))
+        if require_vulkan_device and not device:
+            raise M.NoVulkanDevice("the Vulkan build finds no Vulkan GPU on this host")
+        return "audio.cpp test"
+
+    monkeypatch.setattr(M, "smoke_test_staged_server", smoke)
+    monkeypatch.setattr(M, "resolve", resolve)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "vulkan")
+    return asked, checked
+
+
+def _record(tmp_path):
+    rec = json.loads((tmp_path / "audio.cpp" / M.INSTALL_RECORD).read_text())
+    return rec["asset"], rec["backend"], rec["accelerator_request"], rec["detected_accelerator"]
+
+
+def test_auto_on_an_amd_gpu_installs_the_vulkan_bundle(monkeypatch, tmp_path, pins):
+    asked, checked = _vulkan_host(monkeypatch, tmp_path, pins, device = True)
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert asked == ["vulkan"] and checked == [("vulkan", True)]
+    assert _record(tmp_path) == (VK_ZIP, "vulkan", "auto", "vulkan")
+
+
+def test_auto_vulkan_without_a_vulkan_gpu_installs_the_cpu_build_once(
+    monkeypatch, tmp_path, pins, capsys
+):
+    asked, checked = _vulkan_host(monkeypatch, tmp_path, pins, device = False)
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert asked == ["vulkan", "cpu"]
+    assert checked == [("vulkan", True), ("cpu", False)]
+    assert "finds no Vulkan GPU on this host; installing the CPU build" in capsys.readouterr().out
+    assert _record(tmp_path) == (CPU_ZIP, "cpu", "auto", "vulkan")
+    # The record names the detected Vulkan host, so the next setup run is a no-op.
+    monkeypatch.setattr(M, "resolve", lambda *a: pytest.fail("a matching rerun must not look up"))
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+
+
+def test_an_existing_cpu_install_on_an_amd_gpu_moves_to_vulkan(monkeypatch, tmp_path, pins):
+    # What every AMD host has before #13042: auto, detected "cpu", the CPU bundle.
+    asked, _ = _vulkan_host(monkeypatch, tmp_path, pins, device = True)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cpu")
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert _record(tmp_path) == (CPU_ZIP, "cpu", "auto", "cpu")
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "vulkan")
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert _record(tmp_path) == (VK_ZIP, "vulkan", "auto", "vulkan")
+
+
+def test_explicit_vulkan_is_not_checked_for_a_device(monkeypatch, tmp_path, pins):
+    # A Docker build sees no GPU; an explicit request installs what it names.
+    asked, checked = _vulkan_host(monkeypatch, tmp_path, pins, device = False)
+    assert (
+        M.main(["--install-dir", str(tmp_path / "audio.cpp"), "--accelerator", "vulkan"])
+        == M.EXIT_OK
+    )
+    assert checked == [("vulkan", False)]
+    assert _record(tmp_path)[:3] == (VK_ZIP, "vulkan", "vulkan")
