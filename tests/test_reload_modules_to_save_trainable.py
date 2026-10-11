@@ -69,7 +69,7 @@ def test_reloaded_adapter_trains_modules_to_save(tmp_path):
     fresh.save_pretrained(tmp_path)
 
     torch.manual_seed(0)
-    reloaded = PeftModel.from_pretrained(_Tiny(), tmp_path, is_trainable = True)
+    reloaded = PeftModel.from_pretrained(_Tiny(), tmp_path, is_trainable = True, torch_device = "cpu")
     _freeze_like_kbit_prep(reloaded)
     assert _trainable(reloaded) != expected  # the #3108 state before the fix
 
