@@ -574,6 +574,7 @@ def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch, hip, version):
 def test_rocm_load_turns_on_miopen_immediate(monkeypatch, hip, version, speed_mode):
     # #9130: torch's MIOpen Find trial-launches kernels; one faulting there aborted the server.
     monkeypatch.delenv("MIOPEN_FIND_MODE", raising = False)
+    monkeypatch.delenv("MIOPEN_FIND_ENFORCE", raising = False)
     torch = _stub_torch(monkeypatch)
     torch.version = types.SimpleNamespace(hip = hip)
     torch.__version__ = version
@@ -588,15 +589,19 @@ def test_rocm_load_turns_on_miopen_immediate(monkeypatch, hip, version, speed_mo
 
 
 @pytest.mark.parametrize(
-    "hip, version, find_mode",
-    [(None, "2.11.0+cu130", None), ("7.13.0", "2.11.0+rocm7.13.0", "NORMAL")],
-    ids = ["cuda_torch", "explicit_find_mode"],
+    "hip, version, env",
+    [
+        (None, "2.11.0+cu130", {}),
+        ("7.13.0", "2.11.0+rocm7.13.0", {"MIOPEN_FIND_MODE": "NORMAL"}),
+        ("7.13.0", "2.11.0+rocm7.13.0", {"MIOPEN_FIND_ENFORCE": "SEARCH"}),
+    ],
+    ids = ["cuda_torch", "explicit_find_mode", "explicit_find_enforce"],
 )
-def test_miopen_immediate_left_alone(monkeypatch, hip, version, find_mode):
-    if find_mode is None:
-        monkeypatch.delenv("MIOPEN_FIND_MODE", raising = False)
-    else:
-        monkeypatch.setenv("MIOPEN_FIND_MODE", find_mode)
+def test_miopen_immediate_left_alone(monkeypatch, hip, version, env):
+    for name in ("MIOPEN_FIND_MODE", "MIOPEN_FIND_ENFORCE"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     torch = _stub_torch(monkeypatch)
     torch.version = types.SimpleNamespace(hip = hip)
     torch.__version__ = version
