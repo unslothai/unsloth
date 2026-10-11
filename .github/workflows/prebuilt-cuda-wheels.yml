@@ -41,7 +41,7 @@ on:
         type: string
         default: 'flash-attn,causal-conv1d,mamba-ssm'
       platforms:
-        description: 'platforms, comma separated (linux_x86_64, win_amd64)'
+        description: 'platforms, comma separated (linux_x86_64, win_amd64, linux_aarch64, win_arm64)'
         type: string
         default: 'linux_x86_64,win_amd64'
       release_tag:
@@ -205,12 +205,14 @@ jobs:
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '600'
+          # NVIDIA's repository for server-class aarch64 (Grace, GB10) is sbsa, not the Jetson one.
+          CUDA_REPO_ARCH: ${{ matrix.platform == 'linux_aarch64' && 'sbsa' || 'x86_64' }}
         run: |
           set -euo pipefail
           keyring=cuda-keyring_1.1-1_all.deb
           curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
             -o "$keyring" \
-            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/$keyring"
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/$CUDA_REPO_ARCH/$keyring"
           sudo dpkg -i "$keyring"
           bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-13-0'
@@ -235,7 +237,7 @@ jobs:
       # what we sign. 13.0.2 = nvcc 13.0.88, the same as the Linux apt package. C:\cuda is a
       # junction so build.ninja never sees a space.
       - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)
-        if: runner.os == 'Windows'
+        if: matrix.platform == 'win_amd64'
         timeout-minutes: 25
         shell: pwsh
         run: |
@@ -269,19 +271,43 @@ jobs:
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
 
-      # vcvars64 exported to later steps (no setup action). DISTUTILS_USE_SDK=1 makes setuptools use
-      # it as-is and turns on flash-attn's MSVC flags.
-      - name: Activate the MSVC x64 environment (Windows)
-        if: runner.os == 'Windows'
+      # CUDA 13.4 is the first toolkit with a Windows ARM64 nvcc and what NVIDIA's torch 2.14+cu134
+      # is built with. From the redist archives: the manifest is pinned by sha256 and lists one for
+      # every archive, so nothing unhashed is unpacked. Installed straight into C:\cuda.
+      - name: Install the CUDA 13.4 toolkit (Windows ARM64)
+        if: matrix.platform == 'win_arm64'
+        timeout-minutes: 25
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
+            'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
+            '291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302' `
+            'windows-arm64' 'C:\cuda' `
+            cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
+            libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
+            cuda_cuobjdump cuda_nvdisasm cuda_nvprune
+          if ($LASTEXITCODE -ne 0) { throw "CUDA redist install exited $LASTEXITCODE" }
+          'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & 'C:\cuda\bin\nvcc.exe' --version
+
+      # vcvars64 exported to later steps (no setup action). DISTUTILS_USE_SDK=1 makes setuptools use
+      # it as-is and turns on flash-attn's MSVC flags.
+      - name: Activate the MSVC ${{ matrix.platform == 'win_arm64' && 'arm64' || 'x64' }} environment (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSVC_COMPONENT: ${{ matrix.platform == 'win_arm64' && 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' || 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }}
+          VCVARS: ${{ matrix.platform == 'win_arm64' && 'vcvarsarm64.bat' || 'vcvars64.bat' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vs) { throw 'no Visual Studio with the x64 C++ tools' }
-          $bat = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $vs = & $vswhere -latest -products * -requires $env:MSVC_COMPONENT -property installationPath
+          if (-not $vs) { throw "no Visual Studio with $env:MSVC_COMPONENT" }
+          $bat = Join-Path $vs "VC\Auxiliary\Build\$env:VCVARS"
           $lines = cmd /c "`"$bat`" >nul 2>&1 && set"
-          if ($LASTEXITCODE -ne 0) { throw "vcvars64.bat exited $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "$env:VCVARS exited $LASTEXITCODE" }
           $before = @{}
           Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
           $oldPath = $env:Path -split ';'
@@ -312,13 +338,19 @@ jobs:
         if: runner.os == 'Windows'
         timeout-minutes: 10
         shell: pwsh
+        env:
+          WHEEL_PLATFORM: ${{ matrix.platform }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $name = 'ccache-4.14.1-windows-x86_64'
+          $pinned = @{
+            'ccache-4.14.1-windows-x86_64'  = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
+            'ccache-4.14.1-windows-aarch64' = '28121851c8c2c8b76214cfc5e119d769fbc39e93d27862e4e3a556905ebd23b2'
+          }
+          $name = if ($env:WHEEL_PLATFORM -eq 'win_arm64') { 'ccache-4.14.1-windows-aarch64' } else { 'ccache-4.14.1-windows-x86_64' }
           $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
           Invoke-WebRequest -Uri "https://github.com/ccache/ccache/releases/download/v4.14.1/$name.zip" -OutFile $zip -TimeoutSec 300
           $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4') { throw "ccache sha256 $hash" }
+          if ($hash -ne $pinned[$name]) { throw "ccache sha256 $hash" }
           Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
           New-Item -ItemType Directory -Force -Path 'C:\ccache' | Out-Null
           Copy-Item -Path (Join-Path $env:RUNNER_TEMP "$name\ccache.exe") -Destination 'C:\ccache\ccache.exe'
@@ -335,7 +367,8 @@ jobs:
         with:
           minimum-size: 16GB
           maximum-size: 32GB
-          disk-root: 'D:'
+          # windows-11-arm has no D: drive.
+          disk-root: ${{ matrix.platform == 'win_arm64' && 'C:' || 'D:' }}
 
       - name: Report memory, page file and disk (Windows)
         if: runner.os == 'Windows'
@@ -360,13 +393,14 @@ jobs:
           sudo swapon /mnt/swapfile
           free -h
 
-      - name: Install torch ${{ matrix.torch }}+cu130
+      - name: Install ${{ matrix.torch_spec }}
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install 'setuptools>=77' wheel ninja packaging
-          python -m pip install --no-cache-dir "torch==${{ matrix.torch }}" \
-            --index-url https://download.pytorch.org/whl/cu130
+          # TORCH_INDEX_ARGS is an allowlisted constant from prebuilt_wheels.py; word splitting intended.
+          # shellcheck disable=SC2086
+          python -m pip install --no-cache-dir "$TORCH_SPEC" $TORCH_INDEX_ARGS
           nvcc --version
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cxx11abi', torch._C._GLIBCXX_USE_CXX11_ABI)"
           python - <<'PY'
@@ -374,6 +408,12 @@ jobs:
           want_torch = os.environ["MATRIX_TORCH"]
           if torch.__version__.split("+")[0] != want_torch:
               sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
+          if "+" in os.environ["TORCH_SPEC"] and torch.__version__ != os.environ["TORCH_SPEC"].split("==", 1)[1]:
+              sys.exit(f"installed torch {torch.__version__}, wanted {os.environ['TORCH_SPEC']}")
+          # An emulated x64 interpreter on an ARM runner would build an x64 extension.
+          import sysconfig
+          if sysconfig.get_platform() != os.environ["PY_PLATFORM"]:
+              sys.exit(f"interpreter platform {sysconfig.get_platform()}, wanted {os.environ['PY_PLATFORM']}")
           if not torch.version.cuda.startswith("13."):
               sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
           # Verify the ABI matches the wheel's cxx11abi tag, which every upstream setup.py copies
@@ -385,6 +425,9 @@ jobs:
         env:
           MATRIX_TORCH: ${{ matrix.torch }}
           MATRIX_ABI: ${{ matrix.abi }}
+          TORCH_SPEC: ${{ matrix.torch_spec }}
+          TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
+          PY_PLATFORM: ${{ matrix.py_platform }}
 
       # The one source edit in this workflow, and only for mamba-ssm. Its setup.py compiles the
       # Mamba-1 selective-scan kernels at -std=c++17; torch 2.13's headers require C++20, and
@@ -539,12 +582,14 @@ jobs:
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '600'
+          # NVIDIA's repository for server-class aarch64 (Grace, GB10) is sbsa, not the Jetson one.
+          CUDA_REPO_ARCH: ${{ matrix.platform == 'linux_aarch64' && 'sbsa' || 'x86_64' }}
         run: |
           set -euo pipefail
           keyring=cuda-keyring_1.1-1_all.deb
           curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
             -o "$keyring" \
-            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/$keyring"
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/$CUDA_REPO_ARCH/$keyring"
           sudo dpkg -i "$keyring"
           bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-13-0'
@@ -568,7 +613,7 @@ jobs:
       # what we sign. 13.0.2 = nvcc 13.0.88, the same as the Linux apt package. C:\cuda is a
       # junction so build.ninja never sees a space.
       - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)
-        if: runner.os == 'Windows'
+        if: matrix.platform == 'win_amd64'
         timeout-minutes: 25
         shell: pwsh
         run: |
@@ -602,19 +647,43 @@ jobs:
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
 
-      # vcvars64 exported to later steps (no setup action). DISTUTILS_USE_SDK=1 makes setuptools use
-      # it as-is and turns on flash-attn's MSVC flags.
-      - name: Activate the MSVC x64 environment (Windows)
-        if: runner.os == 'Windows'
+      # CUDA 13.4 is the first toolkit with a Windows ARM64 nvcc and what NVIDIA's torch 2.14+cu134
+      # is built with. From the redist archives: the manifest is pinned by sha256 and lists one for
+      # every archive, so nothing unhashed is unpacked. Installed straight into C:\cuda.
+      - name: Install the CUDA 13.4 toolkit (Windows ARM64)
+        if: matrix.platform == 'win_arm64'
+        timeout-minutes: 25
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
+            'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
+            '291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302' `
+            'windows-arm64' 'C:\cuda' `
+            cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
+            libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
+            cuda_cuobjdump cuda_nvdisasm cuda_nvprune
+          if ($LASTEXITCODE -ne 0) { throw "CUDA redist install exited $LASTEXITCODE" }
+          'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & 'C:\cuda\bin\nvcc.exe' --version
+
+      # vcvars64 exported to later steps (no setup action). DISTUTILS_USE_SDK=1 makes setuptools use
+      # it as-is and turns on flash-attn's MSVC flags.
+      - name: Activate the MSVC ${{ matrix.platform == 'win_arm64' && 'arm64' || 'x64' }} environment (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSVC_COMPONENT: ${{ matrix.platform == 'win_arm64' && 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' || 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }}
+          VCVARS: ${{ matrix.platform == 'win_arm64' && 'vcvarsarm64.bat' || 'vcvars64.bat' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vs) { throw 'no Visual Studio with the x64 C++ tools' }
-          $bat = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $vs = & $vswhere -latest -products * -requires $env:MSVC_COMPONENT -property installationPath
+          if (-not $vs) { throw "no Visual Studio with $env:MSVC_COMPONENT" }
+          $bat = Join-Path $vs "VC\Auxiliary\Build\$env:VCVARS"
           $lines = cmd /c "`"$bat`" >nul 2>&1 && set"
-          if ($LASTEXITCODE -ne 0) { throw "vcvars64.bat exited $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "$env:VCVARS exited $LASTEXITCODE" }
           $before = @{}
           Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
           $oldPath = $env:Path -split ';'
@@ -645,13 +714,19 @@ jobs:
         if: runner.os == 'Windows'
         timeout-minutes: 10
         shell: pwsh
+        env:
+          WHEEL_PLATFORM: ${{ matrix.platform }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $name = 'ccache-4.14.1-windows-x86_64'
+          $pinned = @{
+            'ccache-4.14.1-windows-x86_64'  = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
+            'ccache-4.14.1-windows-aarch64' = '28121851c8c2c8b76214cfc5e119d769fbc39e93d27862e4e3a556905ebd23b2'
+          }
+          $name = if ($env:WHEEL_PLATFORM -eq 'win_arm64') { 'ccache-4.14.1-windows-aarch64' } else { 'ccache-4.14.1-windows-x86_64' }
           $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
           Invoke-WebRequest -Uri "https://github.com/ccache/ccache/releases/download/v4.14.1/$name.zip" -OutFile $zip -TimeoutSec 300
           $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4') { throw "ccache sha256 $hash" }
+          if ($hash -ne $pinned[$name]) { throw "ccache sha256 $hash" }
           Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
           New-Item -ItemType Directory -Force -Path 'C:\ccache' | Out-Null
           Copy-Item -Path (Join-Path $env:RUNNER_TEMP "$name\ccache.exe") -Destination 'C:\ccache\ccache.exe'
@@ -668,7 +743,8 @@ jobs:
         with:
           minimum-size: 16GB
           maximum-size: 32GB
-          disk-root: 'D:'
+          # windows-11-arm has no D: drive.
+          disk-root: ${{ matrix.platform == 'win_arm64' && 'C:' || 'D:' }}
 
       - name: Report memory, page file and disk (Windows)
         if: runner.os == 'Windows'
@@ -690,13 +766,14 @@ jobs:
           sudo swapon /mnt/swapfile
           free -h
 
-      - name: Install torch ${{ matrix.torch }}+cu130
+      - name: Install ${{ matrix.torch_spec }}
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install 'setuptools>=77' wheel ninja packaging
-          python -m pip install --no-cache-dir "torch==${{ matrix.torch }}" \
-            --index-url https://download.pytorch.org/whl/cu130
+          # TORCH_INDEX_ARGS is an allowlisted constant from prebuilt_wheels.py; word splitting intended.
+          # shellcheck disable=SC2086
+          python -m pip install --no-cache-dir "$TORCH_SPEC" $TORCH_INDEX_ARGS
           nvcc --version
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cxx11abi', torch._C._GLIBCXX_USE_CXX11_ABI)"
           python - <<'PY'
@@ -704,6 +781,12 @@ jobs:
           want_torch = os.environ["MATRIX_TORCH"]
           if torch.__version__.split("+")[0] != want_torch:
               sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
+          if "+" in os.environ["TORCH_SPEC"] and torch.__version__ != os.environ["TORCH_SPEC"].split("==", 1)[1]:
+              sys.exit(f"installed torch {torch.__version__}, wanted {os.environ['TORCH_SPEC']}")
+          # An emulated x64 interpreter on an ARM runner would build an x64 extension.
+          import sysconfig
+          if sysconfig.get_platform() != os.environ["PY_PLATFORM"]:
+              sys.exit(f"interpreter platform {sysconfig.get_platform()}, wanted {os.environ['PY_PLATFORM']}")
           if not torch.version.cuda.startswith("13."):
               sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
           # Verify the ABI matches the wheel's cxx11abi tag, which every upstream setup.py copies
@@ -715,6 +798,9 @@ jobs:
         env:
           MATRIX_TORCH: ${{ matrix.torch }}
           MATRIX_ABI: ${{ matrix.abi }}
+          TORCH_SPEC: ${{ matrix.torch_spec }}
+          TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
+          PY_PLATFORM: ${{ matrix.py_platform }}
 
       - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
         if: matrix.patch == 'cxx20'
@@ -755,6 +841,7 @@ jobs:
           NVCC_THREADS: ${{ matrix.nvcc_threads }}
           BUILD_ENV: ${{ matrix.build_env }}
           BUILD_TIMEOUT: ${{ matrix.build_timeout }}
+          WHEEL_PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           # Each entry is NAME=VALUE from the allowlisted table in prebuilt_wheels.py, so this is
@@ -768,7 +855,9 @@ jobs:
             # Git Bash puts /usr/bin first, and its coreutils `link.exe` (hard links) shadows MSVC's
             # linker: setuptools found it on PATH and every object compiled, then the final link
             # failed. MSVC's own bin goes back in front for this step.
-            PATH="$(cygpath -u "${VCToolsInstallDir}bin\Hostx64\x64"):$PATH"
+            host="Hostx64\\x64"
+            if [ "$WHEEL_PLATFORM" = "win_arm64" ]; then host="Hostarm64\\arm64"; fi
+            PATH="$(cygpath -u "${VCToolsInstallDir}bin\\${host}"):$PATH"
             export PATH
             link_exe="$(command -v link.exe)"
             echo "linker: $link_exe"
@@ -825,6 +914,9 @@ jobs:
           MATRIX_TORCH: ${{ matrix.torch }}
           SMOKE_EXCLUDE: ${{ matrix.smoke_exclude }}
           SMOKE_EXTRA: ${{ matrix.smoke_extra }}
+          TORCH_SPEC: ${{ matrix.torch_spec }}
+          TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
+          WHEEL_PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           smoke="$RUNNER_TEMP/smoke"
@@ -838,10 +930,11 @@ jobs:
             export PATH
             unset CUDA_HOME CUDA_PATH
           fi
+          python unsloth/.github/scripts/prebuilt_wheels_check_binaries.py "src/dist/${WHEEL_NAME}" "$WHEEL_PLATFORM"
           python -m venv "$smoke"
           "$py" -m pip install --quiet --upgrade pip
-          "$py" -m pip install --quiet --no-cache-dir \
-            "torch==${MATRIX_TORCH}" --index-url https://download.pytorch.org/whl/cu130
+          # shellcheck disable=SC2086
+          "$py" -m pip install --quiet --no-cache-dir "$TORCH_SPEC" $TORCH_INDEX_ARGS
           # The wheel is installed with --no-deps so nothing can drag a second torch into the
           # venv; every other runtime dependency the package declares is installed first, read
           # from the wheel's own metadata rather than from a hand-kept list. The hand-kept list

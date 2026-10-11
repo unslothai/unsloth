@@ -81,7 +81,51 @@ PLATFORMS = {
         "label": " / win_amd64",
         "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
     },
+    # Upstream's aarch64 wheels stop at torch 2.10. ubuntu-22.04-arm keeps the glibc 2.35 floor
+    # the x86_64 build has, and the build asserts it.
+    "linux_aarch64": {
+        "os": "linux",
+        "runner": "ubuntu-22.04-arm",
+        "abi": "TRUE",
+        "label": " / linux_aarch64",
+        "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
+    },
+    # NVIDIA publishes flash-attn for Windows on ARM itself (studio resolves it), so only the other
+    # two are built here, against the only CUDA torch that exists for it: NVIDIA's 2.14.0+cu134,
+    # which needs CUDA 13.4, the first toolkit with a Windows ARM64 nvcc.
+    "win_arm64": {
+        "os": "windows",
+        "runner": "windows-11-arm",
+        "abi": "TRUE",
+        "label": " / win_arm64",
+        "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
+        "torches": ("2.14.0",),
+        "packages": ("causal-conv1d", "mamba-ssm"),
+        "torch_local": "cu134",
+        "torch_index_args": "--extra-index-url https://pypi.nvidia.com/nvtorch_oot",
+    },
 }
+
+# Per platform, what differs from the x86_64 defaults below without changing any x86_64 cell.
+_PLATFORM_DEFAULTS = {
+    "torches": None,  # every TORCH_VERSIONS entry
+    "packages": None,  # every SPECS entry
+    "torch_local": "",
+    "torch_index_args": "--index-url https://download.pytorch.org/whl/cu130",
+}
+# What the build asserts about its own interpreter and output, so an emulated x64 Python on an
+# ARM runner cannot quietly produce an x64 wheel under an arm64 name.
+_PY_PLATFORM = {
+    "linux_x86_64": "linux-x86_64",
+    "win_amd64": "win-amd64",
+    "linux_aarch64": "linux-aarch64",
+    "win_arm64": "win-arm64",
+}
+
+
+def _platform(platform: str, key: str):
+    return PLATFORMS[platform].get(key, _PLATFORM_DEFAULTS.get(key))
+
 
 # torch 2.13 pins triton==3.7.1 and 2.14 triton~=3.8.0 (Linux-only markers); exact pins keep
 # the Windows smoke test reproducible.
@@ -175,7 +219,8 @@ PYTHON_VERSIONS = ("3.11", "3.12", "3.13")
 DEFAULT_PACKAGES = tuple(SPECS)
 DEFAULT_TORCH = TORCH_VERSIONS
 DEFAULT_PYTHON = ("3.13",)
-DEFAULT_PLATFORMS = tuple(PLATFORMS)
+# ARM is opt-in, so an ordinary dispatch builds exactly what it did before ARM existed.
+DEFAULT_PLATFORMS = ("linux_x86_64", "win_amd64")
 
 
 def torch_minor(torch_version: str) -> str:
@@ -272,14 +317,21 @@ def build_matrix(
     chosen_packages = _resolve(packages, DEFAULT_PACKAGES, DEFAULT_PACKAGES, "package")
     chosen_torch = _resolve(torches, TORCH_VERSIONS, DEFAULT_TORCH, "torch version")
     chosen_python = _resolve(pythons, PYTHON_VERSIONS, DEFAULT_PYTHON, "python version")
-    chosen_platforms = _resolve(platforms, DEFAULT_PLATFORMS, DEFAULT_PLATFORMS, "platform")
+    chosen_platforms = _resolve(platforms, tuple(PLATFORMS), DEFAULT_PLATFORMS, "platform")
 
     include = []
     for platform in chosen_platforms:
         target = PLATFORMS[platform]
+        torches = _platform(platform, "torches") or TORCH_VERSIONS
+        packages_here = _platform(platform, "packages") or tuple(SPECS)
+        local = _platform(platform, "torch_local")
         for torch_version in chosen_torch:
+            if torch_version not in torches:
+                continue
             for python_version in chosen_python:
                 for package in chosen_packages:
+                    if package not in packages_here:
+                        continue
                     spec = SPECS[package]
                     smoke_exclude, smoke_extra = _smoke(package, torch_version, platform)
                     include.append(
@@ -315,14 +367,23 @@ def build_matrix(
                             "pytorch_nvcc": target["pytorch_nvcc"],
                             "smoke_exclude": smoke_exclude,
                             "smoke_extra": smoke_extra,
+                            "torch_spec": f"torch=={torch_version}"
+                            + (f"+{local}" if local else ""),
+                            "torch_index_args": _platform(platform, "torch_index_args"),
+                            "py_platform": _PY_PLATFORM[platform],
                         }
                     )
+    if not include:
+        raise SystemExit(
+            "no cells: none of the chosen platforms builds that package / torch combination "
+            "(win_arm64 builds causal-conv1d and mamba-ssm for torch 2.14.0 only)."
+        )
     return include
 
 
 def gpu_matrix(include: list[dict]) -> list[dict]:
-    """Cells the (Linux) self-hosted GPU runner can load."""
-    return [cell for cell in include if cell["os"] == "linux"]
+    """Cells the (x86_64 Linux) self-hosted GPU runner can load."""
+    return [cell for cell in include if cell["platform"] == "linux_x86_64"]
 
 
 def warm_matrix(include: list[dict]) -> list[dict]:
@@ -383,7 +444,12 @@ def _join(items: list[str]) -> str:
 
 
 # How the release body names each platform.
-PLATFORM_NAMES = {"linux_x86_64": "Linux x86_64", "win_amd64": "Windows x86_64"}
+PLATFORM_NAMES = {
+    "linux_x86_64": "Linux x86_64",
+    "win_amd64": "Windows x86_64",
+    "linux_aarch64": "Linux aarch64",
+    "win_arm64": "Windows ARM64",
+}
 
 
 def _coverage(rows: list[dict]) -> str:

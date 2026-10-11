@@ -154,7 +154,9 @@ class TestMatrix:
             words = target["pytorch_nvcc"].split(" ")
             assert len(words) == 2 and all(words), target
 
-    @pytest.mark.parametrize("platforms", ["win_arm64", "macosx", "win_amd64; whoami", "$(id)"])
+    @pytest.mark.parametrize(
+        "platforms", ["win_arm64ec", "macosx_arm64", "win_amd64; whoami", "$(id)"]
+    )
     def test_unknown_platforms_are_refused(self, platforms):
         with pytest.raises(SystemExit):
             prebuilt_wheels.build_matrix(platforms = platforms)
@@ -472,13 +474,16 @@ class TestDeadline:
         assert deadline.main(["x", "5m", "echo"]) == 2
 
 
-WINDOWS_SETUP = (
-    "Enable long paths (Windows)",
-    "Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)",
-    "Activate the MSVC x64 environment (Windows)",
-    "Install ccache (Windows)",
-    "Report memory, page file and disk (Windows)",
-)
+MSVC_STEP = "Activate the MSVC ${{ matrix.platform == 'win_arm64' && 'arm64' || 'x64' }} environment (Windows)"
+# Step name -> its `if`: the two toolkits are per Windows platform, the rest per OS.
+WINDOWS_SETUP = {
+    "Enable long paths (Windows)": "runner.os == 'Windows'",
+    "Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)": "matrix.platform == 'win_amd64'",
+    "Install the CUDA 13.4 toolkit (Windows ARM64)": "matrix.platform == 'win_arm64'",
+    MSVC_STEP: "runner.os == 'Windows'",
+    "Install ccache (Windows)": "runner.os == 'Windows'",
+    "Report memory, page file and disk (Windows)": "runner.os == 'Windows'",
+}
 LINUX_ONLY = (
     "Harden runner (audit)",
     "Free up disk space",
@@ -498,9 +503,9 @@ class TestWorkflow:
     @pytest.mark.parametrize("job", ["warm", "build"])
     def test_windows_setup_exists_in_both_jobs_and_is_gated(self, workflow, job):
         names = [s.get("name") for s in _steps(workflow, job)]
-        for name in WINDOWS_SETUP:
+        for name, gate in WINDOWS_SETUP.items():
             step = _step(workflow, job, name)
-            assert step["if"] == "runner.os == 'Windows'", (job, name)
+            assert step["if"] == gate, (job, name)
             assert step["shell"] == "pwsh", (job, name)
         for name in LINUX_ONLY:
             assert _step(workflow, job, name)["if"] == "runner.os == 'Linux'", (job, name)
@@ -531,8 +536,13 @@ class TestWorkflow:
         assert "CCACHE_COMPILERCHECK=content" in run
 
     def test_msvc_environment_is_exported_with_distutils_use_sdk(self, workflow):
-        run = _step(workflow, "build", "Activate the MSVC x64 environment (Windows)")["run"]
-        assert "vswhere.exe" in run and "vcvars64.bat" in run
+        step = _step(workflow, "build", MSVC_STEP)
+        run = step["run"]
+        assert "vswhere.exe" in run and "$env:VCVARS" in run
+        assert (
+            "'vcvars64.bat'" in step["env"]["VCVARS"]
+            and "'vcvarsarm64.bat'" in step["env"]["VCVARS"]
+        )
         assert "DISTUTILS_USE_SDK=1" in run
         assert "GITHUB_ENV" in run and "GITHUB_PATH" in run
 
@@ -566,7 +576,9 @@ class TestWorkflow:
     def test_the_torch_abi_check_follows_the_cell(self, workflow):
         for job in ("warm", "build"):
             step = next(
-                s for s in _steps(workflow, job) if s.get("name", "").startswith("Install torch")
+                s
+                for s in _steps(workflow, job)
+                if s.get("name", "") == "Install ${{ matrix.torch_spec }}"
             )
             assert step["env"]["MATRIX_ABI"] == "${{ matrix.abi }}"
             assert 'os.environ["MATRIX_ABI"]' in step["run"]
