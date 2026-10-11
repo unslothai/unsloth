@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Mid-generation MTP crash recovery for every MTP launch (#13253).
-
-A Gemma 4 drafter on Apple Silicon passed /health and then aborted llama-server on
-every decode. The runtime fallback (reload without speculative decoding) was armed
-only under tensor parallelism, so the respawn replayed the same MTP launch and every
-request failed. The reload also runs on a short-lived thread, which on Linux killed
-the replacement through PR_SET_PDEATHSIG as soon as that thread returned.
-"""
+"""MTP crash fallback on every MTP launch, and its reload surviving its thread (#13253)."""
 
 from __future__ import annotations
 
@@ -45,7 +38,6 @@ def test_runtime_fallback_armed_without_tensor_parallel():
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PDEATHSIG is Linux-only")
 def test_llama_server_started_from_a_short_thread_outlives_it(tmp_path, monkeypatch):
-    # The MTP-crash reload spawns from a thread that exits right after the load.
     if not process_lifetime._pdeathsig_available():
         pytest.skip(reason = "PR_SET_PDEATHSIG blocked here (seccomp), so the hazard cannot occur")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))

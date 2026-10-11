@@ -24176,8 +24176,7 @@ class LlamaCppBackend:
                 self._close_attempt_log()
                 self._health_wait_cancelled = True
                 return False
-            # PDEATHSIG follows the forking thread: the MTP-crash reload and the
-            # watchdog launch from threads that exit right after the load.
+            # PDEATHSIG follows the forking thread; the MTP-crash reload's thread exits.
             _spawned = _spawn_on_lifetime_thread(
                 lambda: subprocess.Popen(
                     cmd,
@@ -32437,11 +32436,8 @@ class LlamaCppBackend:
                 _spec_requested_dflash = any(
                     "draft-dflash" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
-                # Is the launched server running MTP? Arms the watchdog/recovery for
-                # any MTP launch, not only tensor: a drafter that passes /health and
-                # aborts every decode (Gemma 4 on Apple Silicon, #13253) would
-                # otherwise be respawned into the same crash on every request.
-                # Cleared if the MTP-drop fallback wins.
+                # Any MTP launch, not only tensor: a respawn would replay a drafter that
+                # aborts every decode (#13253). Cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(_spec_requested_mtp)
                 # MTP can pass /health then crash the flash-attn kernel on the
                 # first decode under tensor; probe one generation so the fallback
