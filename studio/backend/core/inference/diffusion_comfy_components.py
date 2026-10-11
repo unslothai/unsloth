@@ -837,6 +837,9 @@ class ComponentOverrides:
     classes: dict[str, str] = field(default_factory = dict)  # component -> class name
     kinds: dict[str, str] = field(default_factory = dict)  # component -> detected file kind
     modules: dict[str, Any] = field(default_factory = dict)
+    # Found beside a ComfyUI DiT rather than named by the request: status keeps the caller's own precision ask.
+    discovered: bool = False
+    te_quant_request: Optional[str] = None
 
     @property
     def components(self) -> tuple[str, ...]:
@@ -1274,20 +1277,22 @@ def validate_component_specs(
 
 
 def _file_precision(path: str) -> str:
-    """``dense`` / ``fp8`` / ``int8`` / ``mixed`` from the header; raises for a format Studio cannot load."""
+    """``dense`` / ``fp8`` / ``int8`` (ConvRot, stays int8 in memory) / ``int8_dequant`` (loads dense) / ``mixed``
+    from the header; raises for a format Studio cannot load."""
     from .diffusion_comfy_quant import FP8_FORMATS, INT8_TENSORWISE
 
-    formats = {layer.format for layer in quant_layers(path).values()}
+    layers = quant_layers(path).values()
+    formats = {layer.format for layer in layers}
     if not formats:
         return "dense"
     if formats <= set(FP8_FORMATS):
         return "fp8"
     if formats == {INT8_TENSORWISE}:
-        return "int8"
+        return "int8" if all(layer.convrot for layer in layers) else "int8_dequant"
     return "mixed"
 
 
-_PRECISION_ORDER = ("dense", "fp8", "int8")
+_PRECISION_ORDER = ("dense", "fp8", "int8", "int8_dequant")
 
 
 def pick_comfy_text_encoders(
@@ -1302,15 +1307,16 @@ def pick_comfy_text_encoders(
 
     A slot takes a file only when it fits that slot's real class strictly (``fits`` raises otherwise) and is
     the single best by precision: dense, then fp8, then int8, the base repo's own precision first. Under a
-    family's automatic scheme (``auto_scheme``) only files already in that scheme count, so a dense file never
-    displaces the smaller encoder the family loads by default. Two equally good files for one slot (a
+    family's automatic scheme (``auto_scheme``) only files that stay in that scheme once loaded count (int8
+    ConvRot; fp8 and plain int8 load dense), so a larger resident encoder never displaces the one the family
+    loads by default. Two equally good files for one slot (a
     fine-tune beside the original) leave it to the base repo. Unreadable or unfitting files are skipped."""
     classes = component_classes_from_index(model_index)
     standalone = _STANDALONE_TE_SLOTS.get(family, ())
     wanted = {classes[c] for c in TEXT_ENCODER_COMPONENTS if c in classes and c not in standalone}
     if not wanted:
         return []
-    order = (auto_scheme,) if auto_scheme else _PRECISION_ORDER
+    order = (("int8",) if auto_scheme == "int8" else ()) if auto_scheme else _PRECISION_ORDER
     by_slot: dict[str, list[tuple[int, str]]] = {}
     for path in candidates:
         try:

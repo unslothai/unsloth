@@ -217,7 +217,8 @@ def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
     return tuple(roots)
 
 
-_MAX_LAYOUT_ANCESTORS = 4
+# models/<dit folder>/ plus the scanner's subfolder depth, then the ComfyUI root above models/.
+_MAX_LAYOUT_ANCESTORS = _MAX_SUBDIR_DEPTH + 3
 _MAX_COMPONENT_FILES = 64
 
 
@@ -236,15 +237,16 @@ def _within(path: Path, roots: Iterable[Path]) -> bool:
     return False
 
 
-def comfy_text_encoder_files(dit_path: Path) -> tuple[Path, ...]:
+def comfy_text_encoder_files(dit_path: Path, scan_folders: Iterable[Path] = ()) -> tuple[Path, ...]:
     """The ``.safetensors`` in the text-encoder folders of the ComfyUI layout whose DiT folders hold
-    ``dit_path``; empty when the file is not in one. Never raises."""
+    ``dit_path``: one found above the file, else a registered ``scan_folders`` entry whose layout lists it
+    (``extra_model_paths.yaml`` pointing outside the tree). Empty when the file is in none. Never raises."""
     try:
         dit_path = Path(dit_path)
-        ancestors = list(dit_path.parents)[:_MAX_LAYOUT_ANCESTORS]
-    except (OSError, ValueError):
+        folders = [*list(dit_path.parents)[:_MAX_LAYOUT_ANCESTORS], *map(Path, scan_folders)]
+    except (OSError, ValueError, TypeError):
         return ()
-    for folder in ancestors:
+    for folder in folders:
         layout = comfy_layout(folder)
         if layout is None or not _within(dit_path.parent, layout.dit_dirs):
             continue

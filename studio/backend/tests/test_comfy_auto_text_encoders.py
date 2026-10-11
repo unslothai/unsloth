@@ -102,6 +102,23 @@ def test_text_encoder_folders_of_the_dits_own_layout(tmp_path):
     assert comfy_text_encoder_files(models / "text_encoders" / "qwen_3_4b.safetensors") == ()
     (tmp_path / "plain").mkdir()
     assert comfy_text_encoder_files(tmp_path / "plain" / "dit.safetensors") == ()
+    deep = models / "diffusion_models" / "a" / "b" / "c" / "dit.safetensors"
+    assert [str(p) for p in comfy_text_encoder_files(deep)] == [te, legacy]
+
+
+def test_a_dit_folder_listed_by_extra_model_paths_finds_its_tree(tmp_path):
+    from hub.utils.comfy_models import comfy_text_encoder_files
+
+    models = _comfy_tree(tmp_path)
+    te = _encoder_file(models / "text_encoders" / "qwen_3_4b.safetensors")
+    shared = tmp_path / "shared" / "dits"
+    shared.mkdir(parents = True)
+    (models.parent / "extra_model_paths.yaml").write_text(
+        f"shared:\n  diffusion_models: {shared}\n", encoding = "utf-8"
+    )
+    dit = shared / "dit.safetensors"
+    assert comfy_text_encoder_files(dit) == ()
+    assert [str(p) for p in comfy_text_encoder_files(dit, [models.parent])] == [te]
 
 
 def test_the_one_fitting_encoder_is_picked(tmp_path):
@@ -129,10 +146,15 @@ def test_dense_beats_int8_and_a_tie_falls_back_to_the_base_repo(tmp_path):
 def test_auto_scheme_family_never_takes_a_dense_file(tmp_path):
     base = _base(tmp_path)
     dense = _encoder_file(tmp_path / "te" / "qwen3vl_8b_bf16.safetensors")
-    int8 = _encoder_file(tmp_path / "te" / "qwen3vl_8b_int8.safetensors", int8 = True)
+    plain = _encoder_file(tmp_path / "te" / "qwen3vl_8b_int8.safetensors", int8 = True)
+    convrot = _encoder_file(
+        tmp_path / "te" / "qwen3vl_8b_int8_convrot.safetensors", int8 = True, convrot = True
+    )
     kwargs = dict(model_index = INDEX, fits = _fits(base), auto_scheme = "int8")
-    assert C.pick_comfy_text_encoders([dense], **kwargs) == []
-    assert C.pick_comfy_text_encoders([dense, int8], **kwargs) == [int8]
+    # Plain int8 dequantizes on load, so it is as large in memory as the dense file.
+    assert C.pick_comfy_text_encoders([dense, plain], **kwargs) == []
+    assert C.pick_comfy_text_encoders([dense, plain, convrot], **kwargs) == [convrot]
+    assert C.pick_comfy_text_encoders([convrot], **{**kwargs, "auto_scheme": "fp8"}) == []
 
 
 def test_an_explicit_precision_the_file_cannot_take_skips_it(tmp_path):

@@ -3251,7 +3251,12 @@ class DiffusionBackend:
             from hub.utils.comfy_models import comfy_text_encoder_files
 
             dit = resolve_local_gguf_child(Path(repo_id).expanduser(), gguf_filename)
-            candidates = [str(p) for p in comfy_text_encoder_files(dit)]
+            try:
+                from hub.storage.scan_folders import list_scan_folders
+                scan_folders = [row["path"] for row in list_scan_folders()]
+            except Exception:  # noqa: BLE001 - the layout above the file still answers
+                scan_folders = []
+            candidates = [str(p) for p in comfy_text_encoder_files(dit, scan_folders)]
             if candidates:
                 from hub.services.models import account_access
                 if account_access.managed_account():
@@ -3655,6 +3660,7 @@ class DiffusionBackend:
                     kwargs.get("gguf_filename"),
                 )
             kwargs["base_repo"] = base
+            discovered = False
             if not kwargs.get("text_encoder_files") and not kwargs.get("vae_file"):
                 kwargs["text_encoder_files"] = (
                     self._comfy_text_encoders(
@@ -3669,6 +3675,7 @@ class DiffusionBackend:
                     )
                     or None
                 )
+                discovered = bool(kwargs["text_encoder_files"])
             # Claimed before a byte moves, so the cache-delete guard sees a Hub component repo.
             from .diffusion_comfy_components import hub_repo_ids
 
@@ -3695,6 +3702,9 @@ class DiffusionBackend:
                 cancel_event = cancel_event,
                 text_encoder_quant = kwargs.get("text_encoder_quant"),
             )
+            if discovered and component_overrides is not None:
+                component_overrides.discovered = True
+                component_overrides.te_quant_request = kwargs.get("text_encoder_quant")
             kwargs["_component_overrides"] = component_overrides
             replaced = tuple(component_overrides.components) if component_overrides else ()
             if component_overrides is not None and component_overrides.text_encoder_components:
@@ -5991,6 +6001,11 @@ class DiffusionBackend:
         # "none"/"off" -> the released bf16 encoder; an explicit scheme pins itself. Also validates the raw request,
         # which is why it runs before this load evicts the previous pipeline.
         text_encoder_quant_requested = text_encoder_quant
+        from .diffusion_comfy_components import active_component_overrides
+
+        discovered_components = active_component_overrides()
+        if discovered_components is not None and discovered_components.discovered:
+            text_encoder_quant_requested = discovered_components.te_quant_request
         text_encoder_quant, text_encoder_quant_auto = resolve_te_quant_request(
             text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
