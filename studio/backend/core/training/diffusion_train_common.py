@@ -831,38 +831,34 @@ def recorded_optimizer_class(cfg: Any, identity: Any) -> Optional[str]:
 
 
 GC_MODE_ENV = "UNSLOTH_DIFFUSION_GC_MODE"
-GC_SKIP_EVERY_ENV = "UNSLOTH_DIFFUSION_GC_SKIP_EVERY"
+GC_EVERY_N_ENV = "UNSLOTH_DIFFUSION_GC_EVERY_N"
 
 
 def enable_diffusion_gradient_checkpointing(model: Any, mode: Optional[str] = None) -> str:
-    """Mode "plain" checkpoints every block; "partial" skips every Nth repeated block (more VRAM, fewer recomputes).
-
-    Selective / CPU-offloaded checkpointing were slower or numerically different under regional compile.
-    Non-reentrant: reentrant recompute of a bnb 4-bit LoRA linear can hit an illegal memory access on FLUX."""
-    import functools
-
-    import torch.utils.checkpoint as _ckpt
-
-    plain = functools.partial(_ckpt.checkpoint, use_reentrant = False)
+    """Mode "plain" checkpoints every block; "partial" every Nth (UNSLOTH_DIFFUSION_GC_EVERY_N, default 2): fewer
+    recomputes, more VRAM. Selective / CPU-offloaded checkpointing were slower or numerically different under
+    regional compile."""
     mode = (mode or os.environ.get(GC_MODE_ENV, "") or "plain").strip().lower()
-    repeated = set(getattr(model, "_repeated_blocks", None) or ())
-    blocks = [m for m in model.modules() if m.__class__.__name__ in repeated]
-    if mode == "partial" and blocks:
+    every_n = 1
+    if mode == "partial":
         try:
-            every = max(2, int(os.environ.get(GC_SKIP_EVERY_ENV, "") or 2))
+            every_n = max(2, int(os.environ.get(GC_EVERY_N_ENV, "") or 2))
         except ValueError:
-            every = 2
-        skip = {id(b) for b in blocks[every - 1 :: every]}
+            every_n = 2
+    try:
+        from unsloth_zoo.block_checkpointing import enable_block_gradient_checkpointing
+    except ImportError:
+        # unsloth_zoo older than the helper: every block, the default, through the diffusers hook.
+        import functools
 
-        def _partial(module, *args, **kwargs):
-            if id(module) in skip:
-                return module(*args, **kwargs)
-            return plain(module, *args, **kwargs)
+        import torch.utils.checkpoint as _ckpt
 
-        model.enable_gradient_checkpointing(gradient_checkpointing_func = _partial)
-        return "partial"
-    model.enable_gradient_checkpointing(gradient_checkpointing_func = plain)
-    return "plain"
+        model.enable_gradient_checkpointing(
+            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
+        )
+        return "plain"
+    enable_block_gradient_checkpointing(model, every_n_blocks = every_n)
+    return "partial" if every_n > 1 else "plain"
 
 
 def make_lora_optimizer(

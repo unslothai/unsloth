@@ -81,6 +81,7 @@ from core.training.diffusion_train_common import (
     _latent_cache_forced,
     _latent_cache_over_budget,
     _restore_perf_flags,
+    enable_diffusion_gradient_checkpointing,
     h3_train_unsupported_reason,
     flow_bf16_trainable,
     native_bf16_supported_xpu,
@@ -638,11 +639,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         )
     )
     if cfg.gradient_checkpointing:
-        import functools
-        import torch.utils.checkpoint as _ckpt
-        transformer.enable_gradient_checkpointing(
-            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
-        )
+        enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if not lora_params:
