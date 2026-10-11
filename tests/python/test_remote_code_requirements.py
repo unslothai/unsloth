@@ -1,8 +1,4 @@
-"""Packages imported only by Hub remote code must stay in Studio's requirements.
-
-Nothing in this repo imports them, so an "unused package" sweep drops them and the
-affected models fail to load with transformers' "requires the following packages" error.
-"""
+"""Hub remote code imports these, nothing in this repo does, so an unused-package sweep drops them."""
 
 from __future__ import annotations
 
@@ -13,7 +9,6 @@ EXTRAS_TXT = (
     Path(__file__).resolve().parents[2] / "studio" / "backend" / "requirements" / "extras.txt"
 )
 
-# package -> models whose remote code imports it
 REMOTE_CODE_PACKAGES = {
     "addict": ("unsloth/DeepSeek-OCR", "unsloth/DeepSeek-OCR-2"),  # #8732
 }
