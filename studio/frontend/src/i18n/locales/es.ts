@@ -2137,6 +2137,10 @@ export const es = {
           "PyTorch es una compilación solo para CPU ({version}), por lo que las GPU de abajo no se pueden usar. Repare la instalación para restaurar la compatibilidad con GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) no puede inicializar las GPU de abajo, por lo que no se pueden usar. Revise el controlador de la GPU o repare la instalación.",
+        driverIdleEvict:
+          "El controlador de AMD {version} tiene un error conocido que puede congelar Windows cuando una GPU de AMD está inactiva, sobre todo con más de una GPU. Actualiza a Adrenalin 26.9.2 o posterior.",
+        driverIdleEvictDetails: "Detalles",
+        dismissNotice: "Descartar",
         unusableDevice: "no utilizable",
         unknownDevice: "GPU desconocida",
         deviceWithIndex: "GPU {index}",
@@ -2514,6 +2518,15 @@ export const es = {
         "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "Longitud de la salida de herramientas",
+      toolResultLimitDescription: "Caracteres de un resultado de Python o Terminal que lee el modelo. El valor predeterminado es {count}.",
+      toolResultLimitHint: "La salida más larga se guarda en un archivo que el modelo puede leer por partes. Un límite mayor se aplica a los modelos que se ejecutan en Unsloth, y las ventanas de contexto pequeñas siguen recibiendo menos. Los modelos de API mantienen el valor predeterminado salvo que lo bajes.",
+      toolResultLimitDefault: "{count} (predeterminado)",
+      toolResultLimitLocked: "Definido por UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "No se pudo cargar la longitud de la salida de herramientas.",
+      toolResultLimitSaveError: "No se pudo guardar la longitud de la salida de herramientas.",
+      toolResultLimitKeywords:
+        "salida resultado truncar recortar límite caracteres longitud tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Contraído",
         auto: "Expandir mientras se ejecuta",
@@ -2938,9 +2951,9 @@ export const es = {
       },
       mcp: {
         title: "Acceso de agentes (MCP)",
-        description: "Permite que agentes de código como Claude Code y Codex usen Unsloth Studio mediante MCP. Los agentes inician sesión con un token de acceso de esta página.",
+        description: "Permite que agentes de código como Claude Code y Codex usen Unsloth mediante MCP. Los agentes inician sesión con un token de acceso de esta página.",
         enable: "Permitir conexiones de agentes",
-        enableDescription: "Sirve /mcp/ a las solicitudes que llevan un token de acceso de Unsloth Studio.",
+        enableDescription: "Sirve /mcp/ a las solicitudes que llevan un token de acceso de Unsloth.",
         lockedByEnv: "Definido por {name}.",
         loadError: "No se pudo cargar la configuración de acceso de agentes.",
         saveError: "No se pudo guardar la configuración de acceso de agentes.",
@@ -4062,6 +4075,8 @@ export const es = {
     selection: {
       startChat: "Iniciar chat",
       move: "Mover",
+      selectAll: "Seleccionar todo",
+      countOfTotal: "{count} de {total} seleccionados",
       clear: "Borrar selección",
     },
     menu: {

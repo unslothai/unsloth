@@ -2266,6 +2266,10 @@ export const sv = {
           "PyTorch är en version endast för CPU ({version}), så GPU:erna nedan kan inte användas. Reparera installationen för att återställa GPU-stödet.",
         mismatchUnavailable:
           "PyTorch ({version}) kan inte initiera GPU:erna nedan, så de kan inte användas. Kontrollera GPU-drivrutinen eller reparera installationen.",
+        driverIdleEvict:
+          "AMD-drivrutinen {version} har en känd bugg som kan frysa Windows när ett AMD-grafikkort står inaktivt, oftast med fler än ett grafikkort. Uppdatera till Adrenalin 26.9.2 eller senare.",
+        driverIdleEvictDetails: "Detaljer",
+        dismissNotice: "Stäng",
         unusableDevice: "oanvändbar",
         unknownDevice: "Okänd GPU",
         deviceWithIndex: "GPU {index}",
@@ -2670,6 +2674,15 @@ export const sv = {
         "Äldre turer flyttas till ett sökbart arkiv när en chatt fyller sin kontext.",
       autoCompactKeywords:
         "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall search",
+      toolResultLimit: "Längd på verktygsutdata",
+      toolResultLimitDescription: "Tecken i ett Python- eller Terminal-resultat som modellen läser. Standard är {count}.",
+      toolResultLimitHint: "Längre utdata sparas i en fil som modellen kan läsa i delar. En högre gräns gäller modeller som körs i Unsloth, och små kontextfönster får fortfarande mindre. API-modeller behåller standardvärdet om du inte sänker det.",
+      toolResultLimitDefault: "{count} (standard)",
+      toolResultLimitLocked: "Anges av UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Det gick inte att läsa in längden på verktygsutdata.",
+      toolResultLimitSaveError: "Det gick inte att spara längden på verktygsutdata.",
+      toolResultLimitKeywords:
+        "utdata resultat trunkera avkortad gräns tecken längd tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Hopfälld",
         auto: "Fäll ut medan den körs",
@@ -3112,9 +3125,9 @@ export const sv = {
       },
       mcp: {
         title: "Agentåtkomst (MCP)",
-        description: "Låt kodagenter som Claude Code och Codex använda Unsloth Studio via MCP. Agenter loggar in med en åtkomsttoken från den här sidan.",
+        description: "Låt kodagenter som Claude Code och Codex använda Unsloth via MCP. Agenter loggar in med en åtkomsttoken från den här sidan.",
         enable: "Tillåt agentanslutningar",
-        enableDescription: "Betjänar /mcp/ för förfrågningar som har en åtkomsttoken för Unsloth Studio.",
+        enableDescription: "Betjänar /mcp/ för förfrågningar som har en åtkomsttoken för Unsloth.",
         lockedByEnv: "Angiven av {name}.",
         loadError: "Det gick inte att läsa in inställningarna för agentåtkomst.",
         saveError: "Det gick inte att spara inställningen för agentåtkomst.",
@@ -4244,6 +4257,8 @@ export const sv = {
     selection: {
       startChat: "Starta chatt",
       move: "Flytta",
+      selectAll: "Markera alla",
+      countOfTotal: "{count} av {total} markerade",
       clear: "Rensa markering",
     },
     menu: {

@@ -2113,6 +2113,10 @@ export const ar = {
           "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
         mismatchUnavailable:
           "لا يستطيع PyTorch ({version}) تهيئة وحدات GPU أدناه، لذا لا يمكن استخدامها. تحقق من تعريف كرت الشاشة أو أصلح التثبيت.",
+        driverIdleEvict:
+          "يحتوي برنامج تشغيل AMD {version} على خلل معروف قد يؤدي إلى تجمّد Windows عندما تكون وحدة GPU من AMD خاملة، وغالبًا مع وجود أكثر من GPU. حدّث إلى Adrenalin 26.9.2 أو أحدث.",
+        driverIdleEvictDetails: "التفاصيل",
+        dismissNotice: "إغلاق",
         unusableDevice: "غير قابل للاستخدام",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
@@ -2485,6 +2489,15 @@ export const ar = {
         "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "طول مخرجات الأدوات",
+      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
+      toolResultLimitHint: "تُحفظ المخرجات الأطول في ملف يمكن للنموذج قراءته على أجزاء. ينطبق الحد الأعلى على النماذج التي تعمل في Unsloth، وتظل نوافذ السياق الصغيرة تحصل على أقل. تحتفظ نماذج API بالقيمة الافتراضية ما لم تخفضها.",
+      toolResultLimitDefault: "{count} (افتراضي)",
+      toolResultLimitLocked: "مضبوط بواسطة UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "تعذر تحميل طول مخرجات الأدوات.",
+      toolResultLimitSaveError: "تعذر حفظ طول مخرجات الأدوات.",
+      toolResultLimitKeywords:
+        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "مطوي",
         auto: "التوسيع أثناء التشغيل",
@@ -2901,9 +2914,9 @@ export const ar = {
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
-        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth Studio عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
+        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
         enable: "السماح باتصالات الوكلاء",
-        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Unsloth Studio.",
+        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Unsloth.",
         lockedByEnv: "مضبوط بواسطة {name}.",
         loadError: "تعذّر تحميل إعدادات وصول الوكلاء.",
         saveError: "تعذّر حفظ إعداد وصول الوكلاء.",
@@ -3991,6 +4004,8 @@ export const ar = {
     selection: {
       startChat: "بدء محادثة",
       move: "نقل",
+      selectAll: "تحديد الكل",
+      countOfTotal: "{count} من {total} محددة",
       clear: "مسح التحديد",
     },
     menu: {

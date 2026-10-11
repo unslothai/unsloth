@@ -690,52 +690,38 @@ class _FreezeNewTorchForCoreUpdate:
         return False
 
 
-# torchao's cpp is built for ONE torch release AND CUDA major. Either mismatch costs the
-# kernels, never the import: torchao/__init__.py has caught the dlopen failure since 0.12 and
-# import_fixes.py filters that warning. Match torchao to the installed torch (pytorch/ao#2919):
-#   2.9.x            -> 0.14.0
-#   2.10.x, CUDA<=12 -> 0.16.0 (cpp built for 2.10, loads via the CUDA-12 wheel)
-#   2.10.x, CUDA>=13 -> 0.17.0 (cu130: 0.16.0's CUDA-12 cpp crashes on load; 0.17.0
-#                       targets torch 2.11 so its cpp is cleanly skipped, not crashed)
-#   2.11.x           -> 0.17.0 (cpp built for 2.11)
-#   2.12.x and up    -> 0.18.0 (dropped torch <2.11; release CI pinned to 2.13)
-# Unknown/older torch keeps the conservative default.
-#
-# The version alone is not enough: torchao ships per accelerator under /whl/<tag>, and PyPI's
-# single default tracks whatever major PyTorch currently ships (13 as of 0.18.0), so it cannot
-# be treated as a fixed fallback major. The caller pins the index to the resident torch.
+# torchao cpp extensions match one torch and CUDA release; mismatches disable kernels or crash.
+# torch 2.9 needs 0.15 because 0.14 breaks supported Diffusers and Transformers (#13244).
+# use the resident accelerator index because PyPI follows the latest PyTorch CUDA major.
 _TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
+_TORCHAO_TORCH_29_SPEC = "torchao==0.15.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
 _TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
 _TORCHAO_TORCH_211_SPEC = "torchao==0.17.0"
 _TORCHAO_TORCH_212_PLUS_SPEC = "torchao==0.18.0"
-# torch 2.10 built against CUDA >= this major can't load 0.16.0's CUDA-12 cpp.
+# torch 2.10 cannot load 0.16's CUDA 12 cpp on this major or newer.
 _TORCHAO_CUDA13_MIN_MAJOR = 13
 
 
 def _cuda_major_from_torch_version(torch_version: str) -> int | None:
-    """Extract the CUDA major from a torch local version tag, e.g. '2.10.0+cu130'
-    -> 13, '2.10.0+cu128' -> 12. Returns None for rocm/cpu/tagless builds."""
+    """return the CUDA major from a torch local tag, or None for rocm, cpu, and tagless builds."""
     local = str(torch_version).split("+", 1)
     if len(local) < 2 or not local[1].startswith("cu"):
         return None
-    digits = re.sub(r"[^0-9].*", "", local[1][2:])  # 'cu130' -> '130'
+    digits = re.sub(r"[^0-9].*", "", local[1][2:])
     if not digits:
         return None
-    return int(digits) // 10  # '130' -> 13, '128' -> 12, '118' -> 11
+    return int(digits) // 10
 
 
 def _select_torchao_spec(torch_version: str | None) -> str:
-    """Map an installed torch version string (e.g. '2.10.0+cu130') to the torchao
-    pip spec whose cpp extensions match it. Falls back to _TORCHAO_DEFAULT_SPEC for
-    torch <=2.9, a non-2.x major, or an unparseable/missing version. Pure function.
-    """
+    """select the torchao spec whose cpp extension matches the installed torch version."""
     if not torch_version:
         return _TORCHAO_DEFAULT_SPEC
-    release = str(torch_version).split("+", 1)[0]  # drop +cu130/+rocm6.4/+cpu
+    release = str(torch_version).split("+", 1)[0]
     parts = release.split(".")
     try:
-        # Strip a pre-release suffix from the minor ('10rc1' -> '10').
+        # ignore the minor's prerelease suffix.
         minor_str = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else ""
         major, minor = int(parts[0]), int(minor_str)
     except (IndexError, ValueError):
@@ -743,21 +729,21 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     if major != 2:
         return _TORCHAO_DEFAULT_SPEC
     if minor >= 12:
-        return _TORCHAO_TORCH_212_PLUS_SPEC  # newest known build; covers 2.12+
+        return _TORCHAO_TORCH_212_PLUS_SPEC
     if minor == 11:
-        return _TORCHAO_TORCH_211_SPEC  # 0.17.0's cpp is built for exactly this minor
+        return _TORCHAO_TORCH_211_SPEC
     if minor == 10:
-        # cu130+ can't load 0.16.0's CUDA-12 cpp; use 0.17.0 (cpp skipped, not crashed).
+        # torchao 0.16's CUDA 12 cpp crashes on CUDA 13; 0.17 skips its mismatched cpp.
         cuda_major = _cuda_major_from_torch_version(str(torch_version))
         if cuda_major is not None and cuda_major >= _TORCHAO_CUDA13_MIN_MAJOR:
             return _TORCHAO_TORCH_210_CUDA13_SPEC
         return _TORCHAO_TORCH_210_SPEC
+    if minor == 9:
+        return _TORCHAO_TORCH_29_SPEC
     return _TORCHAO_DEFAULT_SPEC
 
 
-# torchcodec up to 0.11 is built against one torch minor and declares no
-# `Requires-Dist: torch`, so pip cannot catch a mismatch. 0.12+ is ABI-stable against torch
-# >=2.11, hence the open floor. Mirrors pyproject's audio-torch2xx and import_fixes.
+# torchcodec 0.11 and older target one torch minor; 0.12 is ABI-stable with torch 2.11+.
 _TORCHCODEC_DEFAULT_SPEC = "torchcodec>=0.10.0,<0.11.0"
 _TORCHCODEC_ABI_STABLE_SPEC = "torchcodec>=0.12.0"
 _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
@@ -4393,7 +4379,7 @@ _XPU_TORCH_PKG_SPEC: tuple[str, str, str] = (
 def _explicit_xpu_torch_index_url() -> "str | None":
     """The pinned wheel index URL when it names the XPU family (leaf == xpu), else None.
 
-    Intel support is a pin, never autodetection, so the pin is the only signal there is.
+    Only the pin; install.sh's Intel GPU route reaches _ensure_xpu_torch through _TORCH_BACKEND.
     """
     url = _explicit_torch_index_url()
     if url is None:
@@ -4637,8 +4623,60 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     )
 
 
-def _ensure_xpu_torch() -> "bool | None":
-    """Install XPU torch when an explicit XPU pin is set but the venv has another build.
+# Same allowlist as studio/backend/utils/hardware/hardware.py and install.sh's _intel_xpu_gpu_id.
+_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0xE200, 0xE2FF))
+_INTEL_XPU_PCI_IDS = frozenset((
+    0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083,  # Core Ultra Arc iGPUs
+    0xB084, 0xB085, 0xB086, 0xB087,  # PTL Arc Pro (Mesa iris_pci_ids.h)
+    0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
+))  # fmt: skip
+_PCI_DEVICES_ROOT = "/sys/bus/pci/devices"
+_INTEL_DEVICE_FILTER_VARS = (
+    "ONEAPI_DEVICE_SELECTOR",
+    "SYCL_DEVICE_FILTER",
+    "SYCL_DEVICE_ALLOWLIST",
+)
+
+
+def _intel_xpu_auto_route_holds() -> bool:
+    """install.sh's Intel XPU auto route, re-asked now: opt-out, ZE_AFFINITY_MASK, AMD silicon, and
+    an allowlisted Intel display device on the PCI bus."""
+    if os.environ.get("UNSLOTH_DISABLE_XPU_AUTO", "0") == "1":
+        return False
+    # Level Zero reads an empty or "default" ZE_AFFINITY_MASK as unset (compute-runtime isAffinityMaskSet).
+    ze_mask_set = os.environ.get("ZE_AFFINITY_MASK", "default") not in ("", "default")
+    if (
+        ze_mask_set
+        or any(v in os.environ for v in _INTEL_DEVICE_FILTER_VARS)
+        or os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+    ):
+        return False
+    intel = False
+    try:
+        devices = sorted(Path(_PCI_DEVICES_ROOT).iterdir())
+    except OSError:
+        return False
+    for dev in devices:
+        try:
+            vendor = (dev / "vendor").read_text(encoding = "utf-8").strip().lower()
+            if not (dev / "class").read_text(encoding = "utf-8").strip().lower().startswith("0x03"):
+                continue
+            if vendor == "0x1002":
+                return False
+            if vendor != "0x8086":
+                continue
+            device_id = int((dev / "device").read_text(encoding = "utf-8").strip(), 16)
+        except (OSError, ValueError):
+            continue
+        if device_id in _INTEL_XPU_PCI_IDS or any(
+            lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES
+        ):
+            intel = True
+    return intel
+
+
+def _ensure_xpu_torch(probe_only: bool = False) -> "bool | None":
+    """Install XPU torch when an XPU pin, or install.sh's Intel GPU route, is not what the venv has.
 
     Counterpart to _ensure_cpu_torch for Intel. `unsloth studio update` runs setup.sh, never
     install.sh, so its XPU install path is unreachable there; and an xpu leaf names no family
@@ -4646,13 +4684,32 @@ def _ensure_xpu_torch() -> "bool | None":
 
     Windows is excluded on purpose: setup.ps1 owns torch there and already installs the XPU
     trio itself, so acting here would fight it. macOS has no XPU at all. False: a repair is
-    required but the mirror cannot express the XPU index; the caller aborts.
+    required but the mirror cannot express the XPU index; the caller aborts. ``probe_only``
+    answers True where a repair (or that False) would happen, and installs nothing.
     """
     if NO_TORCH or IS_MACOS or IS_WINDOWS:
         return
     pin = _explicit_xpu_torch_index_url()
+    _source = "an explicit XPU index is pinned"
     if pin is None and _explicit_torch_index_family() != "xpu":
-        return
+        # Unpinned: install.sh's route or the recorded flavor; any other stated backend or pin wins.
+        if (
+            _explicit_torch_index_family() is not None
+            or (_TORCH_BACKEND or _RECORDED_TORCH_TAG) != "xpu"
+        ):
+            return
+        # A stated backend is a preference; only install.sh's resolved answer or a record is re-asked.
+        stated = (
+            _TORCH_BACKEND == "xpu"
+            and os.environ.get("UNSLOTH_TORCH_BACKEND_SOURCE", "").strip().lower() != "resolved"
+        )
+        # A recorded XPU flavor yields to an NVIDIA or AMD GPU added since.
+        if not _TORCH_BACKEND and (_has_usable_nvidia_gpu() or _has_rocm_gpu()):
+            return
+        if not stated and not _intel_xpu_auto_route_holds():
+            return
+        pin = _pytorch_whl_leaf_url("xpu")  # None: the mirror cannot express it; False below
+        _source = "this install selected XPU torch for its Intel GPU"
 
     # Un-importable either way installs from the pin below. One shared probe bounds it.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
@@ -4663,6 +4720,8 @@ def _ensure_xpu_torch() -> "bool | None":
         # reinstalling never fixes a driver -- it would just re-download the trio twice per
         # update, since this helper runs at two repair points.
         if _xpu_wheel_supported_on_disk():
+            if probe_only:
+                return
             _safe_print(
                 _red(
                     "   torch did not respond in time; the installed XPU build is supported, "
@@ -4685,10 +4744,12 @@ def _ensure_xpu_torch() -> "bool | None":
     else:
         _why = "torch cannot import"
 
+    if probe_only:
+        return True
     if pin is None:
         return False
     _safe_print(
-        f"   {_why} but an explicit XPU index is pinned -- reinstalling XPU torch from "
+        f"   {_why} but {_source} -- reinstalling XPU torch from "
         f"{_strip_index_url_credentials(pin)}"
     )
     _torch_pkg, _vision_pkg, _audio_pkg = _XPU_TORCH_PKG_SPEC
@@ -5844,6 +5905,18 @@ def _cuda_torch_needs_dependency_pass() -> bool:
     """
     try:
         return bool(_ensure_cuda_torch(probe_only = True))
+    except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
+        return False
+
+
+def _xpu_torch_needs_dependency_pass() -> bool:
+    """True when only the dependency pass can put back the XPU torch this install chose.
+
+    Answered by _ensure_xpu_torch in probe mode, as _cuda_torch_needs_dependency_pass is.
+    Never installs, and fails closed.
+    """
+    try:
+        return bool(_ensure_xpu_torch(probe_only = True))
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
         return False
 
@@ -8287,12 +8360,25 @@ def _flash_attn_importable() -> bool:
 
 
 def _remove_rejected_flash_attn() -> bool:
-    """Uninstall a flash-attn that installed but will not import. True iff it is gone.
-
-    uv gets --python as well as --system: --system ALONE would remove from the system
-    Python, leaving the rejected wheel in the venv while setup reported it gone.
-    """
+    """remove rejected flash-attn and return whether it is gone; uv pairs --system with --python."""
     return _uninstall_distribution("flash-attn")
+
+
+def _remove_stale_flash_attn() -> None:
+    """remove stale flash-attn before xformers imports it and breaks every Diffusers pipeline."""
+    if _remove_rejected_flash_attn():
+        _step(
+            "warning",
+            "flash-attn was built for another torch or CUDA and does not import; removed it",
+            _cyan,
+        )
+    else:
+        _step(
+            "warning",
+            "flash-attn was built for another torch or CUDA and could not be removed; "
+            "uninstall flash-attn manually",
+            _cyan,
+        )
 
 
 def _ensure_flash_attn() -> None:
@@ -8306,10 +8392,12 @@ def _ensure_flash_attn() -> None:
         return
 
     env = probe_torch_wheel_env()
+    # a failed flash-attn probe proves staleness only when torch still imports.
+    stale = env is not None and _installed_distribution_version("flash-attn") is not None
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_available:
-        # Counted: it lands a distribution, so the caches keyed on the counter must be rebuilt.
+        # installing a distribution invalidates caches keyed on the action counter.
         _count_install_action()
         outcome = install_prebuilt(
             wheel_url,
@@ -8321,13 +8409,12 @@ def _ensure_flash_attn() -> None:
             ),
             use_uv = USE_UV,
             uv_needs_system = UV_NEEDS_SYSTEM,
+            reinstall = stale,
         )
         if outcome == "installed":
             return
         if outcome == "rejected":
-            # Remove it before giving up. Left installed, unsloth/models/_utils.py finds
-            # it by metadata (_package_available) and then imports the native module
-            # in process, so a wheel that killed the probe would kill training too.
+            # metadata detection imports rejected wheels in the training process.
             if _remove_rejected_flash_attn():
                 _step(
                     "warning",
@@ -8335,13 +8422,15 @@ def _ensure_flash_attn() -> None:
                     _cyan,
                 )
             else:
-                # Still importable in process, unlike never having installed it.
+                # the rejected native module remains discoverable and may terminate training.
                 _step(
                     "warning",
                     "flash-attn wheel is not importable on this GPU and could not be "
                     "removed; uninstall flash-attn manually before training",
                     _cyan,
                 )
+        elif stale:
+            _remove_stale_flash_attn()
         _step("warning", "Continuing without flash-attn", _cyan)
         return
 
@@ -8355,6 +8444,8 @@ def _ensure_flash_attn() -> None:
         )
     else:
         _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+    if stale:
+        _remove_stale_flash_attn()
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -12636,9 +12727,12 @@ def install_python_stack() -> int:
         if _torch_after_repair and _torch_after_repair != _torch_before_repair:
             _note(
                 f"torch moved from {_torch_before_repair or 'unknown'} to "
-                f"{_torch_after_repair} during the repair -- re-selecting torchao"
+                f"{_torch_after_repair} during the repair -- re-selecting torchao and "
+                "flash-attn"
             )
             _install_torchao_for_torch(_torch_after_repair)
+            # resync flash-attn because the repair can invalidate the wheel selected earlier.
+            _ensure_flash_attn()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
@@ -12973,6 +13067,9 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)
+    if sys.argv[1:] == ["--xpu-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _xpu_torch_needs_dependency_pass() else 1)
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)

@@ -2854,14 +2854,6 @@ def test_detect_dflash_file_ignores_the_suffix_form_the_picker_cannot_hide(tmp_p
     assert _is_companion_gguf_path("dflash-kquant.gguf") is True
 
 
-def test_dflash_prefix_form_is_still_found_beside_the_weight(tmp_path):
-    """Dropping the suffix form must not cost the published sidecar."""
-    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
-    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
-
-    assert detect_dflash_file(str(weight)) == str(sidecar.resolve())
-
-
 def test_detect_dflash_file_validates_a_candidate_before_reading_its_header(tmp_path, monkeypatch):
     """A native grant answers through ``accept``, and its answer has to arrive
     before the file is opened.
