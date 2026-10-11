@@ -326,3 +326,26 @@ def test_a_different_training_run_with_the_same_name_is_not_a_copy(catalog, tmp_
     )
     register(folder)
     assert len(_local()) == 2
+
+
+def test_a_same_layout_adapter_with_other_weights_is_not_a_copy(catalog, tmp_path):
+    meta = {"family": "sdxl", "source": "studio-trained", "created_at": 1.5}
+    (catalog / "style.safetensors").write_bytes(b"A" * 200_000)
+    (catalog / "style.json").write_text(json.dumps(meta))
+    folder = tmp_path / "my-models"
+    folder.mkdir()
+    (folder / "style.safetensors").write_bytes(b"A" * 100_000 + b"B" * 100_000)
+    (folder / "style.json").write_text(json.dumps({**meta, **_MARK}))
+    register(folder)
+    assert len(_local()) == 2
+
+
+def test_hand_written_metadata_never_collapses(catalog, tmp_path):
+    (catalog / "style.safetensors").write_bytes(b"w" * 10)
+    (catalog / "style.json").write_text(json.dumps({"family": "sdxl"}))
+    folder = tmp_path / "my-models"
+    folder.mkdir()
+    (folder / "style.safetensors").write_bytes(b"w" * 10)
+    (folder / "style.json").write_text(json.dumps({"family": "sdxl", **_MARK}))
+    register(folder)
+    assert len(_local()) == 2

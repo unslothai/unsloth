@@ -20,11 +20,14 @@ import { ImageAdd02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { exportDiffusionLora } from "../api/export-api";
+import { matchCatalogId } from "@/features/images/train/diffusion-train-deploy";
 import { savedLabel } from "../constants";
 
 function imageLoraLabel(lora: DiffusionLoraInfo, clashes: boolean): string {
   const tags = [...lora.families, ...(lora.fine_tuned ? ["fine-tuned"] : [])];
-  const name = clashes ? `${lora.display_name} [${lora.id}]` : lora.display_name;
+  const name = clashes
+    ? `${lora.display_name} [${lora.id}]`
+    : lora.display_name;
   return tags.length > 0 ? `${name} (${tags.join(", ")})` : name;
 }
 
@@ -60,8 +63,15 @@ export function ImageLoraExportCard({ preselect }: { preselect?: string }) {
   // Arriving from a finished image training run: pick that LoRA and bring the card into view, since the
   // text-model export card above it reports no runs for an image-only user.
   useEffect(() => {
-    if (!preselect || !loras?.some((l) => l.id === preselect)) return;
-    setLoraId(preselect);
+    const id =
+      preselect && loras
+        ? matchCatalogId(
+            loras.map((l) => l.id),
+            preselect,
+          )
+        : undefined;
+    if (!id) return;
+    setLoraId(id);
     cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [preselect, loras]);
 
@@ -91,70 +101,71 @@ export function ImageLoraExportCard({ preselect }: { preselect?: string }) {
 
   return (
     <div ref={cardRef}>
-    <SectionCard
-      icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />}
-      title="Export an image LoRA"
-      description="Save a copy of an image generation LoRA you trained (or added) on the Images page: the .safetensors adapter plus its .json metadata. Any Unsloth install lists it again from a custom models folder."
-      className="mt-6"
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <label htmlFor="image-lora-id" className="text-sm font-medium">
-            Image LoRA
-          </label>
-          <Select value={loraId} onValueChange={setLoraId}>
-            <SelectTrigger id="image-lora-id" className="w-full">
-              <SelectValue
-                placeholder={
-                  loras === null
-                    ? "Loading…"
-                    : loras.length === 0
-                      ? "No image LoRAs found"
-                      : "Select an image LoRA…"
-                }
-              />
-            </SelectTrigger>
-            <SelectContent>
-              {(loras ?? []).map((l) => (
-                <SelectItem key={l.id} value={l.id}>
-                  {imageLoraLabel(
-                    l,
-                    (loras ?? []).some(
-                      (o) => o.id !== l.id && o.display_name === l.display_name,
-                    ),
-                  )}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      <SectionCard
+        icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />}
+        title="Export an image LoRA"
+        description="Save a copy of an image generation LoRA you trained (or added) on the Images page: the .safetensors adapter plus its .json metadata. Any Unsloth install lists it again from a custom models folder."
+        className="mt-6"
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <label htmlFor="image-lora-id" className="text-sm font-medium">
+              Image LoRA
+            </label>
+            <Select value={loraId} onValueChange={setLoraId}>
+              <SelectTrigger id="image-lora-id" className="w-full">
+                <SelectValue
+                  placeholder={
+                    loras === null
+                      ? "Loading…"
+                      : loras.length === 0
+                        ? "No image LoRAs found"
+                        : "Select an image LoRA…"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {(loras ?? []).map((l) => (
+                  <SelectItem key={l.id} value={l.id}>
+                    {imageLoraLabel(
+                      l,
+                      (loras ?? []).some(
+                        (o) =>
+                          o.id !== l.id && o.display_name === l.display_name,
+                      ),
+                    )}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="image-lora-save" className="text-sm font-medium">
+              Save directory
+            </label>
+            <Input
+              id="image-lora-save"
+              value={saveDirectory}
+              onChange={(e) => setSaveDirectory(e.target.value)}
+            />
+          </div>
         </div>
-        <div className="space-y-1.5">
-          <label htmlFor="image-lora-save" className="text-sm font-medium">
-            Save directory
-          </label>
-          <Input
-            id="image-lora-save"
-            value={saveDirectory}
-            onChange={(e) => setSaveDirectory(e.target.value)}
-          />
+        <div className="flex items-center justify-between gap-3">
+          <p
+            className={
+              result?.ok === false
+                ? "text-xs text-destructive"
+                : "text-xs text-muted-foreground"
+            }
+          >
+            {result?.text ?? "A plain file copy: no model load or GPU needed."}
+          </p>
+          <Button disabled={!canExport} onClick={handleExport}>
+            {running && <Spinner />}
+            Export
+          </Button>
         </div>
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <p
-          className={
-            result?.ok === false
-              ? "text-xs text-destructive"
-              : "text-xs text-muted-foreground"
-          }
-        >
-          {result?.text ?? "A plain file copy: no model load or GPU needed."}
-        </p>
-        <Button disabled={!canExport} onClick={handleExport}>
-          {running && <Spinner />}
-          Export
-        </Button>
-      </div>
-    </SectionCard>
+      </SectionCard>
     </div>
   );
 }

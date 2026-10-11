@@ -242,9 +242,9 @@ def _scan_local() -> list[LoraCatalogEntry]:
             found.append((p, entry_id))
 
     entries: list[LoraCatalogEntry] = []
-    # An export carries its source's sidecar plus ``kind``; trainer sidecars hold ``created_at``, so size + sidecar
-    # identifies a copy. A file with no metadata is never treated as a copy (same-rank LoRAs share sizes).
-    originals: dict[tuple, str] = {}
+    # An export carries its source's sidecar plus ``kind``. Only trainer sidecars (``created_at``) qualify, and the
+    # bytes at both ends must match too: equal size and metadata alone fit two different same-rank LoRAs.
+    originals: dict[tuple, tuple[str, Path]] = {}
     for p, entry_id in found:
         try:
             size = p.stat().st_size
@@ -252,13 +252,15 @@ def _scan_local() -> list[LoraCatalogEntry]:
             size = 0
         sidecar = _sidecar_data(p) or {}
         meta = {k: v for k, v in sidecar.items() if k != "kind"}
-        signature = (size, json.dumps(meta, sort_keys = True, default = str)) if meta else None
+        signature = (
+            (size, json.dumps(meta, sort_keys = True, default = str)) if "created_at" in meta else None
+        )
         copy_of = None
         if p.parent == root_dir:
             if signature:
-                originals.setdefault(signature, entry_id)
-        elif signature:
-            copy_of = originals.get(signature)
+                originals.setdefault(signature, (entry_id, p))
+        elif signature in originals and _same_ends(originals[signature][1], p):
+            copy_of = originals[signature][0]
         # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so
         # it is family-gated instead of "unknown". Best-effort.
         families, weight_default = _read_lora_sidecar(p)
@@ -277,6 +279,22 @@ def _scan_local() -> list[LoraCatalogEntry]:
             )
         )
     return entries
+
+
+def _same_ends(
+    a: Path,
+    b: Path,
+    n: int = 1 << 16,
+) -> bool:
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            if fa.read(n) != fb.read(n):
+                return False
+            for f in (fa, fb):
+                f.seek(max(0, os.fstat(f.fileno()).st_size - n))
+            return fa.read(n) == fb.read(n)
+    except OSError:
+        return False
 
 
 def _sidecar_data(weight_path: Path) -> Optional[dict]:

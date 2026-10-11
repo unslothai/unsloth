@@ -56,12 +56,22 @@ export function resolveDiffusionTrainingBase(
   const name = normalizedRepo(trainingRepo.split("/").pop() ?? "");
   if (!name) return null;
   return (
-    family.base_repos.find((repo) => normalizedRepo(repo.split("/").pop() ?? "") === name) ?? null
+    family.base_repos.find(
+      (repo) => normalizedRepo(repo.split("/").pop() ?? "") === name,
+    ) ?? null
   );
 }
 
-// Catalog id of a published adapter: its loras/diffusion file stem.
-export function catalogId(catalogPath: string): string {
-  const name = catalogPath.split(/[\\/]/).pop() ?? catalogPath;
-  return name.replace(/\.(safetensors|gguf)$/i, "");
+// A published adapter's loras/diffusion file name; the catalog id is its stem, or the full name when a
+// same-stem file of the other format exists, so the Export page matches either spelling.
+export function catalogFileName(catalogPath: string): string {
+  return catalogPath.split(/[\\/]/).pop() ?? catalogPath;
+}
+
+export function matchCatalogId(
+  ids: string[],
+  fileName: string,
+): string | undefined {
+  const stem = fileName.replace(/\.(safetensors|gguf)$/i, "");
+  return ids.find((id) => id === fileName) ?? ids.find((id) => id === stem);
 }
