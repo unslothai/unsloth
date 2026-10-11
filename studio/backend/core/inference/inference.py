@@ -916,6 +916,10 @@ class InferenceBackend:
                 self.models[model_name]["is_vision"] = False
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
+                logger.info(
+                    f"Loaded text-diffusion model for chat (profile: "
+                    f"{self.models[model_name]['diffusion_lm_profile']})"
+                )
 
             elif config.is_vision:
                 model, processor = FastVisionModel.from_pretrained(
@@ -987,6 +991,7 @@ class InferenceBackend:
                 loaded_profile = loaded_diffusion_profile(model)
                 if loaded_profile:
                     self.models[model_name]["diffusion_lm_profile"] = loaded_profile
+                    logger.info(f"Loaded text-diffusion model for chat (profile: {loaded_profile})")
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
             self.models[model_name]["context_length"] = runtime_context_length(
