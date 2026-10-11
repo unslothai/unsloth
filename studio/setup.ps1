@@ -9045,9 +9045,11 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # newest one and drags torch up with it. UPGRADE=1 asks for newer.
     if (-not $WinArm64Venv -and -not $_cudaKeptRelease -and $env:UNSLOTH_TORCH_UPGRADE -ne "1") {
         $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
-        # Only a release this index publishes (download.pytorch.org: cu126 from 2.6, cu128 2.7, cu129 2.8, cu130 2.9).
-        $_keptFloor = @{ "cu126" = 6; "cu128" = 7; "cu129" = 8; "cu130" = 9 }[[string]$CuTag]
-        if ($_keptFloor -and $_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.(\d+)\.\d+)(\+\S*)?\s*$') -and [int]$Matches[2] -ge $_keptFloor) {
+        # Only a release this index publishes, so a CUDA family change never pins an unservable one.
+        # download.pytorch.org win_amd64: cu126 2.6-2.14, cu128 2.7-2.11, cu129 2.8-2.9, cu130 2.9-2.14.
+        $_keptRange = @{ "cu126" = @(6, 14); "cu128" = @(7, 11); "cu129" = @(8, 9); "cu130" = @(9, 14) }[[string]$CuTag]
+        if ($_keptRange -and $_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.(\d+)\.\d+)(\+\S*)?\s*$') -and
+                [int]$Matches[2] -ge $_keptRange[0] -and [int]$Matches[2] -le $_keptRange[1]) {
             $_cudaKeptRelease = $Matches[1]
             $_cudaKeptFromResident = $true
         }

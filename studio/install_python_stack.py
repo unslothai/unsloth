@@ -639,8 +639,15 @@ _TORCH_FREEZE_ACTIVE = False
 
 
 def _write_space_free_override(text: str) -> tuple[str, str | None]:
-    """Write TEXT to an overrides file uv can name: (path, space-free path to hand uv, or None)."""
-    candidates = [None, os.environ.get("PUBLIC"), "/tmp", "/var/tmp", sys.prefix]
+    """Write TEXT to an overrides file uv can name: (path, space-free path to hand uv, or None).
+
+    Only user-private places: inherited override lines can carry authenticated index URLs, and
+    mkstemp's 0600 is private in a shared /tmp but a Windows file takes its directory's ACL.
+    """
+    if sys.platform == "win32":
+        candidates = [None, sys.prefix]
+    else:
+        candidates = [None, "/tmp", "/var/tmp", sys.prefix]
     for directory in candidates:
         if directory is not None and (
             any(ch.isspace() for ch in directory) or not os.path.isdir(directory)
@@ -708,11 +715,13 @@ class _FreezeNewTorchForCoreUpdate:
                 lines.append(line)
         name, safe = _write_space_free_override("\n".join(lines) + "\n")
         if safe is None:
-            # uv splits UV_OVERRIDE on whitespace. Unfrozen, a released unsloth's torch cap would
-            # replace the resident torch; stopping keeps it, as a spaced path always did.
+            # uv splits UV_OVERRIDE on whitespace. Windows ran unfrozen before this freeze existed;
+            # on Linux a spaced path always stopped the update, which keeps the resident torch.
+            if sys.platform == "win32":
+                return self
             _step(
                 "error",
-                "no writable directory without spaces for the torch freeze; set TMP to one",
+                "no writable directory without spaces for the torch freeze; set TMPDIR to one",
                 _red,
             )
             raise SystemExit(1)

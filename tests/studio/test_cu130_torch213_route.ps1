@@ -266,6 +266,8 @@ try {
     Check "a resident release the cu130 index does not publish is not pinned" ($r.Calls[0] -eq "torch torchvision torchaudio")
     $r = Invoke-SetupTorchBlock -Resident "2.7.1+cu128" -CuTag "cu128"
     Check "cu128 keeps a resident 2.7" ($r.Calls[0] -eq "torch==2.7.1 torchvision==0.22.* torchaudio==2.7.*")
+    $r = Invoke-SetupTorchBlock -Resident "2.13.0+cu130" -CuTag "cu128" -Force "--force-reinstall"
+    Check "a resident 2.13 is not pinned against cu128, which stops at 2.11" ($r.Calls[0] -eq "torch torchvision torchaudio --force-reinstall" -and $r.Probes -eq 1)
     $r = Invoke-SetupTorchBlock -Resident "2.14.0rc1"
     Check "a prerelease resident torch is never pinned" ($r.Calls[0] -eq "torch torchvision torchaudio")
     $r = Invoke-SetupTorchBlock -Resident "2.13.0+cu130" -CuTag "rocm7.2"

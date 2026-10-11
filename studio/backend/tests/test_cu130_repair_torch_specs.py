@@ -197,23 +197,41 @@ def _spaced_windows_freeze(monkeypatch, tmp_path, mod):
     return spaced
 
 
-def test_core_update_freeze_moves_to_a_space_free_directory(monkeypatch, tmp_path, mod):
+def test_core_update_freeze_never_writes_to_a_shared_windows_directory(monkeypatch, tmp_path, mod):
     spaced = _spaced_windows_freeze(monkeypatch, tmp_path, mod)
     public = tmp_path / "Public"
     public.mkdir()
     monkeypatch.setenv("PUBLIC", str(public))
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    monkeypatch.setattr(mod.sys, "prefix", str(venv))
     with mod._FreezeNewTorchForCoreUpdate() as freeze:
         value = mod.os.environ["UV_OVERRIDE"]
-        assert Path(value).parent == public and " " not in value
+        assert Path(value).parent == venv and " " not in value
         assert Path(value).read_text(encoding = "utf-8").split() == ["torch==2.13.0+cu130"]
         assert mod._TORCH_FREEZE_ACTIVE is True
     assert not freeze._path.exists()
-    assert list(spaced.iterdir()) == []
+    assert list(spaced.iterdir()) == [] and list(public.iterdir()) == []
 
 
-def test_core_update_stops_rather_than_resolving_unfrozen(monkeypatch, tmp_path, mod):
+def test_windows_without_a_private_space_free_directory_resolves_as_before(
+    monkeypatch, tmp_path, mod
+):
     spaced = _spaced_windows_freeze(monkeypatch, tmp_path, mod)
-    monkeypatch.setenv("PUBLIC", str(spaced))
+    public = tmp_path / "Public"
+    public.mkdir()
+    monkeypatch.setenv("PUBLIC", str(public))
+    monkeypatch.setattr(mod.sys, "prefix", str(spaced))
+    with mod._FreezeNewTorchForCoreUpdate() as freeze:
+        assert "UV_OVERRIDE" not in mod.os.environ
+        assert mod._TORCH_FREEZE_ACTIVE is False
+    assert freeze._path is None
+    assert list(spaced.iterdir()) == [] and list(public.iterdir()) == []
+
+
+def test_linux_stops_rather_than_resolving_unfrozen(monkeypatch, tmp_path, mod):
+    spaced = _spaced_windows_freeze(monkeypatch, tmp_path, mod)
+    monkeypatch.setattr(mod.sys, "platform", "linux")
     monkeypatch.setattr(mod.sys, "prefix", str(spaced))
     real_isdir = mod.os.path.isdir
     monkeypatch.setattr(
