@@ -3591,7 +3591,7 @@ def test_int8_prefill_reloads_on_change_and_reports_why_it_is_off(mlx_inference_
 
 
 @pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
-def test_int8_prefill_is_the_outermost_scope_of_generation_only_when_active(
+def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inactive(
     monkeypatch, mlx_inference_patches, requested, available
 ):
     from core.inference import mlx_inference
@@ -3631,8 +3631,19 @@ def test_int8_prefill_is_the_outermost_scope_of_generation_only_when_active(
     args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0.7, 0.9, 40, 0.01, 4)
     assert list(backend._generate_vlm(*args, 1.0, None)) == ["ok"]
 
-    expected = [("int8", True)] + [("fusion", None)] * len(FUSIONS) + [("stream", None)]
-    assert events == (expected + [("int8_exit", True)] if requested and available else expected[1:])
+    active = requested and available
+    assert events == [("int8", active)] + [("fusion", None)] * len(FUSIONS) + [
+        ("stream", None),
+        ("int8_exit", active),
+    ]
+
+    def broken(model, int8_prefill = None):
+        raise ImportError("skewed zoo")
+
+    mlx_inference_patches.nax_quantized_linear = broken
+    if not active:  # an inactive load never asked for the scope, so its failure costs no request
+        with backend._int8_prefill_scope():
+            pass
 
 
 def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):
