@@ -297,26 +297,45 @@ def _load_torchao_nodist():
 _TORCHAO_EXPORT_MIN = "0.15.0"
 
 
-def _torchao_below_export_min(version: str) -> bool:
+def _torchao_below(version: str, floor: str) -> bool:
     """PEP 440 compare, as transformers and diffusers do: 0.15.0rc1 and 0.15.0.dev are below 0.15.0."""
     try:
         from packaging.version import Version
 
-        return Version(version) < Version(_TORCHAO_EXPORT_MIN)
+        return Version(version) < Version(floor)
     except Exception:  # noqa: BLE001 -- packaging missing or an unparseable version
-        found = re.match(r"(\d+)\.(\d+)", version or "")
-        return bool(found) and (int(found[1]), int(found[2])) < (0, 15)
+        have = re.match(r"(\d+)\.(\d+)", version or "")
+        need = re.match(r"(\d+)\.(\d+)", floor or "")
+        return bool(have and need) and (int(have[1]), int(have[2])) < (int(need[1]), int(need[2]))
+
+
+def _transformers_torchao_min() -> Optional[str]:
+    """``TORCHAO_MIN_VERSION`` of the installed transformers, read from its source without importing it:
+    0.15.0 on transformers 5.5, 0.4.0 on the 4.57.6 Python 3.9 pin. None when it cannot be read."""
+    try:
+        spec = importlib.util.find_spec("transformers")
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        if not locations:
+            return None
+        with open(os.path.join(locations[0], "utils", "import_utils.py"), encoding = "utf-8") as f:
+            found = re.search(r"^TORCHAO_MIN_VERSION\s*=\s*[\"']([^\"']+)[\"']", f.read(), re.M)
+        return found[1] if found else None
+    except Exception:  # noqa: BLE001 -- unreadable: do not guess a floor
+        return None
 
 
 def torchao_too_old_for_export() -> Optional[str]:
-    """The installed torchao version when transformers' TorchAoConfig refuses it (below 0.15, where
-    transformers 5 reports torchao as not installed at all), else None. Metadata only: never imports
-    torchao, so it is safe at server startup."""
+    """The installed torchao version when the installed transformers' TorchAoConfig refuses it (below
+    0.15 on transformers 5.5, which then reports torchao as not installed at all), else None. Reads
+    metadata and source only: never imports torchao or transformers, so it is safe at server startup."""
     try:
         version = importlib.metadata.version("torchao")
     except Exception:  # noqa: BLE001 -- absent or unreadable: nothing to name
         return None
-    return version if version and _torchao_below_export_min(version) else None
+    floor = _transformers_torchao_min()
+    if not version or not floor:
+        return None
+    return version if _torchao_below(version, floor) else None
 
 
 def torchao_export_loadable() -> bool:
@@ -329,7 +348,7 @@ def torchao_export_loadable() -> bool:
             return False
         # TorchAoConfig requires torchao 0.15
         version = importlib.metadata.version("torchao")
-        if not re.match(r"\d+\.\d+", version or "") or _torchao_below_export_min(version):
+        if not re.match(r"\d+\.\d+", version or "") or _torchao_below(version, _TORCHAO_EXPORT_MIN):
             return False
         spec = importlib.util.find_spec("unsloth")
         locations = list(spec.submodule_search_locations or ()) if spec else []

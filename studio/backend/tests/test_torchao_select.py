@@ -655,6 +655,7 @@ def test_torchao_export_loadable_needs_015_on_every_platform(monkeypatch, instal
         return installed
 
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(_stub, "_transformers_torchao_min", lambda: "0.15.0")
     monkeypatch.setattr(_stub.importlib.metadata, "version", version)
     saved = {n: m for n, m in sys.modules.items() if n == "torchao" or n.startswith("torchao.")}
     for name in saved:
@@ -665,11 +666,43 @@ def test_torchao_export_loadable_needs_015_on_every_platform(monkeypatch, instal
     assert _stub.torchao_too_old_for_export() == too_old
 
 
+@pytest.mark.parametrize("floor", ["0.4.0", None])
+def test_torchao_014_stays_exportable_where_transformers_accepts_it(monkeypatch, floor):
+    """transformers 4.57.6 (the Python 3.9 pin, torch 2.4 / 2.5 keep torchao 0.14) has a 0.4 floor;
+    an unreadable floor never hides the formats either."""
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(_stub, "_transformers_torchao_min", lambda: floor)
+    monkeypatch.setattr(_stub.importlib.metadata, "version", lambda name: "0.14.0")
+    assert _stub.torchao_too_old_for_export() is None
+    assert _stub.torchao_export_loadable() is True
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('TORCHAO_MIN_VERSION = "0.15.0"\n', "0.15.0"),
+        ("x = 1\nTORCHAO_MIN_VERSION = '0.4.0'\n", "0.4.0"),
+        ("x = 1\n", None),
+    ],
+)
+def test_transformers_torchao_min_read_without_import(monkeypatch, tmp_path, source, expected):
+    pkg = tmp_path / "transformers"
+    (pkg / "utils").mkdir(parents = True)
+    (pkg / "__init__.py").write_text("raise RuntimeError('must not be imported')\n")
+    (pkg / "utils" / "import_utils.py").write_text(source)
+    for name in [n for n in sys.modules if n == "transformers" or n.startswith("transformers.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    assert _stub._transformers_torchao_min() == expected
+    assert "transformers" not in sys.modules
+
+
 @pytest.mark.parametrize("alias", ["torchao_fp8", "portable_int8"])
 def test_torchao_export_rejected_early_when_torchao_is_too_old(monkeypatch, alias):
     mod = _load_export_module_no_torch(monkeypatch)
     monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(_stub, "_transformers_torchao_min", lambda: "0.15.0")
     monkeypatch.setattr(_stub.importlib.metadata, "version", lambda name: "0.14.0")
     _set_torchao(monkeypatch, "real")
     _install_fake_unsloth_save(monkeypatch, has_method = True)
@@ -683,6 +716,7 @@ def test_too_old_torchao_does_not_block_other_formats(monkeypatch):
     mod = _load_export_module_no_torch(monkeypatch)
     monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(_stub, "_transformers_torchao_min", lambda: "0.15.0")
     monkeypatch.setattr(_stub.importlib.metadata, "version", lambda name: "0.14.0")
     _install_fake_unsloth_save(monkeypatch, has_method = True)
 
