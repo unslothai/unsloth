@@ -204,15 +204,25 @@ def test_the_resume_identity_keeps_the_default_token_and_drops_min_snr_for_flow_
     assert ident.snr_gamma is None
     old = dc.CheckpointIdentity.from_dict({**ident.as_dict(), "snr_gamma": "5.0"})
     assert old.mismatch_reason(ident) is None
-    # A number changed meaning (effective, not on top of the model's shift), so it cannot continue an older run's.
-    shifted = dc.identity_for_config(
+    # FLUX.1 shifts dynamically, so its sigmas never carried a static shift: a number means what it did, and an
+    # older run's checkpoint still resumes.
+    flux_shifted = dc.identity_for_config(
         DiffusionLoraConfig(
             base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o", flow_shift = 3.0
         ).normalized()
     )
-    assert shifted.flow_shift == "effective:3.0"
-    legacy = dc.CheckpointIdentity.from_dict({**shifted.as_dict(), "flow_shift": "3.0"})
-    assert "timestep shift" in (legacy.mismatch_reason(shifted) or "")
+    assert flux_shifted.flow_shift == "3.0"
+    legacy = dc.CheckpointIdentity.from_dict({**flux_shifted.as_dict(), "flow_shift": "3.0"})
+    assert legacy.mismatch_reason(flux_shifted) is None
+    # Z-Image bakes a static shift in: a number is now effective, not on top of it, so an older run is refused.
+    zimage_shifted = dc.identity_for_config(
+        DiffusionLoraConfig(
+            base_model = "Tongyi-MAI/Z-Image-Turbo", data_dir = "d", output_dir = "o", flow_shift = 3.0
+        ).normalized()
+    )
+    assert zimage_shifted.flow_shift == "effective:3.0"
+    legacy = dc.CheckpointIdentity.from_dict({**zimage_shifted.as_dict(), "flow_shift": "3.0"})
+    assert "timestep shift" in (legacy.mismatch_reason(zimage_shifted) or "")
     sdxl = DiffusionLoraConfig(
         base_model = "stabilityai/stable-diffusion-xl-base-1.0", data_dir = "d", output_dir = "o"
     ).normalized()

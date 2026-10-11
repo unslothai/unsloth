@@ -371,16 +371,23 @@ def _optional_float(value: Any) -> Optional[float]:
         return None
 
 
-def _flow_shift_key(value: Any) -> str:
+# Families whose scheduler bakes a static shift into ``sigmas`` (no dynamic shifting, shift != 1): Z-Image's 3 / 6.
+_STATIC_SHIFT_FAMILIES = frozenset({"z-image"})
+
+
+def _flow_shift_key(value: Any, family: str = "") -> str:
     """flow_shift as text: "auto" and the number it resolves to are different runs. The model's own
-    schedule (None) keeps the "1.0" earlier builds recorded for it; a number is now the effective
-    shift on the unshifted schedule rather than a factor on the model's own, so it gets a new
-    token and a checkpoint from before that change is refused instead of continuing at a new shift."""
+    schedule (None) keeps the "1.0" earlier builds recorded for it. A number is now the effective
+    shift on the unshifted schedule; that changed its meaning only where a static shift was baked
+    in, so only those families get a new token (an older checkpoint is refused there instead of
+    continuing at a new shift) and every other family keeps the token earlier builds wrote."""
     if value is None:
         return "1.0"
     if isinstance(value, str):
         return value
-    return f"effective:{float(value)}"
+    if family in _STATIC_SHIFT_FAMILIES:
+        return f"effective:{float(value)}"
+    return str(float(value))
 
 
 def _snr_gamma_key(value: Any) -> str:
@@ -561,7 +568,9 @@ def identity_for_config(
         lora_alpha = int(cfg.lora_alpha if cfg.lora_alpha is not None else cfg.lora_rank),
         lora_dropout = round(float(getattr(cfg, "lora_dropout", 0.0) or 0.0), 6),
         cfg_dropout = round(float(getattr(cfg, "cfg_dropout", 0.0) or 0.0), 6),
-        flow_shift = _flow_shift_key(getattr(cfg, "flow_shift", None)),
+        flow_shift = _flow_shift_key(
+            getattr(cfg, "flow_shift", None), str(getattr(cfg, "resolved_family", "") or "")
+        ),
         weighting_scheme = str(getattr(cfg, "weighting_scheme", "") or "none"),
         # Only the SDXL loop applies min-SNR, so a flow-matching run records "cannot tell" rather than the unused default.
         snr_gamma = (
