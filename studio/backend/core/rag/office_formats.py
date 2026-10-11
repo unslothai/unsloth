@@ -800,7 +800,9 @@ def opendocument(path: str) -> list[Section]:
         if zf.has(manifest) and b"encryption-data" in zf.read(manifest):
             raise ValueError("file is password protected")
         budget = _Budget()
-        if zf.has("mimetype") and zf.read("mimetype").strip().endswith(b".spreadsheet"):
+        if zf.has("mimetype") and zf.read("mimetype").strip().endswith(
+            (b".spreadsheet", b".spreadsheet-template")
+        ):
             return _ods_streamed(zf, budget)
         body = zf.xml("content.xml").find(_q("office", "body"))
         if body is None:
