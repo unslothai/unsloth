@@ -4,8 +4,9 @@
 """ComfyUI models-folder discovery and loose single-file diffusion checkpoints.
 
 Role folders hold many loose ``.safetensors`` with no ``config.json``; each denoiser is listed as its
-own row when its header says DiT. Text-encoder / VAE folders are resolved but nothing loads from
-them yet. No torch: called on every listing.
+own row when its header says DiT. A local DiT's text encoder is taken from the layout's text-encoder
+folders when one fits (``diffusion_comfy_components.pick_comfy_text_encoders``); VAE folders are
+resolved but nothing loads from them. No torch: called on every listing.
 """
 
 from __future__ import annotations
@@ -214,6 +215,56 @@ def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
         roots.append(root)
         roots.extend(_plain_subdirs(root))
     return tuple(roots)
+
+
+_MAX_LAYOUT_ANCESTORS = 4
+_MAX_COMPONENT_FILES = 64
+
+
+def _within(path: Path, roots: Iterable[Path]) -> bool:
+    try:
+        real = Path(os.path.realpath(path))
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            base = Path(os.path.realpath(root))
+        except OSError:
+            continue
+        if real == base or base in real.parents:
+            return True
+    return False
+
+
+def comfy_text_encoder_files(dit_path: Path) -> tuple[Path, ...]:
+    """The ``.safetensors`` in the text-encoder folders of the ComfyUI layout whose DiT folders hold
+    ``dit_path``; empty when the file is not in one. Never raises."""
+    try:
+        dit_path = Path(dit_path)
+        ancestors = list(dit_path.parents)[:_MAX_LAYOUT_ANCESTORS]
+    except (OSError, ValueError):
+        return ()
+    for folder in ancestors:
+        layout = comfy_layout(folder)
+        if layout is None or not _within(dit_path.parent, layout.dit_dirs):
+            continue
+        out: list[Path] = []
+        for root in layout.text_encoder_dirs:
+            for sub in (root, *_plain_subdirs(root)):
+                try:
+                    with os.scandir(sub) as entries:
+                        names = sorted(e.name for e in entries if e.is_file())
+                except OSError:
+                    continue
+                for name in names:
+                    path = sub / name
+                    if name.startswith(".") or not is_loose_checkpoint_candidate(path):
+                        continue
+                    out.append(path)
+                    if len(out) >= _MAX_COMPONENT_FILES:
+                        return tuple(out)
+        return tuple(out)
+    return ()
 
 
 def comfy_role_dirs(folder: Path) -> frozenset[str]:

@@ -1271,3 +1271,78 @@ def validate_component_specs(
     if len(set(names)) != len(names):
         raise ComponentFileError("the same file was supplied twice")
     return refs
+
+
+def _file_precision(path: str) -> str:
+    """``dense`` / ``fp8`` / ``int8`` / ``mixed`` from the header; raises for a format Studio cannot load."""
+    from .diffusion_comfy_quant import FP8_FORMATS, INT8_TENSORWISE
+
+    formats = {layer.format for layer in quant_layers(path).values()}
+    if not formats:
+        return "dense"
+    if formats <= set(FP8_FORMATS):
+        return "fp8"
+    if formats == {INT8_TENSORWISE}:
+        return "int8"
+    return "mixed"
+
+
+_PRECISION_ORDER = ("dense", "fp8", "int8")
+
+
+def pick_comfy_text_encoders(
+    candidates: Sequence[str],
+    *,
+    model_index: dict,
+    family: str = "",
+    fits: Callable[[ComponentOverrides], None],
+    auto_scheme: Optional[str] = None,
+) -> list[str]:
+    """The ComfyUI text-encoder files to load in place of the base repo's, one per slot, from ``candidates``.
+
+    A slot takes a file only when it fits that slot's real class strictly (``fits`` raises otherwise) and is
+    the single best by precision: dense, then fp8, then int8, the base repo's own precision first. Under a
+    family's automatic scheme (``auto_scheme``) only files already in that scheme count, so a dense file never
+    displaces the smaller encoder the family loads by default. Two equally good files for one slot (a
+    fine-tune beside the original) leave it to the base repo. Unreadable or unfitting files are skipped."""
+    classes = component_classes_from_index(model_index)
+    standalone = _STANDALONE_TE_SLOTS.get(family, ())
+    wanted = {classes[c] for c in TEXT_ENCODER_COMPONENTS if c in classes and c not in standalone}
+    if not wanted:
+        return []
+    order = (auto_scheme,) if auto_scheme else _PRECISION_ORDER
+    by_slot: dict[str, list[tuple[int, str]]] = {}
+    for path in candidates:
+        try:
+            header, _ = read_safetensors_header(path)
+            keys = weight_keys(header)
+            kind = classify_text_encoder(
+                keys + [k for k in header if k in _NON_WEIGHT_KEYS],
+                {k: header[k].get("shape") for k in keys},
+            )
+            if kind is None or not (TE_KIND_CLASSES.get(kind, frozenset()) & wanted):
+                continue
+            precision = _file_precision(path)
+            if precision not in order:
+                continue
+            planned = plan_component_overrides(
+                text_encoder_files = [path],
+                vae_file = None,
+                model_path = None,
+                model_index = model_index,
+                family = family,
+            )
+            if planned is None or len(planned.files) != 1:
+                continue
+            fits(planned)
+        except Exception:  # noqa: BLE001 - a file that does not fit is simply not offered
+            continue
+        slot = planned.components[0]
+        by_slot.setdefault(slot, []).append((order.index(precision), path))
+    picked: list[str] = []
+    for slot in TEXT_ENCODER_COMPONENTS:
+        ranked = sorted(by_slot.get(slot, ()))
+        if not ranked or (len(ranked) > 1 and ranked[0][0] == ranked[1][0]):
+            continue
+        picked.append(ranked[0][1])
+    return picked

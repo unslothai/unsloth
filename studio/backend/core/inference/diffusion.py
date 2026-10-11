@@ -3220,6 +3220,95 @@ class DiffusionBackend:
             )
         return overrides
 
+    def _comfy_text_encoders(
+        self,
+        fam: Optional[DiffusionFamily],
+        kind: str,
+        repo_id: str,
+        gguf_filename: Optional[str],
+        base: str,
+        hf_token: Optional[str],
+        *,
+        local_files_only: bool = False,
+        text_encoder_quant: Optional[str] = None,
+    ) -> list[str]:
+        """Text-encoder files from the ComfyUI layout beside a local DiT, used when the request names none, so a
+        ComfyUI user's ``text_encoders/`` copy replaces the base repo's multi-GB download. Empty whenever any part
+        cannot be settled: the load then takes the base repo's encoder, as before."""
+        if (
+            fam is None
+            or kind not in ("gguf", "single_file")
+            or fam.single_file_is_pipeline
+            or fam.pipeline_only
+            or not gguf_filename
+            or not _is_local_path(repo_id)
+            or os.environ.get("UNSLOTH_DIFFUSION_COMFY_TEXT_ENCODERS", "").strip().lower()
+            in ("0", "false", "off", "no")
+        ):
+            return []
+        try:
+            from hub.utils.comfy_models import comfy_text_encoder_files
+
+            dit = resolve_local_gguf_child(Path(repo_id).expanduser(), gguf_filename)
+            candidates = [str(p) for p in comfy_text_encoder_files(dit)]
+            if candidates:
+                from hub.services.models import account_access
+                if account_access.managed_account():
+                    candidates = [
+                        p for p in candidates if account_access.model_visible(os.path.realpath(p))
+                    ]
+            if not candidates:
+                return []
+            from .diffusion_comfy_components import (
+                pick_comfy_text_encoders,
+                read_model_index,
+                verify_override_fit,
+            )
+
+            mirror = prefer_ungated_mirror(base, hf_token)
+            index = read_model_index(
+                mirror,
+                base_local_dir = base if _is_local_path(base) else None,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                cache_dir = hub_cache_dir(),
+            )
+            planned_quant, auto = resolve_te_quant_request(
+                text_encoder_quant, getattr(fam, "te_quant_auto", None)
+            )
+
+            def _fits(overrides: Any) -> None:
+                verify_override_fit(
+                    overrides,
+                    base = base if _is_local_path(base) else mirror,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    family = fam.name,
+                    cache_dir = hub_cache_dir(),
+                    text_encoder_quant = text_encoder_quant,
+                )
+
+            picked = pick_comfy_text_encoders(
+                candidates,
+                model_index = index,
+                family = fam.name,
+                fits = _fits,
+                auto_scheme = planned_quant if auto else None,
+            )
+        except Exception as exc:  # noqa: BLE001 - the base repo's encoder is always the fallback
+            logger.info(
+                "diffusion.comfy_text_encoders: none taken from the ComfyUI folder (%s)",
+                type(exc).__name__,
+            )
+            return []
+        if picked:
+            logger.info(
+                "diffusion.comfy_text_encoders: %s from the ComfyUI folder beside %s",
+                ", ".join(os.path.basename(p) for p in picked),
+                gguf_filename,
+            )
+        return picked
+
     def validate_load_request(
         self,
         repo_id: str,
@@ -3564,6 +3653,20 @@ class DiffusionBackend:
                     kwargs.get("gguf_filename"),
                 )
             kwargs["base_repo"] = base
+            if not kwargs.get("text_encoder_files") and not kwargs.get("vae_file"):
+                kwargs["text_encoder_files"] = (
+                    self._comfy_text_encoders(
+                        fam,
+                        kind,
+                        kwargs["repo_id"],
+                        kwargs.get("gguf_filename"),
+                        base,
+                        kwargs.get("hf_token"),
+                        local_files_only = local_files_only,
+                        text_encoder_quant = kwargs.get("text_encoder_quant"),
+                    )
+                    or None
+                )
             # Claimed before a byte moves, so the cache-delete guard sees a Hub component repo.
             from .diffusion_comfy_components import hub_repo_ids
 
@@ -4711,6 +4814,20 @@ class DiffusionBackend:
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         component_overrides = None
+        if not load_kwargs.get("text_encoder_files") and not load_kwargs.get("vae_file"):
+            # The same pick the load makes, so the plan stages no encoder the load will not open.
+            load_kwargs["text_encoder_files"] = (
+                self._comfy_text_encoders(
+                    fam,
+                    kind,
+                    repo_id,
+                    gguf_filename,
+                    base,
+                    hf_token,
+                    text_encoder_quant = text_encoder_quant,
+                )
+                or None
+            )
         if (
             load_kwargs.get("text_encoder_files") or load_kwargs.get("vae_file")
         ) and fam is not None:
