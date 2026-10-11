@@ -507,6 +507,7 @@ def test_fa4_hd256_window_keeps_segments_route(real_fa4):
 @pytest.mark.skipif(
     not has_real_cuda(), reason = "needs CUDA tensors (the wrapper only takes CUDA rows)"
 )
+@pytest.mark.skipif(torch.version.hip is not None, reason = "torch varlen is off on ROCm")
 @pytest.mark.parametrize("window", [None, 2])
 @pytest.mark.parametrize("allowed", [True, False])
 def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, allowed, window):

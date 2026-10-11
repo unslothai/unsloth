@@ -158,6 +158,10 @@ def test_unpacked_calls_go_straight_through(monkeypatch):
 
 
 _CUDA = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+# torch varlen is never used on ROCm (_torch_varlen returns None there).
+_TORCH_VARLEN_HOST = pytest.mark.skipif(
+    torch.version.hip is not None, reason = "torch varlen is off on ROCm"
+)
 
 
 @_CUDA
@@ -369,6 +373,36 @@ def test_install_forwards_router_sentinels_and_runs_once(monkeypatch):
 
 
 @_CUDA
+@pytest.mark.parametrize("window", [None, 4])
+def test_rocm_keeps_windowed_rows_off_flash_attn(monkeypatch, window):
+    """flash-attn's ROCm backend lists sliding windows as work in progress."""
+    from unsloth.utils import attention_dispatch as ad
+
+    seen, orig = _calls()
+    hpa._ORIG_SDPA[0] = orig
+    dispatched = []
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.version, "hip", "6.4")
+    monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.FLASH_VARLEN)
+    monkeypatch.setattr(ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"])
+    lengths = [3, 5]
+    q = torch.randn(1, 4, 8, 64, device = "cuda", dtype = torch.bfloat16)
+    mask = (
+        _block_causal(lengths, "cuda")
+        if window is None
+        else _hf_window_mask(lengths, window, "cuda")
+    )
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, sliding_window = window)
+    hpa._sdpa_packed_varlen(
+        module, q, q, q, mask, packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32)
+    )
+    if window is None:
+        assert dispatched and not seen
+    else:
+        assert seen and not dispatched
+
+
+@_CUDA
 @pytest.mark.parametrize("window", [None, 3, 4, 128])
 @pytest.mark.parametrize("route", ["torch", "torch_2_11", "dispatch"])
 @pytest.mark.parametrize("n_kv", [8, 2])
@@ -492,6 +526,7 @@ def test_int32_guard_follows_training_or_grad_mode(monkeypatch, mode):
 
 
 @_CUDA
+@_TORCH_VARLEN_HOST
 def test_a_refusing_torch_varlen_hands_the_call_back(monkeypatch):
     seen, orig = _calls()
     hpa._ORIG_SDPA[0] = orig
@@ -526,6 +561,7 @@ def test_torch_varlen_kill_switch(monkeypatch):
 
 
 @_CUDA
+@_TORCH_VARLEN_HOST
 @pytest.mark.parametrize("policy", ["math_only", "flash_disabled", "math_first", "deterministic"])
 def test_an_sdpa_policy_keeps_every_varlen_kernel_off(monkeypatch, policy):
     """The wrapped sdpa runs, not torch varlen nor the xformers / flash-attn dispatch; outside, varlen runs."""

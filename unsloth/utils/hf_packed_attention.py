@@ -253,6 +253,9 @@ def _sdpa_packed_varlen(
         if torch_varlen is not None and not flash_impl_allows(head_dim, window, query.device):
             torch_varlen = None
         backend = select_attention_backend(use_varlen = True)
+        # flash-attn's ROCm backend lists sliding windows as work in progress: windowed rows keep sdpa there.
+        if window is not None and torch.version.hip is not None:
+            backend = None
         # Flash-2 varlen backward faults past int32 indexing. Keyed on training / grad mode, not
         # requires_grad, so a reentrant checkpoint's no_grad forward and its recompute agree.
         if (
