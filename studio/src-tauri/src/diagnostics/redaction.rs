@@ -614,8 +614,14 @@ mod tests {
         for (i, (input, secret, kept)) in cases.iter().enumerate() {
             let mut report = RedactionReport::default();
             let redacted = redact_text(input, &mut report);
-            assert!(!redacted.contains(secret), "case {i}: secret survived redaction");
-            assert!(redacted.contains(kept), "case {i}: expected {kept:?} to survive");
+            assert!(
+                !redacted.contains(secret),
+                "case {i}: secret survived redaction"
+            );
+            assert!(
+                redacted.contains(kept),
+                "case {i}: expected {kept:?} to survive"
+            );
             assert!(report.replacements > 0, "case {i}: nothing was redacted");
         }
     }
@@ -658,8 +664,11 @@ mod tests {
             for sep in [r"\n", r"\r\n", r"\t"] {
                 let input = format!(r#"{{"event": "dump:{sep}{body}{sep}next line"}}"#);
                 let redacted = redact_text(&input, &mut RedactionReport::default());
-                assert!(!redacted.contains("opaque"), "leaked: {redacted}");
-                assert!(redacted.contains(&format!("{sep}next line")), "{redacted}");
+                assert!(!redacted.contains("opaque"), "secret survived after {sep}");
+                assert!(
+                    redacted.contains(&format!("{sep}next line")),
+                    "lost the line after {sep}"
+                );
             }
         }
     }
