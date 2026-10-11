@@ -3060,8 +3060,11 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
             # after a choice: the reclaim below plans from this reading.
             if controller.contended():
                 _gguf_refresh_residency(controller)
-                if not victims:
-                    victims = controller.plan_preemptions(needed = 0)
+                # Again even after a choice: the fresh reading can show more growth than the
+                # cached one the first victims were picked against.
+                victims = list(victims) + [
+                    v for v in controller.plan_preemptions(needed = 0) if v not in victims
+                ]
             if victims:
                 # Dead residue first: an idle slot's cache belongs to a finished request, so
                 # erasing it costs a future prefix hit where pausing costs a conversation.
@@ -3205,6 +3208,40 @@ def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None
     except Exception:
         # Bookkeeping must never fail a request that is otherwise fine.
         logger.debug("could not count the raw holder", exc_info = True)
+
+
+def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Optional[str]:
+    """Count a /v1/completions request as a holder the controller cannot pause.
+
+    It takes no admission lease, but its cells share the unified cache, and unseen it left
+    an admitted chat looking alone: no residency read, no plan, and the pair overran the cache.
+    Charged by its prompt, unmeasured, like a non-streaming raw holder. Returns the id to
+    release, or None when nothing was counted.
+    """
+    try:
+        if not preemption_enabled() or not _openai_llama_preemption_will_apply(
+            llama_backend, _openai_llama_admission_budget(llama_backend)
+        ):
+            return None
+        gen_id = f"cmpl-holder-{uuid.uuid4().hex}"
+        get_preemption_controller(_preempt_key(llama_backend)).register(
+            gen_id,
+            tokens = max(1, len(str(prompt_text or "")) // 4),
+            state = ParticipantState.STREAMING_RAW,
+        )
+        return gen_id
+    except Exception:
+        logger.debug("could not count the completions holder", exc_info = True)
+        return None
+
+
+def _openai_llama_release_completions_holder(llama_backend, gen_id: Optional[str]) -> None:
+    if gen_id is None:
+        return
+    try:
+        get_preemption_controller(_preempt_key(llama_backend)).unregister(gen_id)
+    except Exception:
+        logger.debug("could not release the completions holder", exc_info = True)
 
 
 def _openai_llama_note_raw_measured(*, llama_backend, gen_id: str) -> None:
@@ -38589,8 +38626,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _tracker.__enter__()
             # Must stay the last statement before the try that decrements it: a raise in
             # between leaks a permanent +1, and there is no reset hook.
+            _cmpl_holder = None
             _direct_llama_request_started()
             try:
+                _cmpl_holder = _openai_llama_count_completions_holder(llama_backend, prompt_text)
                 req = client.build_request(
                     "POST",
                     target_url,
@@ -38721,6 +38760,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         client = client,
                     )
                 finally:
+                    _openai_llama_release_completions_holder(llama_backend, _cmpl_holder)
                     _direct_llama_request_finished()
                     _tracker.__exit__(None, None, None)
 
@@ -38741,8 +38781,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 client = _client,
             )
         )
+        _cmpl_holder = None
         _direct_llama_request_started()
         try:
+            _cmpl_holder = _openai_llama_count_completions_holder(llama_backend, prompt_text)
             try:
                 resp = await _nonstreaming_post_through_park(
                     _client,
@@ -38776,6 +38818,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 except Exception:
                     pass
             finally:
+                _openai_llama_release_completions_holder(llama_backend, _cmpl_holder)
                 _direct_llama_request_finished()
                 _tracker.__exit__(None, None, None)
 

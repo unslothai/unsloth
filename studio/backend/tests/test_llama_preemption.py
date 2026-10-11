@@ -413,11 +413,13 @@ class TestTheBatchReserveIsOnlyHeldWhileSomethingPrefills:
         assert c.plan_preemptions(needed = 0), "the growing round's chunk was not covered"
 
         higher = self._c("test://higher")
+        fired = []
         for i in range(self.SLOTS):
             higher.register(f"chat{i}", tokens = 1900, signal = PreemptSignal())
-            higher.observe(f"chat{i}", 1)
+            fired += higher.observe(f"chat{i}", 1)
         assert higher.committed_tokens() == 7604 > self.BUDGET - self.IDLE
-        assert higher.plan_preemptions(needed = 0), "7604 is past the 7416 dynamic ceiling"
+        fired += higher.plan_preemptions(needed = 0)
+        assert fired, "7604 is past the 7416 dynamic ceiling"
 
 
 # ============================================================================== who stops
@@ -1138,3 +1140,31 @@ class TestALoneChatIsChargedItsNextStepNotABatch:
         assert controller.cannot_ever_fit(7000) is False
         assert controller.room_for("only", 7000) is True
         assert controller.cannot_ever_fit(8192 - 64) is True
+
+
+class TestAChoiceInFlightIsCountedOnce:
+    """A victim already chosen is giving its room back; a later sweep plans net of it."""
+
+    def test_a_second_sweep_does_not_stop_another_chat_for_the_same_room(self):
+        controller = _controller()
+        ceiling = _ceiling(controller)
+        for gen_id in ("a", "b", "c"):
+            _register(controller, gen_id, ceiling // 3)
+        _register(controller, "d", ceiling // 6)
+        first = controller.plan_preemptions(needed = 0)
+        assert [v.gen_id for v in first] == ["d"], "the newest goes first"
+        assert controller.plan_preemptions(needed = 0) == [], (
+            "d's room is already on its way back, so a second sweep must not stop c too"
+        )
+
+    def test_growth_found_after_a_choice_still_gets_planned(self):
+        controller = _controller()
+        ceiling = _ceiling(controller)
+        for gen_id in ("a", "b", "c"):
+            _register(controller, gen_id, ceiling // 3)
+        _register(controller, "d", ceiling // 6)
+        assert [v.gen_id for v in controller.plan_preemptions(needed = 0)] == ["d"]
+        # A sample past the cached reading, as the token path's refresh would bring in.
+        controller.note_resident(ceiling)
+        more = controller.plan_preemptions(needed = 0)
+        assert more and "d" not in [v.gen_id for v in more], "the cache holds more than d frees"

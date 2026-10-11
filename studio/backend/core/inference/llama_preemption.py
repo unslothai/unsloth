@@ -1557,7 +1557,13 @@ class PreemptionController:
                 return []
             buffer = self._buffer_locked()
             ceiling = max(0, self._budget - buffer)
-            total = self._committed_locked()
+            # Net of holders already chosen: they are on their way out, and counting them again
+            # would stop a second chat for room the first is already giving back.
+            total = self._committed_locked() - sum(
+                p.tokens
+                for p in self._participants.values()
+                if p.holds_kv and p.state == ParticipantState.PREEMPTING
+            )
             want = max(0, int(needed or 0))
             # The two figures the sweep chooses between, recorded whenever they disagree: a run
             # that overran could have been the ledger drifting low or the sweep never running.
