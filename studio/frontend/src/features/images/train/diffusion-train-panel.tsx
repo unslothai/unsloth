@@ -510,6 +510,10 @@ export function DiffusionTrainPanel({
   const [randomFlip, setRandomFlip] = useState(false);
   // Only the DiT loops read it, and MiniMax-H3 refuses it: it has no unconditional branch to train.
   const [cfgDropout, setCfgDropout] = useState(0);
+  const [loraDropout, setLoraDropout] = useState(0);
+  // Flow-matching families only. "default" sends nothing, so each family keeps its own default.
+  const [flowShiftMode, setFlowShiftMode] = useState<"default" | "auto" | "custom">("default");
+  const [flowShift, setFlowShift] = useState(3);
   // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen base
   // weights and ignore this.
   const [precision, setPrecision] = useState<"bf16" | "fp16" | "no">("bf16");
@@ -1156,6 +1160,12 @@ export function DiffusionTrainPanel({
     if (supportsCfgDropout && !(cfgDropout >= 0 && cfgDropout <= 1)) {
       return toast.error("Caption dropout must be between 0 and 1.");
     }
+    if (!(loraDropout >= 0 && loraDropout < 1)) {
+      return toast.error("LoRA dropout must be at least 0 and below 1.");
+    }
+    if (isDiT && flowShiftMode === "custom" && !(flowShift > 0)) {
+      return toast.error("Timestep shift must be greater than 0.");
+    }
     setStarting(true);
     // A previous run's confirmed stop must not leak into this run: the read-time clamp would re-arm a
     // permanently disabled "Stopping..." button.
@@ -1191,6 +1201,13 @@ export function DiffusionTrainPanel({
         save_steps: supportsCheckpoints ? Math.max(0, Math.floor(saveSteps)) : 0,
         save_total_limit: supportsCheckpoints ? Math.max(0, Math.floor(saveTotalLimit)) : undefined,
         cfg_dropout: supportsCfgDropout ? cfgDropout : undefined,
+        lora_dropout: loraDropout,
+        flow_shift:
+          isDiT && flowShiftMode !== "default"
+            ? flowShiftMode === "auto"
+              ? "auto"
+              : flowShift
+            : undefined,
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only
         // send compile where supported.
@@ -1228,6 +1245,9 @@ export function DiffusionTrainPanel({
     randomFlip,
     cfgDropout,
     supportsCfgDropout,
+    loraDropout,
+    flowShiftMode,
+    flowShift,
     lrScheduler,
     lrWarmupSteps,
     rank,
@@ -1541,6 +1561,38 @@ export function DiffusionTrainPanel({
             min: 0,
             step: 0.05,
             hint: "The chance each image trains with an empty prompt instead of its caption. 0.05 to 0.1 can help a LoRA respond to guidance (CFG) without overfitting to the exact caption; 0 turns it off.",
+          })}
+        {numberField("LoRA dropout", loraDropout, setLoraDropout, 0, {
+          min: 0,
+          step: 0.05,
+          hint: "Randomly drops part of the LoRA's input each step, a light guard against memorising a small dataset. 0 (off) is the usual choice; try 0.05 to 0.1 if results copy the training images too closely.",
+        })}
+        {isDiT && (
+          <div className={fieldClass}>
+            <FieldLabel hint="Which noise levels training spends its steps on. Default follows each model's own schedule (Qwen-Image, LTX-2 and MiniMax-H3 default to Auto). Auto matches the schedule the model generates with. Custom sets the shift directly: higher favours composition and layout, lower fine detail.">
+              Timestep shift
+            </FieldLabel>
+            <Select
+              value={flowShiftMode}
+              onValueChange={(v) => setFlowShiftMode(v as "default" | "auto" | "custom")}
+            >
+              <SelectTrigger className={selectClass} aria-label="Timestep shift">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">Default</SelectItem>
+                <SelectItem value="auto">Auto (match generation)</SelectItem>
+                <SelectItem value="custom">Custom</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        {isDiT &&
+          flowShiftMode === "custom" &&
+          numberField("Shift value", flowShift, setFlowShift, 3, {
+            min: 0.1,
+            step: 0.5,
+            hint: "1 is no shift; around 3 suits most image models.",
           })}
 
         {isDiT ? (
