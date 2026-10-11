@@ -111,3 +111,17 @@ test("the turn card stays inside a phone-width viewport", async () => {
     /right: `calc\(\$\{preview\.right\}px \+ 1\.5rem\)`,[\s\S]{0,160}maxWidth: `calc\(100vw - \$\{preview\.right\}px - 2rem\)`/,
   );
 });
+
+test("the turn card follows its focused marker when the rail scrolls", async () => {
+  const nav = await readFile(
+    new URL(
+      "../src/components/assistant-ui/turn-navigation.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    nav,
+    /const onRailScroll = useCallback\([\s\S]{0,700}current\.openerId === focused\.dataset\.turnId[\s\S]{0,120}top: box\.top \+ box\.height \/ 2/,
+  );
+});

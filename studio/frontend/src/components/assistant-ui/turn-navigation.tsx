@@ -583,9 +583,19 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   // the dashes move under a still pointer when the rail itself scrolls
   const onRailScroll = useCallback(
     (event: UIEvent<HTMLElement>) => {
+      const rail = event.currentTarget;
       if (magnifiedRef.current.length > 0 && !magnifyFrameRef.current) {
-        const rail = event.currentTarget;
         magnifyFrameRef.current = requestAnimationFrame(() => magnify(rail));
+      }
+      // the rail follows a keyboard jump, so the card stays on its still-focused marker
+      const focused = document.activeElement;
+      if (focused instanceof HTMLButtonElement && rail.contains(focused)) {
+        const box = focused.getBoundingClientRect();
+        setPreview((current) =>
+          current && current.openerId === focused.dataset.turnId
+            ? { ...current, top: box.top + box.height / 2 }
+            : current,
+        );
       }
     },
     [magnify],
