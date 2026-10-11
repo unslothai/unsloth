@@ -9,6 +9,7 @@ import json
 import re
 import urllib.request
 
+from core.inference import llama_stats
 from core.inference.llama_stats import erase_llama_slot, fetch_llama_slots
 
 
@@ -38,7 +39,14 @@ def _capture(monkeypatch, body: bytes):
         seen.append(request)
         return _Response(body)
 
-    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    class _Opener:
+        open = staticmethod(_urlopen)
+
+    def _proxied(*_a, **_k):
+        raise AssertionError("urlopen honours HTTP_PROXY and would hand the bearer to it")
+
+    monkeypatch.setattr(llama_stats, "_loopback_opener", _Opener)
+    monkeypatch.setattr(urllib.request, "urlopen", _proxied)
     return seen
 
 
@@ -64,6 +72,38 @@ class TestTheEraseCarriesTheKey:
         assert freed == 4096
         assert seen[0].get_header("Authorization") == "Bearer secret-key"
         assert seen[0].get_method() == "POST"
+
+
+def test_a_configured_proxy_never_sees_the_loopback_call(monkeypatch):
+    import http.server
+    import threading
+
+    seen = []
+
+    class _Slots(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization"))
+            body = b"[]"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Slots)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising = False)
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        assert fetch_llama_slots(url, headers = {"Authorization": "Bearer k"}) == []
+    finally:
+        server.shutdown()
+    assert seen == ["Bearer k"]
 
 
 class TestTheRouteHandsThemTheBackendsKey:

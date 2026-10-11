@@ -1512,6 +1512,7 @@ async def stream_with_studio_tools(
         normalize_sandbox_level,
         normalize_tool_permissions,
         requires_os_isolation,
+        round_may_prompt,
         runs_without_os_sandbox,
     )
 
@@ -1960,16 +1961,17 @@ async def stream_with_studio_tools(
         # out at call three that it needs an approval dialog would put a modal in front of
         # work already in flight. Approval gating therefore keeps the strict order, and a
         # user answering "Allow" for a tool whose siblings have run is being asked about a
-        # decision already made without them. Under `permission_mode == "auto"` only
-        # high-risk calls prompt, so a round of ordinary reads still overlaps.
-        _approval_gate = confirm_tool_calls and not bypass_permissions and permission_mode != "off"
-        if _approval_gate and permission_mode == "auto":
-            _approval_gate = any(
-                is_high_risk_tool_call(
-                    (item.get("function") or {}).get("name", ""), item.get("arguments")
-                )
-                for item in calls
-            )
+        # decision already made without them. Under "auto" only high-risk calls prompt, and
+        # "off" still asks for an unisolated Python or Terminal.
+        _approval_gate = round_may_prompt(
+            calls,
+            confirm_tool_calls = confirm_tool_calls,
+            bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            sandbox_level = sandbox_level,
+            is_high_risk = is_high_risk_tool_call,
+            never_needs = never_needs_approval,
+        )
         # And only when the calls cannot depend on each other's RESULTS. `prepare_call` has
         # two such dependencies, both written by `record_result`: the same call twice in one
         # turn is a no-op the second time, and a one-shot tool runs once per turn. Deciding

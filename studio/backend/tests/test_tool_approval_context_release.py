@@ -113,3 +113,27 @@ def test_erasure_unconfirmed_keeps_the_context(monkeypatch, save_dir, other, bod
     assert llama_cpp.LlamaCppBackend.release_idle_chat_slot(server, target, 2) is ok
     # A swallowed request reads as a refusal, so the call itself is the assertion.
     assert sent == ([] if body is None else [("http://s/slots/2", {"action": "erase"})])
+
+
+def test_a_resume_that_gives_up_hands_its_claim_to_the_next_arrival():
+    """Leaving the resume queue frees the room it held back, so the line moves at once."""
+
+    async def scenario():
+        queue = LlamaAdmissionQueue("resume-gives-up")
+        first = reserve(queue, 29000, 4).lease_nowait()
+        assert first.park()
+        assert first.release_parked_cache() == 29000
+        busy = reserve(queue, 20000, 4).lease_nowait()
+        stop = asyncio.Event()
+        resumed = asyncio.create_task(first.unpark_async(cancel_event = stop, poll_s = 0.001))
+        await asyncio.sleep(0.01)
+        arrival = reserve(queue, 8000, 4)
+        assert arrival.lease_nowait() is None, "held back for the resume"
+        stop.set()
+        await asyncio.wait_for(resumed, 1)
+        lease = await asyncio.wait_for(arrival.wait(1), 2)
+        assert lease is not None, "nothing else happened, so the exit itself must admit it"
+        lease.release()
+        busy.release()
+
+    asyncio.run(scenario())

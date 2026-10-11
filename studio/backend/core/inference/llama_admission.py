@@ -1430,6 +1430,7 @@ class LlamaAdmissionQueue:
                     pass
                 self._unpark_tokens.pop(ticket, None)
                 self._unpark_lapsed.discard(ticket)
+                self._grant_waiters_locked()
 
     def cancel(self, waiter: _Waiter) -> None:
         lease_to_release = None

@@ -38190,6 +38190,7 @@ class LlamaCppBackend:
             normalize_sandbox_level,
             normalize_tool_permissions,
             requires_os_isolation,
+            round_may_prompt,
             runs_without_os_sandbox,
             tool_call_may_prompt,
         )
@@ -40746,39 +40747,16 @@ class LlamaCppBackend:
 
                 # Whether this round's calls may run at once, decided BEFORE any is
                 # prepared: discovering an approval dialog mid-round would put a modal in
-                # front of work already in flight. Under `permission_mode == "auto"` only
-                # high-risk calls prompt, so ordinary reads still overlap.
-                _approval_gate = (
-                    bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
+                # front of work already in flight. Under "auto" only high-risk calls prompt,
+                # so ordinary reads still overlap; "off" still asks for an unisolated Python
+                # or Terminal.
+                _approval_gate = round_may_prompt(
+                    tool_calls,
+                    confirm_tool_calls = bool(confirm_tool_calls),
+                    bypass_permissions = bypass_permissions,
+                    permission_mode = permission_mode,
+                    sandbox_level = sandbox_level,
                 )
-                if _approval_gate and permission_mode == "auto":
-
-                    def _risk_args(raw):
-                        """`is_high_risk_tool_call` reads the arguments as a mapping, but on
-                        the wire they are a JSON string. Anything that will not parse is
-                        treated as risky, which costs this round its overlap and nothing else.
-                        """
-                        if isinstance(raw, Mapping):
-                            return dict(raw)
-                        if isinstance(raw, str):
-                            try:
-                                parsed = json.loads(raw)
-                            except Exception:
-                                return None
-                            return parsed if isinstance(parsed, dict) else None
-                        return None
-
-                    def _round_call_is_risky(_tc):
-                        _fn = (_tc or {}).get("function") or {}
-                        _args = _risk_args(_fn.get("arguments"))
-                        if _args is None:
-                            return True
-                        try:
-                            return bool(is_high_risk_tool_call(_fn.get("name", ""), _args))
-                        except Exception:
-                            return True
-
-                    _approval_gate = any(_round_call_is_risky(_tc) for _tc in (tool_calls or []))
                 # A round may only overlap when its calls cannot depend on each other's
                 # RESULTS. `prepare_call` has two such dependencies, both written by
                 # `record_result`: `_successful_keys` makes the same call twice a no-op, and
