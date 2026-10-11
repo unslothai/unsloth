@@ -2531,6 +2531,20 @@ def _host_bounded_parking_mib(need_mib: int) -> int:
     return max(0, min(int(need_mib), cap))
 
 
+def _rebound_named_parking_budget(cmd: list, budget_mib: int) -> Optional[int]:
+    """Replace the ``--preempt-ram budget_mib`` pair Studio appended to ``cmd`` with the host-bounded
+    figure, dropping the pair when that is zero. Returns the budget now in force."""
+    bounded = _host_bounded_parking_mib(budget_mib)
+    for i in range(len(cmd) - 1, 0, -1):
+        if cmd[i - 1] == "--preempt-ram" and cmd[i] == str(budget_mib):
+            if bounded > 0:
+                cmd[i] = str(bounded)
+            else:
+                del cmd[i - 1 : i + 1]
+            break
+    return bounded or None
+
+
 def _server_owned_parking_budget_mib(
     kv_bytes: int,
     *,
@@ -30439,6 +30453,12 @@ class LlamaCppBackend:
                                 )
                                 if _exact_setting == _exact.EXACT_AUTO:
                                     _exact_wanted = False
+                                    if _exact_budget is not None:
+                                        # The budget Studio sized for exact parks; the plain
+                                        # parking left behind gets the host-bounded one.
+                                        _exact_budget = _rebound_named_parking_budget(
+                                            cmd, _exact_budget
+                                        )
                         # An auto-fit context leaves the pool unknown, so the budget named above is
                         # the unsized figure rather than one measured: it is judged after launch
                         # off the context the server chose. Never an unlimited budget guessed
@@ -33320,6 +33340,23 @@ class LlamaCppBackend:
                 # Read off the argv that LAUNCHED and the env it launched with, not the intent: respawns rewrite them.
                 self._requested_exact_concurrency = _exact_setting
                 _exact_short = getattr(self, "_exact_parking_short", None)
+                if (
+                    _mtp_will_engage
+                    and not _mtp_active_for_launched_server
+                    and getattr(self, "_exact_parking_writes", None) is not None
+                    and _exact_kv_bytes > 0
+                ):
+                    # The writes were priced with the drafter's state the launched server lacks.
+                    _writes = _exact_parking_need_mib(_exact_kv_bytes, parallel = n_parallel)
+                    _cap = _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
+                    if _cap is not None and _cap >= 0:
+                        _writes = min(_cap, _writes)
+                    self._exact_parking_writes = _writes
+                    if getattr(self, "_exact_host_short", None) is not None:
+                        _free = _available_host_memory_mib()
+                        self._exact_host_short = (
+                            (_writes, _free) if _free is not None and _writes > _free else None
+                        )
                 _exact_host_short = getattr(self, "_exact_host_short", None)
                 if _exact_host_short is None:
                     # The reading before launch predates the weights: a load that keeps them

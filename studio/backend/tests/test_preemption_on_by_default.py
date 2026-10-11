@@ -206,3 +206,36 @@ class TestADefaultLaunch:
         confirm = source.index("self._server_confirms_parking()")
         assert source.index("_preemption.note_server_parking(self._server_preempts_kv") > confirm
         assert "bound_to_host = not _exact_wanted" in source
+
+
+class TestAnExactFallbackKeepsTheHostBound:
+    """Exact auto that falls back for a short host must not leave its full budget on the line."""
+
+    def test_the_budget_is_bounded_in_place(self, monkeypatch):
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 16 * 1024)
+        monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 16 * 1024)
+        cmd = ["llama-server", "--kv-unified", "--preempt-ram", "20000"]
+        assert llama_mod._rebound_named_parking_budget(cmd, 20000) == 4096
+        assert cmd[-2:] == ["--preempt-ram", "4096"]
+
+    def test_no_room_drops_the_flag(self, monkeypatch):
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 3 * 1024)
+        monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 8 * 1024)
+        cmd = ["llama-server", "--preempt-ram", "20000", "--kv-unified"]
+        assert llama_mod._rebound_named_parking_budget(cmd, 20000) is None
+        assert cmd == ["llama-server", "--kv-unified"]
+
+    def test_the_load_rebounds_on_the_auto_fallback_and_reprices_a_dropped_drafter(self):
+        import inspect
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        fallback = source.index(
+            "if _exact_setting == _exact.EXACT_AUTO:\n                                    _exact_wanted = False"
+        )
+        assert "_rebound_named_parking_budget(" in source[fallback : fallback + 600]
+        reprice = source.index(
+            "_writes = _exact_parking_need_mib(_exact_kv_bytes, parallel = n_parallel)"
+        )
+        assert reprice < source.index(
+            '_exact_host_short = getattr(self, "_exact_host_short", None)'
+        )
