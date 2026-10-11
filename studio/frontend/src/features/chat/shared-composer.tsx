@@ -1844,6 +1844,16 @@ export function SharedComposer({
             engine_precision: "auto",
             engine_parallelism: "tensor",
             load_in_4bit: false,
+            ...(ownConfig.selectedGpuIds !== undefined
+              ? {
+                  gpu_ids:
+                    reconcilePersistedGpuIds(
+                      ownConfig.selectedGpuIds,
+                      ownConfig.selectedGpuIndexKind,
+                      false,
+                    ) ?? undefined,
+                }
+              : {}),
           };
           Object.assign(validation, await validatePane());
           throwIfCompareCancelled(compareSignal);

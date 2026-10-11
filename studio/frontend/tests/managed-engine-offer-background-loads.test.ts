@@ -69,7 +69,7 @@ const paneDecisionBody = new AsyncFunction(
   "validation",
   "deps",
   `const { sel, compareModelDisplayName, confirmManagedEngineIfNeeded, validatePane,
-     throwIfCompareCancelled, compareSignal } = deps;
+     throwIfCompareCancelled, compareSignal, ownConfig, reconcilePersistedGpuIds } = deps;
    let paneEngineFields = { engine: paneEngine };
    ${composer.slice(paneStart, paneEnd)}
    return paneEngineFields;`,
@@ -81,6 +81,7 @@ async function paneDecision(
   paneEngine: string,
   validation: Record<string, unknown>,
   choice: string | null = null,
+  ownConfig: Record<string, unknown> = {},
 ) {
   const asked: unknown[] = [];
   let revalidated = 0;
@@ -97,6 +98,8 @@ async function paneDecision(
     },
     throwIfCompareCancelled: () => {},
     compareSignal: undefined,
+    ownConfig,
+    reconcilePersistedGpuIds: (ids: number[] | null) => ids,
   });
   return { fields, asked, revalidated, validation };
 }
@@ -120,6 +123,16 @@ test("a default-engine compare pane offers vLLM and loads with the pick", async 
     "re-validated as the chosen engine before /load",
   );
   assert.equal(run.validation.revalidated, true);
+});
+
+test("the pane's saved GPU pick survives the switch to the offered engine", async () => {
+  const run = await paneDecision(
+    "auto",
+    { managed_engine_offer: OFFER },
+    "vllm",
+    { selectedGpuIds: [1, 2], selectedGpuIndexKind: "physical" },
+  );
+  assert.deepEqual(run.fields.gpu_ids, [1, 2]);
 });
 
 test("declining the offer refuses the load and names the engine", async () => {
