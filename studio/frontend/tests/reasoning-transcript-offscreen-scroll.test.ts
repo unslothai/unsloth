@@ -97,6 +97,20 @@ test("a jump past the observer margin wakes far transcripts through one listener
   );
 });
 
+test("a far transcript corrects a resize above the reader by its size change, not its frozen offset", () => {
+  const adjust = between(
+    transcript,
+    "virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta) => {",
+    "useLayoutEffect(",
+  );
+  // TanStack's correction is offset + adjustments - scrollTop; a far transcript's offset is stale.
+  assert.match(
+    adjust,
+    /if \(nearby\.current\) return true;(?:\s*\/\/[^\n]*)*\s*adjustAbove\(delta\);\s*return false;/,
+    "a far transcript hands TanStack a correction from its frozen offset",
+  );
+});
+
 test("a far transcript skips the reading-anchor scan", () => {
   assert.match(
     transcript,

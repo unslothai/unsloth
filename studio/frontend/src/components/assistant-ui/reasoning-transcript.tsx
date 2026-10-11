@@ -446,12 +446,21 @@ export function ReasoningTranscript({
         adjustAbove(offset + adjustments - element.scrollTop);
     },
   });
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item) =>
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta) => {
     // Ref measurements run before the virtualizer observes the shared viewport.
     // Its offset is still zero then: applying that correction would send a reader
     // back to the beginning when a live trace first crosses the threshold.
-    virtualizer.scrollElement !== null &&
-    item.end < (viewport()?.scrollTop ?? 0);
+    if (
+      virtualizer.scrollElement === null ||
+      item.end >= (viewport()?.scrollTop ?? 0)
+    )
+      return false;
+    if (nearby.current) return true;
+    // A far transcript's offset froze when it stopped listening; correcting from it
+    // would throw the reader back to where it left. Shift by the size change alone.
+    adjustAbove(delta);
+    return false;
+  };
 
   useLayoutEffect(() => {
     const element = root.current;
