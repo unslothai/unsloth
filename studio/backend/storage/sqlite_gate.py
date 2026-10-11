@@ -9,6 +9,8 @@ thread's open or close of the same file: they take the VFS and inode mutexes in 
 (#9008): studio.db, auth.db and rag.db all open through here. Gating only close() still deadlocks.
 """
 
+from __future__ import annotations
+
 import os
 import sqlite3
 import threading
