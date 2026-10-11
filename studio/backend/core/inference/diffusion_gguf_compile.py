@@ -100,9 +100,13 @@ def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
     the first generation (#9897, Triton could not build its driver) ran nothing, so the stock dequant answers."""
     failed: list = []
 
+    from . import diffusion_compile_config  # noqa: PLC0415
+
     @functools.wraps(eager)
     def guarded(*args: Any, **kwargs: Any) -> Any:
         if not failed:
+            # The lazy compile runs in the caller's context; on torch 2.12+ the load's knob writes may not be visible.
+            diffusion_compile_config.apply()
             try:
                 return compiled(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure

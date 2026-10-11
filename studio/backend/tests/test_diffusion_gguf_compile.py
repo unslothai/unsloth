@@ -101,6 +101,35 @@ def test_compile_failure_falls_back_to_eager():
     assert calls == ["compiled", "eager", "eager"]
 
 
+def test_the_lazy_compile_sees_the_recorded_compile_config():
+    import threading
+
+    from core.inference import diffusion_compile_config as cc
+
+    cc._reset_for_tests()
+    seen = {}
+
+    def compiled(t):
+        seen["memory_planning"] = torch._inductor.config.memory_planning
+        return t
+
+    try:
+        assert cc.set_knob("torch._inductor.config", "memory_planning", False)
+        guarded = gc._guard(compiled, lambda t: t, None)
+
+        def render():
+            # A render context still carrying the training config (torch 2.12+ keeps config writes per context).
+            torch._inductor.config.memory_planning = True
+            guarded(torch.ones(1))
+
+        worker = threading.Thread(target = render)
+        worker.start()
+        worker.join()
+        assert seen["memory_planning"] is False
+    finally:
+        cc._reset_for_tests()
+
+
 @pytest.mark.parametrize(
     "exc",
     [RuntimeError("bad weight"), torch.OutOfMemoryError("CUDA out of memory")],
