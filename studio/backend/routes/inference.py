@@ -2070,9 +2070,7 @@ def _openai_llama_admission_output_allowance(
 ) -> int:
     """Reserve output KV, treating caps at or above the per-request window as unstated.
 
-    Unstated requests reserve their full share when the prompt and wire margin fit.
-    Larger prompts receive the flat allowance and a larger charge, reducing concurrency
-    instead of forcing a one-token reply."""
+    A prompt too large for its share takes the flat allowance (less concurrency), not a one-token reply."""
     window = context_window or budget
     if cap is not None and cap < window:
         return cap
@@ -2589,9 +2587,8 @@ def _openai_llama_admission_wire_prompt_tokens(
     markup = None,
     vision: bool = True,
 ) -> int:
-    """Price the sanitized conversation and catalogue actually sent.
-    Exclude audio/video transport bytes and top-level fields already folded into messages.
-    Use the loaded markup profile so pricing matches the builders."""
+    """Price what is actually sent, under the loaded markup profile, without audio/video transport
+    bytes or top-level fields already folded into messages."""
     from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
     conversation = neutralize_control_markup_in_messages(conversation, None, markup)
@@ -2606,8 +2603,7 @@ def _openai_llama_admission_wire_prompt_tokens(
     )
 
 
-# Leave room for template overhead and llama-server's next-token check.
-# This margin does not cover arbitrary prompt-estimator undercounts.
+# Template overhead and llama-server's next-token check; not a cover for estimator undercounts.
 _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS = 64
 
 
@@ -2645,9 +2641,8 @@ def _openai_llama_admission_enforced_max_tokens(
     prompt_tokens: Optional[int] = None,
     capacity: Optional[int] = None,
 ) -> Optional[int]:
-    """Enforce the reserved output allowance using the finalized conversation.
-    Return None for disabled accounting, unpriceable media, or an explicit cap below
-    the context window. Caps at or above the window count as unstated."""
+    """Enforce the reserved output allowance on the finalized conversation. None when accounting is
+    off, media is unpriceable, or the caller stated a cap below the window."""
     share = _openai_llama_admission_share(request, llama_backend, capacity = capacity)
     if share is None:
         return None
@@ -2955,9 +2950,8 @@ def _openai_llama_admission_recost(
 ) -> Optional[int]:
     """Re-cost the current tool conversation and return its output allowance.
 
-    Waiting releases the old commitment, so it requires reclaimable idle KV or
-    `cache_is_empty`. Otherwise, growth that cannot fit is refused.
-    `wire_tools` is the catalogue actually sent, or None for the final answer.
+    Waiting releases the old commitment, so it needs reclaimable idle KV or `cache_is_empty`;
+    otherwise growth that cannot fit is refused. `wire_tools` is None for the final answer.
 
     `count_prepared_prompt` charges the ledger the tokenizer's exact count of the round.
 

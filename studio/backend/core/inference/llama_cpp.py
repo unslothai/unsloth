@@ -37468,8 +37468,7 @@ class LlamaCppBackend:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
-        # Append parameters to preserve positional callers.
-        # The callback may block for cache room and returns the replacement output allowance.
+        # Appended for positional callers. May block for cache room; returns the new allowance.
         on_conversation_grew: Optional[Callable[[list, Optional[list]], Optional[int]]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
@@ -37477,7 +37476,7 @@ class LlamaCppBackend:
         deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
-        # Bounds the wire cap of every request the loop sends. Appended after existing hooks.
+        # Bounds the wire cap of every request the loop sends.
         admission_output_allowance: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
@@ -41051,8 +41050,7 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
 
-        # Re-cost the final pass: tool results and nudges may have grown since the last round.
-        # It sends no tools catalogue.
+        # Re-cost the final pass (no catalogue): tool results and nudges may have grown since.
 
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
@@ -41133,8 +41131,7 @@ class LlamaCppBackend:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
-                    # Pre-respawn window, as the iteration refit: a new window is not a new
-                    # reservation.
+                    # Pre-respawn window: a new window is not a new reservation.
                     max_tokens = _final_fit_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
