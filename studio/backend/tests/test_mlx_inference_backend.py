@@ -5953,6 +5953,35 @@ def test_an_mlx_count_reports_the_id_status_publishes(monkeypatch, active, adver
     assert json.loads(served.body)["model"] == active
 
 
+@pytest.mark.parametrize("via_api_key", [True, False], ids = ["api_key", "ui_session"])
+def test_an_mlx_count_redacts_a_local_folder_for_an_api_key_caller(monkeypatch, via_api_key):
+    """/status hides host paths from API-key callers; the count must not hand the same path back."""
+    from hub.utils.host_paths import redact_host_paths
+    from routes import inference as route
+
+    active = "/Users/alice/outputs/my-finetune-mlx"
+    backend = _RenderRecordingBackend()
+    backend.active_model_name = active
+    backend.models = {active: next(iter(_mirror(_TOOL_TEMPLATE).values()))}
+    monkeypatch.setattr(route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
+    monkeypatch.setattr(route.active_generations, "count", lambda: 0)
+    served = asyncio.run(
+        route.chat_count_tokens(
+            route.ChatCountTokensRequest(messages = [{"role": "user", "content": "hi"}]),
+            current_subject = "tester",
+            via_api_key = via_api_key,
+        )
+    )
+    model = json.loads(served.body)["model"]
+    if via_api_key:
+        assert "/Users/alice" not in model
+        status_view = redact_host_paths({"model_identifier": active}, via_api_key = True)
+        assert model == status_view["model_identifier"]
+    else:
+        assert model == active
+
+
 def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeypatch):
     """The active name cannot see a same-ID reload, which is how a template override lands.
     A count routed from the old entry must not be published."""

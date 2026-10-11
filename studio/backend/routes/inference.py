@@ -40586,7 +40586,11 @@ async def _resident_model_reads_images() -> bool:
     return bool(entry.get("is_vision"))
 
 
-async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONResponse]:
+async def _mlx_count_chat_tokens(
+    payload,
+    request = None,
+    via_api_key = None,
+) -> Optional[JSONResponse]:
     """Count with a resident MLX or managed engine tokenizer, otherwise return None.
 
     This has to answer the question the safetensors completion answers -- which of its two
@@ -40902,8 +40906,19 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             detail = "The loaded model changed while counting tokens.",
         )
     # The id /status publishes as model_identifier (the raw active name, a local folder or
-    # snapshot path included): the caller drops a count naming any other checkpoint.
-    return JSONResponse(content = {"input_tokens": int(count), "model": active})
+    # snapshot path included): the client drops a count naming any other checkpoint.
+    return JSONResponse(
+        content = {"input_tokens": int(count), "model": _count_model_id(active, via_api_key)}
+    )
+
+
+def _count_model_id(model_id, via_api_key):
+    """A count's ``model``, redacted for an API-key caller exactly as /status redacts its
+    ``model_identifier`` (the redactor keys on that field name)."""
+    from hub.utils.host_paths import redact_host_paths
+    return redact_host_paths({"model_identifier": model_id}, via_api_key = via_api_key)[
+        "model_identifier"
+    ]
 
 
 @router.post("/chat/count_tokens")
@@ -40911,6 +40926,7 @@ async def chat_count_tokens(
     payload: ChatCountTokensRequest,
     current_subject: str = Depends(get_current_subject),
     request: Request = None,
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
@@ -41004,7 +41020,7 @@ async def chat_count_tokens(
     if not llama_backend.is_loaded:
         # The refusals above are about the request and so are shared; the ones below are
         # llama.cpp's own render concerns, so this returns rather than falling through.
-        _mlx_count = await _mlx_count_chat_tokens(payload, request)
+        _mlx_count = await _mlx_count_chat_tokens(payload, request, via_api_key = via_api_key)
         if _mlx_count is not None:
             return _mlx_count
         raise HTTPException(
@@ -41205,7 +41221,12 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    return JSONResponse(content = {"input_tokens": int(count), "model": _tokenizer_model})
+    return JSONResponse(
+        content = {
+            "input_tokens": int(count),
+            "model": _count_model_id(_tokenizer_model, via_api_key),
+        }
+    )
 
 
 @router.post("/messages/count_tokens")
