@@ -26,6 +26,8 @@ import textwrap
 
 import pytest
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 pytest.importorskip("bitsandbytes")
 pytest.importorskip("triton")
 torch = pytest.importorskip("torch")
@@ -165,7 +167,7 @@ _GPU_RUNNER = textwrap.dedent(
 )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "real Triton launches need a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "real Triton launches need a GPU")
 @pytest.mark.parametrize("patch", [False, True])
 def test_real_triton_without_a_compiler(tmp_path, patch):
     """Real Triton, with gcc / clang hidden and a cold cache: its launcher build raises."""
