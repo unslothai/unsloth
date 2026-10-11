@@ -60,11 +60,6 @@ Or if you prefer to install manually:
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 
-On macOS, you can also install Unsloth Desktop with Homebrew:
-```bash
-brew install --cask unsloth
-```
-
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
@@ -72,6 +67,11 @@ irm https://unsloth.ai/install.ps1 | iex
 #### Docker
 
 The [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) `unsloth/unsloth` is available on Docker. [Read guide.](https://unsloth.ai/docs/get-started/install/docker)
+
+#### Homebrew:
+```bash
+brew install --cask unsloth
+```
 
 #### Community:
 
@@ -158,28 +158,22 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 
-On macOS, you can also install Unsloth Desktop with Homebrew:
-```bash
-brew install --cask unsloth
-```
-
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
 
-#### Launch
+#### Homebrew:
 ```bash
-unsloth studio
-```
-
-#### HTTP Secure Deployment
-```bash
-unsloth studio --secure
+brew install --cask unsloth
 ```
 
 #### Docker
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux, set up GPU access once with `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh` (Windows: [Docker Desktop with WSL 2](https://unsloth.ai/docs/get-started/install/docker)).
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux and Mac, set up GPU access once with
+```bash
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
+```
+For Windows instructions and more information, read our [Unsloth Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
 
 **Linux / WSL (Bash):**
 ```bash
@@ -191,9 +185,19 @@ docker run -d --name unsloth --gpus all --ipc=host \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth && docker logs -f unsloth
 ```
-See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more information. For cloud hosting / global serving, add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more information. For notebooks only, use the `unsloth/unsloth:core` tag; all tags and options are on [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).<br>For **AMD** there is a separate image: [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm).
 
-On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm).
+---
+
+#### Launch
+```bash
+unsloth studio
+```
+
+#### HTTP Secure Deployment
+```bash
+unsloth studio --secure
+```
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
