@@ -10,6 +10,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 import ast
 import atexit
 import bisect
+import collections
 import weakref
 import contextlib
 import ctypes
@@ -8520,6 +8521,45 @@ def _extra_args_have_tensor_split(
         if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
             return True
     return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
+# Recent prompt counts, keyed by llama-server process and rendered request body.
+_COUNT_MEMO_MAX = 64
+_COUNT_MEMO: "collections.OrderedDict[tuple, int]" = collections.OrderedDict()
+_COUNT_MEMO_LOCK = threading.Lock()
+
+
+def _count_memo_key(backend, template_body: dict, prefer_native: bool) -> Optional[tuple]:
+    process = getattr(backend, "_process", None)
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        return None
+    try:
+        encoded = json.dumps(template_body, sort_keys = True, ensure_ascii = False, default = str)
+    except (TypeError, ValueError):
+        return None
+    digest = hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).hexdigest()
+    return (getattr(backend, "base_url", None), pid, bool(prefer_native), digest)
+
+
+def _count_memo_get(key: Optional[tuple]) -> Optional[int]:
+    if key is None:
+        return None
+    with _COUNT_MEMO_LOCK:
+        count = _COUNT_MEMO.get(key)
+        if count is not None:
+            _COUNT_MEMO.move_to_end(key)
+        return count
+
+
+def _count_memo_put(key: Optional[tuple], count: int) -> None:
+    if key is None:
+        return
+    with _COUNT_MEMO_LOCK:
+        _COUNT_MEMO[key] = count
+        _COUNT_MEMO.move_to_end(key)
+        while len(_COUNT_MEMO) > _COUNT_MEMO_MAX:
+            _COUNT_MEMO.popitem(last = False)
 
 
 @functools.lru_cache(maxsize = 1)
@@ -44624,6 +44664,14 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
+                        # A count is a pure function of the rendered body for one llama-server
+                        # process: a tool loop's opening reservation and its first-round recost
+                        # price the same prompt back to back. Keyed on the process, so a relaunch
+                        # (new template, new model) never reads an old answer.
+                        memo_key = _count_memo_key(self, template_body, prefer_native)
+                        hit = _count_memo_get(memo_key)
+                        if hit is not None:
+                            return hit, False
                         if prefer_native:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
@@ -44635,6 +44683,7 @@ class LlamaCppBackend:
                                 if native.status_code == 200:
                                     count = native.json().get("input_tokens")
                                     if type(count) is int and count > 0:
+                                        _count_memo_put(memo_key, count)
                                         return count, False
                             except Exception:
                                 pass
@@ -44650,7 +44699,10 @@ class LlamaCppBackend:
                         if isinstance(prompt, str):
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            return _tokenize(prompt), False
+                            count = _tokenize(prompt)
+                            if type(count) is int and count > 0:
+                                _count_memo_put(memo_key, count)
+                            return count, False
                     except CountAborted:
                         # Not a template failure: swallowed, the text fallback tokenizes anyway,
                         # which is the work being declined. Must precede the generic except.
