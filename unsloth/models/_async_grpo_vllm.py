@@ -9,6 +9,7 @@ __all__ = [
     "UnslothAsyncVLLMServer",
 ]
 
+import itertools
 import json
 import logging
 import threading
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Adapter ids of their own, so they never collide with the ids Unsloth's GRPOTrainer hands out.
 _LORA_ID_BASE = 1_000_000
+# Process-wide: one engine outlives each trainer's server, and vLLM ignores a re-added id it already holds.
+_LORA_IDS = itertools.count(_LORA_ID_BASE)
 # Every request is served by the newest adapter (see `_lora_for`), so any number of named versions is servable.
 _SERVABLE_LORAS = 1 << 20
 _BATCH_WAIT_S = 0.0005
@@ -58,7 +61,6 @@ class _Engine:
         self.loras = {}
         self.newest = None
         self.lora_holds = {}
-        self.next_lora_id = _LORA_ID_BASE
         self.aborted = None
         self.stats = {"requests": 0, "tokens": 0, "steps": 0, "step_s": 0.0, "max_batch": 0}
         self.thread = threading.Thread(
@@ -149,6 +151,8 @@ class _Engine:
             pending, self.pending = self.pending, []
         for item in pending:
             item[-1].set_exception(RuntimeError("Unsloth: the in-process vLLM server stopped."))
+        for name in list(self.loras):
+            self.remove_adapter(name)
 
     def _admit(self, prompt_ids, params, model, future):
         request_id = uuid.uuid4().hex
@@ -216,8 +220,7 @@ class _Engine:
 
     # Commands (run on the engine thread through `call`).
     def add_adapter(self, name, path):
-        lora_id = self.next_lora_id
-        self.next_lora_id += 1
+        lora_id = next(_LORA_IDS)
         lora = self.load_lora(path, lora_request_id = lora_id)
         # Load now, while the trainer waits on this sync, not lazily on the first request.
         self.engine.add_lora(lora)

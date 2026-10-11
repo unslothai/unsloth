@@ -4500,6 +4500,10 @@ def _check_async_grpo_adapter_servable(model):
     # Raise vLLM's refusals (e.g. LoRA on MoE experts) at construction instead of at the first weight sync.
     import os
     import tempfile
+
+    # load_lora reads the "default" adapter; TRL syncs the active one, so other layouts are left to the sync.
+    if set(getattr(model, "peft_config", None) or ()) != {"default"}:
+        return
     with tempfile.TemporaryDirectory() as directory:
         # A path that does not exist yet: older load_lora writes the adapter config only into a new directory.
         model.load_lora(os.path.join(directory, "adapter"), load_tensors = True)
@@ -4562,6 +4566,7 @@ def patch_trl_async_grpo():
             _check_async_grpo_fast_inference(async_module, model, train_dataset)
             _check_async_grpo_adapter_servable(model)
             server = _start_async_grpo_vllm_server(model)
+            saved_config = (config.vllm_server_base_url, config.max_inflight_tasks)
             config.vllm_server_base_url = server.url
             if getattr(config, "max_inflight_tasks", 0) < 0:
                 # TRL's default counts rows, not rollouts, so token-budget packing would leave the engine
@@ -4584,6 +4589,9 @@ def patch_trl_async_grpo():
             try:
                 original_init(self, model, *args, **kwargs)
             finally:
+                if server is not None:
+                    # TRL read the URL during init; a reused config must not point at this trainer's server.
+                    config.vllm_server_base_url = saved_config[0]
                 restore_validate()
                 restore_requires_grad()
                 restore_text_config()
@@ -4601,6 +4609,7 @@ def patch_trl_async_grpo():
         except BaseException:
             if server is not None:
                 server.stop()
+                config.max_inflight_tasks = saved_config[1]
             raise
         if server is not None:
             self._unsloth_vllm_server = server

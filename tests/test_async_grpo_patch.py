@@ -584,3 +584,45 @@ def test_unservable_adapter_fails_at_construction(fast_inference_trl):
     assert seen == [(False, True, True)]
     assert _FakeServer.started == []
     assert mod._calls["init"] == []
+
+
+def test_a_reused_config_keeps_its_own_server_url(fast_inference_trl):
+    mod, _ = fast_inference_trl
+    config = mod.AsyncGRPOConfig("o")
+    trainer = mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())),
+        None,
+        args = config,
+        train_dataset = [{"prompt": "hi"}],
+    )
+    assert trainer.url_seen == _FakeServer.started[0].url
+    assert config.vllm_server_base_url == "http://localhost:8000"
+    mod.AsyncGRPOTrainer.lora_sync = False
+    try:
+        config = mod.AsyncGRPOConfig("o")
+        with pytest.raises(ValueError, match = "plain LoRA adapter"):
+            mod.AsyncGRPOTrainer(
+                _fast_inference_peft(CausalLM(FastBackbone())),
+                None,
+                args = config,
+                train_dataset = [{"prompt": "hi"}],
+            )
+    finally:
+        mod.AsyncGRPOTrainer.lora_sync = True
+    assert (config.vllm_server_base_url, config.max_inflight_tasks) == ("http://localhost:8000", -1)
+    assert _FakeServer.started[1].stopped == 1
+
+
+def test_servable_check_reads_only_a_lone_default_adapter():
+    ns = _load()
+    calls = []
+    model = types.SimpleNamespace(
+        peft_config = {"policy": object()}, load_lora = lambda *a, **k: calls.append(a)
+    )
+    ns["_check_async_grpo_adapter_servable"](model)
+    model.peft_config = {"default": object(), "other": object()}
+    ns["_check_async_grpo_adapter_servable"](model)
+    assert calls == []
+    model.peft_config = {"default": object()}
+    ns["_check_async_grpo_adapter_servable"](model)
+    assert len(calls) == 1

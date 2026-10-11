@@ -259,6 +259,25 @@ def test_adapters_load_eagerly_serve_newest_and_unload_after_drain(served):
     _post(server, "/v1/unload_lora_adapter", {"lora_name": "missing"})
 
 
+def test_a_second_server_on_one_engine_gets_new_lora_ids():
+    llm = _FakeLLM()
+    engine = llm.llm_engine
+    model = _model(llm)
+    first = server_module.UnslothAsyncVLLMServer(model, sampling_params = _Sampling)
+    _post(first, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"})
+    first.stop()
+    # The stopped server leaves nothing registered in the shared engine.
+    assert engine.removed_loras == engine.added_loras
+    second = server_module.UnslothAsyncVLLMServer(model, sampling_params = _Sampling)
+    try:
+        _post(
+            second, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"}
+        )
+    finally:
+        second.stop()
+    assert len(set(engine.added_loras)) == 2
+
+
 def test_unload_of_an_adapter_in_use_waits_for_its_requests(served):
     server, llm = served
     engine = llm.llm_engine
