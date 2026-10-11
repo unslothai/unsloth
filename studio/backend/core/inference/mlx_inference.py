@@ -933,6 +933,10 @@ def _mlx_fused_residual_norm_handoff(model):
     return _mlx_optional_fusion("fused_residual_norm_handoff", model)
 
 
+def _mlx_fused_packed_gated_delta(model):
+    return _mlx_optional_fusion("fused_packed_gated_delta", model)
+
+
 def _mlx_exact_speculative_verify(model):
     return _mlx_optional_fusion("exact_speculative_verify", model)
 
@@ -5586,6 +5590,7 @@ class MLXInferenceBackend:
             _mlx_fused_moe_router(self._model),
             _mlx_fused_moe_routed_experts(self._model),
             _mlx_fused_residual_norm_handoff(self._model),
+            _mlx_fused_packed_gated_delta(self._model),
         ):
             (
                 gen_prompt,
@@ -6369,6 +6374,7 @@ class MLXInferenceBackend:
                 generation_scope.enter_context(_mlx_fused_moe_router(self._model))
                 generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
                 generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
+                generation_scope.enter_context(_mlx_fused_packed_gated_delta(self._model))
                 final_response = None
                 clip_path = None
                 if draft is not None:
@@ -6905,6 +6911,7 @@ class MLXInferenceBackend:
             generation_scope.enter_context(_mlx_fused_moe_router(self._model))
             generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
             generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
+            generation_scope.enter_context(_mlx_fused_packed_gated_delta(self._model))
             final_response = None
             try:
                 with closing(

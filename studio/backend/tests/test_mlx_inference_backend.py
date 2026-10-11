@@ -31,6 +31,7 @@ FUSIONS = (
     "moe_router",
     "moe_routed_experts",
     "residual_norm_handoff",
+    "packed_gated_delta",
 )
 
 
