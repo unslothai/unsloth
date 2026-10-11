@@ -10178,6 +10178,10 @@ def _gguf_request_intent(
         for name in (f.name for f in dataclass_fields(source))
         if hasattr(request, name) and (name != "hf_token" or source.hf_repo)
     }
+    if not is_owner_context():
+        # Exact concurrency is machine-wide and the owner's to set (the settings PUT is
+        # owner-only): another account's load follows the stored setting, not its own field.
+        settings["exact_concurrency"] = None
     settings.update(
         n_ctx = request.max_seq_length,
         chat_template_override = chat_template_override,

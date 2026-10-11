@@ -143,3 +143,28 @@ def test_a_managed_account_cannot_switch_exact_concurrency(monkeypatch):
             == 200
         )
     assert written == ["on"]
+
+
+def test_a_managed_accounts_load_cannot_override_exact_concurrency():
+    # The mode is machine-wide and the owner's to set: another account's per-load field is
+    # dropped, so its load follows the stored setting.
+    from types import SimpleNamespace
+
+    from core.inference.llama_cpp import GgufLoadIntent
+    from routes import inference
+
+    source = GgufLoadIntent(model_identifier = "m", gguf_path = "/m.gguf")
+    request = SimpleNamespace(exact_concurrency = "off", max_seq_length = 4096)
+
+    def _intent(account):
+        token = bind_account(account)
+        try:
+            return inference._gguf_request_intent(
+                source, request, chat_template_override = None, extra_args = None,
+                gpu_ids = None, n_parallel = 1,
+            )
+        finally:
+            reset_account(token)
+
+    assert _intent(ALICE).exact_concurrency is None
+    assert _intent(OWNER).exact_concurrency == "off"
