@@ -379,31 +379,37 @@ def test_checkpoint_modes_match_uncheckpointed_grads(mode, monkeypatch):
     assert len(calls) == (6 if mode == "plain" else 3)
 
 
+def _fake_zoo_helper(monkeypatch):
+    # A stand-in unsloth_zoo.block_checkpointing, so these tests do not depend on the installed zoo release.
+    import sys
+    import types
+
+    called = []
+    module = types.ModuleType("unsloth_zoo.block_checkpointing")
+    module.enable_block_gradient_checkpointing = lambda model, every_n_blocks: called.append(
+        every_n_blocks
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.block_checkpointing", module)
+    return called
+
+
 def test_checkpoint_mode_comes_from_the_env_and_defaults_to_plain(monkeypatch):
-    seen = {}
-
-    class _Model(torch.nn.Module):
-        _repeated_blocks = ["Linear"]
-
-        def __init__(self):
-            super().__init__()
-            self.blocks = torch.nn.ModuleList([torch.nn.Linear(2, 2) for _ in range(4)])
-
-        def enable_gradient_checkpointing(self, gradient_checkpointing_func = None):
-            seen["func"] = gradient_checkpointing_func
-
+    called = _fake_zoo_helper(monkeypatch)
     monkeypatch.delenv(dtc.GC_MODE_ENV, raising = False)
-    assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == "plain"
+    monkeypatch.delenv(dtc.GC_EVERY_N_ENV, raising = False)
+    assert dtc.enable_diffusion_gradient_checkpointing(object()) == "plain"
     for value, expected in (("partial", "partial"), ("PARTIAL ", "partial"), ("bogus", "plain")):
         monkeypatch.setenv(dtc.GC_MODE_ENV, value)
-        assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == expected
-        assert callable(seen["func"])
+        assert dtc.enable_diffusion_gradient_checkpointing(object()) == expected
     monkeypatch.setenv(dtc.GC_MODE_ENV, "partial")
     monkeypatch.setenv(dtc.GC_EVERY_N_ENV, "x")
-    assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == "partial"
+    assert dtc.enable_diffusion_gradient_checkpointing(object()) == "partial"
+    monkeypatch.setenv(dtc.GC_EVERY_N_ENV, "4")
+    assert dtc.enable_diffusion_gradient_checkpointing(object()) == "partial"
+    assert called == [1, 2, 2, 1, 2, 4]
 
 
-def test_checkpointing_uses_the_zoo_helper_and_falls_back_to_every_block(monkeypatch):
+def test_checkpointing_falls_back_to_every_block_without_the_zoo_helper(monkeypatch):
     import sys
 
     seen = {}
@@ -413,14 +419,6 @@ def test_checkpointing_uses_the_zoo_helper_and_falls_back_to_every_block(monkeyp
             seen["func"] = gradient_checkpointing_func
 
     monkeypatch.setenv(dtc.GC_MODE_ENV, "partial")
-    zoo = pytest.importorskip("unsloth_zoo.block_checkpointing")
-    called = {}
-    monkeypatch.setattr(
-        zoo,
-        "enable_block_gradient_checkpointing",
-        lambda model, every_n_blocks: called.update(n = every_n_blocks),
-    )
-    assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == "partial" and called == {"n": 2}
     # An unsloth_zoo without the helper: every block through the diffusers hook.
     monkeypatch.setitem(sys.modules, "unsloth_zoo.block_checkpointing", None)
     assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == "plain"
