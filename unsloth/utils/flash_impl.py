@@ -1,18 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Run torch's flash kernels as FA4 (flash_attn.cute) or FA3 (flash_attn_interface) while a packed /
-padding-free trainer trains, on Hopper / datacenter Blackwell, when the user installed the kernels.
+"""Run torch's flash kernels as FA4 / FA3 while a packed / padding-free trainer trains.
 
-torch (2.11+) swaps the implementation behind its flash ops process-wide, so this also changes dense
-SDPA calls that pick flash (on sm100 only decode-shaped calls and dropout: cuDNN takes the rest). FA4
-raises instead of falling back on dropout and on head dims it lacks, and its Python launch costs about
-0.2 ms per call, so it is turned on only inside ``trainer.train()`` and only when the model has no
-attention dropout, every head dim it can send to flash is one the kernel has, and a probe on the
-model's own shapes matches torch's bundled flash. Anything uncertain leaves torch untouched.
-
-UNSLOTH_FLASH_ATTENTION_IMPL = off (default) | auto (FA4 on sm100 when every gate passes) | fa4 | fa3 (sm90).
-Opt-in: FA4 helps long documents (about 13% per step at 16k on B200) and is neutral to slower on short
-ones, where its launch cost dominates.
+torch (2.11+) swaps the flash impl process-wide, and FA4 raises (not falls back) on dropout and missing
+head dims and costs ~0.2 ms per launch, so it is on only inside ``trainer.train()``, with no dropout,
+supported head dims, and a probe matching torch's bundled flash.
+UNSLOTH_FLASH_ATTENTION_IMPL = off (default) | auto (FA4 on sm100) | fa4 | fa3 (sm90).
 """
 
 import contextlib
@@ -40,7 +33,6 @@ _DROPOUT_KEYS = (
     "attention_dropout_prob",
 )
 _SUBCONFIG_KEYS = ("text_config", "vision_config", "audio_config", "encoder", "decoder")
-# active: impl Unsloth turned on (None otherwise); reason: last decision; verdicts: probe results per shape key.
 FLASH_IMPL_STATE = {"active": None, "reason": None, "verdicts": {}, "logged": set()}
 _logger = logging.getLogger(__name__)
 
@@ -65,7 +57,6 @@ def _log_once(message, level = logging.INFO):
 
 
 def _registry():
-    """(activate, restore, list, current) from torch >= 2.11, else None."""
     try:
         from torch.nn.attention import (
             activate_flash_attention_impl,
@@ -103,8 +94,7 @@ def _device_majors():
 
 
 def _candidates(requested, majors):
-    """Impls worth trying on these devices. torch's FA4 hook takes majors 9 / 10, its FA3 hook 9.
-    auto only turns FA4 on for sm100 (measured); Hopper (FA3 / FA4) is opt-in until measured there."""
+    """auto only turns FA4 on for sm100 (measured); Hopper is opt-in until measured there."""
     if not majors or len(majors) != 1:
         return []
     major = next(iter(majors))
@@ -135,8 +125,7 @@ def head_dim_supported(
     head_dim_v = None,
     window = None,
 ) -> bool:
-    """Shapes the impl's kernels take (flash_attn.cute interface._validate_head_dims and the sm100
-    hd256 backward, which has no local / sliding window). torch pads dense SDPA heads to a multiple of 8."""
+    """Mirrors flash_attn.cute _validate_head_dims; the sm100 hd256 backward has no sliding window."""
     head_dim_v = head_dim if head_dim_v is None else head_dim_v
     if head_dim % 8 or head_dim_v % 8 or min(head_dim, head_dim_v) < 8:
         return False
@@ -156,9 +145,7 @@ except Exception:
 
 
 def flash_impl_allows(head_dim, window, device) -> bool:
-    """Per varlen call: False when a non-default flash impl is active and lacks this shape, so the caller
-    keeps its per-segment / wrapped SDPA route instead of an assertion from inside the kernel. Plain
-    attribute reads, so a compiled caller guards on the active impl instead of breaking its graph."""
+    """False when the active impl lacks this shape. Plain attribute reads so compiled callers do not graph break."""
     active = getattr(_TORCH_FLASH_REGISTRY, "_FLASH_ATTENTION_ACTIVE", None)
     if active is None:
         return True
@@ -188,8 +175,7 @@ def _ceil8(value):
 
 
 def model_facts(model):
-    """(attention dropout > 0, [(head_dim, head_dim_v)], heads, kv heads, sliding window, dtype) from the
-    model's config and attention modules; None fields when unknown."""
+    """(dropout > 0, [(head_dim, head_dim_v)], heads, kv heads, window, dtype); None when unknown."""
     dropout, dims, n_heads, n_kv, window = False, [], None, None, None
     for cfg in _configs(model):
         for key in _DROPOUT_KEYS:
@@ -253,8 +239,7 @@ def _model_gate(impl, major, facts):
     if dropout:
         return "the model has attention dropout > 0 (FA4 / FA3 raise on dropout instead of falling back)"
     for head_dim, head_dim_v in dims:
-        # Heads above 256 never reach a flash kernel (torch and the varlen sites refuse them first);
-        # torch only calls flash with equal q / v head dims.
+        # Heads > 256 or unequal q / v dims never reach flash.
         if max(head_dim, head_dim_v) > 256 or head_dim != head_dim_v:
             continue
         if not head_dim_supported(impl, major, _ceil8(head_dim)):
@@ -318,7 +303,6 @@ def _run_case(case, device):
 
 @contextlib.contextmanager
 def _count_impl_calls(impl):
-    """Count torch's {impl} forward / backward runner calls (None when torch names them differently)."""
     name = impl.lower()
     try:
         import importlib
@@ -346,7 +330,6 @@ def _count_impl_calls(impl):
 
 
 def _probe_error(impl, cases, activate, restore):
-    """Reference cases on torch's bundled flash, then activate impl and compare; restore on mismatch."""
     device = torch.device("cuda", torch.cuda.current_device())
     try:
         refs = [_run_case(case, device) for case in cases]
@@ -361,7 +344,7 @@ def _probe_error(impl, cases, activate, restore):
             with _count_impl_calls(impl) as calls:
                 got = _run_case(case, device)
                 torch.cuda.synchronize(device)
-            # A torch whose varlen_attn picks cuDNN for causal rows never reaches the impl: nothing to gain.
+            # varlen_attn on cuDNN never reaches the impl.
             if case[0] == "varlen" and calls is not None and not (calls["fwd"] and calls["bwd"]):
                 raise RuntimeError(f"varlen_attn did not run on {impl} ({calls})")
             tol = 2e-2 if case[-1] == torch.bfloat16 else 1e-2
@@ -381,8 +364,7 @@ def _probe_error(impl, cases, activate, restore):
 
 
 def maybe_activate_flash_attention_impl(model = None):
-    """Turn on FA4 / FA3 for torch's flash kernels when every gate passes. Returns the impl now active
-    because of this call or an earlier one, else None. Never call while a backward is pending."""
+    """Returns the active impl or None. Never call while a backward is pending."""
     requested = _requested()
     registry = _registry()
     if requested is None or registry is None:
@@ -438,7 +420,6 @@ def maybe_activate_flash_attention_impl(model = None):
 
 
 def deactivate_flash_attention_impl():
-    """Put torch's bundled flash back if Unsloth activated another impl."""
     if FLASH_IMPL_STATE["active"] is None:
         return
     FLASH_IMPL_STATE["active"] = None
@@ -451,8 +432,7 @@ def deactivate_flash_attention_impl():
 
 
 def scope_flash_attention_impl_to_train(trainer, model) -> None:
-    """Wrap trainer.train once so the impl is active only while it trains: inference after training
-    keeps torch's bundled flash (FA4's Python launch makes each decode step's attention ~6x slower)."""
+    """Active only during trainer.train: FA4's launch cost makes decode attention ~6x slower."""
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
         return
     if _requested() is None or _registry() is None:

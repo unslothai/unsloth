@@ -204,7 +204,6 @@ def _enable_hf_packed_attention() -> None:
 
 
 def _scope_flash_attention_impl(model, trainer) -> None:
-    # FA4 / FA3 behind torch's flash kernels while this trainer trains (gated; see flash_impl).
     try:
         from .flash_impl import scope_flash_attention_impl_to_train
         scope_flash_attention_impl_to_train(trainer, model)

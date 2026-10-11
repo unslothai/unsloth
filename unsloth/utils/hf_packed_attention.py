@@ -65,8 +65,7 @@ def _mask_is_block_causal(
             output_size = total,
         )
         position = torch.arange(total, device = attention_mask.device)
-        # Row blocks keep the reference to _MASK_CHECK_ROWS x T, not a second T x T mask; one host sync
-        # for the whole mask, since each sync costs a time slice on a shared GPU.
+        # Row blocks avoid a second T x T mask; one host sync for the whole mask.
         mismatch = torch.zeros((), dtype = torch.bool, device = attention_mask.device)
         for start in range(0, total, _MASK_CHECK_ROWS):
             rows = slice(start, min(start + _MASK_CHECK_ROWS, total))

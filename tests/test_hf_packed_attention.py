@@ -396,7 +396,6 @@ def test_varlen_matches_sdpa_over_the_dense_mask(monkeypatch, n_kv, route, windo
     hpa._ORIG_SDPA[0] = sdpa_attention_forward
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     torch.manual_seed(0)
-    # Documents both shorter and longer than every window.
     lengths = [37, 100, 2, 5, 230]
     T, H, D = sum(lengths), 8, 64
     module = types.SimpleNamespace(

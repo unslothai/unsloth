@@ -64,7 +64,6 @@ def fake(monkeypatch):
     monkeypatch.setattr(fi, "_probe_error", probe)
     monkeypatch.setitem(fi.FLASH_IMPL_STATE, "active", None)
     monkeypatch.setitem(fi.FLASH_IMPL_STATE, "verdicts", {})
-    # Off by default; the gate tests below exercise auto.
     monkeypatch.setenv(fi._ENV, "auto")
     registry.probes = probes
     return registry
@@ -116,7 +115,6 @@ def test_hopper_is_opt_in(fake, monkeypatch):
     monkeypatch.setenv(fi._ENV, "fa4")
     assert fi.maybe_activate_flash_attention_impl(_model()) == "FA4"
     fi.deactivate_flash_attention_impl()
-    # Blackwell has no FA3.
     monkeypatch.setattr(fi, "_device_majors", lambda: {10})
     monkeypatch.setenv(fi._ENV, "fa3")
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
@@ -283,7 +281,6 @@ def test_flash_impl_allows_reads_torch_active_impl(monkeypatch):
     assert fi.flash_impl_allows(256, None, torch.device("cuda", 0))
 
 
-# ---------------------------------------------------------------- real FA4 on sm90 / sm100
 def _fa4_ready():
     if not has_real_cuda() or torch.version.hip is not None:
         return False
