@@ -2957,19 +2957,25 @@ class FastLlamaModel:
         if max_seq_length is None:
             max_seq_length = model_max_seq_length
 
-        if rope_scaling is not None and model_config.model_type in ("gemma", "gemma2"):
-            # GemmaFixedRotaryEmbedding ignores config scaling, so vLLM and training would disagree.
-            logger.warning_once(
-                f"Unsloth: `rope_scaling` is not supported for {model_config.model_type} and is ignored."
-            )
-            rope_scaling = None
+        caller_rope_scaling = rope_scaling is not None
+        if caller_rope_scaling:
+            _rope = _rope_scaling_as_dict(rope_scaling)
+            _rope_type = _rope.get("rope_type") or _rope.get("type")
+            # Gemma's rotary ignores config scaling and Unsloth's rotary has no dynamic NTK update, so
+            # vLLM and training would disagree; ignore it as before.
+            if model_config.model_type in ("gemma", "gemma2") or _rope_type == "dynamic":
+                logger.warning_once(
+                    f"Unsloth: `rope_scaling` of type {_rope_type} is not supported for "
+                    f"{model_config.model_type} and is ignored."
+                )
+                rope_scaling = None
         if rope_scaling is not None:
             # On the config for the in-process load and in kwargs for load_vllm, else vLLM keeps the
             # checkpoint's RoPE and indexes past its cos/sin cache (#3083).
             rope_scaling = _user_rope_scaling(model_config, rope_scaling)
             model_config.rope_scaling = rope_scaling
             kwargs["rope_scaling"] = rope_scaling
-        elif max_seq_length > model_max_seq_length:
+        elif not caller_rope_scaling and max_seq_length > model_max_seq_length:
             factor = max_seq_length / model_max_seq_length
 
             if fast_inference:
