@@ -475,6 +475,34 @@ class TestStarvation:
         assert starved.consecutive_preemptions <= 1
 
 
+    def test_a_sweep_that_passes_a_promoted_chat_over_clears_its_debt(self):
+        controller = _controller(budget = 16384)
+        starved = self._starve(controller)
+        assert starved.promoted
+        _fill(controller, "newcomer", 0.28)
+        victims = [p.gen_id for p in controller.plan_preemptions()]
+        assert victims and "starved" not in victims, victims
+        assert starved.consecutive_preemptions == 0, (
+            "it ran while another chat was paused, so its losses were no longer in a row"
+        )
+        assert not starved.promoted
+
+    def test_promotion_does_not_outlive_the_streak_for_everyone(self):
+        # Three chats, each pushed past the threshold in turn: without the reset all three
+        # stay promoted and the order is plain newest-first among them.
+        controller = _controller(budget = 16384)
+        a = _fill(controller, "a", 0.4)
+        b = _fill(controller, "b", 0.4)
+        c = _fill(controller, "c", 0.4)
+        for victim in (c, b, a):
+            for _ in range(PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS):
+                victim.consecutive_preemptions += 1
+        controller.note_resumed("c")
+        chosen = controller.plan_preemptions()
+        assert chosen
+        assert sum(p.promoted for p in (a, b, c)) < 3
+
+
 class TestTheSwitchesThatTurnItOff:
     def test_a_private_cache_per_slot_is_never_preempted(self):
         """Without --kv-unified each slot owns its own cells; nobody can overrun anyone."""
