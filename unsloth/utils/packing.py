@@ -201,11 +201,13 @@ def configure_padding_free(config):
     setattr(config, "remove_unused_columns", False)
 
 
-def _enable_hf_packed_attention() -> None:
+def _enable_hf_packed_attention(model = None) -> None:
     # packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
     try:
         from .hf_packed_attention import enable_hf_packed_attention
-        enable_hf_packed_attention()
+        if enable_hf_packed_attention() and model is not None:
+            from ..models._utils import use_sdpa_for_packed_head_dim_flex
+            use_sdpa_for_packed_head_dim_flex(model)
     except Exception as exc:
         logging.getLogger(__name__).info(f"Unsloth: packed varlen attention not enabled ({exc})")
 
@@ -247,7 +249,7 @@ def enable_sample_packing(
     collator = getattr(trainer, "data_collator", None)
     if collator is None or not hasattr(collator, "torch_call"):
         return
-    _enable_hf_packed_attention()
+    _enable_hf_packed_attention(model)
     _scope_flash_attention_impl(model, trainer, sequence_lengths_key)
     if getattr(collator, "_unsloth_packing_wrapped", False):
         return
@@ -294,7 +296,7 @@ def enable_padding_free_metadata(model, trainer):
         return
 
     mark_allow_overlength(model)
-    _enable_hf_packed_attention()
+    _enable_hf_packed_attention(model)
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
     if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):

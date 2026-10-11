@@ -716,6 +716,55 @@ def _prefers_flex_for_head_dim(config):
     return not _sdpa_reaches_cudnn_at_head_dim_256()
 
 
+_PACKED_VARLEN_OVER_FLEX_ENV_VAR = "UNSLOTH_PACKED_VARLEN_OVER_FLEX"
+
+
+def use_sdpa_for_packed_head_dim_flex(model):
+    """Packed / padding-free rows: a decoder on flex only for its head dim (<= 256) moves to "sdpa",
+    whose packed varlen wrapper runs them through torch's varlen flash kernel exactly (B200 head_dim
+    256: 6-10% faster at a fixed packed length, 15-24% with varying lengths, and no flex compile).
+    True when switched. Not the gemma3 family, not head_dim 512, not a forced
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM, and only where torch's varlen kernel runs."""
+    if os.environ.get(_PACKED_VARLEN_OVER_FLEX_ENV_VAR, "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    if _flex_large_head_dim_override() is not None:
+        return False
+    config = getattr(model, "config", None)
+    if config is None or _config_prefers_flex_attention(config):
+        return False
+    head_dim = _text_attention_head_dim(config)
+    if head_dim is None or head_dim > _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
+        return False
+    if not _prefers_flex_for_head_dim(config):
+        return False
+    text_config = _text_sub_config(config)
+    target = config if text_config is None else text_config
+    if _config_get(target, "_attn_implementation", None) != "flex_attention":
+        return False
+    try:
+        from ..utils.hf_packed_attention import _ORIG_SDPA, _torch_varlen
+        if _ORIG_SDPA[0] is None or not torch.cuda.is_available():
+            return False
+        if any(
+            _torch_varlen(torch.device("cuda", index)) is None
+            for index in range(torch.cuda.device_count())
+        ):
+            return False
+    except Exception:
+        return False
+    _write_attn_impl(target, "sdpa")
+    logging.getLogger(__name__).info(
+        f"Unsloth: packed rows at head_dim {head_dim} use varlen flash attention via sdpa "
+        f"instead of flex_attention ({_PACKED_VARLEN_OVER_FLEX_ENV_VAR}=0 keeps flex)."
+    )
+    return True
+
+
 # Above head_dim 256 the default flex template faults with misaligned address on torch 2.13 and 2.14; 32x32 blocks pass
 _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM = 256
 # BLOCK_M/N drive the forward template, BLOCK_M1/N1/M2/N2 the two backward passes.
