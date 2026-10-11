@@ -4948,6 +4948,33 @@ def _shim_supports_ngl(shim_cmd: List[str]) -> bool:
     return False
 
 
+def _visual_server_splits_gpus(visual_bin: Optional[str]) -> bool:
+    """Whether the diffusion visual server survives a model split over several GPUs.
+
+    Builds before the fix abort on the first request once split: with the prompt-KV store
+    off (it is single-device) every [prompt|canvas] row asked for logits past the server's
+    canvas-sized output cap. Fixed builds answer ``--capabilities`` with ``multi_gpu_split``;
+    read that literal from the binary rather than spawning it, since an old build takes
+    10-30 s to fail on the unknown argument.
+    """
+    if not visual_bin:
+        return False
+    try:
+        st = os.stat(visual_bin)
+    except OSError:
+        return False
+    return _binary_has_marker(visual_bin, st.st_mtime_ns, st.st_size, b"multi_gpu_split")
+
+
+@functools.lru_cache(maxsize = 16)
+def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return marker in f.read()
+    except OSError:
+        return False
+
+
 def _swa_full_from_args_or_env(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -19345,7 +19372,11 @@ class LlamaCppBackend:
 
     @classmethod
     def _diffusion_fit_gpus(
-        cls, model_size_bytes: int, gpu_ids: Optional[List[int]], gpu: str
+        cls,
+        model_size_bytes: int,
+        gpu_ids: Optional[List[int]],
+        gpu: str,
+        visual_bin: Optional[str],
     ) -> Optional[List[int]]:
         """Physical GPUs to layer-split a diffusion GGUF over, or None to keep ``gpu`` alone.
 
@@ -19354,8 +19385,9 @@ class LlamaCppBackend:
         ``gpu`` moves: alone it overflows the card (a hang on Windows, where it spills into
         shared memory, #6347). The pool is the explicit pick, else every visible GPU; a pool
         that cannot hold it either still gets all of it. Shared with the training guard,
-        so both budget the devices the runner will use."""
-        if not gpu.isdigit() or not model_size_bytes:
+        so both budget the devices the runner will use. A runner that cannot split keeps
+        today's single device."""
+        if not gpu.isdigit() or not model_size_bytes or not _visual_server_splits_gpus(visual_bin):
             return None
         # Unpinned: only ids the child resolves the same way under PCI order (no inherited
         # mask to reinterpret, ids from nvidia-smi / NVML), as for llama-server auto fits.
@@ -19457,7 +19489,7 @@ class LlamaCppBackend:
         if manual_ngl is None:
             try:
                 fit_gpus = self._diffusion_fit_gpus(
-                    self._get_gguf_size_bytes(model_path), gpu_ids, gpu
+                    self._get_gguf_size_bytes(model_path), gpu_ids, gpu, visual_bin
                 )
             except OSError as e:
                 logger.debug(f"DiffusionGemma GPU fit skipped: {e}")

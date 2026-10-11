@@ -638,7 +638,10 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         **kwargs,
     ):
         config = SimpleNamespace(is_gguf = True, gguf_file = gguf_file)
-        backend = SimpleNamespace(diffusion_split_supported = lambda: True)
+        backend = SimpleNamespace(
+            diffusion_split_supported = lambda: True,
+            _find_diffusion_assets = lambda: (["python"], "/bin/vs", None),
+        )
         fits = []
         with (
             patch.object(
@@ -686,7 +689,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         captured = []
         with tempfile.NamedTemporaryFile(suffix = ".gguf") as f:
             fits = self._guard_diffusion_pick(captured, fit = [1, 3], gguf_file = f.name)
-        self.assertEqual(fits, [(9 * 1024**3, [3, 1], "1")])
+        self.assertEqual(fits, [(9 * 1024**3, [3, 1], "1", "/bin/vs")])
         self.assertIsNone(captured[0]["single_device_gpu"])
         self.assertEqual(captured[0]["requested_gpu_ids"], [1, 3])
 

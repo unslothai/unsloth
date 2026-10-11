@@ -16610,10 +16610,15 @@ def _guard_chat_load_against_training(
     _gguf_file = getattr(config, "gguf_file", None) if is_gguf else None
     if diffusion_gpu and diffusion_ngl is None and _gguf_file and os.path.isfile(_gguf_file):
         try:
+            _assets = get_llama_cpp_backend()._find_diffusion_assets()
             fit_gpus = LlamaCppBackend._diffusion_fit_gpus(
-                LlamaCppBackend._get_gguf_size_bytes(_gguf_file), requested_gpu_ids, diffusion_gpu
+                LlamaCppBackend._get_gguf_size_bytes(_gguf_file),
+                requested_gpu_ids,
+                diffusion_gpu,
+                _assets[1] if _assets else None,
             )
-        except OSError:
+        except Exception as e:
+            logger.debug("Diffusion GPU fit skipped in the training guard: %s", e)
             fit_gpus = None
         if fit_gpus:
             diffusion_gpu, guard_gpu_ids = None, fit_gpus
