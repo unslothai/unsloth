@@ -5235,10 +5235,8 @@ def _raised_in_triton_host_build(exc):
 
 
 def patch_bitsandbytes_triton_quantize_fallback(device_type = "xpu"):
-    """bitsandbytes has no SYCL quantize kernel, so on XPU quantize_4bit and quantize_blockwise are
-    Triton's, and Triton needs a host C compiler for every launcher. A stock Windows box has none,
-    so every 4bit load died as a weight "CONVERSION" error (#10844). When that build fails, use
-    bitsandbytes' own PyTorch kernels instead; a box whose compiler works keeps Triton."""
+    """bitsandbytes' XPU quantize ops are Triton's, whose launchers need a host C compiler that a stock
+    Windows box lacks (#10844). On that build failure use bitsandbytes' PyTorch kernels instead."""
     if "bitsandbytes" not in sys.modules:
         return
     try:
@@ -5283,7 +5281,6 @@ def patch_bitsandbytes_triton_quantize_fallback(device_type = "xpu"):
         key = torch._C._dispatch_key_for_device(device_type)
         lib = torch.library.Library("bitsandbytes", "FRAGMENT")
         with warnings.catch_warnings():
-            # torch warns once that a kernel was overridden; that is the point.
             warnings.simplefilter("ignore")
             for name, kernel in kernels.items():
                 # torch < 2.13 refuses to override a Python-registered kernel unless asked to.

@@ -14,12 +14,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""#10844: bitsandbytes' Triton quantize ops on a box with no host C compiler.
-
-Each case runs in a subprocess, since kernel registrations are process-wide. bitsandbytes registers
-Triton's quantize_4bit / quantize_blockwise for XPU; the cases register them (or stand-ins) for the
-device at hand instead.
-"""
+"""#10844: bitsandbytes' Triton quantize ops with no host C compiler. One subprocess per case:
+kernel registrations are process-wide."""
 
 import json
 import os
@@ -38,7 +34,7 @@ _FIXES = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "import_fixes.py"
 )
 
-# Stand-in Triton ops: the failure is raised from a frame in triton/runtime/build.py, as Triton's is.
+# Stand-ins raise from a triton/runtime/build.py frame, as Triton's launcher build does.
 _CPU_RUNNER = textwrap.dedent(
     """
     import importlib.util, json, sys
