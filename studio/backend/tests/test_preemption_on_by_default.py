@@ -429,6 +429,27 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._available_host_memory_mib() == 3_000
         assert llama_mod._total_host_memory_mib() == 8_000
 
+    def test_a_helper_backend_that_parks_is_counted_though_it_does_not_serve(self, monkeypatch):
+        # The dataset and Hub assistants build their own backend and never register as serving.
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        helper = self._backend(exact.EXACT_STATE_OFF, None)
+        helper._server_launched_parking = True
+        helper._launched_parking_mib = 4_000
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me])
+        monkeypatch.setattr(llama_mod, "_parked_host_mib", lambda backend: 0)
+        monkeypatch.setattr(llama_mod, "_parking_backends", __import__("weakref").WeakSet())
+        llama_mod._note_parking_backend(helper)
+        assert llama_mod._exact_host_free_mib(me) == 6_000
+
+    def test_a_launch_that_parks_is_noted(self):
+        import inspect
+
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "if self._server_launched_parking: _note_parking_backend(self)" in source
+
     def test_every_exact_host_check_asks_for_this_backends_share(self):
         import inspect
         source = inspect.getsource(LlamaCppBackend.load_model)

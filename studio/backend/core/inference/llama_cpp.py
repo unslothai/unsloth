@@ -602,6 +602,23 @@ def _serving_backends_snapshot() -> list:
         return list(_serving_backends)
 
 
+# Every backend whose server was launched to park, serving or not: the dataset and Hub assistants
+# build their own and never register as serving, but their parks take the same host RAM.
+_parking_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
+
+
+def _note_parking_backend(backend) -> None:
+    with _serving_backends_lock:
+        _parking_backends.add(backend)
+
+
+def _parking_neighbours(backend) -> list:
+    seen = _serving_backends_snapshot()
+    with _serving_backends_lock:
+        seen += [b for b in _parking_backends if all(b is not s for s in seen)]
+    return [b for b in seen if b is not backend]
+
+
 class GgufDownloadCancelled(RuntimeError):
     """Expected signal from a cancelled GGUF download."""
 
@@ -2659,9 +2676,7 @@ def _exact_host_free_mib(backend) -> Optional[int]:
     if free is None:
         return None
     held = 0
-    for other in _serving_backends_snapshot():
-        if other is backend:
-            continue
+    for other in _parking_neighbours(backend):
         # Every neighbour that may park: an exact one up to the writes it certified, any other
         # up to the budget it was launched with.
         if getattr(other, "_exact_concurrency", None) == _exact.EXACT_STATE_ON:
@@ -34014,6 +34029,8 @@ class LlamaCppBackend:
                     if self._server_launched_parking
                     else None
                 )
+                if self._server_launched_parking:
+                    _note_parking_backend(self)
                 if self._server_preempts_kv:
                     self._server_preempts_kv = self._server_confirms_parking()
                 _preemption.note_server_parking(self._server_preempts_kv and kv_cache_unified, self)
