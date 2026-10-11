@@ -37872,6 +37872,12 @@ class LlamaCppBackend:
                 )
                 yield from _finish_after_giving_up()
                 return
+            if _preemption.resumes_exhausted(_preempt_resumes):
+                logger.warning(
+                    "llama preemption ending a non-tool chat after %s resumes", _preempt_resumes
+                )
+                yield from _finish_after_giving_up()
+                return
             if isinstance(max_tokens, int) and max_tokens > 0:
                 _window_p = self._effective_context_length or 0
                 if max_tokens - checkpoint.charged_tokens <= 0 and not (

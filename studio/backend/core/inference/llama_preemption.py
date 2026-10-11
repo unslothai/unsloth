@@ -88,6 +88,17 @@ def resumes_stalled(stalled: int) -> bool:
     return int(stalled or 0) >= DEFAULT_MAX_STALLED_RESUMES
 
 
+# The plain (non-tool) chat resumes by re-entering its generator, one nesting level per
+# pause that made progress, and Python stops near 1000. Far past any real contention; the
+# turn ends continuable rather than with a RecursionError.
+MAX_NESTED_RESUMES = 128
+
+
+def resumes_exhausted(resumes: int) -> bool:
+    """Whether a turn already resumed ``resumes`` times must not nest another."""
+    return int(resumes or 0) + 1 >= MAX_NESTED_RESUMES
+
+
 # A chat preempted this many times in a row outranks newest-first, so repeatedly losing
 # does not become never finishing.
 PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
@@ -1026,7 +1037,7 @@ class PreemptionController:
         reclaimable: int = 0,
         *,
         started_at_seq: Optional[int] = None,
-    ) -> None:
+    ) -> Optional[int]:
         """The cache as llama-server actually sees it. None means the read failed.
 
         ``reclaimable`` is the part held by IDLE slots: real occupancy, so it counts toward
@@ -1038,10 +1049,13 @@ class PreemptionController:
         A reading whose probe started before the last one was recorded is dropped: an arming
         probe past its join window can finish after a newer sample, and putting its older
         count back would plan resumes against cells that are no longer free.
+
+        Returns the sequence the reading was recorded at, for `note_erased_since`; None
+        when nothing was recorded.
         """
         with self._lock:
             if started_at_seq is not None and started_at_seq < self._last_sample_seq:
-                return
+                return None
             if resident is None:
                 if (
                     self._resident is not None
@@ -1050,10 +1064,10 @@ class PreemptionController:
                     # One failed read keeps what the cache was known to hold; only the idle
                     # residue it reported stops counting as room, since it may be gone.
                     self._reclaimable = 0
-                    return
+                    return None
                 self._resident = None
                 self._reclaimable = 0
-                return
+                return None
             # Clamped: a per-slot sum is an upper bound (shared prefix cells, stale idle
             # entries), and unclamped it is unreachable, so every resume is refused.
             ceiling = self._budget if self._budget > 0 else int(resident)
@@ -1073,6 +1087,24 @@ class PreemptionController:
                 # Started after its prefill was announced done, so its cells are inside.
                 participant.measured = True
                 participant.measured_at_seq = None
+            return self._last_sample_seq
+
+    def note_erased_since(self, recorded_seq: Optional[int], resident: int, reclaimable: int) -> bool:
+        """The reading `note_resident` recorded at ``recorded_seq``, less what an erase it
+        planned has since freed.
+
+        Not a new sample, so it neither orders against probes nor promotes anyone: that
+        reading already promoted everyone it could. Dropped once a newer sample is in, since
+        that one saw the erase or the cells refilling.
+        """
+        with self._lock:
+            if recorded_seq is None or recorded_seq != self._last_sample_seq:
+                return False
+            if self._resident is None:
+                return False
+            self._resident = max(0, min(int(resident), self._resident))
+            self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
+            return True
 
     def note_tokens(
         self,
