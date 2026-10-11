@@ -77,8 +77,10 @@ def _config_may_skip(config):
             value = getattr(c, key, None)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return True
-        if (getattr(c, "layerdrop", 0) or 0) > 0:
-            return True
+        for key in ("layerdrop", "encoder_layerdrop", "decoder_layerdrop"):
+            value = getattr(c, key, 0)
+            if isinstance(value, (int, float)) and value > 0:
+                return True
     return False
 
 
@@ -138,8 +140,9 @@ def unsloth_default_ddp_find_unused_parameters(args, model):
     if args is None or not hasattr(args, "ddp_find_unused_parameters"):
         return None
     if getattr(args, _AUTO_FLAG, False):
-        # Reused args object: our earlier default is not a user choice, re-decide for this model.
-        args.ddp_find_unused_parameters = None
+        # Reused args object: our earlier False is not a user choice, re-decide; a value set since then wins.
+        if args.ddp_find_unused_parameters is False:
+            args.ddp_find_unused_parameters = None
         object.__setattr__(args, _AUTO_FLAG, False)
     if args.ddp_find_unused_parameters is not None:
         return args.ddp_find_unused_parameters

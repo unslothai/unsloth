@@ -123,6 +123,8 @@ def test_skippable_models_keep_transformers_default(ddp_env, make):
         {"moe_num_experts": 4},
         {"num_experts_per_tok": 2},
         {"layerdrop": 0.1},
+        {"encoder_layerdrop": 0.1},
+        {"decoder_layerdrop": 0.1},
     ],
 )
 def test_moe_and_layerdrop_config_keys_keep_default(ddp_env, extra):
@@ -225,8 +227,16 @@ def test_reused_args_redecides(ddp_env):
     assert helper(args, _lora(_llama(num_local_experts = 4))) is None
 
 
+def test_reused_args_keep_a_value_set_after_the_auto_default(ddp_env):
+    args = _args()
+    helper = _helper()
+    assert helper(args, _lora(_llama())) is False
+    args.ddp_find_unused_parameters = True
+    assert helper(args, _lora(_llama())) is True
+
+
 def test_generated_trainer_calls_helper():
-    source = (ROOT / "unsloth" / "models" / "rl.py").read_text()
+    source = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
     call = "unsloth_default_ddp_find_unused_parameters(args, model)"
     assert call in source
     # Before super().__init__: transformers builds the DDP kwargs inside Trainer.__init__ (5.x).
