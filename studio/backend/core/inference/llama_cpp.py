@@ -35926,6 +35926,9 @@ class LlamaCppBackend:
         proc = self._process
         if snapshot is None or proc is None:
             return False
+        # Still serving: a transient error, so leave the caller its normal retry.
+        if proc.poll() is None and self._server_socket_is_open():
+            return False
         # Single-flight: the first failure claims the reload.
         with self._mtp_runtime_fallback_lock:
             if self._mtp_runtime_fallback_in_progress:
@@ -36005,7 +36008,12 @@ class LlamaCppBackend:
                                 )
                             # Restore the requested mode + reason load_model("off") cleared,
                             # so /status shows the user's mode + note (like the startup fallback).
-                            self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
+                            # None when the extras own --spec-type, as the duplicate-load match expects.
+                            self._requested_spec_mode = (
+                                None
+                                if _extra_args_set_spec_type(_ea)
+                                else _canonicalize_spec_mode(requested_mode)
+                            )
                             self._spec_fallback_reason = "runtime_error"
                     if undo_reload:
                         logger.info(
