@@ -10729,12 +10729,39 @@ class LlamaCppBackend:
             env,
             draft_model = draft_model,
         )
-        if not mappings or any(buft.upper() == "CPU" for _pattern, buft in mappings):
-            return raw
-        if not items:
-            return raw
-        exact_gpu_names = {pattern for pattern, buft in mappings if buft.upper() != "CPU"}
-        return sum(size for name, size in items if name not in exact_gpu_names)
+        moved = self._host_floor_moved_names(items, mappings)
+        return sum(size for name, size in items if name not in moved) if moved else raw
+
+    @staticmethod
+    def _host_floor_moved_names(
+        items: "tuple[tuple[str, int], ...]", mappings: "tuple[tuple[str, str], ...]"
+    ) -> frozenset:
+        """Host-pinned tensor names ``_host_pinned_floor_bytes`` leaves out of the floor."""
+        if not items or not mappings or any(buft.upper() == "CPU" for _p, buft in mappings):
+            return frozenset()
+        return frozenset(pattern for pattern, buft in mappings if buft.upper() != "CPU")
+
+    def _lazy_read_in_host_floor(
+        self,
+        model_path: str,
+        lazy_bytes: int,
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> int:
+        """Share of ``lazy_bytes`` the host-pinned floor still counts, matched by tensor
+        name: a lazy table an exact override already took out of the floor discounts
+        nothing, and never another embedding's bytes."""
+        lazy_bytes = max(0, int(lazy_bytes or 0))
+        if not lazy_bytes:
+            return 0
+        items = self._host_pinned_weight_items(model_path)
+        moved = self._host_floor_moved_names(items, self._tensor_override_mappings(extra_args, env))
+        if not moved:
+            return lazy_bytes
+        scan = self._gguf_tensor_scan(model_path)
+        lazy_names = _LAZY_READ_TENSORS.get((scan or (None,))[0] or "", ())
+        moved_lazy = sum(size for name, size in items if name in moved and name in lazy_names)
+        return max(0, lazy_bytes - moved_lazy)
 
     @staticmethod
     def _host_pinned_vram_discount(
@@ -15675,7 +15702,15 @@ class LlamaCppBackend:
             )
             model_bytes = max(1, model_bytes - _lazy_bytes)
             # The lazily read table is one of the host-pinned embeddings, but stays mmap'd.
-            host_floor = max(0, host_floor - min(_lazy_bytes, host_floor))
+            if host_floor:
+                host_floor = max(
+                    0,
+                    host_floor
+                    - min(
+                        self._lazy_read_in_host_floor(model_path, _lazy_bytes, argv, _env),
+                        host_floor,
+                    ),
+                )
         except Exception as e:  # noqa: BLE001 -- unverified discount: price the whole file
             logger.debug("Lazy-read discount skipped in the host preflight: %s", e)
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
@@ -29130,7 +29165,10 @@ class LlamaCppBackend:
                     # (model_size no longer holds it) leaves host_only_bytes below, and
                     # only the rest leaves the footprint, so no share loses it twice.
                     _fit_lazy_in_host_pinned = min(
-                        _fit_lazy_bytes, _host_pinned + _fit_extra_host_pinned
+                        self._lazy_read_in_host_floor(
+                            model_path, _fit_lazy_bytes, extra_args, os.environ
+                        ),
+                        _host_pinned + _fit_extra_host_pinned,
                     )
                     _fit_load_mode_kwargs = dict(
                         model_size = _fit_model_size,

@@ -1227,6 +1227,47 @@ def test_a_lazily_read_table_leaves_the_host_floor_once(backend, tmp_path: Path)
     )
 
 
+def test_lazy_overlap_with_the_host_floor_is_matched_by_tensor_name(backend, tmp_path: Path):
+    """An exact -ot moving per_layer_token_embd.weight already took it out of the host
+    floor, so the lazy discount must not then subtract token_embd.weight's bytes: the
+    overlap is the lazy tensors still in the floor, by name, not min(lazy, floor)."""
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
+
+    gib = 1024**3
+    items = (("token_embd.weight", 1 * gib), ("per_layer_token_embd.weight", 27 * gib))
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 40 * gib
+    instance.probe_server_capabilities = lambda _binary: {}
+    instance._lazy_auto_resolves_off = lambda **_kw: False
+    instance._lazy_read_host_bytes = lambda *_a, **_kw: 27 * gib
+    instance._host_pinned_weight_items = lambda _path: items
+    instance._gguf_tensor_scan = lambda _path: ("gemma4", dict(items), 0)
+    model = str(tmp_path / "model.gguf")
+    moved = ["-ot", "per_layer_token_embd.weight=CUDA0"]
+    # The floor the launch passes: the moved table is gone, token_embd stays.
+    floor = instance._host_pinned_floor_bytes(model, moved, env = {})
+    assert floor == 1 * gib
+    # token_embd (1 GiB) stays pinned, so RAM short of it must warn.
+    argv = ["llama-server", "-m", model, *moved]
+    assert (
+        instance._launch_host_shortfall_message(
+            argv,
+            [(0, 64 * 1024)],
+            avail_mib = 512 + _HOST_RAM_HEADROOM_MIB,
+            host_only_bytes = floor,
+            env = {},
+        )
+        is not None
+    )
+
+    # The fit's overlap uses the same name match.
+    assert instance._lazy_read_in_host_floor(model, 27 * gib, moved, {}) == 0
+    assert instance._lazy_read_in_host_floor(model, 27 * gib, [], {}) == 27 * gib
+    # A CPU rule keeps the raw floor, so the whole lazy table is still in it.
+    cpu = ["-ot", "per_layer_token_embd.weight=CUDA0,exps=CPU"]
+    assert instance._lazy_read_in_host_floor(model, 27 * gib, cpu, {}) == 27 * gib
+
+
 def test_the_load_mode_fit_removes_a_lazy_table_once():
     """The fit's footprint carries the host-pinned embeddings in host_only_bytes, not in
     model_size. A lazily read table among them leaves host_only_bytes, and only the
@@ -1238,7 +1279,9 @@ def test_the_load_mode_fit_removes_a_lazy_table_once():
 
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert (
-        "_fit_lazy_in_host_pinned=min(_fit_lazy_bytes,_host_pinned+_fit_extra_host_pinned)"
+        "_fit_lazy_in_host_pinned=min(self._lazy_read_in_host_floor("
+        "model_path,_fit_lazy_bytes,extra_args,os.environ),"
+        "_host_pinned+_fit_extra_host_pinned,)"
     ) in compact
     assert "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes," in compact
     assert "lazy_read_bytes=_fit_lazy_bytes-_fit_lazy_in_host_pinned," in compact
