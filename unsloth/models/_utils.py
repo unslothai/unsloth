@@ -4861,9 +4861,7 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
 
 
 def _unsloth_attach_accelerator_scaler(trainer, model):
-    # Fused CE saves d(loss * scaling)/d(hidden) in the forward. Only the RL/TRL trainer wrappers
-    # (rl.py) set `accelerator_scaler`, so a plain transformers.Trainer under fp16 saved unscaled
-    # gradients that underflow and LoRA barely trains (#3529).
+    # Fused CE saves d(loss * scale)/d(hidden) in the forward; without the fp16 scale it underflows (#3529).
     scaler = getattr(getattr(trainer, "accelerator", None), "scaler", None)
     if scaler is None or getattr(model, "accelerator_scaler", None) is scaler:
         return

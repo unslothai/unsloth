@@ -13,11 +13,8 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""A plain transformers.Trainer under fp16 must hand its GradScaler to the model as
-`accelerator_scaler`, which the fused CE loss reads; without it the saved logit gradients
-underflow in fp16 and LoRA barely trains (#3529). `import unsloth` needs CUDA or XPU, so
-the helper is executed from source.
-"""
+"""A plain Trainer under fp16 must hand its GradScaler to the model for fused CE (#3529).
+`import unsloth` needs CUDA or XPU, so the helper is executed from source."""
 
 import ast
 import pathlib
@@ -67,7 +64,7 @@ def _peft_llama():
     return causal, model
 
 
-class _Wrapper(torch.nn.Module):  # DDP-style `module` wrapper, as accelerate.prepare returns
+class _Wrapper(torch.nn.Module):  # DDP-style `module` wrapper
     def __init__(self, module):
         super().__init__()
         self.module = module
@@ -91,9 +88,8 @@ def test_scaler_reaches_causal_lm_through_peft_and_wrapper():
     scaler = object()
     trainer = SimpleNamespace(accelerator = SimpleNamespace(scaler = scaler))
     attach(trainer, _Wrapper(model))
-    # The fused CE call site reads `getattr(self, "accelerator_scaler", None)` on the CausalLM.
     assert causal.__dict__.get("accelerator_scaler") is scaler
-    attach(trainer, _Wrapper(model))  # idempotent
+    attach(trainer, _Wrapper(model))
     assert causal.__dict__.get("accelerator_scaler") is scaler
 
 
