@@ -1671,6 +1671,13 @@ class PreemptionController:
                 victim.preempt_chosen_at = time.monotonic()
                 victim.preempt_event.set()
                 chosen.append(victim)
+            if chosen:
+                # A sweep that took others and left this one running broke its run of losses:
+                # the count is "in a row", so it starts again. Kept, it never fell, and once
+                # every chat was promoted the order was newest-first among them all again.
+                for passed_over in victims:
+                    if passed_over not in chosen:
+                        passed_over.consecutive_preemptions = 0
             return chosen
 
     def snapshot(self) -> PreemptionSnapshot:

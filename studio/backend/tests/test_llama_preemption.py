@@ -537,6 +537,22 @@ class TestStarvation:
         victims = [p.gen_id for p in controller.plan_preemptions()]
         assert victims and victims[0] != "starved", f"taken first anyway, order was {victims}"
 
+    def test_a_sweep_that_passes_a_promoted_chat_over_clears_its_debt(self):
+        controller = _controller()
+        starved = self._starve(controller)
+        _fill(controller, "newcomer", 0.28)
+        victims = [p.gen_id for p in controller.plan_preemptions()]
+        assert victims and "starved" not in victims, victims
+        assert starved.consecutive_preemptions == 0 and not starved.promoted
+
+    def test_promotion_does_not_outlive_the_streak_for_everyone(self):
+        controller = _controller()
+        chats = [_fill(controller, name, 0.4) for name in ("a", "b", "c")]
+        for chat in chats:
+            chat.consecutive_preemptions = PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS
+        assert controller.plan_preemptions()
+        assert sum(chat.promoted for chat in chats) < 3
+
 
 class TestTheSwitchesThatTurnItOff:
     @pytest.mark.parametrize("budget, unified", [(16384, False), (0, True)])
