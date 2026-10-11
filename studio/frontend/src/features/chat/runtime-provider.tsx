@@ -2230,14 +2230,12 @@ function createPersistedRunAdapter(
         if (reservationToken) {
           releasePreStreamRunReservation(reservationToken);
         }
-        // A late rejection from an aborted run must not stop the steering follow-up queue.
-        if (!options.abortSignal.aborted) {
-          // Queued runs carry no reservation, so this also stops pending work.
-          requestPromptQueueStop(persistedRunThreadIds);
-          notifyPromptQueueRunFailed(
-            options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
-          );
-        }
+        // The history write ignores abortSignal, so a rejection here is a real failure (or clear-all)
+        // even after a steer. Queued runs carry no reservation, so this also stops pending work.
+        requestPromptQueueStop(persistedRunThreadIds);
+        notifyPromptQueueRunFailed(
+          options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
+        );
         throw error;
       }
       // Outside the catch: steering's reservation cancel is not a history write failure.

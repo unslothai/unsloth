@@ -115,14 +115,15 @@ test("reservation cancellation before signal propagation does not stop the follo
   assert.equal(w.calls(), 0);
 });
 
-test("an aborted run's late persistence rejection does not stop replacement work", async () => {
+test("a genuine persistence failure after a steer abort still stops the queue", async () => {
   const w = pendingRun(false);
   const next = w.run.next();
   w.controller.abort();
-  w.reject(new DOMException("cancelled", "AbortError"));
-  await assert.rejects(next, { name: "AbortError" });
-  assert.deepEqual(w.stops, []);
-  assert.deepEqual(w.failures, []);
+  w.reject(new Error("history write failed"));
+  await assert.rejects(next, /history write failed/);
+  assert.deepEqual(w.stops, [["chat"]]);
+  assert.deepEqual(w.failures, ["chat"]);
+  assert.equal(w.calls(), 0);
 });
 
 test("a genuine history persistence failure still stops and reports the affected queue", async () => {
