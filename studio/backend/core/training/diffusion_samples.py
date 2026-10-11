@@ -259,10 +259,15 @@ def flow_sigmas(
 
 
 def to_pil(images):
+    """Raises on a non-finite decode, which the trainers turn into a "sampling disabled" warning instead of
+    saving a black image that reads as a broken LoRA."""
     import torch
     from PIL import Image
 
-    arr = ((images.float().clamp(-1, 1) + 1) * 127.5).round().to(dtype = torch.uint8)
+    images = images.float()
+    if not bool(torch.isfinite(images).all()):
+        raise ValueError("the preview decoded to NaN / inf values")
+    arr = ((images.clamp(-1, 1) + 1) * 127.5).round().to(dtype = torch.uint8)
     arr = arr.permute(0, 2, 3, 1).cpu().numpy()
     return [Image.fromarray(a) for a in arr]
 

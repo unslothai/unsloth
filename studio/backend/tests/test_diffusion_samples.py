@@ -576,3 +576,23 @@ def test_sdxl_previews_zero_the_empty_negative_like_the_pipeline():
     render = render[: render.index("\n\n")]
     assert 'pipe.config.get("force_zeros_for_empty_prompt", False)' in render
     assert "torch.zeros_like(npe), torch.zeros_like(npooled)" in render
+
+
+def test_a_non_finite_preview_raises_instead_of_saving_a_black_image():
+    good = ds.to_pil(torch.zeros(1, 3, 4, 4))
+    assert len(good) == 1 and good[0].size == (4, 4)
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError, match = "NaN"):
+            ds.to_pil(torch.full((1, 3, 4, 4), bad))
+
+
+def test_the_warm_cache_preview_load_is_rng_isolated():
+    import inspect
+
+    import core.training.diffusion_dit_trainer as dit
+
+    src = inspect.getsource(dit)
+    block = src[src.index("if caption_embeds is not None and sample_texts:") :]
+    block = block[: block.index("sample_embeds = dict(")]
+    assert "with isolated_sampling(device, False):" in block
+    assert block.index("isolated_sampling") < block.index("spec.load_conditioners")

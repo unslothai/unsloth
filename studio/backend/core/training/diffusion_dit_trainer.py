@@ -2111,9 +2111,11 @@ def _train_dit(
                 total = len(image_paths),
             )
     if caption_embeds is not None and sample_texts:
-        # Warm conditioning skips the VAE and encoders, but previews need the VAE and their own embeddings.
-        pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
-        encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
+        # Warm conditioning skips the VAE and encoders, but previews need the VAE and their own embeddings. RNG-isolated:
+        # a run without previews never makes this load, so it must not move the training streams.
+        with isolated_sampling(device, False):
+            pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
+            encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
         sample_embeds = dict(zip(sample_texts, encoded))
         _free_text_encoders(pipe)
     if caption_embeds is None:
