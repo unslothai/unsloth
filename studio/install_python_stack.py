@@ -638,6 +638,30 @@ _TORCH_TRIO_LINE = re.compile(r"^\s*torch(vision|audio)?([\s<>=!~;@\[]|$)", re.I
 _TORCH_FREEZE_ACTIVE = False
 
 
+def _write_space_free_override(text: str) -> tuple[str, str | None]:
+    """Write TEXT to an overrides file uv can name: (path, space-free path to hand uv, or None)."""
+    candidates = [None, os.environ.get("PUBLIC"), "/tmp", "/var/tmp", sys.prefix]
+    for directory in candidates:
+        if directory is not None and (
+            any(ch.isspace() for ch in directory) or not os.path.isdir(directory)
+        ):
+            continue
+        try:
+            fd, name = tempfile.mkstemp(
+                prefix = "unsloth-torch-overrides-", suffix = ".txt", dir = directory
+            )
+        except OSError:
+            continue
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+            handle.write(text)
+        # %TEMP% under a spaced profile is fine when it has an 8.3 short name.
+        safe = _uv_safe_path(name)
+        if not any(ch.isspace() for ch in safe):
+            return name, safe
+        Path(name).unlink(missing_ok = True)
+    return "", None
+
+
 class _FreezeNewTorchForCoreUpdate:
     """Pin the resident torch trio via UV_OVERRIDE while unsloth / unsloth-zoo re-resolve.
 
@@ -682,15 +706,16 @@ class _FreezeNewTorchForCoreUpdate:
                 if include and "://" not in include[2] and not os.path.isabs(include[2]):
                     line = f"{include[1]}{(base / include[2]).resolve()}{include[3]}"
                 lines.append(line)
-        fd, name = tempfile.mkstemp(prefix = "unsloth-torch-overrides-", suffix = ".txt")
-        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
-        safe = _uv_safe_path(name)
-        if any(ch.isspace() for ch in safe):
-            # uv splits UV_OVERRIDE on whitespace: with no short name for a spaced %TEMP% the
-            # file cannot be named, so resolve unfrozen as before rather than fail the update.
-            Path(name).unlink(missing_ok = True)
-            return self
+        name, safe = _write_space_free_override("\n".join(lines) + "\n")
+        if safe is None:
+            # uv splits UV_OVERRIDE on whitespace. Unfrozen, a released unsloth's torch cap would
+            # replace the resident torch; stopping keeps it, as a spaced path always did.
+            _step(
+                "error",
+                "no writable directory without spaces for the torch freeze; set TMP to one",
+                _red,
+            )
+            raise SystemExit(1)
         self._path = Path(name)
         os.environ["UV_OVERRIDE"] = safe
         global _TORCH_FREEZE_ACTIVE

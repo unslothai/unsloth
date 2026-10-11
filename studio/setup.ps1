@@ -9039,11 +9039,18 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # Not on win_arm64: the kept release is one NVIDIA's channel does not publish.
     $_cudaKeptActive = $false
     $_cudaKeptRelease = $env:UNSLOTH_KEPT_TORCH
-    # A forced reinstall (pin change, failed import) with no installer handoff, e.g. `studio update`
-    # or the startup repair, keeps the resident release like install.sh; UPGRADE=1 asks for newer.
-    if (-not $WinArm64Venv -and -not $_cudaKeptRelease -and $cudaForce.Count -gt 0 -and $env:UNSLOTH_TORCH_UPGRADE -ne "1") {
+    $_cudaKeptFromResident = $false
+    # No installer handoff (`studio update`, the startup repair, a re-run of setup): keep the resident
+    # release like install.sh, forced or not. Unpinned, a missing torchvision alone resolves the
+    # newest one and drags torch up with it. UPGRADE=1 asks for newer.
+    if (-not $WinArm64Venv -and -not $_cudaKeptRelease -and $env:UNSLOTH_TORCH_UPGRADE -ne "1") {
         $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
-        if ($_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.\d+\.\d+)(\+\S*)?\s*$')) { $_cudaKeptRelease = $Matches[1] }
+        # Only a release this index publishes (download.pytorch.org: cu126 from 2.6, cu128 2.7, cu129 2.8, cu130 2.9).
+        $_keptFloor = @{ "cu126" = 6; "cu128" = 7; "cu129" = 8; "cu130" = 9 }[[string]$CuTag]
+        if ($_keptFloor -and $_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.(\d+)\.\d+)(\+\S*)?\s*$') -and [int]$Matches[2] -ge $_keptFloor) {
+            $_cudaKeptRelease = $Matches[1]
+            $_cudaKeptFromResident = $true
+        }
     }
     if (-not $WinArm64Venv -and $_cudaKeptRelease -match '^\d+\.\d+(\.\d+)?$') {
         $_keptMinor = [int](($_cudaKeptRelease -split '\.')[1])
@@ -9108,11 +9115,16 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
             foreach ($_woaCutoffName in @($_woaCutoffSaved.Keys)) { Set-Item "Env:$_woaCutoffName" $_woaCutoffSaved[$_woaCutoffName] }
         }
         if ($torchInstallExit -eq 0 -or -not $_cudaKeptActive) { break }
-        substep "[WARN] torch==$_cudaKeptRelease not installable from this CUDA index -- using the supported release" "Yellow"
-        # The bounded default trio, as install.sh's fallback: a bare spec would take the newest torch.
-        $cudaTorchSpec = "torch>=2.4,<2.12.0"; $cudaVisionSpec = "torchvision>=0.19,<0.27.0"; $cudaAudioSpec = "torchaudio>=2.4,<2.12.0"
-        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-        $_cudaKeptActive = $false
+        # Nothing forced and the pin was only ours: retry exactly what an unpinned run would have done.
+        if ($_cudaKeptFromResident -and $cudaForce.Count -eq 0) {
+            $cudaTorchSpec = "torch"; $cudaVisionSpec = "torchvision"; $cudaAudioSpec = "torchaudio"
+            $_cudaKeptActive = $false
+            continue
+        }
+        # Otherwise stop, like install_python_stack.py: a second resolve under another range would
+        # download a different torch (usually after a transient failure) and move the release unasked.
+        substep "[WARN] torch==$_cudaKeptRelease could not be reinstalled; re-run, or set UNSLOTH_TORCH_UPGRADE=1 to move to the supported release" "Yellow"
+        break
     }
     if ($torchInstallExit -ne 0) {
         Write-StudioLine "[FAILED] PyTorch CUDA install failed (exit code $torchInstallExit)" -ForegroundColor Red

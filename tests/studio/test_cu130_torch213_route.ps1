@@ -224,13 +224,53 @@ try {
     Check "the CWD-relative legacy venv records its torch before it is migrated" ($install -match '(?s)\$_cwdVenvPy -and \(\s*\(Test-Path -LiteralPath \$_cwdVenvPy\) -or\s*\(Test-Path -LiteralPath \(Join-Path [^\n]*"pyvenv\.cfg"\) -PathType Leaf\)\)\) \{.*?\$script:ExistingInstall = \$true.*?\$script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$_cwdVenvPy \}\s*if \(-not \$script:PrevTorchVer\) \{ \$script:PrevTorchVer = Get-TorchVersionFromDisk')
     Check "a migrated venv freezes its trio for the core install" ($install -match '(?s)\$script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe \$VenvPython\s*\$_migOverrides = @\(\)\s*if \(\$script:TorchOverridesFile\) \{ \$_migOverrides = @\("--overrides", \$script:TorchOverridesFile\) \}.*?-Label "install unsloth \(migrated\)" \{ & \$script:UvExe pip install --python \$VenvPython @_migOverrides ')
     Check "a migrated CUDA venv keeps its release for the flavor repair" ($install -match '(?s)\$_migTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$VenvPython.*?\$script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion \$_migTorchVer -Constraint \$_migWindow.*?\$env:UNSLOTH_KEPT_TORCH = \$script:PrevTorchPin\.Release\.PublicBase')
-    Check "setup.ps1 keeps the resident release on a forced reinstall with no handoff" ($setup -match '(?s)-not \$_cudaKeptRelease -and \$cudaForce\.Count -gt 0 -and \$env:UNSLOTH_TORCH_UPGRADE -ne "1"\) \{\s*\$_residentProbe = Invoke-BoundedPythonProbe .*?print\(m\.version\(.torch.\)\).*?\$_cudaKeptRelease = \$Matches\[1\]')
     $probeRe = [regex]::Match($setup, "_residentProbe\.Output -match '([^']+)'").Groups[1].Value
     foreach ($t in @(@("2.11.0+cu130", "2.11.0"), @("2.14.0", "2.14.0"), @("2.13.0+cu130`r", "2.13.0"), @("2.14.0rc1", $null), @("2.15.0.dev20261001+cu130", $null), @("2.14.0a0+git1234", $null))) {
         $got = if ($t[0] -match $probeRe) { $Matches[1] } else { $null }
         Check ("resident probe reads '" + $t[0].Trim() + "' as " + $(if ($t[1]) { $t[1] } else { "no release" })) ($got -eq $t[1])
     }
-    Check "setup.ps1 falls back to the bounded trio, never a bare torch" ($setup -match '(?s)not installable from this CUDA index -- using the supported release" "Yellow"\s*#[^\n]*\n\s*\$cudaTorchSpec = "torch>=2\.4,<2\.12\.0"; \$cudaVisionSpec = "torchvision>=0\.19,<0\.27\.0"; \$cudaAudioSpec = "torchaudio>=2\.4,<2\.12\.0"')
+    # setup.ps1's own CUDA torch block, run with the installer and the probe stubbed.
+    $blockStart = $setup.IndexOf('    $_cudaKeptActive = $false')
+    $blockEnd = $setup.IndexOf('    if ($torchInstallExit -ne 0) {', $blockStart)
+    $torchBlock = [scriptblock]::Create($setup.Substring($blockStart, $blockEnd - $blockStart))
+    function Invoke-SetupTorchBlock {
+        param([string]$Resident, [string]$CuTag = "cu130", [string[]]$Force = @(), [int[]]$Exits = @(0), [string]$Handoff = "", [string]$Upgrade = "")
+        $script:FastInstallCalls = @()
+        $script:FastInstallExits = [System.Collections.Generic.Queue[int]]::new([int[]]$Exits)
+        $script:ProbeCalls = 0
+        function Fast-Install { $script:FastInstallCalls += ,(@($args | Where-Object { $_ -notmatch '^--index-url$|^https://' }) -join " "); $global:LASTEXITCODE = $script:FastInstallExits.Dequeue(); "" }
+        function Invoke-BoundedPythonProbe { param($PythonExe, $Code) $script:ProbeCalls++; [pscustomobject]@{ Ok = [bool]$Resident; Output = $Resident } }
+        function substep { }
+        $env:UNSLOTH_KEPT_TORCH = $Handoff; $env:UNSLOTH_TORCH_UPGRADE = $Upgrade
+        $WinArm64Venv = $false; $WinArm64NoAudio = $false; $WinArm64IndexArgs = @(); $PinnedTorchIndexUrl = $null
+        $WinArm64TorchIndexUrl = $null; $TorchInstallIndexUrl = "https://download.pytorch.org/whl/$CuTag"; $script:UnslothVerbose = $false
+        $cudaTorchSpec = "torch"; $cudaVisionSpec = "torchvision"; $cudaAudioSpec = "torchaudio"; $cudaForce = $Force
+        . $torchBlock
+        Remove-Item Env:UNSLOTH_KEPT_TORCH, Env:UNSLOTH_TORCH_UPGRADE -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ Calls = $script:FastInstallCalls; Exit = $torchInstallExit; Probes = $script:ProbeCalls }
+    }
+    $kept13 = "torch==2.13.0 torchvision==0.28.* torchaudio==2.11.*"
+    $r = Invoke-SetupTorchBlock -Resident "2.13.0+cu130"
+    Check "setup keeps a healthy resident 2.13 when nothing is forced (a missing torchvision cannot pull 2.14)" ($r.Calls.Count -eq 1 -and $r.Calls[0] -eq $kept13)
+    $r = Invoke-SetupTorchBlock -Resident "2.13.0+cu130" -Exits 1, 0
+    Check "an unforced resident pin that fails retries exactly the unpinned run" ($r.Calls.Count -eq 2 -and $r.Calls[1] -eq "torch torchvision torchaudio" -and $r.Exit -eq 0)
+    $r = Invoke-SetupTorchBlock -Resident "2.10.0+cu128" -Force "--force-reinstall"
+    Check "a forced repair keeps the resident release" ($r.Calls.Count -eq 1 -and $r.Calls[0] -eq "torch==2.10.0 torchvision==0.25.* torchaudio==2.10.* --force-reinstall")
+    $r = Invoke-SetupTorchBlock -Resident "2.10.0+cu128" -Force "--force-reinstall" -Exits 1, 0
+    Check "a forced kept pin that fails stops instead of resolving another release" ($r.Calls.Count -eq 1 -and $r.Exit -eq 1)
+    $r = Invoke-SetupTorchBlock -Resident "2.13.0+cu130" -Handoff "2.11.0" -Exits 1, 0
+    Check "a failed installer handoff stops instead of resolving another release" ($r.Calls.Count -eq 1 -and $r.Calls[0] -like "torch==2.11.0 *" -and $r.Exit -eq 1 -and $r.Probes -eq 0)
+    $r = Invoke-SetupTorchBlock -Resident "2.13.0+cu130" -Upgrade "1"
+    Check "UNSLOTH_TORCH_UPGRADE=1 resolves unpinned and never probes" ($r.Calls[0] -eq "torch torchvision torchaudio" -and $r.Probes -eq 0)
+    $r = Invoke-SetupTorchBlock -Resident "2.6.0+cu126"
+    Check "a resident release the cu130 index does not publish is not pinned" ($r.Calls[0] -eq "torch torchvision torchaudio")
+    $r = Invoke-SetupTorchBlock -Resident "2.7.1+cu128" -CuTag "cu128"
+    Check "cu128 keeps a resident 2.7" ($r.Calls[0] -eq "torch==2.7.1 torchvision==0.22.* torchaudio==2.7.*")
+    $r = Invoke-SetupTorchBlock -Resident "2.14.0rc1"
+    Check "a prerelease resident torch is never pinned" ($r.Calls[0] -eq "torch torchvision torchaudio")
+    $r = Invoke-SetupTorchBlock -Resident "2.13.0+cu130" -CuTag "rocm7.2"
+    Check "a non-CUDA leaf is never pinned" ($r.Calls[0] -eq "torch torchvision torchaudio")
+    Check "setup.ps1 never falls back to the default range after a kept pin" ($setup -notmatch 'not installable from this CUDA index -- using the supported release')
     Check "setup.ps1 re-reads torch before installing triton" ($setup -match '(?s)\$_tritonTorchProbe = Invoke-BoundedPythonProbe.*?\$_tritonSpec = Get-TritonWindowsSpec -TorchVersion.*?substep "installing Triton for Windows\.\.\."')
     Check "setup.ps1 pairs every kept torch 2.12+ with torchaudio 2.11" (
         ([regex]::Matches($setup, 'torchaudio==2\.\$\(\[Math\]::Min\(\$_keptMinor, 11\)\)\.\*')).Count -eq 3 -and

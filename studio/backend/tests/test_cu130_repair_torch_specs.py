@@ -183,9 +183,7 @@ def test_core_update_freeze_restores_an_unset_override(monkeypatch, mod):
     assert "UV_OVERRIDE" not in mod.os.environ
 
 
-def test_core_update_freeze_stands_down_without_a_space_free_override_path(
-    monkeypatch, tmp_path, mod
-):
+def _spaced_windows_freeze(monkeypatch, tmp_path, mod):
     monkeypatch.setattr(mod.sys, "platform", "win32")
     monkeypatch.setattr(mod, "_is_windows_arm64", lambda: False)
     monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
@@ -196,10 +194,36 @@ def test_core_update_freeze_stands_down_without_a_space_free_override_path(
     # No 8.3 short name: uv_safe_path hands the spaced path back.
     monkeypatch.setattr(mod, "_uv_safe_path", lambda path: str(path))
     monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    return spaced
+
+
+def test_core_update_freeze_moves_to_a_space_free_directory(monkeypatch, tmp_path, mod):
+    spaced = _spaced_windows_freeze(monkeypatch, tmp_path, mod)
+    public = tmp_path / "Public"
+    public.mkdir()
+    monkeypatch.setenv("PUBLIC", str(public))
     with mod._FreezeNewTorchForCoreUpdate() as freeze:
-        assert "UV_OVERRIDE" not in mod.os.environ
-        assert mod._TORCH_FREEZE_ACTIVE is False
-    assert freeze._path is None
+        value = mod.os.environ["UV_OVERRIDE"]
+        assert Path(value).parent == public and " " not in value
+        assert Path(value).read_text(encoding = "utf-8").split() == ["torch==2.13.0+cu130"]
+        assert mod._TORCH_FREEZE_ACTIVE is True
+    assert not freeze._path.exists()
+    assert list(spaced.iterdir()) == []
+
+
+def test_core_update_stops_rather_than_resolving_unfrozen(monkeypatch, tmp_path, mod):
+    spaced = _spaced_windows_freeze(monkeypatch, tmp_path, mod)
+    monkeypatch.setenv("PUBLIC", str(spaced))
+    monkeypatch.setattr(mod.sys, "prefix", str(spaced))
+    real_isdir = mod.os.path.isdir
+    monkeypatch.setattr(
+        mod.os.path, "isdir", lambda d: str(d).startswith(str(tmp_path)) and real_isdir(d)
+    )
+    with pytest.raises(SystemExit):
+        with mod._FreezeNewTorchForCoreUpdate():
+            pass
+    assert "UV_OVERRIDE" not in mod.os.environ
+    assert mod._TORCH_FREEZE_ACTIVE is False
     assert list(spaced.iterdir()) == []
 
 
