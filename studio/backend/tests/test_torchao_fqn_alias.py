@@ -61,11 +61,51 @@ def test_a_new_torchao_is_left_alone(fake_torchao, version):
 
 
 def test_a_new_torchao_is_not_even_imported(monkeypatch):
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
     monkeypatch.setattr(_torchao_stub.importlib.metadata, "version", lambda name: "0.18.0")
     monkeypatch.delitem(sys.modules, "torchao", raising = False)
     monkeypatch.delitem(sys.modules, "torchao.quantization", raising = False)
+    monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
     _torchao_stub.alias_torchao_fqn_to_config()
     assert "torchao.quantization" not in sys.modules
+
+
+def _drop_diffusers_and_torchao(monkeypatch):
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    for name in [n for n in sys.modules if n.split(".")[0] in ("diffusers", "torchao")]:
+        monkeypatch.delitem(sys.modules, name)
+
+
+def test_an_old_torchao_is_aliased_on_the_first_diffusers_import_not_before(monkeypatch, tmp_path):
+    """run.py and every spawn child call this; importing torchao there would load torch for nothing."""
+    _drop_diffusers_and_torchao(monkeypatch)
+    pkg = tmp_path / "torchao"
+    (pkg / "quantization").mkdir(parents = True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "quantization" / "__init__.py").write_text("class ModuleFqnToConfig:\n    pass\n")
+    (tmp_path / "diffusers").mkdir()
+    (tmp_path / "diffusers" / "__init__.py").write_text("from torchao.quantization import FqnToConfig\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(_torchao_stub.importlib.metadata, "version", lambda name: "0.14.0")
+
+    _torchao_stub.alias_torchao_fqn_to_config()
+    _torchao_stub.alias_torchao_fqn_to_config()
+    assert "torchao" not in sys.modules
+    assert sum(isinstance(f, _torchao_stub._FqnAliasBeforeDiffusers) for f in sys.meta_path) == 1
+
+    import diffusers
+
+    assert diffusers.FqnToConfig is sys.modules["torchao.quantization"].ModuleFqnToConfig
+
+
+def test_a_failing_alias_never_breaks_the_diffusers_import(monkeypatch):
+    _drop_diffusers_and_torchao(monkeypatch)
+
+    def boom():
+        raise RuntimeError("unreadable metadata")
+
+    monkeypatch.setattr(_torchao_stub, "_alias_fqn_to_config_now", boom)
+    assert _torchao_stub._FqnAliasBeforeDiffusers().find_spec("diffusers") is None
 
 
 def test_absent_or_stubbed_torchao_is_a_no_op(fake_torchao, monkeypatch):

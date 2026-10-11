@@ -231,9 +231,7 @@ def install_torchao_windows_rocm_stub() -> None:
 _FQN_TO_CONFIG_SINCE = (0, 15)
 
 
-def alias_torchao_fqn_to_config() -> None:
-    """diffusers 0.41 imports ``FqnToConfig`` from torchao unguarded; torchao < 0.15 (Studio's torch <= 2.8
-    pairing) names it ``ModuleFqnToConfig``, and 0.15 keeps ``ModuleFqnToConfig = FqnToConfig``."""
+def _alias_fqn_to_config_now() -> None:
     if is_stubbed("torchao"):
         return
     try:
@@ -249,6 +247,29 @@ def alias_torchao_fqn_to_config() -> None:
         return
     if not hasattr(quantization, "FqnToConfig") and hasattr(quantization, "ModuleFqnToConfig"):
         quantization.FqnToConfig = quantization.ModuleFqnToConfig
+
+
+class _FqnAliasBeforeDiffusers(importlib.abc.MetaPathFinder):
+    """Aliases on the first ``import diffusers`` and never resolves a module itself."""
+
+    def find_spec(self, fullname, path = None, target = None):
+        if fullname == "diffusers":
+            try:
+                _alias_fqn_to_config_now()
+            except Exception:  # noqa: BLE001 -- must never break the diffusers import it precedes
+                pass
+        return None
+
+
+def alias_torchao_fqn_to_config() -> None:
+    """diffusers 0.41 imports ``FqnToConfig`` from torchao unguarded; torchao < 0.15 (Studio's torch <= 2.8
+    pairing) names it ``ModuleFqnToConfig``, and 0.15 keeps ``ModuleFqnToConfig = FqnToConfig``.
+    Deferred to the first diffusers import: importing torchao here would load torch into the server
+    process and every spawn child (seconds and ~600 MB each) that never touch diffusers."""
+    if "diffusers" in sys.modules or "torchao.quantization" in sys.modules:
+        _alias_fqn_to_config_now()
+    elif not any(isinstance(f, _FqnAliasBeforeDiffusers) for f in sys.meta_path):
+        sys.meta_path.insert(0, _FqnAliasBeforeDiffusers())
 
 
 def _load_torchao_nodist():
