@@ -271,16 +271,25 @@ class TestNotes:
             _entries(["linux_x86_64", "win_amd64"]), tag = "t", repo = "o/r"
         )
         assert notes == (
-            "Prebuilt CUDA 13 wheels for flash-attn 2.8.4, causal-conv1d 1.7.0 and "
-            "mamba-ssm 2.3.2.post1: Linux x86_64 for PyTorch 2.13 and 2.14 on Python 3.13; "
-            "Windows x86_64 for PyTorch 2.13 and 2.14 on Python 3.13.\n"
+            "Prebuilt CUDA 13 wheels. Linux x86_64: flash-attn 2.8.4, causal-conv1d 1.7.0 and "
+            "mamba-ssm 2.3.2.post1, built for PyTorch 2.13 and 2.14 on Python 3.13. "
+            "Windows x86_64: flash-attn 2.8.4, causal-conv1d 1.7.0 and mamba-ssm 2.3.2.post1, "
+            "built for PyTorch 2.13 and 2.14 on Python 3.13.\n"
         )
 
     def test_platforms_with_different_coverage_are_not_merged(self):
         entries = _entries(["linux_x86_64"]) + _entries(["win_amd64"], torches = ("2.14.0",))
         notes = prebuilt_wheels.render_notes(entries, tag = "t", repo = "o/r")
-        assert "Linux x86_64 for PyTorch 2.13 and 2.14" in notes
-        assert "Windows x86_64 for PyTorch 2.14 on Python 3.13" in notes
+        assert "built for PyTorch 2.13 and 2.14 on Python 3.13. Windows" in notes
+        assert notes.endswith("built for PyTorch 2.14 on Python 3.13.\n")
+
+    def test_packages_are_listed_per_platform(self):
+        entries = _entries(["linux_x86_64"]) + [
+            row for row in _entries(["win_amd64"]) if row[1].startswith("mamba_ssm-")
+        ]
+        notes = prebuilt_wheels.render_notes(entries, tag = "t", repo = "o/r")
+        windows = notes.split("Windows x86_64: ", 1)[1]
+        assert windows == "mamba-ssm 2.3.2.post1, built for PyTorch 2.13 and 2.14 on Python 3.13.\n"
 
     def test_windows_only(self):
         notes = prebuilt_wheels.render_notes(_entries(["win_amd64"]), tag = "t", repo = "o/r")

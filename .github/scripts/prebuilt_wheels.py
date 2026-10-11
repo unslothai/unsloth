@@ -397,6 +397,15 @@ def _coverage(rows: list[dict]) -> str:
     return f"PyTorch {_join(torches)} on Python {_join(pythons)}"
 
 
+def _packages(rows: list[dict]) -> str:
+    """`flash-attn 2.8.4 and mamba-ssm 2.3.2.post1` for a set of parsed rows, in SPECS order."""
+    order = {package: index for index, package in enumerate(SPECS)}
+    pairs = sorted(
+        {(row["package"], row["version"]) for row in rows}, key = lambda pv: (order[pv[0]], pv[1])
+    )
+    return _join([f"{package} {version}" for package, version in pairs])
+
+
 def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     """One-sentence release body from `(sha256, filename)` pairs.
 
@@ -406,27 +415,19 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     parsed = [row for row in (parse_wheel_name(name) for _, name in entries) if row is not None]
     if not parsed:
         return "No wheels are attached to this release yet.\n"
-    order = {package: index for index, package in enumerate(SPECS)}
-    packages = [
-        f"{package} {version}"
-        for package, version in sorted(
-            {(row["package"], row["version"]) for row in parsed},
-            key = lambda pv: (order[pv[0]], pv[1]),
-        )
-    ]
     platforms = [tag for tag in PLATFORMS if any(row["platform"] == tag for row in parsed)]
     if len(platforms) == 1:
         return (
             f"Prebuilt {PLATFORM_NAMES[platforms[0]]} CUDA {CUDA_TAG} wheels for "
-            f"{_join(packages)}, built for {_coverage(parsed)}.\n"
+            f"{_packages(parsed)}, built for {_coverage(parsed)}.\n"
         )
-    # Per platform: separate runs need not cover the same torch minors.
-    per_platform = "; ".join(
-        f"{PLATFORM_NAMES[platform]} for "
-        f"{_coverage([row for row in parsed if row['platform'] == platform])}"
+    # Per platform: separate runs need not cover the same packages or torch minors.
+    per_platform = " ".join(
+        f"{PLATFORM_NAMES[platform]}: {_packages(rows)}, built for {_coverage(rows)}."
         for platform in platforms
+        for rows in [[row for row in parsed if row["platform"] == platform]]
     )
-    return f"Prebuilt CUDA {CUDA_TAG} wheels for {_join(packages)}: {per_platform}.\n"
+    return f"Prebuilt CUDA {CUDA_TAG} wheels. {per_platform}\n"
 
 
 def render_sums(entries: list[tuple[str, str]]) -> str:
