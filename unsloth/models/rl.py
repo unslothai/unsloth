@@ -4223,30 +4223,108 @@ def _is_unsloth_fast_backbone(backbone):
     return getattr(type(backbone), "forward", None) is LlamaModel_fast_forward
 
 
+def _text_prepended_position_ids(position_ids):
+    # Multimodal-RoPE text models (Qwen2.5-VL) build the packed mask only from [4, B, T] ids whose first plane is
+    # the text positions; text-only rows use the same positions on every plane.
+    if position_ids is None or position_ids.dim() != 2:
+        return position_ids
+    return position_ids[None].expand(4, *position_ids.shape)
+
+
+@torch.no_grad()
+def _packing_honored(backbone, position_transform = None):
+    # Runs the backbone the way the fused head does: a second packed sequence must match itself run alone far more
+    # closely than when it can see the first one. Numeric, so it covers every attention and mixer implementation.
+    params = next(backbone.parameters(), None)
+    if params is None:
+        return False
+    device = params.device
+    config = getattr(backbone, "config", None)
+    text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    vocab = int(getattr(text_config, "vocab_size", 0) or 0)
+    if vocab < 20:
+        return False
+    generator = torch.Generator().manual_seed(3407)
+    first, second = 24, 20
+    ids = torch.randint(10, min(vocab, 32000), (1, first + second), generator = generator).to(device)
+    transform = position_transform or (lambda p: p)
+    dtype = getattr(config, "torch_dtype", None) or params.dtype
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = torch.bfloat16 if params.dtype == torch.float32 else params.dtype
+    training = [(module, module.training) for module in backbone.modules()]
+    # Training mode, as in the trainer: some models (gpt-oss) take a different attention path when training.
+    # Dropout off so the comparison is deterministic.
+    backbone.train()
+    for module in backbone.modules():
+        if isinstance(module, torch.nn.modules.dropout._DropoutNd):
+            module.training = False
+
+    def hidden(input_ids, position_ids):
+        with torch.autocast(device.type, dtype = dtype, enabled = device.type in ("cuda", "xpu")):
+            out = backbone(
+                input_ids = input_ids, position_ids = transform(position_ids), use_cache = False
+            )
+        return out.last_hidden_state.float()
+
+    try:
+        arange = lambda n: torch.arange(n, device = device)[None]
+        packed = hidden(ids, torch.cat([arange(first), arange(second)], dim = 1))[0, first:]
+        alone = hidden(ids[:, first:], arange(second))[0]
+        crossed = hidden(ids, arange(first + second))[0, first:]
+    finally:
+        for module, mode in training:
+            module.training = mode
+    leak = (packed - alone).abs().mean()
+    control = (crossed - alone).abs().mean()
+    return bool(torch.isfinite(leak)) and bool(control > 0) and bool(leak <= 0.2 * control)
+
+
 def _unsloth_async_grpo_lm_head(original, flag):
     # TRL >= 1.15 `add_fused_lm_head` (active when `flag` is passed), TRL 1.13-1.14 `patch_chunked_lm_head` (always).
     def patch_lm_head(model, *args, **kwargs):
         # The head replaces the CausalLM forward and calls its backbone, so it must sit under any PEFT wrapper.
         target = model.get_base_model() if hasattr(model, "get_base_model") else model
         original(target, *args, **kwargs)
-        if not _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
-            attn = getattr(target.config, "_attn_implementation", None) or ""
-            if "flash" not in str(attn):
-                raise ValueError(
-                    "Unsloth: AsyncGRPOTrainer packs several sequences into one row and separates them only by "
-                    f"position_ids resets, which `{attn}` attention ignores, so sequences would attend to each other. "
-                    "Load the model with FastLanguageModel, or with a flash attention implementation."
-                )
-            return
         head_forward = target.forward
+        if _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
+            # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets.
+            def packed_kwargs(f_kwargs):
+                if f_kwargs.get("packed_seq_lengths") is None:
+                    lengths = _packed_seq_lengths_from_position_ids(f_kwargs.get("position_ids"))
+                    if lengths is not None:
+                        f_kwargs["packed_seq_lengths"] = lengths
+        else:
+            # Compiled / vision / MoE backbones: transformers builds the packed mask from position_ids resets.
+            # Use the first position_ids form this backbone honors, else refuse.
+            config = target.config
+            is_vlm = getattr(config, "get_text_config", lambda: config)() is not config
+            # Same backbone TRL's fused head calls.
+            backbone = (
+                getattr(target, "model", None)
+                if (is_vlm and Version(importlib_version("transformers")) < Version("5.0.0"))
+                else getattr(target, "base_model", None)
+            )
+            transforms = [None, _text_prepended_position_ids] if is_vlm else [None]
+            transform = next(
+                (t for t in transforms if backbone is not None and _packing_honored(backbone, t)),
+                False,
+            )
+            if transform is False:
+                raise ValueError(
+                    "Unsloth: AsyncGRPOTrainer packs several sequences into one row, separated only by "
+                    f"position_ids resets, and `{type(backbone).__name__}` lets them attend to each other. Load "
+                    "the model with a flash attention implementation, or train it with GRPOTrainer instead."
+                )
+            if transform is None:
+                return
+
+            def packed_kwargs(f_kwargs):
+                f_kwargs["position_ids"] = transform(f_kwargs.get("position_ids"))
 
         @functools.wraps(head_forward)
         def forward(*f_args, **f_kwargs):
-            # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets.
-            if (flag is None or f_kwargs.get(flag)) and f_kwargs.get("packed_seq_lengths") is None:
-                lengths = _packed_seq_lengths_from_position_ids(f_kwargs.get("position_ids"))
-                if lengths is not None:
-                    f_kwargs["packed_seq_lengths"] = lengths
+            if flag is None or f_kwargs.get(flag):
+                packed_kwargs(f_kwargs)
             return head_forward(*f_args, **f_kwargs)
 
         target.forward = forward
