@@ -224,7 +224,7 @@ class TestOllamaAndFallback:
                 "gguf_init_from_reader: tensor 'dspark.fc.weight' has offset 337718592, "
                 "expected 357584192\n"
                 "gguf_init_from_reader: failed to read tensor data\n",
-                "packed differently from this build's",
+                "download it again",
             ),
         ],
     )

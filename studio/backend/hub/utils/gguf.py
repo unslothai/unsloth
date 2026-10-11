@@ -288,11 +288,13 @@ def _first_mainline_loadable(names: list[str]) -> Optional[str]:
     """First of *names*, skipping fork-only packs while anything else is left."""
     tokens = {name: extract_quant_token(name) or "" for name in names}
     loadable = [name for name in names if not _FORK_ONLY_QUANT_RE.match(tokens[name])]
-    # Beside a fork-only pack, an explicit group size (Q2_g64) is the pack mainline reads; the plain Q2_0 is the fork's group-128 one.
+    # Beside a fork-only pack or its own plain Q2_0, an explicit group size (Q2_g64) is the pack mainline reads; the plain one is the fork's group-128 pack.
+    plain = {token.upper() for token in tokens.values()}
     grouped = [
         name
         for name in loadable
-        if len(loadable) < len(names) and _GROUPED_QUANT_RE.search(tokens[name])
+        if (match := _GROUPED_QUANT_RE.match(tokens[name]))
+        and (len(loadable) < len(names) or f"{match.group(1)}_0".upper() in plain)
     ]
     return next(iter(grouped or loadable or names), None)
 
@@ -305,7 +307,7 @@ def _gguf_stem(filename: str) -> str:
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
 # prism-ml's PQ2_0 / PTQ1_0 are ggml types only its llama.cpp fork defines; the bundled build rejects them (#11259).
 _FORK_ONLY_QUANT_RE = re.compile(r"PT?Q[0-9]", re.IGNORECASE)
-_GROUPED_QUANT_RE = re.compile(r"_G[0-9]+$", re.IGNORECASE)
+_GROUPED_QUANT_RE = re.compile(r"(Q[0-9]+)(?:_[0-9]+)?_G[0-9]+$", re.IGNORECASE)
 
 
 def _select_quant_match(text: str) -> Optional[re.Match]:

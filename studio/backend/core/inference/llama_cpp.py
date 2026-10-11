@@ -21977,14 +21977,20 @@ class LlamaCppBackend:
                 f"tensor '{_short(bad_type.group(1))}' uses quantization type "
                 f"{bad_type.group(2)}, which this build does not have"
                 if bad_type
-                else "a quantization type in it is packed differently from this build's"
+                else "its tensor layout does not match this build's quantization types"
+            )
+            # A damaged header also miscounts tensor sizes, so the layout case keeps that cause.
+            damaged = (
+                ""
+                if bad_type
+                else " If the model card says it runs on stock llama.cpp, the file may be damaged: download it again."
             )
             return LlamaCppBackend._with_startup_diagnostics(
                 "The installed llama.cpp cannot read this GGUF's weights "
-                f"({detail}); this is not a memory problem. The file was made for "
+                f"({detail}); this is not a memory problem. The file was likely made for "
                 "a different llama.cpp build: a newer one, or a publisher's own fork. Pick "
                 "another quant of this model, or use the llama.cpp build the "
-                "model card names.",
+                f"model card names.{damaged}",
                 output,
                 log_path,
                 secrets,

@@ -553,6 +553,11 @@ def test_pick_best_gguf_skips_fork_only_packs_when_a_loadable_quant_exists():
         gguf.pick_best_gguf(["Ternary-Bonsai-27B-PQ2_0.gguf", "Ternary-Bonsai-27B-Q2_g64.gguf"])
         == "Ternary-Bonsai-27B-Q2_g64.gguf"
     )
+    # Cached Q2_0 + Q2_g64 without PQ2_0, sorted: the plain group-128 pack still loses.
+    assert (
+        gguf.pick_best_gguf(["Ternary-Bonsai-27B-Q2_0.gguf", "Ternary-Bonsai-27B-Q2_g64.gguf"])
+        == "Ternary-Bonsai-27B-Q2_g64.gguf"
+    )
     # Without a fork-only pack the first-listed fallback stands.
     assert gguf.pick_best_gguf(["m-Q4_0.gguf", "m-Q2_g64.gguf", "m-F16.gguf"]) == "m-Q4_0.gguf"
     # Ternary-Bonsai-2-27B has nothing else quantized; its F16 needs the fork too, so keep the pack.
