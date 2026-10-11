@@ -276,6 +276,18 @@ def test_sdar_import_shim_is_scoped():
     assert "flash_attn" not in sys.modules
 
 
+def test_sdar_import_shim_provides_sliding_window_cache(monkeypatch):
+    import transformers.cache_utils as cache_utils
+    from unsloth.models.diffusion_block import _sdar_remote_code_imports
+
+    monkeypatch.delattr(cache_utils, "SlidingWindowCache", raising = False)
+    with _sdar_remote_code_imports():
+        from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache
+        assert issubclass(SlidingWindowCache, Cache)
+        assert not isinstance(DynamicCache(), SlidingWindowCache)
+    assert not hasattr(cache_utils, "SlidingWindowCache")
+
+
 def test_restore_rotary_buffers_refills_zeroed_inv_freq():
     from unsloth.models.diffusion_profiles import restore_rotary_buffers
 

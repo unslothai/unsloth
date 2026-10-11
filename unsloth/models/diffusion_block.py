@@ -383,9 +383,9 @@ def _module(name, **attributes):
 
 @contextlib.contextmanager
 def _sdar_remote_code_imports():
-    """SDAR's modeling file imports flash-attn's RMSNorm and 4.x `LossKwargs` at module level. Provide
-    torch stand-ins only while it imports when flash-attn is absent; the module keeps its references."""
-    import importlib.util
+    """SDAR's modeling file imports flash-attn's RMSNorm, 4.x `LossKwargs` and `SlidingWindowCache` at
+    module level. Provide stand-ins only while it imports; the module keeps its references."""
+    import transformers.cache_utils as cache_utils
     import transformers.utils as transformers_utils
 
     if not hasattr(transformers_utils, "LossKwargs"):
@@ -394,6 +394,22 @@ def _sdar_remote_code_imports():
             num_items_in_batch: Optional[torch.Tensor]
 
         transformers_utils.LossKwargs = LossKwargs
+    # Missing from some transformers 5.x releases (5.5 has none); SDAR only isinstance-checks it, and nothing builds one.
+    added_sliding_cache = not hasattr(cache_utils, "SlidingWindowCache")
+    if added_sliding_cache:
+        cache_utils.SlidingWindowCache = type("SlidingWindowCache", (cache_utils.Cache,), {})
+    try:
+        with _sdar_flash_attn_stubs():
+            yield
+    finally:
+        if added_sliding_cache:
+            del cache_utils.SlidingWindowCache
+
+
+@contextlib.contextmanager
+def _sdar_flash_attn_stubs():
+    import importlib.util
+
     try:
         has_flash = importlib.util.find_spec("flash_attn") is not None
     except (ImportError, ValueError):
