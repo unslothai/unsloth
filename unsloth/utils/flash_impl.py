@@ -108,8 +108,10 @@ def _candidates(requested, majors):
 
 def _package_error(impl):
     try:
-        import importlib
-        importlib.import_module(_MODULES[impl])
+        if impl == "FA4":
+            import flash_attn.cute.interface  # noqa: F401
+        else:
+            import flash_attn_interface  # noqa: F401
         if impl == "FA3":
             ops = getattr(torch.ops, "flash_attn_3", None)
             if ops is None or not hasattr(ops, "fwd") or not hasattr(ops, "bwd"):
@@ -311,8 +313,10 @@ def _run_case(case, device):
 def _count_impl_calls(impl):
     name = impl.lower()
     try:
-        import importlib
-        module = importlib.import_module(f"torch.nn.attention._{name}")
+        if impl == "FA4":
+            from torch.nn.attention import _fa4 as module
+        else:
+            from torch.nn.attention import _fa3 as module
         fwd, bwd = getattr(module, f"_{name}_run_forward"), getattr(module, f"_{name}_run_backward")
     except Exception:
         yield None
