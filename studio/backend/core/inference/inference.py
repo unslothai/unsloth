@@ -886,7 +886,38 @@ class InferenceBackend:
             exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
             use_exact_model_name = exact_model_name is not None
             load_path = exact_model_name or config.path
-            if config.is_vision:
+            from utils.models.diffusion_lm import (
+                diffusion_lm_profile_for_model,
+                loaded_diffusion_profile,
+            )
+
+            diffusion_lm_profile = diffusion_lm_profile_for_model(
+                load_path, hf_token = _hf_token_for_loader(hf_token) or None
+            )
+            if diffusion_lm_profile:
+                # Text-diffusion LMs (LLaDA, Dream, DiffusionGemma, ...) decode with their own sampler,
+                # never left-to-right generate(); DiffusionGemma's vision tower is not used here.
+                from unsloth import FastModel
+
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = load_path,
+                    max_seq_length = max_seq_length,
+                    dtype = dtype,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    device_map = device_map,
+                    token = _hf_token_for_loader(hf_token),
+                    trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
+                )
+                FastModel.for_inference(model)
+                self.models[model_name]["diffusion_lm_profile"] = (
+                    loaded_diffusion_profile(model) or diffusion_lm_profile
+                )
+                self.models[model_name]["is_vision"] = False
+                self.models[model_name]["model"] = model
+                self.models[model_name]["tokenizer"] = tokenizer
+
+            elif config.is_vision:
                 model, processor = FastVisionModel.from_pretrained(
                     model_name = load_path,
                     max_seq_length = max_seq_length,
@@ -1414,6 +1445,22 @@ class InferenceBackend:
             raise RuntimeError("No active model")
 
         model_info = self.models[self.active_model_name]
+        if model_info.get("diffusion_lm_profile"):
+            template_messages = (
+                [{"role": "system", "content": system_prompt}] + messages
+                if system_prompt
+                else messages
+            )
+            yield from self._generate_diffusion_lm(
+                model_info,
+                messages = _without_image_parts(template_messages),
+                temperature = temperature,
+                max_new_tokens = max_new_tokens,
+                cancel_event = cancel_event,
+                _adapter_state = _adapter_state,
+                stop = stop,
+            )
+            return
         is_vision = model_info.get("is_vision", False)
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
@@ -2310,6 +2357,47 @@ class InferenceBackend:
                 )
                 yield cleaned
 
+    def _generate_diffusion_lm(
+        self,
+        model_info: dict,
+        prompt: Optional[str] = None,
+        messages: Optional[list] = None,
+        temperature: float = 0.0,
+        max_new_tokens: Optional[int] = 256,
+        cancel_event = None,
+        _adapter_state = None,
+        stop: Optional[list] = None,
+    ) -> Generator[str, None, None]:
+        """A text-diffusion LM fills a whole block at once, so the answer arrives as one completion: there is
+        no left-to-right token stream to forward. Holds the generation lock until the sampler returns, and
+        the sampler polls ``cancel_event`` between denoising steps."""
+        from utils.models.diffusion_lm import require_diffusion_api
+
+        generate_text = getattr(require_diffusion_api("FastDiffusionModel"), "generate_text", None)
+        if generate_text is None:
+            raise RuntimeError(
+                "Unsloth: chatting with a text-diffusion model needs a newer Unsloth "
+                "(FastDiffusionModel.generate_text). Update with `unsloth studio update`."
+            )
+        with self._generation_lock:
+            if _adapter_state is not None:
+                self._apply_adapter_state(_adapter_state)
+            text = generate_text(
+                model_info["model"],
+                model_info["tokenizer"],
+                prompt = prompt,
+                messages = messages,
+                max_new_tokens = int(max_new_tokens or 256),
+                temperature = float(temperature or 0.0),
+                stop_callback = (lambda: cancel_event is not None and cancel_event.is_set()),
+            )
+        text = text or ""
+        for sequence in stop or ():
+            if sequence and sequence in text:
+                text = text[: text.index(sequence)]
+        if text and not (cancel_event is not None and cancel_event.is_set()):
+            yield text
+
     def generate_stream(
         self,
         prompt: str,
@@ -2345,6 +2433,17 @@ class InferenceBackend:
         self.last_generation_stats = None
 
         model_info = self.models[self.active_model_name]
+        if model_info.get("diffusion_lm_profile"):
+            yield from self._generate_diffusion_lm(
+                model_info,
+                prompt = prompt,
+                temperature = temperature,
+                max_new_tokens = max_new_tokens,
+                cancel_event = cancel_event,
+                _adapter_state = _adapter_state,
+                stop = stop,
+            )
+            return
         model = model_info["model"]
         # For VLMs the stored "tokenizer" is actually the processor. Unwrap to
         # the real tokenizer so TextIteratorStreamer's skip_prompt /

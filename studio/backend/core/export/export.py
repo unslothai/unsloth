@@ -710,6 +710,12 @@ class ExportBackend:
         self.is_peft = False
         self._audio_type = None
         self.decision = None
+        # Text-diffusion LM profile of the loaded checkpoint (LLaDA, Dream, DiffusionGemma, ...), else None.
+        self.diffusion_lm_profile = None
+
+    def _diffusion_refusal(self, method: str) -> Optional[str]:
+        from utils.models.diffusion_lm import export_refusal
+        return export_refusal(getattr(self, "diffusion_lm_profile", None), method)
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -779,6 +785,7 @@ class ExportBackend:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
             self.cleanup_memory()
+            self.diffusion_lm_profile = None
 
             # Before the base / audio / vision probes: a decision run never reaches the chat loaders.
             from core.export.decision import decision_kind
@@ -824,6 +831,18 @@ class ExportBackend:
                 self.is_vision = not self._audio_type and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
+                from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+
+                self.diffusion_lm_profile = (
+                    None
+                    if self._audio_type
+                    else diffusion_lm_profile_for_model(
+                        model_id, hf_token = probe_token, local_files_only = local_files_only
+                    )
+                )
+                if self.diffusion_lm_profile:
+                    # DiffusionGemma ships a vision tower; its text-diffusion load is FastModel's.
+                    self.is_vision = False
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -900,6 +919,20 @@ class ExportBackend:
                     **_device_map_kw,
                 )
 
+            elif self.diffusion_lm_profile:
+                from unsloth import FastModel
+                logger.info(f"Loading as text-diffusion model ({self.diffusion_lm_profile})...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                    **_device_map_kw,
+                )
+
             elif self.is_vision:
                 logger.info("Loading as vision model...")
                 model, processor = FastVisionModel.from_pretrained(
@@ -955,6 +988,8 @@ class ExportBackend:
 
             if self._audio_type:
                 model_type = f"Audio ({self._audio_type})"
+            elif self.diffusion_lm_profile:
+                model_type = f"Text-diffusion ({self.diffusion_lm_profile})"
             elif self.is_vision:
                 model_type = "Vision"
             else:
@@ -1126,6 +1161,9 @@ class ExportBackend:
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("merged")
+        if refusal:
+            return False, refusal, None
 
         # save_pretrained_merged is a no-op merge for non-PEFT base models, so one path covers both.
 
@@ -1571,6 +1609,9 @@ class ExportBackend:
             )
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("gguf")
+        if refusal:
+            return False, refusal, None
 
         # Older unsloth builds raise on an unexpected imatrix_file kwarg even for a plain no-imatrix export.
         if imatrix_file and not _imatrix_export_supported(self.current_model.save_pretrained_gguf):
@@ -2126,6 +2167,9 @@ class ExportBackend:
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("gguf") if gguf else None
+        if refusal:
+            return False, refusal, None
 
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None

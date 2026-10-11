@@ -135,11 +135,22 @@ class DecisionExportInfo(BaseModel):
     )
 
 
+class DiffusionLmExportInfo(BaseModel):
+    """Export limits for a text-diffusion LM checkpoint (LLaDA, Dream, SDAR, DiffusionGemma, ...)."""
+
+    profile: str = Field(..., description = "Text-diffusion family of the checkpoint's base model")
+    disabled_methods: List[str] = Field(
+        default_factory = list, description = "Export methods this checkpoint cannot use"
+    )
+    reason: Optional[str] = Field(None, description = "Why those methods are unavailable")
+
+
 class ExportDecisionInfoResponse(BaseModel):
     """Decision-model export info for a checkpoint path; decision is None for any other model."""
 
     checkpoint_path: str
     decision: Optional[DecisionExportInfo] = None
+    diffusion_lm: Optional[DiffusionLmExportInfo] = None
 
 
 class ExportOperationResponse(BaseModel):

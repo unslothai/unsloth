@@ -822,6 +822,68 @@ def _current_cached_snapshot(
         return None
 
 
+def _read_raw_config_json(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Optional[dict]:
+    """config.json as a dict, read without executing any repo code; None when the repo publishes none.
+    Raises on read errors: callers decide what an unreadable config means."""
+    current = (
+        None
+        if revision is not None
+        else _current_cached_snapshot(model_name, hf_token, local_files_only)
+    )
+    if is_local_path(model_name):
+        config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
+    elif current is not None and (current[0] / "config.json").is_file():
+        # The current commit's own copy: skips the absence probe and the freshness check.
+        config_path = current[0] / "config.json"
+    elif current is not None and "config.json" not in current[1]:
+        # The document just said the repo publishes none; the probe below re-asks.
+        logger.debug("'%s' has no config.json on the Hub", model_name)
+        return None
+    else:
+        from huggingface_hub import hf_hub_download
+        from utils.hf_probe import hf_file_definitely_absent
+
+        # Avoid caching the expected 404 for GGUF repos without config.json.
+        if not local_files_only and hf_file_definitely_absent(
+            model_name,
+            "config.json",
+            revision = revision,
+            token = hf_token,
+        ):
+            logger.debug("'%s' has no config.json on the Hub", model_name)
+            return None
+        download_kwargs = {
+            "repo_id": model_name,
+            "filename": "config.json",
+            "token": hf_token,
+            "local_files_only": local_files_only,
+            "cache_dir": active_hf_hub_cache(),
+        }
+        if revision is not None:
+            download_kwargs["revision"] = revision
+        # Measured: hf_hub_download falls back to the cache even with
+        # local_files_only=False, never consulting the credential, so a planted entry
+        # plus a dead endpoint returns a private config.json to a token that cannot read it.
+        if cached_read_refused(
+            hf_token,
+            repo_id = model_name,
+            is_cached = lambda: _config_json_already_cached(model_name, revision),
+        ):
+            return None
+        config_path = Path(
+            call_with_anonymous_retry(
+                lambda token: hf_hub_download(**{**download_kwargs, "token": token}),
+                hf_token,
+            )
+        )
+    return json.loads(config_path.read_text(encoding = "utf-8-sig"))
+
+
 def _raw_config_has_vision_config(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -829,58 +891,9 @@ def _raw_config_has_vision_config(
     revision: Optional[str] = None,
 ) -> Optional[bool]:
     try:
-        current = (
-            None
-            if revision is not None
-            else _current_cached_snapshot(model_name, hf_token, local_files_only)
-        )
-        if is_local_path(model_name):
-            config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
-        elif current is not None and (current[0] / "config.json").is_file():
-            # The current commit's own copy: skips the absence probe and the freshness check.
-            config_path = current[0] / "config.json"
-        elif current is not None and "config.json" not in current[1]:
-            # The document just said the repo publishes none; the probe below re-asks.
-            logger.debug("'%s' has no config.json on the Hub", model_name)
+        config = _read_raw_config_json(model_name, hf_token, local_files_only, revision)
+        if config is None:
             return None
-        else:
-            from huggingface_hub import hf_hub_download
-            from utils.hf_probe import hf_file_definitely_absent
-
-            # Avoid caching the expected 404 for GGUF repos without config.json.
-            if not local_files_only and hf_file_definitely_absent(
-                model_name,
-                "config.json",
-                revision = revision,
-                token = hf_token,
-            ):
-                logger.debug("'%s' has no config.json on the Hub", model_name)
-                return None
-            download_kwargs = {
-                "repo_id": model_name,
-                "filename": "config.json",
-                "token": hf_token,
-                "local_files_only": local_files_only,
-                "cache_dir": active_hf_hub_cache(),
-            }
-            if revision is not None:
-                download_kwargs["revision"] = revision
-            # Measured: hf_hub_download falls back to the cache even with
-            # local_files_only=False, never consulting the credential, so a planted entry
-            # plus a dead endpoint returns a private config.json to a token that cannot read it.
-            if cached_read_refused(
-                hf_token,
-                repo_id = model_name,
-                is_cached = lambda: _config_json_already_cached(model_name, revision),
-            ):
-                return None
-            config_path = Path(
-                call_with_anonymous_retry(
-                    lambda token: hf_hub_download(**{**download_kwargs, "token": token}),
-                    hf_token,
-                )
-            )
-        config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
         explicit_vision = (

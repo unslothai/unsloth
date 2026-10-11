@@ -773,6 +773,19 @@ def _pre_detect_training_model(
         load_in_4bit = _pre_detect_load_in_4bit(config, model_load_name, hf_token),
     )
     _check_finetune_targets_after_detect(trainer, config)
+    _apply_diffusion_lm_overrides(trainer, config)
+
+
+def _apply_diffusion_lm_overrides(trainer, config: dict) -> None:
+    """Text-diffusion runs never pack: packed rows would share one bidirectional attention window. Set before
+    the row bound and online tokenization read the flag, so their accounting matches what trains."""
+    profile = getattr(trainer, "diffusion_lm_profile", None)
+    if not profile:
+        return
+    config["diffusion_lm_profile"] = profile
+    if config.get("packing"):
+        config["packing"] = False
+        logger.info("Text-diffusion model (%s): sequence packing turned off", profile)
 
 
 _NOTHING_TO_TRAIN = (

@@ -72,6 +72,11 @@ from utils.third_party_source import (
 )
 
 from utils.models import is_vision_model, detect_audio_type_checked
+from utils.models.diffusion_lm import (
+    diffusion_lm_profile_for_model,
+    loaded_diffusion_profile,
+    require_diffusion_api,
+)
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
@@ -101,6 +106,18 @@ from .training import (
 from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
 
 logger = get_logger(__name__)
+
+# Studio's default LoRA target list and the CPT embedding modules, as the training page sends them.
+_STUDIO_DEFAULT_TARGETS = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+_CPT_EMBEDDING_TARGETS = ("embed_tokens", "lm_head")
 
 # Streaming eval has no __len__, so cap it or an unbounded eval iterates the whole source on every eval step.
 STREAMING_EVAL_MAX_SAMPLES = 500
@@ -362,6 +379,8 @@ class UnslothTrainer:
         self.is_audio = False
         self.is_audio_vlm = False
         self._audio_type = None
+        # Text-diffusion LM profile name (LLaDA, Dream, SDAR, DiffusionGemma, ...); None for every other model.
+        self.diffusion_lm_profile = None
         self._use_gradient_checkpointing = "unsloth"
         self._offload_layers = 0
         self._prefetch_depth = 2
@@ -453,13 +472,15 @@ class UnslothTrainer:
             else False
         )
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
+        self._detect_diffusion_lm(lookup_name, hf_token, local_files_only, model_revision)
 
         logger.info(
-            "pre_detect: audio_type=%s, is_audio=%s, is_audio_vlm=%s, is_vlm=%s",
+            "pre_detect: audio_type=%s, is_audio=%s, is_audio_vlm=%s, is_vlm=%s, diffusion_lm=%s",
             self._audio_type,
             self.is_audio,
             self.is_audio_vlm,
             self.is_vlm,
+            self.diffusion_lm_profile,
         )
 
         # Load tokenizer/processor (CPU only, no VRAM). Whisper needs AutoProcessor; others AutoTokenizer (CSM loads
@@ -543,6 +564,25 @@ class UnslothTrainer:
                 "Reloaded tokenizer for %s after detection changed to %s",
                 model_name,
                 self._audio_type,
+            )
+
+    def _detect_diffusion_lm(self, lookup_name, hf_token, local_files_only, model_revision):
+        """Text-diffusion LMs train with their own denoising objective on the text path, never the VLM one
+        (DiffusionGemma ships a vision tower the diffusion objective does not use)."""
+        self.diffusion_lm_profile = (
+            None
+            if self.is_audio or self.is_audio_vlm
+            else diffusion_lm_profile_for_model(
+                lookup_name,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                revision = model_revision,
+            )
+        )
+        if self.diffusion_lm_profile and self.is_vlm:
+            self.is_vlm = False
+            self._record_warning(
+                "Text-diffusion models train on text only here; the dataset's images are ignored."
             )
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
@@ -1081,6 +1121,7 @@ class UnslothTrainer:
                 else False
             )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
+            self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
             self.max_seq_length = max_seq_length
 
@@ -1100,7 +1141,15 @@ class UnslothTrainer:
             )
 
             model_display = model_name.split("/")[-1] if "/" in model_name else model_name
-            model_type_label = "audio" if self.is_audio else ("vision" if self.is_vlm else "text")
+            model_type_label = (
+                "audio"
+                if self.is_audio
+                else (
+                    "vision"
+                    if self.is_vlm
+                    else ("text-diffusion" if self.diffusion_lm_profile else "text")
+                )
+            )
             self._update_progress(
                 status_message = f"Loading {model_type_label} model... {model_display}"
             )
@@ -1309,6 +1358,34 @@ class UnslothTrainer:
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
+            elif self.diffusion_lm_profile:
+                # FastModel routes every registered text-diffusion family to its diffusion loader.
+                from unsloth import FastModel
+
+                self.model, self.tokenizer = FastModel.from_pretrained(
+                    model_name = lookup_name,
+                    max_seq_length = max_seq_length,
+                    dtype = _auto_dtype,
+                    load_in_4bit = load_in_4bit,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
+                    token = hf_token,
+                    trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
+                )
+                loaded = loaded_diffusion_profile(self.model)
+                if loaded is None:
+                    raise RuntimeError(
+                        f"Unsloth: {model_name} looks like a text-diffusion model "
+                        f"({self.diffusion_lm_profile}) but loaded as an autoregressive one, so it "
+                        "would train on the wrong objective. Update Unsloth (`unsloth studio update`)."
+                    )
+                self.diffusion_lm_profile = loaded
+                logger.info(f"Loaded text-diffusion model (profile: {loaded})")
+
             elif self.is_vlm:
                 self.model, self.tokenizer = FastVisionModel.from_pretrained(
                     model_name = lookup_name,
@@ -1372,7 +1449,12 @@ class UnslothTrainer:
             if self.should_stop:
                 return False
 
-            if full_finetuning:
+            if full_finetuning and self.diffusion_lm_profile:
+                from unsloth import FastModel
+                FastModel.for_training(
+                    self.model, use_gradient_checkpointing = bool(use_gradient_checkpointing)
+                )
+            elif full_finetuning:
                 self.model.for_training(
                     use_gradient_checkpointing = use_gradient_checkpointing,
                 )
@@ -1455,6 +1537,74 @@ class UnslothTrainer:
         finally:
             self._source_code_retried = False
 
+    def _prepare_diffusion_lora(
+        self,
+        target_modules,
+        modules_to_save,
+        lora_r,
+        lora_alpha,
+        lora_dropout,
+        use_gradient_checkpointing,
+        use_rslora,
+        use_loftq,
+        use_dora,
+    ) -> bool:
+        """LoRA for a text-diffusion model through its profile. Studio's default target list names
+        autoregressive projections (LLaDA has none of o/gate/down_proj, and the MoE families must keep their
+        experts and router frozen), so the default list means "the profile's own targets"."""
+        from unsloth import FastModel
+
+        unsupported = [name for name, on in (("DoRA", use_dora), ("LoftQ", use_loftq)) if on]
+        if unsupported:
+            raise ValueError(
+                f"{' and '.join(unsupported)} {'is' if len(unsupported) == 1 else 'are'} not supported "
+                "for text-diffusion models yet. Turn it off and train with LoRA."
+            )
+        requested = (
+            [target_modules] if isinstance(target_modules, str) else list(target_modules or [])
+        )
+        if not requested or set(requested) - set(_CPT_EMBEDDING_TARGETS) == set(
+            _STUDIO_DEFAULT_TARGETS
+        ):
+            target_modules = None
+        elif requested == ["all-linear"]:
+            target_modules = "all-linear"
+        else:
+            target_modules = [m for m in requested if m != "all-linear"] or "all-linear"
+        leaf_names = {name.rsplit(".", 1)[-1] for name, _ in self.model.named_modules()}
+        if modules_to_save:
+            kept = [m for m in modules_to_save if m in leaf_names]
+            dropped = sorted(set(modules_to_save) - set(kept))
+            if dropped:
+                logger.info(
+                    f"Text-diffusion model has no {dropped}; training them is skipped for this model.\n"
+                )
+            modules_to_save = kept or None
+        logger.info(
+            f"Text-diffusion LoRA ({self.diffusion_lm_profile}): target modules = "
+            f"{'profile default' if target_modules is None else target_modules}\n"
+        )
+        peft_kwargs = dict(
+            r = lora_r,
+            target_modules = target_modules,
+            lora_alpha = lora_alpha,
+            lora_dropout = lora_dropout,
+            bias = "none",
+            use_gradient_checkpointing = bool(use_gradient_checkpointing),
+            random_state = 3407,
+        )
+        if modules_to_save:
+            peft_kwargs["modules_to_save"] = modules_to_save
+        if use_rslora:
+            peft_kwargs["use_rslora"] = True
+        self.model = FastModel.get_peft_model(self.model, **peft_kwargs)
+        if self.should_stop:
+            logger.info("Stopped during LoRA configuration\n")
+            return False
+        self._update_progress(status_message = "LoRA adapters configured")
+        logger.info("LoRA adapters configured successfully\n")
+        return True
+
     def prepare_model_for_training(
         self,
         use_lora: bool = True,
@@ -1495,6 +1645,19 @@ class UnslothTrainer:
                 return True
 
             self._use_gradient_checkpointing = use_gradient_checkpointing
+
+            if getattr(self, "diffusion_lm_profile", None):
+                return self._prepare_diffusion_lora(
+                    target_modules = target_modules,
+                    modules_to_save = modules_to_save,
+                    lora_r = lora_r,
+                    lora_alpha = lora_alpha,
+                    lora_dropout = lora_dropout,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    use_rslora = use_rslora,
+                    use_loftq = use_loftq,
+                    use_dora = use_dora,
+                )
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
@@ -4437,6 +4600,10 @@ class UnslothTrainer:
             elif self._audio_type == "dac":
                 config_args["packing"] = False
                 logger.info("Applied DAC overrides: packing=False\n")
+            if getattr(self, "diffusion_lm_profile", None) and config_args.get("packing"):
+                # Packed rows share one bidirectional attention window, so documents would see each other.
+                config_args["packing"] = False
+                logger.info("Text-diffusion model: sequence packing turned off\n")
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything
             # else stays eager.
@@ -4500,7 +4667,31 @@ class UnslothTrainer:
                     logger.info("Unwrapping Processor → raw tokenizer for text-only SFTTrainer")
                     sft_tokenizer = self.tokenizer.tokenizer
 
-                if is_cpt:
+                if getattr(self, "diffusion_lm_profile", None):
+                    # Same SFT data path; the loss is the family's denoising objective. CPT = every token
+                    # supervised, which is what the objective does when no label is -100.
+                    DiffusionTrainer = require_diffusion_api("DiffusionTrainer")
+                    DiffusionConfig = require_diffusion_api("DiffusionConfig")
+                    fields = getattr(DiffusionConfig, "__dataclass_fields__", {})
+                    diffusion_args = {k: v for k, v in config_args.items() if k in fields}
+                    skipped = sorted(set(config_args) - set(diffusion_args))
+                    if skipped:
+                        logger.info(f"DiffusionConfig has no {skipped}; not passed\n")
+                    trainer_kwargs = {
+                        "model": self.model,
+                        "tokenizer": sft_tokenizer,
+                        "train_dataset": dataset["dataset"],
+                        "data_collator": data_collator,
+                        "args": DiffusionConfig(**diffusion_args),
+                    }
+                    if eval_dataset is not None:
+                        trainer_kwargs["eval_dataset"] = eval_dataset
+                    self.trainer = DiffusionTrainer(**trainer_kwargs)
+                    logger.info(
+                        f"Text-diffusion trainer: {type(self.trainer).__name__} "
+                        f"(profile {self.diffusion_lm_profile})\n"
+                    )
+                elif is_cpt:
                     try:
                         from unsloth import (
                             UnslothTrainer as _UnslothCPTTrainer,

@@ -393,7 +393,16 @@ async def get_decision_export_info(
     except Exception as e:
         logger.warning(f"Could not inspect {checkpoint_path} for decision export: {e}")
         decision = None
-    return ExportDecisionInfoResponse(checkpoint_path = checkpoint_path, decision = decision)
+    from utils.models.diffusion_lm import diffusion_lm_export_limits
+
+    diffusion_lm = (
+        None
+        if decision is not None
+        else await asyncio.to_thread(diffusion_lm_export_limits, checkpoint_path)
+    )
+    return ExportDecisionInfoResponse(
+        checkpoint_path = checkpoint_path, decision = decision, diffusion_lm = diffusion_lm
+    )
 
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
