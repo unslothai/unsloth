@@ -14,6 +14,7 @@ import os
 import platform
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -59,11 +60,16 @@ def test_plist_asks_for_arm64_first() -> None:
     assert _plist()["LSArchitecturePriority"][0] == "arm64"
 
 
-def test_stub_parses_and_keeps_a_plain_exec_for_intel() -> None:
+def test_stub_keeps_a_plain_exec_for_intel() -> None:
     stub = _heredoc("STUB_EOF")
-    subprocess.run(["sh", "-n", "/dev/stdin"], input = stub, text = True, check = True)
     assert "/usr/bin/arch -arm64 '@@DATA_DIR@@/launch-studio.sh'" in stub
     assert stub.rstrip().endswith("exec '@@DATA_DIR@@/launch-studio.sh' \"$@\"")
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh on this runner")
+def test_stub_parses(tmp_path: Path) -> None:
+    (tmp_path / "stub").write_text(_heredoc("STUB_EOF"), encoding = "utf-8")
+    subprocess.run(["sh", "-n", "stub"], cwd = tmp_path, check = True)
 
 
 def _rosetta_available() -> bool:
