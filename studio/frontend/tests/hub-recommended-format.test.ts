@@ -26,6 +26,14 @@ test("checkpoint quant format comes from the repo name or the fp8 quant config",
   assert.equal(checkpointQuantFormat(nvfp4), "nvfp4");
   assert.equal(checkpointQuantFormat(bf16), null);
   assert.equal(checkpointQuantFormat({ ...bf16, quantMethod: "fp8" }), "fp8");
+  // A mixed NVFP4 / FP8 checkpoint needs NVFP4 hardware.
+  const mixed = {
+    id: "primitive-ai/Qwen3.8-Flash-Next-mixed-NVFP4-FP8",
+    isGguf: false,
+  };
+  assert.equal(checkpointQuantFormat(mixed), "nvfp4");
+  assert.equal(matchesRecommended(mixed, ["fp8"]), false);
+  assert.equal(matchesRecommended(mixed, ["fp8", "nvfp4"]), true);
   // FP8 bases re-quantized to another scheme are not FP8 checkpoints.
   for (const id of [
     "tcclaviger/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ",

@@ -53,9 +53,10 @@ export function detectResultFormat(result: {
   return "safetensors";
 }
 
+// Strictest first: a mixed "NVFP4-FP8" checkpoint still holds NVFP4 weights and needs Blackwell.
 const CHECKPOINT_QUANT_NAME: ReadonlyArray<readonly [string, RegExp]> = [
-  ["fp8", /(?:^|[-_/.])fp8(?:[-_/.]|$)/i],
   ["nvfp4", /(?:^|[-_/.])nvfp4(?:[-_/.]|$)/i],
+  ["fp8", /(?:^|[-_/.])fp8(?:[-_/.]|$)/i],
 ];
 // A second quant token (an FP8 base re-quantized to GPTQ / IQ4 / MXFP4) means the repo is not an FP8 checkpoint.
 const OTHER_QUANT_NAME =
