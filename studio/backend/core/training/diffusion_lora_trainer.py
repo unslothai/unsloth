@@ -565,6 +565,7 @@ def run_diffusion_lora_training(
                 preexisting = preexisting_checkpoints,
             )
 
+        # Reported peak VRAM = training peak, not the higher load / encode peak.
         if device == "cuda":
             torch.cuda.reset_peak_memory_stats()
         for opt_step in range(resumed, cfg.train_steps):

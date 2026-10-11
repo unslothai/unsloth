@@ -2257,6 +2257,7 @@ def _train_dit(
         if device in ("cuda", "xpu")
         else nullcontext()
     )
+    # Reported peak VRAM = training peak, not the higher load / encode peak.
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     for opt_step in range(resumed, cfg.train_steps):

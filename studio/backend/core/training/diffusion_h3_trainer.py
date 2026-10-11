@@ -689,6 +689,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     t_start = time.time()
     t_steady = None
     done = 0
+    # Reported peak VRAM = training peak, not the higher load / encode peak.
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     for opt_step in range(cfg.train_steps):
