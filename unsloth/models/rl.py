@@ -4321,10 +4321,11 @@ def _unsloth_async_grpo_lm_head(original, flag):
                     False,
                 )
             except Exception as error:
-                logger.info(
-                    f"Unsloth: could not check packed rows on `{type(backbone).__name__}`: {error}"
-                )
-                return
+                raise ValueError(
+                    "Unsloth: AsyncGRPOTrainer packs several sequences into one row, and checking that "
+                    f"`{type(backbone).__name__}` keeps them apart failed ({type(error).__name__}: {error}). Load "
+                    "the model with a flash attention implementation, or train it with GRPOTrainer instead."
+                ) from error
             if transform is False:
                 raise ValueError(
                     "Unsloth: AsyncGRPOTrainer packs several sequences into one row, separated only by "
@@ -4372,8 +4373,9 @@ def _async_grpo_uses_fast_inference(model, config, kwargs):
 
 
 def _dataset_has_images(dataset):
+    # Index, never iterate: a stateful iterable dataset would lose its first row.
     try:
-        row = next(iter(dataset))
+        row = dataset[0] if hasattr(dataset, "__getitem__") and len(dataset) > 0 else None
     except Exception:
         return False
     if not isinstance(row, dict):

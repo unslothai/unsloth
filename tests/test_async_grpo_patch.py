@@ -220,10 +220,11 @@ def test_non_unsloth_sdpa_model_is_refused(fake_trl):
     for attn in ("flash_attention_2", "kernels-community/flash-attn3"):
         lm = CausalLM(torch.nn.Module(), attn = attn)
         mod.AsyncGRPOTrainer(lm, None, args = mod.AsyncGRPOConfig("o"))
-    # A self-test that cannot run leaves TRL's behaviour unchanged instead of failing init.
-    mod.AsyncGRPOTrainer(
-        CausalLM(torch.nn.Module(), attn = "sdpa"), None, args = mod.AsyncGRPOConfig("o")
-    )
+    # A self-test that cannot run refuses, like one that fails.
+    with pytest.raises(ValueError, match = "keeps them apart failed"):
+        mod.AsyncGRPOTrainer(
+            CausalLM(torch.nn.Module(), attn = "sdpa"), None, args = mod.AsyncGRPOConfig("o")
+        )
     ns["_packing_honored"] = lambda backbone, transform = None: True
     lm = CausalLM(torch.nn.Module(), attn = "flash_attention_2")
     mod.AsyncGRPOTrainer(lm, None, args = mod.AsyncGRPOConfig("o"))
@@ -638,3 +639,23 @@ def test_servable_check_reads_only_a_lone_default_adapter():
     model.peft_config = {"default": object()}
     ns["_check_async_grpo_adapter_servable"](model)
     assert len(calls) == 1
+
+
+def test_image_check_does_not_consume_an_iterable_dataset():
+    ns = _load()
+
+    class OneShot:
+        def __init__(self):
+            self.rows = iter([{"prompt": "a"}, {"prompt": "b"}])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.rows)
+
+    data = OneShot()
+    assert ns["_dataset_has_images"](data) is False
+    assert next(data) == {"prompt": "a"}
+    assert ns["_dataset_has_images"]([{"image": object()}]) is True
+    assert ns["_dataset_has_images"]([{"prompt": "hi"}]) is False
