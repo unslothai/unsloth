@@ -4306,10 +4306,19 @@ def _unsloth_async_grpo_lm_head(original, flag):
                 else getattr(target, "base_model", None)
             )
             transforms = [None, _text_prepended_position_ids] if is_vlm else [None]
-            transform = next(
-                (t for t in transforms if backbone is not None and _packing_honored(backbone, t)),
-                False,
-            )
+            attn = str(getattr(config, "_attn_implementation", None) or "")
+            if "flash" in attn and not is_vlm:
+                # Varlen flash attention reads sequence boundaries from position_ids, as TRL expects; TRL builds
+                # these models on CPU, where the kernel cannot run the self-test.
+                return
+            try:
+                transform = next(
+                    (t for t in transforms if backbone is not None and _packing_honored(backbone, t)),
+                    False,
+                )
+            except Exception as error:
+                logger.info(f"Unsloth: could not check packed rows on `{type(backbone).__name__}`: {error}")
+                return
             if transform is False:
                 raise ValueError(
                     "Unsloth: AsyncGRPOTrainer packs several sequences into one row, separated only by "
