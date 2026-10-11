@@ -39,8 +39,13 @@ test("a far transcript drops both viewport scroll listeners and resumes when nea
   const [near, far] = toggle.split("} else {");
   assert.match(
     far,
-    /followOffset\.current\?\.\(false\)/,
+    /followOffset\.current\?\.\(\s*false,/,
     "offset observer kept offscreen",
+  );
+  // Parked at the edge nearest the reader: above it renders its tail, below it its head.
+  assert.match(
+    far,
+    /box\.bottom <= scroll\.getBoundingClientRect\(\)\.top\s*\?\s*1e9\s*:\s*-1e9/,
   );
   assert.match(
     far,
@@ -64,8 +69,8 @@ test("a far transcript drops both viewport scroll listeners and resumes when nea
   );
   assert.match(
     observe,
-    /if \(!on\) return;/,
-    "offset observer cannot be stopped",
+    /if \(!on\) \{[\s\S]*?if \(park !== undefined\) callback\(park, false\);\s*return;\s*\}/,
+    "offset observer cannot be stopped or parked",
   );
   assert.match(
     observe,

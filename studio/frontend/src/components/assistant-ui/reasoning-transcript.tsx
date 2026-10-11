@@ -333,7 +333,9 @@ export function ReasoningTranscript({
   const root = useRef<HTMLDivElement>(null);
   // Over a screen away, a transcript stops listening to the shared viewport's scroll (#12025).
   const nearby = useRef(true);
-  const followOffset = useRef<((on: boolean) => void) | null>(null);
+  const followOffset = useRef<((on: boolean, park?: number) => void) | null>(
+    null,
+  );
   const [index] = useState(() => new ReasoningTranscriptIndex());
   const fragments = useMemo(() => index.update(documents), [documents, index]);
   const [anchor, setAnchor] = useState(
@@ -367,12 +369,17 @@ export function ReasoningTranscript({
     observeElementOffset: (instance, callback) => {
       let stop: (() => void) | undefined;
       let generation = 0;
-      const follow = (on: boolean) => {
+      const follow = (on: boolean, park?: number) => {
         stop?.();
         stop = undefined;
         // TanStack's scroll-end debounce outlives its unsubscribe: drop a stopped one's call.
         const current = ++generation;
-        if (!on) return;
+        if (!on) {
+          // A frozen offset can land mid-transcript once content above moves, mounting
+          // rows a live offset never would. Park it where the live one keeps the range.
+          if (park !== undefined) callback(park, false);
+          return;
+        }
         // Seed the live offset, else TanStack keeps its initial zero or the one from before it left.
         callback(instance.scrollElement?.scrollTop ?? 0, false);
         stop = observeElementOffset(instance, (offset, isScrolling) => {
@@ -539,7 +546,16 @@ export function ReasoningTranscript({
           schedule();
         }
       } else {
-        followOffset.current?.(false);
+        const box = element.getBoundingClientRect();
+        // Far means wholly above or below the reader; a closed folded round has no box.
+        followOffset.current?.(
+          false,
+          box.height > 0
+            ? box.bottom <= scroll.getBoundingClientRect().top
+              ? 1e9
+              : -1e9
+            : undefined,
+        );
         scroll.removeEventListener("scroll", schedule);
         readingAnchor = undefined;
         stopJumpWatch = onViewportJump(scroll, () => {
