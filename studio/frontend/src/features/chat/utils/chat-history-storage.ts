@@ -4,6 +4,7 @@
 import {
   ChatMessageProtectedError,
   ChatThreadDeletedError,
+  batchCountChatMessages,
   batchListChatMessages,
   buildBackendChatExport,
   clearBackendChats,
@@ -60,6 +61,29 @@ export function unmarkThreadIncognito(threadId: string): void {
 /** True for a temporary-session thread, which is deliberately never persisted. */
 export function isThreadIncognito(threadId: string): boolean {
   return incognitoThreadIds.has(threadId);
+}
+
+// Read live: initialize() clears newThreadId before persisting the thread.
+const newThreadIdSources = new Set<() => string | null | undefined>();
+// Settings can start a row write while the runtime still considers the thread new.
+const writtenThreadIds = new Set<string>();
+
+/** Returns the unregister function. */
+export function registerNewThreadIdSource(
+  source: () => string | null | undefined,
+): () => void {
+  newThreadIdSources.add(source);
+  return () => {
+    newThreadIdSources.delete(source);
+  };
+}
+
+function isPendingNewThread(threadId: string): boolean {
+  if (writtenThreadIds.has(threadId)) return false;
+  for (const source of newThreadIdSources) {
+    if (source() === threadId) return true;
+  }
+  return false;
 }
 
 type ThreadListArgs = {
@@ -403,6 +427,7 @@ async function saveLegacyChatThread(
 }
 
 function writeChatThreadRecord(thread: ThreadRecord): Promise<ThreadRecord> {
+  writtenThreadIds.add(thread.id);
   return threadRecordWrites.write(thread.id, () => saveChatThread(thread));
 }
 
@@ -631,6 +656,9 @@ export async function getStoredChatThreadReadResult(
   if (isChatThreadDeleted(threadId)) {
     return { thread: undefined, cacheable: true };
   }
+  if (isPendingNewThread(threadId)) {
+    return { thread: undefined, cacheable: true };
+  }
   const legacyThread = await readLegacyStore(
     () => db.threads.get(threadId),
     undefined,
@@ -807,8 +835,16 @@ function inheritedMessageIds(
 export async function listStoredChatMessages(
   threadId: string,
 ): Promise<MessageRecord[]> {
-  if (isThreadIncognito(threadId)) return [];
-  if (isChatThreadDeleted(threadId)) return [];
+  return (await readStoredChatMessages(threadId)).messages;
+}
+
+/** `fromBackend` is false when the backend read failed and the legacy browser copy was returned. */
+export async function readStoredChatMessages(
+  threadId: string,
+): Promise<{ messages: MessageRecord[]; fromBackend: boolean }> {
+  if (isThreadIncognito(threadId)) return { messages: [], fromBackend: false };
+  if (isChatThreadDeleted(threadId)) return { messages: [], fromBackend: false };
+  if (isPendingNewThread(threadId)) return { messages: [], fromBackend: false };
   const legacyMessages = await readLegacyStore(
     () => db.messages.where("threadId").equals(threadId).toArray(),
     [] as MessageRecord[],
@@ -835,22 +871,26 @@ export async function listStoredChatMessages(
         (backendMessages.length === 0 && legacyMessages.length > 0),
     });
     if (legacyMessages.length > 0 && merged.shouldSync) {
-      return syncChatMessages(threadId, merged.messages, {
+      const messages = await syncChatMessages(threadId, merged.messages, {
         pruneMissing: false,
       }).catch(() => merged.messages);
+      return { messages, fromBackend: true };
     }
-    return merged.messages;
+    return { messages: merged.messages, fromBackend: true };
   }
   if (
     backendMessages &&
     isLegacyChatImportDone() &&
     legacyMessages.length === 0
   ) {
-    return [];
+    return { messages: [], fromBackend: true };
   }
-  return legacyMessages.filter(
-    (message) => !isChatThreadDeleted(message.threadId),
-  );
+  return {
+    messages: legacyMessages.filter(
+      (message) => !isChatThreadDeleted(message.threadId),
+    ),
+    fromBackend: false,
+  };
 }
 
 export async function getStoredChatMessage(
@@ -1177,6 +1217,44 @@ export async function updateStoredChatThread(
   });
   if (!thread) return undefined;
   return updateChatThread(threadId, patch, options);
+}
+
+/** Message counts in one request. Threads the server has none for count legacy local messages.
+ *  Null on an older server. */
+export async function countStoredChatMessages(
+  threadIds: string[],
+): Promise<Map<string, number> | null> {
+  const ids = threadIds.filter((id) => !isThreadIncognito(id) && !isChatThreadDeleted(id));
+  const counts = await batchCountChatMessages(ids);
+  if (!counts) return null;
+  await Promise.all(
+    ids
+      .filter((id) => (counts.get(id) ?? 0) === 0)
+      .map(async (id) => {
+        const legacy = await readLegacyStore(
+          () => db.messages.where("threadId").equals(id).toArray(),
+          [] as MessageRecord[],
+        );
+        const n = legacy.filter((m) => m.role === "user" || m.role === "assistant").length;
+        if (n > 0) counts.set(id, n);
+      }),
+  );
+  return counts;
+}
+
+/** Messages for many threads in one request; a thread the batch has nothing for falls back to
+ *  its per-thread read, which also covers legacy local history. */
+export async function listStoredChatMessagesMany(
+  threadIds: string[],
+): Promise<Map<string, MessageRecord[]>> {
+  const ids = threadIds.filter((id) => !isThreadIncognito(id) && !isChatThreadDeleted(id));
+  const out = await batchListChatMessages(ids).catch(() => new Map<string, MessageRecord[]>());
+  await Promise.all(
+    ids
+      .filter((id) => (out.get(id)?.length ?? 0) === 0)
+      .map(async (id) => out.set(id, await listStoredChatMessages(id).catch(() => []))),
+  );
+  return out;
 }
 
 /** Thread ids whose sandbox still holds files, passed through from the route. */

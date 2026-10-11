@@ -331,6 +331,40 @@ def test_load_generate_status_unload_roundtrip(client):
 def test_gallery_serve_refuses_unowned_id(client):
     # The serve route resolves through the ownership guard, so a guessed stem is a 404, not a stream of foreign bytes.
     assert client.get("/api/inference/images/gallery/family-photo/file").status_code == 404
+    assert (
+        client.get("/api/inference/images/gallery/family-photo/file?thumb=256").status_code == 404
+    )
+
+
+def test_gallery_serve_thumb_is_a_webp_and_falls_back_to_the_png(client, monkeypatch):
+    _post_load(
+        client,
+        model_path = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_S.gguf",
+        base_repo = "unsloth/Z-Image-base",
+    )
+    url = _post_generate(client, prompt = "a sloth", seed = 7).json()["images"][0]["url"]
+    sizes = []
+
+    def _thumbnail(path, size):
+        sizes.append(size)
+        return b"WEBP"
+
+    monkeypatch.setattr(gallery_module, "thumbnail", _thumbnail)
+    thumb = client.get(f"{url}?thumb=5000")
+    assert thumb.headers["content-type"] == "image/webp" and thumb.content == b"WEBP"
+    assert sizes == [1024]
+    assert client.get(f"{url}?thumb=0").headers["content-type"] == "image/webp"
+    assert sizes == [1024, 32]
+    original = client.get(url)
+    assert original.headers["content-type"] == "image/png" and original.content == b"PNG"
+
+    def _undecodable(path, size):
+        raise OSError("truncated PNG")
+
+    monkeypatch.setattr(gallery_module, "thumbnail", _undecodable)
+    fallback = client.get(f"{url}?thumb=256")
+    assert fallback.headers["content-type"] == "image/png" and fallback.content == b"PNG"
 
 
 def test_generate_holds_progress_active_during_persist(client, monkeypatch):
@@ -674,6 +708,21 @@ def test_generate_native_process_death_names_the_engine_not_its_output(client, m
     assert "native image renderer stopped" in detail
     for leak in ("ggml_abort", "/Users/me", "img_gen", "code -6"):
         assert leak not in detail
+
+
+def test_generate_nan_image_names_the_overflow(client, monkeypatch):
+    from core.inference.diffusion_postprocess import NAN_IMAGE_MESSAGE
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _nan(**kwargs):
+        raise RuntimeError(NAN_IMAGE_MESSAGE)
+
+    monkeypatch.setattr(backend, "generate", _nan)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert "overflowed at this resolution" in resp.json()["detail"]
 
 
 def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(client, monkeypatch):
@@ -1437,6 +1486,7 @@ def test_status_passes_through_resolved(client, monkeypatch):
     assert body["resolved"]["transformer_quant"] == {
         **resolved["transformer_quant"],
         "artifact": None,
+        "replaced": None,
     }
     # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
     assert body["resolved"]["speed_mode"]["requested"] is None

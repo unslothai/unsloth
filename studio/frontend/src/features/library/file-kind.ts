@@ -3,10 +3,10 @@
 
 import {
   AudioWave01Icon,
-  File02Icon,
+  Doc01Icon,
+  FileEmpty02Icon,
   FlimSlateIcon,
   Image02Icon,
-  InternetIcon,
   Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
@@ -14,12 +14,14 @@ import {
 import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { documentKind } from "@/components/file-viewer/kind";
+import { attachmentFileKind } from "@/features/chat/lib/attachment-file-kind";
 import type { LibraryItem } from "./api";
 import { fileExtension } from "./file-name";
 
 export type LibraryFileKind =
   | "image"
   | "web"
+  | "word"
   | "document"
   | "spreadsheet"
   | "presentation"
@@ -134,6 +136,7 @@ export function fileKind(
   if (type.startsWith("video/")) return "video";
   if (type === "application/pdf") return "pdf";
   if (type === "text/html") return "web";
+  if (attachmentFileKind(item.fileName ?? item.name, type) === "word") return "word";
   const viewed = documentKind("", type);
   if (viewed === "sheet") return "spreadsheet";
   if (viewed === "slides") return "presentation";
@@ -157,7 +160,7 @@ export const TYPE_FILTER_KINDS: Record<LibraryTypeFilter, LibraryFileKind[]> = {
   images: ["image"],
   videos: ["video"],
   audio: ["audio"],
-  documents: ["document", "web", "code"],
+  documents: ["word", "document", "web", "code"],
   spreadsheets: ["spreadsheet"],
   presentations: ["presentation"],
   pdfs: ["pdf"],
@@ -165,8 +168,9 @@ export const TYPE_FILTER_KINDS: Record<LibraryTypeFilter, LibraryFileKind[]> = {
 
 export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
   image: Image02Icon,
-  web: InternetIcon,
-  document: File02Icon,
+  web: SourceCodeIcon,
+  word: Doc01Icon,
+  document: FileEmpty02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
   pdf: Pdf01Icon,
@@ -177,6 +181,7 @@ export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
 };
 
 export const KIND_ICON_CLASS: Partial<Record<LibraryFileKind, string>> = {
+  word: "text-[#4285F4]",
   spreadsheet: "text-emerald-500",
   pdf: "text-red-500",
   presentation: "text-orange-500",

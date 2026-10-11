@@ -245,6 +245,36 @@ def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, t
     assert metadata.transport == download_registry.TRANSPORT_XET
     assert metadata.blob_hashes == frozenset({"blob"})
     assert registry.current_generation(key) == generation
+    assert registry.current_attempt(key) == 2
+
+
+def test_reclaiming_a_run_counts_attempts_and_a_fresh_claim_resets_them():
+    key, registry = _shared_setup_1()
+    generation = registry.current_generation(key)
+    assert registry.current_attempt(key) == 1
+
+    for expected in (2, 3):
+        registry.release_active_slot(key)
+        assert registry.claim(
+            key,
+            download_registry.TRANSPORT_XET,
+            repo_type = "model",
+            repo_id = "Org/Model",
+            generation = generation,
+            replace_active = True,
+        )[0]
+        assert registry.current_generation(key) == generation
+        assert registry.current_attempt(key) == expected
+
+    registry.set_job(key, "error", "killed")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+    )[0]
+    assert registry.current_generation(key) != generation
+    assert registry.current_attempt(key) == 1
 
 
 def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):

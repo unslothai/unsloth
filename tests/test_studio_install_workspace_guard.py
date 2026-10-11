@@ -12,8 +12,6 @@ from pathlib import Path
 import pytest
 from unsloth_pwsh_runner import run_pwsh
 
-from unsloth_pwsh_runner import run_pwsh
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
@@ -1475,6 +1473,155 @@ def test_create_studio_shortcuts_end_to_end_never_embeds_a_planted_id(tmp_path):
 
     subprocess.run(["sh", "-c", f". {launcher}"], capture_output = True, timeout = 60)
     assert not marker.exists(), "the planted id executed as launcher code"
+
+
+def _generated_sh_launcher(tmp_path):
+    """Run the real create_studio_shortcuts; return (studio_home, data_dir, baked id)."""
+    home, studio_home, data_dir = tmp_path / "home", tmp_path / "studio", tmp_path / "data"
+    for d in (home, studio_home / "share", data_dir, tmp_path / "bin"):
+        d.mkdir(parents = True)
+    exe = tmp_path / "bin" / "unsloth"
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    exe.chmod(0o755)
+    script = (
+        "set -e\ndownload() { : ; }\nsubstep() { : ; }\n_LOCK_KEY=testkey\n"
+        f'STUDIO_HOME="{studio_home}"\nDATA_DIR="{data_dir}"\n_STUDIO_HOME_REDIRECT=default\n'
+        + _extract_create_studio_shortcuts()
+        + f'\ncreate_studio_shortcuts "{exe}" "linux"\n'
+    )
+    res = subprocess.run(
+        ["sh", "-c", script],
+        text = True,
+        capture_output = True,
+        timeout = 300,
+        env = dict(os.environ, HOME = str(home)),
+        cwd = str(tmp_path),
+    )
+    assert res.returncode == 0, res.stderr[-400:]
+    baked = re.search(
+        r"^_EXPECTED_STUDIO_ROOT_ID='(.*)'$", (data_dir / "launch-studio.sh").read_text(), re.M
+    ).group(1)
+    return studio_home, data_dir, baked
+
+
+def _run_sh_launcher_repair(
+    data_dir: Path,
+    baked: str,
+    conf: Path | None = None,
+):
+    """The generated launcher's prologue (studio.conf + the repair), under its own set -euo pipefail."""
+    launcher = (data_dir / "launch-studio.sh").read_text(encoding = "utf-8")
+    start = launcher.index("_repair_studio_install_id() (")
+    end = launcher.index("\n_repair_studio_install_id\n", start) + len(
+        "\n_repair_studio_install_id\n"
+    )
+    script = (
+        "set -euo pipefail\n"
+        f"_EXPECTED_STUDIO_ROOT_ID='{baked}'\n"
+        f". '{conf or data_dir / 'studio.conf'}'\n" + launcher[start:end] + "echo REPAIR_DONE\n"
+    )
+    res = subprocess.run(["bash", "-c", script], text = True, capture_output = True, timeout = 60)
+    assert res.returncode == 0 and "REPAIR_DONE" in res.stdout, res.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "runs the POSIX installer function")
+def test_install_sh_launcher_restores_a_missing_or_malformed_install_id(tmp_path):
+    """Without the id the backend reports "", which the baked id never matches, so the launcher
+    would start a new Studio on every click and never open one."""
+    studio_home, data_dir, baked = _generated_sh_launcher(tmp_path)
+    id_file = studio_home / "share" / "studio_install_id"
+    launcher = (data_dir / "launch-studio.sh").read_text(encoding = "utf-8")
+    assert launcher.index("\n_repair_studio_install_id\n") < launcher.index(
+        "\n_port=$(_find_healthy_port)"
+    )
+
+    id_file.unlink()
+    _run_sh_launcher_repair(data_dir, baked)
+    assert id_file.read_text() == baked
+    assert oct(id_file.stat().st_mode & 0o777) == "0o600"
+
+    for broken in ("", "not-an-id", baked.upper(), baked[:63]):
+        id_file.write_text(broken)
+        _run_sh_launcher_repair(data_dir, baked)
+        assert id_file.read_text() == baked, f"{broken!r} was not repaired"
+
+    other = "cd34" * 16
+    id_file.write_text(other + "\n")
+    _run_sh_launcher_repair(data_dir, baked)
+    assert id_file.read_text() == other + "\n", "a different valid id belongs to someone else"
+
+    id_file.unlink()
+    id_file.mkdir()
+    _run_sh_launcher_repair(data_dir, baked)
+    assert id_file.is_dir() and not any(id_file.iterdir())
+    assert [p.name for p in (studio_home / "share").iterdir()] == [
+        "studio_install_id"
+    ], "temp file left behind"
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "runs the POSIX installer function")
+def test_install_sh_launcher_repair_is_a_no_op_without_the_id_path(tmp_path):
+    """A studio.conf from an older install names no id file, so there is nothing to repair."""
+    studio_home, data_dir, baked = _generated_sh_launcher(tmp_path)
+    id_file = studio_home / "share" / "studio_install_id"
+    id_file.unlink()
+    old_conf = tmp_path / "old.conf"
+    old_conf.write_text(
+        "".join(
+            l + "\n"
+            for l in (data_dir / "studio.conf").read_text().splitlines()
+            if not l.startswith("STUDIO_INSTALL_ID_FILE=")
+        )
+    )
+    _run_sh_launcher_repair(data_dir, baked, conf = old_conf)
+    assert not id_file.exists()
+
+
+def _ps1_launcher_repair(id_file: Path, expected: str) -> str:
+    """Repair-StudioInstallId from install.ps1's launcher template, rendered as install.ps1 would."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    tpl = src[src.index('$launcherContent = @"') :]
+    start = tpl.index("function Repair-StudioInstallId {")
+    end = tpl.index("\nRepair-StudioInstallId\n", start) + len("\nRepair-StudioInstallId\n")
+    body = tpl[start:end].replace("`$", "$")
+    quoted = str(id_file).replace("'", "''")
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$_ExpectedStudioRootId = '{expected}'\n$_StudioInstallIdFile = '{quoted}'\n"
+        + body
+        + "'REPAIR_DONE'\n"
+    )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs pwsh")
+def test_install_ps1_launcher_restores_a_missing_or_malformed_install_id(tmp_path):
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    tpl = src[src.index('$launcherContent = @"') :]
+    assert "`$_StudioInstallIdFile = '$($_studioIdFile -replace \"'\", \"''\")'" in tpl
+    assert tpl.index("\nRepair-StudioInstallId\n") < tpl.index("function Find-FreeLaunchPort")
+
+    share = tmp_path / "it's share"
+    share.mkdir()
+    id_file = share / "studio_install_id"
+    expected = "ab12" * 16
+    script = tmp_path / "repair.ps1"
+    script.write_text(_ps1_launcher_repair(id_file, expected), encoding = "utf-8")
+
+    def run():
+        res = run_pwsh(["pwsh", "-NoProfile", "-File", str(script)], capture_output = True, text = True)
+        assert res.returncode == 0 and "REPAIR_DONE" in res.stdout, res.stderr
+
+    run()
+    assert id_file.read_text() == expected
+    for broken in ("", "not-an-id", expected.upper()):
+        id_file.write_text(broken)
+        run()
+        assert id_file.read_text() == expected, f"{broken!r} was not repaired"
+    other = "cd34" * 16
+    id_file.write_text(other)
+    run()
+    assert id_file.read_text() == other
+    assert [p.name for p in share.iterdir()] == ["studio_install_id"], "temp file left behind"
 
 
 def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):

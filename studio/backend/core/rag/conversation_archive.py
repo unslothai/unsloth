@@ -588,6 +588,9 @@ def archive_turns(
                 written += 1
             if _INGEST_FAILED:
                 globals()["_INGEST_FAILED"] = False
+    except embeddings.EmbeddingModelDownloadRequiredError as exc:
+        globals()["_INGEST_FAILED"] = True
+        _log_embedder_pending(model, exc)
     except Exception:
         # A chat that cannot archive still beats one that raises. Whatever was written before the failure stays
         # searchable.
@@ -610,6 +613,17 @@ def archive_turns(
         delete_for_thread(thread_id)
         return 0
     return written
+
+
+# A Settings pick whose download has not finished is not a fault; logged once, not per compaction.
+_EMBEDDER_PENDING_LOGGED: set = set()
+
+
+def _log_embedder_pending(model, exc: Exception) -> None:
+    if model in _EMBEDDER_PENDING_LOGGED:
+        return
+    _EMBEDDER_PENDING_LOGGED.add(model)
+    logger.info("conversation_archive.embedder_pending: %s", exc)
 
 
 # Set when an archive write fails, cleared by the next one that succeeds. Process-wide on purpose: what fails here is
@@ -2299,6 +2313,8 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
                     seen.add(hit.chunk_id)
                 if len(hits) >= fetch:
                     break
+        except embeddings.EmbeddingModelDownloadRequiredError as exc:
+            _log_embedder_pending(model, exc)
         except Exception:
             # Dense retrieval raises rather than degrading when no embedder can start. The lexical hits stand on their
             # own, so this top-up may fail.

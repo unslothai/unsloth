@@ -32,11 +32,23 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Re-measured together on one machine and build: 5,813.8 KB raw / 1,730.2 KB transfer at d7795365c,
-  // plus the margin the previous raise chose (210.8 KB raw, 65.1 KB transfer). The growth since is
-  // chat attachment cards, chips and their layout (#12017), which the first chat screen renders.
-  transferBytes: 1_840_000,
-  rawBytes: 6_170_000,
+  // Re-measured together on one machine and build: 6,023.4 KB raw / 1,802.1 KB transfer at 5b78bafd04,
+  // plus the margin the previous raises chose (210.8 KB raw, 65.1 KB transfer). The growth since is
+  // the vLLM / SGLang engine options inside the model config page and Resources tab (#11491), which
+  // live inline in the chat and settings chunks: lazy-loading the separable inference-engines
+  // module recovers only 0.6 KB transfer, so what ran out is headroom, not laziness.
+  // The browser panel's bookmarks, tab dragging and page zoom then added 2.8 KB raw / 1.0 KB
+  // transfer (6,231.7 -> 6,234.5 KB raw, 1,865.0 -> 1,866.0 KB transfer, one machine and build),
+  // inside the already-eager chat chunk; raw is raised by that so the margin stays where it was.
+  // Re-measured again at cc84c7dc7a: 6,278.6 KB raw / 1,879.0 KB transfer, 11.8 KB transfer over.
+  // Measured commit by commit from the browser panel (#12347), no single import did it: the panel
+  // itself left 2.9 KB transfer over, the Sandbox settings tab (#12215) added 16.4 KB raw / 4.5 KB
+  // transfer (its strings in every eager locale and the sandbox pick in the chat adapter), the
+  // message action bar rework (#12735) 2.9 KB raw, and the other merges in that range the rest,
+  // all in the eager chat, index and settings chunks. Headroom ran out, so the same margin is put
+  // back.
+  transferBytes: 1_991_000,
+  rawBytes: 6_646_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

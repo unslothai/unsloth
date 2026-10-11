@@ -22,9 +22,10 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MoreHorizontalIcon, RotateCwIcon } from "lucide-react";
+import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
 import type { FolderSyncJob, LinkedFolderScope } from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
@@ -113,7 +114,7 @@ export function LinkedFoldersManager({
             disabled={running}
             onSelect={() => void manager.rebuild(folder.id)}
           >
-            <RotateCwIcon className="size-3.5" /> Rebuild index
+            <RefreshGlyph className="size-3.5" /> Rebuild index
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem

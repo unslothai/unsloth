@@ -24,6 +24,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { skillLoadCardEvent } from "../src/features/chat/api/skill-load-event.ts";
 
 const paddedResponse = await import("../src/features/chat/api/padded-response.ts");
 const { shouldRestorePreviousModel, loadOutcomeUnknown } = await import(
@@ -109,6 +110,7 @@ function realAuthFetch(port: number): AuthApi {
 
 function realLoadModel(auth: AuthApi): ChatApi {
   return loadWithStubs<ChatApi>(new URL("../src/features/chat/api/chat-api.ts", import.meta.url), {
+    "./skill-load-event": { skillLoadCardEvent },
     "@/features/auth": { authFetch: auth.authFetch },
     "./padded-response": paddedResponse,
     "@/lib/format-fastapi-error": {

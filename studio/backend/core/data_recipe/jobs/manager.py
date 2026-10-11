@@ -359,7 +359,15 @@ class JobManager:
             base_dataset_path = Path(artifact_path)
             parquet_dir = base_dataset_path / "parquet-files"
             if not parquet_dir.exists():
-                return {"error": f"dataset path missing: {parquet_dir}"}
+                if job_status in {"completed", "error", "cancelled"}:
+                    return {"error": f"dataset path missing: {parquet_dir}"}
+                return None
+            if job_status not in {"completed", "error", "cancelled"}:
+                # DuckDB opens with FILE_SHARE_DELETE; the pyarrow fallback would block the
+                # worker's merge rmtree on Windows.
+                return self._load_dataset_page_with_duckdb(
+                    parquet_dir = parquet_dir, limit = limit, offset = offset
+                )
 
             return self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
         except Exception as exc:
@@ -393,29 +401,36 @@ class JobManager:
         try:
             conn = duckdb.connect(":memory:")
             try:
-                total_row = conn.execute(
-                    "SELECT COUNT(*) FROM read_parquet(?)",
+                # Row counts from the footers, then scan only the shards the page covers: a full
+                # sort per request grows with the run and the live preview polls page 1.
+                shards = conn.execute(
+                    "SELECT file_name, num_rows FROM parquet_file_metadata(?) ORDER BY file_name",
                     [parquet_glob],
-                ).fetchone()
-                total = int(total_row[0] if total_row else 0)
-                dataframe = conn.execute(
-                    (
-                        "SELECT *, row_number() OVER (PARTITION BY filename) AS __row_num__ "
-                        "FROM read_parquet(?, filename=true) "
-                        "ORDER BY filename, __row_num__ "
-                        "LIMIT ? OFFSET ?"
-                    ),
-                    [parquet_glob, int(limit), int(offset)],
-                ).fetchdf()
+                ).fetchall()
+                total = sum(int(num_rows) for _, num_rows in shards)
+                frames = []
+                skip, remaining = int(offset), int(limit)
+                for file_name, num_rows in shards:
+                    if remaining <= 0:
+                        break
+                    if skip >= int(num_rows):
+                        skip -= int(num_rows)
+                        continue
+                    frame = conn.execute(
+                        "SELECT * FROM read_parquet(?) LIMIT ? OFFSET ?",
+                        [file_name, remaining, skip],
+                    ).fetchdf()
+                    frames.append(frame)
+                    remaining -= len(frame.index)
+                    skip = 0
             finally:
                 conn.close()
         except (RuntimeError, ValueError, duckdb.Error):
             return None
 
-        for helper_col in ("filename", "__row_num__"):
-            if helper_col in dataframe.columns:
-                dataframe = dataframe.drop(columns = [helper_col])
+        import pandas as pd
 
+        dataframe = pd.concat(frames, ignore_index = True) if frames else pd.DataFrame()
         rows = dataframe.to_dict(orient = "records")
         return {"dataset": to_preview_jsonable_row(rows), "total": total}
 
@@ -587,6 +602,8 @@ class JobManager:
                 return
             if et == EVENT_JOB_STARTED:
                 self._job.status = "active"
+                self._job.artifact_path = event.get("artifact_path") or self._job.artifact_path
+                self._job.execution_type = event.get("execution_type") or self._job.execution_type
             if et == EVENT_JOB_COMPLETED:
                 self._job.status = "completed"
                 self._job.finished_at = time.time()

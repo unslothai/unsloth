@@ -426,7 +426,7 @@ export function DataRecipesPage(): ReactElement {
             <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
               Data Recipes
             </h1>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <p className="mt-0.5 text-sm text-muted-foreground">
               Create and manage local recipe workflows.
             </p>
           </div>

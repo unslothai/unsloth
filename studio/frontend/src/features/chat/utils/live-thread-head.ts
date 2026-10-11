@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 type LiveThreadView = {
-  threadListItem: () => { getState: () => { remoteId?: string | null } };
+  threads: () => { getState: () => { mainThreadId?: string } };
+  threadListItem: () => {
+    getState: () => { id?: string; remoteId?: string | null };
+  };
   thread: () => {
     getState: () => { messages: ReadonlyArray<{ id: string }> };
   };
@@ -21,7 +24,10 @@ export function registerLiveThreadView(view: LiveThreadView): () => void {
 export function liveThreadBranch(threadId: string): string[] | null {
   for (const view of views) {
     try {
-      if (view.threadListItem().getState().remoteId !== threadId) continue;
+      const item = view.threadListItem().getState();
+      if (item.remoteId !== threadId) continue;
+      // A chat opened earlier keeps its runtime alive, but its thread() reads the chat on screen.
+      if (item.id !== view.threads().getState().mainThreadId) continue;
       return view.thread().getState().messages.map((message) => message.id);
     } catch {
       // A view torn down mid-switch has no thread to read.

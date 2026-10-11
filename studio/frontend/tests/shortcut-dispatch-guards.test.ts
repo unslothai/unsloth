@@ -31,6 +31,7 @@ const SRC__ROOT = readSrc("app/routes/__root.tsx");
 const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 // The chat row menu's shared parts, drawn by the sidebar and by the Projects page.
 const CHAT_ROW_MENU = readSrc("features/chat/components/chat-row-menu.ts");
+const OPEN_CHAT_FOLDER = readSrc("features/chat/components/open-chat-folder-item.tsx");
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
 const USE_SHORTCUT = readSrc("features/settings/hooks/use-shortcut.ts");
@@ -386,7 +387,8 @@ test("the sandbox probe leaves the shared project folder alone", async () => {
   // them reported a second folder for any chat that joined a used project.
   assert.doesNotMatch(body, /sandboxSessionIdFor\(/);
   assert.doesNotMatch(body, /candidates\.add\(/);
-  assert.equal(APP_SIDEBAR.split("sandboxSessionIdsHolding(ids)").length - 1, 2);
+  assert.equal(APP_SIDEBAR.split("sandboxSessionIdsHolding(ids)").length - 1, 1);
+  assert.equal(OPEN_CHAT_FOLDER.split("sandboxSessionIdsHolding(ids)").length - 1, 1);
 });
 
 // Loading a model that drops the level in force leaves the effort set to one

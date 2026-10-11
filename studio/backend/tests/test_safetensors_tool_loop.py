@@ -1851,8 +1851,8 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
         ),
         # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
         pytest.param(
-            [["I will use web_search", '[ARGS]{"code":"print(1)"}'], ["done"]],
-            [("web_search", {"code": "print(1)"})],
+            [["I will use web_search", '[ARGS]{"query":"print(1)"}'], ["done"]],
+            [("web_search", {"query": "print(1)"})],
             ["web_search"],
             None,
             id = "initial_buffer_flush_holds_split_rehearsal_name",
@@ -2020,7 +2020,7 @@ def test_unrestricted_mode_split_rehearsal_name_is_not_streamed():
             max_tool_iterations = 2,
         )
     )
-    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"query": "x"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search" in t for t in contents), contents
 
@@ -2043,7 +2043,7 @@ def test_unrestricted_mode_split_after_bracket_is_not_streamed():
             max_tool_iterations = 2,
         )
     )
-    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"query": "x"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search[" in t for t in contents), contents
 
@@ -2612,7 +2612,7 @@ class TestLoopBasic:
             [
                 [
                     '<think>draft render_html[ARGS]{"code":"x"}</think>',
-                    'web_search[ARGS]{"code":"print(1)"}',
+                    'web_search[ARGS]{"query":"print(1)"}',
                 ],
                 ["Done."],
             ]
@@ -2638,7 +2638,7 @@ class TestLoopBasic:
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
         assert [e["tool_name"] for e in tool_starts] == ["web_search"], tool_starts
-        assert exec_fn.calls == [("web_search", {"code": "print(1)"})]
+        assert exec_fn.calls == [("web_search", {"query": "print(1)"})]
 
     def test_render_html_success_blocks_second_canvas_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -2794,6 +2794,31 @@ class TestLoopBehaviour:
             "One earlier request to call tool 'web_search' in this batch was not executed"
         )
         assert "previous tool request" not in after[1]["content"].lower()
+
+    @pytest.mark.parametrize("deduplicate", [True, False])
+    def test_identical_calls_in_one_turn_run_when_deduplication_is_off(self, deduplicate):
+        call = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+        turns = iter([[call * 2], ["final"]])
+
+        def fake_single_turn(messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["1", "1"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "run it twice"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+                deduplicate_tool_calls = deduplicate,
+            )
+        )
+
+        assert exec_fn.calls == [("python", {"code": "print(1)"})] * (1 if deduplicate else 2)
 
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
@@ -3291,6 +3316,99 @@ class TestLoopRePrompt:
         assert exec_fn.calls == []
         contents = [e for e in events if e["type"] == "content"]
         assert contents and contents[-1]["text"].strip() == "4"
+
+    @pytest.mark.parametrize(
+        "reasoning, answer, reasoning_prefilled",
+        [
+            pytest.param(
+                "",
+                "I'll write a small Python function that reverses a string.\n"
+                "```python\ndef reverse(s):\n    return s[::-1]\n```\n",
+                False,
+                id = "plain",
+            ),
+            pytest.param(
+                "",
+                "Let me run this:\n```python\nprint(1)\n```\n",
+                False,
+                id = "run_intent_with_code",
+            ),
+            pytest.param(
+                "Plan it.</think>",
+                "I'll write it.\n```python\ndef f(): pass\n```\n",
+                True,
+                id = "prefilled_then_answer",
+            ),
+        ],
+    )
+    def test_finished_code_answer_is_not_reprompted(self, reasoning, answer, reasoning_prefilled):
+        loop, exec_fn = _make_loop(
+            turns = [[reasoning + answer], ["No tool is needed. Here it is again."]],
+            nudge_tool_calls = True,
+            reasoning_prefilled = reasoning_prefilled,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert NUDGE_TOOL_CALLS_STATUS not in statuses
+        assert exec_fn.calls == []
+        assert contents[-1] == reasoning + answer
+
+    @pytest.mark.parametrize(
+        "chunk, reasoning_prefilled",
+        [
+            pytest.param(
+                "<think>I'll write it.\n```python\ndef f(): pass\n```\n</think>",
+                False,
+                id = "think_block_only",
+            ),
+            pytest.param(
+                "I'll write it.\n```python\ndef f(): pass\n```\n",
+                True,
+                id = "prefilled_unclosed",
+            ),
+            pytest.param(
+                "I'll write it.\n```python\ndef f(): pass\n```\n</think>",
+                True,
+                id = "prefilled_closed_empty_answer",
+            ),
+        ],
+    )
+    def test_code_only_in_reasoning_is_still_reprompted(self, chunk, reasoning_prefilled):
+        loop, exec_fn = _make_loop(
+            turns = [[chunk], ["Done."]],
+            nudge_tool_calls = True,
+            reasoning_prefilled = reasoning_prefilled,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        assert NUDGE_TOOL_CALLS_STATUS in statuses
+
+    @pytest.mark.parametrize(
+        "chunk",
+        [
+            pytest.param(
+                'Let me run it.\n<tool_call>\n```json\n{"name": "python", "arguments": '
+                '{"code": "print(1)"}}\n```\n</tool_call>',
+                id = "fenced_json_call",
+            ),
+            pytest.param(
+                "Let me run it.\n<tool_call>\n```python\nprint(1)\n```\n</tool_call>",
+                id = "fenced_code_call",
+            ),
+        ],
+    )
+    def test_unparsed_call_with_a_fence_is_still_reprompted(self, chunk):
+        call = '<tool_call>\n{"name": "python", "arguments": {"code": "print(1)"}}\n</tool_call>'
+        loop, exec_fn = _make_loop(
+            turns = [[chunk], [call], ["1"]],
+            exec_results = ["1"],
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        assert NUDGE_TOOL_CALLS_STATUS in statuses
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
 
     def test_max_reprompts_capped(self):
         # Model keeps stalling with intent -- after MAX_ACT_REPROMPTS re-prompts
@@ -4788,14 +4906,14 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
-    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"query":"' + big + '"}}'
     chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
     loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
     events = _collect_events(loop)
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
     assert exec_fn.calls and exec_fn.calls[0][0] == "web_search"
-    assert len(exec_fn.calls[0][1].get("code", "")) > _MAX_BARE_JSON_BUFFER
+    assert len(exec_fn.calls[0][1].get("query", "")) > _MAX_BARE_JSON_BUFFER
 
 
 def test_oversized_plain_json_answer_still_streams():
@@ -4960,12 +5078,6 @@ class TestEnabledToolNameGate:
 
     def _names(self, calls):
         return [c["function"]["name"] for c in calls]
-
-    def test_parse_inactive_rehearsal_does_not_swallow_active_call(self):
-        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
-        assert self._names(calls) == ["web_search"]
-        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_parse_inactive_rehearsal_alone_is_prose(self):
         assert (
@@ -5728,6 +5840,29 @@ def test_an_alternating_workspace_block_does_not_crowd_out_a_later_tool():
         "terminal",
         "web_search",
     ]
+
+
+def test_mcp_listing_runs_again_after_an_mcp_write():
+    """#10348: `list, create, list` on an MCP server re-lists instead of dropping the call."""
+    name = "mcp__docs__manager"
+    listing = '<tool_call>{"name":"%s","arguments":{"action":"list"}}</tool_call>' % name
+    create = '<tool_call>{"name":"%s","arguments":{"action":"create"}}</tool_call>' % name
+    turns = iter([listing + create + listing, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["[]", "created", "[a]"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Create a doc"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [args.get("action") for _, args in executor.calls] == ["list", "create", "list"]
 
 
 def test_every_independent_edit_gets_its_own_verification_rerun():

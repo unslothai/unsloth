@@ -31,6 +31,14 @@ $ProgressPreference = 'SilentlyContinue'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
+# The deps pass can replace this file while PowerShell keeps running the parsed copy (rerun below).
+$script:SetupSelfPath = $MyInvocation.MyCommand.Path
+$script:SetupSelfAtStart = $null
+try { $script:SetupSelfAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { }
+$script:SetupArgs = @($args)
+$script:SetupStartEnv = $null
+try { $script:SetupStartEnv = [System.Environment]::GetEnvironmentVariables() } catch { }
+
 # `unsloth studio update` spawns powershell.exe, which is Windows PowerShell 5.1,
 # and the child inherits the caller's PSModulePath. Launched from a PowerShell 7
 # prompt that path leads with PowerShell 7's module directories, which ship their
@@ -123,6 +131,19 @@ function Write-StudioLine {
     }
 }
 
+function Show-DownloadProgress {
+    param([Parameter(ValueFromPipeline = $true)][object]$InputObject)
+    process {
+        $line = [string]$InputObject
+        if ((@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE) -and
+            ($line -like 'Downloading *: *% (*) at */s' -or
+             $line -like 'Downloading *: * downloaded at */s')) {
+            Write-StudioLine $line
+        }
+        $InputObject
+    }
+}
+
 # --------------------------------------------------------------------------
 #  Maintainer-editable defaults
 #  Change these in the GitHub-hosted script so users get updated defaults.
@@ -165,21 +186,41 @@ $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
 $script:CudaArch = $null
+$script:DriverMaxCuda = $null
 
 function Exit-SetupFailure {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
-        [int]$Code = 1
+        [int]$Code = 1,
+        [switch]$NoTauriMarker
     )
     if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
     if ($Code -eq 0) { $Code = 1 }
-    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
-        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    if (-not $NoTauriMarker -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         $singleLine = ($Message -replace '[\r\n]+', ' ').Trim()
         [Console]::Out.WriteLine("[TAURI:ERROR] $singleLine")
         [Console]::Out.Flush()
     }
     exit $Code
+}
+
+function Test-SetupScriptReplaced {
+    if ($env:UNSLOTH_SETUP_RERUN -eq '1' -or -not $script:SetupSelfAtStart) { return $false }
+    try { $now = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { return $false }
+    return ($now -cne $script:SetupSelfAtStart)
+}
+
+function Restore-SetupStartEnvironment {
+    if (-not $script:SetupStartEnv) { return }
+    $keep = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($k in $script:SetupStartEnv.Keys) { [void]$keep.Add([string]$k) }
+    foreach ($k in @([System.Environment]::GetEnvironmentVariables().Keys)) {
+        if (-not $keep.Contains([string]$k)) { try { [System.Environment]::SetEnvironmentVariable([string]$k, $null) } catch { } }
+    }
+    foreach ($k in $script:SetupStartEnv.Keys) {
+        try { [System.Environment]::SetEnvironmentVariable([string]$k, [string]$script:SetupStartEnv[$k]) } catch { }
+    }
 }
 
 # The interpreter this setup was launched from, when it lives inside $VenvDir; $null otherwise.
@@ -1323,6 +1364,15 @@ function Write-CudaDriverToolkitMismatch {
     substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
 }
 
+# ggml's -compress-mode=size (toolkit >= 12.8) does not load on a driver below 12.4 (#12842).
+function Test-CudaDriverNeedsUncompressedFatbin {
+    param([string]$DriverMaxCuda)
+    if ($DriverMaxCuda -notmatch '^(\d+)\.(\d+)$') { return $false }
+    $major = [int]$Matches[1]
+    $minor = [int]$Matches[2]
+    return (($major -lt 12) -or (($major -eq 12) -and ($minor -lt 4)))
+}
+
 function Get-CudaComputeCapability {
     # $NvidiaSmiExe is an absolute path that survives Refresh-Environment. Not rediscovered
     # once detection rejected nvidia-smi: the driver library answered, and asking a wedged
@@ -2278,7 +2328,8 @@ function Invoke-BoundedPythonProbe {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $PythonExe
-        $psi.Arguments = "-c `"$Code`""
+        # -I: the stale-venv probe runs before Enter-StudioVenv drops PYTHONPATH (#11980).
+        $psi.Arguments = "-I -c `"$Code`""
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
@@ -2709,6 +2760,69 @@ function Find-VsBuildTools {
     return $null
 }
 
+# Same ceiling Resolve-CudaToolkit reads: nvidia-smi, else the driver library.
+function Get-LlamaDriverMaxCuda {
+    $smi = ""
+    if ($NvidiaSmiExe -and (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue)) {
+        try { $smi = Invoke-NvidiaSmiBounded $NvidiaSmiExe } catch { }
+    }
+    if ($smi -match "CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)") { return "$($Matches[1]).$($Matches[2])" }
+    if (Get-Command Get-NvidiaLibraryInventory -ErrorAction SilentlyContinue) {
+        $inv = Get-NvidiaLibraryInventory
+        if ($inv) { return "$($inv.CudaMajor).$($inv.CudaMinor)" }
+    }
+    return $null
+}
+
+function Get-NvccMajor {
+    param([string]$Nvcc)
+    try { if ((& $Nvcc --version 2>&1 | Out-String) -match 'release\s+(\d+)\.') { return [int]$Matches[1] } } catch { }
+    return $null
+}
+
+function Test-LlamaBuildToolsMissing {
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $true }
+    if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) { return $true }
+    # A CUDA source build installs the Toolkit (several GB) when no nvcc is found.
+    $nvccExe = $null
+    if ($HasNvidiaDriverEvidence) {
+        # A toolkit newer than the driver is rejected by Resolve-CudaToolkit, which then installs one.
+        $max = Get-LlamaDriverMaxCuda
+        $nvccExe = if ($max) { Find-Nvcc -MaxVersion $max } else { $null }
+        if (-not $nvccExe) {
+            $nvccExe = Find-Nvcc
+            $major = if ($nvccExe -and $max) { Get-NvccMajor $nvccExe } else { $null }
+            if ($max -and ($null -eq $major -or $major -gt [int]$max.Split('.')[0])) { $nvccExe = $null }
+        }
+    }
+    if ($HasNvidiaDriverEvidence -and -not $nvccExe) { return $true }
+    # Phase 4 upgrades a CMake too old for VS 2026 via winget.
+    if ($CmakeGenerator -match 'Visual Studio 18\b' -and -not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) { return $true }
+    # Resolve-CudaToolkit copies missing CUDA .targets into VS, elevating when denied.
+    $cudaRoot = if ($nvccExe) { Split-Path (Split-Path $nvccExe -Parent) -Parent } else { $null }
+    if ($cudaRoot -and $script:VsInstallPath) {
+        $extras = Join-Path $cudaRoot "extras\visual_studio_integration\MSBuildExtensions"
+        $custom = Get-VcBuildCustomizationsDir -VsInstallPath $script:VsInstallPath -Generator $CmakeGenerator
+        if ((Test-Path $extras) -and (Test-Path $custom) -and
+            -not (Get-ChildItem $custom -Filter "CUDA *.targets" -ErrorAction SilentlyContinue)) { return $true }
+    }
+    return (-not $script:VsInstallPath) -and (-not (Find-VsBuildTools))
+}
+
+function Test-SetupConsoleHeadless {
+    return (-not [Environment]::UserInteractive) -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
+}
+
+# A failed prebuilt is not consent to a multi-GB toolchain. No prompt (#8040): headless runs
+# outside Desktop keep installing; a terminal or Desktop opts in via UNSLOTH_INSTALL_BUILD_TOOLS.
+function Test-LlamaBuildToolsInstallAllowed {
+    $opt = "$env:UNSLOTH_INSTALL_BUILD_TOOLS".Trim().ToLowerInvariant()
+    if ($opt -in @("1", "true", "yes")) { return $true }
+    if ($opt -in @("0", "false", "no")) { return $false }
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
+    return (Test-SetupConsoleHeadless)
+}
+
 # Deferred from Phase 1 so the prebuilt path never pays for the multi-GB install.
 function Ensure-BuildToolsForLlamaSourceBuild {
     # CMake
@@ -2806,6 +2920,12 @@ function Test-VCRedistInstalled {
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     if ($StageRoot) { step "vcredist" "missing; unchanged during staging" "Yellow"; return }
+    # The first pass already tried; the installer prompts for UAC.
+    if ($env:UNSLOTH_SETUP_RERUN -eq '1') {
+        step "vcredist" "missing; already tried earlier in this update" "Yellow"
+        substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
+        return
+    }
     Write-StudioLine "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
     if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
         try {
@@ -3084,19 +3204,49 @@ function substep {
     }
 }
 
+# Matched on npm's error code line, not anywhere in the log: Windows cleanup warnings
+# carry EPERM after a network failure too. FetchError names registry.npmjs.org even
+# on a local errno, so this runs before the network check (#8725).
+$script:NpmLocalFailureRe = 'npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE)|operation was rejected by your operating system'
+# Keep in sync with _suggest_npm_registry in studio/setup.sh.
+$script:NpmNetworkFailureRe = '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)'
+
+function Show-NpmLocalFailureHint {
+    # -Socket: FetchError with no "npm error path" line, i.e. the OS refused node.exe's
+    # socket (per-program firewall / antivirus rule). A cache write failure has a path.
+    param([switch]$Socket)
+    Write-StudioLine ""
+    if ($Socket) {
+        $nodePath = try { (Get-Command node -ErrorAction Stop).Source } catch { "node.exe" }
+        step "frontend" "the OS refused node's connection to the npm registry" "Yellow"
+        substep "Allow $nodePath in your firewall/antivirus, or use another Node install."
+        return
+    }
+    step "frontend" "npm hit a local file error (permission, lock or disk full)" "Yellow"
+    substep "Try: npm cache clean --force, or exclude the npm cache from your antivirus."
+}
+
 function Invoke-NpmMirrorRetry {
     if (-not $env:_UNSLOTH_MIRROR_SPARE) { return $false }
     if ((Get-MirrorFailedHost -Output $script:SetupCommandOutput -Ran npm) -ne 'npm') { return $false }
     $pairs = @(Pop-MirrorSpare npm)
     if (-not $pairs) { return $false }
     $registry = $pairs[0].Split('=', 2)[1]
-    if ((Invoke-SetupCommand { npm install --registry $registry }) -ne 0) { return $false }
+    $verb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
+    if ((Invoke-SetupCommand { npm $verb --registry $registry }) -ne 0) { return $false }
     Set-MirrorEnv $pairs
     $script:NpmRegistryArgs = @('--registry', $registry)
     return $true
 }
 
 function Show-NpmRegistryHint {
+    # Empty output (verbose runs stream npm) keeps the unconditional registry hint.
+    param([string]$FailureOutput = "")
+    if ($FailureOutput) {
+        $FailureOutput = $FailureOutput -replace "$([char]27)\[[0-9;]*m", ''
+        if ($FailureOutput -cmatch $script:NpmLocalFailureRe) { Show-NpmLocalFailureHint -Socket:($FailureOutput -cmatch 'FetchError' -and $FailureOutput -cnotmatch 'npm (error|ERR!) path '); return }
+        if ($FailureOutput -inotmatch $script:NpmNetworkFailureRe) { return }
+    }
     if ($env:UNSLOTH_NPM_REGISTRY) { return }
     $mirror = $env:NPM_CONFIG_REGISTRY
     if (-not $mirror) {
@@ -3179,8 +3329,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         $ElevationState = if ($_principal.IsInRole(
                 [System.Security.Principal.WindowsBuiltInRole]::Administrator)) { "true" } else { "false" }
     } catch { }
-    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
-        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    if ($env:UNSLOTH_SETUP_RERUN -ne '1' -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
         [Console]::Out.Flush()
     }
@@ -4174,6 +4324,21 @@ $archFamilyMap = @{
     "gfx1030" = "gfx103X-all"
     "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
 }
+# RDNA arches route to AMD's multi-arch index, one pinned tag (unslothai#11815, #11614, #11814).
+# gfx1033 (miscomputes) and CDNA stay on the family map. In sync with _WINDOWS_MULTIARCH_GFX in studio/install_python_stack.py.
+$multiArchGfx = @(
+    "gfx1010", "gfx1011", "gfx1012",                                        # RDNA 1
+    "gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036",       # RDNA 2, gfx1033 stays per-family
+    "gfx1100", "gfx1101", "gfx1102", "gfx1103",                             # RDNA 3
+    "gfx1150", "gfx1151", "gfx1152", "gfx1153",                             # RDNA 3.5
+    "gfx1200", "gfx1201"                                                    # RDNA 4
+)
+$MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
+# Not rocm7.14.1: its Windows wheels ship a mismatched AOTriton runtime, so fused SDPA fails (ROCm/TheRock#7992).
+$MultiArchTag = "rocm7.14.0"
+$MultiArchTorchVersion = "2.11.0"
+$MultiArchTorchvisionVersion = "0.26.0"
+$MultiArchTorchaudioVersion = "2.11.0"
 
 
 # True when any of the three masks is set. Mirrors _visible_devices_pinned(): ANY value
@@ -4220,17 +4385,17 @@ function Resolve-ShadowingGfxPick {
     param([AllowNull()][string]$Picked, [AllowNull()][string[]]$AllArches)
     if (-not $Picked) { return $Picked }
     # Only arches in $archFamilyMap have an AMD Windows wheel index.
-    function Test-GfxHasWheels { param([AllowNull()][string]$Arch) return [bool]($Arch -and $archFamilyMap.ContainsKey($Arch)) }
+    function Test-GfxHasWheels { param([AllowNull()][string]$Arch) return [bool]($Arch -and ($archFamilyMap.ContainsKey($Arch) -or $multiArchGfx -contains $Arch)) }
     # A selected device is honoured verbatim; never repick over the user.
     if (Test-VisibleDevicesPinned) { return $Picked }
     if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
     $distinctArches = @($AllArches | Select-Object -Unique)
     if ($distinctArches.Count -lt 2) { return $Picked }
-    # Deposing a supported APU for a discrete card with no Windows wheels (gfx1036 + an
-    # older gfx1010) resolves to no index and drops the host to CPU, worse than the
+    # Deposing a supported APU for a discrete card with no Windows wheels (gfx1036 + a
+    # gfx803) resolves to no index and drops the host to CPU, worse than the
     # shadowing itself. So prefer a wheel-backed discrete card, and fall back to an
     # unsupported one only when the pick has no wheels either: taking the first
-    # non-integrated arch instead sent gfx90c,gfx1010,gfx1200 to CPU torch despite the
+    # non-integrated arch instead sent gfx90c,gfx803,gfx1200 to CPU torch despite the
     # supported gfx1200. Mirrors _dedup_pick()'s `_withWheels or (...)`.
     $pickedHasWheels = Test-GfxHasWheels $Picked
     $others = @($AllArches | Where-Object { $script:ShadowingIntegratedGfx -notcontains $_ })
@@ -4240,8 +4405,8 @@ function Resolve-ShadowingGfxPick {
                   else { @() }
     $discreteArch = $candidates | Select-Object -First 1
     if (-not $discreteArch) { return $Picked }
-    # Not always device 1: on gfx1036,gfx1010,gfx1200 the pick is device 2, and
-    # naming 1 would expose the gfx1010 the wheels do not target.
+    # Not always device 1: on gfx1036,gfx803,gfx1200 the pick is device 2, and
+    # naming 1 would expose the gfx803 the wheels do not target.
     $discreteIdx = [array]::IndexOf(@($AllArches), $discreteArch)
     if ($discreteIdx -lt 0) { $discreteIdx = 1 }
     substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
@@ -4468,18 +4633,11 @@ if (-not $HasNvidiaSmi) {
         } catch {}
     }
 
-    # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
-    # and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on purpose: it
-    # only WORDS a message, never selects a wheel index or a prebuilt. AMD's TheRock ships
-    # RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
-    # The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from LLVM's AMDGPU
-    # tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14 professional parts LLVM
-    # omits; nothing is guessed, so Polaris 11/12 (RX 460/550/560, a different die) is
-    # left out.
+    # GPU name -> gfx arch for AMD generations no ROCm wheel covers: Polaris 10/20/30
+    # (unslothai#8529). Kept apart from $nameArchTable on purpose: it only WORDS a message,
+    # never selects a wheel index or a prebuilt. The (?!0) guards stop "RX 570" swallowing
+    # an "RX 5700"; Polaris 11/12 (RX 460/550/560, a different die) is left out.
     $unsupportedNameArchTable = @(
-        @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
-        @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
-        @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
         @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
     )
     $script:ROCmUnsupportedGfxArch = $null
@@ -4493,7 +4651,7 @@ if (-not $HasNvidiaSmi) {
     if (-not $script:ROCmGfxArch) {
         # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
         if ($env:UNSLOTH_ROCM_GFX_ARCH) {
-            $script:ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+            $script:ROCmGfxArch = ($env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower() -split ':')[0]  # drop HIP feature suffixes (gfx1010:xnack-)
             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
             substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
         }
@@ -4512,6 +4670,9 @@ if (-not $HasNvidiaSmi) {
                 @{ P = "RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900"; A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
                 @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
                 @{ P = "RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300";  A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
+                @{ P = "Radeon Pro V520|Radeon Pro 5600M"; A = "gfx1011" }  # RDNA 1 (Navi 12) -- multi-arch index
+                @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700"; A = "gfx1010" }  # RDNA 1 (Navi 10) -- multi-arch index
+                @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300"; A = "gfx1012" }  # RDNA 1 (Navi 14) -- multi-arch index
             )
             function Get-GfxArchFromGpuName {
                 param([AllowNull()][string]$Name, [object[]]$Table)
@@ -4698,13 +4859,14 @@ if (-not $HasNvidiaSmi) {
 # usable Arc card. test_rocm_arch_table_parity.py keeps it in sync with $archFamilyMap below.
 $_rocmWheelArches = @(
     "gfx1201", "gfx1200",           # RDNA 4
-    "gfx1151", "gfx1150", "gfx1152",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
+    "gfx1151", "gfx1150", "gfx1152", "gfx1153",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
     "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
     "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
+    "gfx1012", "gfx1011", "gfx1010",  # RDNA 1 (RX 5000): AMD's multi-arch index (unslothai#11755)
     "gfx90a", "gfx908"              # MI200 / MI100
 )
 # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are true on
-# unmapped arches (Vega, RDNA1) too, and those install CPU torch.
+# unmapped arches (Vega, Polaris) too, and those install CPU torch. Must include $multiArchGfx.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
 
 # Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right after
@@ -4884,8 +5046,11 @@ if ($LongPathsEnabled) {
     step "long paths" "enabled"
 } elseif ($StageRoot) {
     step "long paths" "disabled; unchanged during staging" "Yellow"
+} elseif ($env:UNSLOTH_SETUP_RERUN -eq '1') {
+    step "long paths" "disabled; already asked earlier in this update" "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
+    Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
         $proc = Start-Process -FilePath "reg.exe" `
@@ -4949,7 +5114,8 @@ if (-not $HasGit) {
     if ($gitNeeded -and $StageRoot) {
         Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
     }
-    if ($gitNeeded -or -not $StageRoot) {
+    # Only when something here clones: a machine-wide Git install is not ours to add otherwise.
+    if ($gitNeeded) {
         Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
@@ -5280,6 +5446,7 @@ if (-not $CudaArch) {
 $script:NvccPath = $NvccPath
 $script:CudaToolkitRoot = $CudaToolkitRoot
 $script:CudaArch = $CudaArch
+$script:DriverMaxCuda = $DriverMaxCuda
 $script:CudaToolkitReady = $true
 }
 
@@ -5663,11 +5830,11 @@ if ($NeedNodeForSetup) {
         substep "installing isolated Node (system Node/npm left untouched)..."
         # Prefer the validated handed-off/venv Python: bare `python` may be a Store stub here.
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
-        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
         $nodeExit = $LASTEXITCODE
         # A failed download gets one retry through the mirror; 3 is another install holding the lock and 4 an unwritable directory, which no mirror fixes.
         if ($nodeExit -notin 0, 3, 4 -and (Use-MirrorSpare node)) {
-            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
             $nodeExit = $LASTEXITCODE
         }
         if ($nodeExit -eq 3) {
@@ -5696,6 +5863,12 @@ if ($NeedNodeForSetup) {
             Write-StudioLine "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
             Write-StudioLine "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
             Exit-SetupFailure "Could not install an isolated Node runtime"
+        } elseif ($nodeOut -match "keeping existing isolated Node") {
+            # Exit 0 also covers a failed update that kept a working Node; relay any repair lines.
+            if ($nodeOut -match 'takeown /F') {
+                Write-StudioLine $nodeOut -ForegroundColor DarkGray
+            }
+            step "node" "update not applied, existing isolated Node kept" "Yellow"
         }
         # Same condition as the guard above, or the tree this run just created under a master
         # root stays unmarked and the uninstaller declines to remove it as somebody else's.
@@ -5709,8 +5882,8 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        # bun (optional, faster installs); npm -g stays in the isolated prefix.
-        if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        # bun (optional, unused when package-lock.json means `npm ci`); npm -g stays in the isolated prefix.
+        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5757,12 +5930,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
 
-    $UseBun = $null -ne (Get-Command bun -ErrorAction SilentlyContinue)
+    # package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
+    $UseBun = -not (Test-Path "package-lock.json") -and (Test-Path "bun.lock") -and ($null -ne (Get-Command bun -ErrorAction SilentlyContinue))
+    $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
 
     # A corrupt bun cache still exits 0, so validate, clear it, retry once, then fall back to npm.
     if ($UseBun) {
         Write-StudioLine "   Using bun for package install (faster)" -ForegroundColor DarkGray
-        $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
+        $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile @NpmRegistryArgs }
         # .bin/ entries vary by manager (npm: tsc/.cmd/.ps1; bun: .exe/.bunx).
         $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
         $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
@@ -5773,7 +5948,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
-            $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
+            $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile @NpmRegistryArgs }
             $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
             $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
@@ -5792,15 +5967,15 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
     if (-not $UseBun) {
-        $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+        $npmExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
         if ($npmExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $npmExit = 0 }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-            Write-StudioLine "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
-            Write-StudioLine "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
-            Show-NpmRegistryHint
+            Write-StudioLine "[ERROR] npm $NpmInstallVerb failed (exit code $npmExit)" -ForegroundColor Red
+            Write-StudioLine "   Try running 'npm $NpmInstallVerb' manually in frontend/ to see errors" -ForegroundColor Yellow
+            Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
             Exit-SetupFailure "Frontend dependency installation failed (exit code $npmExit)"
         }
     }
@@ -5836,13 +6011,14 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+    $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
+    $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
     if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-StudioLine "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint
+        Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
+        Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
         Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
     }
     Pop-Location
@@ -7623,9 +7799,11 @@ function Enter-StudioVenv {
         $env:VIRTUAL_ENV = $VenvDir
         $env:PATH = (Join-Path $VenvDir "Scripts") + ";" + $env:PATH
         Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
         return
     }
     . $ActivateScript
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 }
 Enter-StudioVenv
 Assert-VenvActivated -VenvDir $VenvDir
@@ -8146,6 +8324,16 @@ sys.exit(2 if conflict else (0 if version else 1))
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
             }
+            # A ROCm torch whose device extra lost a family kernel pack still sees the GPU.
+            if ($SkipPythonDeps) {
+                try {
+                    & python (Join-Path $PSScriptRoot "install_python_stack.py") --windows-rocm-device-packs-need-dependency-pass *> $null
+                    if ($LASTEXITCODE -eq 0) {
+                        substep "AMD device packs are incomplete or mismatched -- forcing dependency pass to repair..." "Cyan"
+                        $SkipPythonDeps = $false
+                    }
+                } catch {}
+            }
         }
     }
 }
@@ -8400,6 +8588,7 @@ if ($PinnedTorchIndexUrl) {
 # AMD's arch-specific pip index (repo.amd.com/rocm/whl/{arch}/); wheels bundle their runtime.
 $ROCmGfxArch = $script:ROCmGfxArch
 $ROCmIndexUrl = $null
+$script:ROCmMultiArch = $false
 # Also on a name-inferred gfx: the wheels bundle the runtime, so no HIP SDK is needed.
 if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
@@ -8444,11 +8633,20 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     $ROCmTorchSpec  = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch))        { $torchFloorMap[$ROCmGfxArch]        } else { "torch" }
     $ROCmVisionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch))  { $torchvisionFloorMap[$ROCmGfxArch]  } else { "torchvision" }
     $ROCmAudioSpec  = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch))   { $torchaudioFloorMap[$ROCmGfxArch]   } else { "torchaudio" }
-    if ($archFamily) {
+    # A family-layout mirror (and no multi-arch mirror) keeps the family route for arches that have one.
+    $_familyMirrorPinned = [bool]($env:UNSLOTH_ROCM_WINDOWS_MIRROR) -and -not [bool]($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR)
+    $script:ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch -and -not ($archFamily -and $_familyMirrorPinned))
+    if ($script:ROCmMultiArch) {
+        $ROCmIndexUrl   = "$MultiArchIndexBase/"
+        $ROCmTorchSpec  = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
+        $ROCmVisionSpec = "torchvision[device-$ROCmGfxArch]==$MultiArchTorchvisionVersion+$MultiArchTag"
+        $ROCmAudioSpec  = "torchaudio==$MultiArchTorchaudioVersion+$MultiArchTag"
+        substep "$ROCmGfxArch -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
+    } elseif ($archFamily) {
         $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
     } elseif ($ROCmGfxArch) {
         substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
-        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151/1152 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx90a, gfx908" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151/1152 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx1010-1012 (RDNA 1), gfx90a, gfx908 (RDNA parts: AMD multi-arch index)" "Yellow"
     } else {
         substep "[WARN] AMD GPU detected (HIP SDK present) but GPU arch could not be read -- falling back to CPU-only PyTorch" "Yellow"
         substep "       Arch detection requires hipinfo to report gcnArchName. Re-install the HIP SDK if this is unexpected." "Yellow"
@@ -8597,13 +8795,15 @@ $WinArm64IndexArgs = if ($WinArm64Venv) {
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
-    if ($ROCmTorchSpec -ne "torch") {
+    if ($script:ROCmMultiArch) {
+        substep "  pinned $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (AMD multi-arch index, one release tag)" "Cyan"
+    } elseif ($ROCmTorchSpec -ne "torch") {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
     # Release preservation: keep UNSLOTH_KEPT_TORCH unless it conflicts with a >=2.11 floor.
     $_rocmKeptActive = $false
     $_rocmOrigTorch = $ROCmTorchSpec; $_rocmOrigVision = $ROCmVisionSpec; $_rocmOrigAudio = $ROCmAudioSpec
-    if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
+    if (-not $script:ROCmMultiArch -and $env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
         if (-not ($ROCmTorchSpec -match 'torch>=2\.11' -and $_keptMinor -lt 11)) {
             $ROCmTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
@@ -8659,7 +8859,7 @@ if ($ROCmIndexUrl) {
     while ($true) {
         # Built here, not in the verbose branch (a splat assigned there is unset on the other path).
         $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec, $ROCmAudioSpec)
-        if ($WinArm64NoAudio) { $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec) }
+        if ($WinArm64NoAudio -or -not $ROCmAudioSpec) { $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec) }
         if ($script:UnslothVerbose) {
             Fast-Install @_rocmTrio @rocmForce --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
             $torchInstallExit = $LASTEXITCODE
@@ -9164,6 +9364,35 @@ if ($stackExit -ne 0) {
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
 
+# ── Finish with the setup script this update installed ──
+# Phases a release adds below would be skipped by the update installing it. A module scope keeps this
+# run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
+if (Test-SetupScriptReplaced) {
+    step "setup" "the update replaced this setup script; finishing with the new version"
+    $_setupRerunArgs = $script:SetupArgs
+    Restore-SetupStartEnvironment
+    Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
+    $env:UNSLOTH_SETUP_RERUN = '1'
+    $_setupRerunner = New-Module -ScriptBlock { $script:Ok = $false; $script:Code = 1 }
+    try {
+        & $_setupRerunner {
+            param($Path, [object[]]$Arguments, $Defaults)
+            $PSDefaultParameterValues = $Defaults
+            & $Path @Arguments
+            $script:Ok = $?
+            $script:Code = $global:LASTEXITCODE
+        } $script:SetupSelfPath $_setupRerunArgs $PSDefaultParameterValues
+        $_setupRerunOk = & $_setupRerunner { $script:Ok }
+        $_setupRerunCode = & $_setupRerunner { $script:Code }
+    } finally {
+        Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue
+        Remove-WoaMergedOverrides
+    }
+    # $? first: under -Command a run that fell off its end succeeded whatever its last native exit.
+    if ($_setupRerunOk) { return }
+    Exit-SetupFailure -Message "the updated setup script failed (exit code $_setupRerunCode)" -Code $_setupRerunCode -NoTauriMarker
+}
+
 } else {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
@@ -9519,6 +9748,7 @@ $ErrorActionPreference = $script:PrevEAP_T5
 # Reuse the managed path resolved and preflighted before phase 1.
 if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
 $NeedLlamaSourceBuild = $false
+$script:LlamaSourceBuildIsFallback = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
 # Every host installs the fork's app-* prebuilts; ggml-org artifacts are no longer the default.
@@ -9725,12 +9955,12 @@ if ($LocalLlamaCppSrc) {
             Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
             # A locked/in-use tree can silently survive removal (SilentlyContinue
             # masks it). Don't then junction/copy over a half-present dir; mirror the
-            # prebuilt path's active-process handling and stop with a clear message.
-            # Denied counts as surviving: unreadable is not gone.
+            # prebuilt path's blocked-install handling and stop with a clear message.
+            # Denied counts as surviving (unreadable is not gone), so name no single cause (#9928).
             if ((Get-PathState -Path $LlamaCppDir) -ne "Absent") {
-                step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
-                substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-                Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
+                step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
+                substep "Close Unsloth or other llama.cpp users, or repair the ACLs on $LlamaCppDir, then retry" "Yellow"
+                Exit-SetupFailure "llama.cpp install is blocked; the existing install could not be replaced" 3
             }
         }
         cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
@@ -9870,7 +10100,7 @@ if ($LocalLlamaCppLinked) {
                 $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
                 Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
             } else {
-                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
+                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Show-DownloadProgress | Out-String
                 $prebuiltExit = $LASTEXITCODE
             }
         } finally {
@@ -9899,13 +10129,18 @@ if ($LocalLlamaCppLinked) {
                 substep $installedRelease
             }
         } elseif ($prebuiltExit -eq 3) {
-            step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+            # WinError 5 is both an in-use file and an unreadable ACL: name ACLs only if repair lines were printed.
+            step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
-            substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-            Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
+            if ($prebuiltOutput -match 'takeown /F') {
+                substep "Close Unsloth or other llama.cpp users, or repair the ACLs named above, then retry" "Yellow"
+            } else {
+                substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
+            }
+            Exit-SetupFailure "llama.cpp install is blocked; the existing install could not be replaced" 3
         } elseif ($prebuiltExit -eq 4) {
             step "llama.cpp" "not enough disk space to install llama.cpp" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
@@ -9952,6 +10187,7 @@ if ($LocalLlamaCppLinked) {
             # which this script cannot see -- exits 5 above instead.
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
             $NeedLlamaSourceBuild = $true
+            $script:LlamaSourceBuildIsFallback = $true
             }
         } else {
             step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
@@ -10009,7 +10245,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         $restoreNativeErrorPreferenceW = $true
     }
     try {
-        $whisperOutput = & python @whisperArgs 2>&1 | Out-String
+        $whisperOutput = & python @whisperArgs 2>&1 | Show-DownloadProgress | Out-String
         $whisperExit = $LASTEXITCODE
     } finally {
         if ($restoreNativeErrorPreferenceW) {
@@ -10052,16 +10288,81 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     }
 }
 
+# ==========================================================================
+#  PHASE 3.4b: Install the audio.cpp prebuilt (speech, music and dictation runtime)
+# ==========================================================================
+# audio.cpp vendors its own patched ggml, so its bundles are self-contained and do not
+# pair with the llama install. Failure is never fatal: every other audio engine keeps working.
+$AudioCppDir = Join-Path $UnslothHome "audio.cpp"
+$AudioCppInstaller = Join-Path $PSScriptRoot "install_audio_cpp_prebuilt.py"
+if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
+    substep "audio.cpp: using a user-configured binary/dir; skipping managed install"
+} elseif ($env:UNSLOTH_SKIP_AUDIO_CPP_INSTALL -eq "1") {
+    substep "audio.cpp: install skipped (UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1)"
+} elseif ($RuntimeRootIsCustom -and (Test-Path -LiteralPath $AudioCppInstaller) -and
+        (Assert-StudioOwnedOrAbsent -Path $AudioCppDir -Label "audio.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied") {
+    step "audio.cpp" "install directory cannot be read: access is denied; audio.cpp models are unavailable; restore access to $AudioCppDir or move it aside, then re-run setup" "Yellow"
+} elseif (Test-Path -LiteralPath $AudioCppInstaller) {
+    if ($RuntimeRootIsCustom) {
+        Assert-StudioOwnedOrAbsent -Path $AudioCppDir -Label "audio.cpp install" -IsCustom $RuntimeRootIsCustom
+    }
+    $audioCppArgs = @($AudioCppInstaller, "--install-dir", $AudioCppDir)
+    # A host whose GPU is invisible at install time names its bundle here.
+    if ($env:UNSLOTH_AUDIO_CPP_ACCELERATOR) {
+        $audioCppArgs += @("--accelerator", $env:UNSLOTH_AUDIO_CPP_ACCELERATOR)
+    }
+    $prevEAPAudioCpp = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $previousNativeErrorPreferenceA = $null
+    $restoreNativeErrorPreferenceA = $false
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreferenceA = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreferenceA = $true
+    }
+    try {
+        $audioCppOutput = & python @audioCppArgs 2>&1 | Show-DownloadProgress | Out-String
+        $audioCppExit = $LASTEXITCODE
+    } finally {
+        if ($restoreNativeErrorPreferenceA) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreferenceA
+        }
+    }
+    $ErrorActionPreference = $prevEAPAudioCpp
+    if ($audioCppExit -eq 0) {
+        if ($audioCppOutput -match "already matches") {
+            step "audio.cpp" "prebuilt up to date"
+        } elseif ($audioCppOutput -match "keeping the existing complete install") {
+            # The release lookup could not answer and the install on disk is complete; "prebuilt
+            # installed" would name a release nothing fetched. whisper.cpp's wording.
+            step "audio.cpp" "update unavailable, existing prebuilt kept" "Yellow"
+        } else {
+            step "audio.cpp" "prebuilt installed"
+        }
+        if ($RuntimeRootIsCustom -and (Test-PathQuiet $AudioCppDir "Container")) {
+            Mark-StudioOwned -Path $AudioCppDir
+        }
+    } elseif ($audioCppExit -eq 3) {
+        step "audio.cpp" "install busy; keeping existing runtime" "Yellow"
+    } else {
+        step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "Yellow"
+    }
+}
+
 if ($StageRoot -and $NeedLlamaSourceBuild) {
     Exit-SetupFailure "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 }
+
+# Asked before Phase 3.5: OpenSSL is a system install too.
+$script:LlamaBuildToolsDeclined = $NeedLlamaSourceBuild -and $script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and
+    -not (Test-LlamaBuildToolsInstallAllowed)
 
 # ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
 $OpenSslAvailable = $false
 
-if ($NeedLlamaSourceBuild) {
+if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
     $OpenSslRoots = @(
         'C:\Program Files\OpenSSL-Win64',
         'C:\Program Files\OpenSSL',
@@ -10078,6 +10379,9 @@ if ($NeedLlamaSourceBuild) {
     if ($OpenSslRoot) {
         $OpenSslAvailable = $true
         substep "OpenSSL dev found at $OpenSslRoot"
+    } elseif ($script:LlamaSourceBuildIsFallback -and -not (Test-LlamaBuildToolsInstallAllowed)) {
+        # Optional for the build, so it is skipped rather than declining the whole build.
+        substep "OpenSSL dev not found; building without HTTPS (UNSLOTH_INSTALL_BUILD_TOOLS=1 installs it)" "Yellow"
     } else {
         Write-StudioLine ""
         substep "installing OpenSSL dev (for HTTPS in llama-server)..."
@@ -10156,6 +10460,7 @@ if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinke
     $CanReuseLlamaBuild = Test-LlamaTreeStillHealthy $LlamaCppDir
 }
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild
+if ($script:LlamaBuildToolsDeclined -and -not $CanReuseLlamaBuild) { $WillBuildLlamaFromSource = $false }
 if ($WillBuildLlamaFromSource) {
     if (-not $HasGitForBuild) {
         # Phase 1 keeps git optional, so only the automatic fallback after a failed prebuilt
@@ -10196,6 +10501,13 @@ if ($LocalLlamaCppLinked) {
     # $CanReuseLlamaBuild above, so refusing here also planned the toolchain.
     Write-StudioLine ""
     step "llama.cpp" "already built"
+} elseif ($script:LlamaBuildToolsDeclined) {
+    Write-StudioLine ""
+    step "llama.cpp" "build skipped (build tools not installed)" "Yellow"
+    substep "The prebuilt download failed, and a source build needs Git, CMake and Visual Studio Build Tools." "Yellow"
+    substep "GGUF inference and export will not be available." "Yellow"
+    substep "To install them and build from source, set UNSLOTH_INSTALL_BUILD_TOOLS=1 and re-run setup." "Yellow"
+    $script:LlamaCppDegraded = $true
 } elseif (-not $HasGitForBuild) {
     # Before cmake: the toolchain install is skipped without git, so cmake may be missing
     # purely as a consequence. Degrade rather than abort; the opt-in source triggers already
@@ -10345,6 +10657,9 @@ if ($LocalLlamaCppLinked) {
     # -- Step A: Clone or pull llama.cpp --
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
+    # --depth 1 makes llama.cpp stamp build 1 (#12798); set only once the tag is checked out.
+    $TagBuildNumber = if ($ResolvedSourceRef -match '^b(\d+)$') { $Matches[1] } else { $null }
+    $LlamaBuildNumber = $null
 
     # Denied must not read as "no checkout here": the fresh-clone branch ends in
     # a swap that recursively removes this tree and moves the temp one over it,
@@ -10415,6 +10730,7 @@ if ($LocalLlamaCppLinked) {
                     $FailedStep = "git checkout"
                 } else {
                     Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                    $LlamaBuildNumber = $TagBuildNumber
                 }
             }
         } else {
@@ -10520,6 +10836,8 @@ if ($LocalLlamaCppLinked) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
                 if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+            } elseif ($UseConcreteRef) {
+                $LlamaBuildNumber = $TagBuildNumber
             }
         }
         # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
@@ -10550,6 +10868,9 @@ if ($LocalLlamaCppLinked) {
         $CmakeArgs += '-DLLAMA_BUILD_EXAMPLES=OFF'
         $CmakeArgs += '-DLLAMA_BUILD_SERVER=ON'
         $CmakeArgs += '-DGGML_NATIVE=ON'
+        if ($LlamaBuildNumber) {
+            $CmakeArgs += "-DLLAMA_BUILD_NUMBER=$LlamaBuildNumber"
+        }
         # HTTPS support via OpenSSL
         if ($OpenSslAvailable -and $OpenSslRoot) {
             $CmakeArgs += "-DOPENSSL_ROOT_DIR=$OpenSslRoot"
@@ -10568,6 +10889,10 @@ if ($LocalLlamaCppLinked) {
                 $CmakeArgs += '-DGGML_CUDA=OFF'
             } else {
                 $CmakeArgs += '-DGGML_CUDA=ON'
+                if (Test-CudaDriverNeedsUncompressedFatbin -DriverMaxCuda $script:DriverMaxCuda) {
+                    $CmakeArgs += '-DGGML_CUDA_COMPRESSION_MODE=none'
+                    substep "driver CUDA $script:DriverMaxCuda predates 12.4; building uncompressed CUDA kernels it can load." "Yellow"
+                }
                 # Accept a host MSVC newer than nvcc's whitelist, which would otherwise abort.
                 $nvccAllowFlag = '-allow-unsupported-compiler'
                 if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
@@ -10778,6 +11103,8 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
         [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
         [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
         [Console]::Out.Flush()
+    } elseif ($script:LlamaBuildToolsDeclined) {
+        step "llama.cpp" "unavailable; GGUF inference is disabled until the build tools are installed" "Yellow"
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
     }

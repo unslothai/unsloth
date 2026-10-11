@@ -271,9 +271,99 @@ def dflash_plan_files(
     return eligible[best]
 
 
+def _audio_cpp_package_plans(siblings: Sequence) -> Optional[dict[str, GgufVariantPlan]]:
+    """Plans for an audio.cpp package repo (MiniMax Music 3, YuE2): each variant is a component mix
+    plus the config, tokenizer and sidecar files the package loads with. Files every mix shares
+    are companions, so deleting one mix never counts them as its own weights."""
+    try:
+        from core.inference.audio_cpp_models import package_variant_files
+    except Exception:
+        return None
+    by_name = {
+        name: sibling
+        for sibling in siblings
+        if isinstance(name := getattr(sibling, "rfilename", None), str)
+    }
+    packages = package_variant_files(by_name)
+    if not packages:
+        return None
+    shared = set.intersection(*(set(files) for files in packages.values()))
+    plans: dict[str, GgufVariantPlan] = {}
+    for key, files in packages.items():
+        expected = tuple(
+            file
+            for name in files
+            if (file := expected_file_from_sibling(by_name[name])) is not None
+        )
+        main_files = tuple(
+            file for file in expected if is_gguf_filename(file.path) and file.path not in shared
+        )
+        companions = tuple(file for file in expected if file.path in shared)
+        plans[key.lower()] = GgufVariantPlan(
+            main_filenames = frozenset(file.path for file in main_files),
+            target_filenames = tuple(file.path for file in expected),
+            main_hashes = frozenset(file.sha256 for file in main_files if file.sha256),
+            required_hashes = frozenset(file.sha256 for file in expected if file.sha256),
+            companion_hashes = frozenset(file.sha256 for file in companions if file.sha256),
+            mmproj_filenames = frozenset(),
+            mmproj_hashes = frozenset(),
+            expected_files = expected,
+            main_size_bytes = sum(max(0, int(file.size or 0)) for file in main_files),
+            download_size_bytes = sum(max(0, int(file.size or 0)) for file in expected),
+        )
+    return plans
+
+
+def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVariantPlan:
+    """*plan* plus what audio.cpp reads beside its GGUF: the voice embeddings in ``<dir>/embeddings/``
+    (PocketTTS) and a companion model in the same repo (MioTTS's MioCodec). Otherwise unchanged."""
+    dirs = {name.rpartition("/")[0] for name in plan.main_filenames}
+    if len(dirs) != 1:
+        return plan
+    prefix = f"{next(iter(dirs))}/embeddings/".lstrip("/")
+    by_name = {
+        name: sibling
+        for sibling in siblings
+        if isinstance(name := getattr(sibling, "rfilename", None), str)
+    }
+    wanted = {
+        name
+        for name in by_name
+        if name.startswith(prefix) and name.lower().endswith(".safetensors")
+    }
+    try:
+        from core.inference.audio_cpp_models import companion_files
+    except Exception:
+        companion_files = None
+    if companion_files is not None:
+        wanted.update(companion_files(min(plan.main_filenames), by_name))
+    extras = tuple(
+        file
+        for name, sibling in by_name.items()
+        if name in wanted and (file := expected_file_from_sibling(sibling)) is not None
+    )
+    if not extras:
+        return plan
+    hashes = frozenset(file.sha256 for file in extras if file.sha256)
+    from dataclasses import replace
+
+    return replace(
+        plan,
+        target_filenames = (*plan.target_filenames, *(file.path for file in extras)),
+        required_hashes = plan.required_hashes | hashes,
+        companion_hashes = plan.companion_hashes | hashes,
+        expected_files = (*plan.expected_files, *extras),
+        download_size_bytes = plan.download_size_bytes
+        + sum(max(0, int(file.size or 0)) for file in extras),
+    )
+
+
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     # Family grouping keeps the family holding the lexicographically first name, which is the "._" one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local discovery no main GGUF to load.
     siblings = drop_shadowed_appledouble_siblings(list(siblings))
+    package_plans = _audio_cpp_package_plans(siblings)
+    if package_plans is not None:
+        return package_plans
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
     all_mmproj_filenames = frozenset(
@@ -331,11 +421,14 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             *mtp_expected,
             *dflash_expected,
         )
-        plans[quant] = plan_from_expected_files(
-            quant,
-            expected_files,
-            all_mmproj_filenames = all_mmproj_filenames,
-            all_mmproj_hashes = all_mmproj_hashes,
+        plans[quant] = _with_audio_cpp_extras(
+            plan_from_expected_files(
+                quant,
+                expected_files,
+                all_mmproj_filenames = all_mmproj_filenames,
+                all_mmproj_hashes = all_mmproj_hashes,
+            ),
+            siblings,
         )
     return plans
 

@@ -27,6 +27,14 @@ sys.path.insert(0, os.environ["_BACKEND"])
 from utils.paths import storage_roots as sr
 from utils.node_runtime import managed_node_dir
 from core.inference.stt_ggml_sidecar import _managed_whisper_cpp_dir
+from core.inference.audio_cpp_server import managed_audio_cpp_dir
+
+# The audio.cpp installer runs before the backend is importable, so it keeps its own copy of the
+# rule (default_install_dir); both have to land where setup's $UNSLOTH_HOME/audio.cpp does.
+import importlib.util
+_spec = importlib.util.spec_from_file_location("_audio_installer", os.environ["_AUDIO_INSTALLER"])
+_audio_installer = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_audio_installer)
 
 # studio_root() is called constantly, so a warning it emits for a supported
 # layout is not one line, it is a flooded log.
@@ -38,6 +46,8 @@ print(json.dumps({
     "master": None if sr.unsloth_home() is None else str(sr.unsloth_home()),
     "node": str(managed_node_dir()),
     "whisper": str(_managed_whisper_cpp_dir()),
+    "audio": str(managed_audio_cpp_dir()),
+    "audio_installer": str(_audio_installer.default_install_dir()),
     "warnings": _warnings,
 }))
 """
@@ -49,6 +59,7 @@ def _resolve(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
         "HOME": str(home),
         "USERPROFILE": str(home),
         "_BACKEND": str(BACKEND),
+        "_AUDIO_INSTALLER": str(REPO / "studio" / "install_audio_cpp_prebuilt.py"),
     }
     # A hand-built environment has to carry what the interpreter needs: Windows python exits 1
     # with no usable message when SYSTEMROOT is absent, which read as "the resolver answered
@@ -74,6 +85,7 @@ def test_portable_root_puts_the_tools_beside_studio(tmp_path):
     assert r["master"] == str(root)
     assert r["node"] == str(root / "node")
     assert r["whisper"] == str(root / "whisper.cpp")
+    assert r["audio"] == r["audio_installer"] == str(root / "audio.cpp")
 
 
 def test_a_default_install_is_untouched(tmp_path):
@@ -84,6 +96,7 @@ def test_a_default_install_is_untouched(tmp_path):
     assert r["studio"] == str(home / ".unsloth" / "studio")
     assert r["node"] == str(home / ".unsloth" / "node")
     assert r["whisper"] == str(home / ".unsloth" / "whisper.cpp")
+    assert r["audio"] == r["audio_installer"] == str(home / ".unsloth" / "audio.cpp")
 
 
 def test_a_plain_custom_studio_home_is_untouched(tmp_path):
@@ -96,6 +109,7 @@ def test_a_plain_custom_studio_home_is_untouched(tmp_path):
     assert r["studio"] == str(custom)
     assert r["node"] == str(custom / "node")
     assert r["whisper"] == str(custom / "whisper.cpp")
+    assert r["audio"] == r["audio_installer"] == str(custom / "audio.cpp")
 
 
 def test_a_flat_root_keeps_the_tools_at_that_root(tmp_path):
@@ -107,6 +121,7 @@ def test_a_flat_root_keeps_the_tools_at_that_root(tmp_path):
     assert r["studio"] == str(root)
     assert r["node"] == str(root / "node")
     assert r["whisper"] == str(root / "whisper.cpp")
+    assert r["audio"] == r["audio_installer"] == str(root / "audio.cpp")
     # Path.parents excludes the path itself, so the equality check is what keeps this warning off.
     assert r["warnings"] == []
 
@@ -158,7 +173,20 @@ def test_a_recorded_master_root_outlives_the_command_that_set_it(tmp_path):
     assert r["studio"] == str(studio)
     assert r["node"] == str(root / "node")
     assert r["whisper"] == str(root / "whisper.cpp")
+    # The installer reads no note; setup.sh / setup.ps1 hand it --install-dir "$UNSLOTH_HOME/audio.cpp".
+    assert r["audio"] == str(root / "audio.cpp")
     assert r["warnings"] == []
+
+
+def test_setup_installs_audio_cpp_where_the_backend_looks():
+    # Both shells name the directory outright, so the installer's own default never decides it.
+    for script, needle in (
+        ("studio/setup.sh", 'AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"'),
+        ("studio/setup.ps1", '$AudioCppDir = Join-Path $UnslothHome "audio.cpp"'),
+    ):
+        text = (REPO / script).read_text(encoding = "utf-8")
+        assert needle in text, script
+        assert "install_audio_cpp_prebuilt.py" in text and "--install-dir" in text, script
 
 
 def test_a_note_whose_root_has_since_moved_is_ignored(tmp_path):

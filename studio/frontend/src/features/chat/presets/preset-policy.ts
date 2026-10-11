@@ -530,6 +530,14 @@ export function resolveFitMaxSeqLength(
   return customContextLength && customContextLength > 0 ? customContextLength : 0;
 }
 
+export function isReplayedLoadContext(
+  isGguf: boolean | null | undefined,
+  customContextLength: number | null,
+  maxSeqLength: number,
+): boolean {
+  return isGguf === true && customContextLength == null && maxSeqLength > 0;
+}
+
 /** The context pin a completed load leaves behind: the Context Length the user EXPLICITLY set, or
  *  null for Auto. Takes the user's setting, never the n_ctx that went on the wire, which cannot
  *  answer this: `resolveLoadMaxSeqLength` sends the resolved context on a same-model reload, so

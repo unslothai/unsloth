@@ -184,8 +184,10 @@ shell process, repeat on every run" is a cluster behavioural engines score, and 
 changed nothing it is also pure waste. So both install.ps1 and install.sh snapshot the icon and run
 the heavy path only on a first install or an actual change, preserving start2.bin.
 
-SHChangeNotify stays, and with it one shell32 import: a permanently wrong desktop icon is a worse
-outcome than one import.
+SHChangeNotify stays, called through a Windows Python's ctypes in both install.ps1 and the WSL
+shortcut script install.sh generates, so neither defines a native type. Where no interpreter can be
+reached the per-item refresh is skipped: a stale icon on a shortcut that works is cosmetic, and the
+heavier refresh above still runs on a first install or an icon change.
 
 ## uv comes from a pinned archive, not from a remote install script
 
@@ -320,13 +322,14 @@ def test_no_remote_script_is_executed_in_process(name: str) -> None:
 def test_no_remote_script_is_piped_into_a_shell_first(name: str) -> None:
     # The astral fallback stays reachable for unpinned hosts, but must never be tried first.
     text = _text(name)
-    if "astral.sh/uv/install.sh" not in text:
+    match = re.search(r"astral\.sh/uv/(\$\w+/)?install\.sh", text)
+    if match is None:
         return
     pinned = min(
         (m.start() for m in re.finditer(r"_(setup_install_uv_pinned|uv_install_pinned)\b", text)),
         default = None,
     )
-    fallback = text.index("astral.sh/uv/install.sh")
+    fallback = match.start()
     assert pinned is not None, f"{name} has no pinned uv path"
     assert pinned < fallback, f"{name} reaches the piped fallback before the pinned release"
 

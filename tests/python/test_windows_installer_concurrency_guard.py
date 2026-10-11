@@ -18,6 +18,25 @@ import pytest
 from unsloth_pwsh_runner import pwsh_env, run_pwsh
 
 
+# Stands in for the long-lived venv process the guard has to find: `-n N` keeps it alive for N
+# seconds, the way `ping -n N` did. A pip-style launcher rather than a renamed System32 tool,
+# which is itself a masquerading shape (scripts/lint_av_shapes.py AV009).
+_SLEEPER_SOURCE = (
+    "import sys, time\n"
+    "args = sys.argv[1:]\n"
+    "time.sleep(float(args[args.index('-n') + 1]) if '-n' in args else 0)\n"
+)
+
+
+def _write_sleeper(path: Path) -> None:
+    from windows_console_stub import console_stub_bytes
+
+    stub = console_stub_bytes(source = _SLEEPER_SOURCE)
+    if stub is None:
+        pytest.skip("no distlib console launcher to build a stand-in process from")
+    path.write_bytes(stub)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 COMMANDS_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs"
@@ -246,7 +265,7 @@ def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     scripts = tmp_path / "unsloth_studio" / "Scripts"
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    _write_sleeper(probe)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     # Long enough that the child outlives the scan: PowerShell 5.1 pays a cold start plus a csc.exe compile first.
@@ -296,7 +315,7 @@ def test_x86_powershell_reports_64_bit_managed_process(tmp_path: Path):
     scripts = tmp_path / "unsloth_studio" / "Scripts"
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    _write_sleeper(probe)
     # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile.
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
@@ -341,7 +360,7 @@ def test_installer_decision_stops_active_process_and_allows_idle(tmp_path: Path,
     marker = venv / "must-remain.txt"
     marker.write_text("untouched", encoding = "utf-8")
     worker = scripts / "worker.exe"
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", worker)
+    _write_sleeper(worker)
     child = subprocess.Popen(
         [str(worker), "-n", "30", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -495,7 +514,7 @@ def test_junction_alias_process_is_reported_for_physical_venv(tmp_path: Path, sh
         text = True,
     )
     probe = alias / "Scripts" / "guard-probe.exe"
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    _write_sleeper(probe)
     child = subprocess.Popen(
         [str(probe), "-n", "6", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -522,7 +541,7 @@ def test_exact_studio_bin_shim_process_is_reported(tmp_path: Path, shell: str):
     detector = _process_helpers(source)
     shim = tmp_path / "studio" / "bin" / "unsloth.exe"
     shim.parent.mkdir(parents = True)
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", shim)
+    _write_sleeper(shim)
     child = subprocess.Popen(
         [str(shim), "-n", "6", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),

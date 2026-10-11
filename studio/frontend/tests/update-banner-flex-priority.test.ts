@@ -138,7 +138,7 @@ test("a floored card paints all the height its slot reserves", () => {
   // Short notes content must not leave an unpainted gap inside the floor.
   for (const [name, source] of [...CARDS, ["llama.cpp", LLAMA] as const]) {
     assert.match(
-      classes(source, "relative flex max-h-[calc(100dvh_-_2rem)] "),
+      classes(source, "relative flex max-h-[calc(100dvh_-_2rem"),
       /\bgrow\b/,
       `the ${name} card can be shorter than the slot it sits in`,
     );
@@ -362,10 +362,11 @@ test("the rail's block gutter costs the cards no room", () => {
     const rules = rail.slice(0, rail.indexOf('"'));
     const style = rail.slice(rail.indexOf("style={{"), rail.indexOf("}}"));
     // 2rem for the cards' own band, less the 24px of gutter the rail adds
-    // around them, so the cards keep exactly the band they had.
+    // around them, so the cards keep exactly the band they had. The desktop
+    // rail also stops below the window chrome.
     assert.match(
       rules,
-      /max-h-\[(?:calc\()?100dvh(?:_-_\d+px\))?\]/,
+      /max-h-\[(?:calc\()?100dvh(?:_-_\d+px\)|-var\(--studio-window-chrome-top,0px\)\))?\]/,
       "the rail lost the cap that pays for its gutters",
     );
     // From the constants, not pb-4/pt-2: those are rem, so at any root size but

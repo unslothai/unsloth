@@ -4,6 +4,7 @@
 """Authentication API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.security import HTTPAuthorizationCredentials
 
 import base64
 import importlib.util
@@ -16,6 +17,7 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from models.auth import (
     ApiKeyListResponse,
@@ -40,7 +42,9 @@ from auth.authentication import (
     get_current_credential,
     get_current_subject,
     get_current_subject_allow_password_change,
+    is_keyless,
     refresh_access_token,
+    security,
 )
 
 router = APIRouter()
@@ -439,13 +443,14 @@ def auth_status() -> AuthStatusResponse:
         else True
     )
     # Only while the default password stands: that is what the deadline fires on.
-    from auth.policy import full_access_permitted, login_mode
+    from auth.policy import installation_has_managed_accounts, login_mode
 
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
         login_mode = login_mode(),
-        full_access = full_access_permitted(),
+        # Public pre-login hint for older clients; signed-in clients use the account role.
+        full_access = not installation_has_managed_accounts(),
         requires_password_change = requires_change,
         bootstrap_deadline_seconds = (
             bootstrap_deadline_remaining_seconds() if requires_change else None
@@ -803,6 +808,7 @@ def _key_account_scope() -> "str | None":
 async def create_api_key(
     payload: CreateApiKeyRequest,
     credential: tuple = Depends(get_current_credential),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
@@ -812,6 +818,14 @@ async def create_api_key(
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days = payload.expires_in_days)
         ).isoformat()
+    # A key minted with an expiring key expires no later than it, so a leaked short-lived key cannot
+    # be turned into a permanent one.
+    parent_expires_at = _api_key_caller_expiry(credentials)
+    if parent_expires_at is not None and (
+        expires_at is None
+        or datetime.fromisoformat(expires_at) > datetime.fromisoformat(parent_expires_at)
+    ):
+        expires_at = parent_expires_at
 
     try:
         raw_key, row = storage.create_api_key(
@@ -830,6 +844,23 @@ async def create_api_key(
         key = raw_key,
         api_key = _row_to_api_key_response(row),
     )
+
+
+def _api_key_caller_expiry(credentials: Optional[HTTPAuthorizationCredentials]) -> Optional[str]:
+    """Expiry of the sk-unsloth key that authenticated this request, or None (UI session, keyless
+    caller, or a key that never expires)."""
+    if credentials is None or is_keyless(credentials):
+        return None
+    raw = credentials.credentials or ""
+    if not raw.startswith(storage.API_KEY_PREFIX):
+        return None
+    validated = storage.validate_api_key_account(raw, touch = False)
+    if validated is None:
+        # Expired or revoked since it authenticated: no cap to apply, so refuse rather than mint uncapped.
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED, detail = "Invalid or expired token"
+        )
+    return validated[0].get("expires_at")
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)

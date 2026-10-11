@@ -755,7 +755,7 @@ def test_the_security_scan_imports_nothing_heavy():
         ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", False, "unsloth/gemma-3-270m-it"),
         # ...while a 4-bit load keeps it, so the tables resolve nothing and BAD_MAPPINGS is
         # applied to the input name instead, landing on a DIFFERENT repo.
-        ("unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit", True, "unsloth/qwen3-30b-a3b"),
+        ("unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit", True, "unsloth/Qwen3-30B-A3B"),
         # An id the loader really does leave alone still answers None.
         ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", True, None),
         ("unsloth/gemma-3-270m-it", False, None),

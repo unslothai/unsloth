@@ -130,7 +130,7 @@ export function ConfirmDeleteDialog({
   const t = useT();
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
+      <AlertDialogContent onOverlayClick={() => onOpenChange(false)}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>

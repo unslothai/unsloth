@@ -14,6 +14,7 @@ import {
   lanAccessErrorMessage,
   lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
+  lanApiUrls,
   normalizeLanAccessStatus,
   validLanAccessPort,
 } from "../src/features/settings/api/lan-access-state.ts";
@@ -136,7 +137,7 @@ test("the port form is capability-gated and keeps its live error region mounted"
   );
   assert.match(
     SECTION_SOURCE,
-    /<\/div>\s*<span\s+id=\{portErrorId\}\s+role="status"\s+aria-live="polite"[\s\S]*?>[\s\S]*?\{portErrorVisible\s*\?\s*portInvalid/,
+    /below=\{\s*<span\s+id=\{portErrorId\}\s+role="status"\s+aria-live="polite"[\s\S]*?>[\s\S]*?\{portErrorVisible\s*\?\s*portInvalid/,
   );
   assert.doesNotMatch(
     SECTION_SOURCE,
@@ -199,6 +200,17 @@ test("urls survives a null or non-array payload without throwing", () => {
     assert.deepEqual(s.urls, []);
     assert.deepEqual(s.publicUrls, []);
   }
+});
+
+test("only LAN access started from Settings feeds the API base URL", () => {
+  const status = (managed: "launch" | "settings" | null) =>
+    normalizeLanAccessStatus(
+      // biome-ignore lint/style/useNamingConvention: API schema
+      apiStatus({ state: "online", urls: [LAN, SECOND], managed_by: managed }),
+    );
+  assert.deepEqual(lanApiUrls(status("settings")), [LAN, SECOND]);
+  assert.deepEqual(lanApiUrls(status("launch")), []);
+  assert.deepEqual(lanApiUrls(status(null)), []);
 });
 
 test("a public address is carried through so the section can warn about it", () => {

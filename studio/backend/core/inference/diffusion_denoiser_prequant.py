@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
-from .diffusion_krea2 import KREA2_FAMILY_NAME
 
 # The planner DECIDED against the seed, unlike never having asked: the pull kept the dense shards, so
 # the loader must not re-take the decision and fetch the artifact inline.
@@ -20,9 +19,8 @@ PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
 
-# Families assembled PER COMPONENT, plus ideogram's second denoiser: their assemblers never see
-# ``pipe_kwargs``, so a seed would be dropped after the plan had dropped their dense shards.
-_UNSEEDABLE_PIPELINE_FAMILIES = (KREA2_FAMILY_NAME, IDEOGRAM4_FAMILY_NAME)
+# Ideogram's assembler never sees ``pipe_kwargs``, so a seed would be dropped after the plan dropped its dense shards.
+_UNSEEDABLE_PIPELINE_FAMILIES = (IDEOGRAM4_FAMILY_NAME,)
 
 
 def pipeline_seed_supported(fam: Any) -> bool:
@@ -70,7 +68,9 @@ def denoiser_prequant_cached(
         return True
     try:
         from .diffusion_prequant import prequant_checkpoint_cached
-        return prequant_checkpoint_cached(source, cache_dir = cache_dir)
+
+        # Offline: the load walks to the first cached name, so any cached readable name is what it opens.
+        return prequant_checkpoint_cached(source, cache_dir = cache_dir, online = False)
     except Exception:  # noqa: BLE001 -- an unreadable cache is not proof the artifact is there
         return False
 
@@ -89,9 +89,11 @@ def denoiser_prequant_pipe_kwargs(
     local_files_only: bool = False,
     cache_dir: Optional[str] = None,
     logger: Any = None,
+    placement_device: Optional[str] = None,
 ) -> dict[str, Any]:
     """``{"transformer": module}`` for pipeline assembly, or ``{}`` when it cannot be seeded, which
-    obliges the caller to re-plan at bf16 and restore the dropped shards."""
+    obliges the caller to re-plan at bf16 and restore the dropped shards. ``placement_device``: where the
+    module is materialised (see ``load_prequantized_transformer``)."""
     try:
         if not pipeline_seed_supported(fam):
             return {}
@@ -133,6 +135,8 @@ def denoiser_prequant_pipe_kwargs(
             cache_dir = cache_dir,
             local_files_only = local_files_only,
             logger = logger,
+            placement_device = placement_device,
+            family = getattr(fam, "name", None),
         )
         if module is None:
             if logger is not None:

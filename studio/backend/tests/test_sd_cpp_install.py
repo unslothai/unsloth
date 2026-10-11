@@ -227,11 +227,49 @@ def test_linux_arm64_has_no_prebuilt():
     assert _resolve("Linux", "aarch64") is None
 
 
-# ── Windows ─────────────────────────────────────────────────────────────────
-
-
 def test_windows_auto_picks_avx2():
     assert _resolve("Windows", "AMD64") == "sd-master-8caa3f9-bin-win-avx2-x64.zip"
+
+
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_windows_cpu_selection_with_unsloth_vulkan_asset(accelerator, reverse):
+    cpu = "sd-master-813-bfbef5b-u1d02858-bin-win-cpu-x64.zip"
+    vulkan = "sd-master-813-bfbef5b-u1d02858-bin-win-vulkan-x64.zip"
+    assets = [cpu, vulkan]
+    if reverse:
+        assets.reverse()
+    assert (
+        resolve_release_asset(assets, system = "Windows", machine = "AMD64", accelerator = accelerator)
+        == cpu
+    )
+
+
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+@pytest.mark.parametrize("gpu", ["cuda12", "vulkan", "rocm", "sycl", "musa"])
+def test_windows_cpu_selection_never_uses_accelerator_build(accelerator, gpu):
+    assets = [f"sd-master-test-bin-win-{gpu}-avx2-x64.zip"]
+    assert (
+        resolve_release_asset(assets, system = "Windows", machine = "AMD64", accelerator = accelerator)
+        is None
+    )
+    cpu = "sd-master-test-bin-win-cpu-x64.zip"
+    assert (
+        resolve_release_asset(
+            [*assets, cpu], system = "Windows", machine = "AMD64", accelerator = accelerator
+        )
+        == cpu
+    )
+
+
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+def test_windows_cpu_selection_keeps_upstream_avx2_preference(accelerator):
+    avx2 = "sd-master-test-bin-win-avx2-x64.zip"
+    assets = ["sd-master-test-bin-win-cpu-x64.zip", avx2]
+    assert (
+        resolve_release_asset(assets, system = "Windows", machine = "AMD64", accelerator = accelerator)
+        == avx2
+    )
 
 
 def test_windows_cuda_picks_cuda12():
@@ -3112,6 +3150,45 @@ def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_pa
     assert installs == []
 
 
+def test_an_old_pin_legacy_server_is_not_reinstalled_over_a_serverless_current_pin(
+    tmp_path, monkeypatch
+):
+    """A legacy server for the RIGHT accelerator but an older pin is superseded once the current root holds the
+    current pin's serverless bundle: not handed back after the upgrade, and not reinstalled on every later load."""
+    bk, home, legacy = _shared_setup_3(monkeypatch, tmp_path)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_AUTO_UPGRADE", raising = False)
+    old_server = legacy / "sd-bin" / _SERVER
+    old_server.write_bytes(b"old-pin-build")
+    (legacy / sdmod.INSTALL_RECORD).write_text(
+        json.dumps({"accelerator": "cuda", "repo": "r", "tag": "master-1-0000000-u0000000"}),
+        encoding = "utf-8",
+    )
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+
+    installs: list[dict] = []
+
+    def _install(**kw):
+        installs.append(kw)
+        sdmod._write_install_record(
+            current, accelerator = "cuda", repo = "r", tag = "t", ships_server = False
+        )
+
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_failed_pin_upgrades", set())
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert len(installs) == 1
+
+
 def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_path, monkeypatch):
     """The serverless guard must fire only on a MISMATCHED legacy server. One built for the
     accelerator being asked for is a working resident server, and dropping to the one-shot CLI
@@ -3294,3 +3371,48 @@ def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
         with pytest.raises(RuntimeError, match = "unsafe symlink"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "escape.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "remaining", "body", "throttled"),
+    [
+        (403, "0", b"", True),
+        (429, "4998", b"", True),
+        (403, "4998", b'{"message": "secondary rate limit"}', True),
+        (403, "4998", b'{"message": "Resource not accessible"}', False),
+    ],
+)
+def test_a_rate_limit_stops_the_fallback_ladder(
+    monkeypatch, capsys, status, remaining, body, throttled
+):
+    import email.message
+
+    seen = []
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = remaining
+
+    def fake_fetch(
+        tag,
+        *,
+        repo,
+        token,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
+        seen.append(repo)
+        raise urllib.error.HTTPError(
+            f"https://api/{repo}", status, "refused", headers, io.BytesIO(body)
+        )
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    if not throttled:
+        assert sdmod._resolve_with_fallback("auto", None)[2] is None
+        assert len(seen) > 1
+        return
+    with pytest.raises(sdmod.GitHubRateLimited, match = "rate limiting.*GH_TOKEN"):
+        sdmod._resolve_with_fallback("auto", None)
+    assert len(seen) == 1
+    assert sdmod.main(["--print-asset"]) == 2
+    assert "rate limiting" in capsys.readouterr().err

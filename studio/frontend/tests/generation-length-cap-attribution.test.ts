@@ -4,18 +4,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { maxTokensIsTheLimit } from "../src/features/chat/api/generation-length.ts";
+import {
+  lengthStopCause,
+  maxTokensIsTheLimit,
+  windowEvidenceCount,
+} from "../src/features/chat/api/generation-length.ts";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+const { externalStopWindow } = await import(
+  "../src/features/chat/provider-capabilities.ts"
+);
 
 const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const CHAT_API = readSrc("features/chat/api/chat-api.ts");
 
 // Hoisted: biome's useTopLevelRegex flags a literal recompiled per call.
 const LOCAL_WINDOW_ARGUMENT =
-  /isExternalRequest\s*\n\s*\? null\s*\n\s*: \(runtime\.loadedCustomContextLength \?\?\s*\n\s*runtime\.loadedContextLength \?\?\s*\n\s*\(params\.maxSeqLength \|\| null\)\)/;
+  /isExternalRequest\s*\n\s*\? externalStopWindow\(\s*externalProvider\?\.providerType,\s*externalProvider\?\.baseUrl,\s*\)\s*\n\s*: \(runtime\.loadedCustomContextLength \?\?\s*\n\s*runtime\.loadedContextLength \?\?\s*\n\s*\(params\.maxSeqLength \|\| null\)\)/;
 // The EDITABLE field must not be what a stop is judged against: the store defines a
 // pending context edit as exactly `customContextLength !== loadedCustomContextLength`.
 const PENDING_FIELD = /: \(runtime\.customContextLength \?\?/;
+const WINDOW_COUNT_FROM_TIMINGS = /windowEvidenceCount\(parsedTimings\)/;
+const ADAPTER_COUNT_FROM_TIMINGS = /windowEvidenceCount\(chunkTimings\)/;
+const PROVIDER_WINDOW_EVENT =
+  /parsedToolEvent\?\.type === "context_window_exceeded"/;
+const PROVIDER_WINDOW_WINS = /providerReportedWindow\s*\?\s*"context_window"/;
 
 test("a cap the prompt left no room for is not the limit that was hit", () => {
   // 4096 window, 3000-token prompt, Max Tokens 2048: generation stops at roughly 1096,
@@ -108,4 +123,144 @@ test("a pending Context Length edit does not decide what stopped the generation"
 
   assert.match(CHAT_ADAPTER, LOCAL_WINDOW_ARGUMENT);
   assert.doesNotMatch(CHAT_ADAPTER, PENDING_FIELD);
+});
+
+test("a stop short of the cap against a window Studio cannot see filled that window", () => {
+  // Prompt + output fills a 4096-token window before reaching Max Tokens.
+  assert.equal(
+    lengthStopCause({
+      cap: 2048,
+      contextLength: null,
+      promptTokens: 3857,
+      completionTokens: 239,
+    }),
+    "context_window",
+  );
+  assert.equal(
+    lengthStopCause({
+      cap: 2048,
+      contextLength: null,
+      promptTokens: null,
+      completionTokens: 2048,
+    }),
+    "max_tokens",
+  );
+});
+
+test("with no window and no output count, neither wall is claimed", () => {
+  assert.equal(
+    lengthStopCause({
+      cap: 2048,
+      contextLength: null,
+      promptTokens: null,
+      completionTokens: null,
+    }),
+    "unknown",
+  );
+});
+
+test("a known window still decides from the prompt, as before", () => {
+  assert.equal(
+    lengthStopCause({
+      cap: 2048,
+      contextLength: 4096,
+      promptTokens: 3000,
+      completionTokens: 1096,
+    }),
+    "context_length",
+  );
+  assert.equal(
+    lengthStopCause({
+      cap: 512,
+      contextLength: 4096,
+      promptTokens: 3000,
+      completionTokens: 512,
+    }),
+    "max_tokens",
+  );
+});
+
+/** Classify a final chunk using the stream parser's inputs. */
+function causeOf(
+  chunk: {
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    timings?: { predicted_n?: number };
+  },
+  cap: number,
+) {
+  return lengthStopCause({
+    cap,
+    contextLength: null,
+    promptTokens: chunk.usage?.prompt_tokens ?? null,
+    completionTokens: windowEvidenceCount(chunk.timings),
+  });
+}
+
+test("llama.cpp's own count tells a full window from Max Tokens", () => {
+  // The live case: 3,842 + 254 tokens filled a 4096 window with Max Tokens at 2048.
+  assert.equal(
+    causeOf({ timings: { predicted_n: 254 } }, 2048),
+    "context_window",
+  );
+  assert.equal(causeOf({ timings: { predicted_n: 2048 } }, 2048), "max_tokens");
+  assert.equal(windowEvidenceCount({ predicted_n: "254" }), null);
+});
+
+test("a count that leaves out reasoning does not claim a full window", () => {
+  // xAI excludes reasoning from completion_tokens.
+  assert.equal(
+    causeOf(
+      {
+        usage: { prompt_tokens: 32, completion_tokens: 9 },
+      },
+      64,
+    ),
+    "unknown",
+  );
+});
+
+test("an output budget the server lowered does not claim a full window", () => {
+  // The server caps output at 4096 despite the requested 8192.
+  assert.equal(
+    causeOf({ usage: { prompt_tokens: 900, completion_tokens: 4096 } }, 8192),
+    "unknown",
+  );
+});
+
+test("the stream reads the window from llama.cpp timings and the provider's own report", () => {
+  assert.match(CHAT_API, WINDOW_COUNT_FROM_TIMINGS);
+  assert.match(CHAT_ADAPTER, ADAPTER_COUNT_FROM_TIMINGS);
+  assert.match(CHAT_API, PROVIDER_WINDOW_EVENT);
+  assert.match(CHAT_API, PROVIDER_WINDOW_WINS);
+});
+
+test("a Gemini length stop is always the output limit", () => {
+  // Native Gemini rejects oversized input before generation.
+  const window = externalStopWindow("gemini", null);
+  for (const [completionTokens, cap] of [
+    [60, 64],
+    [99, 100],
+    [8177, 8192],
+  ]) {
+    assert.equal(
+      lengthStopCause({
+        cap,
+        contextLength: window,
+        promptTokens: 1200,
+        completionTokens,
+      }),
+      "max_tokens",
+    );
+  }
+  assert.equal(
+    externalStopWindow(
+      "gemini",
+      "https://generativelanguage.googleapis.com/v1beta",
+    ),
+    Number.POSITIVE_INFINITY,
+  );
+  // Custom gateways and other providers keep an unknown window.
+  assert.equal(externalStopWindow("gemini", "http://localhost:4000/v1"), null);
+  assert.equal(externalStopWindow("custom", null), null);
+  assert.equal(externalStopWindow(undefined, null), null);
 });

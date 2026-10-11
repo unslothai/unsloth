@@ -20,10 +20,15 @@ import {
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
 const {
+  chatModelIsResident,
+  chatModelSelectableId,
   chatModelSwitchMeta,
   createChatModelHistoryReader,
   resolveChatModelSwitchTarget,
 } = await import("../src/features/chat/components/chat-model-notice-switch.ts");
+const { modelDisplayName } = await import(
+  "../src/features/hub/lib/model-identity.ts"
+);
 const { chatLocalModelOptions } = await import(
   "../src/features/chat/local-model-options.ts"
 );
@@ -50,7 +55,6 @@ const thread = atDefaultUiScale(readText("../src/components/assistant-ui/thread.
 const researchPanel = readText(
   "../src/features/chat/components/research-activity-panel.tsx",
 );
-const artifact = atDefaultUiScale(readText("../src/features/chat/artifacts/artifact-surface.tsx"));
 const switchSource = readText(
   "../src/features/chat/components/chat-model-notice-switch.ts",
 );
@@ -86,21 +90,20 @@ test("the notice never switches a model on its own", () => {
   // Opening a chat must not evict what is resident: a local load is multi-gigabyte.
   assert.doesNotMatch(notice, /loadModel|setCheckpoint/);
   // The only way out of it is the button.
-  assert.match(notice, /onClick=\{\(\) => onSwitch\(createdModel\)\}/);
+  assert.match(notice, /onClick=\{\(\) => onSwitch\(switchTarget\)\}/);
 });
 
 test("the notice stays quiet when it has nothing to offer", () => {
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  // no stamp, already on the exact pick, or a model that has since gone away
+  // no stamp, already on the pick (including snapshot vs repo id), or a model that has since gone away
   assert.match(body, /if \(!createdModel\) return null;/);
-  assert.match(body, /createdModel\.modelId === checkpoint/);
   assert.match(
     body,
-    /ggufVariantsMatch\(createdModel\.ggufVariant, activeGgufVariant\)/,
+    /chatModelIsResident\(createdModel, checkpoint, activeGgufVariant\)/,
   );
   assert.match(
     body,
-    /if \(!selectableModelIds\.has\(createdModel\.modelId\)\) return null;/,
+    /chatModelSelectableId\(\s*createdModel\.modelId,\s*selectableModelIds,?\s*\)/,
   );
 });
 
@@ -186,6 +189,87 @@ test("only models that can actually be selected are offered", () => {
   }
 });
 
+const HUB = "/home/u/.cache/huggingface/hub";
+const REPO_ID = "unsloth/Repo-GGUF";
+const SNAPSHOT_A = `${HUB}/models--unsloth--Repo-GGUF/snapshots/aaa1111`;
+const SNAPSHOT_B = `${HUB}/models--unsloth--Repo-GGUF/snapshots/bbb2222`;
+
+test("Switch Back resolves a snapshot-path chat to the live picker row", () => {
+  assert.equal(
+    chatModelSelectableId(SNAPSHOT_A, new Set([SNAPSHOT_A, REPO_ID])),
+    SNAPSHOT_A,
+  );
+  assert.equal(chatModelSelectableId(SNAPSHOT_A, new Set([REPO_ID])), REPO_ID);
+  assert.equal(
+    chatModelSelectableId(SNAPSHOT_A, new Set([SNAPSHOT_B])),
+    SNAPSHOT_B,
+  );
+  assert.equal(
+    chatModelSelectableId(SNAPSHOT_A, new Set(["unsloth/Other-GGUF"])),
+    null,
+  );
+  assert.equal(
+    chatModelSelectableId(
+      SNAPSHOT_A,
+      new Set([`${HUB}/models--unsloth--Other-GGUF/snapshots/ccc3333`]),
+    ),
+    null,
+  );
+  // a plain local file collapses to a bare stem, which is no repo
+  assert.equal(
+    chatModelSelectableId(
+      "/srv/models/a/Repo-Q4_K_M.gguf",
+      new Set(["Repo-Q4_K_M"]),
+    ),
+    null,
+  );
+});
+
+test("a snapshot-path chat is already on its repo-id checkpoint", () => {
+  const created = { modelId: SNAPSHOT_A, ggufVariant: "Q4_K_M" };
+  assert.equal(chatModelIsResident(created, REPO_ID, "Q4_K_M"), true);
+  assert.equal(chatModelIsResident(created, SNAPSHOT_B, "Q4_K_M"), true);
+  assert.equal(
+    chatModelIsResident(
+      { modelId: REPO_ID, ggufVariant: "Q4_K_M" },
+      SNAPSHOT_A,
+      "Q4_K_M",
+    ),
+    true,
+  );
+  assert.equal(chatModelIsResident(created, REPO_ID, "Q8_0"), false);
+  assert.equal(
+    chatModelIsResident(created, "unsloth/Other-GGUF", "Q4_K_M"),
+    false,
+  );
+});
+
+test("external and ollama-manifest ids never alias across case", () => {
+  for (const [upper, lower] of [
+    [
+      `external::vendor::${encodeURIComponent("Vendor/Qwen3.8-27B")}`,
+      `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`,
+    ],
+    [
+      `ollama-manifest:${encodeURIComponent("/home/u/.ollama/manifests/Llama")}`,
+      `ollama-manifest:${encodeURIComponent("/home/u/.ollama/manifests/llama")}`,
+    ],
+  ]) {
+    assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
+    assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
+    assert.equal(chatModelSelectableId(upper, new Set([lower])), null);
+    assert.equal(chatModelSelectableId(upper, new Set([upper])), upper);
+  }
+});
+
+test("a snapshot-path chat is labelled by its repo name, not the revision sha", () => {
+  assert.equal(modelDisplayName(SNAPSHOT_A), "Repo-GGUF");
+  assert.equal(modelDisplayName("org/model.gguf"), "model.gguf");
+  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
+  assert.match(body, /externalModelLabel\(createdModel\.modelId\)/);
+  assert.match(body, /modelDisplayName\(createdModel\.modelId\)/);
+});
+
 test("the notice clears the chat header instead of rendering underneath it", () => {
   // The bug this pins: the notice was an in-flow sibling of the chat header, and the
   // header is `absolute ... top-[--studio-content-top-inset] z-40` with an OPAQUE
@@ -206,7 +290,10 @@ test("the notice clears the chat header instead of rendering underneath it", () 
   assert.match(div, /\babsolute\b/);
   // Offset by the SAME header height the header, its fade and the drop overlay use,
   // so a change to either variable moves all four together.
-  assert.match(div, /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/);
+  assert.match(
+    div,
+    /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/,
+  );
   // Between the header fade (z-20) and the header itself (z-40): over the gradient,
   // under the model picker, whose menu must stay clickable.
   const z = /\bz-(\d+)\b/.exec(div);
@@ -217,7 +304,11 @@ test("the notice clears the chat header instead of rendering underneath it", () 
   );
   // An overlay over the scrolling conversation must be opaque, or messages read
   // through it. bg-muted/40 was fine only while the bar took its own row.
-  assert.doesNotMatch(div, /bg-muted\//, "a translucent overlay lets messages show through");
+  assert.doesNotMatch(
+    div,
+    /bg-muted\//,
+    "a translucent overlay lets messages show through",
+  );
 });
 
 test("the conversation reserves the space the notice overlay takes", () => {
@@ -254,7 +345,7 @@ test("the conversation reserves the space the notice overlay takes", () => {
   // 0px so every surface without a notice keeps exactly the padding it had.
   assert.match(
     thread,
-    /pt-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\]/,
+    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\] pt-\[var\(--thread-header-offset\)\]/,
   );
   // And the fade moves down with it, or it would dissolve behind the opaque bar.
   const fade = slice(page, "chat-header-fade", '"');
@@ -298,44 +389,19 @@ test("the research panel reserves the notice's height too", () => {
   );
 });
 
-test("the canvas panel reserves the notice's height too", () => {
-  // The other column the notice spans. The canvas panel's top offset was a fixed
-  // 90px, which clears the 48px header on top of a 34px content inset by 8px and
-  // nothing more, so a 36px notice covers the top 28px of the panel: the
-  // preview/source tabs and the close control sit in exactly that band, and the
-  // notice is opaque and takes pointer events at z-30. Same fix as the research
-  // panel, and 0px whenever no notice is on screen.
-  // The 90 and the 122 now carry the UI scale, minus the content inset, which
-  // is window chrome and stays fixed. At the default both come to what they
-  // were, so the geometry this test describes is unchanged.
-  const panel = slice(artifact, 'variant === "panel"', "aria-label=");
-  assert.match(
-    panel,
-    /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ \(90px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
-  );
-  // Both edges move, or the panel keeps its height and overflows the bottom.
-  assert.match(
-    panel,
-    /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - \(122px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) - var\(--studio-chat-notice-height, 0px\)\)"/,
-  );
-  // The class list must not still carry the fixed geometry the style replaces.
-  assert.doesNotMatch(panel, /mt-\[90px\]/);
-  assert.doesNotMatch(panel, /h-\[calc\(100%_-_122px\)\]/);
-  // 0px is the only safe fallback: the overlay variant and every chat without a
-  // notice keep the exact geometry they had before this notice existed.
-  assert.doesNotMatch(
-    panel,
-    /--studio-chat-notice-height,\s*2\.25rem/,
-    "the panel must not assume a notice is present",
-  );
-});
-
 test("a chat started as New Chat gets the notice once its row exists", () => {
   // ?new=<nonce> carries no thread in the URL and keeps none after the first send, so
   // the notice saw nothing until the chat was reopened. The store's id is only this
   // chat's after ThreadNewChatSwitch has blanked the previous one, hence the latch.
-  const gate = slice(page, "const newChatBlankedRef", "const newChatThreadId =");
-  assert.match(gate, /activeThreadId === null \|\| isAssistantLocalThreadId\(activeThreadId\)/);
+  const gate = slice(
+    page,
+    "const newChatBlankedRef",
+    "const newChatThreadId =",
+  );
+  assert.match(
+    gate,
+    /activeThreadId === null \|\| isAssistantLocalThreadId\(activeThreadId\)/,
+  );
   assert.match(gate, /newChatBlankedRef\.current = search\.new;/);
 
   const derived = slice(page, "const newChatThreadId =", "\n  const");
@@ -345,7 +411,10 @@ test("a chat started as New Chat gets the notice once its row exists", () => {
   assert.match(derived, /: null/);
 
   const notice = slice(page, "<ChatModelNotice", "/>");
-  assert.match(notice, /threadId=\{view\.threadId \?\? newChatThreadId \?\? undefined\}/);
+  assert.match(
+    notice,
+    /threadId=\{view\.threadId \?\? newChatThreadId \?\? undefined\}/,
+  );
 });
 
 test("a chat thread keeps the GGUF variant it started on", () => {
@@ -386,7 +455,10 @@ test("a queued empty-model send backfills its resolved GGUF variant", () => {
     "../src/features/chat/utils/queued-chat-run-settings.ts",
   );
   assert.match(queuedSettings, /"activeGgufVariant"/);
-  assert.match(thread, /modelGgufVariant: runSettingsAtQueueStart\.activeGgufVariant/);
+  assert.match(
+    thread,
+    /modelGgufVariant: runSettingsAtQueueStart\.activeGgufVariant/,
+  );
 });
 
 test("queued model backfill changes only a fresh empty thread row", () => {
@@ -398,7 +470,11 @@ test("queued model backfill changes only a fresh empty thread row", () => {
   assert.equal(shouldPersistResolvedQueuedModel(undefined), false);
   // The caller has already returned on a queued checkpoint four lines earlier.
   assert.match(
-    slice(adapter, "const persistResolvedQueuedModel", "if (queuedRunSettings)"),
+    slice(
+      adapter,
+      "const persistResolvedQueuedModel",
+      "if (queuedRunSettings)",
+    ),
     /queuedRunSettings\.params\.checkpoint \|\|/,
   );
 });
@@ -493,7 +569,11 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
     true,
   );
   // The selection mapping above and the predicate under test are the page's own.
-  const built = slice(page, "const selection = {", "await stageOrLoad(selection);");
+  const built = slice(
+    page,
+    "const selection = {",
+    "await stageOrLoad(selection);",
+  );
   for (const field of [
     "source: meta?.source",
     "isLora: meta?.isLora",
@@ -502,7 +582,10 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
   ]) {
     assert.ok(built.includes(field), `selection lost ${field}`);
   }
-  assert.match(built, /isDownloaded: meta\?\.isDownloaded \|\| isSameLoadedModel/);
+  assert.match(
+    built,
+    /isDownloaded: meta\?\.isDownloaded \|\| isSameLoadedModel/,
+  );
   assert.match(
     page,
     /const wantManagerStaging = wantsDownloadManagerStaging\(selection\);/,
@@ -618,7 +701,10 @@ test("a legacy GGUF directory does not infer a quant from config alone", () => {
       customContextLength: 32768,
     }),
   );
-  assert.equal(resolveChatModelSwitchTarget({ modelId }).ggufVariant, undefined);
+  assert.equal(
+    resolveChatModelSwitchTarget({ modelId }).ggufVariant,
+    undefined,
+  );
 });
 
 test("the switch back leaves the remembered config to stageOrLoad", () => {
@@ -644,8 +730,15 @@ test("the switch back leaves the remembered config to stageOrLoad", () => {
     slice(switchSource, "import type {", "export type ChatModelSwitchTarget"),
     /resolveInitialConfig/,
   );
-  const stage = slice(page, "const stageOrLoad = useCallback", "useRepoDownload(");
-  assert.match(stage, /selection\.config \?\? rememberedConfigFor\(selection\)/);
+  const stage = slice(
+    page,
+    "const stageOrLoad = useCallback",
+    "useRepoDownload(",
+  );
+  assert.match(
+    stage,
+    /selection\.config \?\? rememberedConfigFor\(selection\)/,
+  );
   const remembered = slice(
     page,
     "const rememberedConfigFor = useCallback",

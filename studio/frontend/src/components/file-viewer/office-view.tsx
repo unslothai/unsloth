@@ -10,11 +10,13 @@ import { cn } from "@/lib/utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type CSSProperties, type MouseEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type DocumentKind, sheetDelimiter } from "./kind";
+import { queueParse } from "./parse-queue";
 import { useWidth } from "./use-width";
 import {
   type Deck,
   type Sheet,
   type SheetCell,
+  type SheetLimits,
   type Slide,
   type SlideBox,
   columnName,
@@ -29,11 +31,19 @@ type Parsed =
   | { kind: "sheet"; sheets: Sheet[] }
   | { kind: "slides"; deck: Deck };
 
-async function parse(file: Blob, kind: DocumentKind, name: string, contentType: string): Promise<Parsed> {
+async function parse(
+  file: Blob,
+  kind: DocumentKind,
+  name: string,
+  contentType: string,
+  thumbnail = false,
+): Promise<Parsed> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
-    const repacked = repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
+    const repacked = thumbnail
+      ? repackDocxPreviewArchive(name, bytes, THUMBNAIL_DOCX_PARAGRAPHS, { keptImagesOnly: true })
+      : repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
     let dropped = false;
     let pixelsLeft = MAX_DOCX_PIXELS;
     const convertImage = mammoth.images.imgElement(async (image) => {
@@ -46,10 +56,17 @@ async function parse(file: Blob, kind: DocumentKind, name: string, contentType: 
       return { src: "" };
     });
     const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer }, { convertImage, idPrefix: "docx-" });
-    const { html, truncated } = sanitizeDocxHtml(value);
+    const { html, truncated } = thumbnail
+      ? sanitizeDocxHtml(value, THUMBNAIL_DOCX_ELEMENTS, { links: false })
+      : sanitizeDocxHtml(value, MAX_DOCX_ELEMENTS);
     return { kind, html, truncated: truncated || repacked.truncated || dropped };
   }
-  if (kind === "slides") return { kind, deck: readPptx(bytes) };
+  if (kind === "slides") {
+    if (!thumbnail) return { kind, deck: readPptx(bytes) };
+    return { kind, deck: { ...readPptx(bytes, { maxSlides: 1 }), truncated: false } };
+  }
+  // A card shows the top-left of the first sheet; later tabs keep their names only.
+  const limits = thumbnail ? THUMBNAIL_SHEET_LIMITS : undefined;
   const delimiter = sheetDelimiter(name, contentType);
   if (delimiter) {
     const encoding =
@@ -58,10 +75,10 @@ async function parse(file: Blob, kind: DocumentKind, name: string, contentType: 
         : bytes[0] === 0xfe && bytes[1] === 0xff
           ? "utf-16be"
           : "utf-8";
-    const text = new TextDecoder(encoding).decode(bytes);
-    return { kind: "sheet", sheets: [readDelimited(text, delimiter, name)] };
+    const text = new TextDecoder(encoding).decode(thumbnail ? bytes.subarray(0, THUMBNAIL_TEXT_BYTES) : bytes);
+    return { kind: "sheet", sheets: [untruncated(readDelimited(text, delimiter, name, limits), thumbnail)] };
   }
-  return { kind: "sheet", sheets: readXlsx(bytes) };
+  return { kind: "sheet", sheets: readXlsx(bytes, limits).map((sheet) => untruncated(sheet, thumbnail)) };
 }
 
 const DOCX_TAGS = new Set(
@@ -72,13 +89,28 @@ const DOCX_ATTRIBUTES = new Set(["href", "src", "alt", "id", "colspan", "rowspan
 const MAX_DOCX_PARAGRAPHS = 20_000;
 const MAX_DOCX_ELEMENTS = 50_000;
 const MAX_DOCX_PIXELS = 128 * 1024 * 1024;
+// A card shows only the opening of a document.
+const THUMBNAIL_DOCX_PARAGRAPHS = 60;
+const THUMBNAIL_DOCX_ELEMENTS = 2_000;
+const THUMBNAIL_SHEET_LIMITS: SheetLimits = { sheets: 1, rows: 60, columns: 30, extraNames: 8 };
+const THUMBNAIL_TEXT_BYTES = 256 * 1024;
 
-function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
+// A thumbnail cut is expected, so it shows no truncation note.
+function untruncated(sheet: Sheet, thumbnail: boolean): Sheet {
+  return thumbnail ? { ...sheet, truncated: false } : sheet;
+}
+
+// A thumbnail sits inside a button, so it drops links: interactive content cannot nest there.
+function sanitizeDocxHtml(
+  html: string,
+  maxElements: number,
+  { links = true } = {},
+): { html: string; truncated: boolean } {
   // Cut before parsing: mammoth escapes each < in text, so every one left is a tag.
   const opening = /<[a-z]/gi;
   let cut = -1;
   for (let count = 0; opening.exec(html); count++) {
-    if (count === MAX_DOCX_ELEMENTS) {
+    if (count === maxElements) {
       cut = opening.lastIndex - 2;
       break;
     }
@@ -94,7 +126,7 @@ function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
       const value = attr.value.trim().toLowerCase();
       const unsafe =
         !DOCX_ATTRIBUTES.has(attr.name) ||
-        (attr.name === "href" && !/^(https?:|mailto:|#)/.test(value)) ||
+        (attr.name === "href" && (!links || !/^(https?:|mailto:|#)/.test(value))) ||
         (attr.name === "src" && !value.startsWith("data:image/"));
       if (unsafe) element.removeAttribute(attr.name);
     }
@@ -290,7 +322,18 @@ function SheetGrid({
   );
 }
 
-function SheetView({ sheets, tabs, scale }: { sheets: Sheet[]; tabs: boolean; scale: number }) {
+function SheetView({
+  sheets,
+  tabs,
+  scale,
+  thumbnail = false,
+}: {
+  sheets: Sheet[];
+  tabs: boolean;
+  scale: number;
+  /** Tabs as labels: a thumbnail sits inside a button. */
+  thumbnail?: boolean;
+}) {
   const t = useT();
   const uiScale = useUiSpaceScale();
   const [active, setActive] = useState(0);
@@ -302,19 +345,21 @@ function SheetView({ sheets, tabs, scale }: { sheets: Sheet[]; tabs: boolean; sc
       {(tabs || sheet.truncated) && (
         <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-t border-border px-2 py-1.5">
           {tabs &&
-            sheets.map((item, index) => (
-              <button
-                key={index}
-                type="button"
-                onClick={() => setActive(index)}
-                className={cn(
-                  "shrink-0 rounded-md px-3 py-1 text-ui-13 transition-colors hover:bg-muted",
-                  index === active ? "bg-muted font-medium text-foreground" : "text-muted-foreground",
-                )}
-              >
-                {item.name}
-              </button>
-            ))}
+            sheets.map((item, index) => {
+              const className = cn(
+                "shrink-0 rounded-md px-3 py-1 text-ui-13 transition-colors hover:bg-muted",
+                index === active ? "bg-muted font-medium text-foreground" : "text-muted-foreground",
+              );
+              return thumbnail ? (
+                <span key={index} className={className}>
+                  {item.name}
+                </span>
+              ) : (
+                <button key={index} type="button" onClick={() => setActive(index)} className={className}>
+                  {item.name}
+                </button>
+              );
+            })}
           {sheet.truncated && (
             <span className="ml-auto shrink-0 px-2 text-ui-12 text-muted-foreground">
               {t("library.preview.sheetTruncated")}
@@ -511,32 +556,43 @@ export default function OfficeView({
   name,
   contentType,
   scale,
+  thumbnail = false,
 }: {
   file: Blob;
   kind: DocumentKind;
   name: string;
   contentType: string;
   scale: number;
+  /** Card thumbnail: parse queued, first slide only. */
+  thumbnail?: boolean;
 }) {
   const t = useT();
   const [state, setState] = useState<{ file: Blob; parsed?: Parsed; error?: boolean } | null>(null);
   useEffect(() => {
     let cancelled = false;
-    parse(file, kind, name, contentType).then(
-      (parsed) => !cancelled && setState({ file, parsed }),
+    const run = () => parse(file, kind, name, contentType, thumbnail);
+    (thumbnail ? queueParse(run, () => cancelled) : run()).then(
+      (parsed) => !cancelled && parsed && setState({ file, parsed }),
       () => !cancelled && setState({ file, error: true }),
     );
     return () => {
       cancelled = true;
     };
-  }, [file, kind, name, contentType]);
+  }, [file, kind, name, contentType, thumbnail]);
   const current = state?.file === file ? state : null;
+  const parsed = current?.parsed;
   if (current?.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
-  const parsed = current?.parsed;
   if (!parsed) return <Spinner className="m-auto size-6" />;
   if (parsed.kind === "docx") return <DocxView html={parsed.html} truncated={parsed.truncated} scale={scale} />;
   if (parsed.kind === "slides") return <SlidesView deck={parsed.deck} scale={scale} />;
-  return <SheetView sheets={parsed.sheets} tabs={!sheetDelimiter(name, contentType)} scale={scale} />;
+  return (
+    <SheetView
+      sheets={parsed.sheets}
+      tabs={!sheetDelimiter(name, contentType)}
+      scale={scale}
+      thumbnail={thumbnail}
+    />
+  );
 }

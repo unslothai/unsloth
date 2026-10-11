@@ -269,6 +269,8 @@ def test_the_warning_does_not_claim_the_other_class_is_gone_too(peft_env, fake_t
         "cannot import name 'LinearActivationQuantizedTensor' from 'torchao.quantization'",
         # Code reaching past the package for the same class.
         "No module named 'torchao.quantization.linear_activation_quantized_tensor'",
+        # torchao main deleted the whole package that defined AffineQuantizedTensor.
+        "No module named 'torchao.dtypes'",
     ],
 )
 def test_every_spelling_of_the_missing_class_is_handled(peft_env, fake_torchao, message):

@@ -3,6 +3,7 @@
 import ast
 import importlib.util
 import inspect
+import os
 import sys
 import textwrap
 import types
@@ -12,8 +13,10 @@ import pytest
 
 
 def _load_worker_module():
+    worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
     stub_names = (
-        "structlog",
+        "core.training",
+        "core.training.dataset_bounds",
         "loggers",
         "utils",
         "utils.child_stdio",
@@ -23,11 +26,16 @@ def _load_worker_module():
         "utils.training_runs",
         "utils.wheel_utils",
         "utils.training_runs",
+        # Imported for real against the stubs above, so dropped again afterwards.
+        "utils.kernel_install",
+        "utils.ssm_runtime",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
 
     try:
-        sys.modules["structlog"] = types.ModuleType("structlog")
+        core_training = types.ModuleType("core.training")
+        core_training.__path__ = [str(worker_path.parent)]
+        sys.modules["core.training"] = core_training
 
         loggers = types.ModuleType("loggers")
         loggers.get_logger = lambda *_args, **_kwargs: None
@@ -40,7 +48,13 @@ def _load_worker_module():
         sys.modules["utils"] = utils
 
         child_stdio = types.ModuleType("utils.child_stdio")
-        child_stdio.utf8_child_env = lambda env = None: dict(env or {})
+
+        def utf8_child_env(env = None):
+            child = dict(os.environ if env is None else env)
+            child["PYTHONIOENCODING"] = "utf-8"
+            return child
+
+        child_stdio.utf8_child_env = utf8_child_env
         sys.modules["utils.child_stdio"] = child_stdio
 
         hardware = types.ModuleType("utils.hardware")
@@ -71,9 +85,23 @@ def _load_worker_module():
             "url_exists",
         ):
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
+        # Read at import by utils.kernel_install, which the worker imports.
+        for name in (
+            "redact_url_credentials",
+            "xformers_wheel_url",
+        ):
+            setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
+        for name in (
+            "CAUSAL_CONV1D_PACKAGE_VERSION",
+            "CAUSAL_CONV1D_RELEASE_BASE_URL",
+            "CAUSAL_CONV1D_RELEASE_TAG",
+            "MAMBA_SSM_PACKAGE_VERSION",
+            "MAMBA_SSM_RELEASE_BASE_URL",
+            "MAMBA_SSM_RELEASE_TAG",
+        ):
+            setattr(wheel_utils, name, "")
         sys.modules["utils.wheel_utils"] = wheel_utils
 
-        worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
         spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
@@ -98,7 +126,9 @@ _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
 _mlx_dora_peft_kwargs = _worker._mlx_dora_peft_kwargs
 
 
-def test_mlx_studio_optimizer_aliases_are_explicit():
+def test_mlx_studio_optimizer_aliases_are_explicit(monkeypatch):
+    # Pin the local fallback: a zoo with the MLX normalizer keeps adamw_8bit (real 8-bit AdamW).
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.trainer", None)
     assert _normalize_mlx_studio_optimizer("adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("paged_adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("adafactor") == "adafactor"
@@ -520,3 +550,84 @@ def test_odd_model_names_do_not_break_the_warning(model_name):
     events, applied = _run_masking(model_name = model_name, detect = _detect_fails)
 
     assert applied is False and len(_warnings(events)) == 1
+
+
+class _FakeRankTrainer:
+    def __init__(
+        self,
+        rank = 0,
+        world_size = 1,
+        save_error = None,
+    ):
+        self.distributed_world_size = world_size
+        self.is_main_process = rank == 0
+        self.stop_requested = False
+        self.saved = []
+        self._save_error = save_error
+
+    def save_model(self, path):
+        if self._save_error is not None:
+            raise self._save_error
+        self.saved.append(path)
+
+    def _distributed_any_flag(self, flag):
+        return bool(flag)
+
+    def _raise_distributed_failure(
+        self,
+        failed,
+        context,
+        exc = None,
+    ):
+        if failed:
+            raise RuntimeError(f"{context}: {exc}")
+
+
+def _finalize(
+    trainer,
+    stop = (False, True),
+    checkpoint_ok = True,
+):
+    events = []
+    _worker._finalize_mlx_training(
+        trainer,
+        lambda: stop,
+        "/out",
+        lambda: None,
+        lambda event_type, **payload: events.append((event_type, payload)),
+        lambda: checkpoint_ok,
+    )
+    return events
+
+
+def test_mlx_epoch_steps_divide_by_world_size_only_when_derived():
+    steps = _worker._resolve_mlx_training_steps
+    assert steps(0, 16, 2, 2, 3, 1) == 12
+    assert steps(0, 16, 2, 2, 3, 2) == 6
+    assert steps(7, 16, 2, 2, 3, 2) == 7
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_mlx_final_save_is_rank0_owned(rank):
+    trainer = _FakeRankTrainer(rank = rank, world_size = 2)
+    events = _finalize(trainer)
+    assert trainer.saved == (["/out"] if rank == 0 else [])
+    assert events[-1] == (
+        "complete",
+        {"output_dir": "/out" if rank == 0 else None, "status_message": "Training completed"},
+    )
+
+
+def test_mlx_rank0_save_failure_reaches_every_rank():
+    with pytest.raises(RuntimeError, match = "final model save"):
+        _finalize(_FakeRankTrainer(world_size = 2, save_error = OSError("disk full")))
+
+
+def test_mlx_single_process_finalization_keeps_prior_contract():
+    trainer = _FakeRankTrainer()
+    assert _finalize(trainer, stop = (True, False))[-1][1]["status_message"] == "Training cancelled"
+    assert trainer.saved == []
+
+    events = _finalize(trainer, stop = (True, True), checkpoint_ok = False)
+    assert trainer.saved == ["/out"]
+    assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True

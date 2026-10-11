@@ -60,10 +60,14 @@ function MetaRow({
   label,
   value,
   mono,
+  title,
+  wrap,
 }: {
   label: string;
   value: ReactNode;
   mono?: boolean;
+  title?: string;
+  wrap?: boolean;
 }): ReactElement {
   return (
     <div className="flex items-baseline justify-between gap-3">
@@ -72,9 +76,11 @@ function MetaRow({
       </span>
       <span
         className={cn(
-          "min-w-0 truncate text-ui-12p5 text-foreground/90",
+          "min-w-0 text-ui-12p5 text-foreground/90",
+          wrap ? "break-words text-right" : "truncate",
           mono && "font-mono text-ui-12",
         )}
+        title={title}
       >
         {value}
       </span>
@@ -350,6 +356,7 @@ export function RunPreviewCard({
     gradientAccumulation,
     learningRate,
     contextLength,
+    isDecision,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       selectedModel: s.selectedModel,
@@ -368,6 +375,7 @@ export function RunPreviewCard({
       gradientAccumulation: s.gradientAccumulation,
       learningRate: s.learningRate,
       contextLength: s.contextLength,
+      isDecision: s.modelType === "decision",
     })),
   );
 
@@ -484,11 +492,13 @@ export function RunPreviewCard({
             />
           }
         />
-        <MetaRow
-          label={t("studio.preview.context")}
-          value={numberFormatter.format(contextLength)}
-          mono={true}
-        />
+        {!isDecision && (
+          <MetaRow
+            label={t("studio.preview.context")}
+            value={numberFormatter.format(contextLength)}
+            mono={true}
+          />
+        )}
         <MetaRow
           label={t("studio.preview.lr")}
           value={formatLearningRate(learningRate)}
@@ -511,12 +521,16 @@ export function RunPreviewCard({
       <section className="flex flex-col gap-3">
         <MetaRow
           label={t("studio.preview.hardware")}
-          value={
-            gpu.available
-              ? `${gpu.name} · ${gpu.memoryTotalGb} GiB`
-              : t("studio.preview.noGpu")
-          }
+          wrap
+          value={gpu.available ? gpu.name : t("studio.preview.noGpu")}
         />
+        {gpu.available && (
+          <MetaRow
+            label={t("studio.preview.vram")}
+            title={`${gpu.memoryTotalGb} GiB`}
+            value={`${Math.round(gpu.memoryTotalGb)} GiB`}
+          />
+        )}
         <MetaRow
           label={t("studio.preview.hfToken")}
           value={

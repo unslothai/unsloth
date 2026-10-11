@@ -23,7 +23,7 @@ export type ResourceTypeFilter = "models" | "datasets";
 
 export type HubModelType = "text" | "vision" | "audio" | "embeddings";
 
-export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx";
+export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx" | "npu";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 
@@ -74,6 +74,8 @@ export interface SelectedModelView {
   /** The backend's inferred pipeline task for an on-device row. A cached GGUF repo carries
    *  this and NOT `pipelineTag`, so deciding a GGUF row's modality needs both. */
   task?: string | null;
+  /** The on-device row's audio type; separation is told apart from other audio-to-audio by it. */
+  audioType?: string | null;
   libraryName?: string;
   gated?: false | "auto" | "manual";
   private?: boolean;

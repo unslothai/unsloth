@@ -9,6 +9,7 @@ import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
+import { audioSummary } from "../audio-items";
 import { modelLabelKey } from "../file-kind";
 import { formatActivityTime, formatCardTime, formatItemCount, formatSize } from "../format";
 import type { LibrarySortKey, LibrarySortState } from "../settings-store";
@@ -22,6 +23,8 @@ function targetKey(target: LibraryTarget): string {
 }
 
 const ROW_INSET = "pl-4 pr-6";
+// Gap, not padding, so each row's hover area keeps its width.
+export const LIST_ROW_GAP = "gap-1";
 
 const CELL = "hidden text-ui-13 text-muted-foreground sm:block";
 const ACTIVITY_COLUMN = "w-48 shrink-0";
@@ -30,6 +33,7 @@ const SIZE_COLUMN = "w-28 shrink-0";
 const ACTIVITY_COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
   ["modified", "library.list.lastActivity", ACTIVITY_COLUMN],
 ];
+export const FILE_LIST_COLUMNS = { cell: CELL, modified: MODIFIED_COLUMN, size: SIZE_COLUMN };
 const COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
   ["modified", "library.list.modifiedColumn", MODIFIED_COLUMN],
   ["size", "library.preview.size", SIZE_COLUMN],
@@ -71,20 +75,25 @@ function GutterCheckbox({
   checked,
   visible,
   group,
-  onCheckedChange,
+  onToggle,
   label,
 }: {
   checked: boolean;
   visible: boolean;
   group: "row" | "head";
-  onCheckedChange: () => void;
+  /** `range` is a shift click. */
+  onToggle: (range: boolean) => void;
   label: string;
 }) {
   return (
     <div className="absolute right-full top-1/2 mr-3 flex -translate-y-1/2">
       <Checkbox
         checked={checked}
-        onCheckedChange={onCheckedChange}
+        // onClick to read shift.
+        onClick={(event) => {
+          event.preventDefault();
+          onToggle(event.shiftKey);
+        }}
         aria-label={label}
         className={cn(
           "rounded-full border-neutral-300 opacity-0 transition-opacity focus-visible:opacity-100 dark:border-input",
@@ -102,7 +111,7 @@ function Row({
   target,
   selected,
   selecting,
-  onSelectedChange,
+  onToggle,
   onOpen,
   tile,
   name,
@@ -114,7 +123,7 @@ function Row({
   target: LibraryTarget;
   selected: boolean;
   selecting: boolean;
-  onSelectedChange: (selected: boolean) => void;
+  onToggle: (range: boolean) => void;
   onOpen: () => void;
   tile: ReactNode;
   name: ReactNode;
@@ -137,14 +146,16 @@ function Row({
         checked={selected}
         visible={selecting}
         group="row"
-        onCheckedChange={() => onSelectedChange(!selected)}
+        onToggle={onToggle}
         label={t("library.selectItem", {
           name: target.kind === "item" ? target.item.name : target.folder.name,
         })}
       />
+      {/* While selecting, a click selects, as a card's does. */}
       <button
         type="button"
-        onClick={onOpen}
+        aria-pressed={selecting ? selected : undefined}
+        onClick={(event) => (selecting ? onToggle(event.shiftKey) : onOpen())}
         className="flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {tile}
@@ -173,18 +184,26 @@ export function LibraryList({
   counts,
   selection,
   onSelectionChange,
+  onToggle,
   sort,
   onSortChange,
   activity,
+  leading,
+  favoriteMarks = true,
 }: {
   folders: LibraryFolder[];
   items: LibraryItem[];
   counts: Map<string, number>;
   selection: Set<string>;
   onSelectionChange: (next: Set<string>) => void;
+  /** Select or deselect one row; `range` (a shift click) takes every row since the last click. */
+  onToggle: (key: string, range: boolean) => void;
   sort: LibrarySortState;
   onSortChange: (key: LibrarySortKey) => void;
   activity: boolean;
+  /** Rows listed first, with own menus and no selection (Favorites' starred chats). */
+  leading?: ReactNode;
+  favoriteMarks?: boolean;
 }) {
   const t = useT();
   const actions = useLibraryActions();
@@ -194,13 +213,6 @@ export function LibraryList({
   ];
   const allSelected = targets.length > 0 && targets.every((t) => selection.has(targetKey(t)));
   const selecting = selection.size > 0;
-
-  const setSelected = (target: LibraryTarget, selected: boolean) => {
-    const next = new Set(selection);
-    if (selected) next.add(targetKey(target));
-    else next.delete(targetKey(target));
-    onSelectionChange(next);
-  };
 
   return (
     <div>
@@ -217,7 +229,7 @@ export function LibraryList({
             checked={allSelected}
             visible={selecting}
             group="head"
-            onCheckedChange={() =>
+            onToggle={() =>
               onSelectionChange(allSelected ? new Set() : new Set(targets.map(targetKey)))
             }
             label={t("library.list.selectAll")}
@@ -238,14 +250,15 @@ export function LibraryList({
           <span className="w-8 shrink-0" />
         </div>
       </div>
-      <div className="mt-1 flex flex-col">
+      <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
+        {leading}
         {folders.map((folder) => (
           <Row
             key={folder.id}
             target={{ kind: "folder", folder }}
             selected={selection.has(`folder:${folder.id}`)}
             selecting={selecting}
-            onSelectedChange={(selected) => setSelected({ kind: "folder", folder }, selected)}
+            onToggle={(range) => onToggle(`folder:${folder.id}`, range)}
             onOpen={() => actions.openFolder(folder.id)}
             tile={
               <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
@@ -270,7 +283,7 @@ export function LibraryList({
             target={{ kind: "item", item }}
             selected={selection.has(`item:${item.id}`)}
             selecting={selecting}
-            onSelectedChange={(selected) => setSelected({ kind: "item", item }, selected)}
+            onToggle={(range) => onToggle(`item:${item.id}`, range)}
             onOpen={() => actions.openItem(item)}
             tile={<ItemTile item={item} />}
             name={
@@ -281,7 +294,12 @@ export function LibraryList({
                     {t(modelLabelKey(item)!)}
                   </span>
                 )}
-                {item.favorite && (
+                {item.audio && (
+                  <span className="shrink-0 text-muted-foreground text-sm tabular-nums">
+                    {audioSummary(item).join(" · ")}
+                  </span>
+                )}
+                {favoriteMarks && item.favorite && (
                   <HugeiconsIcon
                     icon={StarPointedIcon}
                     aria-label={t("library.list.favorite")}

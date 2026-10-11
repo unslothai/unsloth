@@ -914,9 +914,15 @@ def mmproj_accepts_image(path: str) -> bool:
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
-    """True/False from ``general.type``; None means fall back to filename."""
+    """True/False from ``general.type``; None means fall back to filename.
+
+    ``general.architecture == "clip"`` is llama.cpp's projector arch and wins: older
+    converters wrote ``general.type`` values like ``clip-vision`` (#9286).
+    """
     if not meta:
         return None
+    if (meta.get("general.architecture") or "").lower() == "clip":
+        return True
     t = meta.get("general.type")
     if t is None:
         return None
@@ -939,7 +945,11 @@ def _normalize_url(url: str) -> Optional[str]:
     if not has_url_host:
         return value
     host, separator, path = value.partition("/")
-    return host.lower() + (separator + path if separator else "")
+    host = host.lower()
+    # Hugging Face owner/repo IDs are case-insensitive, but arbitrary host, file, and revision paths are not.
+    if host == "huggingface.co" and len(path.split("/")) == 2:
+        path = path.casefold()
+    return host + (separator + path if separator else "")
 
 
 def _repo_path_from_url(url: str) -> Optional[str]:
@@ -964,7 +974,13 @@ def _same_repo_reference(left: str, right: str) -> bool:
         return False
     hosted = left_normalized if left_is_url else right_normalized
     host, _, _ = hosted.partition("/")
-    return host == "huggingface.co" and _repo_path_from_url(left) == _repo_path_from_url(right)
+    if host != "huggingface.co":
+        return False
+    left_path = _repo_path_from_url(left)
+    right_path = _repo_path_from_url(right)
+    if left_path and right_path and len(left_path.split("/")) == len(right_path.split("/")) == 2:
+        return left_path.casefold() == right_path.casefold()
+    return left_path == right_path
 
 
 def _hf_repo_slug_from_url(url: str) -> Optional[str]:
@@ -1007,6 +1023,26 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
     if not weight_slug or not projector_slug:
         return False
     return _slug_extends_base(weight_slug, projector_slug)
+
+
+def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optional[bool], str]:
+    """Gemma 4 only: pair by projector type + projection dim, not branding. None = unknown."""
+    if read_gguf_architecture(weight_path) != "gemma4":
+        return None, ""
+    projector_type = read_mmproj_vision_projector_type(mmproj_path)
+    if projector_type != "gemma4v":
+        return None, ""
+    embedding_length = read_gguf_embedding_length(weight_path)
+    dims = _parse_gguf_arch_uints(mmproj_path, frozenset({"vision.projection_dim"})) or {}
+    projection_dim = dims.get("vision.projection_dim")
+    if not embedding_length or not projection_dim:
+        return None, ""
+    if embedding_length != projection_dim:
+        return False, (
+            f"gemma4.embedding_length {embedding_length} != "
+            f"clip.vision.projection_dim {projection_dim}"
+        )
+    return True, ""
 
 
 def pairing_score(

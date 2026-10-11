@@ -31,6 +31,8 @@ logger = get_logger(__name__)
 
 # PNG text-chunk key holding our structured recipe JSON.
 _META_KEY = "unsloth"
+# Absent on PNGs written before it existed.
+RECIPE_SCHEMA_VERSION = 1
 # Image ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -55,6 +57,20 @@ def _params_text(meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# Pillow's default zlib level 6 costs ~0.4 s per 1024x1024 PNG on the request path; level 1 ~0.1 s, ~10% larger, lossless.
+PNG_COMPRESS_LEVEL_ENV = "UNSLOTH_IMAGE_PNG_COMPRESS_LEVEL"
+_DEFAULT_PNG_COMPRESS_LEVEL = 1
+
+
+def png_compress_level() -> int:
+    raw = os.environ.get(PNG_COMPRESS_LEVEL_ENV, "").strip()
+    try:
+        level = int(raw)
+    except ValueError:
+        return _DEFAULT_PNG_COMPRESS_LEVEL
+    return level if 0 <= level <= 9 else _DEFAULT_PNG_COMPRESS_LEVEL
+
+
 def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     import io
 
@@ -64,13 +80,14 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
     buf = io.BytesIO()
-    image.save(buf, format = "PNG", pnginfo = info)
+    image.save(buf, format = "PNG", pnginfo = info, compress_level = png_compress_level())
     return buf.getvalue()
 
 
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
+    meta = {**meta, "schema_version": RECIPE_SCHEMA_VERSION}
     # Encoded before the folder is looked up: a Settings move during the encode would otherwise
     # finish first, and the image land in the folder it left.
     data = _png_bytes(image, meta)
@@ -169,6 +186,21 @@ def owned_image_path(image_id: str) -> Optional[Path]:
     if path is None or _read_meta(path) is None:
         return None
     return path
+
+
+def thumbnail(path: Path, size: int) -> bytes:
+    """Return a WebP thumbnail with its longest side at most ``size`` pixels."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        im.thumbnail((size, size), Image.LANCZOS)
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
+        buf = io.BytesIO()
+        im.save(buf, format = "WEBP", quality = 85, method = 4)
+    return buf.getvalue()
 
 
 def _mtime(path: Path) -> float:

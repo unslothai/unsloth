@@ -387,6 +387,7 @@ export const RESIDENT_ADDING_ARGS = [
   "--control-vector",
   "--control-vector-scaled",
   "--mmproj",
+  "-mm",
   "--model-draft",
   "-md",
   "--spec-draft-hf",

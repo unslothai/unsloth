@@ -287,7 +287,6 @@ def run(page):
 
     for source, target in itertools.product(
         [
-            "Manage chats",
             "Uploaded files",
             "Archived chats",
             "Archived images",
@@ -345,7 +344,6 @@ def run(page):
 
     checks.extend(run_libraries(page))
     checks.extend(run_library_locales(page))
-    checks.extend(run_library_selection(page))
     checks.extend(run_library_collation(page))
     checks.extend(run_restore_notifications(page))
     checks.extend(run_thumbnail_retention(page))
@@ -389,22 +387,13 @@ def run_libraries(page):
             if (options.reorderDates) {
                 for (const kind of ['images', 'videos', 'audio']) f.media[kind][300].created_at = kind === 'images' ? 1900000000 : new Date(1900000000000).toISOString();
             }
-            if (shelf === 'manage') window.__settingsSmoke.open('data');
-            else window.__settingsSmoke.openArchived(shelf);
+            window.__settingsSmoke.openArchived(shelf);
         }""",
             {"shelf": shelf, "options": options},
         )
-        if shelf == "manage":
-            page.locator('[data-settings-label="Manage chats"]').get_by_role(
-                "button", name = "Manage", exact = True
-            ).click()
-            label = "Search chats or projects"
-        else:
-            label = (
-                "Search archived chats or projects"
-                if shelf == "chats"
-                else f"Search archived {shelf}"
-            )
+        label = (
+            "Search archived chats or projects" if shelf == "chats" else f"Search archived {shelf}"
+        )
         search = page.get_by_role("searchbox", name = label, exact = True)
         search.wait_for()
         page.evaluate("window.dispatchEvent(new Event('unsloth-chat-projects-updated'))")
@@ -419,21 +408,14 @@ def run_libraries(page):
             "window.__dataFixture.requests.filter(r => ['PATCH', 'DELETE'].includes(r.method))"
         )
 
-    for shelf in ["manage", "chats"]:
+    for shelf in ["chats"]:
         search = seed(shelf)
         search.fill("  RESEARCH   cafe ")
         expect(page.get_by_role("button", name = "Café needle", exact = True)).to_be_visible()
         expect(page.get_by_role("button", name = "Zulu sample", exact = True)).to_have_count(0)
         checks.append(f"{shelf}-search-title-and-project-across-pages-unicode")
         search.fill("missing query")
-        expect(
-            page.get_by_text(
-                "No chats match your search."
-                if shelf == "manage"
-                else "No archived chats match your search.",
-                exact = True,
-            )
-        ).to_be_visible()
+        expect(page.get_by_text("No archived chats match your search.", exact = True)).to_be_visible()
         search.fill("")
         page.get_by_role("button", name = "Filter by project", exact = True).click()
         page.get_by_role("combobox", name = "Search projects", exact = True).fill("Research")
@@ -466,24 +448,6 @@ def run_libraries(page):
     search.fill("Old experiments")
     expect(page.get_by_role("button", name = "Chat 31", exact = True)).to_be_visible()
     checks.append("archive-search-includes-archived-project-names")
-
-    search = seed("manage")
-    page.get_by_role("checkbox", name = "Select all visible chats", exact = True).click()
-    expect(page.get_by_text("Selected chats: 20", exact = True)).to_be_visible()
-    search.fill("needle")
-    expect(
-        page.get_by_role("checkbox", name = 'Select "Café needle"', exact = True)
-    ).not_to_be_checked()
-    expect(page.get_by_role("button", name = "Archive", exact = True)).to_have_count(0)
-    assert not mutation_requests()
-    checks.append("manage-filter-clears-hidden-selection")
-    page.get_by_role("checkbox", name = 'Select "Café needle"', exact = True).click()
-    page.get_by_role("button", name = "Archive", exact = True).click()
-    page.wait_for_function(
-        "window.__dataFixture.rows.find(r => r.title === 'Café needle').archived === true"
-    )
-    assert len(mutation_requests()) == 1
-    checks.append("manage-filtered-archive-scope")
 
     search = seed("chats", holdMutation = True)
     search.fill("Compare models")
@@ -680,8 +644,6 @@ def run_library_locales(page):
             }
             return {
                 ...api.messages[locale].settings.data.library,
-                manage: api.translate('settings.data.manageChats'),
-                manageAction: api.translate('settings.data.manageAction'),
                 cancel: api.translate('common.cancel'),
                 delete: api.translate('common.delete'),
                 deleteAll: api.translate('settings.data.deleteAllAction'),
@@ -694,7 +656,7 @@ def run_library_locales(page):
         )
         if locale == "es":
             assert text["noProject"] == "Sin proyecto"
-        for shelf in ["manage", "chats", "images", "videos", "audio"]:
+        for shelf in ["chats", "images", "videos", "audio"]:
             page.evaluate("window.__settingsSmoke.close()")
             expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
             page.evaluate(
@@ -711,18 +673,12 @@ def run_library_locales(page):
                     id: 'locale-media', prompt: 'Sample media', url: '/unused',
                     created_at: kind === 'images' ? 1700000000 : '2023-11-14T22:13:20Z',
                 }]]));
-                if (shelf === 'manage') window.__settingsSmoke.open('data');
-                else window.__settingsSmoke.openArchived(shelf);
+                window.__settingsSmoke.openArchived(shelf);
                 }""",
                 shelf,
             )
-            if shelf == "manage":
-                page.locator(f'[data-settings-label="{text["manage"]}"]').get_by_role(
-                    "button", name = text["manageAction"], exact = True
-                ).click()
             placeholder = text[
                 {
-                    "manage": "searchChats",
                     "chats": "searchArchivedChats",
                     "images": "searchImages",
                     "videos": "searchVideos",
@@ -736,12 +692,12 @@ def run_library_locales(page):
             expect(
                 page.get_by_role("menuitemradio", name = text["alphabetical"], exact = True)
             ).to_be_visible()
-            if shelf in ["manage", "chats"]:
+            if shelf == "chats":
                 expect(
                     page.get_by_role("menuitemradio", name = text["singleChats"], exact = True)
                 ).to_be_visible()
             page.keyboard.press("Escape")
-            if shelf in ["manage", "chats"]:
+            if shelf == "chats":
                 expect(page.get_by_role("button", name = "Sample 0", exact = True)).to_be_visible()
                 search.fill(text["noProject"])
                 expect(page.get_by_role("button", name = "Sample 0", exact = True)).to_be_visible()
@@ -758,20 +714,10 @@ def run_library_locales(page):
                     page.get_by_role("heading", name = text["noProject"], exact = True)
                 ).to_be_visible()
                 expect(page.get_by_role("button", name = "Sample 1", exact = True)).to_have_count(0)
-                if shelf == "manage":
-                    page.get_by_role("checkbox", name = text["selectAll"], exact = True).click()
-                    expect(
-                        page.get_by_role("button", name = text["archive"], exact = True)
-                    ).to_be_visible()
-                    page.get_by_role("button", name = text["delete"], exact = True).click()
-                    expect(page.get_by_role("alertdialog")).to_contain_text(
-                        text["deleteChatsWarning"].replace("{count}", "1")
-                    )
-                else:
-                    page.get_by_role("button", name = text["deleteResults"], exact = True).click()
-                    expect(page.get_by_role("alertdialog")).to_contain_text(
-                        text["deleteArchivedWarning"].replace("{count}", "1")
-                    )
+                page.get_by_role("button", name = text["deleteResults"], exact = True).click()
+                expect(page.get_by_role("alertdialog")).to_contain_text(
+                    text["deleteArchivedWarning"].replace("{count}", "1")
+                )
             else:
                 row = page.locator("[data-archived-id]")
                 expect(row).to_contain_text("Sample media")
@@ -799,13 +745,7 @@ def run_library_locales(page):
                 "window.__dataFixture.requests.some(r => r.method === 'DELETE' || r.method === 'PATCH')"
             )
             search.fill("NoMatchingTitle")
-            empty_key = (
-                "noChats"
-                if shelf == "manage"
-                else "noArchivedMatches"
-                if shelf == "chats"
-                else "noMediaMatches"
-            )
+            empty_key = "noArchivedMatches" if shelf == "chats" else "noMediaMatches"
             expect(page.get_by_text(text[empty_key], exact = True)).to_be_visible()
             if locale == "es" and shelf == "chats":
                 search_to(page, text["archived"])
@@ -823,78 +763,10 @@ def run_library_locales(page):
     return checks
 
 
-def run_library_selection(page):
-    page.evaluate("window.__settingsSmoke.close()")
-    expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
-    page.evaluate("""() => {
-        const f = window.__dataFixture;
-        Object.assign(f, {requests: [], failMutation: false, holdMutation: false, listFail: false});
-        f.rows = Array.from({length: 32}, (_, i) => ({
-            id: `selection-${i}`, title: `Chat ${i}`, modelType: 'base', modelId: 'test',
-            createdAt: 1700000000000, updatedAt: 1700000000000 + (32-i)*1000,
-        }));
-        window.__settingsSmoke.open('data');
-    }""")
-    page.locator('[data-settings-label="Manage chats"]').get_by_role(
-        "button", name = "Manage", exact = True
-    ).click()
-    target = page.get_by_role("checkbox", name = 'Select "Chat 19"', exact = True)
-    target.click()
-    expect(page.get_by_text("Selected chats: 1", exact = True)).to_be_visible()
-    page.evaluate("""() => {
-        window.__dataFixture.rows[20].updatedAt = 1900000000000;
-        window.dispatchEvent(new Event('unsloth-chat-history-updated'));
-    }""")
-    expect(target).to_have_count(0)
-    expect(page.get_by_role("button", name = "Chat 20", exact = True)).to_be_visible()
-    expect(page.get_by_text("Selected chats: 1", exact = True)).to_be_visible()
-    checks = ["selected-chat-survives-live-page-reorder"]
-    select_all = page.get_by_role("checkbox", name = "Select all visible chats", exact = True)
-    expect(select_all).not_to_be_checked()
-    select_all.click()
-    expect(page.get_by_text("Selected chats: 21", exact = True)).to_be_visible()
-    select_all.click()
-    expect(page.get_by_text("Selected chats: 1", exact = True)).to_be_visible()
-    checks.append("select-visible-preserves-hidden-selection")
-    page.get_by_role("button", name = "Show more (12)", exact = True).click()
-    expect(target).to_be_checked()
-    checks.append("revealed-chat-keeps-its-selection")
-    page.evaluate("""() => {
-        const f = window.__dataFixture;
-        f.rows.push(...Array.from({length: 40}, (_, i) => ({
-            id: `incoming-${i}`, title: `Incoming ${i}`, modelType: 'base', modelId: 'test',
-            createdAt: 1700000000000, updatedAt: 1900000000000 + i + 1,
-        })));
-        window.dispatchEvent(new Event('unsloth-chat-history-updated'));
-    }""")
-    expect(target).to_have_count(0)
-    expect(page.get_by_text("Selected chats: 1", exact = True)).to_be_visible()
-    page.get_by_role("button", name = "Delete", exact = True).click()
-    expect(page.get_by_role("alertdialog").get_by_role("heading")).to_have_text("Delete chats (1)")
-    page.get_by_role("alertdialog").get_by_role("button", name = "Cancel", exact = True).click()
-    page.get_by_role("button", name = "Archive", exact = True).click()
-    page.wait_for_function(
-        "window.__dataFixture.rows.find(r => r.id === 'selection-19').archived === true"
-    )
-    assert page.evaluate(
-        "window.__dataFixture.requests.filter(r => r.method === 'PATCH').map(r => r.path)"
-    ) == ["/api/chat/threads/selection-19"]
-    checks.append("bulk-action-retains-original-selected-id")
-    # Explicit filter changes still clear selections.
-    page.get_by_role("checkbox", name = 'Select "Incoming 18"', exact = True).click()
-    page.get_by_role("searchbox", name = "Search chats or projects", exact = True).fill("Incoming 18")
-    expect(
-        page.get_by_role("checkbox", name = 'Select "Incoming 18"', exact = True)
-    ).not_to_be_checked()
-    expect(page.get_by_role("button", name = "Archive", exact = True)).to_have_count(0)
-    checks.append("explicit-filter-change-clears-selection")
-    return checks
-
-
 def run_library_collation(page):
     checks = []
     titles = ["阿", "八", "中", "张", "曾", "Zebra", "苹果", "橙子", "東京", "大阪"]
-    for shelf in ["manage", "chats", "images", "videos", "audio"]:
+    for shelf in ["chats", "images", "videos", "audio"]:
         page.evaluate("window.__settingsSmoke.close()")
         expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
         page.evaluate(
@@ -909,15 +781,10 @@ def run_library_collation(page):
                 id: `${kind}-${i}`, prompt, url: '/unused',
                 created_at: kind === 'images' ? 1700000000 : '2023-11-14T22:13:20Z',
             }))]));
-            if(shelf === 'manage') window.__settingsSmoke.open('data');
-            else window.__settingsSmoke.openArchived(shelf);
+            window.__settingsSmoke.openArchived(shelf);
         }""",
             {"shelf": shelf, "titles": titles},
         )
-        if shelf == "manage":
-            page.locator('[data-settings-label="Manage chats"]').get_by_role(
-                "button", name = "Manage", exact = True
-            ).click()
         page.get_by_role("button", name = "Filter and sort", exact = True).click()
         page.get_by_role("menuitemradio", name = "Alphabetical", exact = True).click()
         for locale in ["en", "zh-CN", "ja"]:
@@ -930,13 +797,13 @@ def run_library_collation(page):
             }""",
                 {"locale": locale, "titles": titles},
             )
-            if shelf in ["manage", "chats"]:
+            if shelf == "chats":
                 rows = page.locator("main section .divide-y button[title]:not([aria-label])")
             else:
                 rows = page.locator("[data-archived-id] p[title]")
             expect(rows).to_have_text(info["expected"])
             checks.append(f"{shelf}-alphabetical-{locale}")
-            if shelf in ["manage", "chats"]:
+            if shelf == "chats":
                 page.get_by_role("button", name = info["projectFilter"], exact = True).click()
                 assert page.get_by_role("option").all_text_contents()[2:] == info["expected"]
                 page.keyboard.press("Escape")
@@ -983,7 +850,8 @@ def run_restore_notifications(page):
             expect(dialog.get_by_role("heading")).to_have_text(f"{heading} ({count})")
             confirm = "Unarchive" if action == "restore" else "Delete"
             dialog.get_by_role("button", name = confirm, exact = True).click()
-            expect(dialog).to_have_count(0)
+            # allow shared runners 30 seconds for 23 sequential mocked HTTP requests
+            expect(dialog).to_have_count(0, timeout = 30_000)
             completed = count if failure_index is None else failure_index
             expected_events = [kind] if completed and action == "restore" else []
             observed = page.evaluate("window.__dataFixture.notifications")

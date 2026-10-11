@@ -10,8 +10,11 @@ Pure functions plus stateful stream emitters; no FastAPI, no I/O.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, Optional, Union
+
+from core.inference.tool_loop_controller import is_tool_error
 
 
 def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> str:
@@ -31,13 +34,51 @@ def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> st
     return "end_turn"
 
 
-def anthropic_tool_use_id(upstream_id = None) -> str:
-    """Return an Anthropic-style tool_use id (prefix 'toolu_'). Reuses an
-    upstream id only if it already starts with 'toolu_'; otherwise mints a fresh
-    'toolu_<24 hex>'."""
-    if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith("toolu_"):
+def anthropic_tool_use_id(upstream_id = None, prefix = "toolu_") -> str:
+    """Return an Anthropic tool id: the upstream id if it already starts with
+    ``prefix``, else a fresh '<prefix><24 hex>'."""
+    if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith(prefix):
         return upstream_id
-    return f"toolu_{uuid.uuid4().hex[:24]}"
+    return f"{prefix}{uuid.uuid4().hex[:24]}"
+
+
+_WEB_SEARCH_HIT = re.compile(r"^Title: (.*)\nURL: (\S+)", re.MULTILINE)
+
+
+def web_search_tool_result_content(
+    result: str, arguments: Optional[dict] = None
+) -> Union[list, dict]:
+    """``content`` of a web_search_tool_result: the search hits, the page a ``url`` call fetched,
+    or the API's error object when the tool failed."""
+    if is_tool_error(result):
+        return {"type": "web_search_tool_result_error", "error_code": "unavailable"}
+    fetched = str((arguments or {}).get("url") or "").strip()
+    if fetched:
+        hits = [(fetched, fetched)] if result.strip() else []
+    else:
+        hits = _WEB_SEARCH_HIT.findall(result)
+    return [
+        {
+            "type": "web_search_result",
+            "title": title.strip(),
+            "url": url,
+            "encrypted_content": "",
+            "page_age": None,
+        }
+        for title, url in hits
+    ]
+
+
+def _web_search_result_text(content: Any) -> str:
+    """Render a replayed web_search_tool_result ``content`` in web_search's own output format."""
+    if isinstance(content, dict):
+        return f"Search failed: {content.get('error_code', 'unavailable')}"
+    hits = [
+        f"Title: {hit.get('title', '')}\nURL: {hit['url']}"
+        for hit in content or []
+        if isinstance(hit, dict) and hit.get("url")
+    ]
+    return "\n\n---\n\n".join(hits) or "No results found."
 
 
 TOOL_RESULT_IMAGE_OMITTED = "[image omitted: this model cannot view images]"
@@ -168,10 +209,27 @@ def anthropic_messages_to_openai(
 
         if role == "assistant":
             # Assistant content: text + tool_use (no images in Anthropic's model), plus replayed thinking when
-            # preservation is requested.
+            # preservation is requested. A web search pair splits the turn the way Studio's tool loop ran it: the
+            # call, its result as a tool message, then what followed.
             text_parts: list[str] = []
             tool_calls: list[dict] = []
             thinking_parts: list[str] = []
+            server_calls: dict[str, dict] = {}
+            flushed = False
+
+            def _flush_assistant() -> None:
+                msg_dict: dict[str, Any] = {"role": "assistant"}
+                if text_parts:
+                    msg_dict["content"] = "\n".join(text_parts)
+                if thinking_parts:
+                    msg_dict["reasoning_content"] = "\n\n".join(thinking_parts)
+                if tool_calls:
+                    msg_dict["tool_calls"] = list(tool_calls)
+                result.append(msg_dict)
+                text_parts.clear()
+                tool_calls.clear()
+                thinking_parts.clear()
+
             for block in content:
                 b = block if isinstance(block, dict) else block.model_dump()
                 btype = b.get("type", "")
@@ -192,14 +250,31 @@ def anthropic_messages_to_openai(
                             },
                         }
                     )
-            msg_dict: dict[str, Any] = {"role": "assistant"}
-            if text_parts:
-                msg_dict["content"] = "\n".join(text_parts)
-            if thinking_parts:
-                msg_dict["reasoning_content"] = "\n\n".join(thinking_parts)
-            if tool_calls:
-                msg_dict["tool_calls"] = tool_calls
-            result.append(msg_dict)
+                elif btype == "server_tool_use":
+                    server_calls[b.get("id")] = b
+                elif btype == "web_search_tool_result" and b.get("tool_use_id") in server_calls:
+                    call = server_calls.pop(b["tool_use_id"])
+                    tool_calls.append(
+                        {
+                            "id": b["tool_use_id"],
+                            "type": "function",
+                            "function": {
+                                "name": call.get("name") or "web_search",
+                                "arguments": json.dumps(call.get("input") or {}),
+                            },
+                        }
+                    )
+                    _flush_assistant()
+                    result.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": b["tool_use_id"],
+                            "content": _web_search_result_text(b.get("content")),
+                        }
+                    )
+                    flushed = True
+            if text_parts or tool_calls or thinking_parts or not flushed:
+                _flush_assistant()
             continue
 
         if role == "user":
@@ -556,6 +631,7 @@ class AnthropicStreamEmitter:
         # consumers can correlate them.
         self._open_tool_use_id: Optional[str] = None
         self._open_tool_args_sent: bool = False
+        self._open_tool_args: dict = {}
         self._prev_text: str = ""
         # <think> routing: the generator folds reasoning_content into the cumulative text as <think>...</think> markup
         # (the UI chat parses it), but Anthropic clients expect typed thinking blocks. Split the markup back out: text
@@ -843,10 +919,14 @@ class AnthropicStreamEmitter:
             self._open_tool_use_id = None
             self._open_tool_args_sent = False
 
+        web_search = event.get("tool_name") == "web_search"
         self._alloc_block_index()
         self._open_tool_call_id = tool_call_id
-        self._open_tool_use_id = anthropic_tool_use_id(tool_call_id)
+        self._open_tool_use_id = anthropic_tool_use_id(
+            tool_call_id, "srvtoolu_" if web_search else "toolu_"
+        )
         self._open_tool_args_sent = False
+        self._open_tool_args = {}
         events.append(
             build_anthropic_sse_event(
                 "content_block_start",
@@ -854,7 +934,7 @@ class AnthropicStreamEmitter:
                     "type": "content_block_start",
                     "index": self.block_index,
                     "content_block": {
-                        "type": "tool_use",
+                        "type": "server_tool_use" if web_search else "tool_use",
                         "id": self._open_tool_use_id,
                         "name": event.get("tool_name", ""),
                         "input": {},
@@ -871,6 +951,7 @@ class AnthropicStreamEmitter:
         if self._open_tool_args_sent:
             return []
         self._open_tool_args_sent = True
+        self._open_tool_args = args
         return [
             build_anthropic_sse_event(
                 "content_block_delta",
@@ -892,19 +973,40 @@ class AnthropicStreamEmitter:
         # Reuse the id published in content_block_start; fall back to mapping the raw id only if no tool_start preceded
         # this end.
         tool_use_id = self._open_tool_use_id or anthropic_tool_use_id(event.get("tool_call_id", ""))
+        tool_args, self._open_tool_args = self._open_tool_args, {}
         self._open_tool_call_id = None
         self._open_tool_use_id = None
         self._open_tool_args_sent = False
-        events.append(
-            build_anthropic_sse_event(
-                "tool_result",
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": event.get("result", ""),
-                },
+        if event.get("tool_name") == "web_search":
+            self._alloc_block_index()
+            events.append(
+                build_anthropic_sse_event(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": self.block_index,
+                        "content_block": {
+                            "type": "web_search_tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": web_search_tool_result_content(
+                                event.get("result", ""), tool_args
+                            ),
+                        },
+                    },
+                )
             )
-        )
+            events.append(self._close_block())
+        else:
+            events.append(
+                build_anthropic_sse_event(
+                    "tool_result",
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": event.get("result", ""),
+                    },
+                )
+            )
         # Reset text tracking for the next synthesis turn; the next content delta opens a fresh text (or thinking)
         # block lazily, and the new turn may legitimately open with its own leading <think> block.
         self._prev_text = ""

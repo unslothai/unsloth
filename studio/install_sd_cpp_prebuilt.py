@@ -100,6 +100,8 @@ def _raw_install_record(root: Path) -> Optional[str]:
 
 # The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at all: with only half of it remembered, an unwritable record leaves a serverless install looking server-capable, and the load that finds a mismatched legacy server keeps reinstalling.
 _INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
+# The same for the pin: an unwritable record still names the old one, which re-downloads on every load.
+_INSTALLED_PIN_MEMO: dict[str, tuple[Optional[str], Optional[str]]] = {}
 
 
 def installed_ships_server(root: Path) -> Optional[bool]:
@@ -119,7 +121,8 @@ def _write_install_record(
 ) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one. The write itself stays best-effort (a metadata failure must not throw away binaries that extracted correctly) but the answer is memoised either way, so this process never re-installs what it just installed."""
     klass = accelerator_class(accelerator)
-    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag}
+    # The pin this install was FOR: a fallback (upstream / latest) tag never equals it.
+    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag, "requested_tag": _pinned_tag()}
     if ships_server is not None:
         rec["ships_server"] = ships_server
         _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
@@ -130,7 +133,9 @@ def _write_install_record(
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
             json.dump(rec, f)
     except OSError as exc:
-        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, _raw_install_record(root))
+        snapshot = _raw_install_record(root)
+        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, snapshot)
+        _INSTALLED_PIN_MEMO[str(root)] = (rec["requested_tag"], snapshot)
         print(
             f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
             f"remembering {klass} for this process only",
@@ -138,6 +143,7 @@ def _write_install_record(
         )
     else:
         _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
+        _INSTALLED_PIN_MEMO.pop(str(root), None)
 
 
 def _repo() -> str:
@@ -148,6 +154,28 @@ def _pinned_tag() -> Optional[str]:
     """The release tag to install: env override, else the pinned default; '' = latest."""
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
+
+
+def install_is_stale(root: Path) -> bool:
+    """True when ``root`` was installed for another pin. Unknown (no record / tag, tracking latest) is not stale."""
+    want = _pinned_tag()
+    if not want:
+        return False
+    memo = _INSTALLED_PIN_MEMO.get(str(root))
+    if memo is not None:
+        raw = _raw_install_record(root)
+        if raw is None or raw == memo[1]:
+            return memo[0] != want
+        _INSTALLED_PIN_MEMO.pop(str(root), None)
+    rec = read_install_record(root)
+    requested = rec.get("requested_tag")
+    if isinstance(requested, str) and requested:
+        return requested != want
+    have = rec.get("tag")
+    if not isinstance(have, str) or not have:
+        return False
+    # Pre-requested_tag records: the mirror tag, or its upstream release on hosts the mirror does not build.
+    return have not in (want, upstream_tag_for(want))
 
 
 def is_mirror_only_tag(tag: Optional[str]) -> bool:
@@ -173,8 +201,8 @@ _WINDOWS_ACCEL_TOKEN = {
     "cpu": "avx2",
     "auto": "avx2",
 }
-# Tokens that mark an accelerator-specific Linux build; "auto"/"cpu" want none of them.
-_LINUX_ACCEL_MARKERS = ("rocm", "vulkan", "cuda", "sycl", "musa")
+# Tokens that mark an accelerator-specific build; "auto"/"cpu" want none of them.
+_ACCEL_MARKERS = ("rocm", "vulkan", "cuda", "sycl", "musa")
 
 _ARCH_TOKENS = {
     "x86_64": ("x86_64", "x64", "amd64"),
@@ -214,6 +242,8 @@ def resolve_release_asset(
     if system == "windows":
         # Filter by host arch: an arm64 host must not install an unrunnable x64 sd-cli. No match returns None so the caller falls back.
         pool = [a for a in zips if "bin-win" in a.lower() and any(t in a.lower() for t in arch)]
+        if accel in ("auto", "cpu"):
+            pool = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
         token = _WINDOWS_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if token in a.lower()]
         if sel:
@@ -230,7 +260,7 @@ def resolve_release_asset(
         marker = _LINUX_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if marker in a.lower()]
     else:
-        sel = [a for a in pool if not any(m in a.lower() for m in _LINUX_ACCEL_MARKERS)]
+        sel = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
     return sel[0] if sel else None
 
 
@@ -270,6 +300,39 @@ def _fetch_release(
 
 def _fetch_latest_release(*, token: Optional[str] = None, timeout: float = 30.0) -> dict:
     return _fetch_release(None, token = token, timeout = timeout)
+
+
+class GitHubRateLimited(RuntimeError):
+    pass
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    """Same rule as freshness_flow.rate_limit_wait, which this stdlib-only installer cannot import."""
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return True
+    if code != 403:
+        return False
+    headers = getattr(exc, "headers", None) or {}
+    if (
+        str(headers.get("Retry-After") or "").strip()
+        or str(headers.get("X-RateLimit-Remaining") or "").strip() == "0"
+    ):
+        return True
+    try:
+        body = exc.read(2048).decode("utf-8", errors = "replace").lower()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - an unreadable body names nothing
+        return False
+    return "rate limit" in body or "abuse detection" in body
+
+
+def _rate_limit_message() -> str:
+    hint = (
+        ""
+        if (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+        else "; set GH_TOKEN or GITHUB_TOKEN to lift the 60 requests/hour unauthenticated limit"
+    )
+    return f"GitHub API is rate limiting release lookups{hint}"
 
 
 def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
@@ -627,10 +690,12 @@ def _resolve_repo_asset(
     *,
     allow_latest: bool = True,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back."""
+    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A quota refusal raises ``GitHubRateLimited`` instead: every rung shares that quota."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
-    except Exception as exc:  # noqa: BLE001 - network / rate limit -> fall back
+    except Exception as exc:  # noqa: BLE001 - network -> fall back
+        if _is_rate_limited(exc):
+            raise GitHubRateLimited(_rate_limit_message()) from exc
         print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
         return None, None
     if release is None:
@@ -833,7 +898,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.print_asset:
         # Same primary/fallback resolution as install(), so a host the mirror skips reports the upstream asset, not a false miss.
-        _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        try:
+            _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        except GitHubRateLimited as exc:
+            print(f"error: {exc}", file = sys.stderr)
+            return 2
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2
 

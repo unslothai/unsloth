@@ -6,6 +6,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import {
+  prepareQueuedPromptFiles,
+  snapshotQueuedTextPrompt,
+} from "../src/features/chat/utils/queued-text-attachments.ts";
+import { readTextAttachmentOnce } from "../src/features/chat/text-attachment-accept.ts";
 
 const accept = await import("../src/features/chat/open-document-accept.ts");
 const { TOOL_ONLY_ATTACHMENT_EXTENSIONS } = accept;
@@ -122,6 +127,31 @@ test("a document outside the kept types is uploaded only for the python tool", a
   assert.ok("file" in (await send("a.pdf", true, true)));
   await send("t.parquet", true, false, { original });
   assert.deepEqual(uploads, ["data.csv"]);
+});
+
+test("a queued text file is uploaded before the python sandbox request", async () => {
+  const file = new File(["a,b"], "data.csv", { type: "text/csv" });
+  await readTextAttachmentOnce(file);
+  const pending = {
+    id: "queued",
+    type: "document",
+    name: file.name,
+    contentType: file.type,
+    file,
+    status: { type: "requires-action", reason: "composer-send" },
+  } as never;
+  const queued = snapshotQueuedTextPrompt("analyze", [pending])!;
+  const prepared = await prepareQueuedPromptFiles(
+    queued,
+    (source, complete) =>
+      withAttachmentOriginal({ file: source }, complete, false, 0, true),
+  );
+  const { sandboxAttachments } = withSandboxAttachmentPaths([
+    { attachments: prepared.attachments },
+  ]);
+  assert.deepEqual(sandboxAttachments, [
+    { sha256: SHA, name: "data.csv" },
+  ]);
 });
 
 test("only a python turn asks for copies, and every tool-only file has a reader", () => {

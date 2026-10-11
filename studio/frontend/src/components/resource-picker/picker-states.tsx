@@ -3,7 +3,7 @@
 
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { RefreshIcon } from "@hugeicons/core-free-icons";
+import { Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PICKER_OPTION_FOCUS_VISIBLE_CLASS } from "./picker-focus";
 
@@ -18,7 +18,7 @@ export function RetryButton({ onRetry }: { onRetry: () => void }) {
         PICKER_OPTION_FOCUS_VISIBLE_CLASS,
       )}
     >
-      <HugeiconsIcon icon={RefreshIcon} strokeWidth={1.75} className="size-3" />
+      <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3" />
       {t("picker.retry")}
     </button>
   );

@@ -16,6 +16,21 @@ RECIPE_JOB_ID = "f9e8d7c6b5a40312092a8b7c6d5e4f30"
 BLOCK_ID = "0123456789abcdef0123456789abcdef"
 FILE_ID = "fedcba9876543210fedcba9876543210"
 SCAN_FOLDER_DIRNAME = "training-matrix-scan-folder"
+SAVED_RECIPE_ID = "training-matrix-recipe"
+RECIPE_EXECUTION_ID = "training-matrix-execution"
+SAVED_RECIPE_BODY = {
+    "id": SAVED_RECIPE_ID,
+    "name": EDITED,
+    "payload": {"recipe": {}},
+    "createdAt": 1000,
+    "updatedAt": 2000,
+}
+RECIPE_EXECUTION_BODY = {
+    "id": RECIPE_EXECUTION_ID,
+    "recipeId": SAVED_RECIPE_ID,
+    "createdAt": 1000,
+    "status": EDITED,
+}
 
 PNG_1X1 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmM"
@@ -34,6 +49,17 @@ _PUBLISH_REASON = (
 _BLOCK_REASON = (
     "Removing an upload block is an idempotent delete under the caller's own uploads root, so a "
     "foreign account is told ok with deleted false."
+)
+_SAVED_RECIPE_UPSERT_REASON = (
+    "PUT is an upsert keyed only by id inside the caller's own studio.db, so a foreign caller "
+    "writes its own row and never sees alice's; the snapshot proves hers is untouched."
+)
+_SAVED_RECIPE_DELETE_REASON = (
+    "DELETE is idempotent in the caller's own studio.db, so a foreign caller gets 204 after "
+    "tombstoning an id it never had; the snapshot proves alice's recipe survived."
+)
+_RECIPE_EXECUTIONS_READ_REASON = (
+    "Run history is read from the caller's own studio.db, so a foreign caller gets an empty list."
 )
 _EVENTS_REASON = (
     "The owning account's SSE stream ends only when the client disconnects, which an in-process "
@@ -137,6 +163,19 @@ def seed_scan_folder(account) -> dict[str, str]:
         return str(row["id"])
 
     return {"folder_id": run_as(account, install)}
+
+
+@seeder("training-saved-recipe")
+def seed_saved_recipe(account) -> dict[str, str]:
+    from storage import data_recipes_db
+    from utils.account_context import run_as
+
+    def install() -> None:
+        data_recipes_db.upsert_recipe({**SAVED_RECIPE_BODY, "name": SENTINEL})
+        data_recipes_db.upsert_execution({**RECIPE_EXECUTION_BODY, "status": SENTINEL})
+
+    run_as(account, install)
+    return {"recipe_id": SAVED_RECIPE_ID, "execution_id": RECIPE_EXECUTION_ID}
 
 
 @seeder("training-recipe-job")
@@ -247,6 +286,37 @@ FACTORIES = {
         owner = (400,),
         wrong = (400,),
         reason = _PUBLISH_REASON,
+    ),
+    "routes.data_recipe.library:GET:/recipes/{recipe_id}": Factory(
+        "training-saved-recipe", fragment = SENTINEL
+    ),
+    "routes.data_recipe.library:PUT:/recipes/{recipe_id}": Factory(
+        "training-saved-recipe",
+        SAVED_RECIPE_BODY,
+        fragment = EDITED,
+        owner = (200,),
+        wrong = (200,),
+        reason = _SAVED_RECIPE_UPSERT_REASON,
+    ),
+    "routes.data_recipe.library:DELETE:/recipes/{recipe_id}": Factory(
+        "training-saved-recipe",
+        success = 204,
+        owner = (204,),
+        wrong = (204,),
+        reason = _SAVED_RECIPE_DELETE_REASON,
+    ),
+    "routes.data_recipe.library:GET:/recipes/{recipe_id}/executions": Factory(
+        "training-saved-recipe",
+        fragment = SENTINEL,
+        absent = SENTINEL,
+        owner = (200,),
+        wrong = (200,),
+        reason = _RECIPE_EXECUTIONS_READ_REASON,
+    ),
+    "routes.data_recipe.library:PUT:/recipes/{recipe_id}/executions/{execution_id}": Factory(
+        "training-saved-recipe",
+        RECIPE_EXECUTION_BODY,
+        success = 204,
     ),
     "routes.data_recipe.seed:DELETE:/seed/unstructured-block/{block_id}": Factory(
         "training-unstructured-upload",

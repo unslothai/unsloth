@@ -374,11 +374,28 @@ try {
     # Arc machine to CPU wheels for having opted out of a rollback copy.
     [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
     [System.IO.Directory]::CreateDirectory((Join-Path $VenvDir "Scripts")) | Out-Null
-    # Stands in for the interpreter: the probe is bounded and reads stdout, so what it runs only
-    # has to print True the way torch.xpu.is_available() would on an Arc machine.
+    # Stands in for the interpreter. On POSIX it is a real executable and the extracted
+    # Invoke-BoundedPythonProbe runs it end to end: the probe is bounded and reads stdout, so it
+    # only has to print True the way torch.xpu.is_available() would on an Arc machine.
+    #
+    # Windows cannot do that without a real PE image. CreateProcess on a .exe that is really text
+    # does not fail quietly: on an x64 desktop it raises the modal "Unsupported 16-Bit Application"
+    # dialog, which blocks an unattended run on a real machine. So the file there only has to
+    # exist, for the Test-Path gate in front of the probe, and the probe itself is replaced by one
+    # that returns what the real helper returns for a child that printed True and exited 0. That
+    # keeps the assertion below on every platform instead of skipping it where it matters most.
     $fakePy = Join-Path (Join-Path $VenvDir "Scripts") "python.exe"
-    if ($IsWindows -or $env:OS -eq "Windows_NT") {
-        Set-Content -LiteralPath $fakePy -Value "@echo True"
+    $onWindows = ($IsWindows -or $env:OS -eq "Windows_NT")
+    $probeCalls = [System.Collections.Generic.List[object]]::new()
+    if ($onWindows) {
+        # Never executed: nothing below starts it, and it is not a PE image.
+        Set-Content -LiteralPath $fakePy -Value "placeholder, not an interpreter"
+        function Invoke-BoundedPythonProbe {
+            param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+            $probeCalls.Add([pscustomobject]@{ PythonExe = $PythonExe; Code = $Code })
+            # The real helper's shape: stdout verbatim (CRLF from a Windows python), exit 0.
+            return [pscustomobject]@{ Ok = $true; Output = "True`r`n"; Error = "" }
+        }
     } else {
         Set-Content -LiteralPath $fakePy -Value "#!/bin/sh`necho True"
         & chmod +x $fakePy
@@ -388,15 +405,26 @@ try {
     $script:StudioNoRollback = $true
     $script:StudioRollbackCostsFullSize = $true
     $xpuThrew = $false
-    try { Start-StudioVenvRollback -ExistingDir $VenvDir } catch { $xpuThrew = $true }
+    try {
+        try { Start-StudioVenvRollback -ExistingDir $VenvDir } catch { $xpuThrew = $true }
+    } finally {
+        if ($onWindows) {
+            # Put the extracted definition back, so no later case runs against the stand-in.
+            Invoke-Expression $definitions["Invoke-BoundedPythonProbe"].Extent.Text
+        }
+    }
     Check "taking the XPU verdict never costs the discard" (-not $xpuThrew)
-    if ($IsWindows -or $env:OS -eq "Windows_NT") {
-        # A .exe that is really a batch file will not start on Windows, so only the POSIX arm
-        # can drive the probe end to end; here the assertion is that it is attempted and safe.
-        Write-Host "  SKIP  the stand-in interpreter cannot be executed on this platform"
-    } else {
-        Check "the XPU verdict survives the environment being discarded" (
-            $script:StudioPreservedXpuVerdict)
+    Check "the XPU verdict survives the environment being discarded" (
+        $script:StudioPreservedXpuVerdict)
+    if ($onWindows) {
+        # The stand-in answers True to anyone, so also pin WHAT was asked: the moved-aside tree's
+        # interpreter, not the path being rebuilt, and the XPU question rather than some other one.
+        Check "the verdict came from the moved-aside interpreter" (
+            $probeCalls.Count -eq 1 -and
+            $probeCalls[0].PythonExe -match 'unsloth_studio\.rollback\.[^\\/]+[\\/]Scripts[\\/]python\.exe$' -and
+            $probeCalls[0].Code -match 'torch\.xpu\.is_available\(\)')
+        Check "the extracted probe is back in place" (
+            (Get-Command Invoke-BoundedPythonProbe).ScriptBlock.ToString() -match 'ProcessStartInfo')
     }
     Check "and the environment really was discarded" (-not (Test-Path -LiteralPath $VenvDir))
     $script:StudioPreservedXpuVerdict = $false

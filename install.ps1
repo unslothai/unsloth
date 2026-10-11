@@ -4915,8 +4915,8 @@ function Install-UnslothStudio {
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
     $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
-    # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
-    # the same way Test-AccessDeniedError above recognizes ERROR_ACCESS_DENIED.
+    # Policy refusal through PowerShell's wrapper exceptions: AppLocker 1260, App Control
+    # for Business and Smart App Control 4551 (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION).
     # $LASTEXITCODE cannot answer this: no process was created, so it still holds the
     # exit code of whichever native command ran last.
     function Test-ApplicationControlBlock {
@@ -4925,9 +4925,9 @@ function Install-UnslothStudio {
         $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
         while ($ex) {
             # Win32Exception carries NativeErrorCode; outer wrappers keep only the HRESULT
-            # form of the same code (0x800704EC).
-            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 1260) { return $true }
-            if ($ex.HResult -eq -2147023636) { return $true }
+            # form of the same code (0x800704EC, 0x800711C7).
+            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -in @(1260, 4551)) { return $true }
+            if ($ex.HResult -in @(-2147023636, -2147020345)) { return $true }
             $ex = $ex.InnerException
         }
         return $false
@@ -4940,11 +4940,11 @@ function Install-UnslothStudio {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
         Write-StudioLine "[ERROR] Windows Application Control blocked the managed Python runtime." -ForegroundColor Red
-        Write-StudioLine "        Windows error 1260 (ERROR_ACCESS_DISABLED_BY_POLICY)" -ForegroundColor Yellow
+        Write-StudioLine "        AppLocker, App Control for Business or Smart App Control refused to start it." -ForegroundColor Yellow
         Write-StudioLine "        Blocked program: $Path" -ForegroundColor Yellow
-        Write-StudioLine "        Ask your administrator to review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
+        Write-StudioLine "        Review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
         Write-StudioLine "        or CodeIntegrity/Operational event 3077." -ForegroundColor Yellow
-        return "Windows Application Control blocked the managed Python runtime at $Path (Windows error 1260)."
+        return "Windows Application Control blocked the managed Python runtime at $Path."
     }
 
     # One pre-quoted command line, not an argument array: Start-Process joins
@@ -4995,8 +4995,8 @@ function Install-UnslothStudio {
     # Does Application Control deny this launcher here? Windows cannot be asked without
     # trying: AppLocker's cmdlets need the policy and an admin token, WDAC and Smart App
     # Control expose nothing. A denial is free (CreateProcess fails synchronously, no
-    # child, 1260 straight back); an unaffected machine pays one `--version`, measured
-    # at a quarter second. A process that started is not blocked whatever it does next,
+    # child, the policy code straight back); an unaffected machine pays one `--version`,
+    # measured at a quarter second. A process that started is not blocked whatever it does next,
     # so the timeout path still answers "not blocked" and just stops waiting.
     function Test-ShimLaunchBlocked {
         param([Parameter(Mandatory = $true)][string]$Path)
@@ -5358,6 +5358,35 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
 `$_ExpectedStudioRootId = '$_studioRootId'
+`$_StudioInstallIdFile = '$($_studioIdFile -replace "'", "''")'
+
+# A missing or malformed id makes /api/health report "", which the baked id never matches: restore ours no-clobber (the desktop app mints it too), leaving a different valid id or an unreadable file alone.
+function Repair-StudioInstallId {
+    `$idTmp = `$null
+    try {
+        if (Test-Path -LiteralPath `$_StudioInstallIdFile -PathType Container) { return }
+        if (Test-Path -LiteralPath `$_StudioInstallIdFile -PathType Leaf) {
+            `$current = ([System.IO.File]::ReadAllText(`$_StudioInstallIdFile)).Trim()
+            if (`$current -cmatch '^[0-9a-f]{64}$') { return }
+        }
+        [System.IO.Directory]::CreateDirectory((Split-Path -Parent `$_StudioInstallIdFile)) | Out-Null
+        `$idTmp = "`$_StudioInstallIdFile.`$([System.IO.Path]::GetRandomFileName()).tmp"
+        [System.IO.File]::WriteAllText(`$idTmp, `$_ExpectedStudioRootId)
+        try {
+            [System.IO.File]::Move(`$idTmp, `$_StudioInstallIdFile)
+        } catch [System.IO.IOException] {
+            `$incumbent = ''
+            try { `$incumbent = ([System.IO.File]::ReadAllText(`$_StudioInstallIdFile)).Trim() } catch { return }
+            if (`$incumbent -cnotmatch '^[0-9a-f]{64}$') {
+                Move-Item -LiteralPath `$idTmp -Destination `$_StudioInstallIdFile -Force
+            }
+        }
+    } catch {
+    } finally {
+        if (`$idTmp) { Remove-Item -LiteralPath `$idTmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+Repair-StudioInstallId
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
@@ -7032,10 +7061,17 @@ exit 0
     }
     $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
+    # No usable interpreter: uv provides one once it is installed below, instead of a
+    # system-wide winget / python.org install (#7802). Windows on ARM keeps the system
+    # install, whose x64-vs-ARM64 choice the steps below depend on.
+    $PythonFromUv = (-not $DetectedPython) -and ((Get-HostMachineArch) -ne "arm64")
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
+    } elseif ($PythonFromUv) {
+        step "python" "no Python 3.11-3.13 found; uv will provide Python $PythonVersion"
     }
-    if (-not $DetectedPython) {
+    # Dot-sourced so $DetectedPython lands in this scope; also the fallback when uv cannot.
+    $InstallSystemPython = {
         substep "installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         $wingetExit = $null
@@ -7099,8 +7135,11 @@ exit 0
             Write-StudioLine "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
             Write-StudioLine "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
             Write-StudioLine "        Then re-run this installer." -ForegroundColor Yellow
-            return (Exit-InstallFailure "Python installation failed")
         }
+    }
+    if (-not $DetectedPython -and -not $PythonFromUv) {
+        . $InstallSystemPython
+        if (-not $DetectedPython) { return (Exit-InstallFailure "Python installation failed") }
     }
     # Re-probe for the interpreter actually selected: every native decision is keyed to a cp3XX tag.
     $WoaProbedMinor = $PythonVersion
@@ -7569,6 +7608,51 @@ exit 0
         $env:UV_HTTP_TIMEOUT = "180"
     }
 
+    # --no-bin / --no-registry: only uv's own Python store changes, nothing on PATH or in
+    # the py launcher. --system: `find` otherwise answers with an active venv's python.
+    # $null sends the caller to the system install.
+    function Resolve-UvManagedPython {
+        # A range excluding $PythonSkip, as install.sh's _python_request: a bare "3.13" can
+        # resolve to 3.13.8, and a pinned patch may be newer than this uv knows or a cached one.
+        $request = $PythonVersion
+        $bad = @($PythonSkip | Where-Object { $_ -like "$PythonVersion.*" })
+        if ($bad.Count -gt 0 -and $PythonVersion -match '^(\d+)\.(\d+)$') {
+            $request = ">=$PythonVersion,<$($Matches[1]).$([int]$Matches[2] + 1)" + (($bad | ForEach-Object { ",!=$_" }) -join "")
+        }
+        $installExit = Invoke-InstallCommand -NoMirror -Label "install uv-managed Python $request" {
+            & $script:UvExe python install --no-bin --no-registry $request
+        }
+        if ($installExit -ne 0) { return $null }
+        $exe = ""
+        try {
+            $exe = (& $script:UvExe python find --system --managed-python $request 2>$null | Select-Object -First 1)
+        } catch {}
+        $exe = "$exe".Trim()
+        if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
+        # -S: a sitecustomize banner would otherwise be read as the version.
+        $full = ""
+        try {
+            $full = (& $exe -S -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
+        } catch {}
+        $full = "$full".Trim()
+        if ($full -notmatch '^(3\.1[1-3])\.\d+$') { return $null }
+        $minor = $Matches[1]
+        # find answers through uv's per-minor link, which can still name a skipped patch.
+        if ($PythonSkip -contains $full) { return $null }
+        return @{ Version = $minor; Path = $exe; Arch = "" }
+    }
+
+    if ($PythonFromUv) {
+        $DetectedPython = Resolve-UvManagedPython
+        if ($DetectedPython) {
+            step "python" "using uv-managed Python $($DetectedPython.Version)"
+        } else {
+            substep "uv could not provide Python $PythonVersion -- installing it system-wide instead." "Yellow"
+            . $InstallSystemPython
+            if (-not $DetectedPython) { return (Exit-InstallFailure "Python installation failed") }
+        }
+    }
+
     # ── Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. ──
     Write-TauriLog "STEP" "Creating virtual environment"
     Write-StudioRootOwnerMarker -Root $StudioHome
@@ -7702,7 +7786,7 @@ exit 0
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
-            $psi.Arguments = "-c `"$Code`""
+            $psi.Arguments = "-I -c `"$Code`""
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -8041,7 +8125,7 @@ exit 0
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
             # Dist metadata, not "import torch": a broken DLL would drop the pin (as in install.sh).
-            $psi.Arguments = '-c "import importlib.metadata as m; print(m.version(''torch''))"'
+            $psi.Arguments = '-I -c "import importlib.metadata as m; print(m.version(''torch''))"'
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -8128,7 +8212,7 @@ exit 0
             if ($SkipTorch) {
                 & $OldPy -c "import sys; print(sys.executable)" 2>$null | Out-Null
             } else {
-                & $OldPy -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
+                & $OldPy -I -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
             }
             $legacyOk = ($LASTEXITCODE -eq 0)
         } catch { $legacyOk = $false }
@@ -9790,18 +9874,11 @@ main()
                 $wmiAmdNames = @($usePeers | ForEach-Object { $_.Name })
             } catch {}
         }
-        # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
-        # RDNA 1 and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on
-        # purpose: it only WORDS a message, never selects a wheel index. AMD's TheRock
-        # ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never
-        # gfx803. The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from
-        # LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
-        # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX
-        # 460/550/560, a different die) is left out.
+        # GPU name -> gfx arch for AMD generations no ROCm wheel covers: Polaris 10/20/30
+        # (unslothai#8529). Kept apart from $nameArchTable on purpose: it only WORDS a
+        # message, never selects a wheel index. The (?!0) guards stop "RX 570" swallowing
+        # an "RX 5700"; Polaris 11/12 (RX 460/550/560, a different die) is left out.
         $unsupportedNameArchTable = @(
-            @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
-            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
-            @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
             @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
         )
         # ── Arch resolution: env-var override → name inference ──────────────
@@ -9812,7 +9889,7 @@ main()
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
             if ($env:UNSLOTH_ROCM_GFX_ARCH) {
-                $ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+                $ROCmGfxArch = ($env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower() -split ':')[0]  # drop HIP feature suffixes (gfx1010:xnack-)
                 $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                 substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
             }
@@ -9830,6 +9907,9 @@ main()
                     @{ P = "RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900"; A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
                     @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
                     @{ P = "RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300";  A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
+                    @{ P = "Radeon Pro V520|Radeon Pro 5600M"; A = "gfx1011" }  # RDNA 1 (Navi 12) -- multi-arch index
+                    @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700"; A = "gfx1010" }  # RDNA 1 (Navi 10) -- multi-arch index
+                    @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300"; A = "gfx1012" }  # RDNA 1 (Navi 14) -- multi-arch index
                 )
                 foreach ($row in $nameArchTable) {
                     if ($ROCmGpuLabel -match $row.P) {
@@ -9968,9 +10048,24 @@ main()
         "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
     }
+    # RDNA arches route to AMD's multi-arch index, one pinned tag (unslothai#11815, #11614, #11814).
+    # gfx1033 (miscomputes) and CDNA stay on the family map. In sync with _WINDOWS_MULTIARCH_GFX in studio/install_python_stack.py.
+    $multiArchGfx = @(
+        "gfx1010", "gfx1011", "gfx1012",                                        # RDNA 1
+        "gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036",       # RDNA 2, gfx1033 stays per-family
+        "gfx1100", "gfx1101", "gfx1102", "gfx1103",                             # RDNA 3
+        "gfx1150", "gfx1151", "gfx1152", "gfx1153",                             # RDNA 3.5
+        "gfx1200", "gfx1201"                                                    # RDNA 4
+    )
+    $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
+    # Not rocm7.14.1: its Windows wheels ship a mismatched AOTriton runtime, so fused SDPA fails (ROCm/TheRock#7992).
+    $MultiArchTag = "rocm7.14.0"
+    $MultiArchTorchVersion = "2.11.0"
+    $MultiArchTorchvisionVersion = "0.26.0"
+    $MultiArchTorchaudioVersion = "2.11.0"
     # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are
     # true on unmapped arches too, and those install CPU torch.
-    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
+    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and ($archFamilyMap.ContainsKey($ROCmGfxArch) -or $multiArchGfx -contains $ROCmGfxArch))
 
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: a WMI-named-only AMD adapter
@@ -10566,6 +10661,7 @@ main()
     $ROCmTorchFloor = $null
     $PinnedRocmVisionSpec = $null
     $PinnedRocmAudioSpec = $null
+    $ROCmMultiArch = $false
     if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         # $archFamilyMap is defined above the Intel scan (the scan needs it too).
@@ -10614,7 +10710,16 @@ main()
             "gfx1103" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
-        if ($archFamily) {
+        # A family-layout mirror (and no multi-arch mirror) keeps the family route for arches that have one.
+        $_familyMirrorPinned = [bool]($env:UNSLOTH_ROCM_WINDOWS_MIRROR) -and -not [bool]($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR)
+        $ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch -and -not ($archFamily -and $_familyMirrorPinned))
+        if ($ROCmMultiArch) {
+            $ROCmIndexUrl = "$MultiArchIndexBase/"
+            $ROCmTorchFloor = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
+            $PinnedRocmVisionSpec = "torchvision[device-$ROCmGfxArch]==$MultiArchTorchvisionVersion+$MultiArchTag"
+            $PinnedRocmAudioSpec = "torchaudio==$MultiArchTorchaudioVersion+$MultiArchTag"
+            substep "$ROCmGfxArch -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
+        } elseif ($archFamily) {
             $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
             $ROCmTorchFloor = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { $null }
             $archLabel = if ($ROCmGfxArch) { $ROCmGfxArch } else { "AMD GPU" }
@@ -10797,7 +10902,7 @@ main()
     function New-UnslothTorchOverridesFile {
         param([string]$PythonExe)
         if ($SkipTorch) { return $null }
-        $pins = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
+        $pins = & $PythonExe -I -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
         $lines = @($pins | Where-Object { $_ -match '^torch' })
         if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }
         # --overrides replaces any UV_OVERRIDE env file, so fold caller files in, minus their trio.
@@ -10864,7 +10969,7 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.11" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.3" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -10875,7 +10980,7 @@ main()
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -10894,7 +10999,7 @@ main()
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -10924,7 +11029,7 @@ main()
         $script:PrevTorchPin = $null
         # An interrupted run leaks a stale pin, so clear before deciding.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-        if (-not $SkipTorch -and $script:PrevTorchVer) {
+        if (-not $SkipTorch -and $script:PrevTorchVer -and -not $ROCmMultiArch) {
             $_routeWindow = $_pinTorchSpec
             # Vet the kept release against the XPU window, or a kept 2.5 becomes an unsatisfiable pin.
             if ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") { $_routeWindow = (Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython))[0] }
@@ -11146,7 +11251,7 @@ main()
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -11166,11 +11271,11 @@ main()
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -11207,7 +11312,7 @@ main()
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.7" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.10.3" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -11254,7 +11359,7 @@ main()
         }
     }
 
-    $installedPackageVersion = (& $VenvPython -c "
+    $installedPackageVersion = (& $VenvPython -I -c "
 import sys
 try:
     from studio.install_manifest import installed_version_probe
@@ -11501,7 +11606,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     if ($script:WoaNativeCudaTorch) {
         $WoaStudioSetup = $null
         try {
-            $WoaStudioSetup = (& $VenvPython -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
+            $WoaStudioSetup = (& $VenvPython -I -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
         } catch {}
         $WoaStudioAware = $false
         if ($WoaStudioSetup -and (Test-Path -LiteralPath $WoaStudioSetup -PathType Leaf)) {
@@ -12074,10 +12179,13 @@ try {
         }
         $script:WoaResolverEnvSaved = $null
     }
-    foreach ($_mirrorEnvName in @($script:MirrorEnvSaved.Keys)) {
-        $_mirrorEnvValue = $script:MirrorEnvSaved[$_mirrorEnvName]
-        if ($null -eq $_mirrorEnvValue) { Remove-Item "Env:$_mirrorEnvName" -ErrorAction SilentlyContinue }
-        else { Set-Item "Env:$_mirrorEnvName" $_mirrorEnvValue }
+    # Guarded like the block above: @($null.Keys) is one $null item, and indexing it would stop this finally before the cleanup below.
+    if ($script:MirrorEnvSaved) {
+        foreach ($_mirrorEnvName in @($script:MirrorEnvSaved.Keys)) {
+            $_mirrorEnvValue = $script:MirrorEnvSaved[$_mirrorEnvName]
+            if ($null -eq $_mirrorEnvValue) { Remove-Item "Env:$_mirrorEnvName" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:$_mirrorEnvName" $_mirrorEnvValue }
+        }
     }
     # UNSLOTH_KEPT_TORCH is a process-scoped handoff, and the session outlives the installer.
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue

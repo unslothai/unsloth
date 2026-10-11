@@ -5,6 +5,9 @@ import { authFetch } from "@/features/auth";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
 import { useEffect, useSyncExternalStore } from "react";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
+import { SKILL_MENTION_PATTERN } from "./skill-tools";
+
+export { SKILL_MENTION_PATTERN } from "./skill-tools";
 
 export type SkillRecord = {
   name: string;
@@ -46,6 +49,8 @@ const EMPTY_SNAPSHOT: SkillsSnapshot = {
 };
 let snapshot = EMPTY_SNAPSHOT;
 let requestGeneration = 0;
+// increment only on sign-out so a prior account's response cannot be published.
+let sessionEpoch = 0;
 let lastFetchedAt = 0;
 let pending: Promise<readonly SkillRecord[]> | null = null;
 const listeners = new Set<() => void>();
@@ -150,6 +155,27 @@ export async function setSkillEnabled(
   return updated;
 }
 
+/** set every skill state; null restores fresh-install defaults. */
+export async function setAllSkillsEnabled(
+  enabled: boolean | null,
+): Promise<readonly SkillRecord[]> {
+  const epoch = sessionEpoch;
+  const response = await authFetch("/api/skills", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  const skills = await parseResponse<SkillRecord[]>(response);
+  if (epoch !== sessionEpoch) return skills;
+  // invalidate older reads before publishing the server's post-change list.
+  requestGeneration += 1;
+  lastFetchedAt = Date.now();
+  publish({ skills, loading: false, initialized: true, error: null });
+  channel?.postMessage("changed");
+  void refreshContextUsage({ invalidate: true });
+  return skills;
+}
+
 export const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 export function isValidSkillName(name: string): boolean {
@@ -199,10 +225,6 @@ export async function deleteSkill(name: string): Promise<void> {
   await parseResponse<unknown>(response);
   await skillsMutated();
 }
-
-// Spec skill names only, ending at a word boundary: `@example.com`, `@3pm`, `@Probe` are not mentions.
-export const SKILL_MENTION_PATTERN =
-  /(^|\s)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;:!?)\]'"]+(?:$|\s))/g;
 
 // authFetch has no deadline, so a hung /api/skills must not stall the send.
 const SETTLE_TIMEOUT_MS = 3000;
@@ -254,6 +276,7 @@ export function useSkillsCatalog(): SkillsSnapshot {
 // The snapshot is module state, so a sign-out must drop it or the next account inherits it.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    sessionEpoch += 1;
     requestGeneration += 1;
     pending = null;
     lastFetchedAt = 0;

@@ -18,34 +18,31 @@ def generate_smart_vlm_instruction(
     image_column = "image",
     dataset_name = None,
 ):
-    """
-    Generate a smart, context-aware instruction for VLM datasets via heuristics.
-
-    Strategy:
-    1. Explicit question/instruction column → use that
-    2. Infer from text column name + sample content
-    3. Analyze dataset name for task hints
-    4. Generic fallback
-
-    Returns:
-        dict: {
-            "instruction": str or None,  # None means use column content
-            "instruction_type": "explicit" | "inferred" | "generic",
-            "uses_dynamic_instruction": bool,  # True if it varies per sample
-            "confidence": float,  # 0.0 to 1.0
-        }
-    """
-    column_names = set(next(iter(dataset)).keys())
+    """selects a VLM instruction from explicit columns, heuristics, an LLM, or the default."""
     sample = next(iter(dataset))
+    column_names = set(sample.keys())
 
-    # Columns that hold per-sample instructions
-    question_columns = ["question", "query", "prompt", "instruction", "user_prompt"]
+    question_columns = [
+        "question",
+        "query",
+        "prompt",
+        "instruction",
+        "user_prompt",
+        "problem",
+        "input",
+        "inputs",
+    ]
+    columns = [col for col in sample if col not in (text_column, image_column)]
 
-    for col in question_columns:
-        if col in column_names:
-            # Use it only if it has non-empty content
-            sample_content = sample[col]
-            if sample_content and str(sample_content).strip():
+    for name in question_columns:
+        matches = ([name] if name in columns else []) + [
+            col for col in columns if col != name and col.lower() == name
+        ]
+        for col in matches:
+            has_text = any(
+                isinstance(row.get(col), str) and row[col].strip() for row in islice(dataset, 100)
+            )
+            if has_text:
                 return {
                     "instruction": None,
                     "instruction_column": col,

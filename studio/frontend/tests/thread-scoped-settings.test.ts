@@ -24,7 +24,6 @@ test("a full snapshot survives the round trip", () => {
     imageToolsEnabled: false,
     webFetchToolsEnabled: true,
     deepResearchEnabled: false,
-    artifactsEnabled: true,
     mcpEnabledForChat: false,
     permissionMode: "auto",
     ragEnabled: true,
@@ -43,7 +42,6 @@ test("a full snapshot survives the round trip", () => {
     imageToolsEnabled: false,
     webFetchToolsEnabled: true,
     deepResearchEnabled: false,
-    artifactsEnabled: true,
     mcpEnabledForChat: false,
     permissionMode: "auto",
     ragEnabled: true,
@@ -101,6 +99,8 @@ test("settings that describe the installation stay out of the snapshot", () => {
     sanitizeThreadScopedSettings({
       gpuMemoryMode: "manual",
       showCanvasMenuItem: true,
+      // Canvas mode is gone; a chat saved with it on restores without it.
+      artifactsEnabled: true,
       ragOcrScanned: true,
     }),
     {},

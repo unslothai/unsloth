@@ -35,6 +35,7 @@ import {
   POLL_JITTER_MS,
   PROGRESS_POLL_BACKOFF_INTERVAL_MS,
   PROGRESS_POLL_INTERVAL_MS,
+  ATTEMPT_FLOOR_HOLD_MS,
   ACTIVE_STATES,
   TERMINAL_DISPLAY_STATES,
 } from "./download-manager-config";
@@ -99,8 +100,10 @@ import {
   setExpectedBytesForJob,
 } from "./download-manager-state";
 import {
+  floorHoldEnded,
   hasObservedExpectedBytes,
   resolveProgressUpdate,
+  serverRunChange,
 } from "./progress-reconcile";
 import {
   presentationForExpectedBytesUpdate,
@@ -325,22 +328,33 @@ function syncServerGeneration(
   key: string,
   job: ManagedDownload,
   status: PollStatus,
-): boolean {
-  const statusGeneration = status.generation;
-  const previousGeneration = job.serverGeneration;
-  const generationChanged =
-    typeof statusGeneration === "number" &&
-    Number.isSafeInteger(statusGeneration) &&
-    typeof previousGeneration === "number" &&
-    Number.isSafeInteger(previousGeneration) &&
-    statusGeneration !== previousGeneration;
-  if (
-    typeof statusGeneration === "number" &&
-    Number.isSafeInteger(statusGeneration)
-  ) {
-    patchJob(key, { serverGeneration: statusGeneration });
+  rt: JobRuntime,
+): "generation" | "attempt" | null {
+  const change = serverRunChange(
+    {
+      generation: job.serverGeneration,
+      attempt: rt.floorHold?.attempt ?? job.serverAttempt,
+    },
+    status,
+  );
+  const patch: Partial<ManagedDownload> = {};
+  if (Number.isSafeInteger(status.generation)) {
+    patch.serverGeneration = status.generation;
   }
-  return generationChanged;
+  if (change === "attempt") {
+    rt.floorHold = {
+      attempt: status.attempt as number,
+      remainingBytes: job.expectedBytes - job.downloadedBytes,
+      until: Date.now() + ATTEMPT_FLOOR_HOLD_MS,
+    };
+  } else {
+    if (change === "generation") rt.floorHold = null;
+    if (rt.floorHold == null && Number.isSafeInteger(status.attempt)) {
+      patch.serverAttempt = status.attempt;
+    }
+  }
+  if (Object.keys(patch).length > 0) patchJob(key, patch);
+  return change;
 }
 
 async function finalizeTerminalStatus(
@@ -406,7 +420,16 @@ function reconcileProgressAndSpeed(
     madeProgress,
   } = resolveProgressUpdate(current, progressResp, {
     resetMonotonic: generationChanged,
+    skipFloor: rt.floorHold != null,
   });
+  let acknowledgedAttempt: number | undefined;
+  if (
+    rt.floorHold &&
+    floorHoldEnded(rt.floorHold, expected, downloadedBytes, Date.now())
+  ) {
+    acknowledgedAttempt = rt.floorHold.attempt;
+    rt.floorHold = null;
+  }
   if (generationChanged) {
     // Another server owns this transfer, so the old samples describe a different run; the counter cannot say so, since a restart resumes from the same cache.
     rt.speedSamples.length = 0;
@@ -421,6 +444,9 @@ function reconcileProgressAndSpeed(
     fraction,
     bytesPerSec: speed.bytesPerSec,
     etaSeconds: speed.etaSeconds,
+    ...(acknowledgedAttempt !== undefined
+      ? { serverAttempt: acknowledgedAttempt }
+      : {}),
   });
   markPollSuccess(key, rt);
   return { madeProgress };
@@ -496,7 +522,7 @@ async function tick(key: string): Promise<void> {
     if (!isCurrent(key, epoch)) return;
 
     // syncServerGeneration persists immediately, so a change seen before the progress path would look unchanged next tick; hold it until a progress poll consumes it.
-    if (syncServerGeneration(key, job, status)) {
+    if (syncServerGeneration(key, job, status, rt) !== null) {
       rt.pendingGenerationChange = true;
     }
 
@@ -709,6 +735,7 @@ export async function startJob(
       ? opts.generation
       : existing?.serverGeneration
     : undefined;
+  const seedAttempt = carryOverSeed ? existing?.serverAttempt : undefined;
   const adopted = opts.adopt
     ? adoptedTransports(
         { transport: opts.transport, cancelTransport: opts.cancelTransport },
@@ -753,6 +780,9 @@ export async function startJob(
       : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
+      : {}),
+    ...(Number.isSafeInteger(seedAttempt)
+      ? { serverAttempt: seedAttempt }
       : {}),
     ...(req.files && req.files.length > 0
       ? { scopedFiles: [...req.files] }

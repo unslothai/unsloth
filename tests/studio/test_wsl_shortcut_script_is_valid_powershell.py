@@ -10,25 +10,14 @@ into a best-effort `&& _css_created=1`. A parse error there is not a crash and n
 whole script fails to load, no shortcut appears, and the user gets the "WSL interop may be
 disabled" notice, which points at the wrong thing entirely.
 
-That path is one edit away at all times. The block this guards was just rewritten from a
-one-line `Add-Type -MemberDefinition` into a twenty-line reflection-emit sequence with nested
-calls, an array literal and a here-string escaping every `$` it means to keep -- and it sits
-inside `try { } catch { }`, so even at RUNTIME on the right machine a mistake inside it is
-swallowed.
+That path is one edit away at all times, and the icon refresh inside it sits in `try { } catch { }`,
+so even at RUNTIME on the right machine a mistake there is swallowed.
 
-The emit test is the other half: syntax is not enough, the API sequence has to be real. shell32
-is Windows-only, but DefineDynamicAssembly / DefineDynamicModule / DefineType /
-DefinePInvokeMethod / CreateType is not, so the same sequence is pointed at a symbol this host
-does export and the resulting method is called. A wrong call order or a wrong argument count
-fails here, on Linux, instead of silently on a user's desktop.
-
-What that is worth, measured rather than asserted. Mutating the shipped file five ways: a dropped
-closing paren in DefinePInvokeMethod, an unterminated string literal in DefineType and a stray
-closing brace all fail both tests or the parse one; giving the P/Invoke the wrong number of
-parameters fails the emit one. Dropping SetImplementationFlags does NOT fail, and cannot: it sets
-PreserveSig, whose only effect is on how a failing HRESULT is surfaced, and the retargeted symbol
-here returns a plain int. That line is unguarded and is the one place a reviewer still has to
-read for themselves.
+The refresh tests are the other half: syntax is not enough. The per-item SHChangeNotify runs in a
+Windows Python through ctypes, and both halves of that are checked here on Linux: the Python it
+passes is run against a recording stand-in for shell32, and the PowerShell that launches it is run
+under pwsh against a stand-in interpreter, so a quoting mistake in the command line, a lost path or
+a wrong flag fails here instead of silently on a user's desktop.
 """
 
 from __future__ import annotations
@@ -135,47 +124,130 @@ def test_the_generated_wsl_shortcut_script_parses() -> None:
     )
 
 
-@needs_pwsh
-def test_the_icon_refresh_emit_sequence_builds_a_callable_type() -> None:
-    rendered = _render()
-    emit = re.search(r"(?ms)^try \{\n(    \$refreshType = .*?)\n\} catch \{\}", rendered)
-    assert emit, (
-        "could not find the icon-refresh emit block in the generated script; if SHChangeNotify "
-        "is now declared some other way, update this test rather than deleting it"
-    )
-    # Retargeted, not rewritten: only the library, the symbol and its signature change, so the
-    # call sequence under test is the shipped one character for character.
-    body = emit.group(1)
-    body = body.replace(
-        "'SHChangeNotify', 'shell32.dll', 'SHChangeNotify'", "'getpid', 'libc', 'getpid'"
-    )
-    body = re.sub(r"\[System\.Void\],", "[int],", body)
-    body = re.sub(r"@\(\[int\], \[uint32\], \[string\], \[IntPtr\]\),", "@(),", body)
-    body = body.replace(
-        "[System.Runtime.InteropServices.CharSet]::Unicode)",
-        "[System.Runtime.InteropServices.CharSet]::Ansi)",
-    )
-    body = "\n".join(l for l in body.splitlines() if "SHChangeNotify(" not in l)
-    body = body.replace("UnslothShellIconRefresh", "UnslothEmitProbe")
-    assert "DefinePInvokeMethod" in body and "getpid" in body, body
+_SHELL32_STUB = """
+import ctypes, json, os, sys
+calls = []
+class _Fn:
+    def __call__(self, *a):
+        calls.append(list(a))
+class _Dll:
+    def __init__(self, name):
+        assert name == "shell32", name
+        self.SHChangeNotify = _Fn()
+ctypes.WinDLL = _Dll
+exec(sys.argv[1])
+sys.stderr.write(json.dumps(calls))
+"""
 
-    # Twice, because the block caches on `-as [type]`: a second pass must reuse the type rather
-    # than throw on a duplicate name, which is what makes the guard safe to leave in.
-    script = body + "\nWrite-Output ('EMIT_A ' + [string]$refreshType::getpid())\n"
-    script += body + "\nWrite-Output ('EMIT_B ' + [string]$refreshType::getpid())\n"
-    done = run_pwsh(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+
+def _refresh_code(rendered: str) -> str:
+    match = re.search(r'(?m)^    \$refreshCode = "([^"\r\n]*)"$', rendered)
+    assert match, "could not find the icon refresh's Python in the generated script"
+    return match.group(1)
+
+
+_LINKS = [
+    "C:\\Users\\O'Brien\\Desktop\\Unsloth Studio (WSL - O'Brien 24.04).lnk",
+    "C:\\Users\\O'Brien\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\x.lnk",
+]
+_EXPECTED_CALLS = [[0x2000, 0x1005, link, None] for link in _LINKS] + [
+    [0x8000000, 0x1000, None, None]
+]
+
+
+def test_the_icon_refresh_python_notifies_each_shortcut_then_the_shell() -> None:
+    """Per-item SHCNE_UPDATEITEM for every shortcut, then SHCNE_ASSOCCHANGED, all flushed."""
+    import json
+
+    done = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", _SHELL32_STUB, _refresh_code(_render())],
         capture_output = True,
         text = True,
-        verdict = "EMIT_B",
+        env = {"UNSLOTH_SHORTCUT_PATHS": "|".join(_LINKS)},
     )
-    pids = re.findall(r"EMIT_[AB] (\d+)", done.stdout)
-    assert len(pids) == 2, (
-        "the reflection-emit sequence in the generated script does not build a callable P/Invoke "
-        "type. shell32 is Windows-only but this sequence is not, so this is the sequence itself "
-        f"being wrong:\n{done.stdout.strip()}\n{done.stderr.strip()}"
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "ok", done.stdout
+    assert json.loads(done.stderr) == _EXPECTED_CALLS
+
+
+@needs_pwsh
+def test_the_icon_refresh_launch_runs_one_interpreter_with_every_shortcut(tmp_path: Path) -> None:
+    """The PowerShell half: candidate order, the WindowsApps skip, argv quoting, stop on success.
+
+    The block is lifted from the rendered script as written; only the elevation probe, which has
+    no answer off Windows, is pinned to "not elevated".
+    """
+    import json
+
+    rendered = _render()
+    match = re.search(r"(?ms)^(if \(\$created\.Count -gt 0\) \{\n.*?^\})\n", rendered)
+    assert match, "could not find the icon refresh block in the generated script"
+    block = match.group(1)
+    elevation = re.search(r"(?m)^        \$isAdmin = \(\[Security.*$", block)
+    assert elevation, "the refresh no longer checks elevation before launching an interpreter"
+    block = block.replace(elevation.group(0), "        $isAdmin = $false")
+
+    log = tmp_path / "calls.jsonl"
+    stub = tmp_path / "stub.py"
+    stub.write_text(
+        _SHELL32_STUB.replace(
+            "sys.stderr.write(json.dumps(calls))",
+            "open(os.environ['STUB_LOG'], 'a').write(json.dumps("
+            "{'argv': sys.argv[2:], 'cwd': os.getcwd(), 'calls': calls}) + '\\n')",
+        )
     )
-    assert pids[0] == pids[1], f"the cached type was rebuilt instead of reused: {pids}"
+    # A stand-in interpreter taking the real one's argv, which is what the quoting has to survive.
+    venv_python = (
+        tmp_path / "home" / ".unsloth" / "studio" / "unsloth_studio" / "Scripts" / "python.exe"
+    )
+    venv_python.parent.mkdir(parents = True)
+    venv_python.write_text(
+        "#!/bin/sh\n"
+        f'[ "$1 $2 $3 $4" = "-I -S -B -c" ] || exit 7\n'
+        f'exec {shlex.quote(sys.executable)} -I -S -B {shlex.quote(str(stub))} "$5"\n'
+    )
+    venv_python.chmod(0o755)
+    # The same stand-in on PATH: reaching it would mean the loop did not stop at the first success.
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    (path_dir / "python3").write_bytes(venv_python.read_bytes())
+    (path_dir / "python3").chmod(0o755)
+    links = ", ".join("'" + link.replace("'", "''") + "'" for link in _LINKS)
+    script = (
+        f"$env:USERPROFILE = '{tmp_path / 'home'}'\n"
+        f"$env:STUB_LOG = '{log}'\n"
+        f"$env:PATH = '{path_dir}' + [IO.Path]::PathSeparator + $env:PATH\n"
+        f"$created = @({links})\n" + block + "\n"
+        "Write-Output 'BLOCK_DONE'\n"
+    )
+    runner = tmp_path / "refresh.ps1"
+    runner.write_text(script, encoding = "utf-8")
+    done = run_pwsh(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(runner)],
+        capture_output = True,
+        text = True,
+        verdict = "BLOCK_DONE",
+    )
+    assert "BLOCK_DONE" in done.stdout, f"{done.stdout}\n{done.stderr}"
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    # Exactly one run: the first interpreter answered ok, so PATH's are never tried.
+    assert len(entries) == 1, entries
+    assert entries[0]["calls"] == _EXPECTED_CALLS
+    assert entries[0]["cwd"] == str(venv_python.parent)
+
+
+def test_the_generated_script_defines_no_native_type() -> None:
+    """install.sh held the last reflection-emit P/Invoke in the tree; it must not come back."""
+    rendered = _render()
+    for token in (
+        "Add-Type",
+        "DefinePInvoke" + "Method",
+        "DefineDynamic" + "Assembly",
+        "DllImport",
+    ):
+        assert (
+            token not in rendered
+        ), f"the WSL shortcut script declares a native type again: {token}"
 
 
 if __name__ == "__main__":
@@ -270,30 +342,3 @@ def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
         "nothing proves the detector fires on this runner, so a clean verdict is indistinguishable "
         "from a detector that never attached"
     )
-
-
-def test_the_generated_emit_carries_both_spellings_of_define_dynamic_assembly() -> None:
-    """The outer catch is empty, so guessing the wrong spelling costs the icon refresh silently.
-
-    `install.sh` generates this script and emits its own icon-refresh thunk in it, which is the
-    last emit left in the tree: `install.ps1` no longer defines a type at all. The block tries the
-    static `AssemblyBuilder::DefineDynamicAssembly` and falls back to
-    `AppDomain.CurrentDomain.DefineDynamicAssembly`, and the reason is worth keeping written down:
-    the static form is documented for .NET Framework 4.5 through 4.8.1, so the Windows PowerShell
-    5.1 host this script is launched under should take the first branch, but nothing in this
-    repository can run a .NET Framework host to confirm it. The generated script had only the static
-    form under a bare `catch {}`, which is the combination that fails invisibly. Keep both.
-    """
-    script = _render()
-    assert (
-        "[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly" in script
-    ), "the generated script no longer tries the documented static spelling first"
-    assert "[AppDomain]::CurrentDomain.DefineDynamicAssembly" in script, (
-        "the generated script has no AppDomain fallback, so on a host without the static overload "
-        "the empty outer catch swallows the failure and both icon refreshes stop happening"
-    )
-    static_at = script.index("[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly")
-    appdomain_at = script.index("[AppDomain]::CurrentDomain.DefineDynamicAssembly")
-    assert (
-        static_at < appdomain_at
-    ), "AppDomain.CurrentDomain is absent on .NET Core, so leading with it would break pwsh"

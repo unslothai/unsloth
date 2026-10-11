@@ -129,7 +129,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # sync-external-providers.ts held a copy and had to go with it.
         "supports_streaming": True,
         "supports_vision": True,
-        "supports_tool_calling": False,
+        "supports_tool_calling": True,
+        "studio_tools": True,
         # Anthropic's own server tools, appended by `_stream_anthropic`.
         "hosted_tools": ("web_search", "web_fetch", "code_execution"),
         "auth_header": "x-api-key",
@@ -464,6 +465,28 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
     },
+    "typesafe": {
+        "display_name": "TypeSafe",
+        "base_url": "https://api.typesafe.ai/v1",
+        "default_models": ["jev-latest", "jev-1.13"],
+        "supports_streaming": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "System One decision models. Used by the Decision API, never by chat.",
+        "model_list_mode": "curated",
+        "decisions_only": True,
+    },
+    "liquid": {
+        "display_name": "Liquid AI",
+        "base_url": "https://api.liquid.ai/decisions/v1",
+        "default_models": ["d1:free"],
+        "supports_streaming": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "System One decision models. Used by the Decision API, never by chat.",
+        "model_list_mode": "curated",
+        "decisions_only": True,
+    },
 }
 
 
@@ -477,6 +500,13 @@ def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
     return None if info is None or info.get("managed") else info
 
 
+def answers_decisions_only(provider_type: str | None, api_type: str | None = None) -> bool:
+    info = PROVIDER_REGISTRY.get(provider_type) if isinstance(provider_type, str) else None
+    return bool(info and info.get("decisions_only")) or (
+        provider_type == "custom" and api_type == "systemone"
+    )
+
+
 def get_base_url(provider_type: str) -> str | None:
     info = PROVIDER_REGISTRY.get(provider_type)
     return info["base_url"] if info else None
@@ -487,14 +517,8 @@ def provider_runs_local_tools(provider_type: str | None) -> bool:
 
     Unsloth's tools (web_search, python, terminal, MCP, knowledge-base search) execute on the
     Unsloth host, so any provider whose wire format can carry a tool schema out and a tool result
-    back can use them: the whole OpenAI-compatible family plus Gemini, whose native shape is
-    translated to and from OpenAI chunks in ``external_provider.py``.
-
-    Anthropic is deliberately absent: ``_stream_anthropic`` only appends Anthropic's own hosted
-    builtins and never forwards a caller's function-tool schemas, so the loop would advertise a
-    catalog the model never sees. Enabling it needs OpenAI -> Anthropic schema translation plus
-    tool_use / tool_result message replay, which is separate work. Anthropic keeps its hosted
-    web_search, web_fetch and code_execution meanwhile.
+    back can use them: the whole OpenAI-compatible family plus Gemini and Anthropic, whose
+    native shapes are translated to and from OpenAI chunks in ``external_provider.py``.
     """
     # isinstance, not a truthiness check: the value reaches here straight from a
     # request body, and a list or dict key raises TypeError inside dict.get, which
@@ -1074,7 +1098,9 @@ def validate_provider_base_url(base_url: str) -> str:
     return raw.rstrip("/")
 
 
-def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any]]:
+def list_available_providers(
+    include_hidden: bool = False, include_oauth: bool = False
+) -> list[dict[str, Any]]:
     """Return registered providers (for the /registry endpoint).
 
     Hidden entries exist only for backend lookups and are surfaced by the UI via
@@ -1086,10 +1112,16 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     ``include_hidden`` is how a client that does know says so. The self-hosted presets are exactly
     the ones that run Unsloth's tools, so their capability has to reach a frontend that asks for it,
     and asking is opt-in.
+
+    OAuth rows are opt-in too: a pre-OAuth bundle (v0.1.701-beta, bare request) renders them as an
+    API-key form the backend then rejects (#8722). Every bundle sending ``include_hidden`` already
+    renders OAuth, so either flag opts in.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
         if (info.get("hidden") and not include_hidden) or info.get("managed"):
+            continue
+        if info.get("auth_kind") == "chatgpt_oauth" and not (include_hidden or include_oauth):
             continue
         result.append(
             {

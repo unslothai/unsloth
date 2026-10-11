@@ -10,6 +10,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
+import { en } from "../src/i18n/locales/en.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
@@ -23,7 +24,8 @@ test("row forks retain the visible branch across settings settlement", async () 
   for (const open of [true, false]) {
     let visible = open;
     const unregister = liveThreadHead.registerLiveThreadView({
-      threadListItem: () => ({ getState: () => ({ remoteId: visible ? "source" : "other" }) }),
+      threads: () => ({ getState: () => ({ mainThreadId: "main" }) }),
+      threadListItem: () => ({ getState: () => ({ id: "main", remoteId: visible ? "source" : "other" }) }),
       thread: () => ({ getState: () => ({ messages: [{ id: "root" }, { id: "older-reply" }] }) }),
     });
     const calls: string[] = [];
@@ -110,14 +112,38 @@ test("double-clicking a chat title renames it in place", () => {
   );
 });
 
-// A single chat's menu carries no read or unread item; the bulk menu keeps it.
-test("a chat row menu does not offer mark as read or unread", () => {
-  const start = APP_SIDEBAR.indexOf("function renderChatRowMenuItems(");
-  assert.notEqual(start, -1);
-  const rowMenu = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("\n  }\n", start));
-  assert.ok(!rowMenu.includes("markThreadsUnread"));
-  assert.ok(!rowMenu.includes("shell.selection.markUnread"));
-  assert.ok(!rowMenu.includes("shell.selection.markRead"));
+// Regression: per-row Mark as unread/read, and the dot must be removable.
+test("a chat row marks itself read or unread from its own menu", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /onSelect=\{\(\) =>\n\s*alreadyUnread\n\s*\? clearThreadsUnread\(threadIds\)\n\s*: markThreadsUnread\(threadIds, rowIdByThreadId\)\n\s*\}/,
+  );
+  assert.ok(
+    !APP_SIDEBAR.includes("disabled={alreadyUnread}"),
+    "the item is still disabled on a row that carries the dot",
+  );
+  // The same strings the bulk menu uses, so the two cannot drift apart.
+  for (const key of ["markUnread", "markRead"]) {
+    assert.equal(
+      (APP_SIDEBAR.match(new RegExp(`t\\("shell\\.selection\\.${key}"\\)`, "g")) ?? [])
+        .length,
+      2,
+      `the row and bulk menus no longer say the same thing for ${key}`,
+    );
+  }
+  assert.match(
+    APP_SIDEBAR,
+    /const alreadyUnread = threadIds\.some\(\(threadId\) =>\n\s*unreadThreadIds\.has\(threadId\),\n\s*\);/,
+  );
+  assert.equal(
+    (
+      APP_SIDEBAR.match(
+        /icon=\{(alreadyUnread|allSelectedUnread) \? ViewIcon : ViewOffSlashIcon\}/g,
+      ) ?? []
+    ).length,
+    2,
+    "a read or unread item stopped naming the state it moves to",
+  );
 });
 
 // The bulk menu only ever added dots, so a selection of read rows had no way back.
@@ -189,21 +215,19 @@ test("a section's chevron appears on hovering anywhere in it", () => {
 test("the chat-folder hint names what to click instead", async () => {
   // The item is shared with the Projects page's chat rows, so the hint lives with it.
   const item = await readSrcAsync("features/chat/components/open-chat-folder-item.tsx");
+  const hint = en.library.chats.folder.chatHint;
   assert.ok(
-    !item.includes("card that created it"),
+    !hint.includes("card that created it"),
     "the hint still sends the user to a card it never identifies",
   );
   assert.ok(
-    item.includes("download a file from the tool result that wrote it"),
+    hint.includes("download a file from the tool result that wrote it"),
     "the hint no longer says where the files can be had",
   );
-  // Carried twice on purpose: the tooltip is for the pointer, the title for everything else.
-  assert.equal(
-    (item.match(/Only the desktop app can open a chat('|&apos;)s files folder/g) ??
-      []).length,
-    2,
-    "the hint is no longer stated for both the pointer and the screen reader",
-  );
+  // One hint, used twice on purpose: tooltip for the pointer, title for everything else.
+  assert.match(item, /hintOverride \?\? t\("library\.chats\.folder\.chatHint"\)/);
+  assert.match(item, /title=\{hint\}/);
+  assert.match(item, /<TooltipContent[^>]*>\s*\{hint\}\s*<\/TooltipContent>/);
 });
 
 // Forking was reachable only from a message in the open thread, so copying a chat meant opening
@@ -212,12 +236,19 @@ test("a chat row forks from its own menu", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
   );
-  // Below Pin, and before the rule that sets off the rest.
   assert.match(
     APP_SIDEBAR,
-    /<span>\{isPinned \? "Unpin" : "Pin"\}<\/span>\n\s*<\/P\.Item>\n\s*<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)/,
+    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>\n\s*<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)/,
   );
-  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>/);
+  assert.match(
+    APP_SIDEBAR,
+    /<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)[^]*?<span>Fork<\/span>\n\s*<\/P\.Item>\n\s*\{\/\* Projects and sections in one place[^]*?\*\/\}\n\s*<P\.Sub>/,
+  );
+  const rowMenu = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function renderChatRowMenuItems("),
+    APP_SIDEBAR.indexOf("function renderChatSidebarItem("),
+  );
+  assert.doesNotMatch(rowMenu, /<span>Export<\/span>|Export all chats/);
   // A comparison has two threads and no single tip to fork from.
   assert.match(ROW_MENU, /export function canForkChatRow[^]*?return item\.type === "single";/);
   // The fork carries the settings on screen, not the ones the row was last written with.
