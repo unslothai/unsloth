@@ -45,6 +45,7 @@ _PROBE = textwrap.dedent(
         "grpo_fsdp2_args": optim(GRPOConfig, {}, **fsdp2_args),
         "grpo_fsdp2_json": optim(GRPOConfig, {}, fsdp = "full_shard", fsdp_config = fsdp2_json),
         "grpo_fsdp2_explicit_torch": optim(GRPOConfig, {"FSDP_VERSION": "2"}, optim = "adamw_torch"),
+        "grpo_fsdp_unversioned": optim(GRPOConfig, {}, fsdp = "full_shard"),
     }))
     """
 )
@@ -72,6 +73,15 @@ def test_without_fsdp2_the_default_is_unchanged(probe):
 @pytest.mark.parametrize("case", ["grpo_fsdp2", "sft_fsdp2", "grpo_fsdp2_args", "grpo_fsdp2_json"])
 def test_fsdp2_gets_an_optimizer_that_steps_dtensors(probe, case):
     assert probe[case] == "adamw_torch_fused"
+
+
+def test_fsdp_without_a_version_follows_the_transformers_default(probe):
+    """TrainingArguments picks FSDP2 when fsdp_config names no version from transformers 5.10.0, FSDP1 before."""
+    from transformers import __version__
+    from unsloth_zoo.utils import Version
+
+    fsdp2 = Version(__version__) >= Version("5.10.0")
+    assert probe["grpo_fsdp_unversioned"] == ("adamw_torch_fused" if fsdp2 else "adamw_8bit")
 
 
 def test_an_explicit_non_bnb_choice_is_kept(probe):

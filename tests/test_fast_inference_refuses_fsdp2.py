@@ -114,7 +114,7 @@ _TRAINER_PROBE = textwrap.dedent(
         return "BUILT"
 
     print("PROBE", build(fsdp = "full_shard", fsdp_config = {"fsdp_version": 2}),
-          build(fsdp = "full_shard", fsdp_config = {"fsdp_version": 1}), build())
+          build(fsdp = "full_shard", fsdp_config = {"fsdp_version": 1}), build(), build(fsdp = "full_shard"))
     """
 )
 
@@ -135,6 +135,11 @@ def test_trainer_args_fsdp2_is_refused_when_the_trainer_is_built(tmp_path):
     )
     lines = [line for line in run.stdout.splitlines() if line.startswith("PROBE ")]
     assert lines, f"probe failed:\n{run.stdout[-3000:]}\n{run.stderr[-3000:]}"
-    fsdp2, fsdp1, plain = lines[-1].split()[1:]
+    fsdp2, fsdp1, plain, unversioned = lines[-1].split()[1:]
     assert fsdp2 == "REFUSED"
     assert fsdp1 != "REFUSED" and plain != "REFUSED"
+    from transformers import __version__
+    from unsloth_zoo.utils import Version
+
+    # No version named: TrainingArguments picks FSDP2 from transformers 5.10.0, FSDP1 before.
+    assert (unversioned == "REFUSED") == (Version(__version__) >= Version("5.10.0"))

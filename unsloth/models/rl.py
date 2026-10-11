@@ -94,6 +94,9 @@ try:
 except Exception:
     transformers_version = Version("0.0.0")
 
+# TrainingArguments falls back to this FSDP version when fsdp_config names none (1 -> 2 in transformers 5.10.0).
+_FSDP_DEFAULT_VERSION = 2 if transformers_version >= Version("5.10.0") else 1
+
 
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
@@ -3139,8 +3142,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "            _unsloth_fsdp_cfg = _unsloth_json.load(_unsloth_f)\n"
                 "    except Exception:\n"
                 "        _unsloth_fsdp_cfg = None\n"
+                "if fsdp and _unsloth_fsdp_cfg is None:\n"
+                "    _unsloth_fsdp_cfg = {}\n"
                 "if fsdp and isinstance(_unsloth_fsdp_cfg, dict):\n"
-                "    _unsloth_fsdp2 = _unsloth_fsdp2 or str(_unsloth_fsdp_cfg.get('fsdp_version', _unsloth_fsdp_cfg.get('version', ''))) == '2'\n"
+                f"    _unsloth_fsdp2 = _unsloth_fsdp2 or str(_unsloth_fsdp_cfg.get('fsdp_version', _unsloth_fsdp_cfg.get('version', {_FSDP_DEFAULT_VERSION}))) == '2'\n"
             )
         extra_args += (
             "if _unsloth_fsdp2 and str(getattr(optim, 'value', optim)) == 'adamw_8bit':\n"
@@ -3824,7 +3829,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 + " " * 12
                 + "_unsloth_fsdp_cfg = getattr(args, 'fsdp_config', None)\n"
                 + " " * 12
-                + "if getattr(args, 'fsdp', None) and isinstance(_unsloth_fsdp_cfg, dict) and str(_unsloth_fsdp_cfg.get('version', _unsloth_fsdp_cfg.get('fsdp_version', ''))) == '2':\n"
+                + f"if getattr(args, 'fsdp', None) and isinstance(_unsloth_fsdp_cfg, dict) and str(_unsloth_fsdp_cfg.get('version', _unsloth_fsdp_cfg.get('fsdp_version', {_FSDP_DEFAULT_VERSION}))) == '2':\n"
                 + " " * 16
                 + "raise NotImplementedError('Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\\nLoad the model with `fast_inference = False` to train with FSDP2, or launch without FSDP2 to use vLLM.')\n"
                 + " " * 12
