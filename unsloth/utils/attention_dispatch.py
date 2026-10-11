@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
@@ -142,19 +143,35 @@ def _torch_varlen_takes(
 _VARLEN_CUDNN_MAX_MEAN_LEN = 1024
 
 
-def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa):
-    """(flash SDPA enabled, SDPA would pick cuDNN) for these shapes. Both reads break a dynamo graph."""
-    flash = torch.backends.cuda.flash_sdp_enabled()
+@functools.lru_cache(maxsize = 64)
+def _sdpa_picks_cudnn(
+    device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa, backends
+):
     try:
         from torch.nn.attention import SDPBackend
 
         q = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
         k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
         choice = torch._fused_sdp_choice(q, k, k, is_causal = is_causal, enable_gqa = enable_gqa)
-        cudnn = choice == int(SDPBackend.CUDNN_ATTENTION)
+        return choice == int(SDPBackend.CUDNN_ATTENTION)
     except Exception:
-        cudnn = True
-    return flash, cudnn
+        return True
+
+
+def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa):
+    """(flash SDPA enabled, SDPA would pick cuDNN) for these shapes. Both reads break a dynamo graph."""
+    cuda = torch.backends.cuda
+    backends = (
+        cuda.flash_sdp_enabled(),
+        cuda.cudnn_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+        tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+    )
+    cudnn = _sdpa_picks_cudnn(
+        device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa, backends
+    )
+    return backends[0], cudnn
 
 
 if hasattr(torch.compiler, "assume_constant_result"):
@@ -167,6 +184,9 @@ def _torch_varlen_beats_segments(
     """Varlen saves one SDPA launch per run of equal lengths, but its flash kernel is slower per token
     than cuDNN on long segments; with flash already chosen, the kernel is the same and only launches drop."""
     lengths = [length for length in lengths if length > 0]
+    # Lengths overrunning the row would send cu_seqlens past the tensor; leave them to the old path's error.
+    if sum(lengths) != Q.shape[-2]:
+        return False
     runs = sum(1 for i, length in enumerate(lengths) if i == 0 or lengths[i - 1] != length)
     if runs <= 1:
         return False

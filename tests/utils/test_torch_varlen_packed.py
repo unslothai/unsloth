@@ -131,8 +131,12 @@ def test_varlen_only_where_it_beats_segments(monkeypatch, backend, lengths, tota
     from torch.nn.attention import SDPBackend as B
 
     monkeypatch.setattr(torch, "_fused_sdp_choice", lambda *a, **k: int(getattr(B, backend)))
+    ad._sdpa_picks_cudnn.cache_clear()
     qkv = [torch.zeros(1, 4, total, 64, device = "cuda", dtype = torch.bfloat16) for _ in range(3)]
-    _, calls = _run(monkeypatch, True, lengths, total, 4, 4, qkv)
+    try:
+        _, calls = _run(monkeypatch, True, lengths, total, 4, 4, qkv)
+    finally:
+        ad._sdpa_picks_cudnn.cache_clear()
     assert calls == ([(-1, 0)] if expect_varlen else [])
 
 
@@ -184,6 +188,38 @@ def test_ineligible_calls_keep_the_segment_path(monkeypatch, case):
             _, calls = _run(monkeypatch, True, (10, 14), 24, 4, 4, qkv, **kwargs)
     else:
         _, calls = _run(monkeypatch, True, (10, 14), 24, 4, 4, qkv, **kwargs)
+    assert calls == []
+
+
+@needs_varlen
+def test_lengths_overrunning_the_row_keep_the_segment_path(monkeypatch):
+    # Malformed lengths (sum 30 > 24 tokens) must raise as before, not index past the row in the kernel.
+    calls = []
+
+    def stub(*args, **kwargs):
+        calls.append(1)
+        raise AssertionError("varlen_attn called with cu_seqlens past the row")
+
+    monkeypatch.setattr(ad, "_TORCH_VARLEN_ATTN", stub)
+    packing.clear_packed_caches()
+    g = torch.Generator().manual_seed(2)
+    Q, K, V = (torch.randn(1, 4, 24, 64, generator = g).to("cuda", torch.bfloat16) for _ in range(3))
+    config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = 4, n_groups = 1)
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = 24,
+        kv_seq_len = 24,
+        n_heads = 4,
+        head_dim = 64,
+        requires_grad = False,
+        seq_info = _seq_info((10, 14, 6), "cuda"),
+        attention_mask = None,
+        causal_mask = None,
+        is_causal = True,
+        sliding_window = None,
+    )
+    with pytest.raises(RuntimeError):
+        ad.run_attention(config = config, context = context, Q = Q, K = K, V = V)
     assert calls == []
 
 
