@@ -66,7 +66,9 @@ def _configs(config):
         # encoder / decoder: composite configs (SpeechEncoderDecoder, VisionEncoderDecoder).
         for key in ("text_config", "language_config", "llm_config", "encoder", "decoder"):
             value = getattr(c, key, None)
-            if value is not None and not isinstance(value, (str, bool, int, float, list, tuple, dict)):
+            if value is not None and not isinstance(
+                value, (str, bool, int, float, list, tuple, dict)
+            ):
                 stack.append(value)
     return seen
 
@@ -85,7 +87,12 @@ def _config_may_skip(config):
             return True
         # layerdrop, encoder_layerdrop, decoder_layerdrop, speech_encoder_layerdrop, ...
         for key, value in getattr(c, "__dict__", {}).items():
-            if "layerdrop" in key and isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            if (
+                "layerdrop" in key
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and value > 0
+            ):
                 return True
     return False
 
@@ -122,7 +129,9 @@ def _lora_uses_every_trainable_param(model):
     base = getattr(model, "get_base_model", lambda: None)()
     config = getattr(base, "config", None) or getattr(model, "config", None)
     # Decoder-only causal LMs only: encoder-decoder and speech models can leave adapters idle (t2u_model).
-    if getattr(config, "is_encoder_decoder", False) or not type(base).__name__.endswith(("ForCausalLM", "LMHeadModel")):
+    if getattr(config, "is_encoder_decoder", False) or not type(base).__name__.endswith(
+        ("ForCausalLM", "LMHeadModel")
+    ):
         return False
     if _config_may_skip(config):
         return False
