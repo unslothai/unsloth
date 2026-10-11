@@ -717,6 +717,26 @@ def test_scatter_series_keep_their_own_x_values():
     assert office_formats._chart_lines(root) == ["A", "1 | 10", "2 | 20", "B", "5 | 50", "6 | 60"]
 
 
+def test_chart_keeps_every_level_of_multi_level_categories():
+    C = 'xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"'
+    pts = lambda items: "".join(f'<c:pt idx="{i}"><c:v>{v}</c:v></c:pt>' for i, v in items)
+    root = ET.fromstring(
+        f"<c:chartSpace {C}><c:chart><c:plotArea><c:barChart><c:ser>"
+        "<c:cat><c:multiLvlStrRef><c:multiLvlStrCache>"
+        f"<c:lvl>{pts(enumerate(['Q1', 'Q2', 'Q1', 'Q2']))}</c:lvl>"
+        f"<c:lvl>{pts([(0, '2023'), (2, '2024')])}</c:lvl>"
+        "</c:multiLvlStrCache></c:multiLvlStrRef></c:cat>"
+        f"<c:val><c:numRef><c:numCache>{pts(enumerate([10, 20, 30, 40]))}</c:numCache></c:numRef></c:val>"
+        "</c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"
+    )
+    assert office_formats._chart_lines(root) == [
+        "2023 Q1 | 10",
+        "Q2 | 20",
+        "2024 Q1 | 30",
+        "Q2 | 40",
+    ]
+
+
 def test_odp_reads_one_page_per_slide(tmp_path):
     pages = parsers.parse(str(build_odp(tmp_path / "slides.odp")))
     assert [(p.page_number, p.text) for p in pages] == [
@@ -1082,6 +1102,24 @@ def test_rtf_decodes_literal_bytes_in_the_document_code_page(tmp_path):
     path = tmp_path / "ru.rtf"
     path.write_bytes(b"{\\rtf1\\ansi\\ansicpg1251 " + "Привет".encode("cp1251") + b" \\'80}")
     assert _text(path) == "Привет Ђ"
+
+
+@pytest.mark.parametrize(
+    "header, encoded",
+    [
+        (b"\\mac", "Café".encode("mac_roman")),
+        (b"\\pc", "Café".encode("cp437")),
+        (b"\\pca", "Café".encode("cp850")),
+        # Word for Mac writes Mac Roman as \ansicpg10000, which Python names mac_roman.
+        (b"\\mac\\ansicpg10000", "Café".encode("mac_roman")),
+    ],
+)
+def test_rtf_decodes_the_mac_and_pc_document_character_sets(tmp_path, header, encoded):
+    path = tmp_path / "legacy.rtf"
+    path.write_bytes(
+        b"{\\rtf1" + header + b"\\deff0{\\fonttbl{\\f0\\fcharset256 Times;}}\\f0 " + encoded + b"}"
+    )
+    assert _text(path) == "Café"
 
 
 def test_compound_file_reads_mini_and_regular_streams():

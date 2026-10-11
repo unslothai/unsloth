@@ -564,7 +564,10 @@ def _chart_lines(root: ET.Element) -> list[str]:
             for axis in axes:
                 for point in series.iterfind(f"{_q('c', axis)}//{_q('c', 'pt')}"):
                     v = point.find(_q("c", "v"))
-                    store[int(point.get("idx", "0") or 0)] = v.text or "" if v is not None else ""
+                    text = v.text or "" if v is not None else ""
+                    idx = int(point.get("idx", "0") or 0)
+                    # Multi-level categories repeat an idx once per c:lvl, innermost level first.
+                    store[idx] = " ".join(filter(None, (text, store.get(idx))))
         series_categories.append(categories)
         values.append(points)
     if len({tuple(sorted(c.items())) for c in series_categories if c}) > 1:
@@ -968,9 +971,14 @@ _RTF_CHARSETS = {
 }
 
 
+_RTF_DOCUMENT_CHARSETS = {"mac": "mac_roman", "pc": "cp437", "pca": "cp850"}
+
+
 def _rtf_codec(code_page: str) -> str | None:
+    code_page = "mac_roman" if code_page == "10000" else f"cp{code_page}"
+    # b"".decode() never looks the codec up.
     try:
-        b"".decode(code_page)
+        codecs.lookup(code_page)
     except LookupError:
         return None
     return code_page
@@ -994,7 +1002,7 @@ def _rtf_font_codecs(data: str) -> dict[int, str]:
         segment = table[entry.end() : following.start() if following else len(table)]
         cpg = re.search(r"\\cpg(\d+)", segment)
         charset = re.search(r"\\fcharset(\d+)", segment)
-        codec = _rtf_codec(f"cp{cpg.group(1)}") if cpg else None
+        codec = _rtf_codec(cpg.group(1)) if cpg else None
         if codec is None and charset:
             codec = _RTF_CHARSETS.get(int(charset.group(1)))
         if codec:
@@ -1070,7 +1078,10 @@ def _rtf_text(data: str) -> str:
                 pos = min(len(data), pos + max(int(arg or 0), 0))
                 continue
             if word == "ansicpg" and arg:
-                document_codepage = _rtf_codec(f"cp{arg}") or "cp1252"
+                document_codepage = _rtf_codec(arg) or document_codepage
+                codepage = fonts.get(default_font, document_codepage)
+            elif word in _RTF_DOCUMENT_CHARSETS:
+                document_codepage = _RTF_DOCUMENT_CHARSETS[word]
                 codepage = fonts.get(default_font, document_codepage)
             elif word == "deff" and arg:
                 default_font = int(arg)
