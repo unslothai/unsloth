@@ -6052,7 +6052,6 @@ html:has([data-blocking-screen]) .interface-zoom-position {
   cursor: none !important;
 }
 
-/* Chat with files card above the composer. */
 .unsloth-files-panel {
 	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-4 pb-6;
 	container: files-panel / inline-size;
@@ -6075,7 +6074,6 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 		0 0 0 1.5px var(--primary),
 		var(--composer-shadow);
 }
-/* "4 files": its own pill, apart from the title. */
 .unsloth-files-panel-count {
 	@apply inline-flex h-6 shrink-0 items-center rounded-full px-2.5 text-ui-12 font-medium tabular-nums text-foreground/75;
 	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);

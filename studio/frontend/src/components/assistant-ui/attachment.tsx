@@ -74,7 +74,6 @@ import {
 } from "react";
 import { ScrollPane } from "./scroll-pane";
 
-// Exported for the chat with files panel.
 export const CARD_SLOT =
   "shrink-0 w-[calc((100%_-_var(--spacing)*8)/5)] min-w-[calc(7rem*var(--ui-space-scale,1))]";
 export const CARD_SIZE = "h-[calc(7rem*var(--ui-space-scale,1))] w-full";
@@ -797,5 +796,4 @@ export const ComposerAddAttachment: FC = () => {
   );
 };
 
-// Shared with the chat with files panel.
 export { AttachmentKindIcon, FileCardBody };
