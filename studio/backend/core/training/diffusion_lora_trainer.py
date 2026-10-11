@@ -405,7 +405,11 @@ def run_diffusion_lora_training(
 
         # Regionally torch.compile the U-Net repeated blocks via the DiT trainer's never-fatal wrapper (failure
         # falls back to eager).
-        from core.training.diffusion_dit_trainer import _maybe_compile_transformer
+        from core.training.diffusion_dit_trainer import (
+            _compile_engagement_warning,
+            _dynamo_compile_counters,
+            _maybe_compile_transformer,
+        )
 
         compiled = _maybe_compile_transformer(
             unet, cfg, False, device, on_event, base_precision = "bf16"
@@ -561,6 +565,7 @@ def run_diffusion_lora_training(
                 preexisting = preexisting_checkpoints,
             )
 
+        compile_watch = _dynamo_compile_counters() if compiled else None
         for opt_step in range(resumed, cfg.train_steps):
             optimizer.zero_grad(set_to_none = True)
             step_loss = 0.0
@@ -649,6 +654,11 @@ def run_diffusion_lora_training(
             if ran_here == 1:
                 # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the rate starts after it.
                 t_steady = now
+            if compile_watch is not None:
+                reason = _compile_engagement_warning(compile_watch, _dynamo_compile_counters())
+                if reason:
+                    _emit(on_event, "warning", message = reason)
+                    compile_watch = None
             if done % cfg.log_every == 0 or done == cfg.train_steps:
                 # ``learning_rate`` (not ``lr``) is the field the Unsloth training pump reads.
                 if device == "cuda":
