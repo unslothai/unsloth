@@ -494,7 +494,7 @@ def test_start_rejects_adapter_weights_without_adapter_config_for_lora(tmp_path)
     assert "adapter_config.json" in exc_info.value.detail["message"]
 
 
-def test_untrainable_gate_allows_cached_adapter_snapshot_for_lora(tmp_path):
+def test_untrainable_gate_refuses_cached_hub_adapter_snapshot_for_lora(tmp_path):
     route = _load_route_module("training_route_snapshot_adapter_lora")
     snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
@@ -506,7 +506,8 @@ def test_untrainable_gate_allows_cached_adapter_snapshot_for_lora(tmp_path):
         resume_from_checkpoint = "/outputs/run",
     )
 
-    route._reject_untrainable_model_request(request)
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_hub_adapter_unsupported"
 
 
 @pytest.mark.parametrize("runner", ["embedding", "decision", "mlx"])
@@ -678,7 +679,12 @@ def test_start_refuses_adapter_continuation_on_multimodal_data(tmp_path, dataset
     from core.training import worker
 
     error = worker._untrainable_model_format_error(
-        {"model_format": "adapter", "training_type": "LoRA/QLoRA", dataset_flag: True}
+        {
+            "model_format": "adapter",
+            "training_type": "LoRA/QLoRA",
+            "model_name": str(tmp_path),
+            dataset_flag: True,
+        }
     )
     assert error is not None and "image or audio" in error
 
@@ -1315,21 +1321,14 @@ def test_untrainable_gate_rejects_remote_adapter_for_full_finetuning():
     assert "Adapter models are inference-only" in exc_info.value.detail["message"]
 
 
-def test_untrainable_gate_allows_remote_adapter_for_lora():
+def test_untrainable_gate_refuses_remote_adapter_continuation_for_lora():
     route = _load_route_module("training_route_remote_adapter_lora")
     request = _request(model_format = "adapter")
 
-    with (
-        patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"),
-        patch(
-            "utils.models.model_config.get_base_model_from_lora_identifier",
-            return_value = None,
-        ) as base_lookup,
-    ):
-        result = route._reject_untrainable_model_request(request)
+    with patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"):
+        exc_info = _shared_setup_2(request, route)
 
-    assert result.model_name == "unsloth/test"
-    base_lookup.assert_called_once()
+    assert exc_info.value.detail["code"] == "training_hub_adapter_unsupported"
 
 
 def test_remote_format_probe_flags_adapter_repo_without_weights():
@@ -2698,11 +2697,18 @@ def test_worker_rejects_inference_only_model_formats():
     )
     assert (
         worker._untrainable_model_format_error(
-            {"model_format": "adapter", "training_type": "LoRA/QLoRA"}
+            {"model_format": "adapter", "training_type": "LoRA/QLoRA", "model_name": "/runs/a"}
         )
         is None
     )
-    lora_adapter = {"model_format": "adapter", "training_type": "LoRA/QLoRA"}
+    assert "Hugging Face adapter" in worker._untrainable_model_format_error(
+        {"model_format": "adapter", "training_type": "LoRA/QLoRA", "model_name": "org/adapter"}
+    )
+    lora_adapter = {
+        "model_format": "adapter",
+        "training_type": "LoRA/QLoRA",
+        "model_name": "/runs/a",
+    }
     for runner_flag in ("is_embedding", "is_decision"):
         assert (
             worker._untrainable_model_format_error({**lora_adapter, runner_flag: True}) is not None

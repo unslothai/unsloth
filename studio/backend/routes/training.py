@@ -944,6 +944,18 @@ def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None
         account_access.require_model_access(reference, repo_type)
 
 
+def _refuse_hub_adapter_continuation(request: TrainingStartRequest) -> None:
+    # Only saved local adapter folders are continued (#13140). A Hub adapter's tokenizer,
+    # base capabilities and revision are resolved differently by the loader; follow-up work.
+    if not is_local_path(request.model_name):
+        raise _training_start_error(
+            400,
+            "training_hub_adapter_unsupported",
+            "Continuing from a Hugging Face adapter repository is not supported yet. "
+            "Download it to a local folder and select that folder.",
+        )
+
+
 def _refuse_multimodal_adapter_continuation(request: TrainingStartRequest) -> None:
     # The modality probes read the adapter, not its base, so an image or audio run would be
     # formatted as text. Refuse it until the base is resolved for those probes (#13140).
@@ -1236,6 +1248,7 @@ def _reject_untrainable_model_request(
                     "training_remote_model_adapter_weights_missing",
                     "Adapter repository is missing adapter_model weights.",
                 )
+            _refuse_hub_adapter_continuation(request)
             _refuse_multimodal_adapter_continuation(request)
             _authorize_adapter_base(request.model_name, hf_token)
             return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
@@ -1276,6 +1289,7 @@ def _reject_untrainable_model_request(
                 "training_local_model_adapter_config_missing",
                 "Adapter directory is missing adapter_config.json.",
             )
+        _refuse_hub_adapter_continuation(request)
         _refuse_multimodal_adapter_continuation(request)
         _authorize_adapter_base(str(path), hf_token)
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)

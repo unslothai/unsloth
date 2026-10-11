@@ -185,8 +185,14 @@ export function validateTrainingConfig(
     }
     // Adapter format is valid when continuing LoRA / CPT from a saved adapter (#13140).
     // Decision, embedding and Apple Silicon runs build a fresh adapter, so they need a base.
+    // Only a saved local adapter folder is continued; a Hub adapter repo is not yet.
     if (
       !isAdapterMethod(config.trainingMethod) ||
+      !isLocalTrainingModelSelection({
+        model: config.selectedModel,
+        knownCached: config.modelKnownCached,
+        localPath: config.modelLocalPath,
+      }) ||
       config.modelType === "decision" ||
       config.isEmbeddingModel ||
       deviceType === "mac"

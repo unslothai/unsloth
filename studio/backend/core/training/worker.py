@@ -172,6 +172,13 @@ def _untrainable_model_format_error(config: dict) -> str | None:
             or config.get("is_decision", False)
             or _uses_mlx_training_backend()
         ):
+            from utils.paths import is_local_path
+
+            if not is_local_path(str(config.get("model_name") or "")):
+                return (
+                    "Continuing from a Hugging Face adapter repository is not supported yet. "
+                    "Download it to a local folder and select that folder."
+                )
             if config.get("is_dataset_image") or config.get("is_dataset_audio"):
                 return (
                     "Continuing a saved adapter on an image or audio dataset is not supported "
