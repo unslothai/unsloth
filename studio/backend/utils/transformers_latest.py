@@ -448,6 +448,23 @@ def _hardcoded_model_types() -> frozenset[str]:
     )
 
 
+def _hardcoded_tier_ships(model_type: str) -> bool:
+    """A hardcoded tier counts as handling *model_type* unless that sidecar is installed and its
+    CONFIG_MAPPING lacks it: DiffusionGemma is routed to 5.5 for the mlx-vlm processor, but 5.5 has
+    no DiffusionGemma model, so a CUDA load needs the latest-transformers prompt."""
+    if model_type not in _hardcoded_model_types():
+        return False
+    for tier, types in (
+        ("530", _TRANSFORMERS_530_MODEL_TYPES),
+        ("550", _TRANSFORMERS_550_MODEL_TYPES),
+        ("510", _TRANSFORMERS_510_MODEL_TYPES),
+    ):
+        if model_type in types:
+            installed = _config_model_types(tier)
+            return not installed or model_type in installed
+    return True
+
+
 def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dict | None:
     """Upgrade signal for *model_name*, or None when current routing already handles it.
 
@@ -477,11 +494,10 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         # Without a readable base mapping every type looks brand new; bail out.
         if not _config_model_types("default"):
             return None
-        hardcoded = _hardcoded_model_types()
         missing = [
             candidate
             for candidate in candidates
-            if candidate not in hardcoded
+            if not _hardcoded_tier_ships(candidate)
             and not any(candidate in _config_model_types(tier) for tier in _TIER_RANK)
         ]
         if not missing:

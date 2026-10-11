@@ -571,3 +571,15 @@ def test_diffusion_chat_neutralizes_control_markup(monkeypatch):
         )
     )
     assert seen and _Sampler.calls[-1]["messages"] == [{"role": "user", "content": "safe"}]
+
+
+def test_diffusion_gemma_gets_the_latest_transformers_prompt_when_5_5_lacks_it(monkeypatch):
+    from utils import transformers_latest as tl
+
+    shipped = {"550": frozenset({"gemma4"}), "530": frozenset({"qwen3_moe"}), "510": frozenset()}
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: shipped.get(tier, frozenset()))
+    assert not tl._hardcoded_tier_ships("diffusion_gemma")
+    assert tl._hardcoded_tier_ships("gemma4")
+    # Sidecar not provisioned yet: the hardcoded routing still counts as handling it.
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: frozenset())
+    assert tl._hardcoded_tier_ships("diffusion_gemma")
