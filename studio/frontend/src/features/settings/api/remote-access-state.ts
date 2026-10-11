@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isLoopbackHost, normalizeHost } from "../components/agent-command.ts";
+
 export type RemoteAccessState =
   | "off"
   | "starting"
@@ -75,11 +77,21 @@ export function remoteAccessPollDelay(
     : 5000;
 }
 
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    return isLoopbackHost(normalizeHost(new URL(origin).hostname));
+  } catch {
+    return false;
+  }
+}
+
 export function remoteApiOrigin(
   remoteUrl: string | null,
   localOrigin: string,
+  lanUrls: string[] = [],
 ): string {
-  return remoteUrl ?? localOrigin;
+  const lanUrl = isLoopbackOrigin(localOrigin) ? lanUrls[0] : undefined;
+  return remoteUrl ?? lanUrl ?? localOrigin;
 }
 
 export function remoteAccessAutoStartReadOnly(
@@ -102,11 +114,10 @@ export function remoteAccessStopDisconnectsOrigin(
   );
 }
 
-// A Stop sent from the tunnel's own origin is answered with a terminal off, then
-// that origin dies. Polls landing during teardown still report "stopping", a state
-// this origin can never see resolve, so they must not overwrite the terminal off.
-// One that can still stop the connector proves teardown was abandoned, so the
-// origin is staying up and polls lead again.
+// A Stop sent from the tunnel's own origin is answered with a terminal off, then that origin dies.
+// Polls landing during teardown still report "stopping", a state this origin can never see resolve,
+// so they must not overwrite the terminal off. One that can still stop the connector proves
+// teardown was abandoned, so the origin is staying up and polls lead again.
 export function remoteAccessSelfStopPoll(
   next: RemoteAccessStatus,
   expectingDisconnect: boolean,

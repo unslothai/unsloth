@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export type AudioSttEngine = "transformers" | "gguf" | "mtmd";
+import {
+  AUDIO_CPP_DICTATION_MODELS,
+  isAudioCppFolderId,
+} from "./audio-cpp-catalog.ts";
+
+export type AudioSttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 const TRANSFORMERS_REPO_BY_KEY: Record<string, string> = {
   tiny: "unsloth/whisper-tiny",
@@ -23,6 +28,14 @@ const GGUF_REPO_BY_KEY: Record<string, string> = {
   "large-v3-turbo": "unslothai/whisper-large-v3-turbo-GGUF",
   "large-v3": "unslothai/whisper-large-v3-GGUF",
 };
+
+// The audiocpp engine takes any GGUF ASR repo or package folder id as its key. Dictation keys
+// saved before that are distinct from every other engine's and resolve to their folder id.
+const AUDIOCPP_REPO_BY_KEY: Record<string, string> = Object.fromEntries(
+  AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model.id]),
+);
+
+const GGUF_REPO_SUFFIX = /-GGUF$/i;
 
 const KEY_BY_REPO = new Map<string, string>(
   [
@@ -57,13 +70,27 @@ export function sttRepoIdForSidecarKey(
   engine: AudioSttEngine = "transformers",
 ): string {
   const normalized = sidecarKey.trim().toLowerCase();
+  // A saved audiocpp dictation key names one folder whatever engine the caller assumed.
+  if (engine === "audiocpp" || Object.hasOwn(AUDIOCPP_REPO_BY_KEY, normalized))
+    return AUDIOCPP_REPO_BY_KEY[normalized] ?? sidecarKey;
   if (engine === "gguf") return GGUF_REPO_BY_KEY[normalized] ?? sidecarKey;
   if (engine === "mtmd") return MTMD_REPO_BY_KEY[normalized] ?? sidecarKey;
   return TRANSFORMERS_REPO_BY_KEY[normalized] ?? sidecarKey;
 }
 
-/** Resolve from the picker artifact, not the shared short sidecar key. */
-export function sttEngineForRepoId(repoId: string): AudioSttEngine {
-  const normalized = repoId.trim().toLowerCase();
-  return ENGINE_BY_REPO.get(normalized) ?? "transformers";
+/** Resolve from the picker artifact, not the shared short sidecar key. The curated Whisper and
+ *  Qwen3-ASR GGUFs have engines of their own; every other GGUF ASR repo is the audio runtime's,
+ *  and a safetensors repo runs on Transformers. */
+export function sttEngineForRepoId(
+  repoId: string,
+  isGguf?: boolean | null,
+): AudioSttEngine {
+  const normalized = repoId.trim().toLowerCase().replace(/\/+$/, "");
+  const known = ENGINE_BY_REPO.get(normalized);
+  if (known) return known;
+  if (Object.hasOwn(AUDIOCPP_REPO_BY_KEY, normalized)) return "audiocpp";
+  const leaf = normalized.split("/").pop() ?? "";
+  return isGguf || isAudioCppFolderId(normalized) || GGUF_REPO_SUFFIX.test(leaf)
+    ? "audiocpp"
+    : "transformers";
 }

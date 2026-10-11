@@ -132,15 +132,13 @@ async function uploadTrainingDatasetForm(
   return res.json();
 }
 
-// ── AI Assist ──
-
 type AiAssistMappingArgs = {
   columns: string[];
   samples: Record<string, unknown>[];
   datasetName?: string | null;
   hfToken?: string | null;
   modelName?: string | null;
-  modelType?: "text" | "vision" | "audio" | "embeddings" | null;
+  modelType?: "text" | "vision" | "audio" | "embeddings" | "decision" | null;
   signal?: AbortSignal;
 };
 

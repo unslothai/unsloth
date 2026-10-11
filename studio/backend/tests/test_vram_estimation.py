@@ -281,6 +281,35 @@ class TestExtractArchConfig(unittest.TestCase):
         self.assertEqual(arch.quantization_skip_modules, ["model.layers.0.self_attn"])
         self.assertEqual(arch.quant_4bit_factor, 3.6)
 
+    def test_quantization_fields_from_raw_config_json(self):
+        from utils.hardware import hardware as hardware_module
+
+        skip_modules = ["lm_head", "multi_modal_projector", "merger", "modality_projection"]
+        raw_config = {
+            "model_type": "gemma3",
+            "text_config": {
+                "model_type": "gemma3_text",
+                "hidden_size": 5376,
+                "num_hidden_layers": 62,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 16,
+                "intermediate_size": 21504,
+                "vocab_size": 262208,
+            },
+            "quantization_config": {
+                "bnb_4bit_use_double_quant": True,
+                "llm_int8_skip_modules": skip_modules,
+                "quant_method": "bitsandbytes",
+            },
+        }
+        with patch("utils.transformers_version._load_config_json", return_value = raw_config):
+            config = hardware_module._load_config_for_gpu_estimate(
+                "unsloth/gemma-3-27b-it-bnb-4bit"
+            )
+        arch = extract_arch_config(config)
+        self.assertEqual(arch.quant_4bit_factor, 3.6)
+        self.assertEqual(arch.quantization_skip_modules, skip_modules)
+
 
 class TestModelWeightsBytes(unittest.TestCase):
     def test_llama_8b_fp16(self):

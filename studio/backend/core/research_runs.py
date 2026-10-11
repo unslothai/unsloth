@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import weakref
+from core.training.account_jobs import account_is_retired, account_key, job_accounts
+from utils.account_context import arun_as, current_account, run_as
 import asyncio
 import json
 import os
@@ -16,7 +19,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, NamedTuple
 
 import httpx
 
@@ -25,7 +28,14 @@ from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
-from core.inference.tools import EMPTY_SEARCH_RESULTS, RAG_SOURCES_SENTINEL, execute_tool
+from core.inference.tools import (
+    EMPTY_SEARCH_RESULTS,
+    RAG_SOURCES_SENTINEL,
+    execute_mcp_tool,
+    execute_tool,
+    is_high_risk_tool_call,
+    mcp_search_tools,
+)
 from core.inference.web_access_policy import check_url_access, website_policy_prompt
 from core.research.parsing import (
     _MAX_PREVIEW_LABELS,
@@ -43,8 +53,8 @@ from core.research.citations import (
     _allowed_document_citations,
     _citation_title,
     _document_source_citation,
-    _validate_report_document_sources,
-    _validate_report_sources,
+    _mcp_source_label,
+    _validate_report,
 )
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
 from core.research.prompts import (
@@ -76,6 +86,11 @@ _URL_BLOCK = re.compile(
     r"Title:\s*(?P<title>[^\n]*)\nURL:\s*(?P<url>https?://[^\s]+)\nSnippet:\s*(?P<snippet>.*?)(?=\n\n---|\Z)",
     re.DOTALL,
 )
+_OPENAI_RESPONSES_FIXED_SAMPLING_MODEL = re.compile(
+    r"^(?:gpt-6-astra(?:[-.]|$)|gpt-5(?:[-.]|$)|gpt-4\.5(?:[-.]|$)|"
+    r"o\d+(?:[-.]|$)|codex-mini(?:[-.]|$))"
+)
+_OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
 _WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
@@ -119,7 +134,8 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # A model that keeps disappearing would re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
-_NO_GRAMMAR_ENGINE_DETAIL = "needs the llama.cpp grammar engine"
+# Every "no grammar engine here" refusal says this (routes, grammar_constraint); a re-send fixes those only.
+_NO_GRAMMAR_ENGINE_DETAIL = "needs a grammar engine"
 # routes.inference reports the same unloaded state this way when auto-switch finds no local match.
 _MODEL_NOT_FOUND_CODE = "model_not_found"
 # routes.inference 503s with this while an auto-switch to the run's model is still loading.
@@ -250,6 +266,10 @@ class ModelWallClockTimeout(httpx.ReadTimeout):
     pass
 
 
+# Every separator, not just "\n": one survivor lets provider text open a block of its own.
+_LINE_SEPARATOR = re.compile(r"[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+")
+
+
 def _safe_error(exc: BaseException) -> str:
     if isinstance(exc, ModelFirstOutputTimeout):
         return "Local model never started producing output"
@@ -265,7 +285,7 @@ def _safe_error(exc: BaseException) -> str:
     # reading it here dropped the Model settings hint from an oversize refusal.
     friendly = getattr(exc, "friendly", None)
     text = friendly if isinstance(friendly, str) and friendly else str(exc)
-    text = text.replace("\n", " ").strip()
+    text = _LINE_SEPARATOR.sub(" ", text).strip()
     return (text or exc.__class__.__name__)[:_MAX_ERROR_CHARS]
 
 
@@ -362,9 +382,9 @@ def _loaded_context_length(inference: dict[str, Any] | None = None) -> int | Non
     Mirrors routes.inference._monitor_context_length (llama.cpp backend, else the inference
     orchestrator) so grounding sizes evidence to the same context the API layer serves. The ML
     backends live in a worker subprocess, so the core.inference.inference singleton is unpopulated
-    here and importing it pulls in the ML stack; read the orchestrator the routes use instead.
-
-    A run carrying a providerType runs on that connection, not on either local backend."""
+    here and importing it pulls in the ML stack; read the orchestrator the routes use instead. A run
+    carrying a providerType runs on that connection, not on either local backend.
+    """
     if _external_provider_run(inference):
         return None
     try:
@@ -531,6 +551,30 @@ def _saved_connection_cap(provider_id: object) -> int | None | object:
     return _CAP_UNREADABLE
 
 
+def _custom_responses_rejects_sampling(inference: dict[str, Any]) -> bool:
+    """Whether this research hop targets fixed-sampling OpenAI Responses semantics."""
+    if inference.get("providerType") != "custom":
+        return False
+    provider_id = inference.get("providerId")
+    if not isinstance(provider_id, str) or not provider_id:
+        return False
+    try:
+        provider = providers_db.get_provider(provider_id) or {}
+    except Exception:
+        logger.debug("research.provider_api_type_probe_failed", exc_info = True)
+        return False
+    if provider.get("provider_type") != "custom" or provider.get("api_type") != "responses":
+        return False
+
+    model = str(inference.get("externalModel") or inference.get("model") or "").strip().lower()
+    if _OPENAI_NON_REASONING_CHAT_ALIAS.search(model):
+        return False
+    # Sampling support is an upstream model contract, independent of the UI's reasoning
+    # toggle metadata. In particular, codex-mini and gpt-4.5 reject these fields without
+    # necessarily being marked reasoning-capable by the client that created a durable run.
+    return _OPENAI_RESPONSES_FIXED_SAMPLING_MODEL.match(model) is not None
+
+
 def _normalize_completion_usage(raw: Any) -> dict[str, int] | None:
     if not isinstance(raw, dict):
         return None
@@ -603,13 +647,13 @@ async def _response_format_unsupported(response: httpx.Response) -> bool:
 async def _model_unloaded(response: httpx.Response) -> str | None:
     """Which "not servable right now" refusal this is, or None for any other failure.
 
-    All three are transient for a durable run -- the model can be loaded again -- unlike any
-    other 4xx. ``"empty"`` is routes.inference's 400 for a backend with nothing loaded.
-    ``"named"`` is its 404 model_not_found, which the same condition produces when auto-switch
-    is on and the name resolves to nothing local: a model mid-load or mid-update looks exactly
-    like a model that will never resolve, so the caller waits on it far more briefly.
-    ``"switching"`` is its 503 model_switch_failed, raised while a swap to the run's model is
-    still loading; the generic 5xx backoff gave up in three seconds, well inside a real load.
+    All three are transient for a durable run, unlike any other 4xx. ``"empty"`` is
+    routes.inference's 400 for a backend with nothing loaded. ``"named"`` is its 404
+    model_not_found, which the same condition produces when auto-switch is on and the name resolves
+    to nothing local: a model mid-load or mid-update looks exactly like a model that will never
+    resolve, so the caller waits on it far more briefly. ``"switching"`` is its 503
+    model_switch_failed, raised while a swap to the run's model is still loading; the generic 5xx
+    backoff gave up in three seconds, well inside a real load.
     """
     if response.status_code not in (400, 404, 503):
         return None
@@ -973,31 +1017,80 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
     return text.rstrip(), sources
 
 
-def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
-    """A step that gathered no evidence failed, whether the tool errored or simply matched nothing.
+def _mcp_evidence(sources: list[dict]) -> str:
+    if not sources:
+        return ""
+    share = 6000 // len(sources)
+    text = "\n\n".join(
+        f"{_document_source_citation(source)}\n{(source.get('snippet') or '')[:share]}"
+        for source in sources
+    )
+    return f"\n\nMCP tools:\n{text}"
 
-    Reporting an empty search as completed hid the one outcome the user needs to see: the report
-    was written without the evidence that step was supposed to supply.
-    """
+
+def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
+    """empty searches must report missing evidence even when the tool succeeds."""
     if rag_sources:
         return False
     return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
 
 
+def _preferred_step_error(current: str, candidate: str) -> str:
+    """engine errors need retries; empty searches need new queries, so preserve engine errors."""
+    if not candidate:
+        return current
+    if is_tool_error(current) and not is_tool_error(candidate):
+        return current
+    return candidate
+
+
 def _run_moved_on(fresh: dict | None, attempt: int) -> bool:
     """Whether the run this worker was running has since been re-pointed at a newer question.
 
-    A thread reuses its one run row for its lifetime, so between committing a terminal status
-    and writing the terminal reply the user can stop the run and ask something else: the row
-    is reset, its assistant binding moves, and the reply below -- resolved by run id -- would
-    stamp "Research cancelled." and researchStatus cancelled onto the NEW question's
-    placeholder, where it stays until that question reaches its own terminal write.
-
-    retryCount is the attempt epoch, which rebind_cancelled advances for exactly this reason.
+    A thread reuses its one run row for its lifetime, so between committing a terminal status and
+    writing the terminal reply the user can stop the run and ask something else: the row is reset,
+    its assistant binding moves, and the reply below (resolved by run id) would stamp "Research
+    cancelled." and researchStatus cancelled onto the NEW question's placeholder, where it stays
+    until that question reaches its own terminal write. retryCount is the attempt epoch, which
+    rebind_cancelled advances for exactly this reason.
     """
     if not fresh:
         return True
     return int(fresh.get("retryCount") or 0) != attempt
+
+
+def _cited_sources(run: dict) -> list[dict]:
+    """Sources trimmed to the budget: past it, the model never saw them to cite."""
+    max_sources = int(((run.get("config") or {}).get("budgets") or {}).get("maxSources") or 0)
+    return list(run.get("sources") or [])[:max_sources]
+
+
+# A WAL commit on a busy disk has held the writer lock for 37s; under the 120-second lease.
+_TERMINAL_WRITE_DEADLINE_SECONDS = 60.0
+_TERMINAL_WRITE_RETRY_SECONDS = 1.0
+
+
+def _as_literal_markdown(text: str) -> str:
+    """Provider text for a Markdown surface, as the one inline context nothing reparses."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default = 0)
+    fence = "`" * (longest + 1)
+    # A span whose content touches a backtick needs padding, which the renderer then strips.
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _report_under_notice(report: str, lead: str, notice: str) -> str:
+    """A report under a notice; above it, since a cut report can end in an unterminated fence."""
+    return f"> **{lead}** {notice}\n\n{report.lstrip()}"
+
+
+class _ReportDraft(NamedTuple):
+    """``whole`` is whether the provider said the model stopped of its own accord, which an
+    interrupted stream can still have done; ``reason`` is why it stops short, when known."""
+
+    text: str
+    whole: bool
+    reason: str = ""
 
 
 def _update_assistant(
@@ -1008,6 +1101,8 @@ def _update_assistant(
     reasoning: str = "",
     completion_worker_id: str | None = None,
 ) -> None:
+    if account_is_retired():
+        return
     message_id = db.discover_and_bind_assistant_message(run["id"])
     if not message_id:
         if status not in db.TERMINAL_STATUSES:
@@ -1076,12 +1171,17 @@ def _update_assistant(
     )
 
 
+_supervisors = weakref.WeakSet()
+
+
 class ResearchSupervisor:
     def __init__(
         self,
         app: Any,
         poll_seconds: float = 0.5,
     ) -> None:
+        _supervisors.add(self)
+        self.job_account = None
         self.app = app
         self.poll_seconds = poll_seconds
         self.worker_id = uuid.uuid4().hex
@@ -1089,9 +1189,13 @@ class ResearchSupervisor:
         self._task: asyncio.Task | None = None
         self._cancel_events: dict[str, threading.Event] = {}
         self._lost_leases: set[str] = set()
+        # In memory, not read back on failure: every write that would store a draft can itself fail.
+        self._report_drafts: dict[str, _ReportDraft] = {}
+        self._last_claim_account: str | None = None
 
     def start(self) -> None:
-        db.recover_expired()
+        for account in job_accounts():
+            run_as(account, db.recover_expired)
         if self._task is None:
             self._task = asyncio.create_task(self._loop(), name = "research-supervisor")
 
@@ -1108,19 +1212,22 @@ class ResearchSupervisor:
                     # Polling is intentionally sufficient for one local process; requests never own tasks.
                     pass
         finally:
-            await asyncio.to_thread(db.release_worker_leases, self.worker_id)
+            for account in job_accounts():
+                await asyncio.to_thread(run_as, account, db.release_worker_leases, self.worker_id)
 
     def wake(self) -> None:
         pass
 
     def cancel(self, run_id: str) -> None:
-        self._cancel_events.setdefault(run_id, threading.Event()).set()
+        self._cancel_events.setdefault(account_key(run_id), threading.Event()).set()
 
     def _cancel_event(self, run_id: str) -> threading.Event:
-        return self._cancel_events.setdefault(run_id, threading.Event())
+        return self._cancel_events.setdefault(account_key(run_id), threading.Event())
 
     async def _check_active(self, run_id: str) -> None:
-        if run_id in self._lost_leases:
+        if account_is_retired():
+            raise RunCancelled()
+        if account_key(run_id) in self._lost_leases:
             raise LeaseLost()
         cancelled, owns_lease = await asyncio.gather(
             asyncio.to_thread(db.is_cancel_requested, run_id),
@@ -1217,11 +1324,102 @@ class ResearchSupervisor:
             fetched,
         )
 
+    async def _search_mcp_tools(
+        self, run: dict, tools: list[dict], query: str, position: int, tool_timeout: int
+    ) -> list[dict]:
+        labels = {
+            tool["name"]: _mcp_source_label({"filename": f"{tool['serverName']} · {tool['tool']}"})
+            for tool in tools
+        }
+        label_values = list(labels.values())
+        labels = {
+            name: f"{label} ({name})" if label_values.count(label) > 1 else label
+            for name, label in labels.items()
+        }
+        cancel_event = self._cancel_event(run["id"])
+        calls = [
+            (tool, {tool["argument"]: query})
+            for tool in tools
+            if not is_high_risk_tool_call(tool["name"], {tool["argument"]: query})
+        ]
+        results = await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    execute_mcp_tool,
+                    tool["name"],
+                    arguments,
+                    cancel_event = cancel_event,
+                    timeout = tool_timeout,
+                )
+                for tool, arguments in calls
+            ),
+            return_exceptions = True,
+        )
+        found = []
+        for (tool, _arguments), result in zip(calls, results):
+            text = (
+                strip_result_for_model(result, tool["name"]).strip()
+                if isinstance(result, str)
+                else ""
+            )
+            if not text or is_tool_error(text):
+                logger.warning(
+                    "research.mcp_search_failed run_id=%s tool=%s error=%s",
+                    run["id"],
+                    tool["name"],
+                    (text or str(result))[:200],
+                )
+                continue
+            found.append(
+                {
+                    "kind": "mcp",
+                    "chunkId": f"{tool['name']}:{position}",
+                    "documentId": tool["name"],
+                    "filename": labels[tool["name"]],
+                    "page": None,
+                    "score": None,
+                    "snippet": text[:4000],
+                }
+            )
+        return found
+
     async def _check_worker_write(self, run_id: str, written: bool) -> None:
         if written:
             return
         await self._check_active(run_id)
         raise LeaseLost()
+
+    def _salvage_report(self, run_id: str, notice: str) -> str:
+        draft = self._report_drafts.get(account_key(run_id))
+        if draft is None or not draft.text:
+            return ""
+        if draft.whole:
+            return _report_under_notice(draft.text, "Report complete.", notice)
+        reason = f"{draft.reason}. {notice}" if draft.reason else notice
+        return _report_under_notice(draft.text, "Incomplete report.", reason)
+
+    async def _finish_terminal(
+        self, run_id: str, status: str, error: str | None, report: str
+    ) -> str | None:
+        """Commit the terminal status, waiting a bounded while for a writer lock held elsewhere.
+        Gives up by raising, not by standing in a lease-expired row that would discard the run's
+        report and its real error; the run stays claimable once its lease runs out."""
+        deadline = time.monotonic() + _TERMINAL_WRITE_DEADLINE_SECONDS
+        while True:
+            try:
+                return await asyncio.to_thread(
+                    db.finish,
+                    run_id,
+                    self.worker_id,
+                    status,
+                    error,
+                    {"report": report} if report else None,
+                )
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_busy_error(exc) or time.monotonic() >= deadline:
+                    raise
+                logger.warning("research.terminal_write_busy run_id=%s: %s", run_id, exc)
+                await asyncio.sleep(_TERMINAL_WRITE_RETRY_SECONDS)
 
     async def _finish_after_lease_loss(self, run_id: str) -> str | None:
         while True:
@@ -1245,8 +1443,6 @@ class ResearchSupervisor:
 
     def note_server_address(self, server: Any) -> None:
         state = self.app.state
-        # run_server publishes the port before it binds and the address only once the listener is
-        # up, so a known port must not suppress the address.
         published = getattr(state, "server_request_host", None)
         if not (isinstance(published, str) and published):
             host = scope_request_host(server)
@@ -1274,11 +1470,15 @@ class ResearchSupervisor:
                 if self._server_port() is None:
                     await asyncio.sleep(self.poll_seconds)
                     continue
-                run = await asyncio.to_thread(db.claim_next, self.worker_id)
+                account, run = await asyncio.to_thread(self._claim_account_run)
                 if run is None:
                     await asyncio.sleep(self.poll_seconds)
                     continue
-                await self._process(run)
+                self.job_account = account
+                try:
+                    await arun_as(account, self._process(run))
+                finally:
+                    self.job_account = None
             except asyncio.CancelledError:
                 raise
             except sqlite3.OperationalError as exc:
@@ -1292,6 +1492,27 @@ class ResearchSupervisor:
             except Exception:
                 logger.exception("research.supervisor_iteration_failed")
                 await asyncio.sleep(1)
+
+    def _claim_account_run(self):
+        # Round robin from the account after the last claim: runs are processed one at a time.
+        accounts = job_accounts()
+        start = 0
+        for index, account in enumerate(accounts):
+            if account.account_id == self._last_claim_account:
+                start = index + 1
+                break
+        for offset in range(len(accounts)):
+            account = accounts[(start + offset) % len(accounts)]
+            try:
+                run = run_as(account, db.claim_next, self.worker_id)
+            except Exception:
+                # The order is stable, so one corrupt database would shadow the accounts behind it.
+                logger.exception("research.claim_failed_for_account")
+                continue
+            if run is not None:
+                self._last_claim_account = account.account_id
+                return account, run
+        return None, None
 
     def _server_port(self) -> int | None:
         port = getattr(self.app.state, "server_port", None)
@@ -1322,14 +1543,15 @@ class ResearchSupervisor:
     ) -> bool:
         """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
 
-        A durable run resumes after an Unsloth restart and is approved long after it was created,
-        so the model it was started with can be gone. Waiting keeps the run alive instead of
-        ending it on a non-retryable 400 that discards every step and source it gathered.
+        A durable run resumes after an Unsloth restart and is approved long after it was created, so
+        the model it was started with can be gone. Waiting keeps the run alive instead of ending it
+        on a non-retryable 400 that discards every step and source it gathered.
 
-        ``max_seconds`` bounds the wait for refusals that name the model rather than report an
-        empty backend. A load already in flight finishes inside it; anything else (an ejected
-        model, a llama.cpp update, a name that no longer resolves) needs a user action that no
-        wait can outlast, so surfacing the refusal beats burning the whole budget first."""
+        ``max_seconds`` bounds the wait for refusals that name the model rather than report an empty
+        backend. A load already in flight finishes inside it; anything else (an ejected model, a
+        llama.cpp update, a name that no longer resolves) needs a user action that no wait can
+        outlast, so surfacing the refusal beats burning the whole budget first.
+        """
         loop = asyncio.get_running_loop()
         # Share the model budget across the allowed waits: spending it all on one lets the enclosing wall
         # clock fire first and bury the real refusal.
@@ -1487,12 +1709,14 @@ class ResearchSupervisor:
         max_tokens: int | None = None,
         enable_thinking: bool | None = None,
         preview_labels: bool = False,
+        on_partial: Callable[[str, str, str | None], None] | None = None,
     ) -> tuple[str, str, str | None, dict[str, int] | None]:
         call_id = uuid.uuid4().hex
         expires = (
             datetime.now(timezone.utc) + timedelta(seconds = _MODEL_CALL_KEY_LIFETIME_SECONDS)
         ).isoformat()
         key_minted = asyncio.get_running_loop().time()
+        account = current_account()
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
@@ -1501,9 +1725,14 @@ class ResearchSupervisor:
             name = auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME,
             expires_at = expires,
             internal = True,
+            # Pinned to the claiming account: the username could name a recreated namesake.
+            account_id = None if account.is_owner else account.account_id,
         )
         config = run["config"]
         inference = config.get("inferenceRequest") or {}
+        omit_sampling = inference.get("providerType") == "custom" and await asyncio.to_thread(
+            _custom_responses_rejects_sampling, inference
+        )
         payload: dict[str, Any] = {
             "model": inference.get("model") or config.get("model") or "",
             "messages": messages,
@@ -1516,8 +1745,9 @@ class ResearchSupervisor:
             # enabled_tools resolves to every built-in, python and terminal included.
             "tool_choice": "none",
             "enabled_tools": [],
-            "temperature": inference.get("temperature", 0.2),
         }
+        if not omit_sampling:
+            payload["temperature"] = inference.get("temperature", 0.2)
 
         # The route's _sanitize_config already refused anything but an enabled saved connection of a studio-
         # tools-capable provider type.
@@ -1529,8 +1759,23 @@ class ResearchSupervisor:
                     "external_model": inference["externalModel"],
                 }
             )
-        if inference.get("topP") is not None:
+        if not omit_sampling and inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
+        if inference.get("providerType") in ("deepseek", "huggingface", "qwen", "mistral"):
+            # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
+            # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
+            # planner opt-out must not reach mistral-large and the other non-reasoning models.
+            # `is not True`, not `is False`: a run from before these flags carries neither, and a
+            # thinking planner call on a resumed run beats a request the model rejects.
+            if inference.get("supportsReasoning") is not True:
+                enable_thinking = None
+                inference = {
+                    key: value
+                    for key, value in inference.items()
+                    if key not in ("enableThinking", "reasoningEffort")
+                }
+            elif enable_thinking is False and inference.get("supportsReasoningOff") is False:
+                enable_thinking = None
         if enable_thinking is not None:
             payload["enable_thinking"] = enable_thinking
         elif inference.get("enableThinking") is not None:
@@ -1771,12 +2016,10 @@ class ResearchSupervisor:
                                 else:
                                     await asyncio.sleep(delay)
                                 attempt += 1
-                                # re-check the lease and cancellation before re-sending.
                                 await self._check_active(run["id"])
                             continue
-                        # A proxied provider 429 arrives as a 200 whose first line is the refusal, so the
-                        # status cannot see
-                        # it; no body byte is used yet.
+                        # A proxied provider 429 arrives as a 200 whose first line is the refusal, so the status
+                        # cannot see it; no body byte is used yet.
                         stream = self._iter_stream_lines(run["id"], response, semantic_deadline)
                         head = await _peek_stream_head(stream)
                         throttled = _stream_rate_limit_delay(head)
@@ -1795,12 +2038,11 @@ class ResearchSupervisor:
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
-                            # Queueing has no timeout by design, so suspend for it and start the budget when the slot is
-                            # granted.
+                            # Queueing has no timeout by design, so suspend for it and start the budget when the slot
+                            # is granted.
                             if line.startswith(_ADMISSION_WAIT_COMMENT):
-                                # Unlimited has no wall clock behind this, so bound the gap between queue
-                                # notices; each notice
-                                # refreshes it.
+                                # Unlimited has no wall clock behind this, so bound the gap between queue notices;
+                                # each notice refreshes it.
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
@@ -1814,14 +2056,12 @@ class ResearchSupervisor:
                             continue
                         # Arming research in the composer is the approval, so the plan is queued as it is stored
                         # rather than parked for a second confirmation.
-                        # revoked before the phase event, so a cancel there cannot leak a live key.
                         try:
                             chunk = json.loads(data)
                             _stream_error = stream_error_from_chunk(chunk)
                             if _stream_error is not None:
-                                # The server's own text names the cause and both token counts; flattening it to
-                                # a fixed string left
-                                # the user nothing to act on.
+                                # The server's own text names the cause and both token counts; flattening it to a
+                                # fixed string left the user nothing to act on.
                                 raise _stream_error
                             normalized_usage = _normalize_completion_usage(
                                 chunk.get("usage") if isinstance(chunk, dict) else None
@@ -1884,9 +2124,8 @@ class ResearchSupervisor:
                         try:
                             await response.aclose()
                         except Exception:
-                            # Closing a broken stream is best-effort and must not replace the generation result
-                            # or the error
-                            # that caused teardown.
+                            # Closing a broken stream is best-effort and must not replace the generation result or the
+                            # error that caused teardown.
                             logger.warning(
                                 "research.stream_cleanup_failed run_id=%s",
                                 run["id"],
@@ -1894,17 +2133,35 @@ class ResearchSupervisor:
                             )
             await flush_progress()
             return report, reasoning, finish_reason, usage
-        except (ModelFirstOutputTimeout, ModelOutputIdleTimeout, ModelWallClockTimeout):
+        # Not errors: the flush below would fail without writing.
+        except (RunCancelled, LeaseLost):
             raise
-        except httpx.ReadTimeout as exc:
+        except Exception as exc:
+            # Before the flush, which only displays it; with the finish reason, which text cannot carry.
+            if on_partial is not None:
+                on_partial(report, reasoning, finish_reason)
+            if report_progress:
+                try:
+                    # Best effort: a progress update must not replace the error that stopped the run.
+                    await flush_progress()
+                except Exception:
+                    logger.warning(
+                        "research.error_flush_failed run_id=%s", run["id"], exc_info = True
+                    )
+            if isinstance(
+                exc, (ModelFirstOutputTimeout, ModelOutputIdleTimeout, ModelWallClockTimeout)
+            ):
+                raise
             # Transport backstop: HTTPX raises this with no message, so name the stall instead.
-            if semantic_output_at is None:
-                raise ModelFirstOutputTimeout("Local model never produced output") from exc
-            raise ModelOutputIdleTimeout("Local model stopped producing output") from exc
-        except (TimeoutError, asyncio.TimeoutError) as exc:
-            raise ModelWallClockTimeout(
-                "Local model request exceeded its wall-clock timeout"
-            ) from exc
+            if isinstance(exc, httpx.ReadTimeout):
+                if semantic_output_at is None:
+                    raise ModelFirstOutputTimeout("Local model never produced output") from exc
+                raise ModelOutputIdleTimeout("Local model stopped producing output") from exc
+            if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+                raise ModelWallClockTimeout(
+                    "Local model request exceeded its wall-clock timeout"
+                ) from exc
+            raise
         finally:
             # revoked before the phase event, so a cancel there cannot leak a live key.
             try:
@@ -2008,12 +2265,9 @@ class ResearchSupervisor:
         except Exception as exc:
             error = _safe_error(exc)
             logger.warning("research.run_failed run_id=%s error=%s", run["id"], error)
-            try:
-                actual_status = await asyncio.to_thread(
-                    db.finish, run["id"], self.worker_id, "failed", error
-                )
-            except sqlite3.OperationalError:
-                actual_status = await self._finish_after_lease_loss(run["id"])
+            reported = f"Research failed: {_as_literal_markdown(error)}"
+            partial_report = self._salvage_report(run["id"], reported)
+            actual_status = await self._finish_terminal(run["id"], "failed", error, partial_report)
             if actual_status is None:
                 actual_status = await self._finish_after_lease_loss(run["id"])
             fresh = await asyncio.to_thread(db.get_run, run["id"])
@@ -2022,8 +2276,13 @@ class ResearchSupervisor:
                     _update_assistant, fresh, "Research cancelled.", "cancelled"
                 )
             elif actual_status == "failed" and not _run_moved_on(fresh, attempt):
+                saved = fresh.get("report")
                 await asyncio.to_thread(
-                    _update_assistant, fresh, f"Research failed: {error}", "failed"
+                    _update_assistant,
+                    fresh,
+                    saved or reported,
+                    "failed",
+                    _cited_sources(fresh) if saved else None,
                 )
         finally:
             heartbeat.cancel()
@@ -2031,8 +2290,9 @@ class ResearchSupervisor:
                 await heartbeat
             except asyncio.CancelledError:
                 pass
-            self._cancel_events.pop(run["id"], None)
-            self._lost_leases.discard(run["id"])
+            self._cancel_events.pop(account_key(run["id"]), None)
+            self._lost_leases.discard(account_key(run["id"]))
+            self._report_drafts.pop(account_key(run["id"]), None)
 
     async def _heartbeat(self, run_id: str) -> None:
         delay = 30.0
@@ -2048,14 +2308,14 @@ class ResearchSupervisor:
                 # 120-second lease expires.
                 consecutive_errors += 1
                 if consecutive_errors >= 10:
-                    self._lost_leases.add(run_id)
+                    self._lost_leases.add(account_key(run_id))
                     self.cancel(run_id)
                     return
                 delay = 1.0
                 continue
             consecutive_errors = 0
             if not renewed:
-                self._lost_leases.add(run_id)
+                self._lost_leases.add(account_key(run_id))
                 self.cancel(run_id)
                 return
 
@@ -2144,9 +2404,9 @@ class ResearchSupervisor:
         max_steps = int(budgets["maxSteps"])
         max_sources = int(budgets["maxSources"])
         tool_timeout = int(budgets["toolTimeoutSeconds"])
-        # Absent for runs created before auto-scrape: default 0 keeps their behavior unchanged.
+        # default 0 preserves behavior for runs created before auto-scrape.
         max_auto_scrape = int(budgets.get("maxAutoScrape", 0))
-        # On a tiny context the prompt overhead alone fills the window, so fall back to snippet-only.
+        # prompt overhead fills tiny context windows, so use snippets alone.
         if max_auto_scrape > 0:
             loaded_ctx = _loaded_context_length(_run_inference_request(run))
             if loaded_ctx is not None and loaded_ctx < _AUTO_SCRAPE_MIN_CONTEXT_TOKENS:
@@ -2158,6 +2418,20 @@ class ResearchSupervisor:
                 max_auto_scrape = 0
         website_policy = run["config"].get("websitePolicy")
         policy_prompt = website_policy_prompt(website_policy)
+        selected_mcp = {
+            (item["serverId"], item["tool"]) for item in run["config"].get("mcpSources") or ()
+        }
+        mcp_tools = (
+            [
+                tool
+                for tool in await mcp_search_tools(
+                    server_ids = {server_id for server_id, _tool in selected_mcp}
+                )
+                if (tool["serverId"], tool["tool"]) in selected_mcp
+            ]
+            if selected_mcp
+            else []
+        )
         notes: list[str] = []
         decision_notes: list[str] = []
         research_state: dict[str, Any] = {}
@@ -2165,6 +2439,8 @@ class ResearchSupervisor:
         document_sources: list[dict] = []
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
+        completed_steps = 0
+        step_error = ""
         question, conversation_context = await asyncio.to_thread(
             _research_question_context,
             run["threadId"],
@@ -2191,6 +2467,7 @@ class ResearchSupervisor:
             elif argument:
                 used_queries.add(argument)
             if step.get("status") != "completed":
+                step_error = _preferred_step_error(step_error, str(result.get("error") or ""))
                 continue
             restored_state = _normalize_research_state(result.get("researchState"))
             if restored_state:
@@ -2242,11 +2519,18 @@ class ResearchSupervisor:
                 f"{item.get('filename') or 'Document'}: "
                 f"{item.get('text') or item.get('snippet') or ''}"
                 for item in accepted_rag_sources
+                if item.get("kind") != "mcp"
             )
+            mcp_evidence = _mcp_evidence(
+                [item for item in accepted_rag_sources if item.get("kind") == "mcp"]
+            )
+            # unscraped searches save no excerpt, so completed steps may resume without evidence.
+            if web_evidence or rag_evidence or mcp_evidence:
+                completed_steps += 1
             title = str(step.get("title") or "Recovered research step")
             notes.append(
                 f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}\n\n"
-                f"Knowledge base:\n{rag_evidence}"
+                f"Knowledge base:\n{rag_evidence}{mcp_evidence}"
             )
             decision_notes.append(
                 f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}"
@@ -2420,6 +2704,7 @@ class ResearchSupervisor:
                 },
             )
             await self._check_worker_write(run["id"], seq is not None)
+            mcp_sources = []
             if action["action"] == "fetch":
                 fetched_urls.add(argument)
                 result = await asyncio.to_thread(
@@ -2450,6 +2735,10 @@ class ResearchSupervisor:
                         cancel_event = self._cancel_event(run["id"]),
                         timeout = tool_timeout,
                         rag_scope = run["config"]["ragScope"],
+                    )
+                if mcp_tools:
+                    mcp_sources = await self._search_mcp_tools(
+                        run, mcp_tools, argument, position, tool_timeout
                     )
             rag_result, rag_sources = _split_rag_result(rag_result)
             await self._check_active(run["id"])
@@ -2488,10 +2777,22 @@ class ResearchSupervisor:
                     for source in accepted_rag_sources
                 )
             elif rag_sources:
-                # Chunks refused by the source cap have no catalog entry and the validator would strip every
-                # citation to them; gated on rag_sources so a text-only KB reply still passes through.
+                # uncataloged chunks lose citations; keep text-only replies when no chunks exist.
                 rag_result = ""
             rag_sources = accepted_rag_sources
+            for source in mcp_sources:
+                if len(sources) + len(document_sources) >= max_sources:
+                    break
+                written = await asyncio.to_thread(
+                    db.upsert_document_source,
+                    run["id"],
+                    position,
+                    source,
+                    self.worker_id,
+                )
+                await self._check_worker_write(run["id"], written)
+                document_sources.append({**source, "stepPosition": position})
+                rag_sources.append(source)
             step_sources = []
             for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
                 if len(sources) + len(document_sources) >= max_sources:
@@ -2539,13 +2840,15 @@ class ResearchSupervisor:
                 fetched_urls.update(scraped_urls)
                 await self._check_active(run["id"])
                 if scraped_section:
-                    # Additive, not replace: see _merge_scraped_evidence for why replacing the snippets regressed
-                    # accuracy.
+                    # replacing snippets with scraped chunks reduced accuracy.
                     result = _merge_scraped_evidence(result, scraped_section)
+            mcp_evidence = _mcp_evidence(
+                [source for source in rag_sources if source.get("kind") == "mcp"]
+            )
             note = (
                 f"### {action['title']} ({action['action']})\n"
                 f"Input: {argument}\nResult:\n{result[:12000]}\n\n"
-                f"Knowledge base:\n{rag_result[:6000]}"
+                f"Knowledge base:\n{rag_result[:6000]}{mcp_evidence}"
             )
             notes.append(note)
             decision_notes.append(
@@ -2553,6 +2856,10 @@ class ResearchSupervisor:
                 f"Input: {argument}\nResult:\n{result[:12000]}"
             )
             clean_result = strip_result_for_model(result, "web_search")
+            if step_failed:
+                step_error = _preferred_step_error(step_error, clean_result[:500])
+            else:
+                completed_steps += 1
             step_result = {
                 "action": action["action"],
                 "input": argument,
@@ -2597,6 +2904,8 @@ class ResearchSupervisor:
             )
             await self._check_worker_write(run["id"], seq is not None)
         await self._check_active(run["id"])
+        if not completed_steps and not sources and not document_sources:
+            raise ValueError(f"No research step gathered any evidence. {step_error}".rstrip())
         source_catalog = "\n".join(
             f"{index}. Title: {_citation_title(source, source['url'])}\n   URL: {source['url']}"
             for index, source in enumerate(sources, 1)
@@ -2751,6 +3060,40 @@ class ResearchSupervisor:
                 ),
             },
         ]
+
+        def _delivered(draft: str) -> str:
+            """What the reader would get: a model out of budget pads with citations validation drops."""
+            return _validate_report(draft, sources, document_sources)
+
+        def _keep_draft(
+            report: str,
+            finish_reason: str | None,
+            reason: str = "",
+        ) -> None:
+            """Keep the best report reached, so a later failure can still publish it. Ranked as
+            the success path ranks its drafts: finished over cut off, then longer, then newest."""
+            if not reason and finish_reason == "length":
+                # Without the token count, which only a call reaching its own end reports.
+                reason = _synthesis_length_limit_error(
+                    None, requested_max_tokens = 0, inference = _run_inference_request(run)
+                ).rstrip(".")
+            text = _delivered(report).strip()
+            draft = _ReportDraft(
+                text, finish_reason in _NATURAL_FINISH_REASONS and bool(text), reason
+            )
+            kept = self._report_drafts.get(account_key(run["id"]))
+            if kept is None or (draft.whole, len(draft.text)) >= (kept.whole, len(kept.text)):
+                self._report_drafts[account_key(run["id"])] = draft
+
+        def _keep_partial(content: str, reasoning: str, finish_reason: str | None) -> None:
+            """Keep a cut-off stream's text past the final-report boundary; above it is analysis."""
+            draft = (
+                _report_after_boundary(content, _REPORT_BOUNDARY_MARKER)
+                or _report_after_boundary(reasoning, _REPORT_BOUNDARY_MARKER)
+                or ""
+            )
+            _keep_draft(draft, finish_reason)
+
         synthesis_max_tokens = await asyncio.to_thread(
             _synthesis_max_tokens,
             run["config"].get("inferenceRequest") or {},
@@ -2767,6 +3110,7 @@ class ResearchSupervisor:
                 synthesis_messages,
                 phase = "synthesis",
                 max_tokens = synthesis_max_tokens,
+                on_partial = _keep_partial,
             )
         except (RunCancelled, LeaseLost, httpx.ReadTimeout):
             raise
@@ -2793,21 +3137,13 @@ class ResearchSupervisor:
                 synthesis_messages,
                 phase = "synthesis",
                 max_tokens = synthesis_max_tokens,
+                on_partial = _keep_partial,
             )
-        await self._check_active(run["id"])
         report = _select_synthesis_report(report, synthesis_reasoning)
+        # Before the checks below, which can fail once the report already exists.
+        _keep_draft(report, synthesis_finish_reason)
+        await self._check_active(run["id"])
         truncation_notice = ""
-
-        def _delivered(draft: str) -> str:
-            """What the reader would actually get from this draft.
-
-            The validators below drop a model-authored source list and every citation the
-            catalogs do not back, and a model that ran out of budget is exactly the one
-            liable to pad with both, so raw length is not what the drafts should be judged
-            on. Used only to compare them; whichever wins is stored as the model wrote it."""
-            validated = _validate_report_sources(draft, sources)
-            return _validate_report_document_sources(validated, document_sources)
-
         if _synthesis_needs_recovery(report, synthesis_finish_reason):
             recovery_reason = (
                 "exhausted its output budget"
@@ -2844,6 +3180,7 @@ class ResearchSupervisor:
                     phase = "synthesis_recovery",
                     max_tokens = synthesis_max_tokens,
                     enable_thinking = False,
+                    on_partial = _keep_partial,
                 )
             except (RunCancelled, LeaseLost):
                 raise
@@ -2885,6 +3222,7 @@ class ResearchSupervisor:
                     _run_inference_request(run),
                     synthesis_messages,
                 )
+            _keep_draft(report, synthesis_finish_reason)
             await self._check_active(run["id"])
             if report and synthesis_finish_reason == "length":
                 truncation_notice = _synthesis_length_limit_error(
@@ -2892,8 +3230,7 @@ class ResearchSupervisor:
                     requested_max_tokens = requested_max_tokens,
                     inference = _run_inference_request(run),
                 ).rstrip(".")
-        report = _validate_report_sources(report, sources)
-        report = _validate_report_document_sources(report, document_sources)
+        report = _validate_report(report, sources, document_sources)
         if not report:
             raise ValueError(
                 "Local model returned no safely identifiable final report. Disable thinking or "
@@ -2904,8 +3241,10 @@ class ResearchSupervisor:
         # be -- inside a code fence, a list, a quote -- and anything appended under an
         # unterminated container is swallowed by it, whereas the first line of a document is
         # inside nothing. The reader also learns the report is cut short before reading it.
+        # Recorded before the notice goes on: a delivery that fails writes its own.
+        _keep_draft(report, synthesis_finish_reason, truncation_notice)
         if truncation_notice:
-            report = f"> **Incomplete report.** {truncation_notice}.\n\n{report.lstrip()}"
+            report = _report_under_notice(report, "Incomplete report.", f"{truncation_notice}.")
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
         if synthesis_reasoning and synthesis_reasoning not in reasoning:
             reasoning += synthesis_reasoning
@@ -2923,11 +3262,19 @@ class ResearchSupervisor:
             reasoning,
             self.worker_id,
         )
-        actual_status = await asyncio.to_thread(
-            db.finish, run["id"], self.worker_id, "completed", None, {"report": report}
-        )
+        actual_status = await self._finish_terminal(run["id"], "completed", None, report)
         if actual_status is None:
             raise LeaseLost()
         run = await asyncio.to_thread(db.get_run, run["id"])
         if actual_status == "cancelled" and not _run_moved_on(run, research_attempt):
             await asyncio.to_thread(_update_assistant, run, "Research cancelled.", "cancelled")
+
+
+def retire_account_research(account) -> None:
+    """Cancel this account's in-flight generation without stopping the supervisor."""
+    for supervisor in tuple(_supervisors):
+        for key, event in list(supervisor._cancel_events.items()):
+            if (isinstance(key, str) and account.is_owner) or (
+                isinstance(key, tuple) and key[0] == account.account_id
+            ):
+                event.set()

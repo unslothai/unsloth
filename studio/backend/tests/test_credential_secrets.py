@@ -39,9 +39,9 @@ def isolated_databases(tmp_path, monkeypatch):
         "get_or_create_credential_encryption_key",
         auth_storage.get_or_create_credential_encryption_key,
     )
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     yield studio_db
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     auth_storage._credential_encryption_key_cache = None
 
 
@@ -70,6 +70,35 @@ def test_upsert_and_delete_are_idempotent():
     assert credential_secrets.get_hf_token() == "hf_legacy"
     assert credential_secrets.delete_provider_api_key("provider-1") is True
     assert credential_secrets.delete_provider_api_key("provider-1") is False
+
+
+def test_one_read_reports_the_value_and_whether_a_row_is_there(isolated_databases):
+    """Absent and unreadable are different answers, and the gate now gets both from ONE read.
+
+    Against the real store rather than a stub: the reader it replaced asked `get_hf_token` and
+    then `hf_token_row_exists`, so a refactor that collapsed them could satisfy stubbed callers
+    while telling a caller that an undecryptable credential is no credential, which authorizes.
+    """
+    assert credential_secrets.get_hf_token_with_presence() == (None, False)
+
+    credential_secrets.save_hf_token("hf_saved")
+    assert credential_secrets.get_hf_token_with_presence() == ("hf_saved", True)
+
+    conn = sqlite3.connect(isolated_databases)
+    try:
+        row = conn.execute("SELECT ciphertext FROM credential_secrets").fetchone()
+        damaged = bytearray(row[0])
+        damaged[-1] ^= 1
+        conn.execute("UPDATE credential_secrets SET ciphertext = ?", (bytes(damaged),))
+        conn.commit()
+    finally:
+        conn.close()
+    assert credential_secrets.get_hf_token_with_presence() == (
+        None,
+        True,
+    ), "an undecryptable row is still a credential this host holds"
+    assert credential_secrets.get_hf_token() is None
+    assert credential_secrets.hf_token_row_exists() is True
 
 
 def test_tampering_and_key_loss_fail_closed(isolated_databases):
@@ -101,7 +130,7 @@ def test_tampering_and_key_loss_fail_closed(isolated_databases):
 
 def test_repeated_schema_initialization_and_concurrent_upserts():
     credential_secrets.get_connection().close()
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     credential_secrets.get_connection().close()
 
     with ThreadPoolExecutor(max_workers = 4) as pool:

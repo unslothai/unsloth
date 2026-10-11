@@ -41,9 +41,8 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 
-# Effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)); at offset 10 step 1
-# averages aggressively (~0.18) and the ramp reaches 0.99 after ~1000 updates.
-# ── LoRA EMA ──────────────────────────────────────────────────────────────────
+# Effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)); at offset 10 step 1 averages aggressively
+# (~0.18) and the ramp reaches 0.99 after ~1000 updates.
 
 _EMA_WARMUP_OFFSET = 10.0
 
@@ -202,14 +201,13 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
     return str(ema_dir)
 
 
-# ── persistent conditioning cache ─────────────────────────────────────────────
-
 _CACHE_VERSION = "1"
+# v2 composites transparent images onto white before encoding.
+_LATENT_CACHE_VERSION = "2"
 
 
 def _file_content_hash(path: str) -> str:
-    """sha256 of the file bytes (truncated hex): renames/moves keep their cache
-    entries, edits invalidate them."""
+    """return a truncated sha256; renames preserve cache entries while edits invalidate them."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -340,7 +338,8 @@ class PersistentConditioningCache:
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
-            f"lat_v{_CACHE_VERSION}_{self.family}_{geom}_" f"{_file_content_hash(image_path)}_{var}"
+            f"lat_v{_LATENT_CACHE_VERSION}_{self.family}_{geom}_"
+            f"{_file_content_hash(image_path)}_{var}"
         )
 
     def text_key(self, caption: str) -> str:
@@ -353,8 +352,7 @@ class PersistentConditioningCache:
         return self.path_for(key).is_file()
 
     def put(self, key: str, tensors: Iterable[Any]) -> None:
-        """Store an ordered tuple of tensors (None entries allowed: their slot
-        indices are recorded in the metadata so ``get`` restores them)."""
+        """store an ordered tensor tuple with None slots recorded for exact reconstruction."""
         from safetensors.torch import save_file
 
         named: dict[str, Any] = {}
@@ -393,9 +391,8 @@ class PersistentConditioningCache:
             return None
 
 
-# Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching,
-# and regional torch.compile prefers few distinct shapes.
-# ── aspect-ratio bucketing ────────────────────────────────────────────────────
+# Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching, and regional
+# torch.compile prefers few distinct shapes.
 
 BUCKET_DIVISOR = 64
 
@@ -431,7 +428,6 @@ def assign_buckets(
     divisor: int = BUCKET_DIVISOR,
     max_ratio: float = MAX_BUCKET_RATIO,
 ) -> dict[tuple[int, int], list[int]]:
-    """Group dataset indices by their bucket shape."""
     buckets: dict[tuple[int, int], list[int]] = {}
     for i, (w, h) in enumerate(sizes):
         buckets.setdefault(compute_bucket(w, h, base_resolution, divisor, max_ratio), []).append(i)
@@ -459,7 +455,6 @@ class BucketBatchSampler:
         self._pos = {s: 0 for s in self._shapes}
 
     def next_batch(self, k: int) -> tuple[tuple[int, int], list[int]]:
-        """Returns (bucket_shape, indices) with exactly ``k`` indices."""
         shape = self._rng.choices(self._shapes, weights = self._weights, k = 1)[0]
         out: list[int] = []
         while len(out) < k:

@@ -35,9 +35,18 @@ class ParsedRun {
   readonly parts: ContentPart[] = [];
   private insideThink = false;
   private held = "";
+  private readonly parseThink: boolean;
+
+  constructor(parseThink: boolean) {
+    this.parseThink = parseThink;
+  }
 
   append(delta: string): void {
     if (!delta) {
+      return;
+    }
+    if (!this.parseThink) {
+      appendTextPart(this.parts, delta);
       return;
     }
     const work = this.held ? this.held + delta : delta;
@@ -126,8 +135,12 @@ function sameBoundaries(
  *  length or boundary mismatch and rebuilds from `rawText`, at one full parse. */
 export function createSegmentedAssistantText({
   trustAppends = true,
-}: { trustAppends?: boolean } = {}): SegmentedAssistantText {
-  let runs: ParsedRun[] = [new ParsedRun()];
+  parseThink = true,
+}: {
+  trustAppends?: boolean;
+  parseThink?: boolean;
+} = {}): SegmentedAssistantText {
+  let runs: ParsedRun[] = [new ParsedRun(parseThink)];
   let boundaries: number[] = [];
   let length = 0;
 
@@ -140,12 +153,12 @@ export function createSegmentedAssistantText({
     length = rawText.length;
     let from = 0;
     for (const boundary of boundaries) {
-      const run = new ParsedRun();
+      const run = new ParsedRun(parseThink);
       run.append(rawText.slice(from, boundary));
       runs.push(run);
       from = boundary;
     }
-    const last = new ParsedRun();
+    const last = new ParsedRun(parseThink);
     last.append(rawText.slice(from));
     runs.push(last);
   };

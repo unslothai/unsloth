@@ -588,9 +588,9 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
         import_name = "causal_conv1d",
         display_name = "causal-conv1d",
         pypi_name = "causal-conv1d",
-        pypi_version = worker._CAUSAL_CONV1D_PACKAGE_VERSION,
+        pypi_version = worker.CAUSAL_CONV1D.package_version,
         filename_prefix = "causal_conv1d",
-        release_tag = worker._CAUSAL_CONV1D_RELEASE_TAG,
+        release_tag = worker.CAUSAL_CONV1D.release_tag,
         release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
     )
 
@@ -626,9 +626,9 @@ def test_mamba_ssm_path_preserves_wheel_first_install_args(monkeypatch):
         import_name = "mamba_ssm",
         display_name = "mamba-ssm",
         pypi_name = "mamba-ssm",
-        pypi_version = worker._MAMBA_SSM_PACKAGE_VERSION,
+        pypi_version = worker.MAMBA_SSM.package_version,
         filename_prefix = "mamba_ssm",
-        release_tag = worker._MAMBA_SSM_RELEASE_TAG,
+        release_tag = worker.MAMBA_SSM.release_tag,
         release_base_url = "https://github.com/state-spaces/mamba/releases/download",
     )
 

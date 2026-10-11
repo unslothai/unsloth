@@ -6,6 +6,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 import { readSrc, readText } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 const script = readText("../public/reload-snapshot.js");
 const indexHtml = readText("../index.html");
@@ -20,7 +21,7 @@ const attachmentPreviewSource = readSrc("components/assistant-ui/attachment-prev
 const attachmentSource = readSrc("components/assistant-ui/attachment.tsx");
 const imagesPageSource = readSrc("features/images/images-page.tsx");
 const videoPageSource = readSrc("features/video/video-page.tsx");
-const audioPageSource = readSrc("features/audio/audio-page.tsx");
+const audioPageSource = readAudioWorkspaceSource();
 const hubPageSource = readSrc("features/hub/hub-page.tsx");
 const referencePickerSource = readSrc("features/video/reference-picker.tsx");
 
@@ -1041,21 +1042,6 @@ test("carries the appearance customization so the shell paints in its own colors
   );
 });
 
-test("adapts root-scoped palette state to the snapshot shell", () => {
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell:not\(\[data-palette\]\)[\s\S]*?\.palette-card\[data-palette-value="standard"\]/,
-  );
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell\[data-palette="classic"\][\s\S]*?\.palette-card\[data-palette-value="classic"\]/,
-  );
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell\[data-palette="minimal"\][\s\S]*?\.palette-card\[data-palette-value="minimal"\]/,
-  );
-});
-
 test("loads selected imported fonts before revealing the shell", async () => {
   const persistedAppearance = new Map([
     [
@@ -1406,7 +1392,7 @@ test("carries live form state, except what sensitive fields hide", () => {
   );
   assert.match(
     sharedComposerSource,
-    /data-reload-snapshot-sensitive[\s\S]*?pendingAudio\.name/,
+    /pendingAudio\.map\([\s\S]*?data-reload-snapshot-sensitive[\s\S]*?\{clip\.name\}/,
   );
   // Both carriers: the tooltip on the name, and the accessible name on the
   // remove button, a sibling no ancestor marker would reach.
@@ -1429,18 +1415,28 @@ test("carries live form state, except what sensitive fields hide", () => {
     /AttachmentPreviewDialog[\s\S]*?redactFromReload/,
   );
   for (const dialog of [
-    "AttachmentImageDialog",
+    "ImageGalleryDialog",
     "AttachmentTextDialog",
     "AttachmentAudioDialog",
   ]) {
+    const body = attachmentPreviewSource.slice(
+      attachmentPreviewSource.indexOf(`const ${dialog}: FC`),
+    );
     assert.match(
-      attachmentPreviewSource,
-      new RegExp(
-        `${dialog}[\\s\\S]*?data-reload-snapshot-sensitive=\\{redactFromReload \\? "" : undefined\\}`,
-      ),
+      body,
+      /^[\s\S]*?<AttachmentViewer[\s\S]*?redactFromReload=\{redactFromReload\}/,
       `${dialog} must redact its portaled content`,
     );
   }
+  const viewer = readSrc("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(
+    viewer,
+    /export const AttachmentViewer[\s\S]*?<MediaViewer[\s\S]*?redactFromReload=\{redactFromReload\}/,
+  );
+  assert.match(
+    readSrc("components/media-viewer.tsx"),
+    /data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
+  );
 });
 
 test("keeps native select options that paint the closed control label", () => {

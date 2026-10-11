@@ -44,10 +44,10 @@ if [ -n "${UNSLOTH_NPM_REGISTRY:-}" ]; then
     _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
 fi
 
-# Use bun for install if available (faster), fall back to npm.
+# package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
 _install_ok=false
-if command -v bun &>/dev/null; then
-    if bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
+if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then
+    if bun install --frozen-lockfile "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
         _install_ok=true
     else
         echo "⚠ bun install failed, falling back to npm"
@@ -55,7 +55,9 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_install_ok" != "true" ]; then
-    if ! npm install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
+    _npm_install=install
+    [ -f package-lock.json ] && _npm_install=ci
+    if ! npm "$_npm_install" "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
         echo "❌ ERROR: package install failed" >&2
         echo "   If you are behind a corporate firewall/proxy, set UNSLOTH_NPM_REGISTRY to your mirror and retry, e.g.:" >&2
         echo "   UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./build.sh" >&2
@@ -114,11 +116,9 @@ _restore_studio_build_info
 trap - EXIT
 
 # 5. Optionally publish
-#
 # Wheel only. The sdist is still built above, because --verify-dist checks the
 # release stamp in every artifact and a local sdist is the cheapest way to catch
 # a packaging change that only shows up in the source tree. It is not uploaded.
-#
 # A release is ~169MB across both artifacts, and the PyPI project size limit is
 # 10GB; the sdist is the larger half. Uploading only the wheel halves what each
 # release costs against that limit. Nothing is lost for installers: the wheel is

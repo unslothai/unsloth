@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   isOllamaLinkPath,
+  isOllamaModelId,
   isStandaloneGgufPath,
   modelDisplayName,
   modelIdsMatch,
@@ -47,6 +48,8 @@ function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
     speculativeType: null,
     specDraftNMax: null,
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     nBatch: null,
     nUbatch: null,
     tensorParallel: false,
@@ -210,6 +213,9 @@ test("Ollama link paths are recognised the way the resolver excludes them", () =
   assert.equal(isOllamaLinkPath("/srv/models/Qwen3-8B-Q4_K_M.gguf"), false);
   assert.equal(isOllamaLinkPath("unsloth/Qwen3-8B-GGUF"), false);
   assert.equal(isOllamaLinkPath(null), false);
+  // A manifest reference is not one: the resolver indexes it and /v1/models advertises its tag.
+  assert.equal(isOllamaLinkPath("ollama-manifest:%2Fh%2Fllama3"), false);
+  assert.equal(isOllamaModelId("ollama-manifest:%2Fh%2Fllama3"), true);
 });
 
 // The backfill matches on the folded identity, unambiguous only because storage holds one record per model.
@@ -263,6 +269,26 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   assert.equal(
     resolveInitialConfig("/models/Foo.gguf", null).config.maxSeqLength,
     4096,
+  );
+});
+
+test("symlink alias paths keep independent remembered settings", () => {
+  store.clear();
+  savePerModelConfig("/models/alias-a", "Q4_K_M", config(4096));
+  savePerModelConfig("/models/alias-b", "Q4_K_M", config(32768, "q8_0"));
+
+  assert.equal(storedKeys().length, 2);
+  assert.equal(
+    resolveInitialConfig("/models/alias-a", "Q4_K_M").config.maxSeqLength,
+    4096,
+  );
+  assert.equal(
+    resolveInitialConfig("/models/alias-b", "Q4_K_M").config.maxSeqLength,
+    32768,
+  );
+  assert.equal(
+    resolveInitialConfig("/models/alias-b", "Q4_K_M").config.kvCacheDtype,
+    "q8_0",
   );
 });
 

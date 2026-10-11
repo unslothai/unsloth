@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -85,40 +86,77 @@ def _has_vllm() -> bool:
     return importlib.util.find_spec("vllm") is not None
 
 
+def _pulls_in_vllm(module_name: str, *exports: str) -> tuple[bool, list[str]]:
+    """(did importing `module_name` pull in vllm, which of `exports` it has).
+
+    Asked in a FRESH interpreter, because `"vllm" in sys.modules` is a property
+    of the process, not of the import under test. In-process this answers "has
+    anything in this pytest worker ever imported vllm" -- the vllm-hard-import
+    tests in this same file do exactly that, and popping the module under test
+    from sys.modules cannot undo it, because its already-cached dependencies are
+    not re-imported on the second import either. So the check passed or failed on
+    test ordering and never observed what it claimed to.
+
+    The subprocess re-applies the same CPU spoof this module applies at import,
+    so a CPU-only runner is still covered. subprocess + sys.executable keeps this
+    working on Linux, macOS and Windows alike.
+    """
+    probe = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(_SPOOF_DIR)!r})\n"
+        "import _zoo_aggressive_cuda_spoof as s\n"
+        "s.apply()\n"
+        f"m = __import__({module_name!r}, fromlist=['_'])\n"
+        "print('VLLM' if 'vllm' in sys.modules else 'NOVLLM')\n"
+        f"print(','.join(n for n in {list(exports)!r} if hasattr(m, n)))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output = True,
+        text = True,
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"importing {module_name} in a clean interpreter failed:\n"
+            f"{proc.stdout}\n{proc.stderr}"
+        )
+    lines = proc.stdout.strip().split("\n")
+    found = [n for n in (lines[-1].split(",") if lines[-1] else [])]
+    return lines[-2] == "VLLM", found
+
+
 # rl_replacements: zero direct vllm imports;
 # the GRPO + fast_inference surface.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_rl_replacements_imports_without_vllm():
     """unsloth_zoo.rl_replacements must NOT pull in vllm at import time."""
-    sys.modules.pop("unsloth_zoo.rl_replacements", None)
-    rl = importlib.import_module("unsloth_zoo.rl_replacements")
     # A transitive vllm import crashes GRPOTrainer construction on Colab.
-    assert "vllm" not in sys.modules, (
+    pulled, exports = _pulls_in_vllm(
+        "unsloth_zoo.rl_replacements",
+        "RL_REPLACEMENTS",
+        "RL_FUNCTIONS",
+    )
+    assert not pulled, (
         "unsloth_zoo.rl_replacements imported vllm transitively; this breaks "
         "GRPO on environments without vllm installed (the use_vllm=False path "
         "is supposed to work without vllm)."
     )
-    assert (
-        hasattr(rl, "RL_REPLACEMENTS")
-        or hasattr(rl, "RL_FUNCTIONS")
-        or any(name.startswith("grpo_") for name in dir(rl))
-    ), "expected at least one GRPO-related export in rl_replacements"
+    assert exports, "expected at least one GRPO-related export in rl_replacements"
 
 
 # empty_model: no vllm import;
 # pure builder for the fast_inference=True path.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_empty_model_imports_without_vllm():
-    sys.modules.pop("unsloth_zoo.empty_model", None)
-    em = importlib.import_module("unsloth_zoo.empty_model")
+    pulled, exports = _pulls_in_vllm(
+        "unsloth_zoo.empty_model",
+        "create_empty_causal_lm",
+        "create_empty_model",
+    )
     assert (
-        "vllm" not in sys.modules
+        not pulled
     ), "unsloth_zoo.empty_model imported vllm transitively; expected to be vllm-free"
-    assert (
-        hasattr(em, "create_empty_causal_lm")
-        or hasattr(em, "create_empty_model")
-        or any(n.startswith("create_empty") for n in dir(em))
-    ), "expected a create_empty_* helper in empty_model"
+    assert exports, "expected a create_empty_* helper in empty_model"
 
 
 # vllm_lora_request / vllm_lora_worker_manager / vllm_utils: hard-import vllm,

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Mirrors _DIFFUSION_DATASET_IMAGE_EXTS, _CLIP_EXTS and _TEXT_EXTS in
-// backend/routes/training.py.
+// Mirrors _DIFFUSION_DATASET_IMAGE_EXTS, _CLIP_EXTS and _TEXT_EXTS in backend/routes/training.py.
 export const DATASET_IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
 // video containers, for the families that train from clips rather than stills.
 export const DATASET_CLIP_EXTS = [".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"];
@@ -227,6 +226,32 @@ export function existingStemClash(files: File[], existing: string[]): DatasetCol
     if (clash !== undefined) return { kind: "stem", first: clash, second: displayPath(file) };
   }
   return null;
+}
+
+export function existingDatasetName(name: string, datasets: { name: string }[]): string | null {
+  const folded = name.trim().toLowerCase();
+  return datasets.find((d) => d.name.toLowerCase() === folded)?.name ?? null;
+}
+
+export function datasetNamesForCreation(info: {
+  datasets: { name: string }[];
+  dataset_names?: string[];
+} | null): { name: string }[] {
+  return info?.dataset_names?.map((name) => ({ name })) ?? info?.datasets ?? [];
+}
+
+// exact spelling: the upload sends the typed name, and a case variant is a separate folder on a
+// case-sensitive filesystem.
+export function isDatasetContinuation(name: string, continuationName: string | null): boolean {
+  return continuationName !== null && name.trim() === continuationName;
+}
+
+export function freeDatasetName(datasets: { name: string }[]): string {
+  let name = "my-images";
+  for (let i = 2; existingDatasetName(name, datasets); i += 1) {
+    name = `my-images-${i}`;
+  }
+  return name;
 }
 
 // readEntries yields at most 100 entries per call and ends with an empty batch.

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import { fetchWithTimeout } from "../lib/network";
 import type { HubModelType } from "../types";
 import { listDatasets } from "@huggingface/hub";
 import { useCallback, useMemo } from "react";
+
 import { useHubPaginatedSearch } from "./use-hub-paginated-search";
 
 interface DatasetInfoSplit {
@@ -401,15 +403,16 @@ export function useHubDatasetSearch(
     modelType?: HubModelType | null;
     accessToken?: string;
     enabled?: boolean;
-    /** Hold new requests without hiding what is already on screen. `enabled`
-     *  means "this tab is showing", and returns [] when false. */
+    /** pauses new requests while retaining visible results; `enabled` clears results when false. */
     paused?: boolean;
     sortBy?: DatasetSortKey;
     sortDirection?: DatasetSortDirection;
+    pinnedIds?: readonly string[];
   },
 ) {
   const {
     modelType,
+    pinnedIds,
     accessToken,
     enabled = true,
     paused = false,
@@ -418,6 +421,7 @@ export function useHubDatasetSearch(
   } = options ?? {};
   const hasQuery = query.trim().length > 0;
   const useCuratedOnly = !hasQuery && !!modelType;
+  const hfEndpoint = useHfEndpoint();
   const createIter = useCallback(
     (signal: AbortSignal) => {
       if (useCuratedOnly) {
@@ -427,10 +431,11 @@ export function useHubDatasetSearch(
         search: hasQuery ? { query } : {},
         additionalFields: ["cardData", "tags", "createdAt", "downloadsAllTime"],
         fetch: makeDatasetSortFetch(sortBy, sortDirection, signal),
+        hubUrl: getHfEndpoint(),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }) as AsyncGenerator<unknown>;
     },
-    [useCuratedOnly, hasQuery, query, accessToken, sortBy, sortDirection],
+    [useCuratedOnly, hasQuery, query, accessToken, sortBy, sortDirection, hfEndpoint],
   );
 
   const search = useHubPaginatedSearch(createIter, mapDataset, {
@@ -449,7 +454,14 @@ export function useHubDatasetSearch(
       return curatedIds.map(toCuratedDatasetResult);
     }
 
-    if (!modelType) return baseResults;
+    if (!modelType) {
+      if (hasQuery || !pinnedIds?.length) return baseResults;
+      const pinned = new Set(pinnedIds.map((id) => id.toLowerCase()));
+      return [
+        ...pinnedIds.map(toCuratedDatasetResult),
+        ...baseResults.filter((ds) => !pinned.has(ds.id.toLowerCase())),
+      ];
+    }
 
     const boosted: HfDatasetResult[] = [];
     const neutral: HfDatasetResult[] = [];
@@ -461,7 +473,7 @@ export function useHubDatasetSearch(
     }
 
     return [...boosted, ...neutral];
-  }, [enabled, search.results, modelType, query]);
+  }, [enabled, search.results, modelType, query, pinnedIds]);
 
   return { ...search, results };
 }

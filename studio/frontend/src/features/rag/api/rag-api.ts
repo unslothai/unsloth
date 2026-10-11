@@ -110,17 +110,34 @@ export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   return data.knowledgeBases ?? [];
 }
 
+/** Readers keep their own KB list; one that misses a delete keeps sending the deleted kb_id. */
+export const KNOWLEDGE_BASES_CHANGED_EVENT = "unsloth-knowledge-bases-changed";
+
+// Also on failure: a delete can fail because the row is already gone.
+function announceKnowledgeBasesChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(KNOWLEDGE_BASES_CHANGED_EVENT));
+}
+
+export function subscribeKnowledgeBasesChanged(
+  onChanged: () => void,
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  window.addEventListener(KNOWLEDGE_BASES_CHANGED_EVENT, onChanged);
+  return () => window.removeEventListener(KNOWLEDGE_BASES_CHANGED_EVENT, onChanged);
+}
+
 export function createKnowledgeBase(payload: {
   name: string;
   description?: string;
 }): Promise<{ id: string; name: string }> {
-  return ragRequest("/knowledge-bases", {
+  return ragRequest<{ id: string; name: string }>("/knowledge-bases", {
     method: "POST",
     body: {
       name: payload.name,
       ...(payload.description ? { description: payload.description } : {}),
     },
-  });
+  }).finally(announceKnowledgeBasesChanged);
 }
 
 export function updateKnowledgeBase(
@@ -130,16 +147,17 @@ export function updateKnowledgeBase(
   const body: Record<string, unknown> = {};
   if (payload.name !== undefined) body.name = payload.name;
   if (payload.description !== undefined) body.description = payload.description;
-  return ragRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
-    method: "PATCH",
-    body,
-  });
+  return ragRequest<{ ok: boolean }>(
+    `/knowledge-bases/${encodeURIComponent(kbId)}`,
+    { method: "PATCH", body },
+  ).finally(announceKnowledgeBasesChanged);
 }
 
 export function deleteKnowledgeBase(kbId: string): Promise<{ ok: boolean }> {
-  return ragRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
-    method: "DELETE",
-  });
+  return ragRequest<{ ok: boolean }>(
+    `/knowledge-bases/${encodeURIComponent(kbId)}`,
+    { method: "DELETE" },
+  ).finally(announceKnowledgeBasesChanged);
 }
 
 export async function listKnowledgeBaseDocuments(
@@ -211,9 +229,8 @@ export function uploadProjectDocument(
   );
 }
 
-// Cached "does this project have indexed sources?" probe so the chat adapter can
-// auto-scope project chats without a round trip per message. The sources panel
-// invalidates on upload/delete.
+// Cached "does this project have indexed sources?" probe so the chat adapter can auto-scope project
+// chats without a round trip per message. The sources panel invalidates on upload/delete.
 const projectSourcesCache = new Map<string, { has: boolean; at: number }>();
 const PROJECT_SOURCES_TTL_MS = 30_000;
 
@@ -799,9 +816,8 @@ export function getPreviewTarget(
   );
 }
 
-// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because
-// consumers bypass authFetch, and a relative path under Tauri resolves against
-// the webview origin.
+// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because consumers bypass
+// authFetch, and a relative path under Tauri resolves against the webview origin.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,

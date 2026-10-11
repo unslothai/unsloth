@@ -173,15 +173,24 @@ function liftDeltaLoop(): string {
     loopStart >= 0,
     "the delta.tool_calls loop moved in chat-adapter.ts",
   );
-  const gate = adapterSource.lastIndexOf(
-    "if (",
-    adapterSource.indexOf("addedToolCall ||", loopStart),
+  // Searching back for `if (` truncated the slice once the condition moved into a variable.
+  const gate = adapterSource.indexOf(
+    "if (forcePublish || canPublish(",
+    loopStart,
   );
   assert.ok(gate > loopStart, "the publish gate moved in chat-adapter.ts");
   const lifted = adapterSource.slice(loopStart, gate);
   assert.ok(
     lifted.includes("splitTopLevelJsonObjects"),
     "the loop no longer splits on JSON object boundaries",
+  );
+  assert.ok(
+    lifted.includes("endProviderTurn()"),
+    "the lifted loop stops before the turn ends, so it is not the loop production runs",
+  );
+  assert.ok(
+    lifted.includes("const forcePublish ="),
+    "the lifted loop stops before the publish decision it is supposed to reach",
   );
   return lifted;
 }
@@ -1347,13 +1356,33 @@ test("metadata from a resent name goes to the call that runs", () => {
 
 test("a provider-hosted tool event does not end the provider turn", () => {
   // Hosted events ride a whole chunk, `choices` and all, and leave the turn
-  // open; Unsloth's are bare {"type": "tool_start"}.
+  // open; ordinary Unsloth tool events are bare {"type": "tool_start"}.
+  // A backend skill preload is also bare, but happens BEFORE the provider turn.
   const guarded = liftBetween(
     "the hosted-event guard",
     "const toolEvent = (",
     "// Deep Research is an ordinary tool",
   );
-  assert.match(guarded, /if \(!chunk\.choices\) \{\s*endProviderTurn\(\);/);
+  assert.match(
+    guarded,
+    /if \(!chunk\.choices && toolEvent\.tool_name !== "studio_load_skill"\) \{\s*endProviderTurn\(\);/,
+  );
+  // Execute the actual lifted guard, not a hand-written copy of its condition.
+  const js = ts.transpileModule(`${guarded}\n}`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const applyGuard = new Function("chunk", "endProviderTurn", js);
+  for (const [chunk, expectedEnds] of [
+    [{ _toolEvent: { tool_name: "web_search" } }, 1],
+    [{ choices: [{}], _toolEvent: { tool_name: "web_search" } }, 0],
+    [{ _toolEvent: { tool_name: "studio_load_skill" } }, 0],
+    [{ choices: [{}], _toolEvent: { tool_name: "studio_load_skill" } }, 0],
+    [{ choices: [{}] }, 0],
+  ] as const) {
+    let ends = 0;
+    applyGuard(chunk, () => { ends += 1; });
+    assert.equal(ends, expectedEnds, JSON.stringify(chunk));
+  }
 });
 
 test("a late id does not rescue a fork whose object never closed", () => {

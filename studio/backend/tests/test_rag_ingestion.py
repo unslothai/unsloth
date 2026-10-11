@@ -554,15 +554,15 @@ def test_ingestion_rejects_unsupported_ext(rag_home, stub_embeddings, tmp_path):
         ingestion.start_ingestion(store.kb_scope("K1"), "K1", None, "doc.xyz", path)
 
 
-def test_ingestion_empty_doc_completes_with_zero_chunks(rag_home, stub_embeddings, tmp_path):
+def test_ingestion_empty_doc_reports_failure(rag_home, stub_embeddings, tmp_path):
     path = _write(tmp_path, "empty.txt", "   \n  ")
     scope = store.kb_scope("K1")
     doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "empty.txt", path)
     events = _drain(job_id)
-    assert events[-1]["type"] == "complete"
-    assert events[-1]["num_chunks"] == 0
+    assert events[-1]["type"] == "error"
+    assert "No extractable text" in events[-1]["error"]
     status = _wait_completed(job_id)
-    assert status["status"] == "completed"
+    assert status["status"] == "failed"
 
 
 @pytest.mark.skipif(

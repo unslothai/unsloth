@@ -59,12 +59,12 @@ def test_explicit_xet_beats_an_unhealthy_verdict(monkeypatch):
     """An explicit choice is not overruled by the health verdict; it still gets the memory caps and
     the stall fallback."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
-    monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda: (False, "demoted"))
+    monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda **kw: (False, "demoted"))
     assert dl.resolve_requested_use_xet("xet", True)[0] is True
 
 
 def test_auto_defers_to_the_health_verdict(monkeypatch):
-    monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda: (False, "Xet stalled twice"))
+    monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda **kw: (False, "Xet stalled twice"))
     use_xet, reason = dl.resolve_requested_use_xet("auto", True)
     assert use_xet is False
     assert reason == "Xet stalled twice"
@@ -415,6 +415,7 @@ def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
 
     monkeypatch.setattr(importlib, "import_module", _fake_import)
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    monkeypatch.setattr(shim, "_gpu_present", lambda: False)
 
     assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is sentinel
     assert attempts == [None, "1"]
@@ -428,6 +429,8 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(importlib, "import_module", _always_fail)
+    for name in ("unsloth_zoo.hf_xet_tuning", "unsloth_zoo.hf_xet_health"):
+        monkeypatch.delitem(sys.modules, name, raising = False)
     assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is None
     # A missing module means "no opinion", never a hard failure.
     assert shim.xet_env_overrides() == {}
@@ -508,6 +511,7 @@ def test_gpu_init_override_is_serialized(monkeypatch):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(importlib, "import_module", _always_fail)
+    monkeypatch.setattr(shim, "_gpu_present", lambda: False)
 
     threads = [
         threading.Thread(target = shim._load_optional, args = ("unsloth_zoo.hf_xet_tuning",))

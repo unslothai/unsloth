@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Curated MCP tools for driving an Unsloth Studio instance.
-
-The MCP surface deliberately wraps the existing Unsloth services instead of
-duplicating training or export logic. It is opt-in because several tools can
-start GPU work or write model artifacts.
+"""Curated MCP tools for driving an Unsloth Studio instance. The MCP surface deliberately wraps the existing
+Unsloth services instead of duplicating training or export logic. It is opt-in because several tools can start
+GPU work or write model artifacts.
 """
 
 from __future__ import annotations
@@ -75,10 +73,8 @@ def _dump(value: Any) -> Any:
 
 
 def _clamp(value: int, low: int, high: int) -> int:
-    """Clamp an MCP-supplied integer into an inclusive range.
-
-    MCP tools call the Unsloth route functions directly, which skips FastAPI's
-    Query(ge=, le=) validation, so we re-apply the same bounds here.
+    """Clamp an MCP-supplied integer into an inclusive range. MCP tools call the Unsloth route functions
+    directly, which skips FastAPI's Query(ge=, le=) validation, so we re-apply the same bounds here.
     """
     return max(low, min(value, high))
 
@@ -196,7 +192,7 @@ def create_studio_mcp() -> FastMCP:
     async def load_checkpoint(
         checkpoint_path: str,
         max_seq_length: int = 2048,
-        load_in_4bit: bool = True,
+        load_in_4bit: bool | None = None,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: str | None = None,
         hf_token: str | None = None,
@@ -207,18 +203,22 @@ def create_studio_mcp() -> FastMCP:
         inference; it does not unload them, so a load can fail with a clear
         out-of-memory error if the GPU is already full. Pass hf_token to load a
         gated checkpoint, and approved_remote_code_fingerprint to retry a
-        trust_remote_code load that was blocked pending review.
+        trust_remote_code load that was blocked pending review. Leave
+        load_in_4bit unset to load full fine-tunes in 16-bit and adapters in
+        4-bit.
         """
         from models import LoadCheckpointRequest
         from routes.export import load_checkpoint as load
 
+        # Omit an unset load_in_4bit so the backend can pick 16-bit for a full fine-tune.
+        optional = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
         request = LoadCheckpointRequest(
             checkpoint_path = checkpoint_path,
             max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             approved_remote_code_fingerprint = approved_remote_code_fingerprint,
             hf_token = hf_token,
+            **optional,
         )
         return _dump(await load(request, current_subject = "mcp", allow_ambient = False))
 
@@ -232,7 +232,6 @@ def create_studio_mcp() -> FastMCP:
         imatrix: bool = False,
         imatrix_path: str | None = None,
         private: bool = False,
-        gguf_shard_size: str | None = None,
     ) -> dict[str, Any]:
         """Export the loaded model to GGUF using Unsloth's existing path validation.
 
@@ -253,7 +252,6 @@ def create_studio_mcp() -> FastMCP:
             imatrix = imatrix,
             imatrix_path = imatrix_path,
             private = private,
-            gguf_shard_size = gguf_shard_size,
         )
         return _dump(await export(request, current_subject = "mcp", allow_ambient = False))
 
