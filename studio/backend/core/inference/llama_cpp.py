@@ -27919,8 +27919,14 @@ class LlamaCppBackend:
                         ):
                             return False
                         # A projector Studio never resolved but the child loads: unsized here.
-                        if (
-                            _child_env.get("LLAMA_ARG_MMPROJ")
+                        # Vision off scrubs the env projectors and appends --no-mmproj-auto
+                        # at launch, keeping only an audio-only LLAMA_ARG_MMPROJ.
+                        _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
+                        if disable_vision:
+                            if _mmproj_env_is_audio_only(_env_mmproj):
+                                return False
+                        elif (
+                            _env_mmproj
                             or _child_env.get("LLAMA_ARG_MMPROJ_URL")
                             or (
                                 not launch_mmproj_path

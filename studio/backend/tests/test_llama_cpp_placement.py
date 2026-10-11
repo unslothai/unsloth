@@ -4173,6 +4173,35 @@ def test_an_auto_discovered_projector_keeps_a_fit_on_moe_counted_as_spilled(
     assert seen == [True]
 
 
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        ((), {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf"}),
+        (("--mmproj-auto",), {}),
+    ],
+    ids = ["env_url", "argv_mmproj_auto"],
+)
+def test_vision_off_drops_the_projector_from_the_residency_check(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
+):
+    """Vision off scrubs the env projector and appends --no-mmproj-auto at launch, so
+    the child loads none and a model that fits stays resident."""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    seen = []
+    eligible = backend._moe_cache_auto_eligible
+
+    def spy(**kwargs):
+        seen.append(kwargs["experts_on_host"])
+        return eligible(**kwargs)
+
+    backend._moe_cache_auto_eligible = spy
+    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args, disable_vision = True)
+
+    assert seen == [False]
+
+
 def test_an_unsized_drafter_keeps_a_fit_on_moe_counted_as_spilled(tmp_path, _discrete_linux_host):
     """With the draft KV unsized the placement covers MTP with a flat cushion this
     footprint has no term for, so the residency check abstains."""
