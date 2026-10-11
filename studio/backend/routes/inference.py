@@ -5071,6 +5071,62 @@ def _raw_park_grace(llama_backend) -> Optional[Callable[[], bool]]:
     return probe if callable(probe) else None
 
 
+async def _nonstreaming_post_through_park(
+    client, url: str, *, llama_backend, json, upstream_headers
+):
+    """POST a non-streaming request, waiting out a server park longer than the read timeout.
+
+    llama-server writes no park notice on a non-streaming response, so a park is silence until
+    the body lands and the read timeout ended an answer that was coming. Where the server parks,
+    the deadline is enforced here instead: at each window the park probe is asked, a park buys
+    another window, up to `_RAW_PARK_STALL_CAP_S`. The connection stays open throughout, since
+    closing it would cancel the request upstream. Elsewhere this is the plain POST.
+    """
+    timeout = _llama_non_streaming_generation_timeout()
+    stall_grace = _raw_park_grace(llama_backend)
+    if stall_grace is None or timeout.read is None:
+        return await client.post(url, json = json, headers = upstream_headers, timeout = timeout)
+    window = float(timeout.read)
+    cap = float(_RAW_PARK_STALL_CAP_S)
+    # httpx's own read timeout is only the backstop now.
+    task = asyncio.ensure_future(
+        client.post(
+            url,
+            json = json,
+            headers = upstream_headers,
+            timeout = httpx.Timeout(window, read = window + cap + 5.0),
+        )
+    )
+    deadline = time.monotonic() + window
+    crossed_at: Optional[float] = None
+    try:
+        while True:
+            done, _pending = await asyncio.wait(
+                {task}, timeout = max(0.0, deadline - time.monotonic())
+            )
+            if done:
+                return task.result()
+            now = time.monotonic()
+            if crossed_at is None:
+                crossed_at = now
+            grace_left = crossed_at + cap - now
+            if grace_left <= 0 or not await _probe_off_the_loop(stall_grace):
+                raise httpx.ReadTimeout("The model did not produce a first token in time.")
+            logger.info(
+                "llama non-streaming request silent for %.0fs with a slot parked by the server; waiting",
+                now - crossed_at + window,
+            )
+            deadline = now + min(window, grace_left)
+    finally:
+        if not task.done():
+            task.cancel()
+            task.add_done_callback(_discard_task_outcome)
+            try:
+                await asyncio.wait({task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
+            except asyncio.CancelledError:
+                pass
+
+
 from models.inference import (
     _InferenceRuntimeFields,
     LoadRequest,
@@ -38640,11 +38696,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _direct_llama_request_started()
         try:
             try:
-                resp = await _client.post(
+                resp = await _nonstreaming_post_through_park(
+                    _client,
                     target_url,
+                    llama_backend = llama_backend,
                     json = body,
-                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-                    timeout = _llama_non_streaming_generation_timeout(),
+                    upstream_headers = _openai_passthrough_upstream_headers(
+                        llama_backend = llama_backend
+                    ),
                 )
             except httpx.RequestError:
                 # The watcher closed the client out from under the request: report the cancel, not a transport failure.
@@ -45700,11 +45759,12 @@ async def _anthropic_passthrough_non_streaming(
 
     async def _post_once(payload_body):
         try:
-            response = await _client.post(
+            response = await _nonstreaming_post_through_park(
+                _client,
                 target_url,
+                llama_backend = llama_backend,
                 json = payload_body,
-                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-                timeout = _llama_non_streaming_generation_timeout(),
+                upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
             )
         except httpx.RequestError:
             # The watcher closes the client to break a blocked POST, so a transport error
@@ -47816,11 +47876,12 @@ async def _openai_passthrough_non_streaming_upstream(
 
     async def _post(body_to_send):
         if cancel_event is None and request is None:
-            return await nonstreaming_client().post(
+            return await _nonstreaming_post_through_park(
+                nonstreaming_client(),
                 target_url,
+                llama_backend = llama_backend,
                 json = body_to_send,
-                headers = upstream_headers,
-                timeout = _llama_non_streaming_generation_timeout(),
+                upstream_headers = upstream_headers,
             )
 
         if cancel_event is None:
@@ -47837,11 +47898,12 @@ async def _openai_passthrough_non_streaming_upstream(
         )
         try:
             try:
-                response = await client.post(
+                response = await _nonstreaming_post_through_park(
+                    client,
                     target_url,
+                    llama_backend = llama_backend,
                     json = body_to_send,
-                    headers = upstream_headers,
-                    timeout = _llama_non_streaming_generation_timeout(),
+                    upstream_headers = upstream_headers,
                 )
             except httpx.RequestError:
                 _raise_if_nonstreaming_request_cancelled(cancel)
