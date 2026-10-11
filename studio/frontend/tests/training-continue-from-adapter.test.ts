@@ -33,20 +33,21 @@ async function waitForModelDefaults(model: string): Promise<void> {
   throw new Error("model defaults did not settle");
 }
 
-function serveVisionAdapterDetails(): void {
+function serveAdapterDetails(overrides: Record<string, unknown>): void {
   setAuthFetchHandler(() =>
     Promise.resolve(
       Response.json({
         id: ADAPTER,
         config: {},
-        is_vision: true,
+        is_vision: false,
         is_embedding: false,
         is_audio: false,
         audio_type_known: true,
         is_lora: true,
-        model_type: "vision",
+        model_type: "text",
         model_size_bytes: null,
         max_position_embeddings: 32768,
+        ...overrides,
       }),
     ),
   );
@@ -57,7 +58,7 @@ after(() => setAuthFetchHandler(null));
 test("a vision adapter picked for LoRA keeps its vision capability", async () => {
   useTrainingConfigStore.getState().reset();
   useTrainingConfigStore.setState({ trainingMethod: "lora" });
-  serveVisionAdapterDetails();
+  serveAdapterDetails({ is_vision: true, model_type: "vision" });
 
   useTrainingConfigStore.getState().selectTrainingModel(ADAPTER, "vision");
   await waitForModelDefaults(ADAPTER);
@@ -69,16 +70,36 @@ test("a vision adapter picked for LoRA keeps its vision capability", async () =>
   assert.equal(state.maxPositionEmbeddings, 32768);
 });
 
-test("an adapter picked for full finetuning is still refused", async () => {
+test("an adapter picked under full finetuning keeps its modality for a later LoRA switch", async () => {
   useTrainingConfigStore.getState().reset();
   useTrainingConfigStore.setState({ trainingMethod: "full" });
-  serveVisionAdapterDetails();
+  serveAdapterDetails({ is_vision: true, model_type: "vision" });
 
   useTrainingConfigStore.getState().selectTrainingModel(ADAPTER, "vision");
   await waitForModelDefaults(ADAPTER);
 
   const state = useTrainingConfigStore.getState();
   assert.equal(state.modelFormat, "adapter");
-  assert.equal(state.isVisionModel, false);
-  assert.equal(state.modelType, null);
+  assert.equal(state.isVisionModel, true);
+  assert.equal(state.modelType, "vision");
+  assert.equal(state.maxPositionEmbeddings, 32768);
+});
+
+test("a decision adapter is typed as a decision model, not continued", async () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.setState({ trainingMethod: "qlora" });
+  serveAdapterDetails({
+    is_vision: false,
+    is_decision: true,
+    decision_layout: "clef",
+    model_type: "decision",
+  });
+
+  useTrainingConfigStore.getState().selectTrainingModel(ADAPTER, "text");
+  await waitForModelDefaults(ADAPTER);
+
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.modelFormat, "adapter");
+  assert.equal(state.modelType, "decision");
+  assert.equal(state.decisionLayout, null);
 });

@@ -509,6 +509,21 @@ def test_untrainable_gate_allows_cached_adapter_snapshot_for_lora(tmp_path):
     route._reject_untrainable_model_request(request)
 
 
+@pytest.mark.parametrize("runner", ["embedding", "mlx"])
+def test_start_refuses_adapter_dir_where_runner_builds_a_fresh_adapter(tmp_path, runner):
+    route = _load_route_module(f"training_route_adapter_dir_{runner}")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), is_embedding = runner == "embedding")
+
+    with patch(
+        "core.training.training.should_use_mlx_training_backend",
+        return_value = runner == "mlx",
+    ):
+        exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
+
+
 def test_start_rejects_missing_local_model(tmp_path):
     route = _load_route_module("training_route_reject_missing_local_model")
     request = _request(model_name = str(tmp_path / "missing-model"))
@@ -2495,6 +2510,12 @@ def test_worker_rejects_inference_only_model_formats():
         )
         is None
     )
+    lora_adapter = {"model_format": "adapter", "training_type": "LoRA/QLoRA"}
+    assert (
+        worker._untrainable_model_format_error({**lora_adapter, "is_embedding": True}) is not None
+    )
+    with patch.object(worker, "_uses_mlx_training_backend", return_value = True):
+        assert worker._untrainable_model_format_error(lora_adapter) is not None
     assert worker._untrainable_model_format_error({"model_format": "safetensors"}) is None
     assert worker._untrainable_model_format_error({}) is None
 

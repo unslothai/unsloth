@@ -3,6 +3,7 @@
 
 import { validateHubResourceId } from "@/components/resource-picker/hub-resource-id";
 import type { TranslationKey } from "@/i18n";
+import { isAdapterMethod } from "@/types/training";
 import type { TrainingConfigState } from "../types/config";
 import { requiresExplicitCachedDatasetSplit } from "./dataset-split-policy";
 import {
@@ -10,7 +11,6 @@ import {
   validateManualDatasetSubset,
 } from "./manual-dataset-options";
 import { isLocalTrainingModelSelection } from "./model-selection";
-import { isAdapterMethod } from "@/types/training";
 import { isUntrainableModelFormat } from "./model-support";
 import {
   isTrainingLoraVariantSupportedOnDevice,
@@ -184,7 +184,13 @@ export function validateTrainingConfig(
       return { ok: false, errorKey: "studio.modelPicker.reasonGguf" };
     }
     // Adapter format is valid when continuing LoRA / CPT from a saved adapter (#13140).
-    if (!isAdapterMethod(config.trainingMethod)) {
+    // Decision, embedding and Apple Silicon runs build a fresh adapter, so they need a base.
+    if (
+      !isAdapterMethod(config.trainingMethod) ||
+      config.modelType === "decision" ||
+      config.isEmbeddingModel ||
+      deviceType === "mac"
+    ) {
       return { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
     }
   }

@@ -473,8 +473,17 @@ def _has_adapter_metadata(path: Path) -> bool:
 
 
 def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
-    """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140)."""
-    return request.training_type in ("LoRA/QLoRA", "Continued Pretraining")
+    """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140).
+
+    Only the CUDA trainer keeps an adapter it loaded; the embedding and Apple Silicon (MLX)
+    runners always build a fresh one on top, so those still need a base model."""
+    if request.training_type not in ("LoRA/QLoRA", "Continued Pretraining"):
+        return False
+    if getattr(request, "is_embedding", False):
+        return False
+    from core.training.training import should_use_mlx_training_backend
+
+    return not should_use_mlx_training_backend()
 
 
 def _has_local_adapter_weights(path: Path) -> bool:

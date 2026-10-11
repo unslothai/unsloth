@@ -357,43 +357,27 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             if (modelDetails.is_lora) {
-              // LoRA / CPT can continue from a saved adapter; full finetune cannot (#13140).
-              if (!isAdapterMethod(get().trainingMethod)) {
-                set({
-                  ...(shouldApplyTrainingDefaults
-                    ? {
-                        trainingMethodProvenance: {
-                          ...get().trainingMethodProvenance,
-                          learningRateManuallySet: false,
-                          modelAdapterLearningRate: null,
-                        },
-                      }
-                    : {}),
-                  modelType: null,
-                  decisionLayout: null,
-                  modelFormat: "adapter",
-                  isVisionModel: false,
-                  isEmbeddingModel: false,
-                  isAudioModel: false,
-                  audioCapabilityUnknown: false,
-                  isLoadingModelDefaults: false,
-                  isCheckingVision: false,
-                  modelDefaultsError: null,
-                  modelDefaultsAppliedFor: modelName,
-                  maxPositionEmbeddings: null,
-                });
-                toast.error(translate("studio.modelPicker.cantUseModel"), {
-                  description: translate("studio.modelPicker.reasonAdapter"),
-                });
-                return;
-              }
-              // The backend reads modality from the adapter's base model; keep it so a
-              // vision or audio adapter is not validated as a text model.
+              // LoRA / CPT can continue from a saved adapter; full finetune and decision
+              // adapters cannot (#13140).
+              const canContinue =
+                isAdapterMethod(get().trainingMethod) &&
+                !modelDetails.is_decision;
+              // Keep the modality the backend reported even when refusing, so switching the
+              // method afterwards still validates the adapter as what it is.
               set({
+                ...(!canContinue && shouldApplyTrainingDefaults
+                  ? {
+                      trainingMethodProvenance: {
+                        ...get().trainingMethodProvenance,
+                        learningRateManuallySet: false,
+                        modelAdapterLearningRate: null,
+                      },
+                    }
+                  : {}),
                 modelType: resolveTrainingModelType({
                   modelType: modelDetails.model_type,
                   isEmbedding: !!modelDetails.is_embedding,
-                  isDecision: false,
+                  isDecision: !!modelDetails.is_decision,
                   isVision: modelDetails.is_vision,
                   isAudio: modelDetails.is_audio,
                 }),
@@ -410,6 +394,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 maxPositionEmbeddings:
                   modelDetails.max_position_embeddings ?? null,
               });
+              if (!canContinue) {
+                toast.error(translate("studio.modelPicker.cantUseModel"), {
+                  description: translate("studio.modelPicker.reasonAdapter"),
+                });
+              }
               return;
             }
 
