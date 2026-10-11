@@ -1286,11 +1286,12 @@ def test_compile_runs_with_torch_defaults_not_the_training_config(monkeypatch, i
     assert dynamo.suppress_errors is False
 
 
-def test_off_tier_leaves_the_compile_config_alone(monkeypatch):
+@pytest.mark.parametrize("mode", [SPEED_OFF, SPEED_EAGER])
+def test_non_compiling_tiers_leave_the_compile_config_alone(monkeypatch, mode):
     torch = _stub_torch(monkeypatch)
     inductor, dynamo = _stub_training_config(torch)
     apply_speed_optims(
-        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = SPEED_OFF
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = mode
     )
     assert inductor.memory_planning is True and dynamo.suppress_errors is True
 

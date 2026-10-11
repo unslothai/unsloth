@@ -507,7 +507,8 @@ def apply_speed_optims(
     # `off` load never inherits them.
     if mode == SPEED_OFF:
         return applied
-    _pin_compile_defaults()
+    if mode in (SPEED_DEFAULT, SPEED_MAX):
+        _pin_compile_defaults()
 
     if getattr(target, "backend", None) == "rocm":
         try:
