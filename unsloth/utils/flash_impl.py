@@ -3,7 +3,7 @@
 """Run torch's flash kernels as FA4 (flash_attn.cute) or FA3 (flash_attn_interface) while a packed /
 padding-free trainer trains, on Hopper / datacenter Blackwell, when the user installed the kernels.
 
-torch (2.12+) swaps the implementation behind its flash ops process-wide, so this also changes dense
+torch (2.11+) swaps the implementation behind its flash ops process-wide, so this also changes dense
 SDPA calls that pick flash (on sm100 only decode-shaped calls and dropout: cuDNN takes the rest). FA4
 raises instead of falling back on dropout and on head dims it lacks, and its Python launch costs about
 0.2 ms per call, so it is turned on only inside ``trainer.train()`` and only when the model has no
@@ -63,7 +63,7 @@ def _log_once(message, level = logging.INFO):
 
 
 def _registry():
-    """(activate, restore, list, current) from torch >= 2.13, else None."""
+    """(activate, restore, list, current) from torch >= 2.11, else None."""
     try:
         from torch.nn.attention import (
             activate_flash_attention_impl,
@@ -363,7 +363,7 @@ def maybe_activate_flash_attention_impl(model = None):
     requested = _requested()
     registry = _registry()
     if requested is None or registry is None:
-        FLASH_IMPL_STATE["reason"] = "off" if requested is None else "torch has no flash attention impl registry (< 2.13)"
+        FLASH_IMPL_STATE["reason"] = "off" if requested is None else "torch has no flash attention impl registry (< 2.11)"
         return None
     if torch.compiler.is_compiling():
         return FLASH_IMPL_STATE["active"]

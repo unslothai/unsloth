@@ -290,7 +290,7 @@ def _fa4_ready():
 
 needs_fa4 = pytest.mark.skipif(
     not _fa4_ready(),
-    reason = "needs sm90 / sm100 CUDA, torch >= 2.12 flash impl registry and flash_attn.cute (FA4)",
+    reason = "needs sm90 / sm100 CUDA, torch >= 2.11 flash impl registry and flash_attn.cute (FA4)",
 )
 
 
