@@ -11,8 +11,7 @@ import { stopChatThread } from "./stop-chat-thread";
 export const countAllChats = countStoredChats;
 
 export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
-  // Invalidate fresh-thread initialization before either queue cancellation or storage enumeration
-  // can yield. A late initializer must not recreate a chat after this clear finishes.
+  // advance before any await yields, so a late fresh-thread initializer cannot recreate a chat
   chatHistoryClearBoundary.advance();
   const { runningByThreadId, cancelByThreadId, serverCancelByThreadId } =
     useChatRuntimeStore.getState();

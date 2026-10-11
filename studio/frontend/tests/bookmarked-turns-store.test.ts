@@ -27,7 +27,7 @@ test("forgetting chats with no bookmarks keeps the state object", () => {
 });
 
 test("every chat delete route forgets the deleted chats' bookmarks", async () => {
-  // A project delete or a clear-all removes chats without going through deleteChatItems.
+  // project delete and clear-all remove chats without going through deleteChatItems
   const { readSrcAsync } = await import("./helpers/kit.ts");
   for (const file of [
     "features/chat/hooks/use-chat-sidebar-items.ts",
@@ -43,7 +43,6 @@ test("every chat delete route forgets the deleted chats' bookmarks", async () =>
 });
 
 test("clear all chats forgets the cleared chats' bookmarks", async () => {
-  // Settings -> Clear all chats skips deleteChatItems, so it forgets them itself.
   const clearAll = await readFile(
     new URL("../src/features/chat/utils/clear-all-chats.ts", import.meta.url),
     "utf8",

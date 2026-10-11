@@ -2198,8 +2198,7 @@ export const Thread: FC<{
               hideComposer
                 ? "pt-4"
                 : // + the chat-model notice, which is an opaque absolute bar
-                  // directly under the header. 0px whenever it is not showing,
-                  // so every other surface keeps the padding it had.
+                  // directly under the header; 0px when hidden so other surfaces are unchanged
                   "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] pt-[var(--thread-header-offset)]",
             )}
           >
@@ -2213,21 +2212,14 @@ export const Thread: FC<{
 
             <TurnNavigator viewportRef={viewportElRef} />
 
-            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
-            the tail and mounts the rest over the following frames. Nothing unmounts and the
-            document converges to the tree this rendered before; consumers that cannot wait call
-            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
-            reason: React's bail-out needs one shared element per row. See
-            progressive-mount-controller.ts. */}
+            {/* tail first, rest over later frames (progressive-mount-controller.ts); propless so React bails out per row, #9042 */}
             <ProgressiveMessages
               renderMessage={renderThreadMessage}
               resetKey={runtimeThreadId}
               viewportRef={viewportElRef}
             />
 
-            {/* Bottom slack so the last message has room above the sticky
-            scroll-to-bottom button (and floating composer in single mode),
-            instead of butting against the footer. */}
+            {/* bottom slack above the sticky scroll-to-bottom button and single-mode composer */}
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
                 ref={spacerRef}
@@ -8397,7 +8389,7 @@ function useDeleteMessage() {
         try {
           thread.stopSpeaking();
         } catch {
-          // Playback ended between reading the state and stopping it.
+          // playback ended between reading the state and stopping it
         }
       }
     }
@@ -8425,7 +8417,7 @@ function useDeleteMessage() {
   return { handleDelete, isRunning, hidden: Boolean(researchRunId || ownsResearchMessage) };
 }
 
-// The More menu's Delete, last and in red.
+// the More menu's Delete, last and in red
 const DeleteMessageMenuItem: FC = () => {
   const { handleDelete, isRunning, hidden } = useDeleteMessage();
   if (hidden) {
@@ -8819,7 +8811,7 @@ const UserMessageAudio: FC = () => {
 
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
-  // Attachments alone (annotations, images) get no empty bubble under them.
+  // attachments alone (annotations, images) get no empty bubble under them
   const hasContent = useAuiState(({ message }) =>
     message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),
   );
@@ -8845,8 +8837,7 @@ const UserMessage: FC = () => {
           <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
         </UserMessageFooter>
       </div>
-      {/* The other half of the pair: last is a user message while a reply is
-          still to come, or once one has been deleted. */}
+      {/* last is a user message while a reply is pending or after the reply was deleted */}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>

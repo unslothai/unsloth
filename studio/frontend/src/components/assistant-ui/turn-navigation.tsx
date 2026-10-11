@@ -49,21 +49,20 @@ import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 
 const MIN_NAVIGATOR_TURNS = 5;
-// how far an overflowing rail's ends fade out, scaled by how much is hidden past each end
+// end fade of an overflowing rail, scaled by how much is hidden past each end
 const RAIL_FADE_PX = 24;
 const RAIL_LEAD = 1.15;
-// clearance kept between the rail and the thread's top and bottom
+// rail clearance from the thread's top and bottom
 const RAIL_INSET_PX = 48;
 const PROMPT_PREVIEW_CHARS = 240;
 const REPLY_PREVIEW_CHARS = 480;
 // long enough to cross from a marker onto the card
 const PREVIEW_HIDE_DELAY_MS = 150;
 const PYRAMID_REACH = 3;
-// math blocks above the target settle from placeholder heights once reached, so the jump re-aligns briefly
+// math blocks above the target settle from placeholder heights, so the jump re-aligns briefly
 const JUMP_ALIGN_FRAMES = 4;
 
-// keyed by thread (compare panes mount several). Built from the rail's one scan per thread and only
-// marked settled after a switch finishes mounting, so labels and rail add nothing to the switch itself
+// keyed by thread (compare panes mount several); settled after a switch mounts, so it adds no cost
 interface TurnIndex {
   turns: ReadonlyMap<string, number>;
   settled: boolean;
@@ -90,7 +89,7 @@ function useTurnBookmark(
   ownTurn: boolean,
 ): { bookmarked: boolean; toggle: () => void } | null {
   const incognito = useChatRuntimeStore((state) => state.incognito);
-  // one primitive selector: it runs on every store write (keystrokes, streamed tokens) for every mounted message
+  // one primitive selector: it runs on every store write for every mounted message
   const key = useAuiState(
     ({ thread, message, threadListItem }) =>
       `${threadListItem.remoteId ?? ""}\n${ownTurn ? message.id : (turnOpenerIdAt(thread.messages, message.index) ?? "")}`,
@@ -184,8 +183,7 @@ const UserTurnLabelText: FC = () => {
       : 0,
   );
   const bookmarked = useIsTurnBookmarked(threadId, messageId);
-  // the box mounts with the message and only its text fills in once a switch settles: a late box
-  // would resize every message and restyle the whole document
+  // the box mounts with the message and fills in on settle: a late box would restyle the document
   return (
     <div
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
@@ -395,7 +393,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   const [previewOpen, setPreviewOpen] = useState(false);
   // non-empty from the start, so the first hover edits text nodes instead of inserting them
   const lastReplyRef = useRef(" ");
-  // only the latest turn can still stream, so an open card follows it and the scan stops at its prompt
+  // only the latest turn can stream, so an open card follows it and the scan stops at its prompt
   const previewOpenerId = previewOpen ? preview?.openerId : undefined;
   const liveReply = useAuiState(({ thread }) => {
     if (!previewOpenerId) {
@@ -530,8 +528,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     magnifiedRef.current = [];
   }, []);
   useEffect(() => clearMagnify, [clearMagnify]);
-  // dock-style: each dash's width follows its distance to the pointer every frame,
-  // so fast sweeps stay smooth instead of stepping through the data-dist widths
+  // dock-style: widths follow pointer distance every frame, so fast sweeps skip the data-dist steps
   const magnify = useCallback((rail: HTMLElement) => {
     magnifyFrameRef.current = 0;
     const markers = Array.from(rail.children) as HTMLElement[];
@@ -625,8 +622,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       setStyle("--rail-fade-top", fade(top));
       setStyle("--rail-fade-bottom", fade(railRange - top));
     };
-    // every layout read before any write, and writes skipped when unchanged: one layout per frame at most,
-    // which matters while a chat loads (autoscroll) and during a window resize drag
+    // reads before writes, no-op writes skipped: one layout per frame (autoscroll, resize drag)
     const sync = () => {
       frame = 0;
       const scrollTop = viewport.scrollTop;
@@ -635,12 +631,11 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       let fit: Record<string, string> | null = null;
       if (fitPending && anchor) {
         const box = viewport.getBoundingClientRect();
-        // the rail is centred on the anchor, so it may grow to twice the room on its tighter side; not the
-        // composer: the rail sits beside the message column, and the composer grows with the queue
+        // centred on the anchor, so twice the tighter side's room; not the composer, it grows with the queue
         const centre = anchor.getBoundingClientRect().top;
         const room =
           Math.min(centre - box.top, box.bottom - centre) - RAIL_INSET_PX;
-        // whole device pixels for line, pitch and start, or fractional scaling (125%) renders uneven dashes
+        // snap line, pitch and start to device pixels, or 125% scaling renders uneven dashes
         const dpr = window.devicePixelRatio || 1;
         const dash = rail.querySelector("span");
         const shift = Number.parseFloat(rail.style.marginTop) || 0;
@@ -657,12 +652,12 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         for (const [name, value] of Object.entries(fit)) {
           setStyle(name, value);
         }
-        // the one extra layout, and only after a resize
+        // forces a layout, so only after a resize
         railFull = rail.scrollHeight;
         railView = rail.clientHeight;
         railRange = Math.max(0, railFull - railView);
       }
-      // the marker for where the thread is sits mid-rail, a touch ahead, so the ends come into view early
+      // thread position maps to mid-rail, a touch ahead, so the ends come into view early
       const progress = range > 0 ? scrollTop / range : 0;
       const ahead = 0.5 + (progress - 0.5) * RAIL_LEAD;
       const railTop = Math.min(
@@ -682,7 +677,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       schedule();
     };
     const fadeEnds = () => setFades(rail.scrollTop);
-    // keyboard focus scrolls the rail to reveal its dash; keep the ends right, then follow the thread again once focus leaves
+    // focus scrolls the rail to reveal its dash; once focus leaves, follow the thread again
     const onFocusOut = (event: globalThis.FocusEvent) => {
       if (!rail.contains(event.relatedTarget as Node | null)) {
         schedule();
@@ -692,7 +687,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     viewport.addEventListener("scroll", schedule, { passive: true });
     rail.addEventListener("scroll", fadeEnds, { passive: true });
     rail.addEventListener("focusout", onFocusOut);
-    // the rail eases to a new height on resize, so keep its ends in step
+    // the rail height eases, so observing it keeps the fades in step
     const resize = new ResizeObserver(refit);
     resize.observe(rail);
     resize.observe(viewport);
@@ -711,8 +706,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       setActiveMarker(null);
     }, PREVIEW_HIDE_DELAY_MS);
   }, [cancelHide, setActiveMarker]);
-  // WebView2 sends no pointerleave when the cursor exits the page straight onto the window frame (say, to
-  // drag an edge), so the card and magnify would stay up; leaving the document or resizing closes them
+  // WebView2 sends no pointerleave on exit onto the window frame, so close on leave or resize
   useEffect(() => {
     if (!previewOpen) {
       return;
@@ -836,14 +830,14 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   if (previewReply) {
     lastReplyRef.current = previewReply;
   }
-  // sticky, and the rail is not a scroller, so wheel scrolling over it reaches the thread
+  // the rail is not a scroller, so wheel scrolling over it reaches the thread
   return (
     <div
       ref={anchorRef}
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-turn-navigator-anchor pointer-events-none select-none sticky top-1/2 z-10 h-0 w-full shrink-0"
     >
-      {/* gutter beside the message column; when it is too narrow the resting dashes sit in the thread padding */}
+      {/* gutter beside the message column; if too narrow the dashes sit in the thread padding */}
       <div
         style={{
           width:
@@ -866,8 +860,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           {markers}
         </nav>
       </div>
-      {/* portaled out of the thread's autoscroll MutationObserver, and made invisible rather than
-          unmounted: adding or removing boxes trips a document-wide :has() restyle */}
+      {/* portaled out of the autoscroll observer; invisible, not unmounted: no :has() restyle */}
       {createPortal(
         <div
           id={previewId}
@@ -878,7 +871,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
               ? {
                   top: preview.top,
                   right: `calc(${preview.right}px + 1.5rem)`,
-                  // a phone-width viewport or a larger ui text scale would push the card off the left edge
+                  // keeps the card on screen at phone widths or a larger ui text scale
                   maxWidth: `calc(100vw - ${preview.right}px - 2rem)`,
                 }
               : undefined
@@ -921,7 +914,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
               </button>
             )}
           </div>
-          {/* collapsed by class, not `hidden`: toggling display restyles the whole document via :has() */}
+          {/* collapsed by class, not `hidden`: display toggles restyle the document via :has() */}
           <p
             className={cn(
               "line-clamp-3 pr-1.5 text-muted-foreground leading-relaxed",

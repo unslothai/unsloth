@@ -11,7 +11,7 @@ export interface ThreadTurns {
   readonly turnAt: Int32Array;
 }
 
-// keyed on array identity: selectors run on every store write, so one o(n) pass is shared per revision
+// keyed on array identity: selectors run on every store write, so they share one o(n) pass
 const turnsByMessages = new WeakMap<object, ThreadTurns>();
 
 export function threadTurns(messages: readonly TurnMessage[]): ThreadTurns {
