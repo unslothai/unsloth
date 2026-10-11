@@ -237,3 +237,22 @@ def test_rollout_copy_without_tools_needs_no_family(patched):
     handed = module.with_response_parser(tokenizer, False)
     assert _child_accepts(handed, originals).chat_template == PLAIN
     assert _parser(tokenizer) == (None, None)
+
+
+def test_rollout_processor_gets_its_tokenizers_parser(patched):
+    module, originals = patched
+
+    from transformers import ProcessorMixin
+
+    class Processor(ProcessorMixin):
+        attributes = ["tokenizer"]
+
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    trl_utils.add_response_schema(tokenizer)
+    # A tokenizer that already carries a parser (Gemma 4 repos ship one), inside a processor that does not.
+    processor = Processor.__new__(Processor)
+    processor.tokenizer = tokenizer
+    processor.chat_template = UNSLOTH_QWEN3
+    handed = module.with_response_parser(processor, True)
+    assert handed is not processor and _parser(handed) == _parser(tokenizer)
+    assert _parser(processor) == (None, None)

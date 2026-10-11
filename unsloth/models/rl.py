@@ -4498,9 +4498,11 @@ def _allow_moe_parameter_lora(async_module, model):
 
 def _check_async_grpo_adapter_servable(model):
     # Raise vLLM's refusals (e.g. LoRA on MoE experts) at construction instead of at the first weight sync.
+    import os
     import tempfile
     with tempfile.TemporaryDirectory() as directory:
-        model.load_lora(directory, load_tensors = True)
+        # A path that does not exist yet: older load_lora writes the adapter config only into a new directory.
+        model.load_lora(os.path.join(directory, "adapter"), load_tensors = True)
 
 
 def patch_trl_async_grpo():

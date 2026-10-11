@@ -326,6 +326,30 @@ def test_abort_all_fails_in_flight_requests_and_the_server_keeps_serving(served)
     assert _complete(server, [4])["choices"][0]["token_ids"] == [5, 6]
 
 
+def test_abort_all_also_fails_requests_still_queued(served):
+    server, llm = served
+    _post(server, "/pause")
+    box = {}
+
+    def run():
+        try:
+            box["out"] = _complete(server, [7])
+        except urllib.error.HTTPError as error:
+            box["code"] = error.code
+
+    thread = threading.Thread(target = run)
+    thread.start()
+    deadline = time.time() + 5
+    while not server.engine.pending and time.time() < deadline:
+        time.sleep(0.01)
+    server.abort_all()
+    thread.join(10)
+    assert box == {"code": 400}
+    _post(server, "/resume")
+    assert not llm.llm_engine.requests
+    assert _complete(server, [4])["choices"][0]["token_ids"] == [5, 6]
+
+
 def test_sleeping_engine_is_woken_once(monkeypatch):
     llm = _FakeLLM()
     llm.llm_engine.sleeping = True

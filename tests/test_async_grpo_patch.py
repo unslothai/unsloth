@@ -571,7 +571,9 @@ def test_unservable_adapter_fails_at_construction(fast_inference_trl):
     seen = []
 
     def load_lora(directory, load_tensors = False):
-        seen.append((os.path.isdir(directory), load_tensors))
+        seen.append(
+            (os.path.exists(directory), os.path.isdir(os.path.dirname(directory)), load_tensors)
+        )
         raise NotImplementedError("cannot serve this LoRA on MoE expert weights")
 
     peft.load_lora = load_lora
@@ -579,6 +581,6 @@ def test_unservable_adapter_fails_at_construction(fast_inference_trl):
         mod.AsyncGRPOTrainer(
             peft, None, args = mod.AsyncGRPOConfig("o"), train_dataset = [{"prompt": "hi"}]
         )
-    assert seen == [(True, True)]
+    assert seen == [(False, True, True)]
     assert _FakeServer.started == []
     assert mod._calls["init"] == []

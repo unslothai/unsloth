@@ -59,6 +59,7 @@ class _Engine:
         self.newest = None
         self.lora_holds = {}
         self.next_lora_id = _LORA_ID_BASE
+        self.aborted = None
         self.stats = {"requests": 0, "tokens": 0, "steps": 0, "step_s": 0.0, "max_batch": 0}
         self.thread = threading.Thread(
             target = self._run, name = "unsloth-async-grpo-vllm", daemon = True
@@ -112,6 +113,11 @@ class _Engine:
                     future.set_result(fn())
                 except BaseException as error:
                     future.set_exception(error)
+            if self.aborted is not None:
+                # Requests taken from the queue alongside an abort never reach the engine.
+                for item in pending:
+                    item[-1].set_exception(self.aborted)
+                pending, self.aborted = [], None
             for item in pending:
                 self._admit(*item)
             if self.paused or not self.active:
@@ -236,7 +242,13 @@ class _Engine:
         return True
 
     def abort_all(self):
-        self._fail_active(RuntimeError("Unsloth: generation aborted when training ended."))
+        error = RuntimeError("Unsloth: generation aborted when training ended.")
+        with self.cv:
+            pending, self.pending = self.pending, []
+        for item in pending:
+            item[-1].set_exception(error)
+        self.aborted = error
+        self._fail_active(error)
         return True
 
 

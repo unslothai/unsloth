@@ -381,19 +381,20 @@ def with_response_parser(processing_class, uses_tools):
         import trl.chat_template_utils as trl_module
     except Exception:
         return processing_class
-    tokenizer = _tokenizer_of(processing_class)
-    if any(
-        getattr(holder, attribute, None) is not None
-        for holder in (processing_class, tokenizer)
-        for attribute in _PARSER_ATTRIBUTES
-    ):
+
+    def has_parser(holder):
+        return any(getattr(holder, attribute, None) is not None for attribute in _PARSER_ATTRIBUTES)
+
+    if has_parser(processing_class):
         return processing_class
+    tokenizer = _tokenizer_of(processing_class)
     clone = copy.copy(processing_class)
     clone_tokenizer = clone
     if processing_class is not tokenizer:
         clone.tokenizer = clone_tokenizer = copy.copy(tokenizer)
     try:
-        trl_module.add_response_schema(clone)
+        if not has_parser(clone_tokenizer):
+            trl_module.add_response_schema(clone)
     except ValueError:
         if uses_tools:
             return processing_class
