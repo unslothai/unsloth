@@ -35,7 +35,12 @@ def _fp8_weight(out_f, in_f, seed):
 def fp8_calls(monkeypatch):
     calls = []
 
-    def fake_fp8_linear(X, W, W_quant, bias = None):
+    def fake_fp8_linear(
+        X,
+        W,
+        W_quant,
+        bias = None,
+    ):
         calls.append(tuple(W.shape))
         return X @ _dequant(W, W_quant).t()
 
@@ -55,7 +60,12 @@ def _backward(downW, downW_quant):
     upW, up_q = _fp8_weight(INTER, HIDDEN, 3)
     gateA, upA, downA = rnd(RANK, HIDDEN), rnd(RANK, HIDDEN), rnd(RANK, INTER)
     gateB, upB, downB = rnd(INTER, RANK), rnd(INTER, RANK), rnd(HIDDEN, RANK)
-    X, e, gg, dY = rnd(1, TOKENS, HIDDEN), rnd(TOKENS, INTER), rnd(TOKENS, INTER), rnd(1, TOKENS, HIDDEN)
+    X, e, gg, dY = (
+        rnd(1, TOKENS, HIDDEN),
+        rnd(TOKENS, INTER),
+        rnd(TOKENS, INTER),
+        rnd(1, TOKENS, HIDDEN),
+    )
     seen = {}
 
     def backward_function(DW, e, g):
@@ -63,7 +73,18 @@ def _backward(downW, downW_quant):
         return DW, e, g
 
     ctx = types.SimpleNamespace(
-        custom_saved_tensors = (gateW, gate_q, 1.0, upW, up_q, 1.0, downW, downW_quant, 2.0, backward_function),
+        custom_saved_tensors = (
+            gateW,
+            gate_q,
+            1.0,
+            upW,
+            up_q,
+            1.0,
+            downW,
+            downW_quant,
+            2.0,
+            backward_function,
+        ),
         saved_tensors = (gateA, gateB, upA, upB, downA, downB, X, e, gg),
         inplace = False,
         _fwd_used_autocast = False,

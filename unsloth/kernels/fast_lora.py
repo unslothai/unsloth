@@ -176,9 +176,7 @@ class LoRA_MLP(torch.autograd.Function):
 
         if downW.dtype == torch.float8_e4m3fn:
             # Dequantize like gate / up: matmul_lora would send the FP8 weight to fp8_linear, quantizing dY to FP8.
-            DW = matmul_lora(
-                dY, fast_dequantize(downW.t(), downW_quant), None, downB, downA, downS
-            )
+            DW = matmul_lora(dY, fast_dequantize(downW.t(), downW_quant), None, downB, downA, downS)
         else:
             DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
         DW, e, g = _backward_function(DW, e, g)
