@@ -3434,6 +3434,7 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
         intent = None,
         capture = None,
         tied_bytes = 0,
+        model_bytes = 12 * GIB,
     ):
         _apply_os(monkeypatch, "linux")
         monkeypatch.setattr(
@@ -3458,7 +3459,7 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
             torch,
             None,
             returncode = None,
-            model_bytes = 12 * GIB,
+            model_bytes = model_bytes,
             env_extra = env_extra,
             intent_kwargs = {"extra_args": tuple(extra_args), **(intent or {})},
             capture = capture,
@@ -3482,6 +3483,27 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
         planned = backend._planned_vram_mib or backend._pending_plan_mib
         assert set(planned) == {0}
         assert planned[0] < 12 * 1024 - 1024, planned
+
+    def test_the_eviction_shortfall_leaves_out_the_host_pinned_embeddings(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """GpuMemoryShortError.short_mib sizes the eviction, so it prices the weights the
+        placement fitted (20 GiB file less 6 GiB host-pinned), not the whole file."""
+        from core.inference.llama_cpp import GpuMemoryShortError
+
+        capture = {}
+        with pytest.raises(IndexError):  # refused before any spawn
+            self._load(
+                tmp_path,
+                monkeypatch,
+                model_bytes = 20 * GIB,
+                intent = {"refuse_partial_gpu_fit": True},
+                capture = capture,
+            )
+        error = capture["error"]
+        assert isinstance(error, GpuMemoryShortError), error
+        # 14 GiB of device weights on a 12000 MiB card: about 2.3 GiB short, not 8.3.
+        assert 0 < error.short_mib < 6 * 1024, error.short_mib
 
     def test_the_published_reservation_keeps_the_tied_output_copy(
         self, tmp_path, monkeypatch, probe_env

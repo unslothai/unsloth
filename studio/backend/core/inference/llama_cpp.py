@@ -26007,6 +26007,8 @@ class LlamaCppBackend:
                 _ctx_capped_for_vram = False
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
+                # The placement-priced weights, once the fit has computed them.
+                _model_weight_vram_bytes: Optional[int] = None
                 # Set by the expert-spill raise after the fit.
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _moe_cache_candidate = False
@@ -29318,7 +29320,14 @@ class LlamaCppBackend:
                 ):
                     capped_only = _ctx_capped_for_vram and not _placement_verdict_partial
                     asked_ctx = _ctx_before_fit if capped_only else effective_ctx
-                    need_mib = (gguf_size + mmproj_size + _kv_bytes(asked_ctx)) // (1024 * 1024)
+                    # The weights the placement priced (host-pinned embeddings out), so
+                    # short_mib sizes the eviction for what the GPU actually needs.
+                    _short_weights = (
+                        gguf_size if _model_weight_vram_bytes is None else _model_weight_vram_bytes
+                    )
+                    need_mib = (_short_weights + mmproj_size + _kv_bytes(asked_ctx)) // (
+                        1024 * 1024
+                    )
                     free_mib = sum(free for _, free in gpus)
                     need_gb, free_gb = need_mib / 1024, free_mib / 1024
                     raise GpuMemoryShortError(
