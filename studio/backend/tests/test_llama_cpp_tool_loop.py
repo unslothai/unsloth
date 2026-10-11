@@ -1704,6 +1704,31 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
     assert len(duplicate_nudges) == 1
 
 
+@pytest.mark.parametrize("deduplicate", [True, False])
+def test_rebuild_without_an_edit_runs_again_only_when_deduplication_is_off(
+    monkeypatch, deduplicate
+):
+    # #10379: a second identical build command after no file edit is a duplicate by default.
+    build = {"command": "./gradlew build"}
+    streams = [
+        [_tool_call_sse("terminal", build, "call_build_1"), _done()],
+        [_tool_call_sse("terminal", build, "call_build_2"), _done()],
+        [_sse({"content": "Built."}), _done()],
+    ]
+    backend = _make_backend(monkeypatch, streams, [])
+    calls = _record_tool_calls(monkeypatch, lambda name: "BUILD SUCCESSFUL")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "build it twice"}],
+        [{"type": "function", "function": {"name": "terminal"}}],
+        max_tool_iterations = 3,
+        deduplicate_tool_calls = deduplicate,
+    )
+
+    assert calls == [("terminal", build)] * (1 if deduplicate else 2)
+
+
 def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     first_search = [
         _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_1"),
@@ -5224,6 +5249,33 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     )
 
     assert len(calls) == 1, [c[0] for c in calls]
+
+
+@pytest.mark.parametrize("deduplicate", [True, False])
+def test_gguf_textual_fallback_keeps_identical_calls_when_deduplication_is_off(
+    monkeypatch, deduplicate
+):
+    blocks = '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>' * 3
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+            deduplicate_tool_calls = deduplicate,
+        )
+    )
+
+    assert len(calls) == (1 if deduplicate else 3), [c[0] for c in calls]
 
 
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):

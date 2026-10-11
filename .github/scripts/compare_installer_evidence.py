@@ -211,12 +211,22 @@ def _apply_value_normalisers(line: str) -> str:
 # reads, and a line with any other text on it (" - Packages") still compares.
 _SPINNER_FRAMES = frozenset("-\\|/")
 
+# winget's download bar, the same way: it redraws a partly filled bar ("█████▒▒▒▒▒  42%" or
+# "<size> / <size>") as the bytes arrive, and how many partial frames land in the log depends on the
+# network. Only a partial frame (one with a "▒" left) is dropped; the full bar a finished download
+# ends on still compares, as does any line with other text on it.
+_PARTIAL_PROGRESS_FRAME = re.compile(r"[█▒]*▒[█▒]*\s+(?:<percent>|<size> / <size>)")
+
 
 def normalise_transcript(text: str) -> list[str]:
     lines = []
     for raw in text.splitlines():
         line = normalise_line(raw)
-        if not line.strip() or line.strip() in _SPINNER_FRAMES:
+        if (
+            not line.strip()
+            or line.strip() in _SPINNER_FRAMES
+            or _PARTIAL_PROGRESS_FRAME.fullmatch(line.strip())
+        ):
             continue
         # Runner-injected noise, and ONLY what the runner injects. These carry the workflow's own
         # group names and the side's SHA, so they differ between sides for nothing to do with the

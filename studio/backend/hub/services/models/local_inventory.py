@@ -109,10 +109,17 @@ def _http_error(status_code: int, detail: str):
     return HTTPException(status_code = status_code, detail = detail)
 
 
+def _is_image_lora_file(path: Path) -> bool:
+    from core.inference.diffusion_lora import is_image_lora_file
+    return is_image_lora_file(path)
+
+
 def _is_immediate_model_weight_file(path: Path) -> bool:
     if is_appledouble_metadata(path):
         return False
     suffix = path.suffix.lower()
+    if suffix in (".safetensors", ".gguf") and _is_image_lora_file(path):
+        return False
     if suffix == ".safetensors":
         return True
     if suffix == ".gguf":
@@ -389,6 +396,7 @@ def _scan_models_dir(
                 and child.suffix.lower() == ".gguf"
                 and child.is_file()
                 and not is_appledouble_metadata(child)
+                and not _is_image_lora_file(child)
             )
             if not is_dir and not is_gguf_file:
                 continue
@@ -754,6 +762,7 @@ def _scan_lmstudio_dir(
                     child.suffix.lower() == ".gguf"
                     and child.is_file()
                     and not is_appledouble_metadata(child)
+                    and not _is_image_lora_file(child)
                 ):
                     try:
                         updated_at = child.stat().st_mtime
@@ -808,6 +817,7 @@ def _scan_lmstudio_dir(
                         model_dir.suffix.lower() == ".gguf"
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
+                        and not _is_image_lora_file(model_dir)
                     ):
                         try:
                             updated_at = model_dir.stat().st_mtime

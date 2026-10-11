@@ -251,6 +251,10 @@ def _route(tmp_path, monkeypatch, config):
     monkeypatch.setattr(loader.FastBaseModel, "from_pretrained", staticmethod(capture))
     # Its pinned host buffer needs an accelerator; CPU CI has none.
     monkeypatch.setattr(loader, "apply_unsloth_gradient_checkpointing", lambda value, *args: value)
+    # The load repoints transformers' LOSS_MAPPING at Unsloth's Triton loss for the whole process
+    # before the route is captured. Routing needs none of it, and left behind it sends every later
+    # CPU forward with labels in this worker into Triton (test_omni_text_only_load failed that way).
+    monkeypatch.setattr(loader, "patch_loss_functions", lambda *args, **kwargs: None)
     with pytest.raises(_Routed) as routed:
         loader.FastModel.from_pretrained(str(tmp_path), load_in_4bit = False)
     return routed.value.args[0]

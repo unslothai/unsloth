@@ -280,7 +280,7 @@ def test_no_mirror_is_a_companion_only_repo():
 # Vendor bases the catalog offers before their unsloth mirror exists on the Hub. A mirror row for a
 # repo that is not there would 404 every fetch it redirects, so the table cannot lead the upload;
 # this names the gap instead of letting the check below go red on every PR until it closes.
-_MIRRORS_NOT_YET_PUBLISHED: frozenset[str] = frozenset()
+_MIRRORS_NOT_YET_PUBLISHED: frozenset[str] = frozenset({"qwen/qwen-image-2.1-turbo"})
 
 
 def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
@@ -2852,6 +2852,85 @@ def test_generate_other_family_never_passes_cfg_trunc_ratio(fake_runtime, tmp_pa
     backend.generate(prompt = "a sloth", steps = 9, guidance = 0.0)
     call = backend._state.pipe.last_kwargs
     assert call["cfg_trunc_ratio"] is None
+
+
+_TURBO_GRID = [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568]
+
+
+class _FakeFlowScheduler:
+    def __init__(self, **config):
+        self.config = dict(config)
+
+    @classmethod
+    def from_config(cls, config, **overrides):
+        return cls(**{**config, **overrides})
+
+
+class _FakeGridPipe(_FakePipe):
+    """A QwenImage21Pipeline on the pinned diffusers: takes ``sigmas``, but its config never holds ``sample_sigmas``
+    (an extra key there breaks DiffusionPipeline.components, so group offload fails and the load dies)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = {}
+        self.scheduler = _FakeFlowScheduler(
+            shift = 1.0, use_dynamic_shifting = False, shift_terminal = None
+        )
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        sigmas = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {"prompt": prompt, "sigmas": sigmas, **kwargs}
+        return types.SimpleNamespace(images = [_FakeImage()])
+
+
+class _FakeGridPipeline:
+    @classmethod
+    def from_pretrained(cls, base, **kwargs):
+        return _FakeGridPipe()
+
+
+def _load_grid_pipeline(backend, tmp_path, monkeypatch, **manifest):
+    import diffusers
+
+    monkeypatch.setattr(diffusers, "Lumina2Pipeline", _FakeGridPipeline, raising = False)
+    # Stand in for a family whose ComfyUI template sets a static shift.
+    monkeypatch.setattr("core.inference.diffusion.comfy_flow_shift_for", lambda *a, **k: 3.0)
+    _write_pipeline(tmp_path, "Lumina2Pipeline", **manifest)
+    backend.load_pipeline(str(tmp_path), family_override = "lumina-2")
+    return backend._state.pipe
+
+
+def test_checkpoint_sample_sigmas_drive_the_schedule(fake_runtime, tmp_path, monkeypatch):
+    # The pinned diffusers drops Turbo's model_index.json grid; the backend carries it and passes it to every render.
+    backend = DiffusionBackend()
+    pipe = _load_grid_pipeline(backend, tmp_path, monkeypatch, sample_sigmas = _TURBO_GRID)
+    assert "sample_sigmas" not in pipe.config
+    assert pipe.scheduler.config["shift"] == 1.0  # not rebuilt at the static shift
+
+    backend.generate(prompt = "a sloth", steps = 8, guidance = 1.0)
+    assert pipe.last_kwargs["sigmas"] == _TURBO_GRID
+    # Another step count follows the same curve: same endpoints, still decreasing.
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 1.0)
+    four = pipe.last_kwargs["sigmas"]
+    assert len(four) == 4 and four[0] == _TURBO_GRID[0] and four[-1] == _TURBO_GRID[-1]
+    assert all(b < a for a, b in zip(four, four[1:]))
+
+
+def test_checkpoint_without_sample_sigmas_keeps_the_static_shift(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Qwen/Qwen-Image-2.1 and every other checkpoint: no grid, so the ComfyUI shift and the linear ramp stay as on main.
+    backend = DiffusionBackend()
+    pipe = _load_grid_pipeline(backend, tmp_path, monkeypatch)
+    assert pipe.scheduler.config["shift"] == 3.0
+    backend.generate(prompt = "a sloth", steps = 8, guidance = 1.0)
+    assert pipe.last_kwargs["sigmas"] is None
 
 
 def test_begin_load_rejects_concurrent(monkeypatch):
@@ -11717,7 +11796,7 @@ def _upscale_with_tiling_vae(backend, monkeypatch, **kw):
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     seen = {}
     real_call = _FakeImg2ImgPipe.__call__
 
@@ -11753,7 +11832,7 @@ def test_generate_upscale_that_fits_is_not_tiled(fake_runtime, tmp_path, monkeyp
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(512), upscale = 2.0)
     assert vae.calls == []
 
@@ -11766,7 +11845,7 @@ def test_generate_upscale_restores_the_vae_when_the_render_fails(
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
 
     def _boom(self, **kwargs):
         raise RuntimeError("decode failed")
@@ -11782,7 +11861,7 @@ def test_generate_upscale_on_math_only_attention_still_refuses(fake_runtime, tmp
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", _TilingVae(), raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: True)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: True)
     with pytest.raises(ValueError) as excinfo:
         backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
     message = str(excinfo.value)
@@ -11809,7 +11888,7 @@ def test_generate_windows_batch_prices_tiles_at_the_batch_without_slicing(
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     vae = vae_cls()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     monkeypatch.setattr(dmod.sys, "platform", "win32")
     kw = dict(prompt = "a sloth", steps = 4, init_image = _png_b64(1024), upscale = 2.0, seeds = [1, 2])
     if vae_cls is _TilingVae:
@@ -11836,7 +11915,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     vae = _BrokenTilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     calls = []
     real_call = _FakeImg2ImgPipe.__call__
 
