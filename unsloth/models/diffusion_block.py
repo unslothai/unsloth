@@ -137,10 +137,15 @@ class BlockDiffusionProfile(DiffusionProfile):
             return input_ids, maskable, valid
         base = _unwrap(model)
         if not base.__dict__.get("_unsloth_right_padding_checked", False):
-            # The collator's padding side is fixed for a run: check the first batch, not every step (host sync).
-            if (valid[:, 1:] & ~valid[:, :-1]).any():
+            # The collator's padding side is fixed for a run: check until a batch carries padding, then stop
+            # (one host sync per step until then).
+            left_padded, padded = torch.stack(
+                [(valid[:, 1:] & ~valid[:, :-1]).any(), (~valid).any()]
+            ).tolist()
+            if left_padded:
                 raise ValueError("Unsloth: block-diffusion training expects right padding.")
-            base.__dict__["_unsloth_right_padding_checked"] = True
+            if padded:
+                base.__dict__["_unsloth_right_padding_checked"] = True
         # Turns end with a terminator, not EOS, so stopping is learnt only from a supervised EOS tail (as the
         # reference's max-length EOS padding); pad to the next block past the longest row.
         block = self.block_size(model, args)

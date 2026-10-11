@@ -161,6 +161,17 @@ def test_left_padding_rejected():
         llada2.build_batch(_LM(), inputs, SimpleNamespace())
 
 
+def test_left_padding_rejected_after_an_unpadded_first_batch():
+    # An unpadded first batch proves nothing about the padding side, so the check must keep running.
+    llada2, _ = _profiles()
+    model = _LM()
+    llada2.build_batch(model, _batch([2], [12], 12), SimpleNamespace())
+    inputs = _batch([2], [10], 12)
+    inputs["attention_mask"] = inputs["attention_mask"].flip(1)
+    with pytest.raises(ValueError, match = "right padding"):
+        llada2.build_batch(model, inputs, SimpleNamespace())
+
+
 def _naive_loss(profile, model, clean, noisy, masked, maskable, p, valid, block):
     from unsloth.models.diffusion_block import block_diffusion_attention_mask
 

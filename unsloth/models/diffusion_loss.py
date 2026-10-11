@@ -241,14 +241,15 @@ def is_distributed_wrapper(model):
 def fusable_head(model, base):
     """The plain nn.Linear output head whose input can be taken instead of logits, or None (dense logits).
 
-    Decided once per model: a LoRA / quantized / offloaded / tied or post-scaled head, or a distributed
-    wrapper (FSDP shards the weight outside its forward), keeps the dense path."""
+    Decided once per head module (a head wrapped later, e.g. by PEFT, is re-checked): a LoRA / quantized /
+    offloaded / tied or post-scaled head, or a distributed wrapper (FSDP shards the weight outside its
+    forward), keeps the dense path."""
     if is_distributed_wrapper(model):
         return None
-    cached = base.__dict__.get("_unsloth_diffusion_fused_head")
-    if cached is not None:
-        return cached or None
     head = base.get_output_embeddings() if hasattr(base, "get_output_embeddings") else None
+    cached = base.__dict__.get("_unsloth_diffusion_fused_head")
+    if cached is not None and cached[0] is head:
+        return cached[1]
     config = getattr(base, "config", None)
     ok = (
         type(head) is torch.nn.Linear
@@ -260,7 +261,7 @@ def fusable_head(model, base):
         and not getattr(config, "scale_logits", False)
         and head.weight.device.type != "meta"
     )
-    base.__dict__["_unsloth_diffusion_fused_head"] = head if ok else False
+    base.__dict__["_unsloth_diffusion_fused_head"] = (head, head if ok else None)
     return head if ok else None
 
 

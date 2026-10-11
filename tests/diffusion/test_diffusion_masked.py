@@ -488,7 +488,7 @@ def test_hidden_state_loss_matches_dense_logits(name):
     dense.load_state_dict(fused.state_dict())
     fused_loss, _ = _ours(name, fused, inputs, 3)
     dense_loss, _ = _ours(name, dense, inputs, 3)
-    assert fused.__dict__["_unsloth_diffusion_fused_head"] is fused.head
+    assert fused.__dict__["_unsloth_diffusion_fused_head"] == (fused.head, fused.head)
     assert "forward" not in vars(fused.head)  # the swap is undone
     torch.testing.assert_close(fused_loss, dense_loss, rtol = 1e-6, atol = 1e-6)
     fused_loss.backward()
@@ -508,3 +508,13 @@ def test_dream_zero_noise_level_is_finite(monkeypatch):
     loss, metrics = _ours("dream", _Bidirectional(), inputs, 0)
     assert torch.isfinite(loss) and float(loss) == 0.0 and loss.requires_grad
     assert float(metrics["masked_fraction"]) == 0.0
+
+
+def test_fused_head_rechecked_after_head_is_replaced():
+    # A head wrapped after the first loss call (e.g. PEFT modules_to_save) must not reuse the cached decision.
+    from unsloth.models.diffusion_loss import fusable_head
+
+    model = _WithHead()
+    assert fusable_head(model, model) is model.head
+    model.head = torch.nn.Sequential(model.head)
+    assert fusable_head(model, model) is None
