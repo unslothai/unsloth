@@ -197,6 +197,24 @@ def crt_headers_reachable() -> bool:
     return _headers_complete(triton_dirs + env_dirs)
 
 
+def _triton_windows_spec() -> str:
+    """The triton-windows range for the resident torch, as studio/setup.ps1 installs it.
+
+    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.13
+    pins triton 3.7 and 2.14 pins 3.8; anything older (or unreadable) keeps the long-standing <3.7.
+    """
+    try:
+        from importlib.metadata import version  # noqa: PLC0415
+        major, minor = (int(part) for part in version("torch").split("+", 1)[0].split(".")[:2])
+    except Exception:  # noqa: BLE001 -- a hint must never raise
+        return "triton-windows<3.7"
+    if (major, minor) == (2, 13):
+        return "triton-windows>=3.7,<3.8"
+    if (major, minor) == (2, 14):
+        return "triton-windows>=3.8,<3.9"
+    return "triton-windows<3.7"
+
+
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
     if sys.platform != "win32":
         return
@@ -206,7 +224,7 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
         os.environ["TORCHDYNAMO_DISABLE"] = "1"
         log.warning(
             "Triton not found on Windows — torch.compile disabled. "
-            'Install for better performance: pip install "triton-windows<3.7"'
+            f'Install for better performance: pip install "{_triton_windows_spec()}"'
         )
         return
 
