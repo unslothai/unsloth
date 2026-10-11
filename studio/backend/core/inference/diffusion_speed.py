@@ -62,6 +62,7 @@ _INDUCTOR_FLAGS = (
     ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
     ("fx_graph_cache", "inductor_fx_graph_cache"),
     ("dynamic_scale_rblock", "inductor_dynamic_scale_rblock"),
+    ("memory_planning", "inductor_memory_planning"),
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
@@ -254,6 +255,16 @@ def restore_backend_flags(state: Optional[dict]) -> None:
     triton_cfg = getattr(inductor_cfg, "triton", None) if inductor_cfg is not None else None
     for attr, key in _INDUCTOR_TRITON_FLAGS:
         _set_knob(triton_cfg, _INDUCTOR_TRITON_MODULE, attr, key)
+
+
+def _pin_memory_planning_off() -> None:
+    """Inductor's default, for every diffusion compile. Unsloth's training config turns ``memory_planning`` on
+    process-wide on torch < 2.12, and its pooled buffers come back from ``inductor::_alloc_from_pool`` as views that
+    AOTAutograd's custom-op aliasing check rejects at the first call (#9897: every gfx1151 render under ``CI``; a
+    deprecation warning elsewhere)."""
+    inductor_cfg = _inductor_config()
+    if inductor_cfg is not None and hasattr(inductor_cfg, "memory_planning"):
+        compile_config.set_knob(_INDUCTOR_MODULE, "memory_planning", False)
 
 
 def _inductor_config() -> Any:
@@ -471,6 +482,7 @@ def apply_speed_optims(
     # `off` load never inherits them.
     if mode == SPEED_OFF:
         return applied
+    _pin_memory_planning_off()
 
     if getattr(target, "backend", None) == "rocm":
         try:

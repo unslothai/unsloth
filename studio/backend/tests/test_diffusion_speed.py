@@ -1234,6 +1234,44 @@ def test_snapshot_restores_emulate_precision_casts(monkeypatch):
     assert cfg.emulate_precision_casts is False
 
 
+@pytest.mark.parametrize("is_gguf", [True, False], ids = ["gguf_dequant", "regional"])
+def test_compile_runs_with_memory_planning_off(monkeypatch, is_gguf):
+    # Unsloth's training config turns memory_planning on process-wide (torch < 2.12); its inductor::_alloc_from_pool
+    # views fail AOTAutograd's aliasing check at the first render (#9897), so every compiling tier pins it off.
+    torch = _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    cfg = _stub_inductor_config(monkeypatch, torch)
+    cfg.memory_planning = True
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = is_gguf,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert cfg.memory_planning is False
+
+
+def test_off_tier_leaves_memory_planning_alone(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    cfg = _stub_inductor_config(monkeypatch, torch)
+    cfg.memory_planning = True
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = SPEED_OFF
+    )
+    assert cfg.memory_planning is True
+
+
+def test_snapshot_restores_memory_planning(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    cfg = _stub_inductor_config(monkeypatch, torch)
+    cfg.memory_planning = True
+    snap = snapshot_backend_flags()
+    cfg.memory_planning = False
+    restore_backend_flags(snap)
+    assert cfg.memory_planning is True
+
+
 def test_missing_inductor_config_is_tolerated(monkeypatch):
     # A build without torch._inductor (or with the flag renamed) must break neither the snapshot nor the compile path.
     _stub_torch(monkeypatch)  # the stub torch has no _inductor attribute
