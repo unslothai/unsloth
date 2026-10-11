@@ -228,6 +228,36 @@ def install_torchao_windows_rocm_stub() -> None:
                 sys.modules[_tao_name] = _make_mod_stub(_tao_name)
 
 
+# First torchao release exporting ``FqnToConfig``; earlier ones name the same class ``ModuleFqnToConfig``.
+_FQN_TO_CONFIG_SINCE = (0, 15)
+
+
+def alias_torchao_fqn_to_config() -> None:
+    """Give torchao < 0.15 the ``FqnToConfig`` name diffusers >= 0.41 and transformers import.
+
+    Studio pairs torch <= 2.9 with torchao 0.14 (its cpp extension matches that torch), and
+    diffusers 0.41 imports ``from torchao.quantization import FqnToConfig`` unguarded, so every
+    LoRA loader and every model that imports ``diffusers.loaders.peft`` (MiniMax-H3 among them)
+    failed with "cannot import name 'FqnToConfig'". torchao 0.15 renamed the class and kept
+    ``ModuleFqnToConfig = FqnToConfig``; this is the same alias the other way round. No-op on a
+    stubbed, absent, or already-new torchao, and it imports torchao only when an alias is due."""
+    if is_stubbed("torchao"):
+        return
+    try:
+        version = importlib.metadata.version("torchao")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    nums = re.findall(r"\d+", version.split("+", 1)[0])[:2]
+    if len(nums) < 2 or (int(nums[0]), int(nums[1])) >= _FQN_TO_CONFIG_SINCE:
+        return
+    try:
+        import torchao.quantization as quantization
+    except Exception:  # noqa: BLE001 -- an unimportable torchao fails later with its own error
+        return
+    if not hasattr(quantization, "FqnToConfig") and hasattr(quantization, "ModuleFqnToConfig"):
+        quantization.FqnToConfig = quantization.ModuleFqnToConfig
+
+
 def _load_torchao_nodist():
     """unsloth/_torchao_nodist.py, loaded by path: importing unsloth here would start its GPU
     stack before the worker is ready. None on an unsloth that predates it."""
