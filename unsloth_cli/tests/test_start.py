@@ -5423,10 +5423,26 @@ def test_write_openclaw_config_points_a_legacy_agent_list_at_openclaw_doctor(tmp
 
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
 
-    out = capsys.readouterr().out
-    assert "legacy agents.list" in out
-    assert "openclaw doctor --fix" in out
-    assert f'OPENCLAW_CONFIG_PATH="{path}"' in out
+    captured = capsys.readouterr()
+    # stderr, so the copy-paste launch recipe on stdout stays clean.
+    assert "legacy agents.list" in captured.err
+    assert "openclaw doctor --fix" in captured.err
+    assert "legacy agents.list" not in captured.out
+
+
+def test_openclaw_doctor_command_matches_the_shell(tmp_path):
+    path = tmp_path / "with space" / "openclaw.json"
+    posix = start._openclaw_doctor_command(path, windows = False)
+    assert posix.startswith("OPENCLAW_CONFIG_PATH=")
+    assert shlex.split(posix)[:2] == [
+        f"OPENCLAW_CONFIG_PATH={path}",
+        f"OPENCLAW_STATE_DIR={path.parent}",
+    ]
+    assert posix.endswith(" openclaw doctor --fix")
+    windows = start._openclaw_doctor_command(path, windows = True)
+    assert windows.startswith(f'$env:OPENCLAW_CONFIG_PATH = "{path}"; ')
+    assert f'$env:OPENCLAW_STATE_DIR = "{path.parent}"; openclaw doctor --fix' in windows
+    assert "OPENCLAW_CONFIG_PATH=" not in windows
 
 
 def test_write_openclaw_config_clears_per_agent_path_overrides_in_keyed_entries(tmp_path):

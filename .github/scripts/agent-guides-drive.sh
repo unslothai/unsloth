@@ -450,17 +450,15 @@ agents = cfg.setdefault("agents", {})
 agents.setdefault("defaults", {})["skipBootstrap"] = True
 # OpenClaw 2026.10.1 rejects the legacy agents.list array ("agents.list moved to
 # keyed agents.entries") and refuses to start. Keyed entries are read since at least
-# 2026.8.1, so always write entries: fold any legacy list in the way `openclaw doctor
-# --fix` does (id becomes the key) and never leave a list behind.
+# 2026.8.1, so always define the ci agent under agents.entries.
 entries = agents.get("entries")
 entries = dict(entries) if isinstance(entries, dict) else {}
+# `unsloth start` never writes agents.list, and a fresh managed dir has none; migrating one
+# correctly is OpenClaw Doctor's job, so refuse rather than half-migrate it here.
+if "list" in agents:
+    sys.exit("[openclaw] unexpected legacy agents.list in the config unsloth start wrote; "
+             "run `openclaw doctor --fix` on it")
 owner = None
-for item in agents.pop("list", None) or []:
-    if isinstance(item, dict) and str(item.get("id") or "").strip():
-        key = str(item["id"]).strip()
-        if item.get("default") is True and owner is None:
-            owner = key
-        entries.setdefault(key, {k: v for k, v in item.items() if k not in ("id", "default")})
 for key, entry in entries.items():
     if isinstance(entry, dict) and entry.pop("default", None) is True and owner is None:
         owner = key

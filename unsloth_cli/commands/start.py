@@ -4708,6 +4708,19 @@ def _openclaw_provider(
     }
 
 
+def _openclaw_doctor_command(path: Path, *, windows: bool) -> str:
+    """`openclaw doctor --fix` against Unsloth's managed config, in the user's shell syntax."""
+    env = {"OPENCLAW_CONFIG_PATH": str(path), "OPENCLAW_STATE_DIR": str(path.parent)}
+    if windows:
+        sets = "; ".join(
+            f'$env:{name} = "{value.replace("`", "``").replace(chr(34), "`" + chr(34)).replace("$", "`$")}"'
+            for name, value in env.items()
+        )
+        return f"{sets}; openclaw doctor --fix"
+    inline = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
+    return f"{inline} openclaw doctor --fix"
+
+
 def write_openclaw_config(
     base: str,
     key: str,
@@ -4783,8 +4796,8 @@ def write_openclaw_config(
         # workspace pins) is OpenClaw's own migration, so point at it rather than half-reimplement it.
         typer.echo(
             f"Note: {path} still has the legacy agents.list, which OpenClaw 2026.10.1+ rejects. "
-            f'Migrate it with: OPENCLAW_CONFIG_PATH="{path}" OPENCLAW_STATE_DIR="{path.parent}" '
-            "openclaw doctor --fix"
+            f"Migrate it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
+            err = True,
         )
     # Unauthenticated loopback gateway: without auth.mode=none the client will not open the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")
