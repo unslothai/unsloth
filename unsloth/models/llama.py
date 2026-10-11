@@ -2961,9 +2961,13 @@ class FastLlamaModel:
         if caller_rope_scaling:
             _rope = _rope_scaling_as_dict(rope_scaling)
             _rope_type = _rope.get("rope_type") or _rope.get("type")
-            # Gemma's rotary ignores config scaling and Unsloth's rotary has no dynamic NTK update, so
-            # vLLM and training would disagree; ignore it as before.
-            if model_config.model_type in ("gemma", "gemma2") or _rope_type == "dynamic":
+            # Only static types Unsloth's rotary reproduces exactly (no seq_len-dependent dynamic or
+            # longrope switch; Gemma's rotary ignores config scaling), else vLLM and training disagree.
+            if model_config.model_type in ("gemma", "gemma2") or _rope_type not in (
+                "linear",
+                "yarn",
+                "llama3",
+            ):
                 logger.warning_once(
                     f"Unsloth: `rope_scaling` of type {_rope_type} is not supported for "
                     f"{model_config.model_type} and is ignored."
