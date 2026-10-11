@@ -2122,6 +2122,16 @@ def restore_resume_state(
         kernels = [
             {k: g[k] for k in _OPTIMIZER_KERNEL_KEYS if k in g} for g in optimizer.param_groups
         ]
+        saved_groups = (
+            optimizer_state.get("param_groups") if isinstance(optimizer_state, dict) else None
+        )
+        if isinstance(saved_groups, list) and len(saved_groups) == len(kernels):
+            # torch places each "step" by the SAVED group's fused flag: a non-fused bundle keeps it on the CPU,
+            # which the fused kernel rejects at the first step.
+            optimizer_state = {
+                **optimizer_state,
+                "param_groups": [{**g, **kept} for g, kept in zip(saved_groups, kernels)],
+            }
         optimizer.load_state_dict(optimizer_state)
         for group, kept in zip(optimizer.param_groups, kernels):
             group.update(kept)

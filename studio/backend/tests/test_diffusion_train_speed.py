@@ -195,6 +195,33 @@ def test_a_fused_bundle_resumed_under_the_fp32_override_stays_non_fused(run_dir,
     assert opt.state[live.weight]["exp_avg"].abs().sum() > 0
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "fused AdamW needs CUDA")
+def test_a_non_fused_bundle_resumes_into_fused_adamw(run_dir, monkeypatch):
+    # A plain AdamW bundle (fp32 override, or written on a CPU / MPS / XPU host) keeps its step on the CPU;
+    # the fused kernel needs it on the param's device.
+    torch.manual_seed(0)
+    model = torch.nn.Linear(4, 4, bias = False).cuda()
+    plain = torch.optim.AdamW(model.parameters(), lr = 1e-3)
+    model.weight.grad = torch.ones_like(model.weight)
+    plain.step()
+    _write(run_dir, model, plain)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_FP32_OPTIM", raising = False)
+    live = torch.nn.Linear(4, 4, bias = False).cuda()
+    opt = make_lora_optimizer(list(live.parameters()), 1e-3)
+    assert opt.param_groups[0].get("fused")
+    restore_resume_state(
+        _cfg(run_dir, resume_from_checkpoint = str(run_dir / "checkpoint-3")),
+        model = live,
+        optimizer = opt,
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0),
+        identity = _identity(),
+    )
+    assert opt.param_groups[0].get("fused")
+    live.weight.grad = torch.ones_like(live.weight)
+    opt.step()
+    assert opt.state[live.weight]["step"].item() == 2
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes AdamW8bit needs CUDA")
 def test_old_8bit_bundle_resumes_and_continues_identically(run_dir, monkeypatch):
     tmp_path = run_dir
