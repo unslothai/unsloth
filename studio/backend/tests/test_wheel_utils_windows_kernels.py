@@ -124,24 +124,61 @@ def test_win_arm64_flash_attn_is_nvidias_wheel_with_its_sha256(python_tag, abi_t
     [
         {"torch_mm": "2.13"},
         {"torch_mm": "2.15"},
-        {"cuda_major": "12"},
+        {"cuda_major": "12", "cuda_version": "12.8"},
+        {"cuda_version": "13.0"},
         {"python_tag": "cp310", "abi_tag": "cp310"},
     ],
 )
 def test_win_arm64_flash_attn_only_for_the_published_pair(overrides):
-    e = env(platform_tag = "win_arm64", torch_mm = "2.14")
+    e = woa_env()
     e.update(overrides)
     assert wheel_utils.flash_attn_wheel_url(e) is None
 
 
-def test_win_arm64_has_no_causal_conv1d_or_mamba_wheel():
-    e = env(platform_tag = "win_arm64", torch_mm = "2.14")
+def woa_env(**overrides):
+    """What NVIDIA's torch 2.14.0+cu134 reports on Windows on ARM."""
+    return env(
+        **{
+            "platform_tag": "win_arm64",
+            "torch_mm": "2.14",
+            "torch_version": "2.14.0+cu134",
+            "cuda_version": "13.4",
+            **overrides,
+        }
+    )
+
+
+@pytest.mark.parametrize("python_tag", ["cp311", "cp312", "cp313"])
+def test_win_arm64_causal_conv1d_and_mamba_are_ours(python_tag):
+    e = woa_env(python_tag = python_tag, abi_tag = python_tag)
+    assert kernel_install.CAUSAL_CONV1D.wheel_url(e) == (
+        f"{OURS}causal_conv1d-1.7.0+cu13torch2.14cxx11abiTRUE-{python_tag}-{python_tag}-win_arm64.whl"
+    )
+    assert kernel_install.MAMBA_SSM.wheel_url(e) == (
+        f"{OURS}mamba_ssm-2.3.2.post1+cu13torch2.14cxx11abiTRUE-{python_tag}-{python_tag}-win_arm64.whl"
+    )
+    # flash-attn stays NVIDIA's even though the platform is in our table.
+    assert wheel_utils.flash_attn_wheel_url(e).startswith(NVIDIA)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"torch_mm": "2.13", "torch_version": "2.13.0+cu134"},
+        {"cuda_version": "13.0"},
+        {"cuda_version": "", "cuda_major": ""},
+        {"python_tag": "cp314", "abi_tag": "cp314"},
+        {"python_tag": "cp314", "abi_tag": "cp314t"},
+    ],
+)
+def test_win_arm64_kernels_only_for_the_cells_we_build(overrides):
+    e = woa_env(**overrides)
     assert kernel_install.CAUSAL_CONV1D.wheel_url(e) is None
     assert kernel_install.MAMBA_SSM.wheel_url(e) is None
 
 
 def test_an_env_without_abi_tag_is_read_as_a_gil_build():
-    e = env(platform_tag = "win_arm64", torch_mm = "2.14")
+    e = woa_env()
     del e["abi_tag"]
     assert wheel_utils.flash_attn_wheel_url(e).endswith(
         "-cp313-cp313-win_arm64.whl#sha256=" + wheel_utils.NVIDIA_WOA_FLASH_ATTN_SHA256["cp313"]

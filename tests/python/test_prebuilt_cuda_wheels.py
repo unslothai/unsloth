@@ -157,9 +157,10 @@ class TestOverrideScope:
             is None
         )
 
-    # win_amd64 is published too, but for cp313 only; test_wheel_utils_windows_kernels.py owns it.
-    @pytest.mark.parametrize("platform_tag", ["linux_aarch64", "win_arm64", "macosx_11_0_arm64"])
-    def test_only_linux_x86_64_and_win_amd64(self, platform_tag):
+    # win_amd64, win_arm64 and linux_aarch64 are published too, for fewer cells; the windows and arm
+    # resolver tests own them.
+    @pytest.mark.parametrize("platform_tag", ["macosx_11_0_arm64", "linux_armv7l"])
+    def test_no_wheel_for_an_unbuilt_platform(self, platform_tag):
         assert (
             wheel_utils.unsloth_prebuilt_wheel_url(
                 filename_prefix = "mamba_ssm", env = env(platform_tag = platform_tag)

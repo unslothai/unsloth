@@ -131,11 +131,27 @@ _UNSLOTH_PREBUILT_VERSIONS = {
     "mamba_ssm": "2.3.2.post1",
 }
 
-# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True; Windows publishes cp313 GIL builds only.
+# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True; Windows publishes cp313 GIL builds only, and so does linux_aarch64 (upstream's aarch64 wheels stop at torch 2.10).
 _UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
     "linux_x86_64": ("TRUE", None),
     "win_amd64": ("TRUE", frozenset({"cp313"})),
+    "linux_aarch64": ("TRUE", frozenset({"cp313"})),
+    "win_arm64": ("TRUE", frozenset({"cp311", "cp312", "cp313"})),
 }
+
+# Windows on ARM has one CUDA torch, NVIDIA's 2.14.0+cu134 (CUDA 13.4, the first with a Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there.
+_UNSLOTH_WIN_ARM64_PREFIXES = frozenset({"causal_conv1d", "mamba_ssm"})
+_WIN_ARM64_TORCH_MM = "2.14"
+_WIN_ARM64_MIN_CUDA = (13, 4)
+
+
+def _cuda_at_least(env: dict[str, str], floor: tuple[int, int]) -> bool:
+    try:
+        major, minor = (int(part) for part in str(env.get("cuda_version") or "").split(".")[:2])
+    except ValueError:
+        return False
+    return (major, minor) >= floor
+
 
 # NVIDIA's flash-attn for Windows on ARM, built for the torch 2.14.0+cu134 the WoA installer takes. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
 NVIDIA_WOA_FLASH_ATTN_RELEASE_URL = (
@@ -161,7 +177,9 @@ def nvidia_woa_flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     """NVIDIA's win_arm64 flash-attn for this env, with its pinned #sha256= fragment, else None."""
     if env is None or env.get("platform_tag") != "win_arm64":
         return None
-    if env.get("torch_mm") != NVIDIA_WOA_FLASH_ATTN_TORCH_MM or env.get("cuda_major") != "13":
+    if env.get("torch_mm") != NVIDIA_WOA_FLASH_ATTN_TORCH_MM or not _cuda_at_least(
+        env, _WIN_ARM64_MIN_CUDA
+    ):
         return None
     python_tag = env.get("python_tag") or ""
     abi_tag = env.get("abi_tag") or python_tag
@@ -178,7 +196,7 @@ def nvidia_woa_flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
 def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | None) -> str | None:
     """Our own prebuilt wheel for this environment, or None to leave resolution unchanged.
 
-    Every gate here is narrower than it strictly has to be, because the cost of the two answers is not symmetric: returning None costs a source build the user was already facing, and returning a URL for a combination we did not publish costs a 404 and the same source build with a misleading log line in front of it. So it answers only for the exact cells the workflow builds, and the torch minor, CUDA major, ABI, interpreter and platform must all match. Linux x86_64 and Windows x64 only (see _UNSLOTH_PREBUILT_PLATFORMS): nothing else is built, and macOS and linux_aarch64 keep whatever behaviour they have today.
+    Every gate here is narrower than it strictly has to be, because the cost of the two answers is not symmetric: returning None costs a source build the user was already facing, and returning a URL for a combination we did not publish costs a 404 and the same source build with a misleading log line in front of it. So it answers only for the exact cells the workflow builds, and the torch minor, CUDA major, ABI, interpreter and platform must all match (see _UNSLOTH_PREBUILT_PLATFORMS); macOS keeps whatever behaviour it has today.
     """
     if env is None:
         return None
@@ -191,6 +209,12 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     if platform_spec is None:
         return None
     cxx11abi, published_pythons = platform_spec
+    if env.get("platform_tag") == "win_arm64" and (
+        filename_prefix not in _UNSLOTH_WIN_ARM64_PREFIXES
+        or env.get("torch_mm") != _WIN_ARM64_TORCH_MM
+        or not _cuda_at_least(env, _WIN_ARM64_MIN_CUDA)
+    ):
+        return None
     # Every Linux torch pip wheel from 2.7 on is built with _GLIBCXX_USE_CXX11_ABI=1, so there is no abiFALSE variant to publish. A torch built otherwise -- a source build, an NGC image -- is not something these wheels can serve.
     if env.get("cxx11abi") != cxx11abi:
         return None
