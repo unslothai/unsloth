@@ -620,6 +620,8 @@ class LlamaAdmissionLease:
             patience = patience,
             hard_deadline = hard_deadline,
             progress = progress,
+            # A lease released mid-wait leaves the line now, not at its hard deadline.
+            abandoned = lambda: self._released,
         )
         if slot is None:
             return False

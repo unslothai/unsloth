@@ -182,6 +182,22 @@ class TestAChatParkedAfterItsFirstToken:
         assert "".join(self._read(chunks)).endswith('"b"}}]}\n\n')
 
 
+    def test_a_wedged_park_in_split_chunks_times_out(self):
+        data = 'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+        chunks = [data, ": preempted\n\n"]
+        chunks += [": preempt-", "keepalive\n\n: preempt-keepalive\n\n"] * 200
+        started = time.monotonic()
+        with pytest.raises(httpx.ReadTimeout, match = "stopped producing tokens"):
+            for _ in self._read(chunks):
+                pass
+        assert time.monotonic() - started < 3, "split keepalives renewed the stall window"
+
+    def test_a_split_park_that_resumes_still_answers(self):
+        data = 'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+        chunks = [data, ": preempted\n\n: preempt-"] + ["keepalive\n\n"] * 5
+        chunks += [": resumed\n\n", data.replace('"a"', '"b"')]
+        assert "".join(self._read(chunks)).endswith('"b"}}]}\n\n')
+
 class TestAByteStreamParkedAfterItsFirstToken:
     """`/v1/completions` relays raw bytes, so a notice may be split or share a chunk."""
 

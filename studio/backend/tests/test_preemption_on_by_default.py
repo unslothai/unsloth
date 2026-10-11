@@ -326,3 +326,35 @@ class TestEachServerAnswersForItself:
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "note_server_parking(False)" not in source
         assert "note_server_parking(self._server_preempts_kv and kv_cache_unified, self)" in source
+
+
+class TestExactParksAreCountedAcrossModels:
+    """A park budget is a cap allocated only on a park, so each exact model has to be measured
+    against the RAM the others did not already certify, or two pass on the same free reading."""
+
+    @staticmethod
+    def _backend(state, writes):
+        backend = object.__new__(LlamaCppBackend)
+        backend._exact_concurrency = state
+        backend._exact_parking_writes = writes
+        return backend
+
+    def test_an_exact_neighbour_holds_its_parks(self, monkeypatch):
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        neighbour = self._backend(exact.EXACT_STATE_ON, 8_000)
+        stock = self._backend(exact.EXACT_STATE_OFF, 4_000)
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, neighbour, stock])
+        assert llama_mod._exact_host_free_mib(me) == 2_000
+        assert llama_mod._exact_host_shortfall_after_load(8_000, 2_000) == (8_000, 2_000)
+        # Alone, the same model fits.
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, stock])
+        assert llama_mod._exact_host_free_mib(me) == 10_000
+
+    def test_every_exact_host_check_asks_for_this_backends_share(self):
+        import inspect
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        assert source.count("_exact_host_free_mib(self)") == 4

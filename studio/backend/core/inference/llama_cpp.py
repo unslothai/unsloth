@@ -2637,6 +2637,24 @@ _EXACT_HOST_SHORT_AFTER_LOAD = (
 )
 
 
+def _exact_host_free_mib(backend) -> Optional[int]:
+    """Host RAM free for this backend's exact parks: what the others certified as `on` is theirs.
+    A park budget is only a cap, allocated when a slot parks, so two exact models measured
+    against the same free reading could both pass and then exhaust it together."""
+    free = _available_host_memory_mib()
+    if free is None:
+        return None
+    held = 0
+    for other in _serving_backends_snapshot():
+        if other is backend or getattr(other, "_exact_concurrency", None) != _exact.EXACT_STATE_ON:
+            continue
+        try:
+            held += max(0, int(getattr(other, "_exact_parking_writes", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    return max(0, int(free) - held)
+
+
 def _exact_host_shortfall_after_load(
     writes: Optional[int], free_mib: Optional[int]
 ) -> Optional[tuple[int, int]]:
@@ -31017,7 +31035,7 @@ class LlamaCppBackend:
                                 _exact_writes = min(_exact_cap, _exact_writes)
                             # Judged again once the weights are resident: see after launch.
                             self._exact_parking_writes = _exact_writes
-                            _host_free_mib = _available_host_memory_mib()
+                            _host_free_mib = _exact_host_free_mib(self)
                             if _host_free_mib is not None and _exact_writes > _host_free_mib:
                                 self._exact_host_short = (_exact_writes, _host_free_mib)
                                 self._record_load_warning(
@@ -33976,7 +33994,7 @@ class LlamaCppBackend:
                         _writes = min(_cap, _writes)
                     self._exact_parking_writes = _writes
                     if getattr(self, "_exact_host_short", None) is not None:
-                        _free = _available_host_memory_mib()
+                        _free = _exact_host_free_mib(self)
                         self._exact_host_short = (
                             (_writes, _free) if _free is not None and _writes > _free else None
                         )
@@ -33986,7 +34004,7 @@ class LlamaCppBackend:
                     # in anonymous host memory (no mmap, host tensors) takes gigabytes the
                     # parks were told they could have. Judged again now that they are resident.
                     _exact_host_short = _exact_host_shortfall_after_load(
-                        getattr(self, "_exact_parking_writes", None), _available_host_memory_mib()
+                        getattr(self, "_exact_parking_writes", None), _exact_host_free_mib(self)
                     )
                     if _exact_host_short is not None:
                         self._exact_host_short = _exact_host_short
@@ -34056,7 +34074,7 @@ class LlamaCppBackend:
                             _fitted_writes = min(_fitted_cap, _fitted_writes)
                         self._exact_parking_writes = _fitted_writes
                         _exact_host_short = _exact_host_shortfall_after_load(
-                            _fitted_writes, _available_host_memory_mib()
+                            _fitted_writes, _exact_host_free_mib(self)
                         )
                         if _exact_host_short is not None:
                             self._exact_host_short = _exact_host_short
@@ -37842,6 +37860,8 @@ class LlamaCppBackend:
         # When the current park began; its keepalives renew only up to the cap.
         parked_since: Optional[float] = None
         prefill_sse_buffer = ""
+        # Text chunks are arbitrary: a notice can arrive split, or beside another event.
+        post_sse_buffer = ""
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
@@ -37900,7 +37920,22 @@ class LlamaCppBackend:
                             post_first_chunk_read_timeout_s,
                         )
                     now = time.monotonic()
-                    if last_chunk_at is not None and LlamaCppBackend._chunk_is_park_notice(chunk):
+                    if last_chunk_at is None:
+                        # Keep the first chunk's unfinished tail, or the next event is misread.
+                        post_sse_buffer = re.split(r"\r\n\r\n|\n\n|\r\r", chunk)[-1]
+                        parked = False
+                    else:
+                        post_sse_buffer += chunk
+                        events = re.split(r"\r\n\r\n|\n\n|\r\r", post_sse_buffer)
+                        post_sse_buffer = events.pop()
+                        events = [event for event in events if event.strip()]
+                        # Only part of an event continues whatever the stream was doing.
+                        parked = (
+                            all(LlamaCppBackend._chunk_is_park_notice(event) for event in events)
+                            if events
+                            else parked_since is not None
+                        )
+                    if parked:
                         # Parked after its first token: the keepalives renew the stall window
                         # only up to the park cap, as the async relay does.
                         if parked_since is None:
