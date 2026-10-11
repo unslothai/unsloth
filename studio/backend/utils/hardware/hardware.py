@@ -4613,6 +4613,8 @@ _physical_gpu_count_from_smi: bool = False
 _PHYSICAL_GPU_COUNT_TTL_SECONDS = 60.0
 _physical_gpu_count_checked_at: Optional[float] = None
 _physical_gpu_count_refresh_lock = threading.Lock()
+_physical_gpu_count_work_lock = threading.Lock()
+_physical_gpu_count_refreshing = False
 _visible_gpu_count: Optional[int] = None
 
 
@@ -5951,27 +5953,33 @@ def _nvidia_physical_gpu_row_count() -> Optional[int]:
         return None
 
 
-def _refresh_physical_gpu_count() -> None:
-    """Re-read a cached NVIDIA count once per TTL and keep it only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows."""
+def _run_physical_gpu_count_probe() -> None:
+    """Keep a re-read NVIDIA count only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows."""
     global _physical_gpu_count, _physical_gpu_count_from_smi, _physical_gpu_count_checked_at
+    count = _nvidia_physical_gpu_row_count()
+    # Stamped after the probe, so the next expiry also outlives gpu_query's own cache entry for it.
+    _physical_gpu_count_checked_at = time.monotonic()
+    previous = _physical_gpu_count
+    if count is None or previous is None or count <= previous:
+        return
+    logger.info("Physical GPU count grew from %d to %d; using the new GPUs", previous, count)
+    _physical_gpu_count = count
+    _physical_gpu_count_from_smi = True
+
+
+def _refresh_physical_gpu_count() -> None:
+    """Re-probe once per TTL off the caller's thread: async routes reach this, and `nvidia-smi` can take seconds on a busy driver. The caller keeps the cached count; growth shows on the next call."""
     checked_at = _physical_gpu_count_checked_at
     if checked_at is None or time.monotonic() - checked_at < _PHYSICAL_GPU_COUNT_TTL_SECONDS:
         return
-    # One prober at a time; everyone else keeps the cached count instead of waiting on the driver.
-    if not _physical_gpu_count_refresh_lock.acquire(blocking = False):
-        return
-    try:
-        count = _nvidia_physical_gpu_row_count()
-        # Stamped after the probe, so the next expiry also outlives gpu_query's own cache entry for it.
-        _physical_gpu_count_checked_at = time.monotonic()
-        previous = _physical_gpu_count
-        if count is None or previous is None or count <= previous:
-            return
-        logger.info("Physical GPU count grew from %d to %d; using the new GPUs", previous, count)
-        _physical_gpu_count = count
-        _physical_gpu_count_from_smi = True
-    finally:
-        _physical_gpu_count_refresh_lock.release()
+    _schedule_single_flight_refresh(
+        "_physical_gpu_count_refreshing",
+        _physical_gpu_count_refresh_lock,
+        _physical_gpu_count_work_lock,
+        _run_physical_gpu_count_probe,
+        "gpu-count-refresh",
+        "GPU count",
+    )
 
 
 def get_physical_gpu_count() -> int:

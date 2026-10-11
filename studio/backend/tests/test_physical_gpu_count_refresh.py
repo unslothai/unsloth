@@ -23,6 +23,13 @@ def smi(monkeypatch):
     monkeypatch.setattr(hw, "_physical_gpu_count", None)
     monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
     monkeypatch.setattr(hw, "_physical_gpu_count_checked_at", None, raising = False)
+    monkeypatch.setattr(hw, "_physical_gpu_count_refreshing", False, raising = False)
+    # The re-probe runs off-thread in production; inline here so each assertion sees its result.
+    monkeypatch.setattr(
+        hw,
+        "_schedule_single_flight_refresh",
+        lambda flag, refresh_lock, work_lock, run, *a: run(),
+    )
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
     clock = {"now": 1000.0}
     monkeypatch.setattr(hw.time, "monotonic", lambda: clock["now"])
@@ -162,3 +169,31 @@ def test_the_memory_table_covers_every_parent_visible_gpu(smi, monkeypatch):
     )
     assert metadata["estimation_mode"] == "detailed"
     assert "min_per_gpu_2" in metadata["vram_breakdown"]
+
+
+def test_the_reprobe_never_blocks_the_caller(smi, monkeypatch):
+    import threading
+
+    monkeypatch.undo()
+    release = threading.Event()
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "_physical_gpu_count", 1)
+    monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", True)
+    monkeypatch.setattr(hw, "_physical_gpu_count_refreshing", False)
+    monkeypatch.setattr(hw, "_physical_gpu_count_checked_at", hw.time.monotonic() - 3600.0)
+
+    def wedged_driver(gpu_rows_only = False):
+        release.wait(10)
+        return 2
+
+    monkeypatch.setattr(nvidia, "get_physical_gpu_count", wedged_driver)
+    started = hw.time.monotonic()
+    assert hw.get_physical_gpu_count() == 1
+    assert hw.get_physical_gpu_count() == 1
+    assert hw.time.monotonic() - started < 1.0
+    release.set()
+    deadline = hw.time.monotonic() + 10
+    while hw._physical_gpu_count != 2 and hw.time.monotonic() < deadline:
+        hw.time.sleep(0.01)
+    assert hw.get_physical_gpu_count() == 2
