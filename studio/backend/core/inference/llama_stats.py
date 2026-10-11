@@ -37,7 +37,7 @@ def fetch_llama_slots(
     """
     url = f"{str(base_url).rstrip('/')}/slots"
     try:
-        with urllib.request.urlopen(
+        with _loopback_opener().open(
             urllib.request.Request(url, headers = dict(headers or {})), timeout = timeout_s
         ) as r:
             if r.status != 200:
@@ -61,7 +61,7 @@ def erase_llama_slot(
         # Authorized for the same reason the read above is: a 401 returns 0 tokens erased, so a
         # paused slot's cells are never released.
         request = urllib.request.Request(url, method = "POST", data = b"", headers = dict(headers or {}))
-        with urllib.request.urlopen(request, timeout = timeout_s) as r:
+        with _loopback_opener().open(request, timeout = timeout_s) as r:
             if r.status != 200:
                 return 0
             payload = json.loads(r.read().decode("utf-8", "replace"))

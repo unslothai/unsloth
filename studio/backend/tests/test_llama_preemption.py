@@ -15,6 +15,7 @@ import urllib.request
 import pytest
 
 from core.inference import llama_preemption as preemption
+from core.inference import llama_stats
 from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 from core.inference.llama_cpp import LlamaCppBackend, _CombinedCancelEvent, _interrupt_event
 from core.inference.llama_preemption import (
@@ -852,7 +853,14 @@ class TestTheSlotProbesAreAuthenticated:
             seen.append(request)
             return _Response()
 
-        monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+        class _Opener:
+            open = staticmethod(_urlopen)
+
+        def _proxied(*_a, **_k):
+            raise AssertionError("urlopen honours HTTP_PROXY and would hand the bearer to it")
+
+        monkeypatch.setattr(llama_stats, "_loopback_opener", _Opener)
+        monkeypatch.setattr(urllib.request, "urlopen", _proxied)
         key = {"Authorization": "Bearer secret"}
         fetch_llama_slots("http://127.0.0.1:8080", headers = key)
         assert seen[0].get_header("Authorization") == "Bearer secret"
@@ -861,6 +869,36 @@ class TestTheSlotProbesAreAuthenticated:
         assert erase_llama_slot("http://127.0.0.1:8080", 2, headers = key) == 4096
         assert seen[2].get_header("Authorization") == "Bearer secret"
         assert seen[2].get_method() == "POST"
+
+    def test_a_configured_proxy_never_sees_the_loopback_call(self, monkeypatch):
+        import http.server
+        import threading
+
+        seen = []
+
+        class _Slots(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"[]")
+
+            def log_message(self, *_a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Slots)
+        threading.Thread(target = server.serve_forever, daemon = True).start()
+        for name in ("HTTP_PROXY", "http_proxy"):
+            monkeypatch.setenv(name, "http://127.0.0.1:9")
+        for name in ("NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(name, raising = False)
+        try:
+            url = f"http://127.0.0.1:{server.server_port}"
+            assert fetch_llama_slots(url, headers = {"Authorization": "Bearer k"}) == []
+        finally:
+            server.shutdown()
+        assert seen == ["Bearer k"]
 
 
 # ================================================================ the resume grant and waits

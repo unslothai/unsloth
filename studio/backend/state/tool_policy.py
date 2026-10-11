@@ -27,6 +27,7 @@ passthrough guard are built around.
 """
 
 import contextvars
+import json
 from contextlib import contextmanager
 from functools import partial, wraps
 from typing import Iterator, Optional
@@ -146,6 +147,54 @@ def needs_tool_confirmation(
     if permission_mode == "auto":
         return _classify(is_high_risk, name, arguments, sandbox_level)
     return True
+
+
+def round_may_prompt(
+    calls,
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    sandbox_level: Optional[str] = None,
+    is_high_risk = None,
+    never_needs = None,
+) -> bool:
+    """Whether any call of a parsed round could stop and ask, decided before any runs.
+
+    The same question ``needs_tool_confirmation`` answers per call, so "off" still counts the
+    calls it gates. Arguments arrive as a JSON string on the wire; any that do not parse, or a
+    classifier that raises, count as asking, which only costs the round its overlap.
+    """
+    if not confirm_tool_calls or bypass_permissions:
+        return False
+    for call in calls or ():
+        fn = (call or {}).get("function") or {}
+        name = fn.get("name") or ""
+        raw = fn.get("arguments")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                raw = None
+        if not isinstance(raw, dict):
+            if permission_mode != "off" or off_mode_still_gates(name, sandbox_level):
+                return True
+            continue
+        try:
+            if needs_tool_confirmation(
+                confirm_tool_calls = confirm_tool_calls,
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = name,
+                arguments = raw,
+                is_high_risk = is_high_risk,
+                never_needs = never_needs,
+                sandbox_level = sandbox_level,
+            ):
+                return True
+        except Exception:
+            return True
+    return False
 
 
 def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) -> bool:

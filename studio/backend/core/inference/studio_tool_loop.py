@@ -1489,6 +1489,7 @@ async def stream_with_studio_tools(
         normalize_sandbox_level,
         normalize_tool_permissions,
         requires_os_isolation,
+        round_may_prompt,
         runs_without_os_sandbox,
     )
 
@@ -1934,15 +1935,17 @@ async def stream_with_studio_tools(
         turn_executed_real_tool = False
 
         # Whether this round's calls may overlap. Decided BEFORE any is prepared: it has to hold for
-        # the whole round, or a modal lands in front of work already in flight.
-        _approval_gate = confirm_tool_calls and not bypass_permissions and permission_mode != "off"
-        if _approval_gate and permission_mode == "auto":
-            _approval_gate = any(
-                is_high_risk_tool_call(
-                    (item.get("function") or {}).get("name", ""), item.get("arguments")
-                )
-                for item in calls
-            )
+        # the whole round, or a modal lands in front of work already in flight. "off" still counts an
+        # unisolated Python or Terminal call that would ask.
+        _approval_gate = round_may_prompt(
+            calls,
+            confirm_tool_calls = confirm_tool_calls,
+            bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            sandbox_level = sandbox_level,
+            is_high_risk = is_high_risk_tool_call,
+            never_needs = never_needs_approval,
+        )
         # And only when the calls cannot depend on each other's RESULTS. `prepare_call` has
         # exactly two such dependencies, both written by `record_result`. Keyed as the ledger
         # keys them, healed, so two spellings of one call run once.
