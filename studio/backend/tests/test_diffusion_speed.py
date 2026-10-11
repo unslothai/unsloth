@@ -497,6 +497,31 @@ def test_speed_max_gguf_regional_compile_not_dequant(monkeypatch):
     assert called == {"compiled_dequant": 0}
 
 
+def test_speed_max_gguf_without_block_compile_keeps_dequant_compile(monkeypatch):
+    # ROCm targets never regionally compile, so max used to run the GGUF dequant eager: slower than default on gfx1151
+    # (3.83 vs 2.98 s per 512 px FLUX.2-klein Q2_K render).
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(compile_ok = False), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is False and pipe.compiled is False
+    assert applied["compiled_dequant"] is True
+    assert called == {"compiled_dequant": 1}
+
+
+def test_speed_max_gguf_whose_block_compile_fails_keeps_dequant_compile(monkeypatch):
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is False and applied["compiled_dequant"] is True
+    assert called == {"compiled_dequant": 1}
+
+
 def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
@@ -1175,6 +1200,53 @@ def test_snapshot_restores_emulate_precision_casts(monkeypatch):
     cfg.emulate_precision_casts = True
     restore_backend_flags(snap)
     assert cfg.emulate_precision_casts is False
+
+
+def _stub_training_config(torch):
+    """Unsloth's training config as torch < 2.12 leaves it process-wide: memory planning on, compile errors suppressed."""
+    inductor = types.SimpleNamespace(memory_planning = True, emulate_precision_casts = False)
+    dynamo = types.SimpleNamespace(suppress_errors = True)
+    torch._inductor = types.SimpleNamespace(config = inductor)
+    torch._dynamo = types.SimpleNamespace(config = dynamo)
+    return inductor, dynamo
+
+
+@pytest.mark.parametrize("is_gguf", [True, False], ids = ["gguf_dequant", "regional"])
+def test_compile_runs_with_torch_defaults_not_the_training_config(monkeypatch, is_gguf):
+    # #9897: memory planning's inductor::_alloc_from_pool views fail AOTAutograd's aliasing check at the first render,
+    # and suppress_errors hid every failed compile as a silent eager run.
+    torch = _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = is_gguf,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert inductor.memory_planning is False
+    assert dynamo.suppress_errors is False
+
+
+@pytest.mark.parametrize("mode", [SPEED_OFF, SPEED_EAGER])
+def test_non_compiling_tiers_leave_the_compile_config_alone(monkeypatch, mode):
+    torch = _stub_torch(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = mode
+    )
+    assert inductor.memory_planning is True and dynamo.suppress_errors is True
+
+
+def test_snapshot_restores_the_compile_config(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    snap = snapshot_backend_flags()
+    inductor.memory_planning = False
+    dynamo.suppress_errors = False
+    restore_backend_flags(snap)
+    assert inductor.memory_planning is True and dynamo.suppress_errors is True
 
 
 def test_missing_inductor_config_is_tolerated(monkeypatch):
@@ -1869,6 +1941,14 @@ def test_settle_fallback_keeps_compiled_while_another_dit_still_compiles(monkeyp
     third.blocks[0](1)
     ds_mod.settle_compile_fallback(state, pipe)
     assert state.speed_optims == ("cuda_graph", "compile_fallback_eager")
+
+
+def test_settle_fallback_drops_a_dequant_compile_that_fell_back(monkeypatch):
+    monkeypatch.setattr(ds_mod.gguf_compile, "compile_error", lambda: "InductorError: hip_utils.c")
+    pipe = types.SimpleNamespace(transformer = _Dit([_Block(lambda x: x)]))
+    state = types.SimpleNamespace(speed_optims = ("compiled_dequant", "cudnn_benchmark"))
+    assert "hip_utils" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("cudnn_benchmark", "compile_fallback_eager")
 
 
 def test_settle_fallback_sees_a_modular_workflows_named_partition(monkeypatch):

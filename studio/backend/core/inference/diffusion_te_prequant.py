@@ -673,6 +673,7 @@ def _te_prequant_pipe_kwargs(
 ) -> dict[str, Any]:
     """Gated like the runtime cast, so injection never engages where quantize_text_encoders would not."""
     unavailable: list[str] = []
+    unbudgeted: list[str] = []
     failures: list = []
     cause = ""
     try:
@@ -736,14 +737,24 @@ def _te_prequant_pipe_kwargs(
                 )
             if encoder is not None:
                 injected[component] = encoder
+            elif int8_convrot_te_runs_on(target):
+                # The MPS plan priced this checkpoint, not the dense shards beside it.
+                unbudgeted.append(component)
+                cause = f" ({failures[-1]})" if failures else cause
             elif dense_source and not _hosted_component_cached(dense_source, component, "", ""):
                 unavailable.append(component)
                 cause = f" ({failures[-1]})" if failures else cause
-        if not unavailable:
+        if not unavailable and not unbudgeted:
             return injected
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
+    if unbudgeted:
+        raise RuntimeError(
+            f"The pre-quantized {', '.join(unbudgeted)} for {base} could not be loaded{cause}. The "
+            "memory check sized this load for it, so the larger dense encoder is not loaded in its "
+            "place. Set Text encoder precision to Dense (bf16) to load the dense encoder instead."
+        )
     raise RuntimeError(
         f"The pre-quantized {', '.join(unavailable)} for {base} could not be loaded{cause}. Its dense "
         "weights were not downloaded because the pre-quantized copy replaces them. If memory ran out "

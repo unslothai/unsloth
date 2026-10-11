@@ -27377,6 +27377,7 @@ async def produce_openai_chat_completions(
                 except Exception as e:
                     logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
                     api_monitor.fail(monitor_id, _friendly_error(e))
+                    # Recover if an MTP crash killed the server mid-stream.
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse(error_chunk)
@@ -27744,6 +27745,7 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # Map upstream 4xx (e.g. over-context) to a 400 instead of leaking a 500.
                 _cls = _classify_llama_generation_error(e)
@@ -28405,6 +28407,7 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # Map upstream 4xx (e.g. over-context) to a 400 instead of leaking a 500.
                 _cls = _classify_llama_generation_error(e)
@@ -37240,7 +37243,16 @@ def _is_lost_upstream_connection(exc) -> bool:
 
 
 async def _passthrough_retry_url(llama_backend, exc):
-    """A relaunched llama-server gets a new ephemeral port, so a retry must use the fresh URL."""
+    """Fresh upstream URL after respawning a dead llama-server, else None.
+
+    A crashed server relaunches on a NEW ephemeral port, so a passthrough still
+    holding the old base_url keeps failing until the next load. Mirrors the
+    respawn-and-retry in generate_chat_completion. None when an MTP crash
+    already scheduled its own recovery, or when nothing needed respawning.
+
+    Shared by both passthrough surfaces: /v1/messages and /v1/chat/completions post
+    to the same upstream route, and a crash strands whichever one is in use.
+    """
     recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
     if recover is not None and recover(exc):
         return None

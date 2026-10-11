@@ -58,6 +58,8 @@ class LoraCatalogEntry:
     size_bytes: int = 0
     weight_default: float = 1.0
     fine_tuned: bool = False
+    # Id of the loras/diffusion adapter this custom-folder file is an export of: listed once, still resolvable.
+    copy_of: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -232,11 +234,25 @@ def _scan_local() -> list[LoraCatalogEntry]:
             found.append((p, entry_id))
 
     entries: list[LoraCatalogEntry] = []
+    # An export carries its source's sidecar plus ``kind``. Only trainer sidecars (``created_at``) qualify, and the
+    # bytes at both ends must match too: equal size and metadata alone fit two different same-rank LoRAs.
+    originals: dict[tuple, tuple[str, Path]] = {}
     for p, entry_id in found:
         try:
             size = p.stat().st_size
         except OSError:
             size = 0
+        sidecar = _sidecar_data(p) or {}
+        meta = {k: v for k, v in sidecar.items() if k != "kind"}
+        signature = (
+            (size, json.dumps(meta, sort_keys = True, default = str)) if "created_at" in meta else None
+        )
+        copy_of = None
+        if p.parent == root_dir:
+            if signature:
+                originals.setdefault(signature, (entry_id, p))
+        elif signature in originals and _same_ends(originals[signature][1], p):
+            copy_of = originals[signature][0]
         # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so
         # it is family-gated instead of "unknown". Best-effort.
         families, weight_default = _read_lora_sidecar(p)
@@ -250,10 +266,27 @@ def _scan_local() -> list[LoraCatalogEntry]:
                 size_bytes = size,
                 families = families,
                 weight_default = weight_default,
-                fine_tuned = (_sidecar_data(p) or {}).get("source") == "studio-trained",
+                fine_tuned = sidecar.get("source") == "studio-trained",
+                copy_of = copy_of,
             )
         )
     return entries
+
+
+def _same_ends(
+    a: Path,
+    b: Path,
+    n: int = 1 << 16,
+) -> bool:
+    try:
+        with _open_pinned(a) as fa, _open_pinned(b) as fb:
+            if fa.read(n) != fb.read(n):
+                return False
+            for f in (fa, fb):
+                f.seek(max(0, os.fstat(f.fileno()).st_size - n))
+            return fa.read(n) == fb.read(n)
+    except OSError:
+        return False
 
 
 def _sidecar_data(weight_path: Path) -> Optional[dict]:
@@ -295,9 +328,15 @@ def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
     return tuple(names), weight_default
 
 
-def list_loras(*, family: Optional[str] = None) -> list[LoraCatalogEntry]:
-    """Cheap: one directory scan plus the in-memory curated list; network is touched only in resolve()."""
-    merged = list(_CURATED) + _scan_local()
+def list_loras(
+    *, family: Optional[str] = None, include_copies: bool = False
+) -> list[LoraCatalogEntry]:
+    """The merged catalog (curated + local), optionally family-filtered.
+
+    Cheap: one directory scan plus the in-memory curated list. Network is only touched on
+    resolve(), when a hub adapter is selected.
+    """
+    merged = [e for e in list(_CURATED) + _scan_local() if include_copies or not e.copy_of]
     if family:
         fam = family.strip().lower()
         merged = [e for e in merged if not e.families or fam in {f.lower() for f in e.families}]

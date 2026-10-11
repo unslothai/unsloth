@@ -529,3 +529,38 @@ def test_gate_does_not_disable_where_triton_already_compiles(monkeypatch, tmp_pa
 
     _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
     assert "TORCHDYNAMO_DISABLE" not in os.environ
+
+
+def _no_headers(monkeypatch, tcc, builds):
+    monkeypatch.setattr(_msvc_env, "_crt_headers_reachable", lambda: False)
+    monkeypatch.setattr(_msvc_env, "_bundled_tcc", lambda: tcc)
+    monkeypatch.setattr(_msvc_env, "_triton_driver_builds", lambda: builds)
+    # setenv first so teardown removes a CC the code under test writes straight into os.environ.
+    monkeypatch.setenv("CC", "")
+    monkeypatch.delenv("CC")
+
+
+def test_clang_cl_without_headers_switches_to_bundled_tinycc(monkeypatch):
+    # #9897: Windows ROCm without Visual Studio. TinyCC built hip_utils.c and every kernel launcher on gfx1151.
+    _no_headers(monkeypatch, r"C:\py\triton\runtime\tcc\tcc.exe", builds = True)
+    assert _msvc_env.crt_headers_reachable() is True
+    assert os.environ["CC"] == r"C:\py\triton\runtime\tcc\tcc.exe"
+
+
+def test_tinycc_that_cannot_build_the_driver_still_gates(monkeypatch):
+    _no_headers(monkeypatch, r"C:\py\triton\runtime\tcc\tcc.exe", builds = False)
+    assert _msvc_env.crt_headers_reachable() is False
+    assert "CC" not in os.environ
+
+
+def test_no_bundled_tinycc_still_gates(monkeypatch):
+    _no_headers(monkeypatch, None, builds = True)
+    assert _msvc_env.crt_headers_reachable() is False
+    assert "CC" not in os.environ
+
+
+def test_an_explicit_cc_is_never_replaced(monkeypatch):
+    _no_headers(monkeypatch, r"C:\py\triton\runtime\tcc\tcc.exe", builds = True)
+    monkeypatch.setenv("CC", r"C:\llvm\bin\clang-cl.exe")
+    assert _msvc_env.crt_headers_reachable() is False
+    assert os.environ["CC"] == r"C:\llvm\bin\clang-cl.exe"
