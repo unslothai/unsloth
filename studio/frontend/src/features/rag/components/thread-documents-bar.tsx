@@ -256,6 +256,7 @@ function useLinkedFolderNames(
         setNames(new Map(folders.map((f) => [f.id, f.displayName])));
       })
       .catch(() => {
+        // The card falls back to a generic label.
       });
     return () => {
       cancelled = true;
