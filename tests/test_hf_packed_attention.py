@@ -590,7 +590,10 @@ def test_tiny_mistral_packed_row_matches_the_masked_path(monkeypatch, window):
     """A real sliding-window decoder: packed logits and grads with the wrapper equal the wrapped sdpa."""
     transformers = pytest.importorskip("transformers")
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    from unsloth.utils.attention_dispatch import HAS_FLASH_ATTENTION, HAS_XFORMERS
 
+    if not (HAS_FLASH_ATTENTION or HAS_XFORMERS or hpa._torch_varlen(torch.device("cuda", 0))):
+        pytest.skip("no varlen kernel on this build")
     hpa._ORIG_SDPA[0] = None
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     original = ALL_ATTENTION_FUNCTIONS["sdpa"]

@@ -417,12 +417,13 @@ def test_fa4_hd256_window_keeps_segments_route(real_fa4):
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA tensors (the wrapper only takes CUDA rows)")
+@pytest.mark.parametrize("window", [None, 2])
 @pytest.mark.parametrize("allowed", [True, False])
-def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, allowed):
+def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, allowed, window):
     from unsloth.utils import hf_packed_attention as hpa
     from unsloth.utils import attention_dispatch as ad
 
-    seen, used = [], []
+    seen, used, asked = [], [], []
 
     def orig(module, q, k, v, mask, dropout = 0.0, scaling = None, is_causal = None, **kwargs):
         seen.append(1)
@@ -434,26 +435,32 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, al
 
     saved = hpa._ORIG_SDPA[0]
     hpa._ORIG_SDPA[0] = orig
-    hpa._MASK_CHECK[:] = [None, None, None]
+    hpa._MASK_CHECK.clear()
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(hpa, "_TORCH_VARLEN", [fake_varlen])
     monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
     monkeypatch.setattr(hpa, "_sdpa_requested", lambda q, k: False)
     # No FA2 / xformers either, so a refused torch varlen goes back to the wrapped sdpa.
     monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.SDPA)
-    monkeypatch.setattr(fi, "flash_impl_allows", lambda head_dim, window, device: allowed)
+    monkeypatch.setattr(
+        fi, "flash_impl_allows", lambda head_dim, window, device: asked.append(window) or allowed
+    )
     lengths = [3, 3]
     q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16)
     segment = torch.repeat_interleave(torch.arange(2), torch.tensor(lengths)).cuda()
     mask = (segment[:, None] == segment[None, :]).tril()[None, None]
+    if window is not None:
+        position = torch.arange(6, device = "cuda")
+        mask = mask & (position[None, :] > position[:, None] - window)
     try:
         out = hpa._sdpa_packed_varlen(
-            types.SimpleNamespace(is_causal = True), q, q, q, mask,
+            types.SimpleNamespace(is_causal = True, sliding_window = window), q, q, q, mask,
             packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
         )
     finally:
         hpa._ORIG_SDPA[0] = saved
-        hpa._MASK_CHECK[:] = [None, None, None]
+        hpa._MASK_CHECK.clear()
+    assert asked == [window]
     if allowed:
         assert used and not seen
     else:
