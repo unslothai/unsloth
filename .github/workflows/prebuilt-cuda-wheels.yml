@@ -288,6 +288,10 @@ jobs:
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
             cuda_cuobjdump cuda_nvdisasm cuda_nvprune
           if ($LASTEXITCODE -ne 0) { throw "CUDA redist install exited $LASTEXITCODE" }
+          # The ARM64 archives put cudart.lib and friends in lib\arm64; torch's cpp_extension links
+          # from CUDA_HOME\lib\x64 on every Windows (measured: LNK1181 cannot open 'cudart.lib').
+          New-Item -ItemType Junction -Path 'C:\cuda\lib\x64' -Target 'C:\cuda\lib\arm64' | Out-Null
+          if (-not (Test-Path 'C:\cuda\lib\x64\cudart.lib')) { throw 'no cudart.lib under C:\cuda\lib\x64' }
           'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
@@ -668,6 +672,10 @@ jobs:
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
             cuda_cuobjdump cuda_nvdisasm cuda_nvprune
           if ($LASTEXITCODE -ne 0) { throw "CUDA redist install exited $LASTEXITCODE" }
+          # The ARM64 archives put cudart.lib and friends in lib\arm64; torch's cpp_extension links
+          # from CUDA_HOME\lib\x64 on every Windows (measured: LNK1181 cannot open 'cudart.lib').
+          New-Item -ItemType Junction -Path 'C:\cuda\lib\x64' -Target 'C:\cuda\lib\arm64' | Out-Null
+          if (-not (Test-Path 'C:\cuda\lib\x64\cudart.lib')) { throw 'no cudart.lib under C:\cuda\lib\x64' }
           'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
