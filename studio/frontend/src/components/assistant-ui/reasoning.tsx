@@ -568,8 +568,16 @@ function ReasoningTail({
         <button
           type="button"
           data-slot="reasoning-show-full"
-          onClick={onShowFull}
-          className="mt-2 cursor-pointer text-muted-foreground text-xs transition-colors hover:text-foreground"
+          onClick={(event) => {
+            // The button unmounts with the cap: keep keyboard focus on this block's header.
+            if (event.currentTarget === document.activeElement)
+              boxRef.current
+                ?.closest('[data-slot="reasoning-root"]')
+                ?.querySelector<HTMLElement>('[data-slot="reasoning-trigger"]')
+                ?.focus({ preventScroll: true });
+            onShowFull();
+          }}
+          className="mt-2 cursor-pointer font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           Show full thinking
         </button>

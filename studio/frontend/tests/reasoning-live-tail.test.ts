@@ -63,6 +63,19 @@ test("the box clips at the top instead of scrolling, and Show full is a hand ope
   assert.match(reasoning, /bounded=\{capped\}/);
 });
 
+test("Show full hands keyboard focus to the block header before its button unmounts", () => {
+  const tail = reasoning.slice(
+    reasoning.indexOf("function ReasoningTail("),
+    reasoning.indexOf("// With the fold preference on"),
+  );
+  // Otherwise focus falls back to <body> and a keyboard user loses their place.
+  assert.match(
+    tail,
+    /event\.currentTarget === document\.activeElement\)[\s\S]*?closest\('\[data-slot="reasoning-root"\]'\)[\s\S]*?querySelector<HTMLElement>\('\[data-slot="reasoning-trigger"\]'\)[\s\S]*?\.focus\(\{ preventScroll: true \}\);\s*onShowFull\(\);/,
+  );
+  assert.match(tail, /focus-visible:ring-1 focus-visible:ring-ring/);
+});
+
 test("a bounded transcript corrects nothing through the thread and mounts the tail", () => {
   assert.match(transcript, /!bounded &&\s*virtualizer\.scrollElement !== null/);
   assert.match(transcript, /if \(passage && !bounded\)\s*adjustAbove/);
