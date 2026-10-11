@@ -279,21 +279,22 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
                 if (token := extract_quant_token(name))
                 and token.upper() not in _FLOAT_PRECISION_QUANTS
             ]
-            loadable = [
-                name
-                for name in quantized
-                if not _FORK_ONLY_QUANT_RE.match(extract_quant_token(name))
-            ]
-            # Beside a fork-only pack, an explicit group size (Q2_g64) is the pack mainline reads; the plain Q2_0 is the fork's group-128 one.
-            grouped = [
-                name
-                for name in loadable
-                if len(loadable) < len(quantized)
-                and _GROUPED_QUANT_RE.search(extract_quant_token(name))
-            ]
-            filename = next(iter(grouped or loadable or quantized), filename)
+            filename = _first_mainline_loadable(quantized) or filename
         return filename
-    return gguf_files[0]
+    return _first_mainline_loadable(gguf_files)
+
+
+def _first_mainline_loadable(names: list[str]) -> Optional[str]:
+    """First of *names*, skipping fork-only packs while anything else is left."""
+    tokens = {name: extract_quant_token(name) or "" for name in names}
+    loadable = [name for name in names if not _FORK_ONLY_QUANT_RE.match(tokens[name])]
+    # Beside a fork-only pack, an explicit group size (Q2_g64) is the pack mainline reads; the plain Q2_0 is the fork's group-128 one.
+    grouped = [
+        name
+        for name in loadable
+        if len(loadable) < len(names) and _GROUPED_QUANT_RE.search(tokens[name])
+    ]
+    return next(iter(grouped or loadable or names), None)
 
 
 def _gguf_stem(filename: str) -> str:
