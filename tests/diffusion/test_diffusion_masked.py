@@ -394,6 +394,27 @@ def test_mask_builder_signature_exposed_from_wrapper_closure():
     assert list(inspect.signature(wrapper).parameters)[:2] == ["config", "inputs_embeds"]
 
 
+def test_converted_config_keeps_token_fields(monkeypatch, tmp_path):
+    from transformers import TrainingArguments
+    from trl import SFTConfig
+    from unsloth.models.diffusion_trainer import DiffusionConfig, DiffusionTrainer
+
+    seen = {}
+    monkeypatch.setattr(
+        DiffusionTrainer.__bases__[0],
+        "__init__",
+        lambda self, model, args, *a, **k: seen.update(args = args),
+    )
+    for args in (
+        SFTConfig(output_dir = str(tmp_path), report_to = "none", hub_token = "hf_x"),
+        TrainingArguments(output_dir = str(tmp_path), report_to = "none", hub_token = "hf_x"),
+    ):
+        DiffusionTrainer(model = None, args = args, diffusion_profile = _profile("dream"))
+        assert isinstance(seen["args"], DiffusionConfig)
+        assert seen["args"].eos_token is None and seen["args"].pad_token is None
+        assert seen["args"].hub_token == "hf_x"
+
+
 _TINY_TRAIN = r"""
 import math, os, sys, torch
 import unsloth

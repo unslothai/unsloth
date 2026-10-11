@@ -78,13 +78,13 @@ class DiffusionTrainer(SFTTrainer):
         if args is None:
             args = DiffusionConfig(output_dir = "outputs")
         elif not isinstance(args, DiffusionConfig):
-            args = DiffusionConfig(
-                **{
-                    k: v
-                    for k, v in args.to_dict().items()
-                    if k in DiffusionConfig.__dataclass_fields__
-                }
-            )
+            values = {
+                k: v for k, v in args.to_dict().items() if k in DiffusionConfig.__dataclass_fields__
+            }
+            # to_dict() masks every *_token field, None included: SFTConfig's eos_token would become
+            # "<EOS_TOKEN>", which SFTTrainer rejects, and hub_token "<HUB_TOKEN>".
+            values.update({k: getattr(args, k) for k in values if k.endswith("_token")})
+            args = DiffusionConfig(**values)
         args.packing = False
         args.padding_free = False
         profile = diffusion_profile or resolve_diffusion_profile(_unwrap_config(model))
