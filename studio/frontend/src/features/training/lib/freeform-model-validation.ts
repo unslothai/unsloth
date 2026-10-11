@@ -35,7 +35,12 @@ export function validateTrainingModelCandidate(
   }
   // Adapter / PEFT dirs are allowed here: LoRA and CPT can continue from a saved
   // adapter (#13140). Full finetune is refused later in validateTrainingConfig.
-  if (candidate.capabilities && !candidate.capabilities.canTrain) {
+  // The inventory marks adapters canTrain=false (not a base), so skip that check for them.
+  if (
+    candidate.modelFormat !== "adapter" &&
+    candidate.capabilities &&
+    !candidate.capabilities.canTrain
+  ) {
     return { ok: false, reasonKey: "studio.modelPicker.reasonNotTrainable" };
   }
   const support = classifyUnslothSupport({

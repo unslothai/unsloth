@@ -479,7 +479,6 @@ def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
 
 def _has_local_adapter_weights(path: Path) -> bool:
     from utils.transformers_version import _has_adapter_weights
-
     return path.is_dir() and _has_adapter_weights(path)
 
 
@@ -1182,6 +1181,13 @@ def _reject_untrainable_model_request(
                 400,
                 "training_local_model_adapter_weights_missing",
                 "Adapter directory is missing adapter_model weights.",
+            )
+        # The loader needs adapter_config.json to find the base model.
+        if not _has_adapter_metadata(path):
+            raise _training_start_error(
+                400,
+                "training_local_model_adapter_config_missing",
+                "Adapter directory is missing adapter_config.json.",
             )
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     try:

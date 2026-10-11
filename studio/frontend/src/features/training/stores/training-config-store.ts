@@ -387,13 +387,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 });
                 return;
               }
+              // The backend reads modality from the adapter's base model; keep it so a
+              // vision or audio adapter is not validated as a text model.
               set({
+                modelType: resolveTrainingModelType({
+                  modelType: modelDetails.model_type,
+                  isEmbedding: !!modelDetails.is_embedding,
+                  isDecision: false,
+                  isVision: modelDetails.is_vision,
+                  isAudio: modelDetails.is_audio,
+                }),
                 decisionLayout: null,
                 modelFormat: "adapter",
+                isVisionModel: modelDetails.is_vision,
+                isEmbeddingModel: !!modelDetails.is_embedding,
+                isAudioModel: !!modelDetails.is_audio,
+                audioCapabilityUnknown: modelDetails.audio_type_known === false,
                 isLoadingModelDefaults: false,
                 isCheckingVision: false,
                 modelDefaultsError: null,
                 modelDefaultsAppliedFor: modelName,
+                maxPositionEmbeddings:
+                  modelDetails.max_position_embeddings ?? null,
               });
               return;
             }

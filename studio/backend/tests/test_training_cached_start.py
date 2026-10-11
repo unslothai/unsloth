@@ -454,9 +454,7 @@ def test_hf_dataset_preflight_rejects_before_backend_start():
         ),
     ],
 )
-def test_start_rejects_untrainable_model_formats(
-    model_format, training_type, code, expected
-):
+def test_start_rejects_untrainable_model_formats(model_format, training_type, code, expected):
     route = _load_route_module(f"training_route_reject_{model_format}")
     request = _request(model_format = model_format, training_type = training_type)
 
@@ -484,6 +482,31 @@ def test_start_allows_adapter_only_local_dir_for_lora(tmp_path):
 
     result = route._reject_untrainable_model_request(request)
     assert result.model_name == str(tmp_path.resolve())
+
+
+def test_start_rejects_adapter_weights_without_adapter_config_for_lora(tmp_path):
+    route = _load_route_module("training_route_reject_adapter_without_config")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_config_missing"
+    assert "adapter_config.json" in exc_info.value.detail["message"]
+
+
+def test_untrainable_gate_allows_cached_adapter_snapshot_for_lora(tmp_path):
+    route = _load_route_module("training_route_snapshot_adapter_lora")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "adapter_config.json").write_text("{}")
+    (snapshot / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(
+        model_format = "safetensors",
+        model_snapshot_path = str(snapshot),
+        resume_from_checkpoint = "/outputs/run",
+    )
+
+    route._reject_untrainable_model_request(request)
 
 
 def test_start_rejects_missing_local_model(tmp_path):
@@ -678,6 +701,7 @@ def test_untrainable_gate_inspects_verified_snapshot_path(tmp_path):
         model_format = "safetensors",
         model_snapshot_path = str(snapshot),
         resume_from_checkpoint = "/outputs/run",
+        training_type = "Full Finetuning",
     )
 
     exc_info = _shared_setup_2(request, route)
@@ -693,6 +717,7 @@ def test_untrainable_gate_inspects_selected_cache(tmp_path):
     request = _request(
         model_known_cached = True,
         model_format = "safetensors",
+        training_type = "Full Finetuning",
     )
 
     exc_info = _shared_setup_2(request, route)
@@ -722,7 +747,7 @@ def test_unavailable_probe_inspects_unadvertised_cache(tmp_path):
         side_effect = HTTPException(status_code = 503, detail = "unavailable"),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            route._reject_untrainable_model_request(_request())
+            route._reject_untrainable_model_request(_request(training_type = "Full Finetuning"))
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
@@ -1320,7 +1345,11 @@ def test_optimizer_checkpoint_does_not_make_adapter_trainable(tmp_path):
     (tmp_path / "config.json").write_text("{}")
     (tmp_path / "adapter_config.json").write_text("{}")
     (tmp_path / "optimizer.pt").write_bytes(b"x")
-    request = _request(model_name = str(tmp_path), model_format = "safetensors")
+    request = _request(
+        model_name = str(tmp_path),
+        model_format = "safetensors",
+        training_type = "Full Finetuning",
+    )
 
     exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"

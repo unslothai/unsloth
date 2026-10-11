@@ -339,6 +339,27 @@ def normalize_gradient_checkpointing(value) -> Union[str, bool]:
     return "unsloth"
 
 
+def _ignored_adapter_settings(peft_config, lora_r, lora_alpha, modules_to_save) -> list[str]:
+    """Requested LoRA settings a continued adapter keeps from its own config instead."""
+    adapter = next(iter(peft_config.values()), None) if isinstance(peft_config, dict) else None
+    if adapter is None:
+        return []
+    ignored = []
+    saved_r = getattr(adapter, "r", None)
+    if saved_r is not None and saved_r != lora_r:
+        ignored.append(f"rank {lora_r} (adapter has {saved_r})")
+    saved_alpha = getattr(adapter, "lora_alpha", None)
+    if saved_alpha is not None and saved_alpha != lora_alpha:
+        ignored.append(f"alpha {lora_alpha} (adapter has {saved_alpha})")
+    saved_modules = {
+        str(m).rsplit(".", 1)[-1] for m in (getattr(adapter, "modules_to_save", None) or [])
+    }
+    missing = [m for m in (modules_to_save or []) if str(m).rsplit(".", 1)[-1] not in saved_modules]
+    if missing:
+        ignored.append(f"training {', '.join(missing)} (adapter does not train them)")
+    return ignored
+
+
 class UnslothTrainer:
     def __new__(cls, *args, **kwargs):
         if cls is UnslothTrainer and should_use_mlx_training_backend():
@@ -1498,9 +1519,15 @@ class UnslothTrainer:
 
             # Saved LoRA dirs load as PeftModel via from_pretrained; do not stack a second adapter (#13140).
             if getattr(self.model, "peft_config", None):
-                self._update_progress(
-                    status_message = "Continuing from existing LoRA adapters"
+                ignored = _ignored_adapter_settings(
+                    self.model.peft_config, lora_r, lora_alpha, modules_to_save
                 )
+                status = "Continuing from existing LoRA adapters"
+                if ignored:
+                    # The adapter's own shape wins; say so instead of dropping the request silently.
+                    status += f" (kept the adapter's settings, ignoring {'; '.join(ignored)})"
+                    logger.warning(f"{status}\n")
+                self._update_progress(status_message = status)
                 logger.info(
                     "Model already has LoRA adapters from the checkpoint; "
                     "continuing training without creating a new adapter\n"
