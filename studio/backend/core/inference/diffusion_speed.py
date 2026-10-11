@@ -65,6 +65,7 @@ _INDUCTOR_FLAGS = (
     ("memory_planning", "inductor_memory_planning"),
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
+_DYNAMO_FLAGS = (("suppress_errors", "dynamo_suppress_errors"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
 REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _INDUCTOR_MODULE = "torch._inductor.config"
@@ -191,6 +192,11 @@ def snapshot_backend_flags() -> Optional[dict]:
             for attr, key in _INDUCTOR_TRITON_FLAGS:
                 if hasattr(triton_cfg, attr):
                     state[key] = bool(compile_config.get_knob(_INDUCTOR_TRITON_MODULE, attr))
+    dynamo_cfg = _dynamo_config()
+    if dynamo_cfg is not None:
+        for attr, key in _DYNAMO_FLAGS:
+            if hasattr(dynamo_cfg, attr):
+                state[key] = bool(compile_config.get_knob(_DYNAMO_MODULE, attr))
     getter = getattr(torch, "get_float32_matmul_precision", None)
     if callable(getter):
         try:
@@ -255,20 +261,35 @@ def restore_backend_flags(state: Optional[dict]) -> None:
     triton_cfg = getattr(inductor_cfg, "triton", None) if inductor_cfg is not None else None
     for attr, key in _INDUCTOR_TRITON_FLAGS:
         _set_knob(triton_cfg, _INDUCTOR_TRITON_MODULE, attr, key)
+    dynamo_cfg = _dynamo_config()
+    for attr, key in _DYNAMO_FLAGS:
+        _set_knob(dynamo_cfg, _DYNAMO_MODULE, attr, key)
 
 
 def _gguf_dequant_compilable(is_gguf: bool, on_cuda: bool, family_allows_compile: bool) -> bool:
     return is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available()
 
 
-def _pin_memory_planning_off() -> None:
-    """Inductor's default, for every diffusion compile. Unsloth's training config turns ``memory_planning`` on
-    process-wide on torch < 2.12, and its pooled buffers come back from ``inductor::_alloc_from_pool`` as views that
-    AOTAutograd's custom-op aliasing check rejects at the first call (#9897: every gfx1151 render under ``CI``; a
-    deprecation warning elsewhere)."""
+def _pin_compile_defaults() -> None:
+    """torch's defaults for every diffusion compile, against Unsloth's training config, which sets both process-wide
+    on torch < 2.12 (#9897). ``memory_planning``: its pooled buffers come back from ``inductor::_alloc_from_pool`` as
+    views AOTAutograd's custom-op aliasing check rejects at the first call (every gfx1151 render under ``CI``, a
+    deprecation warning elsewhere). ``suppress_errors``: a failed compile would silently run eager; Studio's own
+    guards fall back with a warning instead, as on torch 2.12+ where the render thread never saw the training config."""
     inductor_cfg = _inductor_config()
     if inductor_cfg is not None and hasattr(inductor_cfg, "memory_planning"):
         compile_config.set_knob(_INDUCTOR_MODULE, "memory_planning", False)
+    dynamo_cfg = _dynamo_config()
+    if dynamo_cfg is not None and hasattr(dynamo_cfg, "suppress_errors"):
+        compile_config.set_knob(_DYNAMO_MODULE, "suppress_errors", False)
+
+
+def _dynamo_config() -> Any:
+    try:
+        import torch
+        return getattr(getattr(torch, "_dynamo", None), "config", None)
+    except Exception:  # noqa: BLE001 - no dynamo -> nothing to snapshot/set
+        return None
 
 
 def _inductor_config() -> Any:
@@ -486,7 +507,7 @@ def apply_speed_optims(
     # `off` load never inherits them.
     if mode == SPEED_OFF:
         return applied
-    _pin_memory_planning_off()
+    _pin_compile_defaults()
 
     if getattr(target, "backend", None) == "rocm":
         try:

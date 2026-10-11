@@ -1248,14 +1248,22 @@ def test_snapshot_restores_emulate_precision_casts(monkeypatch):
     assert cfg.emulate_precision_casts is False
 
 
+def _stub_training_config(torch):
+    """Unsloth's training config as torch < 2.12 leaves it process-wide: memory planning on, compile errors suppressed."""
+    inductor = types.SimpleNamespace(memory_planning = True, emulate_precision_casts = False)
+    dynamo = types.SimpleNamespace(suppress_errors = True)
+    torch._inductor = types.SimpleNamespace(config = inductor)
+    torch._dynamo = types.SimpleNamespace(config = dynamo)
+    return inductor, dynamo
+
+
 @pytest.mark.parametrize("is_gguf", [True, False], ids = ["gguf_dequant", "regional"])
-def test_compile_runs_with_memory_planning_off(monkeypatch, is_gguf):
-    # Unsloth's training config turns memory_planning on process-wide (torch < 2.12); its inductor::_alloc_from_pool
-    # views fail AOTAutograd's aliasing check at the first render (#9897), so every compiling tier pins it off.
+def test_compile_runs_with_torch_defaults_not_the_training_config(monkeypatch, is_gguf):
+    # #9897: memory planning's inductor::_alloc_from_pool views fail AOTAutograd's aliasing check at the first render,
+    # and suppress_errors hid every failed compile as a silent eager run.
     torch = _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
-    cfg = _stub_inductor_config(monkeypatch, torch)
-    cfg.memory_planning = True
+    inductor, dynamo = _stub_training_config(torch)
     apply_speed_optims(
         _Pipe(with_compile = True),
         _target(),
@@ -1263,27 +1271,27 @@ def test_compile_runs_with_memory_planning_off(monkeypatch, is_gguf):
         family = _family(),
         speed_mode = SPEED_DEFAULT,
     )
-    assert cfg.memory_planning is False
+    assert inductor.memory_planning is False
+    assert dynamo.suppress_errors is False
 
 
-def test_off_tier_leaves_memory_planning_alone(monkeypatch):
+def test_off_tier_leaves_the_compile_config_alone(monkeypatch):
     torch = _stub_torch(monkeypatch)
-    cfg = _stub_inductor_config(monkeypatch, torch)
-    cfg.memory_planning = True
+    inductor, dynamo = _stub_training_config(torch)
     apply_speed_optims(
         _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = SPEED_OFF
     )
-    assert cfg.memory_planning is True
+    assert inductor.memory_planning is True and dynamo.suppress_errors is True
 
 
-def test_snapshot_restores_memory_planning(monkeypatch):
+def test_snapshot_restores_the_compile_config(monkeypatch):
     torch = _stub_torch(monkeypatch)
-    cfg = _stub_inductor_config(monkeypatch, torch)
-    cfg.memory_planning = True
+    inductor, dynamo = _stub_training_config(torch)
     snap = snapshot_backend_flags()
-    cfg.memory_planning = False
+    inductor.memory_planning = False
+    dynamo.suppress_errors = False
     restore_backend_flags(snap)
-    assert cfg.memory_planning is True
+    assert inductor.memory_planning is True and dynamo.suppress_errors is True
 
 
 def test_missing_inductor_config_is_tolerated(monkeypatch):
