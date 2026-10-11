@@ -347,6 +347,15 @@
       "_INSTALLER_WRAPPER_RE": {
         "kind": "assign"
       },
+      "_LAZY_MODE_SPELLINGS": {
+        "kind": "assign"
+      },
+      "_LAZY_READ_AUTO_MIN_BYTES": {
+        "kind": "assign"
+      },
+      "_LAZY_READ_TENSORS": {
+        "kind": "assign"
+      },
       "_LEGACY_SPEC_MODE_MAP": {
         "kind": "assign"
       },
@@ -372,6 +381,9 @@
         "kind": "assign"
       },
       "_LLAMA_ARG_TRUE_VALUES": {
+        "kind": "assign"
+      },
+      "_LLAMA_CACHE_RAM_DEFAULT_MIB": {
         "kind": "assign"
       },
       "_LLAMA_FIT_MIN_CTX": {
@@ -447,6 +459,18 @@
         "kind": "assign"
       },
       "_MMPROJ_UNKNOWN_UBATCH": {
+        "kind": "assign"
+      },
+      "_MOE_CACHE_AUTO_TOKENS": {
+        "kind": "assign"
+      },
+      "_MOE_CACHE_ERROR_RE": {
+        "kind": "assign"
+      },
+      "_MOE_CACHE_USER_OWNED_ENV": {
+        "kind": "assign"
+      },
+      "_MOE_CACHE_USER_OWNED_FLAGS": {
         "kind": "assign"
       },
       "_MOE_SPILL_N_UBATCH": {
@@ -686,6 +710,9 @@
       "_argv_keeps_projector_on_gpu": {
         "kind": "def"
       },
+      "_argv_loads_pinned": {
+        "kind": "def"
+      },
       "_arm_load_probe_memo": {
         "kind": "def"
       },
@@ -804,6 +831,9 @@
         "kind": "def"
       },
       "_effective_headroom_ratio": {
+        "kind": "def"
+      },
+      "_effective_lazy_mode": {
         "kind": "def"
       },
       "_effective_main_cache_types": {
@@ -1091,6 +1121,9 @@
       "_launch_required_ubatch": {
         "kind": "def"
       },
+      "_lazy_read_bytes": {
+        "kind": "def"
+      },
       "_lib_dir_has_ggml_backend": {
         "kind": "def"
       },
@@ -1254,6 +1287,9 @@
         "kind": "def"
       },
       "_probe_dns_dead": {
+        "kind": "def"
+      },
+      "_prompt_cache_host_bytes": {
         "kind": "def"
       },
       "_quant_label_for_endian": {
