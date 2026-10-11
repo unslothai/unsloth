@@ -674,8 +674,7 @@ function DownloadedBadge() {
   );
 }
 
-/** An incomplete download; the row selects with isDownloaded: false so the click resumes the
- *  download instead of loading incomplete weights. */
+/** Incomplete download: the row selects with isDownloaded: false so a click opens the download. */
 function PartialBadge({ resumable }: { resumable?: boolean }) {
   return (
     <Tooltip delayDuration={0}>
@@ -2972,7 +2971,7 @@ export function HubModelPicker({
     }
     return ids;
   }, [models]);
-  // So a tag-only GGUF still expands variants instead of loading as a checkpoint.
+  // Both listings contribute GGUF hints, so a tag-only GGUF still expands its variants.
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
     for (const result of [

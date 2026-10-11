@@ -280,7 +280,7 @@ export interface LoadModelResponse {
 export interface UnloadModelRequest {
   model_path: string;
   cancel_load_request_id?: string | null;
-  /** Set only after confirmation: unloading takes down the shared llama-server. */
+  /** Stop chats still generating instead of a 409; unloading takes down the shared llama-server. */
   force_cancel_active?: boolean;
 }
 

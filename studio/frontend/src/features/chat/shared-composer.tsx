@@ -1781,7 +1781,7 @@ export function SharedComposer({
             forceCancelActive:
               compareStopDecision?.forceCancelActive ?? false,
           });
-          // The install unloads the active model even if the swap fails.
+          // Unloads the active model even if the swap fails; a later cancel must stop the UI pointing at it.
           if (
             useTransformersUpgradeDialogStore
               .getState()

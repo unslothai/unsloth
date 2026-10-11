@@ -3024,7 +3024,7 @@ export function ChatPage({
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
     );
-    // Kimi k2.x defaults to thinking enabled server-side, so Think starts on.
+    // Kimi k2.6/k2.5 default to thinking enabled server-side, so the Think pill starts on.
     const isKimi = provider?.providerType === "kimi";
     // Search defaults on only for Anthropic and OpenAI (structured citations).
     const searchOnByDefault =
@@ -3524,7 +3524,7 @@ export function ChatPage({
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
         presentation: pending.selection.downloadPresentation,
-        // Notice-only: this surface has no toast of its own.
+        // Notice-only: the toast was removed and must not return on an HTTP start or once notices are spent.
         callerToast: {
           title: "Downloading model",
           description: "It'll load automatically once the download finishes.",
@@ -3734,7 +3734,7 @@ export function ChatPage({
         if (pinnedEffort && nextReasoningEffort !== store.reasoningEffort) {
           noteEffortDisplacedByPin(store.reasoningEffort);
         }
-        // Else the chip keeps a stale openrouter/free ":<chosen>" suffix.
+        // Clear the cached router pick unless staying on openrouter/free, or the chip keeps a stale suffix.
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";

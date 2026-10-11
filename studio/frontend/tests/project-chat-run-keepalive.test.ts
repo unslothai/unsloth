@@ -219,7 +219,7 @@ test("a nonce only owns a thread its own switch opened", () => {
 
 test("the remembered thread is looked up defensively", () => {
   const switchSource = componentSource(provider, "function ThreadNewChatSwitch(");
-  // getItemById throws for a dropped id, and there is no error boundary above this effect.
+  // getItemById throws on a dropped id, not undefined, so the optional chain is no guard.
   assert.match(
     switchSource,
     /try \{\s*recordedRemoteId = runtimeThreads\?\.threads\s*\.getItemById\(recorded\)\s*\.getState\(\)\?\.remoteId;\s*\} catch \{/,

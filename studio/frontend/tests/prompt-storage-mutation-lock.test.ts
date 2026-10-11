@@ -206,7 +206,7 @@ test("an empty draft does not match a submitted one", () => {
   assert.equal(sameListDraft({ name: "", items: ["", ""] }, { name: "l", items: ["a"] }), false);
 });
 
-// One textarea per item scales badly and lists allow 10000 items.
+// One textarea per item scales badly and lists hold 10000 items, so the editor must wait.
 test("an oversized list waits to be asked before mounting its editor", async () => {
   assert.match(PROMPT_STORAGE_DIALOG, /const EDITOR_ROW_LIMIT = \d+;/);
   const limit = Number(/const EDITOR_ROW_LIMIT = (\d+);/.exec(PROMPT_STORAGE_DIALOG)?.[1]);

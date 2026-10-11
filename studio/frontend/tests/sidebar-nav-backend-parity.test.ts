@@ -63,7 +63,7 @@ test("Train and Video are still the capability-gated rows", async () => {
     assert.ok(bodies.has(id), `the backend ships a "${id}" row the sidebar does not define`);
   }
 
-  // Video's disabled expression is pinned in provisional-hardware-verdict.test.ts.
+  // Video needs its own disabled state; reusing the chat-only verdict un-gates it on MLX-only Macs.
   for (const [id, disabled] of [
     ["train", /disabled: chatOnlyMeasured,/],
     ["video", /disabled: (?!chatOnlyMeasured)\w+,/],

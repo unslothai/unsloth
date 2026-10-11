@@ -358,7 +358,7 @@
 	--secondary-base: #303030;
 	--secondary-foreground-base: #dfdfdf;
 	--muted-base: #303030;
-	/* Still ~7:1 on the dialog surface. */
+	/* Secondary text: under the ink, still ~7:1 on the dialog surface. */
 	--muted-foreground: #b0b0b0;
 	--accent-base: #3a3a3a;
 	--accent-foreground-base: #dfdfdf;
@@ -2704,7 +2704,7 @@ html[data-chat-font] .aui-root {
 		border-radius: 18px !important;
 	}
 
-	/* !important so it also overrides the bespoke menu shadows. */
+	/* Menus, selects and popovers are borderless; !important overrides bespoke menu shadows. */
 	[data-slot="dropdown-menu-content"],
 	[data-slot="dropdown-menu-sub-content"],
 	[data-slot="select-content"],
@@ -3298,7 +3298,7 @@ html[data-chat-font] .aui-root {
 		box-shadow: none;
 	}
 
-	/* Radix refocuses triggers on menu close. Zeroing the ring vars keeps decorative shadow-* intact. */
+	/* Clickable controls never show a browser outline; focus-visible keeps custom rings for keyboard. */
 	button:focus,
 	a:focus,
 	summary:focus,
@@ -3504,7 +3504,7 @@ html[data-chat-font] .aui-root {
 		color: #fff !important;
 	}
 
-	/* Also applied to portaled sub-content. */
+	/* Compact items, also applied to portaled sub-content. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"],
@@ -4062,7 +4062,7 @@ html[data-chat-font] .aui-root {
 	margin: 0.4em 0 0 !important;
 }
 
-/* Title and description line heights are 1.5 and 1.4. */
+/* Single text line: centre the icon on it; 1.5em is the title line height. */
 [data-sonner-toast][data-styled='true']:not(:has([data-description])) [data-icon] {
 	margin-top: calc((1.5em - var(--ui-icon-size)) / 2) !important;
 }
@@ -5088,7 +5088,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
    floats over --card, with a page-coloured halo shadow. */
 .find-bar-surface {
 	background-color: #ffffff;
-	/* The composer's shadow spread wider and softened. Kept in step by tests/find-in-page.test.ts. */
+	/* Needs more spread than the composer shadow to sit on content, but not more weight. */
 	box-shadow: 0 3px 14px -1px rgba(0, 0, 0, 0.13);
 }
 

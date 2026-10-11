@@ -167,7 +167,7 @@ const UnmeasuredCollapsibleContent = React.forwardRef<
       [forwardedRef],
     );
 
-    // Mount at `0fr`, then flip to `1fr` a frame later: a same-frame class change would snap open.
+    // Mount at 0fr, then flip to 1fr two frames later so a same-frame class change does not snap open
     React.useEffect(() => {
       if (open) {
         setMounted(true);

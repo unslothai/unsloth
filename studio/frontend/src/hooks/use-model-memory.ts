@@ -44,7 +44,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 export interface ModelMemorySource {
   repoId: string;
   quant: string;
-  /** So the bar draws before the estimate arrives. */
+  /** Size from the listing, so the bar draws before the estimate arrives. */
   sizeBytes?: number | null;
   /** What selecting the row loads, so a duplicate HF cache cannot price a different copy. */
   loadId?: string | null;

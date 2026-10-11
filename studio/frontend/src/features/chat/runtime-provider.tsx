@@ -1431,7 +1431,7 @@ function scheduleGenerationRecovery(
     try {
       let lastPublishedStatus = "";
       let identityValidated = false;
-      // The follower signals its no-progress deadline by throwing.
+      // Catch the follower's no-progress deadline throw here, or the message stays running forever.
       let followStalled = false;
       try {
         for await (const update of followChatGenerationRun(runId, {

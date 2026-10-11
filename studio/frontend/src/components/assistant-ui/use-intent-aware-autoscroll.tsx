@@ -425,7 +425,7 @@ export function useIntentAwareAutoScroll(): {
             extendFollow();
           }
         } else if (delta < 0 && !userDetachedRef.current) {
-          // Count distance-from-bottom growth, not scrollTop: anchoring moves both when content collapses.
+          // Count distance-from-bottom growth, not scrollTop: anchoring moves scrollTop, distance stays put.
           const distanceDelta = distanceNow - lastDistanceFromBottom;
           if (distanceDelta > 0) {
             upwardAccumulator += distanceDelta;

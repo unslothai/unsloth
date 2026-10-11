@@ -34,7 +34,7 @@ export interface RemoteCodeScan {
   findingsSummary: string;
   modelName: string;
   createdByScan: boolean;
-  // Supersedes createdByScan, which tracks only the primary repo.
+  // Every repo the scan first cached (a LoRA scan pulls adapter and base); a decline purges each.
   scanCreatedRepos: string[];
   unsafeFiles: UnsafeFile[]; // non-empty => hard block
   securityBlocked: boolean;

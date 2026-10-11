@@ -312,7 +312,7 @@ function escapeMarkdownLabel(value: string): string {
   return value.replace(/[\r\n]+/g, " ").replace(/([\\[\]*`<])/g, "\\$1");
 }
 
-// Escape entity-opening & and backslashes: CommonMark decodes them and can redirect the link.
+// Escape only entity-opening &, as &amp;: CommonMark decodes entities and can redirect the link.
 const ENTITY_REFERENCE_PATTERN =
   /&(?=(?:[A-Za-z][A-Za-z0-9]{1,31}|#\d{1,7}|#[Xx][0-9A-Fa-f]{1,6});)/g;
 

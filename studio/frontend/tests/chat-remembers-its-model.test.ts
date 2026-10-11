@@ -316,7 +316,7 @@ test("the research panel reserves the notice's height too", () => {
 });
 
 test("a chat started as New Chat gets the notice once its row exists", () => {
-  // ?new=<nonce> carries no thread id, hence the latch on the persisted id.
+  // No thread id in ?new=<nonce>; the store's id is this chat's only after the blank, hence the latch.
   const gate = slice(
     page,
     "const newChatBlankedRef",

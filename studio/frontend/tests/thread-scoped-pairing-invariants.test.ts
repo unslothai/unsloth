@@ -509,7 +509,7 @@ test("a replay only clears the body it actually sent", () => {
 });
 
 test("a provider constraint does not rewrite what the chat stored", () => {
-  // Kimi's builtin search cannot run with thinking; that provider-forced value is not saved.
+  // Kimi built-in search may not run with thinking, so that provider value must not be saved.
   assert.match(store, /const constraintSuppressedThreadFields = new Set<string>\(\);/);
   const reasoning = slice(store, "setReasoningEnabled: (reasoningEnabled, options)", "\n    }),");
   assert.match(reasoning, /noteConstraintSuppressedThreadField\("reasoningEnabled"\)/);

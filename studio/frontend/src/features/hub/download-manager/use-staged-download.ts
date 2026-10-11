@@ -35,7 +35,7 @@ function entryKey(entry: StagedDownloadEntry): string {
     : `${entry.repoId}|${[...entry.files].sort().join(",")}`;
 }
 
-/** Runs a multi-repo plan through the shared download manager, then calls `onReady`. */
+/** Runs a multi-repo plan through the download manager; calls onReady once every entry is on disk. */
 export function useStagedDownload({
   scopeId,
   onReady,

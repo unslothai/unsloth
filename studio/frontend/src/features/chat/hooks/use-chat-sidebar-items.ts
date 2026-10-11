@@ -161,7 +161,7 @@ export function useChatSidebarItems(options?: {
     };
   }, [enabled, options?.projectId, requireMessages]);
 
-  // Memoised for identity: new arrays per render make dependent effects loop forever.
+  // Memoised for identity: dependent effects re-run each render and loop forever if they set state.
   const items = useMemo(() => groupThreads(allThreads ?? []), [allThreads]);
   const archivedItems = useMemo(
     () => groupThreads(allThreads ?? [], true),

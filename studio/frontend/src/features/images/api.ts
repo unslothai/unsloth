@@ -682,7 +682,7 @@ export interface DiffusionTrainableFamily {
   precision_modes?: string[];
   recommended_precision?: string;
   supports_compile?: boolean;
-  // Undefined on an older backend, which reads as true.
+  // Whether the family loop writes checkpoint bundles; undefined on an older backend reads as true.
   supports_checkpoints?: boolean;
   max_train_batch_size?: number | null;
   // Deploy previews on this repo instead of the trained checkpoint (Krea trains on Raw, runs on Turbo).

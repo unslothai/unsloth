@@ -631,7 +631,7 @@ export function useLlamaUpdateCheck({
       action.started === false &&
       !llamaUpdateAdoptsRunningJob(action.reason, actionJob)
     ) {
-      // A stale click's response still carries another tab's completed job.
+      // A stale click's response carries another tab's completed job; process its reload_required here.
       notifyReloadIfNeeded(actionJob);
       setApplying(false);
       return {

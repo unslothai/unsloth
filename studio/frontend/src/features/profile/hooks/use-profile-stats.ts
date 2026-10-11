@@ -42,7 +42,7 @@ export function useProfileStats(): ProfileStatsState {
     return () => abortRef.current?.abort();
   }, [load]);
 
-  // Reopen needs no watcher: the dialog is not force-mounted.
+  // Tokens move while backgrounded, so a watcher is needed; reopen needs none (not force-mounted).
   useEffect(() => subscribeResidentStatusRefresh(load), [load]);
 
   const reload = useCallback(() => {

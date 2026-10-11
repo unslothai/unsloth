@@ -98,8 +98,7 @@ export function communityAudioRowIsRunnable({
 
   if (audioType && NATIVE_AUDIO_TYPES.has(audioType)) return true;
 
-  // The main-slot TTS backend decodes only these codec families. Llasa is excluded: XCodec2 is not
-  // decodable by AudioCodecManager. Keep in step with speechGgufIsUndecodable.
+  // Only these codec families decode; Llasa is excluded. Keep in step with the comment above.
   const normalizedAudioType = (audioType ?? "").toLowerCase();
   if (["snac", "bicodec", "dac"].includes(normalizedAudioType)) return true;
   if (normalizedAudioType === "csm") return !isGguf;

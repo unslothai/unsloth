@@ -526,7 +526,7 @@ const FONT_MIME_BY_EXTENSION: Record<string, string> = {
 
 const MAX_FONT_FILE_BYTES = Math.floor(1.5 * 1024 * 1024);
 
-// "Roboto-Bold.ttf" should match an installed "Roboto".
+// Trailing style words are stripped so Roboto-Bold.ttf matches an installed Roboto.
 const FONT_STYLE_SUFFIXES = new Set([
   "regular",
   "bold",

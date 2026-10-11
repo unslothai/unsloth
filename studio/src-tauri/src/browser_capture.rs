@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn capture_bounds_match_the_panel() {
-        // The shape capture.ts sends.
+        // Matches the bounds capture.ts sends: the page area rect and viewport width, in CSS pixels.
         let bounds: ViewBounds = serde_json::from_value(serde_json::json!({
             "x": 640.5, "y": 96, "width": 579, "height": 799, "viewportWidth": 1440
         }))

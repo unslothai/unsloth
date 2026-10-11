@@ -824,7 +824,7 @@ export function markServerActiveGenerationRunsUnknown(threadId: string): void {
   }
 }
 
-/** Drop a terminal run, or the thread stays durable and later streams lose saves. */
+/** Drop a terminal run, or the thread reads durable and a later subscriber-owned stream is capped. */
 export function forgetServerActiveGenerationRun(runId: string): void {
   serverActiveGenerationRuns.delete(runId);
 }

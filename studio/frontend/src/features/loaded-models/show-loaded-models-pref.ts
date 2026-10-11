@@ -34,7 +34,7 @@ export function getShowLoadedModels(): boolean {
 
 export function setShowLoadedModels(show: boolean): void {
   try {
-    // Write "false", never remove: older tabs also read "false" as off, so the storage event cannot flip it on.
+    // Both values are written, never removed: an older tab reads a stored false as off.
     localStorage.setItem(STORAGE_KEY, show ? "true" : "false");
   } catch {
     // storage unavailable

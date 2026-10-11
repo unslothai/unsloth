@@ -73,7 +73,7 @@ export function OpenAICodeExecSection({
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
-  // OpenAI's list can keep returning a deleted id for a while; hide it for the page's lifetime.
+  // Deleted ids stay hidden for the page lifetime because OpenAI list lags; a refresh resets them.
   const [tombstones, setTombstones] = useState<Set<string>>(() => new Set());
   // Optimistic inserts not yet seen by the eventually consistent list endpoint.
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());

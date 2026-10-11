@@ -68,7 +68,7 @@ export interface GpuInfo {
   loadDeviceSharedMemory: boolean;
   /** Includes Linux ROCm APUs, which report only unified_memory; offload frees nothing on either. */
   loadDeviceSharesHostMemory: boolean;
-  /** For the loader's per-card VRAM reserve. */
+  /** How many GPUs memoryTotalGb sums over, for the loader's per-card VRAM reserve. */
   deviceCount: number;
   cpuCore: number;
   cpuThread: number;
@@ -198,7 +198,7 @@ function toGpuDevices(
         diffusionPinnable: false,
       }));
   }
-  // Absent gguf_gpu_ids_supported (older backend) defaults to pinnable.
+  // Unpinnable configs must hide every pick surface; absent gguf_gpu_ids_supported means pinnable.
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
   // ROCm reuses torch.cuda.* and physical IDs; only the label differs.
   const diffusionBackend =

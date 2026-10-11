@@ -7,7 +7,7 @@ export type HfTokenRejectionEvent = "rejected" | "cleared";
 
 type Listener = (event: HfTokenRejectionEvent) => void;
 
-/** So a briefly failing verifier cannot hide private repos all session. */
+/** A refused token is retried after this long, so a flaky verifier cannot hide private repos. */
 export const HF_TOKEN_REJECTION_RECHECK_MS = 10 * 60 * 1000;
 
 // Per Hub: a mirror can refuse a token another endpoint accepts.

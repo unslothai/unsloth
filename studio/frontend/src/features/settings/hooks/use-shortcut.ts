@@ -96,7 +96,7 @@ export function registerShortcutTrigger(
   };
 }
 
-/** False when nothing took it. */
+/** Runs id as if its chord were pressed, minus key checks; false when nothing took it. */
 export function triggerShortcut(id: ShortcutId): boolean {
   const trigger = [...(triggers.get(id) ?? [])].reverse().find((t) => t.claims());
   trigger?.run();

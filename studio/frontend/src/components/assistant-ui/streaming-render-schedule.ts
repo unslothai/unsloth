@@ -109,7 +109,7 @@ const LINK_REFERENCE_RE =
   /!?\[(?:\\[\s\S]|[^\]\\]){1,999}\]\[(?:\\[\s\S]|[^\]\\]){0,999}\]/u;
 // Label side as above, plus `[` and the optional `!`; the reference side needs no `!`.
 const LINK_REFERENCE_WINDOW = 999 * 3 + 3;
-// The `[` at the seam restarts escape parity, so the label is the text up to the first `]`.
+// The [ at the seam restarts escape parity, so the label is the text up to the first unescaped ].
 const LINK_REFERENCE_LABEL_RE = /^(?:\\[\s\S]|[^\]\\]){0,999}$/u;
 
 function unescapedClose(text: string, from: number): number {
@@ -1152,7 +1152,7 @@ function endsAtBlankLine(text: string, end: number): boolean {
   return true;
 }
 
-// Not sufficient alone; `rewindToRewrite` also keeps a rollback window.
+// The last blank line at or before limit, or 0; rewindToRewrite also keeps a rollback window.
 function lastBlankLineEnd(text: string, limit: number): number {
   for (let end = limit; end > 0; end -= 1) {
     if (endsAtBlankLine(text, end)) {

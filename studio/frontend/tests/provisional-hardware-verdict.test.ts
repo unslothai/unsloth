@@ -142,7 +142,7 @@ test("an actively detecting reply is not deferred", () => {
   );
 });
 
-// Asserted on source: env.ts is not importable outside vite.
+// The bounded hardware re-read runs at most once per page load, or each navigation repeats it.
 test("the bounded hardware wait is spent at most once per page load", async () => {
   const { readFile } = await import("node:fs/promises");
   assert.match(

@@ -4082,7 +4082,7 @@ export const en = {
       audio: "Audio",
       model: "Model",
       folder: "Folder",
-      // Before its .md extension.
+      // File name of a new note, before its .md extension.
       untitledNote: "Untitled note",
     },
     list: {

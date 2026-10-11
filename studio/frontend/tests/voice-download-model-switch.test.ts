@@ -47,7 +47,7 @@ test("a new model's rate is not priced over the previous model's samples", () =>
       rate = stats.stable ? stats.rateBytesPerSecond : 0;
     };
     for (let t = 0; t <= 20; t += 1) poll("A", t * 200 * MB, 4_000 * MB, t);
-    // The resumed counter starts above the last one's end, so nothing regresses to trigger a reset.
+    // The resumed counter starts at or above the last download's end, so nothing regresses.
     let worst = 0;
     for (let t = 21; t <= 30; t += 1) {
       poll("B", 4_000 * MB + (t - 21) * 5 * MB, 8_000 * MB, t);

@@ -201,7 +201,7 @@ export const PLACEMENT_OWNING_ARGS = [
   "-ts",
   "--split-mode",
   "-sm",
-  // _MOE_OFFLOAD_FLAGS
+  // The --cpu-moe pair and the -ncmoe one.
   "--n-cpu-moe",
   "-ncmoe",
   "--cpu-moe",
@@ -216,7 +216,7 @@ export const PLACEMENT_OWNING_ARGS = [
   "--gpu-layers-draft",
   "--n-gpu-layers-draft",
   "--spec-draft-device",
-  // _MMPROJ_OFFLOAD_FLAGS
+  // Either spelling means the user took ownership of where the projector lands.
   "--mmproj-offload",
   "--no-mmproj-offload",
 ];
@@ -319,7 +319,7 @@ export interface EstimateCacheKeyParts {
   nCtx?: number | null;
   kvCacheDtype?: string | null;
   speculativeType?: string | null;
-  /** Unset means the server's slot count, which defaults above one. */
+  /** Unset or non-positive means the server's standing slot count. */
   nParallel?: number | null;
   /** Zero is a real value (no rollback states). */
   specDraftNMax?: number | null;

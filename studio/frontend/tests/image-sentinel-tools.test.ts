@@ -22,7 +22,7 @@ test("only the tools that emit the image envelope are in the set", () => {
   }
 });
 
-// Source-asserted: importing the adapter drags in the whole app.
+// Only tools that emit the envelope may be sliced; otherwise the card fetches a file never written.
 test("the adapter slices the image envelope only for the tools that emit it", () => {
   const source = readSrc("features/chat/api/chat-adapter.ts");
   const gate = source.indexOf(

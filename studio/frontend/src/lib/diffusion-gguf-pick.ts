@@ -10,7 +10,7 @@ export interface PickGuard {
   release(): void;
   /** An eject or deploy, which a staged download must not undo. */
   cancel(): void;
-  /** False after a release. */
+  /** Is this token still the owner? False after a release, so nothing lands on an unwatched page. */
   holds(token: number): boolean;
   /** Survives a release, so a staged download resumes on the way back. */
   isLatest(token: number): boolean;

@@ -199,7 +199,7 @@ export function ProjectSourceDropzone({
     onPendingChangeRef.current?.(pending.current > 0);
   }, []);
 
-  // Prune desktop drops whose token TTL has lapsed.
+  // Prune desktop drops past their token TTL, so Create never commits against sources already pruned.
   useEffect(() => {
     const expiries = staged
       .map(nativeExpiryMs)

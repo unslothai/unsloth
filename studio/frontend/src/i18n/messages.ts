@@ -136,8 +136,7 @@ export function loadLocaleMessages(
   return load;
 }
 
-/** A load that never settles would hand every later pick the same dead promise; the caller that
- * bounded the wait evicts it, while a late arrival still populates the catalog. */
+/** Drops a stalled load so the next pick retries; a newer attempt for this locale is never evicted. */
 export function forgetLocaleLoad(locale: Locale, load?: Promise<void>): void {
   if (load !== undefined && localeLoads.get(locale) !== load) return;
   localeLoads.delete(locale);

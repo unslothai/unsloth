@@ -613,7 +613,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     presencePenalty: false,
   },
   mistral: OPENAI_COMPAT_BASE,
-  // See https://ai.google.dev/api/rest/v1beta/GenerationConfig.
+  // Gemini accepts temperature, topP, topK, presencePenalty; not minP or repetitionPenalty.
   gemini: {
     temperature: true,
     topP: true,
@@ -810,7 +810,7 @@ const OPENAI_REASONING_MODELS = [
     levels: ["medium", "high", "xhigh"],
   },
   {
-    // Rejects "minimal".
+    // gpt-5.6 rejects minimal; its ladder otherwise matches gpt-5.5 and gpt-5.4.
     prefixes: ["gpt-5.6", "gpt-5.5", "gpt-5.4"],
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],

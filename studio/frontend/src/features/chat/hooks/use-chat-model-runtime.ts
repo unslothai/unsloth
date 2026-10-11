@@ -196,7 +196,7 @@ type LoadingModelState = {
   nativePathToken?: string | null;
 };
 
-/** The single shared load slot; its token lets late callbacks prove ownership. */
+/** One attempt at claiming the shared load slot; its token lets late callbacks prove ownership. */
 type ActiveModelLoadRun = {
   attemptId: number;
   intentId: number;
@@ -1429,7 +1429,7 @@ export function useChatModelRuntime() {
                 gpuMemoryMode: live.gpuMemoryMode,
               }
             : currentRuntimePerModelConfig());
-        // 0 is the catalogue's "unknown", which the comparison reads as a reload.
+        // Slot count an unset --parallel resolves to; 0 means unknown in the catalog and reads as a reload.
         const managedFlags = residentStatus
           ? await loadManagedLlamaFlags().catch(() => null)
           : null;

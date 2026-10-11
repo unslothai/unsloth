@@ -2706,7 +2706,7 @@ const Composer: FC<{
       const { selectionStart, selectionEnd, value } = input;
       // Attachments serialise after all inline text, so only an end-of-text paste can become one.
       const pasteGoesLast = input.selectionEnd === input.value.length;
-      // Swallowing the paste dropped the browser's replacement; apply it once the attachment lands.
+      // Apply the replacement once the attachment lands, same composer only, or a failed paste eats text.
       const dropReplacedSelection = () => {
         if (selectionStart === selectionEnd) return;
         const composer = aui.composer();

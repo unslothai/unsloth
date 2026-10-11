@@ -395,7 +395,7 @@ export function DatasetPreviewDialog({
     };
   }, [previewRequest]);
 
-  // Never overwrites existing entries.
+  // Pre-fill mapping from suggested_mapping when data arrives; never overwrite existing entries.
   useEffect(() => {
     if (!open || !datasetName || isDecisionModel) return;
     if (!data?.requires_manual_mapping && !data?.suggested_mapping) return;

@@ -263,7 +263,7 @@ test("the notice is a NOTICE, never part of the conversation", () => {
     "the notice must not be rendered inside the message's content parts",
   );
 
-  // Bounded to function bodies: the streaming handler legitimately reads contextTruncation.
+  // Request builders must never read contextTruncation; the streaming handler legitimately does.
   for (const name of ["toOpenAIMessages", "serializeAssistantReplayMessages"]) {
     const body = functionBody(CHAT_ADAPTER, name);
     assert.ok(body.length > 0, `${name} not found`);

@@ -221,7 +221,7 @@ test("both the folder and the session id are answered from the same probe", () =
 });
 
 test("a sandbox tool result is wrapped even when it carries no envelope", () => {
-  // chat-adapter.ts reaches JSX barrels, so assert on source. __FILES__ can be suppressed.
+  // Session id is the only record of where a call ran, and __FILES__ can be missing: always wrap.
   const adapter = readFileSync(
     fileURLToPath(
       new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),

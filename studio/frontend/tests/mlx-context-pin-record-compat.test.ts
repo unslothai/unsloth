@@ -359,7 +359,7 @@ test("int8 prefill defaults off, and only an enabled one stamps v9", () => {
 });
 
 
-/** Old model-config-page.tsx rule for non-GGUF: reads only maxSeqLength. */
+/** Old config page, non-GGUF: the number reads maxSeqLength; customContextLength only sets atDefault. */
 function oldClientConfigPage(
   config: PerModelConfig,
   native: number,

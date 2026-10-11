@@ -2110,8 +2110,7 @@ fn names_a_path(name: &str, value: &str) -> bool {
     true
 }
 
-/// Removed before every managed spawn: Tauri uses the legacy Unsloth root regardless.
-/// UNSLOTH_HOME and UNSLOTH_PORTABLE also move roots and caches.
+/// Removed from every managed spawn. UNSLOTH_HOME relocates data; UNSLOTH_PORTABLE repoints caches.
 pub(crate) const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &[
     "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
@@ -4336,7 +4335,7 @@ mod backend_log_line_tests {
     }
 }
 
-/// Shared corpus with the backend so both implementations of the rule cannot drift.
+/// Shared corpus with the backend: a rule change on either side fails the test on the other side.
 #[cfg(test)]
 mod shared_access_log_fixture_tests {
     use super::*;

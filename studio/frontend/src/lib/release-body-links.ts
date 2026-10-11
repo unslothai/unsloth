@@ -54,7 +54,7 @@ const REFERENCE_TARGET = /^( {0,3}\[((?:[^[\]\\]|\\.)*)\]:\s*)(<[^<>\n]*>|\S+)/;
 const IMAGE_REFERENCE =
   /!\[((?:[^[\]\\]|\\.)*)\](?:\[((?:[^[\]\\]|\\.)*)\]|(?!\())/g;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-// Inside a list item, measured from the item's content column.
+// Four columns past the container's start is indented code, unless a paragraph is open.
 const INDENTED_CODE_INDENT = 4;
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
@@ -277,7 +277,7 @@ interface Classified {
   comments: CodeSpan[];
 }
 
-/** Offsets are preserved, so a mask span sits where it does in the document. */
+/** Sorts lines into Markdown and code, masking the code so a span cannot pair across it. */
 function classify(lines: string[]): Classified {
   const text: number[] = [];
   const definition = new Set<number>();

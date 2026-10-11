@@ -802,7 +802,7 @@ export function AgentsTab() {
       if (current !== label) {
         return current;
       }
-      // The quant belonged to the label, and an explicit pick stops adoptActiveModel correcting it.
+      // Drop the quant in the same update: it belonged to the label; an explicit pick blocks correction.
       chosenVariant.current = null;
       setSelectedVariant(null);
       return replacement;

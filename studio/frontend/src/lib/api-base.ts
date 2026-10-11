@@ -49,7 +49,7 @@ export function apiUrl(path: string): string {
   return `${apiBase}${path}`
 }
 
-/** So a request to it may carry the sign-in. */
+/** True when url is served by this Studio backend, so a request to it may carry the sign-in. */
 export function isStudioUrl(url: string): boolean {
   const page = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
   try {

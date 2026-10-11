@@ -136,7 +136,7 @@ interface ChatSearchIndexBuild {
   complete: boolean;
 }
 
-// Exported for the bare-node cache harness.
+// Exported so the harness can tell a failed read from a completed empty history.
 export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
   const active = await listStoredChatThreads({ includeArchived: false });
 

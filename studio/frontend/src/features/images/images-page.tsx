@@ -311,7 +311,7 @@ function useImageModels(
   );
 }
 
-// Images each conditioned workflow consumed, for the restore toast. Keys are the backend's
+// Images each conditioned workflow consumed, for the restore toast; keys are backend workflow ids.
 // workflow strings; txt2img is absent because it restores completely.
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
@@ -1417,7 +1417,7 @@ export function ImagesPage({
     r.releaseRecipeClaim?.();
     r.releaseRecipeClaim = undefined;
   }, []);
-  // Without this the Default preset reads as "modified" for the whole download.
+  // Recipe a pick claims until status confirms it; without it Default reads as modified.
   const [pendingModelDefaults, setPendingModelDefaults] = useState<{
     steps: number;
     guidance: number;
@@ -2784,7 +2784,7 @@ export function ImagesPage({
         return settle(false);
       }
       if (startSeq !== cancelSeq.current) {
-        // The cancel's unload may have landed before this load registered, so unload once more.
+        // Unload sent on cancel may have missed this load, so unload again unless a newer load took over.
         if (startLoad === loadSeq.current) {
           try {
             await unloadDiffusionModel();

@@ -12,7 +12,7 @@ export type ResearchPresenceMessage = { metadata?: unknown };
 const presenceByMessages = new WeakMap<object, boolean>();
 const presenceByLiveRun = new WeakMap<object, Map<string, boolean>>();
 
-/** Only a finished run counts; running or stopped runs keep research offered. No status counts. */
+/** Only a finished run counts; running or stopped runs keep research offered; no-status runs count. */
 export function messageHasResearchRunId(
   message: ResearchPresenceMessage,
   liveRunId?: string,

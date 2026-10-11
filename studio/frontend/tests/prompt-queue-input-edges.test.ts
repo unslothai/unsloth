@@ -88,7 +88,7 @@ test("a queue row's drag is recognised however the engine lists the types", () =
     isPromptQueueDragTypes(["text/plain", PROMPT_QUEUE_DRAG_TYPE]),
     true,
   );
-  // types is a DOMStringList in WebKit and an array in Chromium.
+  // DOMStringList in WebKit, array in Chromium; both are ArrayLike, which is all the predicate needs.
   const domStringList = { length: 1, 0: PROMPT_QUEUE_DRAG_TYPE };
   assert.equal(isPromptQueueDragTypes(domStringList), true);
 });

@@ -128,7 +128,7 @@ export function agentRunsOnActiveModel(
   return isGguf || !GGUF_ONLY_AGENTS.includes(agent);
 }
 
-// DEFAULT_AGENT is itself GGUF-only.
+// The non-GGUF reset target, since DEFAULT_AGENT is itself GGUF-only.
 export const UNIVERSAL_AGENT = "opencode";
 
 // Stays inside `offered`; null = nothing offered runs.

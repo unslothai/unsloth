@@ -837,7 +837,7 @@ fn live_backend_port(state: &State<'_, crate::process::BackendState>) -> Result<
     if let Some(port) = backend.owned_backend_port() {
         return Ok(port);
     }
-    // An owned backend with no known port is starting; the cached field may be stale.
+    // Starting, not attachable: the cached field could send the token to a stale listener.
     if backend.has_owned_backend() {
         return Err("Backend is not ready".to_string());
     }

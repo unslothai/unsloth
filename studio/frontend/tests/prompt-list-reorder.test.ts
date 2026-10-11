@@ -112,7 +112,7 @@ test("only the pointer that started the drag drives it", () => {
   assert.equal(ownsDrag(3, 7), false, "a second finger reordered with its own y");
 });
 
-// React unsubscribes listeners a commit after the drag ends.
+// An ended drag owns no pointer: a null id must not match, or a blur-ended drag keeps reordering.
 test("an ended drag owns no pointer at all", () => {
   assert.equal(ownsDrag(null, 3), false, "a blur-ended drag kept reordering");
   assert.equal(ownsDrag(null, 0), false, "pointer id 0 is a real id, not absent");

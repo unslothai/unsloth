@@ -481,7 +481,7 @@ export function migrateShippedSidebarNavDefault(
   storedVersion: number,
   migrationVersion: number,
 ): AppearanceCustomization {
-  // Once persisted at this version, the same layout may be a deliberate choice.
+  // Once persisted at this version, never adopt the same layout again; it may be a deliberate choice.
   if (storedVersion >= migrationVersion) return customization;
   return isUntouchedSidebarNav(customization.sidebarNav)
     ? {
@@ -920,7 +920,7 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_CONTROL_MIX_VAR, mix(raising ? 45 : 55));
     setVar(CONTRAST_STATE_MIX_VAR, mix(raising ? 16 : 55));
     setVar(CONTRAST_TEXT_MIX_VAR, mix(raising ? 40 : 30));
-    // Stops well short so body copy stays readable at 0.
+    // Primary ink heads to black or white when raising, into the page when lowering; stops well short.
     const palettePole = resolved === "light" ? "#000000" : "#ffffff";
     // Palette surfaces keep their colors under a custom foreground, so they raise toward the pole.
     setVar(

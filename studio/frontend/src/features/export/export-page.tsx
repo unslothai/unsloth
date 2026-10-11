@@ -727,7 +727,7 @@ export function ExportPage() {
     effectiveIsAdapter &&
     !isMacHost;
 
-  // Each merged format uploads to the repo root, so a Hub export allows only one format.
+  // Restrict a Hub merged export to one format; multi-format stays available for local export.
   const hubMultiFormat =
     destination === "hub" &&
     exportMethod === "merged" &&

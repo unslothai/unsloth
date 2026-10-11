@@ -15,8 +15,7 @@ import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
 
 import { readText } from "./helpers/kit.ts";
 
-/* Renderer src rewrite, authed fetch, and extension list must agree with the backend's
-   _SANDBOX_MEDIA_TYPES; nothing in the type system joins them. */
+/* Src rewrite and authed fetch must join; the extension list must match _SANDBOX_MEDIA_TYPES. */
 
 const MARKDOWN_TEXT = readText("../src/components/assistant-ui/markdown-text.tsx");
 const HOOK = readText("../src/components/assistant-ui/use-sandbox-image.ts");

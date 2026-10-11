@@ -1449,7 +1449,7 @@ const pairingSettledByThreadId = new Map<
   { promise: Promise<void>; resolve: () => void }
 >();
 
-/** The adapter awaits this so a run never starts on installation defaults. */
+/** Resolves once settings for this thread are known; false means the wait ran out, callers must stop. */
 export function awaitThreadScopedPairing(
   threadId: string | null | undefined,
 ): Promise<boolean> {
@@ -1480,7 +1480,7 @@ export function releaseHeldThreadScopedEdits(): void {
   }
 }
 
-/** Commit to the chat being left: writing to the defaults would move every other chat. */
+/** Commit to the chat being left; defaults would then move every snapshot-less chat. */
 export function commitHeldThreadScopedEditsToTheirThread(
   keepalive = false,
 ): Promise<void> {
@@ -1967,7 +1967,7 @@ export function loadedGpuMemoryFields(resp: {
     reportedGpuIds == null
       ? null
       : cachedPinnableGpuIndexKind(resp.is_diffusion === true);
-  // While discovery is cold, keep the pin or llama.cpp falls back to every device.
+  // Unsafe to adopt a numeric id once discovery says it is not physical; keep the pin while cold.
   const gpuIds =
     reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
   // A shim without --ngl reports Auto while the backend holds the split, so recover it.
@@ -2143,7 +2143,7 @@ type ChatRuntimeStore = {
   ragOcrScanned: boolean;
   ragCaptionFigures: boolean;
   confirmToolCalls: boolean;
-  /** No confirmation gate and no sandbox; kept in sync with permissionMode "full". */
+  /** No confirmation gate and no python/terminal sandbox, though secrets are still stripped. */
   bypassPermissions: boolean;
   /** Source of truth; bypassPermissions and confirmToolCalls mirror it. */
   permissionMode: PermissionMode;
@@ -2530,7 +2530,7 @@ const SCALAR_SETTING_KEYS = [
 const locallyRememberedModels = new Set<string>();
 // Pre-hydration edits are held as patches: they name only touched keys and must merge.
 const modelParamEditsBeforeHydration = new Map<string, PersistedInferenceParams>();
-/** Lazy: an import cycle puts PERSISTED_INFERENCE_PARAM_KEYS in its TDZ at module load. */
+/** Lazy and memoized, or the += 1 bumps stop accumulating; import cycle leaves the const in its TDZ. */
 let inferenceParamMutationVersionsCache: Record<
   PersistedInferenceParamKey,
   number
@@ -4368,7 +4368,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
     });
-    // No load or status follows an external pick, so schedule the migration here.
+    // No load or status follows an external pick, so schedule here; never with ownership.
     if (scheduleQwenMigration) {
       scheduleLegacyQwenDefaultsRetry(null);
     }

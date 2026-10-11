@@ -379,7 +379,7 @@ function OsSandboxSections() {
   const [saving, setSaving] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
   const [absent, setAbsent] = useState(false);
-  // The Windows prepare step keeps `job`.
+  // Linux install and Windows runtime install use setupJob; the Windows prepare step keeps job.
   const [setupJob, setSetupJob] = useState<SandboxSetupJob | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const mounted = useRef(true);

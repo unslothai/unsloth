@@ -310,8 +310,7 @@ test("a check that cannot be answered still arms the card", async () => {
   );
 });
 
-// The status check and the replay run concurrently, so `tool_end` can fold a card mid-request;
-// arming afterwards must not register an already-finished call.
+// Check and replay run concurrently; tool_end can fold a card first, and arming then registers it.
 
 const finishedEnd = (approvalId: string) => ({
   _toolEvent: {

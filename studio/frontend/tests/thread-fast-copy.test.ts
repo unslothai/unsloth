@@ -176,7 +176,7 @@ test("every range of a multi-range selection has to be inside the thread", () =>
 });
 
 test("a form control in the selected subtree hands the copy back", () => {
-  // Form controls are refused: Chromium emits their value as its own block, varying by control.
+  // Form controls are refused: a password field copies as its mask; a wrong guess leaks the password.
   for (const control of ["input", "textarea", "select"]) {
     const decision = decideThreadCopy(
       copyEvent(),

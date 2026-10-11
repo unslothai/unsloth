@@ -48,7 +48,7 @@ export interface CachedInventoryRow {
   partialTransport?: string | null;
   partialResumable?: boolean;
   downloading?: boolean;
-  /** Moves on a sibling cancel, which changes neither bytes nor mtime. */
+  /** Set when a download manifest or cancel marker exists for some quant; moves on a sibling cancel. */
   hasVariantState?: boolean;
   pipelineTag?: string | null;
   task?: string | null;

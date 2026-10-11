@@ -49,7 +49,7 @@ export function ModelConfigDialog({
   const skipHealthCheckId = `${config.id}-skip-health-check`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
   const providerInputRef = useRef(config.provider);
-  // In an effect, not during render, to satisfy react-hooks/refs.
+  // Sync the ref in an effect, not during render, to satisfy react-hooks/refs.
   useEffect(() => {
     providerInputRef.current = config.provider;
   }, [config.provider]);

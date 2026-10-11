@@ -181,7 +181,7 @@ function deleteAccountDatabase(
   });
 }
 
-/** The marker is published last so other tabs reload only once the new session is ready. */
+/** Run before publishing tokens: only a failed clear fails the switch; the marker is published last. */
 export async function transitionBrowserAccount(
   account: BrowserAccount | string,
   postAuthRoute: string,
@@ -258,7 +258,7 @@ export function installAccountTransitionListener(
         browser.localStorage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
       );
       if (isSameAccount(current, parseAccountMarker(event.newValue))) return;
-      // A switch that never finishes still reloads.
+      // Stop sending until the marker arrives; a switch that never finishes still reloads.
       transitionPending = true;
       if (fenceTimer === null) fenceTimer = setTimeout(reload, ACCOUNT_FENCE_TIMEOUT_MS);
       return;

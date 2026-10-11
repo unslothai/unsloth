@@ -203,7 +203,7 @@ export function codexCapabilitiesWithPlanModels(
     entry?.supports_studio_tools,
   );
   for (const model of listed.known ?? listed.models) {
-    // Only the plan describes unlisted slugs; a null modality mirrors the backend's bool(vision).
+    // Only the plan describes unlisted slugs; mirror the backend bool(vision) gate as false, not null.
     if (!(model.id in registryCapabilities)) {
       capabilities[model.id] = {
         ...capabilities[model.id],

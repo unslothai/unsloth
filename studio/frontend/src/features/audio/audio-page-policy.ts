@@ -627,7 +627,7 @@ export function resolveSttResidency(
   return null;
 }
 
-/** Reconcile with sidecar status; keep a selection only while its load is pending. */
+/** Reconcile with sidecar status; keep a selection only while its load or download is pending. */
 export function reconcileSttSelection({
   selectedRepo,
   loadedModel,

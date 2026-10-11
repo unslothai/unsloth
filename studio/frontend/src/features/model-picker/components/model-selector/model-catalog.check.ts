@@ -329,7 +329,7 @@ assert.deepEqual(
   curatedRowLabelFor("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", IMAGE_CATALOG, "dense-quant"),
   { name: "Z-Image-Turbo", tags: ["bnb-4bit"] },
 );
-// The native engine has no low-precision tensor-core path, so every diffusion GGUF is slow.
+// Every diffusion GGUF is the slow row on a host that can also place the dense pipeline.
 assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG, "dense-quant"), {
   name: "Z-Image-Turbo-GGUF (Slow)",
   tags: [],
@@ -546,7 +546,7 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// Otherwise the VRAM badge falls back to the QLoRA estimator, which misreads pipelines.
+// Non-GGUF rows stating a param count must state size, or the VRAM badge misreads pipelines.
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
@@ -1084,7 +1084,7 @@ for (const [id, repo] of PREQUANT_ROWS) {
   const hit = artifactForRepoId(id, IMAGE_CATALOG);
   assert.ok(hit, id);
   assert.equal(hit.artifact.prequantRepo, repo, id);
-  // Else the fit rule sizes a load by an artifact the backend never fetches.
+  // Only a quantiser-takeable row may name a checkpoint, else the fit sizes an unfetched artifact.
   assert.equal(curatedArtifactTakesDenseQuant(id, IMAGE_CATALOG), true, id);
   for (const scheme of ["fp8", "int8"] as const) {
     const size = hit.artifact.prequantSizeGb?.[scheme];

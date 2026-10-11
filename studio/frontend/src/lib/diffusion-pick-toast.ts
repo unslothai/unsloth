@@ -27,7 +27,7 @@ export interface PickToast {
   dismissAll: () => void;
   setPhase: (id: string | undefined, phase: PickToastPhase, plan?: number) => void;
   progress: (progress: StagedPlanProgress | null) => void;
-  /** undefined if the toast is gone. */
+  /** Transfer ownership to the load; return undefined if the toast is gone. */
   take: (id: string | undefined) => string | undefined;
 }
 

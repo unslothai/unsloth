@@ -14,7 +14,7 @@ export function notifyGalleryChanged(kind: GalleryKind): void {
   window.dispatchEvent(new CustomEvent(GALLERY_CHANGED_EVENT, { detail: { kind } }));
 }
 
-/** Returns an unsubscriber. */
+/** Calls back when kind changed elsewhere. Returns an unsubscriber. */
 export function subscribeGalleryChanged(kind: GalleryKind, onChanged: () => void): () => void {
   if (typeof window === "undefined") return () => {};
   const handler = (event: Event) => {
@@ -203,7 +203,7 @@ export function removeGalleryItem<T extends FlaggableItem>(items: T[], id: strin
   return items.filter((i) => i.id !== id);
 }
 
-/** So a burst of actions cannot spin it. */
+/** Attempts a page fetch may make before giving up, so a burst of actions cannot spin it. */
 export const PAGE_MAX_ATTEMPTS = 4;
 
 /** For a GET that REPLACES the strip: a response snapshotted before a pin or archive would revert

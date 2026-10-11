@@ -220,7 +220,7 @@ test("an entry saved by an older install loads without gaining a cap", () => {
   assert.equal(reloaded.maxOutputTokens, 384000);
 });
 
-// Source-level: neither clamp call site is reachable without a DOM.
+// Every clamp site must wait for a resolved provider, or a preset lowers the cap for good.
 test("every clamp site waits for a resolved provider", () => {
   const settings = readSrc("features/chat/chat-settings-sheet.tsx");
   assert.match(

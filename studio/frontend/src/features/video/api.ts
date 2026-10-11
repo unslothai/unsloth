@@ -31,7 +31,7 @@ export interface VideoGenerationDefaults {
   frame_offset: number;
   duration_presets: number[];
   resolution_multiple: number;
-  // Default first.
+  // (width, height) presets the UI offers; the default comes first.
   resolution_presets: Array<[number, number]>;
   canvas_short_edge?: number | null;
   canvas_max_pixels?: number | null;
@@ -52,7 +52,7 @@ export interface VideoStatus {
   dtype: string | null;
   model_kind?: string | null;
   engine?: "diffusers" | "sd_cpp" | null;
-  // Newer backends report this separately from the compute dtype.
+  // Selected GGUF quant; newer backends report it separately from the compute dtype.
   gguf_variant?: string | null;
   offload_policy?: string | null;
   vae_tiling: boolean;

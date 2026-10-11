@@ -28,7 +28,7 @@ export function useNvfp4Diffusion(): boolean {
   return useGpuInfo().nvfp4Diffusion;
 }
 
-/** So a false `useNvfp4Diffusion()` is not just the unloaded default. */
+/** Whether /api/system answered, so a false useNvfp4Diffusion() is not just the unloaded default. */
 export function useNvfp4DiffusionKnown(): boolean {
   return useGpuInfo().budgetKnown;
 }

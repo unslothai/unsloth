@@ -119,7 +119,7 @@ test("a dense feed still tracks a rate change within the smoothing span", () => 
   assert.ok(Math.abs(rate - 50 * MB) < 1);
 });
 
-// 16 is what the previous age-only trim held.
+// A stopped transfer has no increases to trim, so a wedged download must not grow the buffer forever.
 test("a transfer that stops does not grow the sample buffer without bound", () => {
   const samples: TransferSample[] = [];
   for (let t = 0; t <= 6 * 60 * 60; t += 1) publishedRate(samples, t, 1_000);

@@ -286,7 +286,7 @@ test("a once stop listener is dropped before the handlers run", () => {
   let persistentCalls = 0;
   recorder.addEventListener("stop", () => {
     persistentCalls += 1;
-    // The dictation adapter adds listeners from inside a stop handler.
+    // The dictation adapter adds listeners from a stop handler, so a one-shot must already be removed.
     recorder.addEventListener("stop", () => {
       persistentCalls += 10;
     });

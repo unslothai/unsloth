@@ -474,7 +474,7 @@ export function UploadedFilesView() {
   }
 
   async function handleDelete(row: UploadedFileRow) {
-    // A deletion shifts the boundary used by an in-flight page request.
+    // Offset pages and deletions must not race: a deletion shifts the boundary of an in-flight page.
     if (loadingMore || !row.remove) return;
     try {
       await row.remove();

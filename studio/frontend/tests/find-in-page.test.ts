@@ -915,7 +915,7 @@ test("spelling variants do not loosen whitespace inside a fence", () => {
 });
 
 test("an engine with no checkVisibility falls back to the computed properties", () => {
-  // `checkVisibility` is undefined on WebKitGTK.
+  // checkVisibility is undefined on WebKitGTK; read as not false it would index display: none subtrees.
   for (const style of [
     { display: "none" },
     { visibility: "hidden" },

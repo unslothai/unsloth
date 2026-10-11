@@ -87,7 +87,7 @@ fn selected_backend_is_wayland(backends: &OsStr, wayland_open: bool, x11_display
             _ => continue,
         }
     }
-    // Wayland was asked for and nothing else could open; GTK fails anyway if it is truly absent.
+    // Wayland asked and nothing else opened: keep Wayland so an unseen socket is not read as X11.
     named_wayland
 }
 

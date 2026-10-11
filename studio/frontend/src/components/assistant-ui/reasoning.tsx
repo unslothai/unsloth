@@ -714,7 +714,7 @@ const ReasoningGroupBlock = ({
     override,
   });
 
-  // A layout effect, so the folded parts settle before the frame the user sees.
+  // Publishes the open state and tool count of the lead to folded parts, in a layout effect pre-paint.
   const roundKey = reasoningRoundKey(messageId, endIndex);
   const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
   const foldedToolCount = useMessageMemo(

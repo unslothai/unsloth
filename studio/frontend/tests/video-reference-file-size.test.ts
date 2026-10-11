@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The backend caps the base64 STRING (96 MiB video, 32 MiB soundtrack), so the raw file
- * limits are below three quarters of those. */
+/** Backend caps base64 string at 96 MiB video, 32 MiB soundtrack; raw limits are 3/4 of those. */
 
 import assert from "node:assert/strict";
 import test from "node:test";

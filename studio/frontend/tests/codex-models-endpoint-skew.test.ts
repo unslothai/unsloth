@@ -111,7 +111,7 @@ test("a body without a source field is not mistaken for a plan catalog", async (
 });
 
 test("a gateway 401 on the unknown path still keeps the selection", async () => {
-  // Kept last: authFetch treats every 401 as an expired session and runs refresh-and-retry.
+  // Kept last: a gateway 401 runs authFetch's refresh path, so the picker must still keep the selection.
   const location = { pathname: "/chat", href: "/chat" };
   const globals = globalThis as { window?: unknown; localStorage?: unknown };
   const originalWindow = globals.window;

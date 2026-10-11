@@ -257,4 +257,4 @@ test("every remend in the tree is the pinned one, including Streamdown's", async
   }
 });
 
-/* No timing assertion: a doubling-factor check had too little margin and flaked under load. */
+/* No timing assertion: a 15% margin would fail on a busy runner; the claim belongs in the PR. */

@@ -137,7 +137,7 @@ export function useReleaseNotes({
     }
   }, [version, load]);
 
-  // State lags `version` by a render.
+  // Never hand back another version's notes; state lags version by a render.
   const matchesVersion = notes !== null && notes.version === version;
   return {
     state: notes !== null && !matchesVersion ? "loading" : state,

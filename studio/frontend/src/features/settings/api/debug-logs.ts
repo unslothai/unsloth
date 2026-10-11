@@ -256,7 +256,7 @@ function parentDirectory(path: string): string | null {
   return parent;
 }
 
-/** Open the archive's folder via open_models_dir, the generic open_existing_dir command. */
+/** Open the folder the archive was saved into, not openLogsFolder, which opens the logs dir. */
 export async function revealSavedArchive(savedPath: string): Promise<void> {
   if (!isTauri) return;
   const directory = parentDirectory(savedPath);

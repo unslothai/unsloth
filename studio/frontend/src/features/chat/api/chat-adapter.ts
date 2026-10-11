@@ -5504,7 +5504,7 @@ export function createOpenAIStreamAdapter(
         loadedIsDiffusion: runtime.loadedIsDiffusion,
         // Turn-scoped, not thread-scoped: see currentTurnCarriesMedia above.
         turnCarriesMedia: currentTurnCarriesMedia,
-        // Seeded partial is yielded first so autosave lands before admission, which 409s placeholders.
+        // Yield the partial first so autosave lands before admission, which 409s substantive placeholders.
         continuation,
         threadId: resolvedThreadId,
         incognito: resolvedThreadId ? isThreadIncognito(resolvedThreadId) : false,
@@ -5670,7 +5670,7 @@ export function createOpenAIStreamAdapter(
       let streamedChars = 0;
       // Continuations are seeded with the prior partial; a run adding nothing must not be trimmed.
       let producedReplyText = false;
-      // Local backends resume at the exact token, so only providers that repeat need repair.
+      // Local backends resume at the exact token, so only providers that repeat or restart need repair.
       const repairContinuation =
         isExternalRequest && !resumesExactly(externalProvider?.providerType);
       // Repair once on the finished turn; per-arrival runs could shrink published text.

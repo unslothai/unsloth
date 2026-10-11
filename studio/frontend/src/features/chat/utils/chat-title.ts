@@ -333,7 +333,7 @@ function titleReasoningCaps(connection: ResolvedExternalConnection) {
   });
 }
 
-/** Either field becomes reasoning.effort (400 on non-reasoning models), so omit or clamp. */
+/** Responses route: either field becomes reasoning.effort (400 on non-reasoning models); omit/clamp. */
 function titleReasoningFields(
   connection: ResolvedExternalConnection,
 ): TitleReasoningFields {

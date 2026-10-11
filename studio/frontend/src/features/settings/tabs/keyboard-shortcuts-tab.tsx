@@ -59,7 +59,7 @@ function Chord({
 }: {
   label: string;
   tone: "assigned" | "unassigned" | "recording";
-  /** Hover only, so the caps stay a clean column. */
+  /** Why the browser may swallow this chord; hover only, so the caps stay a clean column. */
   note?: string;
 }) {
   const cap = (
@@ -186,7 +186,7 @@ export function KeyboardShortcutsTab() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [recording, setBinding, t]);
 
-  // Capture phase, like the recorder, which owns the keyboard while it runs.
+  // Capture phase like the recorder; stands down while recording, which owns the keyboard.
   useEffect(() => {
     if (!byKeystroke || recording) return;
     const onKeyDown = (event: KeyboardEvent) => {

@@ -106,7 +106,7 @@ function columnWidth(prefix: string): number {
   return width;
 }
 
-/** `content` with CRLF/CR as LF, plus each normalized index's offset in the original. */
+/** Skip the mask rebuild unless a backtick sits outside code; otherwise codeSpans finds nothing. */
 function normalizedMarkdownOffsets(content: string): {
   text: string;
   offsets: number[];

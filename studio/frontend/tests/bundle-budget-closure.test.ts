@@ -45,7 +45,7 @@ test("a classic script is charged to startup, but not as the entry", () => {
 });
 
 test("a deferred script is on the startup path, an async one is not", () => {
-  // async wins when a tag carries both async and defer.
+  // Defer runs after parsing and before DOMContentLoaded, in document order; async has no such order.
   const html =
     '<script defer src="/late.js"></script>' +
     '<script async src="/whenever.js"></script>' +

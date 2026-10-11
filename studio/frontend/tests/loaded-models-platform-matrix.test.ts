@@ -249,7 +249,7 @@ test('a "none" quant is not printed as a precision', () => {
 });
 
 test("a host that can never run video reports an empty runtime, not an error", () => {
-  // The video router is always registered, so hosts without torch get loaded:false, not 404.
+  // Video router is always registered, so macOS and CPU-only hosts get loaded:false, not 404.
   assert.deepEqual(describeVideoStatus(video({ loaded: false })), []);
 });
 

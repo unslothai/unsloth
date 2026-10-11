@@ -69,7 +69,7 @@ function itemName(item: RagUploadItem): string {
   return item.kind === "file" ? item.file.name : item.name;
 }
 
-// Client-side dedup key; the backend dedups authoritatively by content hash.
+// Native drops carry size and mtime so same-named files from different folders stay distinct.
 function itemSignature(item: RagUploadItem): string {
   if (item.kind === "file") {
     return `${item.file.name}|${item.file.size}|${item.file.lastModified}`;

@@ -1085,7 +1085,7 @@ test("a running continuation keeps its lease past the TTL", async () => {
 });
 
 test("a finished run leaves the message continued, not free again", async () => {
-  // Marked done rather than released: other tabs never learn the sibling was written.
+  // Released on any terminal state so the full TTL means only a crash; marked done, not handed back.
   const { storage } = storageFake();
   const locks = lockManagerFake();
   const running = createAutoContinueTab({ storage, locks });

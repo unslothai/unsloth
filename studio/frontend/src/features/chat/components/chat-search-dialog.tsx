@@ -180,7 +180,7 @@ export function ChatSearchDialog() {
   });
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<ChatSearchTab>("all");
-  // Pin the highlight to the first row: later-loading kinds can sort above it.
+  // Pin the highlight to the first row until the user moves it; later-loading kinds can sort above it.
   const [selected, setSelected] = useState("");
   const [moved, setMoved] = useState(false);
   const deferredQuery = useDeferredValue(query);

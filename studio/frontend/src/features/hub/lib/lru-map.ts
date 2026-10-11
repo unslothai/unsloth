@@ -40,7 +40,7 @@ export class LruMap<K, V> {
   }
 }
 
-/** `protectedScans` caps the walk at one pass so a fully protected set cannot loop forever. */
+/** Trims to max, evicting oldest first but never a protected entry; protectedScans bounds the walk. */
 export function evictOldestUnprotected(
   set: Set<string>,
   max: number,

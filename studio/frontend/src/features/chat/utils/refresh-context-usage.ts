@@ -33,7 +33,7 @@ function superseded(threadKey: string | null, generation: number): boolean {
 
 const countsInFlight = new Set<string | null>();
 
-// Replay a deferred trigger only if the in-flight count settled without publishing.
+// Never drop a deferred trigger; replay it only if the in-flight count settled without publishing.
 const retryAfterInFlight = new Map<string | null, RefreshOptions>();
 
 function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {

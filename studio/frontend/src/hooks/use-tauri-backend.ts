@@ -175,7 +175,7 @@ export function useTauriBackend() {
   const environmentWaitPollsRef = useRef(0);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
-  // approveElevation restarts the repair with this after system packages land.
+  // Whether the repair was asked to skip to the installer; approveElevation restarts it with this.
   const forcedRepairRef = useRef(false);
   const repairReasonRef = useRef<string | null>(null);
   // Retry may repair a recently repaired runtime; only the automatic launch-time repair is held.
@@ -301,7 +301,7 @@ export function useTauriBackend() {
   }
 
   async function checkInstallAndStart() {
-    // Before preflight: the native command can adopt a reaping backend and arm a crash watchdog.
+    // Honor a persisted stop before preflight; the native command can adopt a reaping backend.
     if (hasServerStopIntent()) {
       setBackendStatus("stopped");
       return;

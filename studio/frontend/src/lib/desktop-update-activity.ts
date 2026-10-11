@@ -28,7 +28,7 @@ export function followDesktopUpdateScreen(
   };
 }
 
-/** `downWhenIssued` is latched at issue: the rejection can land ~20s later. */
+/** Whether a failed read never reached a backend the update stopped; the flag is latched at issue. */
 export function isSilencedDesktopUpdateFailure(
   error: unknown,
   downWhenIssued: boolean,

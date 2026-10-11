@@ -201,7 +201,7 @@ test("typing is not rewritten before the entry is finished", () => {
 });
 
 test("an abandoned entry does not outlive the box it was typed into", () => {
-  // Removing a focused element fires no blur, so a draft must also be committed on unmount.
+  // Removing a focused element fires no blur, so a draft must be reset on model switch or removal.
   const sheet = readText("../src/features/chat/chat-settings-sheet.tsx");
   const reset = slice(sheet, "useEffect(() => {\n    setSeedDraft(null);", ");");
   assert.match(reset, /\[currentCheckpoint, showSeed\]/);

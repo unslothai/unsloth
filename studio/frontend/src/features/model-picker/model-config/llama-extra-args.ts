@@ -607,7 +607,7 @@ function lastIntegerFlagValue(
   return found;
 }
 
-/** See parse_tensor_split_override. */
+/** Per-GPU ratio read by parse_tensor_split_override; bad entries or a zero total are a 400. */
 const RATIO_VALUE_FLAGS = new Set(["--tensor-split", "-ts"]);
 
 /** llama.cpp splits on this class, so "3/1" is "3,1". */

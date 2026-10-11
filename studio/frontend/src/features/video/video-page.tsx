@@ -313,7 +313,7 @@ const galleryCache: {
   epoch: 0,
 };
 
-// Comfortably inside the backend's own expiry.
+// Re-mint a cached signed link once it is this old, well inside the backend expiry window.
 const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 const PAGE_SIZE = 50;
@@ -555,7 +555,7 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
         value={
           status.text_encoder_quant
             ? formatResolvedValue("text_encoder_quant", status.text_encoder_quant)
-            // On the native engine no TE quant is not the same as bf16.
+            // No runtime TE quant engaged; on the native engine that is not the same as bf16.
             : denseTextEncoderBuildLabel(status)
         }
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
