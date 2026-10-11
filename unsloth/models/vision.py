@@ -3160,7 +3160,7 @@ class FastBaseModel:
         if old_hf_transfer != "0":
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-        # Download counter (environment, repeat, VRAM bucket, GPU count); opt out with UNSLOTH_DISABLE_STATISTICS=1.
+        # Download counter (environment, repeat, VRAM bucket, GPU-count bucket); opt out with UNSLOTH_DISABLE_STATISTICS=1.
         get_statistics(kwargs.get("local_files_only", False))
 
         # The base plus tokenizer prefetch runs AFTER the load-mode validation below, so an invalid load_in_* combination fails without first downloading a snapshot.
