@@ -8529,6 +8529,9 @@ def _display_tool_name_gate(active_tools):
     return names or None
 
 
+_DISPLAY_STRIP_TRIGGERS = _re.compile(r"[<\[{]")
+
+
 def _strip_tool_xml_for_display(
     text: str,
     *,
@@ -8547,6 +8550,13 @@ def _strip_tool_xml_for_display(
     ``enabled_tool_names`` or an execution-class one is kept as prose. The ``[TOOL_CALLS]``
     control-token arms strip unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
+        return text
+    # Every form this strips opens with one of these: XML/sentinel tags and <think> with "<",
+    # [TOOL_CALLS] / NAME[ARGS] / [THINK] with "[", wrapper-less Gemma call:NAME{ with "{".
+    # Without any of them nothing can match, so the text is returned as is. The streaming tool
+    # route calls this on the CUMULATIVE text once per token, which made every token re-scan the
+    # whole answer: at ~1k tok/s the relay delivered about half the server's decode rate.
+    if not _DISPLAY_STRIP_TRIGGERS.search(text):
         return text
     from core.tool_healing import (
         _markerless_promotable,
