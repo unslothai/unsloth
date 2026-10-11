@@ -306,8 +306,27 @@ def _weight_quant_pre_hook(module, args):
             p.data = float_weight.to(p.data.device)
 
 
+def _weight_quant_state_dict_hook(module, state_dict, prefix, local_metadata):
+    """Serialize full weights without materializing the live placeholders."""
+    for name, p in module.named_parameters(recurse = False, remove_duplicate = False):
+        if getattr(p, "_q_scales", None) is not None:
+            state_dict[prefix + name] = _dequantize(
+                p._q_data, p._q_scales, p._q_zeros, p._q_shape
+            ).to(p.device)
+
+
+def _weight_quant_load_state_dict_hook(module, state_dict, prefix, *args):
+    """Restore parameter storage and invalidate quantized weights before loading."""
+    for name, p in module.named_parameters(recurse = False, remove_duplicate = False):
+        if prefix + name in state_dict and getattr(p, "_q_scales", None) is not None:
+            p.data = _dequantize(p._q_data, p._q_scales, p._q_zeros, p._q_shape).to(p.device)
+            p._q_scales = None
+            p._q_zeros = None
+            del p._q_data
+
+
 def install_weight_quant_hooks(model: torch.nn.Module) -> list:
-    """Register forward pre-hooks on modules whose weights are INT8-quantized.
+    """Register forward and checkpoint hooks for INT8-quantized weights.
 
     Returns a list of hook handles so the caller can remove them if needed.
     """
@@ -317,6 +336,10 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
         if has_quant_param:
             h = module.register_forward_pre_hook(_weight_quant_pre_hook)
             handles.append(h)
+            handles.append(module.register_state_dict_post_hook(_weight_quant_state_dict_hook))
+            handles.append(
+                module.register_load_state_dict_pre_hook(_weight_quant_load_state_dict_hook)
+            )
     return handles
 
 
@@ -352,7 +375,7 @@ def make_q_galore_param_groups(
 ) -> list:
     """Build param groups suitable for :class:`QGaLoreAdamW8bit`.
 
-    Parameters matching ``target_modules`` (or the default set of attention
+    Two-dimensional parameters matching ``target_modules`` (or the default set of attention
     and MLP projection names) are placed in the GaLore group.  All other
     trainable parameters go into the non-GaLore group.
 
@@ -387,10 +410,9 @@ def make_q_galore_param_groups(
         if not param.requires_grad:
             continue
 
-        # Match target module names and exclude 1-D params (biases, norms), since GaLoreProjector.project
-        # requires 2-D gradients.
+        # GaLoreProjector requires matrices; biases, norms, and stacked experts use ordinary AdamW.
         name_parts = name.split(".")
-        is_galore = param.dim() >= 2 and any(t in name_parts for t in targets)
+        is_galore = param.dim() == 2 and any(t in name_parts for t in targets)
 
         if is_galore:
             galore_params.append(param)
