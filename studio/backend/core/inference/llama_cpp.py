@@ -13603,6 +13603,30 @@ class LlamaCppBackend:
         return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
 
     @staticmethod
+    def _metal_fit_target_floor_mib() -> float:
+        """Smallest ``--fit-target`` that keeps llama.cpp's Metal fit inside the wired headroom.
+
+        ggml-metal reports free as recommendedMaxWorkingSetSize minus this process's own
+        allocations (ggml-metal-device.m, ggml_metal_device_get_memory), blind to the GPU
+        memory WindowServer and other apps already hold, so --fit packs to within 1 GiB of
+        the static ceiling and over-commits the wired limit (#9279). 0 when either side is
+        unreadable, which leaves llama.cpp's own margin.
+        """
+        headroom = LlamaCppBackend._apple_metal_wired_ceiling_bytes()
+        if headroom <= 0:
+            return 0.0
+        try:
+            import mlx.core as mx
+            from utils.hardware.hardware import _mlx_device_info
+
+            if not mx.metal.is_available():
+                return 0.0
+            seen = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
+        except Exception:
+            return 0.0
+        return max(0.0, (seen - headroom) / (1024 * 1024))
+
+    @staticmethod
     def _rocm_arch_gate_keep(
         binary: Optional[str], torch_mod, for_llama_server: bool
     ) -> Callable[[int], bool]:
@@ -25604,6 +25628,8 @@ class LlamaCppBackend:
                 _metal_ctx_warning: Optional[str] = None
                 # A discounted Metal ceiling must launch the measured full-offload placement.
                 _metal_full_offload_pinned = False
+                # --fit-target floor from the Metal wired headroom; 0 off Apple Silicon.
+                _metal_fit_target_floor_mib = 0.0
                 # The fit and launch must use the same Model Memory snapshot.
                 from utils.model_memory_settings import capture_model_memory_settings
 
@@ -27689,6 +27715,10 @@ class LlamaCppBackend:
                         _metal_full_offload_pinned = bool(
                             _apple_host_embd and _apple_measured_ceiling is not None
                         )
+                        # Weights over the budget launch here too and the fitter places
+                        # them, so it must see the same wired limit the refusals do.
+                        if not _caller_owns_budget and not _paravirtual_cpu_forced:
+                            _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib()
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
@@ -28160,6 +28190,7 @@ class LlamaCppBackend:
                                 fit_target_delta_mib = _fit_target_delta_mib if use_fit else 0.0,
                                 supports_fit_target = use_fit
                                 and bool(server_caps.get("supports_fit_target")),
+                                floor_mib = _metal_fit_target_floor_mib,
                             ),
                             fit_target_margin_in(_fit_extras, _fit_env) or 0.0,
                         )
@@ -28933,19 +28964,30 @@ class LlamaCppBackend:
                     except OSError:
                         self._slot_save_dir = None
                         self._slot_save_binary = None
-                _integrity_flags = self._ctx_integrity_flags(
+                _integrity_args = (
                     n_parallel,
                     use_fit,
                     auto_fit,
                     requested_ctx,
                     effective_ctx,
                     server_caps,
+                )
+                _integrity_flags = self._ctx_integrity_flags(
+                    *_integrity_args,
                     fit_target_delta_mib = _fit_target_delta_mib,
                 )
                 # From the flags, not the inputs: --fit off, an older server without
                 # the capability and a budget at the default all leave the child
                 # unpriced, and each is decided inside that call.
                 _fit_target_priced = "--fit-target" in _integrity_flags
+                if _metal_fit_target_floor_mib:
+                    # Rebuilt after the price is read: the floor is the machine's
+                    # margin, not the budget slider's.
+                    _integrity_flags = self._ctx_integrity_flags(
+                        *_integrity_args,
+                        fit_target_delta_mib = _fit_target_delta_mib,
+                        fit_target_floor_mib = _metal_fit_target_floor_mib,
+                    )
                 cmd.extend(_integrity_flags)
                 offload_overridden = _extra_args_set_any_flag(
                     extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
@@ -36280,6 +36322,7 @@ class LlamaCppBackend:
         auto_fit: bool,
         fit_target_delta_mib: float = 0.0,
         supports_fit_target: bool = True,
+        floor_mib: float = 0.0,
     ) -> float:
         """Free VRAM per device llama.cpp's fitter keeps for itself under ``--fit on``.
 
@@ -36287,12 +36330,13 @@ class LlamaCppBackend:
         told to keep and the margin the fit refuses to spend cannot drift. A server
         too old for ``--fit-target`` still keeps llama.cpp's own 1024 MiB default
         (common/common.h, ``fit_params_target``), which is also what the legacy path
-        deliberately stays silent about.
+        deliberately stays silent about. ``floor_mib`` is a margin the host needs kept
+        whatever the budget says (the Metal wired headroom).
         """
         if not supports_fit_target:
             return _LLAMA_FIT_TARGET_DEFAULT_MIB
         base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
-        return max(_VRAM_FLOOR_RESERVE_MIB, base + fit_target_delta_mib)
+        return max(_VRAM_FLOOR_RESERVE_MIB, base + fit_target_delta_mib, floor_mib)
 
     @staticmethod
     def _ctx_integrity_flags(
@@ -36304,6 +36348,7 @@ class LlamaCppBackend:
         caps: dict,
         *,
         fit_target_delta_mib: float = 0.0,
+        fit_target_floor_mib: float = 0.0,
     ) -> list[str]:
         """Flags that keep the per-request window equal to the advertised ctx.
 
@@ -36341,6 +36386,7 @@ class LlamaCppBackend:
             _target = LlamaCppBackend._fit_target_margin_mib(
                 auto_fit = auto_fit,
                 fit_target_delta_mib = fit_target_delta_mib,
+                floor_mib = fit_target_floor_mib,
             )
             # The legacy path stays silent when it would only restate llama.cpp's
             # own default, so an untouched slider leaves the command unchanged.
