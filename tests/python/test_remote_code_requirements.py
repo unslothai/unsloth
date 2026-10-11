@@ -14,6 +14,7 @@ EXTRAS_TXT = (
 
 REMOTE_CODE_PACKAGES = {
     "addict": ("unsloth/DeepSeek-OCR", "unsloth/DeepSeek-OCR-2"),  # #8732
+    "easydict": ("unsloth/DeepSeek-OCR",),
 }
 
 

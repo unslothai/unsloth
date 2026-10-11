@@ -544,6 +544,14 @@ def _prompt_already_has_bos(tokenizer, prompt):
     return bool(len(ids)) and ids[0] == bos_token_id
 
 
+_DEEPSEEK_OCR_ARCHITECTURES = frozenset({"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"})
+
+
+def _is_deepseek_ocr(model) -> bool:
+    architectures = getattr(getattr(model, "config", None), "architectures", None) or ()
+    return hasattr(model, "infer") and not _DEEPSEEK_OCR_ARCHITECTURES.isdisjoint(architectures)
+
+
 def _without_image_parts(messages) -> list[dict]:
     """The same conversation with every image placeholder dropped, collapsing a
     turn back to its text when that is all it held."""
@@ -1419,6 +1427,10 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
+        if _is_deepseek_ocr(model_info.get("model")):
+            yield from self._generate_deepseek_ocr_response(messages, image, images)
+            return
+
         if is_vision and (image or images):
             # Verify the stored processor can handle images; FastVisionModel may
             # return a raw tokenizer instead of a ProcessorMixin (e.g. Gemma-3).
@@ -1608,6 +1620,38 @@ class InferenceBackend:
             add_special_tokens = add_special_tokens,
             stop = stop,
         )
+
+    def _generate_deepseek_ocr_response(
+        self, messages, image, images
+    ) -> Generator[str, None, None]:
+        """DeepSeek-OCR ships no processor or chat template: its own infer() tiles the image."""
+        import tempfile
+
+        from core.inference.chat_template_helpers import last_user_text
+
+        self.last_generation_stats = None
+        picture = image if image is not None else next(iter(images or ()), None)
+        if picture is None:
+            raise ValueError("DeepSeek-OCR reads text from an image: attach one to your message.")
+        model_info = self.models[self.active_model_name]
+        tokenizer = model_info.get("tokenizer") or model_info.get("processor")
+        prompt = "<image>\n" + (last_user_text(messages) or "Free OCR.")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "image.png")
+            picture.convert("RGB").save(path)
+            # Gundam preset, the one the model card and Unsloth's notebooks use.
+            text = model_info["model"].infer(
+                getattr(tokenizer, "tokenizer", tokenizer),
+                prompt = prompt,
+                image_file = path,
+                output_path = tmp,
+                base_size = 1024,
+                image_size = 768,
+                crop_mode = True,
+                save_results = False,
+                eval_mode = True,
+            )
+        yield text or ""
 
     def _generate_vision_response(
         self,
