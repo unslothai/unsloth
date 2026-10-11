@@ -5,7 +5,7 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
-import { CodeHighlightEnabledContext } from "@/components/assistant-ui/code-highlight-context";
+import { CodeHighlightModeContext } from "@/components/assistant-ui/code-highlight-context";
 import {
   MarkdownText,
   SearchImagesEnabledContext,
@@ -357,9 +357,9 @@ function ReasoningText({
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => (
   <SearchImagesEnabledContext.Provider value={false}>
-    <CodeHighlightEnabledContext.Provider value={false}>
+    <CodeHighlightModeContext.Provider value="settled">
       <MarkdownText />
-    </CodeHighlightEnabledContext.Provider>
+    </CodeHighlightModeContext.Provider>
   </SearchImagesEnabledContext.Provider>
 );
 

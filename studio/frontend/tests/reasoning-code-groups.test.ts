@@ -8,15 +8,18 @@ import { readSrc } from "./helpers/kit.ts";
 
 const TRANSCRIPT = readSrc("components/assistant-ui/reasoning-transcript.tsx");
 
-test("thinking code is plain text and never asks the highlighter", () => {
-  assert.match(TRANSCRIPT, /const CodeRow = memo\(function CodeRow\(\{[\s\S]*?data-reasoning-code-row=""\s*>\s*\{codeRowText\(fragment, leading\)\}\s*<\/span>/);
-  assert.match(TRANSCRIPT, /<CodeRow\s*key=\{fragments\[index\]\.key\}\s*index=\{index\}\s*fragment=\{fragments\[index\]\}\s*leading=\{at === 0\}\s*\/>/, "a streaming commit re-rendered a text node per line of every mounted code row, not only the growing one");
+test("thinking code is plain while it grows and asks the worker once it has closed and nears the screen", () => {
+  assert.match(TRANSCRIPT, /\{tokens === null\s*\? codeRowText\(fragment, leading\)\s*: colouredRow\(fragment, leading, tokens\)\}/);
   assert.match(TRANSCRIPT, /if \(column === 0 && line > 0 && !\(leading && at === 0\)\) nodes\.push\("\\n"\);\s*if \(text !== ""\) nodes\.push\(text\);/, "one text node per line and per line break: a streamed append rewrites only the growing line, and a reading anchor never spans a row's line break");
-  assert.equal(/useReasoningHighlight|highlightFenceSource|FenceLine|IntersectionObserver/.test(TRANSCRIPT), false, "no grammar work, worker request or reach observer for a thinking code group");
-  assert.match(TRANSCRIPT, /<CodeHighlightEnabledContext\.Provider value=\{false\}>/, "a fence inside a prose row of the trace stays plain too");
+  assert.match(TRANSCRIPT, /useSettledCodeColour\(\s*surface,\s*code\.source,\s*code\.language,[\s\S]{0,120}!code\.incomplete \|\| !streaming,\s*\)/, "a growing fence is never coloured");
+  const hook = TRANSCRIPT.slice(TRANSCRIPT.indexOf("function useSettledCodeColour("), TRANSCRIPT.indexOf("const CodeGroup") === -1 ? undefined : TRANSCRIPT.indexOf("function CodeGroup("));
+  assert.match(hook, /new IntersectionObserver\([\s\S]*rootMargin: "100% 0px"/, "only a block near the viewport is asked for");
+  assert.match(hook, /requestFullHighlight\(\s*source,\s*language,[\s\S]*?,\s*true,\s*\)/, "thinking colour is speculative, behind the answer's own fences");
+  assert.equal(/highlightFenceSource|code\.highlight|useReasoningHighlight/.test(TRANSCRIPT), false, "no main-thread tokenizer for thinking code");
+  assert.match(TRANSCRIPT, /<CodeHighlightModeContext\.Provider value="settled">/, "a fence inside a prose row of the trace follows the same rule");
   assert.match(
     readSrc("components/assistant-ui/reasoning.tsx"),
-    /<CodeHighlightEnabledContext\.Provider value=\{false\}>\s*<MarkdownText \/>/,
+    /<CodeHighlightModeContext\.Provider value="settled">\s*<MarkdownText \/>/,
     "and so does a fence in a trace too short for the transcript",
   );
 });

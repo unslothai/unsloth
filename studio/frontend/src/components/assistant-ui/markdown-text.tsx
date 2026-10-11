@@ -95,7 +95,7 @@ import {
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
-import { CodeHighlightEnabledContext } from "./code-highlight-context";
+import { CodeHighlightModeContext } from "./code-highlight-context";
 import { withMathBlockMarker } from "./math-block-marker";
 import {
   MarkdownBlockBoundary,
@@ -765,7 +765,8 @@ function StreamdownBlockContent(props: BlockProps) {
   const messageHasRenderableRenderHtmlTool = useContext(
     RenderHtmlToolPresenceContext,
   );
-  const highlightCode = useContext(CodeHighlightEnabledContext);
+  const highlightMode = useContext(CodeHighlightModeContext);
+  const highlightCode = highlightMode === "all";
   // ONE walk, both answers. `findMermaidFence` splits the block and scans every line, and asking
   // the two questions separately walked it twice on every render of every block. Measured on a
   // 3,000 line fence: 0.118 ms per walk, so the redundant one cost 0.092 ms per render, about
@@ -854,9 +855,11 @@ function StreamdownBlockContent(props: BlockProps) {
 
     return (
       <>
-        {highlightCode ? (
+        {highlightCode || highlightMode === "settled" ? (
           <FenceBlock
-            isIncomplete={props.isIncomplete}
+            // A closed fence in a trace is settled even while the trace streams, so it defers and
+            // takes the worker route instead of the growing fence's main-thread tokenizer.
+            isIncomplete={highlightCode ? props.isIncomplete : false}
             language={codeFence.language}
             source={codeFence.source}
           />
@@ -1447,7 +1450,7 @@ function MarkdownTextRenderer({
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
-  const highlightCode = useContext(CodeHighlightEnabledContext);
+  const highlightCode = useContext(CodeHighlightModeContext) === "all";
   const threadId = remoteId ?? activeThreadId ?? undefined;
   // Streamdown's memo comparator ignores rehypePlugins.
   const sandboxScopeKey = JSON.stringify([threadId, projectId]);

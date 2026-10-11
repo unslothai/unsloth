@@ -13,13 +13,22 @@ import {
   useRef,
   useState,
 } from "react";
+import type { HighlightResult } from "@streamdown/code";
 import { flushSync } from "react-dom";
 import {
   CodeBlockActions,
   MarkdownTextSource,
   SearchImagesEnabledContext,
 } from "./markdown-text";
-import { CodeHighlightEnabledContext } from "./code-highlight-context";
+import { CodeHighlightModeContext } from "./code-highlight-context";
+import { FenceLine } from "./code-fence-defer";
+import {
+  cachedSettledColour,
+  clipLineTokens,
+  rememberSettledColour,
+  type TokenLine,
+} from "./reasoning-code-colour";
+import { requestFullHighlight } from "./use-reasoning-highlight";
 import {
   cachedReasoningTranscriptIndex,
   resolveReasoningAnchor,
@@ -248,14 +257,37 @@ const codeRowText = (
   return nodes;
 };
 
+const colouredRow = (
+  fragment: ReasoningFragment,
+  leading: boolean,
+  tokens: readonly TokenLine[],
+): React.ReactNode[] => {
+  const nodes: React.ReactNode[] = [];
+  for (const [at, { line, column, text }] of fragment.code!.lines.entries()) {
+    if (column === 0 && line > 0 && !(leading && at === 0)) nodes.push("\n");
+    if (text === "") continue;
+    const clipped = clipLineTokens(tokens[line], column, text);
+    nodes.push(
+      clipped === null ? (
+        text
+      ) : (
+        <FenceLine key={`${line}:${column}`} line={clipped} windowed inline />
+      ),
+    );
+  }
+  return nodes;
+};
+
 const CodeRow = memo(function CodeRow({
   index,
   fragment,
   leading,
+  tokens,
 }: {
   index: number;
   fragment: ReasoningFragment;
   leading: boolean;
+  tokens: readonly TokenLine[] | null;
 }) {
   return (
     <span
@@ -263,10 +295,69 @@ const CodeRow = memo(function CodeRow({
       data-reasoning-fragment={fragment.key}
       data-reasoning-code-row=""
     >
-      {codeRowText(fragment, leading)}
+      {tokens === null
+        ? codeRowText(fragment, leading)
+        : colouredRow(fragment, leading, tokens)}
     </span>
   );
 });
+
+/**
+ * Worker colours for a thinking code block, or null. Asked for only once the fence has closed and
+ * the block nears the viewport, so a growing block, and every block the reader never reaches,
+ * costs no grammar work at all. No main-thread fallback: without the worker the block stays plain.
+ */
+function useSettledCodeColour(
+  surface: React.RefObject<HTMLElement | null>,
+  source: string,
+  language: string | null,
+  settled: boolean,
+): HighlightResult | null {
+  const [colour, setColour] = useState<{
+    source: string;
+    result: HighlightResult;
+  } | null>(null);
+  const [reached, setReached] = useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
+  const held = colour !== null && colour.source === source ? colour.result : null;
+  const result =
+    held ?? (settled ? cachedSettledColour(language, source) : null);
+  const coloured = result !== null;
+  useEffect(() => {
+    const element = surface.current;
+    if (!settled || reached || coloured || !element) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+        setReached(true);
+      },
+      { root: element.closest(".aui-thread-viewport"), rootMargin: "100% 0px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [surface, settled, reached, coloured]);
+  useEffect(() => {
+    if (!settled || !reached || coloured) return;
+    let live = true;
+    const cancel = requestFullHighlight(
+      source,
+      language,
+      (late) => {
+        if (!live || late === null) return;
+        rememberSettledColour(language, source, late);
+        setColour({ source, result: late });
+      },
+      true,
+    );
+    return () => {
+      live = false;
+      cancel?.();
+    };
+  }, [settled, reached, coloured, source, language]);
+  return settled ? result : null;
+}
 
 function Row({
   index,
@@ -301,11 +392,20 @@ function CodeGroup({
   const code = fragments[indices[0]].code!;
   const first = fragments[indices[0]];
   const last = fragments[indices[indices.length - 1]];
+  const surface = useRef<HTMLDivElement>(null);
+  const colour = useSettledCodeColour(
+    surface,
+    code.source,
+    code.language,
+    // A trace that stopped inside a fence never closes it; it is still finished.
+    !code.incomplete || !streaming,
+  );
   const breaksAfter =
     !last.last &&
     fragments[indices[indices.length - 1] + 1]?.code?.lines[0]?.column === 0;
   return (
     <div
+      ref={surface}
       data-slot="reasoning-code-fragment"
       data-language={code.language ?? undefined}
       className={cn(
@@ -334,6 +434,7 @@ function CodeGroup({
               index={index}
               fragment={fragments[index]}
               leading={at === 0}
+              tokens={colour?.tokens ?? null}
             />
           ))}
           {breaksAfter && "\n"}
@@ -1078,7 +1179,7 @@ export function ReasoningTranscript({
 
   return (
     <SearchImagesEnabledContext.Provider value={false}>
-      <CodeHighlightEnabledContext.Provider value={false}>
+      <CodeHighlightModeContext.Provider value="settled">
         <div
           ref={root}
           data-slot="reasoning-transcript"
@@ -1096,7 +1197,7 @@ export function ReasoningTranscript({
             {rendered}
           </CommitBounds>
         </div>
-      </CodeHighlightEnabledContext.Provider>
+      </CodeHighlightModeContext.Provider>
     </SearchImagesEnabledContext.Provider>
   );
 }

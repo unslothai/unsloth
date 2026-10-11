@@ -49,7 +49,7 @@ test("a blank line is one line tall, not nothing", () => {
   assert.equal(isBlankLine([{ content: " " }]), false);
   assert.equal(isBlankLine([{ content: "" }, { content: "" }]), false);
   assert.ok(
-    /if \(isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
+    /if \(!inline && isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
       .test(DEFER),
     "a blank line must render the newline streamdown renders for it",
   );
@@ -102,8 +102,9 @@ test("a streaming open fence is highlighted rather than shown plain", () => {
   );
 });
 
-test("a fence in the thinking box is shown plain, with no highlighter behind it", () => {
-  assert.match(readSrc("components/assistant-ui/code-highlight-context.ts"), /export const CodeHighlightEnabledContext = createContext\(true\);/);
+test("a fence in the thinking box is plain while it grows and coloured once it closes", () => {
+  assert.match(readSrc("components/assistant-ui/code-highlight-context.ts"), /export const CodeHighlightModeContext = createContext<CodeHighlightMode>\("all"\);/);
+  assert.match(MARKDOWN_TEXT, /\{highlightCode \|\| highlightMode === "settled" \? \(\s*<FenceBlock[\s\S]{0,300}isIncomplete=\{highlightCode \? props\.isIncomplete : false\}/, "a closed fence in a trace takes the deferred, worker-routed block, never the growing fence's tokenizer");
   assert.equal((MARKDOWN_TEXT.match(/\) : \(\s*<PlainFenceBlock/g) ?? []).length, 3, "every fence route has a plain twin");
   assert.match(MARKDOWN_TEXT, /const STREAMDOWN_PLAIN_CODE_PLUGINS = \{ math, mermaid \}/);
   assert.match(MARKDOWN_TEXT, /plugins=\{\s*highlightCode \? STREAMDOWN_PLUGINS : STREAMDOWN_PLAIN_CODE_PLUGINS\s*\}/, "a fence nested in a list or a quote is plain too");
