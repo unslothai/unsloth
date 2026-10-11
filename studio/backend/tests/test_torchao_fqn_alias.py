@@ -14,6 +14,30 @@ import pytest
 from core import _torchao_stub
 
 
+_PACKAGES = ("diffusers", "torchao")
+
+
+def _loaded_packages() -> dict:
+    return {n: m for n, m in sys.modules.items() if n.split(".")[0] in _PACKAGES}
+
+
+@pytest.fixture(autouse = True)
+def _restore_diffusers_and_torchao_modules():
+    """Put sys.modules back exactly as it was for diffusers and torchao after every test.
+
+    Tests here import a fake ``diffusers`` from tmp_path. monkeypatch.delitem only records
+    entries that existed, so when the real diffusers had not been imported yet in this worker
+    the fake one stayed in sys.modules, and every later test there got a diffusers without
+    AutoencoderKLWan, the pipelines, and so on.
+    """
+    before = _loaded_packages()
+    yield
+    for name in list(_loaded_packages()):
+        if before.get(name) is not sys.modules.get(name):
+            sys.modules.pop(name, None)
+    sys.modules.update(before)
+
+
 class _ModuleFqnToConfig:
     pass
 

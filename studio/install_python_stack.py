@@ -749,9 +749,12 @@ class _FreezeNewTorchForCoreUpdate:
 
 
 # torchao cpp extensions match one torch and CUDA release; mismatches disable kernels or crash.
-# torch 2.9 needs 0.15 because 0.14 breaks supported Diffusers and Transformers (#13244).
+# torch 2.6-2.9 gets 0.15: transformers 5 and diffusers 0.41 refuse TorchAoConfig below 0.15 (#13244),
+# and 0.14 never loads its cpp extensions on torch 2.6-2.8 anyway, so the older pin bought nothing.
+# torchao 0.15 dropped torch <= 2.5, so those keep 0.14.
 # use the resident accelerator index because PyPI follows the latest PyTorch CUDA major.
-_TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
+_TORCHAO_DEFAULT_SPEC = "torchao==0.15.0"
+_TORCHAO_TORCH_25_SPEC = "torchao==0.14.0"
 _TORCHAO_TORCH_29_SPEC = "torchao==0.15.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
 _TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
@@ -798,6 +801,8 @@ def _select_torchao_spec(torch_version: str | None) -> str:
         return _TORCHAO_TORCH_210_SPEC
     if minor == 9:
         return _TORCHAO_TORCH_29_SPEC
+    if minor <= 5:
+        return _TORCHAO_TORCH_25_SPEC
     return _TORCHAO_DEFAULT_SPEC
 
 
