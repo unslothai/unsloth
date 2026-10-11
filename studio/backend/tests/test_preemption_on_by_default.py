@@ -374,7 +374,9 @@ class TestExactParksAreCountedAcrossModels:
         backend = self._backend("on", 8_000)
         backend._port = 1
         monkeypatch.setattr(
-            stats, "scrape_llama_metrics", lambda *a, **k: {"preempt_ram_bytes": 3 * 1024 * 1024 * 1024}
+            stats,
+            "scrape_llama_metrics",
+            lambda *a, **k: {"preempt_ram_bytes": 3 * 1024 * 1024 * 1024},
         )
         assert llama_mod._parked_host_mib(backend) == 3 * 1024
         monkeypatch.setattr(stats, "scrape_llama_metrics", lambda *a, **k: None)

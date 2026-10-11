@@ -2642,7 +2642,6 @@ def _parked_host_mib(backend) -> int:
     the reading is missing, which counts its whole commitment as still to come."""
     try:
         from core.inference.llama_stats import scrape_llama_metrics
-
         metrics = scrape_llama_metrics(
             backend.base_url, timeout_s = 3.0, headers = getattr(backend, "_auth_headers", None)
         )
