@@ -132,10 +132,10 @@ _UNSLOTH_PREBUILT_VERSIONS = {
     "mamba_ssm": "2.3.2.post1",
 }
 
-# platform_tag -> (the cxx11abi field in the filename, the interpreters published, None for "any"). The filename is upstream's own template on both, which on Windows reads cxx11abiFALSE because torch._C._GLIBCXX_USE_CXX11_ABI is False there. Linux answers for any interpreter, as it always has; Windows only for the cp313 GIL build the workflow publishes, so a 3.12 or free-threaded venv resolves to nothing instead of a 404.
+# platform_tag -> (the cxx11abi field in the filename, the interpreters published, None for "any"). The filename is upstream's own template on both, which copies torch._C._GLIBCXX_USE_CXX11_ABI verbatim; the Windows cu130 torch 2.13 / 2.14 wheels report True too (measured on windows-2022), so both read cxx11abiTRUE. Linux answers for any interpreter, as it always has; Windows only for the cp313 GIL build the workflow publishes, so a 3.12 or free-threaded venv resolves to nothing instead of a 404.
 _UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
     "linux_x86_64": ("TRUE", None),
-    "win_amd64": ("FALSE", frozenset({"cp313"})),
+    "win_amd64": ("TRUE", frozenset({"cp313"})),
 }
 
 # NVIDIA's own flash-attn build for Windows on ARM (NVIDIA/pytorch-windows-ci, release Flash-Attention-for-WoA), built for the torch 2.14.0+cu134 the WoA installer takes from pypi.nvidia.com/nvtorch_oot. Not ours to sign, so each file is pinned by the sha256 GitHub reports for the asset and the URL carries it as a #sha256= fragment, which uv and pip both verify before installing (a mismatch fails the install). Keyed on the ABI tag, since cp314t is a separate wheel.

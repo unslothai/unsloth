@@ -573,7 +573,7 @@ class TestEnsureFlashAttn:
 
     def test_windows_probes_with_windows_opt_in_and_installs_the_wheel(self):
         # Windows resolves only the wheels wheel_utils lists for it (our win_amd64 build, NVIDIA's win_arm64 one).
-        url = "https://example.invalid/flash_attn-2.8.4+cu13torch2.13cxx11abiFALSE-cp313-cp313-win_amd64.whl"
+        url = "https://example.invalid/flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", True),

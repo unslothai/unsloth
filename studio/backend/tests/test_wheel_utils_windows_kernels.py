@@ -26,7 +26,8 @@ def env(**overrides):
         "platform_tag": "win_amd64",
         "torch_mm": "2.13",
         "cuda_major": "13",
-        "cxx11abi": "FALSE",
+        # What the Windows cu130 torch 2.13 / 2.14 wheels report (measured on windows-2022).
+        "cxx11abi": "TRUE",
         "python_tag": "cp313",
         "abi_tag": "cp313",
         "torch_version": "2.13.0+cu130",
@@ -43,7 +44,7 @@ def env(**overrides):
 @pytest.mark.parametrize("torch_mm", ["2.13", "2.14"])
 def test_win_amd64_resolves_every_kernel_to_our_release(torch_mm):
     e = env(torch_mm = torch_mm)
-    suffix = f"+cu13torch{torch_mm}cxx11abiFALSE-cp313-cp313-win_amd64.whl"
+    suffix = f"+cu13torch{torch_mm}cxx11abiTRUE-cp313-cp313-win_amd64.whl"
     assert wheel_utils.flash_attn_wheel_url(e) == f"{OURS}flash_attn-2.8.4{suffix}"
     assert kernel_install.CAUSAL_CONV1D.wheel_url(e) == f"{OURS}causal_conv1d-1.7.0{suffix}"
     assert kernel_install.MAMBA_SSM.wheel_url(e) == f"{OURS}mamba_ssm-2.3.2.post1{suffix}"
@@ -54,7 +55,7 @@ def test_win_amd64_resolves_every_kernel_to_our_release(torch_mm):
     [
         {"python_tag": "cp312", "abi_tag": "cp312"},  # only cp313 is published for Windows
         {"abi_tag": "cp313t"},  # a free-threaded build cannot load the GIL wheel
-        {"cxx11abi": "TRUE"},  # not what a Windows torch reports
+        {"cxx11abi": "FALSE"},  # not what the Windows cu130 torch reports
         {"torch_mm": "2.11"},  # Windows default today; no wheel, and no upstream fallback
         {"torch_mm": "2.10"},
         {"cuda_major": "12"},
