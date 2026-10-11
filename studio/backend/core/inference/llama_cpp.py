@@ -13603,19 +13603,16 @@ class LlamaCppBackend:
         return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
 
     @staticmethod
-    def _metal_fit_target_floor_mib(reserve_frac: float = 0.0) -> float:
+    def _metal_fit_target_floor_mib() -> float:
         """Smallest ``--fit-target`` that keeps llama.cpp's Metal fit inside the wired headroom.
 
         ggml-metal reports free as recommendedMaxWorkingSetSize minus this process's own
         allocations (ggml-metal-device.m, ggml_metal_device_get_memory), blind to the GPU
         memory WindowServer and other apps already hold, so --fit packs to within 1 GiB of
         the static ceiling and over-commits the wired limit (#9279). 0 when either side is
-        unreadable, which leaves llama.cpp's own margin. ``reserve_frac`` holds back the flat
-        MTP share like the wired refusals, since llama-server adds no draft to the target.
+        unreadable, which leaves llama.cpp's own margin.
         """
-        headroom = int(
-            LlamaCppBackend._apple_metal_wired_ceiling_bytes() * max(0.0, 1.0 - reserve_frac)
-        )
+        headroom = LlamaCppBackend._apple_metal_wired_ceiling_bytes()
         if headroom <= 0:
             return 0.0
         try:
@@ -27721,9 +27718,7 @@ class LlamaCppBackend:
                         # Weights over the budget launch here too and the fitter places
                         # them, so it must see the same wired limit the refusals do.
                         if not _caller_owns_budget and not _paravirtual_cpu_forced:
-                            _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib(
-                                _flat_mtp_reserve
-                            )
+                            _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib()
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server

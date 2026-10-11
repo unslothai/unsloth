@@ -1785,8 +1785,8 @@ class TestFitterKeepsTheWiredHeadroom:
     def _floor(monkeypatch, mib):
         calls = []
 
-        def floor(reserve_frac = 0.0):
-            calls.append(reserve_frac)
+        def floor():
+            calls.append(1)
             return mib
 
         monkeypatch.setattr(LlamaCppBackend, "_metal_fit_target_floor_mib", staticmethod(floor))
@@ -1893,15 +1893,4 @@ class TestFitterKeepsTheWiredHeadroom:
     def test_an_old_server_without_the_flag_gets_none(self):
         assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
             1, True, False, 0, 8192, {"supports_fit_target": False}, fit_target_floor_mib = 4096
-        )
-
-    def test_an_mtp_reserve_shrinks_the_headroom_like_the_refusals(self, monkeypatch):
-        self._fake_mlx(monkeypatch, 16 * self.GiB)
-        monkeypatch.setattr(
-            LlamaCppBackend,
-            "_apple_metal_wired_ceiling_bytes",
-            staticmethod(lambda: 12 * self.GiB),
-        )
-        assert LlamaCppBackend._metal_fit_target_floor_mib(0.25) == pytest.approx(
-            (16 - 9) * 1024, abs = 1
         )
