@@ -301,7 +301,6 @@ def _torchao_below(version: str, floor: str) -> bool:
     """PEP 440 compare, as transformers and diffusers do: 0.15.0rc1 and 0.15.0.dev are below 0.15.0."""
     try:
         from packaging.version import Version
-
         return Version(version) < Version(floor)
     except Exception:  # noqa: BLE001 -- packaging missing or an unparseable version
         have = re.match(r"(\d+)\.(\d+)", version or "")

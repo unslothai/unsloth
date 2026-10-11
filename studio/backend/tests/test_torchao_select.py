@@ -739,7 +739,13 @@ def test_torchao_export_loadable_ignores_the_stub(monkeypatch):
 
 @pytest.mark.parametrize(
     ("installed", "expect"),
-    [("0.14.0", False), ("0.15.0rc1", False), ("0.15.0", True), ("0.17.0", True), ("0.18.0+rocm", True)],
+    [
+        ("0.14.0", False),
+        ("0.15.0rc1", False),
+        ("0.15.0", True),
+        ("0.17.0", True),
+        ("0.18.0+rocm", True),
+    ],
 )
 def test_torchao_export_loadable_needs_transformers_minimum(
     monkeypatch, tmp_path, installed, expect
