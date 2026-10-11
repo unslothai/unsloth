@@ -81,6 +81,8 @@ def test_split_never_goes_negative_and_unknowns_keep_the_default():
     assert llama_cpp_module._diffusion_auto_ngl(_Q4, None, 16, 4096, 7_800, 8_188) is None
     assert llama_cpp_module._diffusion_auto_ngl(0, 30, 16, 4096, 7_800, 8_188) is None
     assert llama_cpp_module._diffusion_auto_ngl(_Q4, 30, 16, 4096, 0, 0) is None
+    # A full card is a reading, not a missing one.
+    assert llama_cpp_module._diffusion_auto_ngl(_Q4, 30, 16, 4096, 0, 8_188) == 0
 
 
 def _fit_host(

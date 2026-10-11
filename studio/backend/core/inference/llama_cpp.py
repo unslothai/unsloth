@@ -4915,7 +4915,7 @@ def _diffusion_auto_ngl(
     shared system memory until RAM and the page file run out (#6456). The split leaves room
     for the compute buffer (measured 1.75x the [n_head, N, N] fp32 scores) and the 8% of VRAM
     the runner's context probe keeps free (diffusion-gemma-visual-server.cpp)."""
-    if not file_bytes or not n_layers or n_layers <= 0 or free_mib <= 0:
+    if not file_bytes or not n_layers or n_layers <= 0 or (free_mib <= 0 and total_mib <= 0):
         return None
     usable = _vram_usable_mib(
         free_mib, total_mib, _active_vram_fraction(), sysmem_fallback = sysmem_fallback
