@@ -1082,10 +1082,13 @@ _SIZE_TOKEN_RE = re.compile(r"[ae]?\d+(?:\.\d+)?b", re.IGNORECASE)
 
 
 def _model_size_tokens(path: str) -> frozenset[str]:
-    """Parameter-count tokens in ``general.name`` (``35b``, ``a3b``, ``e4b``)."""
-    name = (read_gguf_general_metadata(path) or {}).get("general.name") or ""
+    """Parameter-count tokens (``35b``, ``a3b``, ``e4b``) in the name, basename and filename."""
+    meta = read_gguf_general_metadata(path) or {}
+    text = " ".join(
+        (meta.get("general.name") or "", meta.get("general.basename") or "", Path(path).stem)
+    )
     return frozenset(
-        token.lower() for token in re.split(r"[\s_\-]+", name) if _SIZE_TOKEN_RE.fullmatch(token)
+        token.lower() for token in re.split(r"[\s_\-]+", text) if _SIZE_TOKEN_RE.fullmatch(token)
     )
 
 
