@@ -213,7 +213,7 @@ def test_loss_matches_naive_full_forward(which):
 
 def test_noisy_block_never_sees_its_own_or_later_clean_tokens():
     llada2, _ = _profiles()
-    model, args = _LM(), SimpleNamespace(diffusion_block_size = 4)
+    model = _LM()
     clean = torch.randint(0, 29, (1, 12))
     noisy = clean.clone()
     noisy[:, 4:] = MASK_ID
