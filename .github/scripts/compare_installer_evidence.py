@@ -217,6 +217,12 @@ _SPINNER_FRAMES = frozenset("-\\|/")
 # ends on still compares, as does any line with other text on it.
 _PARTIAL_PROGRESS_FRAME = re.compile(r"[█▒]*▒[█▒]*\s+(?:<percent>|<size> / <size>)")
 
+# The full bar itself can also be drawn twice when winget's last redraw lands after the 100% frame:
+# a run of the same uv download left it once on one side and twice in a row on the other. Only a full
+# bar that repeats the line kept right before it is dropped, so a download that never finishes, or a
+# second download (its own "Downloading" line sits between the bars), still compares.
+_FULL_PROGRESS_FRAME = re.compile(r"█+\s+(?:<percent>|<size> / <size>)")
+
 
 def normalise_transcript(text: str) -> list[str]:
     lines = []
@@ -226,6 +232,7 @@ def normalise_transcript(text: str) -> list[str]:
             not line.strip()
             or line.strip() in _SPINNER_FRAMES
             or _PARTIAL_PROGRESS_FRAME.fullmatch(line.strip())
+            or (lines and line == lines[-1] and _FULL_PROGRESS_FRAME.fullmatch(line.strip()))
         ):
             continue
         # Runner-injected noise, and ONLY what the runner injects. These carry the workflow's own
