@@ -8,6 +8,10 @@ import type {
 import { classifyUnslothSupport, isGgufLike } from "@/features/hub";
 import type { TranslationKey } from "@/i18n";
 
+// A single adapter file is not loadable on its own; its folder is.
+const ADAPTER_ARTIFACT_PATTERN =
+  /(?:^|[/\\])adapter_(?:config\.json|model\.(?:safetensors|bin))$/i;
+
 export type TrainingModelValidationCandidate = {
   id: string;
   modelFormat?: ModelInventoryFormat | null;
@@ -32,6 +36,9 @@ export function validateTrainingModelCandidate(
   }
   if (candidate.modelFormat === "gguf" || isGgufLike(id)) {
     return { ok: false, reasonKey: "studio.modelPicker.reasonGguf" };
+  }
+  if (ADAPTER_ARTIFACT_PATTERN.test(id)) {
+    return { ok: false, reasonKey: "studio.modelPicker.reasonAdapter" };
   }
   // Adapter / PEFT dirs are allowed here: LoRA and CPT can continue from a saved
   // adapter (#13140). Full finetune is refused later in validateTrainingConfig.

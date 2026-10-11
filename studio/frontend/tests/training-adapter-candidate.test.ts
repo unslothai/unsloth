@@ -36,3 +36,20 @@ test("a scanned adapter folder is not refused as untrainable", () => {
     { ok: false, reasonKey: "studio.modelPicker.reasonNotTrainable" },
   );
 });
+
+test("a single adapter file is refused; its folder is the thing to pick", () => {
+  for (const id of [
+    "/outputs/run/checkpoint-30/adapter_config.json",
+    "/outputs/run/adapter_model.safetensors",
+    "C:\\outputs\\run\\adapter_model.bin",
+  ]) {
+    assert.deepEqual(validateTrainingModelCandidate({ id }), {
+      ok: false,
+      reasonKey: "studio.modelPicker.reasonAdapter",
+    });
+  }
+  assert.deepEqual(
+    validateTrainingModelCandidate({ id: "/outputs/run/checkpoint-30" }),
+    { ok: true },
+  );
+});
