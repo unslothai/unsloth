@@ -8203,6 +8203,9 @@ exit 0
         # Record the release before the rollback move; only the new-layout replace needs it.
         if (-not $SkipTorch) {
             $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
+            # A missing or broken interpreter still leaves torch's version.py: without it a
+            # 2.13/2.14 install would fall to the <2.12 default on a plain re-run.
+            if (-not $script:PrevTorchVer) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot $VenvDir }
         }
         # And the interpreter's architecture, for the same reason and while it can still be
         # read: the move below takes $VenvPython with it, and the Windows-on-ARM rebuild
