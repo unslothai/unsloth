@@ -252,6 +252,37 @@ def _offload_frozen_module_for_training(
     module.original_module.requires_grad_(False)
 
 
+def _unfreeze_modules_to_save(model) -> None:
+    """Re-enable gradients on the active trainable copies of every ModulesToSaveWrapper, as PEFT and
+    FastModel (patch_modules_to_save) do.
+
+    prepare_model_for_kbit_training freezes every non-LoRA weight, so an adapter reloaded with
+    `modules_to_save` (embed_tokens / lm_head, a classifier's score) silently stopped training them
+    and a resumed optimizer state no longer matched its parameter groups (#3108). Dtype only, never
+    device: get_peft_model places the copies afterwards.
+    """
+    for module in model.modules():
+        if not isinstance(module, ModulesToSaveWrapper) or getattr(
+            module, "disable_adapters", False
+        ):
+            continue
+        active = getattr(module, "active_adapters", None)
+        if active is None:
+            active = [getattr(module, "active_adapter", "default")]
+        elif isinstance(active, str):
+            active = [active]
+        for adapter_name in active:
+            if adapter_name not in module.modules_to_save:
+                continue
+            trainable = module.modules_to_save[adapter_name]
+            weight = getattr(trainable, "weight", None)
+            if weight is not None and weight.dtype == torch.float16:
+                # Tesla T4 must use float32 and not float16; see #1200.
+                trainable.to(dtype = torch.float32)
+            trainable.requires_grad_(True)
+        module.original_module.requires_grad_(False)
+
+
 def _ensure_cache_is_dynamic(past_key_values):
     # transformers 5 rejects legacy tuple caches in generate().
     if past_key_values is None:
@@ -4377,6 +4408,7 @@ class FastLlamaModel:
             use_reentrant = True,
         )
         freeze_peft_variant_weights(model)
+        _unfreeze_modules_to_save(model)
 
         for active_adapter in model.peft_config.keys():
             if False:
