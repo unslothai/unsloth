@@ -1300,7 +1300,7 @@ def _reject_untrainable_model_request(
         _refuse_multimodal_adapter_continuation(request)
         adapter_base = _authorize_adapter_base(str(path), hf_token)
         return _ModelPreflightResult(
-            model_name, model_local_path, cached_model_pin, adapter_base_pin = adapter_base
+            model_name, model_local_path, cached_model_pin, adapter_base_pin = adapter_base or ""
         )
     try:
         has_gguf = _detect_local_gguf(path) is not None

@@ -162,12 +162,13 @@ def _adapter_trains_embeddings(model) -> bool:
 
 def _adapter_base_changed_error(config: dict) -> str | None:
     """Refuse when the adapter now names a different base than the one checked at start (#13140)."""
+    # None: no adapter was admitted. "": an adapter that named no base, which must stay that way.
     pinned = config.get("adapter_base_pin")
-    if not pinned:
+    if pinned is None:
         return None
     from utils.models.model_config import get_base_model_from_lora
 
-    if get_base_model_from_lora(str(config.get("model_name") or "")) != pinned:
+    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
         return "The adapter's base model changed after the run was checked. Start the run again."
     return None
 
@@ -4612,6 +4613,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _send_status(event_queue, "Loading model...")
         from utils.hf_xet_fallback import start_watchdog
 
+        # Recheck right before the load: the adapter folder may have been edited since start (#13140).
+        base_error = _adapter_base_changed_error(config)
+        if base_error:
+            event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
+            return
+
         event_queue.put({"type": "model_load_started", "ts": time.time()})
         _load_watchdog_stop = start_watchdog(
             repo_ids = [model_name],
@@ -4626,12 +4633,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             if os.path.isdir(os.path.expanduser(repo_id)):
                 return
             event_queue.put({"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()})
-
-        # Recheck right before the load: the adapter folder may have been edited since start (#13140).
-        base_error = _adapter_base_changed_error(config)
-        if base_error:
-            event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
-            return
 
         # Latest-sidecar models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         try:

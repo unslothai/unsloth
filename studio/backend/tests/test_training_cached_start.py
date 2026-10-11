@@ -716,9 +716,30 @@ def test_worker_rechecks_the_adapter_base_right_before_the_model_load():
     source = open(worker.__file__, encoding = "utf-8").read()
     lines = source.splitlines()
     load_line = next(i for i, line in enumerate(lines) if "success = trainer.load_model(" in line)
-    window = "\n".join(lines[max(0, load_line - 40) : load_line])
+    window = "\n".join(lines[max(0, load_line - 60) : load_line])
     assert "_adapter_base_changed_error(config)" in window
     ast.parse(source)
+
+
+def test_adapter_without_a_base_is_pinned_and_cannot_gain_one(tmp_path):
+    from core.training import worker
+
+    route = _load_route_module("training_route_adapter_no_base_pin")
+    adapter = tmp_path / "my-adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}")
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+
+    result = route._reject_untrainable_model_request(request)
+    assert result.adapter_base_pin == ""
+
+    config = {"model_name": str(adapter), "adapter_base_pin": result.adapter_base_pin}
+    assert worker._adapter_base_changed_error(config) is None
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/private-base"})
+    )
+    assert worker._adapter_base_changed_error(config) is not None
 
 
 def test_adapter_trains_embeddings_reads_saved_modules():
