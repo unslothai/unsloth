@@ -271,8 +271,7 @@ def _nvidia_gpu_present() -> bool:
 
 
 def _amd_gpu_present() -> bool:
-    """An AMD display adapter (PCI vendor 0x1002), read as install_llama_prebuilt routes llama.cpp
-    to Vulkan: Linux DRM sysfs, the Windows display-adapter registry."""
+    """PCI vendor 0x1002 in Linux DRM sysfs or the Windows display-adapter registry, as install_llama_prebuilt reads it."""
     if sys.platform.startswith("linux"):
         for path in glob.glob("/sys/class/drm/card*/device/vendor"):
             try:
@@ -299,8 +298,7 @@ def detect_accelerator() -> str:
         return "metal"
     if nvidia_driver_cuda_version() is not None:
         return "cuda"
-    # No HIP bundle is published, so an AMD GPU runs the Vulkan one (#13042). Never beside an
-    # NVIDIA card: Vulkan could enumerate it first.
+    # No HIP bundle is published (#13042); never beside NVIDIA, which Vulkan could enumerate first.
     if _amd_gpu_present() and not _nvidia_gpu_present():
         return "vulkan"
     return "cpu"
@@ -846,8 +844,7 @@ def smoke_test_staged_server(
 ) -> Optional[str]:
     """Start the staged server once with ``--help``: a bundle this host cannot load (a newer glibc, a
     missing DLL) raises here, before it replaces a working tree. Returns its ``--version`` text
-    (build and enabled backends) when it prints one. ``require_vulkan_device`` raises
-    ``NoVulkanDevice`` unless ``--list-devices`` shows a Vulkan GPU."""
+    (build and enabled backends) when it prints one."""
     env = _loader_env(server, extra_dirs)
     if require_vulkan_device:
         try:
@@ -921,8 +918,7 @@ def install(
         try:
             return _install_locked(target, accelerator, token, force)
         except NoVulkanDevice as exc:
-            # Only an auto request checks for a device. Forced, so the record notes the detected
-            # Vulkan host and later runs keep this CPU build without another Vulkan download.
+            # Forced so the record keeps detected "vulkan": later runs keep this CPU build without a lookup.
             print(f"audio.cpp: {exc}; installing the CPU build", flush = True)
             return _install_locked(target, accelerator, token, True, vulkan_unusable = True)
 
