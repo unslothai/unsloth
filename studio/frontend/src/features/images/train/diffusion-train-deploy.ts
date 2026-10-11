@@ -62,8 +62,7 @@ export function resolveDiffusionTrainingBase(
   );
 }
 
-// A published adapter's loras/diffusion file name; the catalog id is its stem, or the full name when a
-// same-stem file of the other format exists, so the Export page matches either spelling.
+// The catalog id is the file stem, or the full name when a same-stem file of the other format exists.
 export function catalogFileName(catalogPath: string): string {
   return catalogPath.split(/[\\/]/).pop() ?? catalogPath;
 }

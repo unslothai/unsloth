@@ -60,8 +60,7 @@ export function ImageLoraExportCard({ preselect }: { preselect?: string }) {
     };
   }, []);
 
-  // Arriving from a finished image training run: pick that LoRA and bring the card into view, since the
-  // text-model export card above it reports no runs for an image-only user.
+  // From a finished image run: pick it and scroll here, since the text-model card above shows no runs.
   useEffect(() => {
     const id =
       preselect && loras

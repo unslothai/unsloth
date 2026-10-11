@@ -14,7 +14,7 @@ export type ExportSearch = {
   // Preselect a training run on the Export page (its output-dir basename, which
   // equals the checkpoint scan's model name). Set when arriving from a run view.
   run?: string;
-  // Preselect an image LoRA (its catalog id) in the image LoRA card. Set from the Images > Train result.
+  // Preselect an image LoRA (its loras/diffusion file name) in the image LoRA card, from Images > Train.
   imageLora?: string;
 };
 
