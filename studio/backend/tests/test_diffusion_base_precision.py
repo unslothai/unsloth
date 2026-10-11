@@ -823,6 +823,7 @@ def test_fp8_config_runs_the_frozen_weight_grad_in_high_precision():
     assert c.cast_config_grad_output.scaling_type is ScalingType.DYNAMIC
     assert c.cast_config_input_for_grad_weight.scaling_type is ScalingType.DISABLED
     assert c.cast_config_grad_output_for_grad_weight.scaling_type is ScalingType.DISABLED
+    assert c.round_scales_to_power_of_2 is False
 
 
 def _lowp_gpu_ready(mode):
@@ -1107,4 +1108,9 @@ def test_lowp_probe_skips_off_cuda_and_raises_on_a_failing_gemm():
 
     with pytest.raises(RuntimeError, match = "scaled_mm unsupported"):
         dit._probe_lowp(failing_convert, _block_model().cuda())
-    dit._probe_lowp(lambda probe: None, _block_model().cuda())  # a working GEMM passes
+    model = _block_model().cuda()
+    cpu_state, cuda_state = torch.get_rng_state(), torch.cuda.get_rng_state()
+    dit._probe_lowp(lambda probe: None, model)  # a working GEMM passes
+    # The seed is set before conversion: the probe must not move the training draws.
+    assert torch.equal(torch.get_rng_state(), cpu_state)
+    assert torch.equal(torch.cuda.get_rng_state(), cuda_state)

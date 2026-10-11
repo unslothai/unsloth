@@ -412,14 +412,16 @@ def _fp8_module_filter(
 
 
 def _fp8_training_config():
-    """Rowwise float8 when available: DiT activation outliers (Z-Image ~6.6e4) crush a tensorwise scale."""
+    """Rowwise float8 only: DiT activation outliers (Z-Image ~2.7e6) crush a tensorwise scale (Z-Image 18% output
+    error), so a torchao without the recipe raises and the caller keeps bf16 (Studio's floor 0.14 has it).
+    Float scales, not the recipe's power-of-2: compiled, pow2 scales tripled FLUX.2 single-block to_qkv_mlp_proj
+    error (eager was fine) and put fp8 at +5% loss vs bf16; float scales match mxfp8 (+0.8%)."""
+    import dataclasses
+
     from torchao.float8 import Float8LinearConfig
 
-    try:
-        config = Float8LinearConfig.from_recipe_name("rowwise")
-    except Exception:  # noqa: BLE001 -- older torchao without the rowwise recipe
-        return Float8LinearConfig(pad_inner_dim = True)
-    return _with_hp_weight_grad(config)
+    config = Float8LinearConfig.from_recipe_name("rowwise")
+    return _with_hp_weight_grad(dataclasses.replace(config, round_scales_to_power_of_2 = False))
 
 
 def _with_hp_weight_grad(config):
@@ -507,13 +509,15 @@ def _probe_lowp(convert, transformer) -> None:
         def forward(self, x):
             return self.ff(x)
 
-    probe = _Probe().to(device = device, dtype = torch.bfloat16).requires_grad_(False)
-    convert(probe)
-    x = torch.randn(1, 48, 64, device = device, requires_grad = True)
-    with torch.autocast("cuda", dtype = torch.bfloat16):
-        y = probe(x)
-    y.float().sum().backward()
-    torch.cuda.synchronize(device)
+    # Forked RNG: the probe's init + randn run after the seed and would shift the noise / timestep draws vs bf16.
+    with torch.random.fork_rng(devices = [device]):
+        probe = _Probe().to(device = device, dtype = torch.bfloat16).requires_grad_(False)
+        convert(probe)
+        x = torch.randn(1, 48, 64, device = device, requires_grad = True)
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            y = probe(x)
+        y.float().sum().backward()
+        torch.cuda.synchronize(device)
     if not (torch.isfinite(y).all() and torch.isfinite(x.grad).all()):
         raise RuntimeError("probe GEMM returned non-finite values")
 
