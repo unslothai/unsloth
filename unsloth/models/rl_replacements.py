@@ -2365,7 +2365,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
-            lm_head = unwrapped_model.get_output_embeddings().weight
+            from unsloth_zoo.rl_replacements import chunked_hidden_states_selective_log_softmax
+
+            output_embeddings = unwrapped_model.get_output_embeddings()
+            lm_head = output_embeddings.weight
+            lm_head_bias = getattr(output_embeddings, "bias", None)
+            if lm_head_bias is not None:
+                from functools import partial
+                chunked_hidden_states_selective_log_softmax = partial(
+                    chunked_hidden_states_selective_log_softmax,
+                    lm_head_bias = lm_head_bias,
+                )
 
             # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (
