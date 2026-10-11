@@ -331,7 +331,6 @@ export function nativeAction(tabId: string, action: "back" | "forward" | "reload
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
 }
 
-/** Gives key focus to the page. */
 export function focusPage(tabId: string): void {
   if (!views.has(tabId)) return;
   void call("browser_view_action", { tabId, action: "focus" }).catch(() => undefined);
@@ -925,7 +924,6 @@ export function startNativeViews(): () => void {
   const unsubscribe = useBrowserStore.subscribe(schedule);
   const overlays = new MutationObserver(schedule);
   overlays.observe(document.body, { childList: true });
-  // Theme switches recolor the backgrounds around the hole.
   overlays.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-palette"] });
   window.addEventListener("resize", schedule);
   // Clickable overlays slide in without a body mutation: measure them every frame while they move.

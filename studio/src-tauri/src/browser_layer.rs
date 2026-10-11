@@ -133,7 +133,6 @@ pub fn install<R: Runtime>(main: &Webview<R>) {
     });
 }
 
-/// Moves a new page under the app's webview.
 pub fn place<R: Runtime>(page: &Webview<R>) {
     let _ = page.with_webview(|platform| {
         let main = MAIN.load(Ordering::Acquire);
