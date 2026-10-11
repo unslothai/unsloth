@@ -218,6 +218,7 @@ try {
     Check "every earlier layout counts as an existing install" (
         ([regex]::Matches($install, '\$script:ExistingInstall = \$true')).Count -eq 3)
     Check "an occupied venv whose interpreter cannot answer keeps its torch from disk" ($install -match '(?s)\$script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$VenvPython\s*#[^\n]*\n\s*#[^\n]*\n\s*if \(-not \$script:PrevTorchVer\) \{ \$script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot \$VenvDir \}')
+    Check "the CWD-relative legacy venv records its torch before it is migrated" ($install -match '(?s)\(Test-Path -LiteralPath \$_cwdVenvPy\)\) \{\s*\$script:ExistingInstall = \$true.*?\$script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe \$_cwdVenvPy\s*if \(-not \$script:PrevTorchVer\) \{ \$script:PrevTorchVer = Get-TorchVersionFromDisk')
     Check "setup.ps1 re-reads torch before installing triton" ($setup -match '(?s)\$_tritonTorchProbe = Invoke-BoundedPythonProbe.*?\$_tritonSpec = Get-TritonWindowsSpec -TorchVersion.*?substep "installing Triton for Windows\.\.\."')
     Check "setup.ps1 pairs every kept torch 2.12+ with torchaudio 2.11" (
         ([regex]::Matches($setup, 'torchaudio==2\.\$\(\[Math\]::Min\(\$_keptMinor, 11\)\)\.\*')).Count -eq 3 -and

@@ -8172,6 +8172,11 @@ exit 0
         if (-not $SkipTorch) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot $_legacyVenvDir }
     } elseif ($studioUsesLegacyLayout -and $_cwdVenvPy -and (Test-Path -LiteralPath $_cwdVenvPy)) {
         $script:ExistingInstall = $true
+        # Migrated below and reused as is, so its release is kept like the other two layouts'.
+        if (-not $SkipTorch) {
+            $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $_cwdVenvPy
+            if (-not $script:PrevTorchVer) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot (Split-Path (Split-Path $_cwdVenvPy -Parent) -Parent) }
+        }
     }
 
     $studioVenvReplacementCommitted = $false

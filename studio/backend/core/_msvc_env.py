@@ -202,7 +202,12 @@ def _triton_windows_spec() -> str:
 
     Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.13
     pins triton 3.7 and 2.14 pins 3.8; anything older (or unreadable) keeps the long-standing <3.7.
+    A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
     """
+    import platform  # noqa: PLC0415
+
+    if platform.machine().lower() == "arm64":
+        return "triton-windows>=3.8.0.post28"
     try:
         from importlib.metadata import version  # noqa: PLC0415
         major, minor = (int(part) for part in version("torch").split("+", 1)[0].split(".")[:2])
