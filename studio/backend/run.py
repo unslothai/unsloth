@@ -112,6 +112,7 @@ except ValueError as exc:
 # Windows ROCm has no distributed backend, so torchao and xformers die on import. Stubs must
 # precede the first import below.
 from core._torchao_stub import (
+    alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -120,6 +121,7 @@ from core._torchao_stub import (
 install_xformers_windows_rocm_stub()
 hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
+alias_torchao_fqn_to_config()
 
 # Conda Python: seed platform._sys_version_cache (https://github.com/python/cpython/issues/102396).
 import _platform_compat  # noqa: F401

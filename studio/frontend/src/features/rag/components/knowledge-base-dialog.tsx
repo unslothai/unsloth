@@ -509,8 +509,8 @@ function KnowledgeBaseDocuments({
             dragging && "border-primary/60 bg-primary/5 text-foreground",
           )}
         >
-          No documents yet. Upload or drop a PDF, Markdown, DOCX, HTML, or text
-          file.
+          No documents yet. Upload or drop documents, spreadsheets, slides,
+          e-books, email, text or code.
         </div>
       ) : (
         <div

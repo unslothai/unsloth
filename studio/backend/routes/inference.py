@@ -24476,8 +24476,7 @@ async def _proxy_to_external_provider(
                 yield "data: [DONE]\n\n"
             finally:
                 await client.close()
-                disconnect_task.cancel()
-                await asyncio.gather(disconnect_task, return_exceptions = True)
+                await _stop_local_disconnect_cancel_watcher(disconnect_task)
 
                 with _CANCEL_LOCK:
                     for key in cancel_keys:
@@ -24942,7 +24941,8 @@ async def _proxy_to_external_provider(
         finally:
             cancel_event.set()
             if disconnect_task is not None:
-                # Join, not just cancel, to avoid "Task exception was never retrieved".
+                # Joined so its outcome is retrieved. No bounded stop needed: cancel_event is
+                # set above, so the loop exits even if is_disconnected() eats the cancel (#7617).
                 disconnect_task.cancel()
                 await asyncio.gather(disconnect_task, return_exceptions = True)
             try:
@@ -25326,8 +25326,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             if relay.stopped or relay.error is not None:
                 break
     finally:
-        watcher.cancel()
-        await asyncio.gather(watcher, return_exceptions = True)
+        await _stop_local_disconnect_cancel_watcher(watcher)
         await lines.aclose()
     if disconnected.is_set():
         return Response(status_code = 499)

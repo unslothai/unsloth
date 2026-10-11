@@ -7,6 +7,7 @@ pair weights and projectors via ``general.base_model.0.repo_url``."""
 from __future__ import annotations
 
 import os
+import re
 import struct
 import threading
 from pathlib import Path
@@ -611,6 +612,17 @@ def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
                         if len(bbyte) < 1:
                             break
                         return bbyte[0] != 0
+                    if key == wanted_key and vtype == 9:  # BOOL array: whether any is set
+                        head = f.read(12)
+                        if len(head) < 12:
+                            break
+                        atype, alen = struct.unpack("<IQ", head)
+                        if atype != 7 or alen > 1 << 20:
+                            break
+                        values = f.read(alen)
+                        if len(values) < alen:
+                            break
+                        return any(values)
                     if not _skip_gguf_value(f, vtype):
                         break
                 except (struct.error, UnicodeDecodeError):
@@ -1000,13 +1012,28 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
     return _slug_extends_base(weight_slug, projector_slug)
 
 
+# Finetunes inherit the vision tower, so these pair by projector type + width, not branding.
+_FUNCTIONAL_PROJECTOR_TYPES = {
+    "gemma4": "gemma4v",
+    "qwen35": "qwen3vl_merger",
+    "qwen35moe": "qwen3vl_merger",
+}
+
+
 def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optional[bool], str]:
-    """Gemma 4 only: pair by projector type + projection dim, not branding. None = unknown."""
-    if read_gguf_architecture(weight_path) != "gemma4":
+    """Gemma 4 and Qwen3.5 / 3.6: pair by projector type + projection dim, not branding. None = unknown."""
+    arch = read_gguf_architecture(weight_path)
+    expected_type = _FUNCTIONAL_PROJECTOR_TYPES.get(arch or "")
+    if expected_type is None:
         return None, ""
     projector_type = read_mmproj_vision_projector_type(mmproj_path)
-    if projector_type != "gemma4v":
+    if projector_type != expected_type:
         return None, ""
+    if expected_type == "qwen3vl_merger" and _read_gguf_bool(
+        mmproj_path, "clip.vision.is_deepstack_layers"
+    ):
+        # Qwen3-VL shares the type and width, but its deepstack output is wider and llama-server refuses it.
+        return False, "Qwen3-VL deepstack projector"
     embedding_length = read_gguf_embedding_length(weight_path)
     dims = _parse_gguf_arch_uints(mmproj_path, frozenset({"vision.projection_dim"})) or {}
     projection_dim = dims.get("vision.projection_dim")
@@ -1014,10 +1041,30 @@ def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optiona
         return None, ""
     if embedding_length != projection_dim:
         return False, (
-            f"gemma4.embedding_length {embedding_length} != "
+            f"{arch}.embedding_length {embedding_length} != "
             f"clip.vision.projection_dim {projection_dim}"
         )
+    # Sizes share widths (Qwen3.5 2B and 35B-A3B are both 2048) but not vision towers, so a
+    # size conflict withholds the rescue and leaves the verdict to the identity metadata.
+    weight_sizes = _model_size_tokens(weight_path)
+    projector_sizes = _model_size_tokens(mmproj_path)
+    if weight_sizes and projector_sizes and weight_sizes.isdisjoint(projector_sizes):
+        return None, ""
     return True, ""
+
+
+_SIZE_TOKEN_RE = re.compile(r"[ae]?\d+(?:\.\d+)?b", re.IGNORECASE)
+
+
+def _model_size_tokens(path: str) -> frozenset[str]:
+    """Parameter-count tokens (``35b``, ``a3b``, ``e4b``) in the name, basename and filename."""
+    meta = read_gguf_general_metadata(path) or {}
+    text = " ".join(
+        (meta.get("general.name") or "", meta.get("general.basename") or "", Path(path).stem)
+    )
+    return frozenset(
+        token.lower() for token in re.split(r"[\s_\-]+", text) if _SIZE_TOKEN_RE.fullmatch(token)
+    )
 
 
 def pairing_score(
