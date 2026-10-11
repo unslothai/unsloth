@@ -350,6 +350,14 @@ def install_kernel(
     if url is None or exists(url) is False:
         print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
         return 0
+    # mamba_ssm imports triton at module load, and on Windows that is triton-windows, which the
+    # wheel's metadata cannot name. The training worker and ssm_runtime gate on it the same way.
+    if name == "mamba_ssm" and sys.platform == "win32" and not _loads("import triton", run):
+        print(
+            "Unsloth: skipping mamba_ssm, which needs Triton on Windows; "
+            "install triton-windows first (Studio setup does), then re-run."
+        )
+        return 0
     # UNSLOTH_PYTORCH_MIRROR may carry credentials, and notebook output gets shared.
     shown = redact_url_credentials(url)
     if dry_run:

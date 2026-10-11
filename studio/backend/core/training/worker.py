@@ -1384,8 +1384,9 @@ def _attempt_package_install(
             return True
         if outcome == "rejected":
             logger.warning(
-                "%s wheel installed but is not importable; falling back to PyPI",
+                "%s wheel installed but is not importable; %s",
                 display_name,
+                "removing it" if wheel_only else "falling back to PyPI",
             )
             wheel_rejected = True
     elif wheel_available is None:
