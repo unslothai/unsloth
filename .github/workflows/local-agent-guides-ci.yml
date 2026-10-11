@@ -399,20 +399,13 @@ jobs:
 
   # ═════════════════════════════════════════════════════════════════════
   # Job 2: file-edit
-  #   The deterministic 2-turn hello.py test on Qwen3.5-4B (smaller models
-  #   can't reliably drive the heavyweight agents' edit flows). Weekly +
-  #   dispatch only -- it is the slow, model-heavy job and must not gate PRs.
+  #   Run the 2-turn hello.py edit check with OpenCode on relevant PRs.
+  #   Scheduled and manual runs retain the full agent matrix.
   # ═════════════════════════════════════════════════════════════════════
   file-edit:
     name: file-edit (${{ matrix.agent }})
-    # Weekly / dispatch only, stated explicitly rather than as "not a PR".
-    # The main push trigger above exists solely to seed the cache that the
-    # save steps are now gated to main for, and `connection` already writes
-    # the identical key (same GGUF_REPO and GGUF_FILE), so this job seeds
-    # nothing new. Left as `!= 'pull_request'` a push would newly start its
-    # 2-job matrix at 60 minutes each, which is runtime the seeding does not
-    # need and which this job was never meant to spend outside its cron.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Main pushes only seed caches; connection already writes the same GGUF key.
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # hermes and openclaw drive a multi-turn tool loop that a CPU-only runner
@@ -426,16 +419,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh, vibe]
-        include:
-          - agent: openclaw
-            node: '24'
-            best_effort: true
-          - agent: hermes
-            best_effort: true
-          # dsh has no resume: turn 2 is a fresh session that re-reads hello.py.
-          - agent: dsh
-            best_effort: true
+        # Use include-only rows so PRs cannot gain extra cells from a static include.
+        # dsh has no resume: turn 2 is a fresh session that re-reads hello.py.
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"agent":"opencode"}]' || '[{"agent":"claude"},{"agent":"codex"},{"agent":"hermes","best_effort":true},{"agent":"openclaw","node":"24","best_effort":true},{"agent":"opencode"},{"agent":"pi"},{"agent":"dsh","best_effort":true},{"agent":"vibe"}]') }}
     env:
       # gemma-4-E4B served as a flat GGUF file (cache size tracks the .gguf 1:1,
       # no xet-chunk inflation; the -MTP- repo ships no separate draft file).
