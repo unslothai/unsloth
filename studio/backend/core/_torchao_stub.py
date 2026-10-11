@@ -262,8 +262,8 @@ class _FqnAliasBeforeDiffusers(importlib.abc.MetaPathFinder):
 
 
 def alias_torchao_fqn_to_config() -> None:
-    """diffusers 0.41 imports ``FqnToConfig`` from torchao unguarded; torchao < 0.15 (Studio's torch <= 2.8
-    pairing) names it ``ModuleFqnToConfig``, and 0.15 keeps ``ModuleFqnToConfig = FqnToConfig``.
+    """diffusers 0.41 imports ``FqnToConfig`` from torchao unguarded; torchao < 0.15 (what older Studio
+    installs paired with torch <= 2.8) names it ``ModuleFqnToConfig``, and 0.15 keeps ``ModuleFqnToConfig = FqnToConfig``.
     Deferred to the first diffusers import: importing torchao here would load torch into the server
     process and every spawn child (seconds and ~600 MB each) that never touch diffusers."""
     if "diffusers" in sys.modules or "torchao.quantization" in sys.modules:
@@ -292,14 +292,29 @@ def _load_torchao_nodist():
 _TORCHAO_EXPORT_MIN = (0, 15)
 
 
+def torchao_too_old_for_export() -> Optional[str]:
+    """The installed torchao version when transformers' TorchAoConfig refuses it (below 0.15, where
+    transformers 5 reports torchao as not installed at all), else None. Metadata only: never imports
+    torchao, so it is safe at server startup."""
+    try:
+        version = importlib.metadata.version("torchao")
+    except Exception:  # noqa: BLE001 -- absent or unreadable: nothing to name
+        return None
+    found = re.match(r"(\d+)\.(\d+)", version or "")
+    if found and (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
+        return version
+    return None
+
+
 def torchao_export_loadable() -> bool:
-    """checks Windows ROCm for torchao and unsloth's shim without imports; true elsewhere."""
+    """False when the installed torchao is too old for TorchAoConfig; on Windows ROCm also checks
+    for torchao and unsloth's shim. Never imports either."""
     if not _is_windows_rocm():
-        return True
+        return torchao_too_old_for_export() is None
     try:
         if importlib.machinery.PathFinder.find_spec("torchao") is None:
             return False
-        # TorchAoConfig requires torchao 0.15; torch <= 2.8 is paired with torchao 0.14
+        # TorchAoConfig requires torchao 0.15
         found = re.match(r"(\d+)\.(\d+)", importlib.metadata.version("torchao"))
         if not found or (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
             return False

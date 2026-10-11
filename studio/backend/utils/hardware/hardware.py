@@ -1800,16 +1800,17 @@ def _gpu_present_but_unusable_message(
 
 
 def export_capability() -> dict:
-    """Whether model export can run here, with a torch-aware reason when it cannot. Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch. Returns {export_supported, export_unsupported_reason, export_unsupported_message, torchao_export_supported}; the last is False only on Windows ROCm without a loadable torchao, where the portable FP8/INT8 formats are hidden."""
+    """Whether model export can run here, with a torch-aware reason when it cannot. Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch. Returns {export_supported, export_unsupported_reason, export_unsupported_message, torchao_export_supported}; the last is False where the installed torchao is below 0.15 (transformers refuses it) or, on Windows ROCm, not loadable; the portable FP8/INT8 formats are then hidden."""
     device = get_device()
-    torchao_export_supported = True
     # get_device() ran detect_hardware(), so IS_ROCM (hip field OR "rocm" tag) is settled.
-    if sys.platform == "win32" and IS_ROCM:
-        try:
-            from core._torchao_stub import torchao_export_loadable
-            torchao_export_supported = torchao_export_loadable()
-        except Exception:
-            torchao_export_supported = False
+    _windows_rocm = sys.platform == "win32" and IS_ROCM
+    try:
+        # Metadata only: a torchao below 0.15 (older torch <= 2.8 installs) hides the formats
+        # everywhere, since transformers' TorchAoConfig refuses it.
+        from core._torchao_stub import torchao_export_loadable
+        torchao_export_supported = torchao_export_loadable()
+    except Exception:
+        torchao_export_supported = not _windows_rocm
     if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
         return {
             "export_supported": True,
