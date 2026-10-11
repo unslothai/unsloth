@@ -4981,6 +4981,10 @@ class FastBaseModel:
 
         # Returning hidden states must be disabled for GRPO, and returning logits enabled.
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        # Remember what the forced "1" replaced, for for_training() to put back (#3071).
+        _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        if _return_logits != "1":
+            os.environ["_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"] = _return_logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
@@ -5044,7 +5048,11 @@ class FastBaseModel:
             except ImportError:
                 pass
 
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        # Undo only for_inference()'s "1": forcing "0" here wiped a user's UNSLOTH_RETURN_LOGITS=1 (#3071).
+        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
+        if _return_logits is None:
+            _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model

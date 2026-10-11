@@ -597,7 +597,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             model.for_training(use_gradient_checkpointing=_use_gc)
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
+            # Mode switch only: a UNSLOTH_RETURN_LOGITS=1 set between here and train() must survive (#3071).
+            _unsloth_logits_env = [(_unsloth_k, os.environ.get(_unsloth_k)) for _unsloth_k in ("UNSLOTH_RETURN_LOGITS", "_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE")]
             model.for_inference()
+            for _unsloth_k, _unsloth_v in _unsloth_logits_env:
+                if _unsloth_v is None: os.environ.pop(_unsloth_k, None)
+                else: os.environ[_unsloth_k] = _unsloth_v
 {RLTrainer_post}
 pass
 '''
