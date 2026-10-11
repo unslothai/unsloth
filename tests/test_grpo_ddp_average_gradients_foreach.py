@@ -20,7 +20,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
 
 
 def _load():
-    tree = ast.parse(SOURCE.read_text())
+    tree = ast.parse(SOURCE.read_text(encoding = "utf-8"))
     node = next(
         n
         for n in tree.body
