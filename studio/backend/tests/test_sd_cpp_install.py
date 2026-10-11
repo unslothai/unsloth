@@ -1443,7 +1443,7 @@ def test_upstream_fallback_asks_for_the_translated_pin_not_latest(monkeypatch):
 
 
 def test_the_shipped_pin_falls_back_to_an_upstream_release_that_runs_qwen_image_2_1(monkeypatch):
-    """#12470: the pin's upstream base (master-813) predates Qwen-Image-2.1, so hosts the mirror skips got a build the router refuses."""
+    """#12470: the previous pin's upstream base (master-813) predated Qwen-Image-2.1, so hosts the mirror skips got a build the router refuses."""
     monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
     monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
     monkeypatch.setattr(sdmod.platform, "system", lambda: "Windows")
@@ -1473,15 +1473,9 @@ def test_the_shipped_pin_falls_back_to_an_upstream_release_that_runs_qwen_image_
     repo, release, chosen = sdmod._resolve_with_fallback("cuda", None)
     assert repo == sdmod.UPSTREAM_FALLBACK_REPO
     assert chosen.endswith("-win-cuda12-x64.zip")
-    assert (sdmod.UPSTREAM_FALLBACK_REPO, upstream_tag_for(DEFAULT_TAG)) not in seen
+    assert release["tag_name"] == upstream_tag_for(DEFAULT_TAG)
     # Qwen-Image-2.1 landed upstream in master-883, its reference-alpha fix in master-896.
     assert int(release["tag_name"].split("-")[1]) >= 896
-
-
-def test_an_explicit_non_default_pin_still_falls_back_to_its_own_upstream_base():
-    assert sdmod.upstream_fallback_tag("master-813-bfbef5b-u13b9d92") == "master-813-bfbef5b"
-    assert sdmod.upstream_fallback_tag("master-809-eb7f35c") == "master-809-eb7f35c"
-    assert sdmod.upstream_fallback_tag(None) is None
 
 
 # ── mirror -> upstream fallback in install() ─────────────────────────────────
@@ -1588,7 +1582,9 @@ def test_a_mirror_only_pin_is_never_requested_upstream(tmp_path, monkeypatch):
     install(install_dir = tmp_path)
     # Never the literal -u<id> string, which upstream cannot have.
     assert (sdmod.UPSTREAM_FALLBACK_REPO, DEFAULT_TAG) not in asked
-    upstream_pin = sdmod.upstream_fallback_tag(DEFAULT_TAG)
+    # It asks upstream for the release the mirror built on top of instead, so the pin survives
+    # translation rather than being dropped.
+    upstream_pin = sdmod.upstream_tag_for(DEFAULT_TAG)
     assert upstream_pin != DEFAULT_TAG
     assert (sdmod.UPSTREAM_FALLBACK_REPO, upstream_pin) in asked
     # And because that pinned attempt succeeds, it never has to settle for upstream latest --
