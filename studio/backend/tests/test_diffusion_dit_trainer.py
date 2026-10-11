@@ -576,3 +576,46 @@ def test_lowp_refused_on_rocm(monkeypatch, mode):
     cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
     with pytest.raises(ValueError, match = "ROCm"):
         _resolve_base_precision(cfg, None, "cuda")
+
+
+def test_compile_engagement_warning():
+    from core.training.diffusion_dit_trainer import _compile_engagement_warning
+
+    assert _compile_engagement_warning(None, (0, 0, 3)) is None
+    assert _compile_engagement_warning((0, 0, 0), (0, 0, 3)) is None
+    assert "no graphs" in _compile_engagement_warning((0, 0, 0), (0, 0, 0))
+    assert "1 graph break" in _compile_engagement_warning((0, 0, 0), (1, 0, 3))
+    assert "2 frame(s)" in _compile_engagement_warning((4, 1, 5), (4, 3, 9))
+
+
+def test_compile_engagement_reads_real_dynamo_counters():
+    # suppress_errors (the trainer's setting) turns a failed compile into a silently eager frame, and the non-fullgraph
+    # nf4 path splits on a graph break; both must surface.
+    import torch
+
+    from core.training.diffusion_dit_trainer import (
+        _compile_engagement_warning,
+        _dynamo_compile_counters,
+    )
+
+    def body(x):
+        x = x + 1
+        torch._dynamo.graph_break()
+        return x * 2
+
+    def broken_backend(gm, example_inputs):
+        raise RuntimeError("backend failed")
+
+    torch._dynamo.reset()
+    before = _dynamo_compile_counters()
+    torch.compile(lambda x: x * 3, backend = "eager", fullgraph = True)(torch.ones(2))
+    assert _compile_engagement_warning(before, _dynamo_compile_counters()) is None
+    before = _dynamo_compile_counters()
+    assert torch.compile(body, backend = "eager")(torch.ones(2)).tolist() == [4.0, 4.0]
+    assert "graph break" in _compile_engagement_warning(before, _dynamo_compile_counters())
+    before = _dynamo_compile_counters()
+    with torch._dynamo.config.patch(suppress_errors = True):
+        out = torch.compile(lambda x: x * 5, backend = broken_backend)(torch.ones(2))
+    assert out.tolist() == [5.0, 5.0]
+    assert "fell back to eager" in _compile_engagement_warning(before, _dynamo_compile_counters())
+    torch._dynamo.reset()

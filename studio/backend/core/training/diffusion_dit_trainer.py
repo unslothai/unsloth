@@ -1990,6 +1990,38 @@ def _maybe_compile_transformer(
         return False
 
 
+def _dynamo_compile_counters() -> Optional[tuple[int, int, int]]:
+    """(graph breaks, frames that failed to convert, unique graphs) from dynamo's process-wide
+    counters, or None when they cannot be read. Never raises."""
+    try:
+        from torch._dynamo.utils import counters
+        frames = counters["frames"]
+        return (
+            sum(counters["graph_break"].values()),
+            frames["total"] - frames["ok"],
+            counters["stats"]["unique_graphs"],
+        )
+    except Exception:  # noqa: BLE001 -- diagnostics only
+        return None
+
+
+def _compile_engagement_warning(before, after) -> Optional[str]:
+    """Why the compiled blocks are (partly) running eager since ``before``, else None. suppress_errors
+    turns a failed compile into a silent eager frame, and the non-fullgraph (bnb) compile splits at
+    graph breaks."""
+    if before is None or after is None:
+        return None
+    breaks, failed, graphs = (a - b for a, b in zip(after, before))
+    if breaks > 0 or failed > 0:
+        return (
+            f"torch.compile did not fully engage ({breaks} graph break(s), {failed} frame(s) "
+            f"fell back to eager): training continues, slower than compiled."
+        )
+    if graphs <= 0:
+        return "torch.compile produced no graphs: the transformer blocks are running eager."
+    return None
+
+
 def run_dit_lora_training(
     config: DiffusionLoraConfig,
     *,
@@ -2406,6 +2438,7 @@ def _train_dit(
         if device in ("cuda", "xpu")
         else nullcontext()
     )
+    compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(resumed, cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
@@ -2484,6 +2517,11 @@ def _train_dit(
         if ran_here == 1:
             # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the reported rate starts after it.
             t_steady = now
+        if compile_watch is not None:
+            reason = _compile_engagement_warning(compile_watch, _dynamo_compile_counters())
+            if reason:
+                _emit(on_event, "warning", message = reason)
+                compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
             if device == "cuda":
                 peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
