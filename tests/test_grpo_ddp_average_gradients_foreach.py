@@ -33,7 +33,11 @@ def _load():
 
 @pytest.fixture
 def two_identical_ranks(monkeypatch):
-    def all_reduce(tensor, op = None, group = None):
+    def all_reduce(
+        tensor,
+        op = None,
+        group = None,
+    ):
         if op is None or op == dist.ReduceOp.SUM:
             tensor.mul_(2)
 
