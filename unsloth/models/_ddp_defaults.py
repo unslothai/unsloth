@@ -90,6 +90,7 @@ def _config_may_skip(config):
 def _lora_uses_every_trainable_param(model):
     """True only when we can show every trainable tensor is a LoRA weight run on each forward."""
     from transformers import PreTrainedModel
+
     if isinstance(model, PreTrainedModel):
         # transformers already decides for these (False under gradient checkpointing).
         return False
@@ -97,7 +98,10 @@ def _lora_uses_every_trainable_param(model):
     if not isinstance(peft_config, dict) or len(peft_config) != 1:
         return False
     cfg = next(iter(peft_config.values()))
-    if str(getattr(getattr(cfg, "peft_type", None), "value", getattr(cfg, "peft_type", ""))) != "LORA":
+    if (
+        str(getattr(getattr(cfg, "peft_type", None), "value", getattr(cfg, "peft_type", "")))
+        != "LORA"
+    ):
         return False
     for attr in ("modules_to_save", "target_parameters", "trainable_token_indices"):
         if getattr(cfg, attr, None):
