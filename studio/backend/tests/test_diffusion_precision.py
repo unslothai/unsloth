@@ -127,14 +127,14 @@ def test_nvfp4_supported_without_fp4_cores(monkeypatch, cc):
 def test_nvfp4_supported_requires_cuda_bf16_and_fp8_dtype(monkeypatch):
     _stub_torch(monkeypatch, cc = (8, 6))
     assert te_quant_supported(_target(device = "cpu"), TE_QUANT_NVFP4) is False
-    # pre-ampere resolves float16, which torchao's nvfp4 quantiser rejects
+    # pre-Ampere resolves float16, which torchao's nvfp4 quantizer rejects
     assert te_quant_supported(_target(dtype = "float16"), TE_QUANT_NVFP4) is False
     _stub_torch(monkeypatch, with_fp8 = False, cc = (8, 6))
     assert te_quant_supported(_target(), TE_QUANT_NVFP4) is False
 
 
 def test_nvfp4_unsupported_when_torchao_lacks_the_weight_only_config(monkeypatch):
-    # studio pins torchao 0.14 for torch 2.9 and older, which has no NVFP4WeightOnlyConfig
+    # Studio pins torchao 0.14 for torch <= 2.8, which lacks NVFP4WeightOnlyConfig
     _stub_torch(monkeypatch, cc = (8, 6), nvfp4_config = False)
     assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_NVFP4) is False
     assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_INT8) is True
@@ -146,7 +146,7 @@ def test_int8_supported_requires_sm80(monkeypatch):
     assert te_quant_supported(_target(), TE_QUANT_INT8) is True
     _stub_torch(monkeypatch, cc = (7, 5))
     assert te_quant_supported(_target(), TE_QUANT_INT8) is False
-    # Still needs CUDA + bf16 like every mode.
+    # all modes also require CUDA and bf16
     _stub_torch(monkeypatch, cc = (8, 0))
     assert te_quant_supported(_target(device = "cpu"), TE_QUANT_INT8) is False
 
