@@ -221,7 +221,6 @@ def read_checkpoint_header(name: str, read_range: ReadRange, size: int) -> Optio
 
 def read_local_checkpoint_header(path: str) -> Optional[dict]:
     import os
-
     try:
         size = os.path.getsize(path)
         handle = open(path, "rb")
