@@ -2608,6 +2608,15 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
         assert "does not fit in GPU memory" in (capture["backend"].last_load_warning or "")
 
 
+_INHERITED_HSA_OVERRIDE = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
+
+
+def test_an_inherited_hsa_override_reaches_tests_that_touch_real_hardware():
+    """ROCr reads HSA_OVERRIDE_GFX_VERSION when torch first initialises the GPU, so a
+    suite-wide fixture dropping it breaks real AMD runs that need it for kernels."""
+    assert os.environ.get("HSA_OVERRIDE_GFX_VERSION") == _INHERITED_HSA_OVERRIDE
+
+
 class TestHsaOverrideGfxVersion:
     """``HSA_OVERRIDE_GFX_VERSION`` is the long-standing AMD workaround for an arch
     the ROCm stack does not build for: the user sets it, ROCr reports the SPOOFED
@@ -3423,6 +3432,7 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
         extra_args = (),
         env_extra = None,
         intent = None,
+        capture = None,
     ):
         _apply_os(monkeypatch, "linux")
         monkeypatch.setattr(
@@ -3448,6 +3458,7 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
             model_bytes = 12 * GIB,
             env_extra = env_extra,
             intent_kwargs = {"extra_args": tuple(extra_args), **(intent or {})},
+            capture = capture,
         )[0][0]
 
     @staticmethod
@@ -3456,6 +3467,18 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
 
     def test_a_gpu_target_takes_the_discount(self, tmp_path, monkeypatch, probe_env):
         assert self._fit(self._load(tmp_path, monkeypatch)) == "off"
+
+    def test_the_published_reservation_leaves_out_the_host_pinned_embeddings(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """_other_planned_vram_mib charges this reservation against every later load, so it
+        carries the same discounted weights the placement fitted, not the whole file."""
+        capture = {}
+        assert self._fit(self._load(tmp_path, monkeypatch, capture = capture)) == "off"
+        backend = capture["backend"]
+        planned = backend._planned_vram_mib or backend._pending_plan_mib
+        assert set(planned) == {0}
+        assert planned[0] < 12 * 1024 - 1024, planned
 
     @pytest.mark.parametrize("value", ["none", "cpu"])
     def test_a_cpu_device_flag_does_not(self, tmp_path, monkeypatch, probe_env, value):

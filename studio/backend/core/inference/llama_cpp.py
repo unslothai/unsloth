@@ -12604,7 +12604,8 @@ class LlamaCppBackend:
                 rocm_classifier = rocm_classify_unified_memory
                 # HSA_OVERRIDE_GFX_VERSION rewrites the reported arch for kernel
                 # compatibility, not topology: a gfx1035 APU presents as gfx1030.
-                rocm_arch_overridden = bool(
+                # ROCr only: Windows runs through PAL and never reads it.
+                rocm_arch_overridden = sys.platform != "win32" and bool(
                     str(os.environ.get("HSA_OVERRIDE_GFX_VERSION", "")).strip()
                 )
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
@@ -28957,8 +28958,12 @@ class LlamaCppBackend:
                     )
                     _on = list(gpu_indices or [idx for idx, _ in gpus])
                     if _on:
+                        # Less the host-pinned embeddings, as the placement priced it:
+                        # every later load subtracts this reservation from its VRAM.
                         self._pending_plan_mib = _gpu_plan_mib(
-                            gguf_size + mmproj_size + kv_cache_bytes, _on, gpus
+                            max(0, gguf_size - _host_pinned) + mmproj_size + kv_cache_bytes,
+                            _on,
+                            gpus,
                         )
                     if (
                         not gpus

@@ -95,6 +95,15 @@ def _write_gguf(
     return path
 
 
+@pytest.fixture(autouse = True)
+def _no_inherited_gpu_arch_override(monkeypatch):
+    """HSA_OVERRIDE_GFX_VERSION relabels a device's arch, and the classifier these tests
+    drive with fabricated devices reads it as a spoof, so a value inherited from the shell
+    would answer their question. Module-scoped, not in conftest: tests that touch real AMD
+    hardware need the override the host set. A test that wants one sets it itself."""
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
+
+
 @pytest.fixture(scope = "module")
 def backend():
     pytest.importorskip("gguf")
@@ -785,6 +794,38 @@ def test_an_hsa_override_cannot_spoof_an_apu_into_a_discrete_discount(backend, m
     # signal from the device properties.
     _Props.is_integrated = 1
     assert backend._torch_unified_memory_classification_known([0]) is True
+
+
+def test_an_hsa_override_on_windows_is_not_a_spoof(backend, monkeypatch):
+    """ROCm on Windows runs through PAL, not ROCr/HSA, so HSA_OVERRIDE_GFX_VERSION is
+    never honoured there (ROCm/TheRock#1719): the reported arch is the silicon's, and a
+    stale variable must not void the discrete proof."""
+
+    class _Props:
+        gcnArchName = "gfx1100"
+        is_integrated = 0
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.4"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0"
+
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert backend._torch_unified_memory_classification_known([0]) is True
+    # Linux honours it, so there the same reading proves nothing.
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert backend._torch_unified_memory_classification_known([0]) is False
 
 
 def test_a_user_override_to_a_gpu_buffer_cancels_the_discount(backend):
