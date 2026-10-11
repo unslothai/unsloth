@@ -359,6 +359,74 @@ def test_a_path_bwrap_from_a_writable_location_is_never_executed(tmp_path, monke
         sandbox_linux.prepare(_plan(tmp_path))
 
 
+def _bwrap_under(
+    monkeypatch,
+    usr_mode,
+    usr_gid = 0,
+    egid = 1000,
+    groups = (1000,),
+):
+    """Point the trust check at /usr/bin/bwrap with the given /usr mode, group and caller groups."""
+    entries = {
+        "/": (stat.S_IFDIR | 0o755, 0),
+        "/usr": (stat.S_IFDIR | usr_mode, usr_gid),
+        "/usr/bin": (stat.S_IFDIR | 0o755, 0),
+        "/usr/bin/bwrap": (stat.S_IFREG | 0o755, 0),
+    }
+
+    real_stat, real_access, real_realpath = os.stat, os.access, os.path.realpath
+
+    def fake_stat(path, *args, **kwargs):
+        if os.fspath(path) not in entries:
+            return real_stat(path, *args, **kwargs)
+        mode, gid = entries[os.fspath(path)]
+        return os.stat_result((mode, 1, 1, 1, 0, gid, 0, 0, 0, 0))
+
+    def fake_access(path, mode, *args, **kwargs):
+        return os.fspath(path) in entries or real_access(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(sandbox_linux.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(
+        sandbox_linux.os.path,
+        "realpath",
+        lambda path, *args, **kwargs: path
+        if path in entries
+        else real_realpath(path, *args, **kwargs),
+    )
+    monkeypatch.setattr(sandbox_linux.os, "stat", fake_stat)
+    monkeypatch.setattr(sandbox_linux.os, "access", fake_access)
+    monkeypatch.setattr(sandbox_linux.os, "getegid", lambda: egid)
+    monkeypatch.setattr(sandbox_linux.os, "getgroups", lambda: list(groups))
+
+
+@pytest.mark.parametrize("usr_mode", [0o775, 0o2775])
+def test_a_root_group_writable_directory_is_trusted_when_studio_is_outside_group_root(
+    monkeypatch, usr_mode
+):
+    _bwrap_under(monkeypatch, usr_mode)
+    assert sandbox_linux._trusted_bwrap_path() == "/usr/bin/bwrap"
+
+
+@pytest.mark.parametrize(
+    "egid, groups",
+    [(1000, (1000, 0)), (0, (0,))],
+    ids = ["supplementary", "effective"],
+)
+def test_a_root_group_writable_directory_is_refused_when_studio_is_in_group_root(
+    monkeypatch, egid, groups
+):
+    _bwrap_under(monkeypatch, 0o775, egid = egid, groups = groups)
+    with pytest.raises(SandboxUnavailableError, match = r"replaceable: /usr\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+@pytest.mark.parametrize("usr_mode, usr_gid", [(0o775, 1000), (0o777, 0), (0o757, 0)])
+def test_a_directory_writable_beyond_group_root_is_refused(monkeypatch, usr_mode, usr_gid):
+    _bwrap_under(monkeypatch, usr_mode, usr_gid = usr_gid)
+    with pytest.raises(SandboxUnavailableError, match = r"replaceable: /usr\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
 def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
     workdir = os.path.realpath(tmp_path)
     assert _pairs(prepared.argv, "--bind") == [(workdir, workdir)]

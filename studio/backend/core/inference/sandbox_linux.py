@@ -96,13 +96,15 @@ def _trusted_bwrap_path() -> str:
             or not os.access(resolved, os.X_OK)
         ):
             raise OSError("the executable is not root-owned, executable, and non-writable")
+        # A root-group-writable directory is safe only while this process is outside group root.
+        in_root_group = os.getegid() == 0 or 0 in os.getgroups()
         parent = os.path.dirname(resolved)
         while True:
             directory = os.stat(parent, follow_symlinks = False)
             if (
                 not stat.S_ISDIR(directory.st_mode)
                 or directory.st_uid != 0
-                or (directory.st_gid != 0 and directory.st_mode & stat.S_IWGRP)
+                or (directory.st_mode & stat.S_IWGRP and (directory.st_gid != 0 or in_root_group))
                 or directory.st_mode & stat.S_IWOTH
             ):
                 raise OSError(f"its directory is replaceable: {parent}")
