@@ -3433,6 +3433,7 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
         env_extra = None,
         intent = None,
         capture = None,
+        tied_bytes = 0,
     ):
         _apply_os(monkeypatch, "linux")
         monkeypatch.setattr(
@@ -3443,7 +3444,9 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
             "_host_pinned_weight_items",
             staticmethod(lambda _path: (("token_embd.weight", 6 * GIB),)),
         )
-        monkeypatch.setattr(LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: 0))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: tied_bytes)
+        )
         torch = _fake_torch(
             [_device(free_mib = 12000, total_bytes = 12 * GIB, name = "NVIDIA GeForce RTX 4070")],
             vendor = "nvidia",
@@ -3479,6 +3482,18 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
         planned = backend._planned_vram_mib or backend._pending_plan_mib
         assert set(planned) == {0}
         assert planned[0] < 12 * 1024 - 1024, planned
+
+    def test_the_published_reservation_keeps_the_tied_output_copy(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """A tied token_embd is duplicated onto the GPU as the output matrix: the
+        placement charges it, so the reservation later loads subtract must too."""
+        capture = {}
+        self._load(tmp_path, monkeypatch, capture = capture, tied_bytes = 1 * GIB)
+        backend = capture["backend"]
+        planned = backend._planned_vram_mib or backend._pending_plan_mib
+        # 12 GiB file + 1 GiB tied copy - 6 GiB host-pinned embeddings
+        assert planned[0] >= 7 * 1024, planned
 
     @pytest.mark.parametrize("value", ["none", "cpu"])
     def test_a_cpu_device_flag_does_not(self, tmp_path, monkeypatch, probe_env, value):

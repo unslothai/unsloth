@@ -28958,10 +28958,10 @@ class LlamaCppBackend:
                     )
                     _on = list(gpu_indices or [idx for idx, _ in gpus])
                     if _on:
-                        # Less the host-pinned embeddings, as the placement priced it:
-                        # every later load subtracts this reservation from its VRAM.
+                        # The weights as the placement priced them (tied output in, host-pinned
+                        # embeddings out): every later load subtracts this reservation.
                         self._pending_plan_mib = _gpu_plan_mib(
-                            max(0, gguf_size - _host_pinned) + mmproj_size + kv_cache_bytes,
+                            _model_weight_vram_bytes + mmproj_size + kv_cache_bytes,
                             _on,
                             gpus,
                         )
