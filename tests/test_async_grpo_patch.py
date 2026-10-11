@@ -43,6 +43,7 @@ NAMES = (
     "_check_async_grpo_fast_inference",
     "_text_prepended_position_ids",
     "_packing_honored",
+    "_align_vlm_text_config",
     "patch_trl_async_grpo",
 )
 
@@ -463,3 +464,49 @@ def test_fast_inference_refusals(fast_inference_trl):
         mod.AsyncGRPOTrainer(
             _fast_inference_peft(CausalLM(FastBackbone())), None, args = mod.AsyncGRPOConfig("o")
         )
+
+
+def _vlm(copy_text_config):
+    from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration
+
+    config = Qwen2_5_VLConfig(
+        text_config = dict(
+            hidden_size = 16,
+            intermediate_size = 32,
+            num_hidden_layers = 1,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            vocab_size = 128,
+            rope_scaling = {"type": "mrope", "mrope_section": [1, 1, 2]},
+        ),
+        vision_config = dict(
+            depth = 1, hidden_size = 16, intermediate_size = 32, num_heads = 2, out_hidden_size = 16
+        ),
+    )
+    model = Qwen2_5_VLForConditionalGeneration(config)
+    language_model = model.model.language_model
+    if copy_text_config:
+        # Unsloth's loaders hand each level its own config copy.
+        language_model.config = __import__("copy").deepcopy(language_model.config)
+    return model, model.config, language_model
+
+
+def test_vlm_text_config_answers_with_the_language_model_config_during_init():
+    ns = _load()
+    model, top, language_model = _vlm(copy_text_config = True)
+    original = top.get_text_config()
+    assert language_model.config is not original
+    restore = ns["_align_vlm_text_config"](model)
+    assert model.config.get_text_config() is language_model.config
+    restore()
+    assert model.config.get_text_config() is original
+    assert "get_text_config" not in vars(top)
+
+
+def test_vlm_text_config_left_alone_when_identity_already_holds():
+    ns = _load()
+    model, top, language_model = _vlm(copy_text_config = False)
+    restore = ns["_align_vlm_text_config"](model)
+    assert "get_text_config" not in vars(top)
+    assert model.config.get_text_config() is language_model.config
+    restore()

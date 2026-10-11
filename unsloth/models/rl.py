@@ -4402,6 +4402,41 @@ def _check_async_grpo_fast_inference(async_module, model, train_dataset):
         )
 
 
+def _align_vlm_text_config(model):
+    # TRL finds a VLM's text model by `module.config is model.config.get_text_config()`; Unsloth's loaders keep
+    # separate config copies per level, so answer with the language model's own config while TRL's init runs.
+    from transformers import PreTrainedModel
+
+    config = getattr(model, "config", None)
+    if config is None or not hasattr(config, "get_text_config"):
+        return lambda: None
+    text_config = config.get_text_config()
+    if text_config is config:
+        return lambda: None
+    modules = [
+        m
+        for m in model.modules()
+        if isinstance(m, PreTrainedModel) and getattr(m, "config", None) is not config
+    ]
+    if any(m.config is text_config for m in modules):
+        return lambda: None
+    matches = {id(m.config): m.config for m in modules if isinstance(m.config, type(text_config))}
+    if len(matches) != 1:
+        return lambda: None
+    (target,) = matches.values()
+    had = "get_text_config" in vars(config)
+    previous = vars(config).get("get_text_config")
+    config.get_text_config = lambda *args, **kwargs: target
+
+    def restore():
+        if had:
+            config.get_text_config = previous
+        else:
+            vars(config).pop("get_text_config", None)
+
+    return restore
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
@@ -4463,14 +4498,26 @@ def patch_trl_async_grpo():
                 # TRL's default counts rows, not rollouts, so token-budget packing would leave the engine
                 # nearly idle; let the engine batch as many as it can schedule.
                 config.max_inflight_tasks = server.max_num_seqs
-            trainable = {id(p) for p in model.parameters() if p.requires_grad}
+        # TRL unfreezes a VLM's whole text model and LM head; under LoRA that is full fine-tuning of the base (and,
+        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set.
+        trainable = (
+            {id(p) for p in model.parameters() if p.requires_grad}
+            if isinstance(model, torch.nn.Module) and hasattr(model, "peft_config")
+            else None
+        )
+        restore_text_config = (
+            _align_vlm_text_config(model) if isinstance(model, torch.nn.Module) else (lambda: None)
+        )
         try:
-            original_init(self, model, *args, **kwargs)
-            if server is not None:
-                # TRL unfreezes a VLM's text model and LM head; those are the weights vLLM serves from.
+            try:
+                original_init(self, model, *args, **kwargs)
+            finally:
+                restore_text_config()
+            if trainable is not None:
                 for p in model.parameters():
                     if p.requires_grad and id(p) not in trainable:
                         p.requires_grad_(False)
+            if server is not None:
                 if not getattr(self, "_lora_sync", False):
                     raise ValueError(
                         "Unsloth: with fast_inference=True, vLLM and the trainer share the base weights, so "
