@@ -160,7 +160,6 @@ def _llada_sample(
         start = prompt_length + block * block_length
         end = start + block_length
         remaining = (x[:, start:end] == mask_id).sum(dim = 1, keepdim = True)
-        # The linear schedule: each step reveals an equal share, the remainder going to the earliest steps.
         schedule = remaining // steps_per_block + (
             torch.arange(steps_per_block, device = x.device)[None, :] < remaining % steps_per_block
         )
@@ -424,7 +423,6 @@ def _diffusion_gemma_sample(
     if attention_mask is not None:
         kwargs["attention_mask"] = attention_mask.to(input_ids.device)
     out = base.generate(input_ids, **kwargs)
-    # A ModelOutput when the generation config asks for return_dict_in_generate.
     return getattr(out, "sequences", out)[:, input_ids.shape[1] :]
 
 
@@ -442,8 +440,7 @@ def _cancellation(base, stop_callback):
         if stop_callback():
             raise DiffusionGenerationCancelled("Unsloth: diffusion generation cancelled.")
 
-    # On every embedding table: each denoising forward reads one, including DiffusionGemma's generate, which
-    # calls its encoder and decoder (separate embeddings) directly rather than the top-level forward.
+    # Every embedding table: DiffusionGemma's generate calls encoder and decoder directly, bypassing forward.
     targets = [m for m in base.modules() if isinstance(m, torch.nn.Embedding)] or [base]
     handles = [m.register_forward_pre_hook(check, with_kwargs = True) for m in targets]
     try:

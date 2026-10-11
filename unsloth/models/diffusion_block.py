@@ -142,8 +142,7 @@ class BlockDiffusionProfile(DiffusionProfile):
             return input_ids, maskable, valid
         base = _unwrap(model)
         if not base.__dict__.get("_unsloth_right_padding_checked", False):
-            # The collator's padding side is fixed for a run: check until a batch carries padding, then stop
-            # (one host sync per step until then).
+            # Padding side is fixed per run: check until a padded batch is seen, then stop.
             left_padded, padded = torch.stack(
                 [(valid[:, 1:] & ~valid[:, :-1]).any(), (~valid).any()]
             ).tolist()
@@ -263,8 +262,7 @@ class BlockDiffusionProfile(DiffusionProfile):
         if weighting == "inverse_t":
             # Divide only where masked: an unmasked row with p = 0 (diffusion_eps = 0) would give 0 / 0.
             weights = weights / torch.where(masked, p[:, None].float(), 1.0)
-        # Every noisy position goes through the chunked CE (head applied per chunk, never [B, L, V] fp32);
-        # unmasked rows are ignored targets, so the shape is fixed whatever was masked.
+        # Unmasked rows are ignored targets, so the shape is fixed whatever was masked.
         weighted, ce_sum, count = chunked_cross_entropy(
             hidden,
             targets,

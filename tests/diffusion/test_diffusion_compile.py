@@ -35,7 +35,6 @@ def _dense(
 
 @pytest.fixture
 def small_chunks(monkeypatch):
-    # Several chunks plus a padded tail even for tiny inputs.
     monkeypatch.setattr(diffusion_loss, "_CHUNK_BYTES", 4 * 11 * 8)
     monkeypatch.setattr(diffusion_loss, "_MIN_ROWS", 4)
 

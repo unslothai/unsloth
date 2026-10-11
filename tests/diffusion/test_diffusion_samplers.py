@@ -45,7 +45,6 @@ class _TinyMaskPredictor(torch.nn.Module):
         h = self.embed(input_ids)
         h = h + self.mix(h.mean(dim = 1, keepdim = True))
         logits = self.head(torch.tanh(h))
-        # Never predict [MASK] itself, as a trained model would not.
         logits[..., MASK_ID] = -1e4
         return SimpleNamespace(logits = logits)
 
@@ -178,7 +177,6 @@ def test_fast_language_model_routes_diffusion_helpers(monkeypatch):
     assert seen["train"] is False
     FastLanguageModel.for_inference(model)
     assert seen["infer"] is True
-    # Signatures still read as FastLlamaModel's (introspecting callers, docs).
     import inspect
 
     assert inspect.signature(FastLanguageModel.get_peft_model) == inspect.signature(
@@ -284,7 +282,6 @@ def test_generate_text_cuts_at_eos_and_budget(monkeypatch):
     text = diffusion_samplers.generate_text(
         model, _Tok(), prompt = "hi", max_new_tokens = 32, steps = 4, alg = "x"
     )
-    # Stops at the first EOS, drops leftover [MASK] ids.
     assert text == "11 12 13"
     assert (
         seen["mask_id"] == MASK_ID

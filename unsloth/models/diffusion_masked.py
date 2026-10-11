@@ -275,7 +275,6 @@ class MaskedDiffusionProfile(DiffusionProfile):
         if self.shift_logits:
             hidden = torch.cat([hidden[:, :1], hidden[:, :-1]], dim = 1)
 
-        # Fixed [B, L] targets and weights: no data-dependent shapes or host syncs.
         targets = torch.where(masked, input_ids, -100)
         weights = masked.float()
         if weighting == "inverse_t":
@@ -350,8 +349,7 @@ register_diffusion_profile(
         architectures = ("NemotronLabsDiffusionModel",),
         requires_remote_code = True,
         lora_target_modules = list(_ATTENTION_AND_MLP),
-        # Its output head is `diffusion_head`: keep it 16-bit like every other head (and so the loss can take
-        # the hidden states instead of [B, L, V] logits).
+        # Keep `diffusion_head` 16-bit like every other head, so the loss can take hidden states.
         quant_skip_modules = ["lm_head", "embed_tokens", "diffusion_head"],
         loss_normalization = "masked_tokens",
         auto_class = "AutoModel",

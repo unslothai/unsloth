@@ -50,8 +50,7 @@ class DiffusionProfile:
     quant_skip_modules: Optional[list] = None
     # Profile-specific defaults a DiffusionConfig field left at None falls back to.
     defaults: dict = field(default_factory = dict)
-    # Whether DiffusionConfig(diffusion_compile = "full") may torch.compile each decoder layer. Off for
-    # data-dependent MoE dispatch (token gathers per expert) until that is rewritten.
+    # diffusion_compile = "full" allowed; off for data-dependent MoE dispatch (per-expert token gathers).
     compile_backbone: bool = False
 
     def matches(self, config) -> bool:
