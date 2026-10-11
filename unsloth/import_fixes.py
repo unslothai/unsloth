@@ -4989,6 +4989,78 @@ def patch_bitsandbytes_paged_optimizer_resume():
     Optimizer8bit.load_state_dict = _unsloth_load_state_dict
 
 
+def _raised_in_triton_host_build(exc):
+    """Triton builds each kernel's launcher with the host C compiler in triton/runtime/build.py."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        tb = exc.__traceback__
+        while tb is not None:
+            path = tb.tb_frame.f_code.co_filename.replace("\\", "/")
+            if path.endswith("triton/runtime/build.py"):
+                return True
+            tb = tb.tb_next
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def patch_bitsandbytes_triton_quantize_fallback(device_type = "xpu"):
+    """bitsandbytes' XPU quantize ops are Triton's, whose launchers need a host C compiler that a stock
+    Windows box lacks (#10844). On that build failure use bitsandbytes' PyTorch kernels instead."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        import torch
+        from bitsandbytes.backends.utils import triton_available
+
+        if not triton_available:
+            return
+        from bitsandbytes.backends.triton import ops as triton_ops
+    except Exception:
+        return
+    if getattr(triton_ops, "_unsloth_quantize_fallback", None) is not None:
+        return
+    state = {"error": None}
+    # bitsandbytes registers its PyTorch kernels under "default", i.e. this key.
+    default_keys = torch._C.DispatchKeySet(torch._C.DispatchKey.CompositeExplicitAutograd)
+
+    def _wrap(name):
+        triton_kernel = getattr(triton_ops, name)
+        op = getattr(torch.ops.bitsandbytes, name).default
+
+        @functools.wraps(triton_kernel)
+        def kernel(*args, **kwargs):
+            if state["error"] is None:
+                try:
+                    return triton_kernel(*args, **kwargs)
+                except Exception as exc:
+                    if not _raised_in_triton_host_build(exc):
+                        raise
+                    state["error"] = f"{type(exc).__name__}: {str(exc).strip().splitlines()[0]}"
+                    print(
+                        "Unsloth: Triton could not build its kernel launcher, as there is no working "
+                        f"C/C++ compiler ({state['error']}). bitsandbytes 4bit quantization will use "
+                        "its PyTorch kernels instead - only model loading is slower."
+                    )
+            return op.redispatch(default_keys, *args, **kwargs)
+
+        return kernel
+
+    try:
+        kernels = {name: _wrap(name) for name in ("quantize_4bit", "quantize_blockwise")}
+        key = torch._C._dispatch_key_for_device(device_type)
+        lib = torch.library.Library("bitsandbytes", "FRAGMENT")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for name, kernel in kernels.items():
+                # torch < 2.13 refuses to override a Python-registered kernel unless asked to.
+                lib.impl(name, torch._disable_dynamo(kernel), key, allow_override = True)
+    except Exception:
+        return
+    state["lib"] = lib
+    triton_ops._unsloth_quantize_fallback = state
+
+
 _PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"
 # torch.export's .pt2 readers: their weights_only=False loads unpickle archive bytes.
 _PT2_LOADER_MODULES = frozenset(
