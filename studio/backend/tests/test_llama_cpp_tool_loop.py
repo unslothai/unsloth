@@ -357,12 +357,7 @@ def test_reuse_prompt_cache_keeps_fixed_seed_without_disabling_slot_reuse():
 
 
 def test_seeded_tool_loop_keeps_prompt_cache_after_the_first_round(monkeypatch):
-    """#10698: a fixed Seed must not force a full re-prefill after every tool call.
-
-    Round 0 still disables cache reuse for reproducibility (#9979). Round 1+ and the
-    synthesised final answer keep the seed but leave ``cache_prompt`` unset so the
-    growing prefix can reuse the slot KV.
-    """
+    """#10698: round 0 stays cold (#9979); later rounds keep the seed and the cache."""
     streams = [
         _structured_tool_call("web_search", {"query": "kernel"}, "call_search"),
         [_sse({"content": "Linux 6.10."}), _done()],
