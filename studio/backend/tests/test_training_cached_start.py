@@ -742,6 +742,39 @@ def test_adapter_without_a_base_is_pinned_and_cannot_gain_one(tmp_path):
     assert worker._adapter_base_changed_error(config) is not None
 
 
+def test_start_refuses_an_adapter_whose_local_base_is_gone(tmp_path):
+    route = _load_route_module("training_route_adapter_base_gone")
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": str(tmp_path / "deleted-base")})
+    )
+    (adapter / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(adapter), model_format = "adapter")
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_adapter_base_missing"
+
+
+@pytest.mark.parametrize("base_format", ["gguf", "adapter", "adapter_without_weights"])
+def test_start_refuses_an_adapter_whose_hub_base_is_not_trainable(tmp_path, base_format):
+    route = _load_route_module(f"training_route_adapter_base_{base_format}")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with (
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = False),
+        patch.object(route, "hf_env_offline", return_value = False),
+        patch.object(route, "_remote_untrainable_model_format", return_value = base_format),
+    ):
+        exc_info = _shared_setup_2(request, route)
+
+    assert exc_info.value.detail["code"] == "training_adapter_base_not_trainable"
+
+
 def test_adapter_trains_embeddings_reads_saved_modules():
     from core.training import worker
 

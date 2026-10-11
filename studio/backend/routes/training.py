@@ -985,6 +985,12 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
     if is_local_path(base):
         # A managed account may only reach bases in its own workspace or the shared cache.
         account_path(base, shared_cache = True)
+        if not Path(base).expanduser().is_dir():
+            raise _training_start_error(
+                400,
+                "training_adapter_base_missing",
+                "The base model folder this adapter names no longer exists.",
+            )
         # A base path inside the Hub cache is still that repository's cached weights.
         cached_ref = cached_repo_ref_for_path(base)
         if cached_ref is None:
@@ -1010,7 +1016,13 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
         if not is_cached():
             # The same Hub probe a selected model gets: a private, missing or misspelled base
             # fails here with its access or not-found error, not later in the loader.
-            _remote_untrainable_model_format(base, hf_token)
+            if _remote_untrainable_model_format(base, hf_token) is not None:
+                raise _training_start_error(
+                    400,
+                    "training_adapter_base_not_trainable",
+                    "The base model this adapter names is GGUF-only or adapter-only, "
+                    "so it cannot be trained.",
+                )
     if cached_read_refused(
         hf_token,
         repo_id = repo_id,
