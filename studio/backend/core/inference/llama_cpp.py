@@ -33939,11 +33939,6 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
-                if not self._publish_healthy():
-                    # Teardown began between the 200 and this commit; publishing
-                    # would report a model that is gone.
-                    _cleanup_cancelled_load("App shut down as the load was completing")
-                    return False
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
@@ -34141,6 +34136,13 @@ class LlamaCppBackend:
                         + _exact_why
                         + " Set exact concurrency to 'on' to fail the load instead."
                     )
+                # Published only now: a required mode the server cannot keep kills the child
+                # above, and a request admitted before that would be cut off mid-answer.
+                if not self._publish_healthy():
+                    # Teardown began between the 200 and this commit; publishing
+                    # would report a model that is gone.
+                    _cleanup_cancelled_load("App shut down as the load was completing")
+                    return False
                 # Re-derived from the slot count that LAUNCHED, not the one the sizing
                 # pass saw. The drafter drop and the non-MTP retry both hand slots back
                 # after the batch flag is emitted, and this is recorded next to

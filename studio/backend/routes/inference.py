@@ -4919,7 +4919,10 @@ async def _aiter_llama_stream_items(
         if park_since is None:
             park_since = now
         if now - park_since < _RAW_PARK_STALL_CAP_S:
-            first_token_deadline = max(first_token_deadline, now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+            first_token_deadline = max(
+                first_token_deadline,
+                min(now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S, park_since + _RAW_PARK_STALL_CAP_S),
+            )
 
     def _post_first_timeout_s() -> Optional[float]:
         if callable(post_first_item_read_timeout_s):
@@ -5054,8 +5057,12 @@ async def _aiter_llama_stream_items(
                 # during its prefill, and the prefill it resumes into still needs the first-token
                 # window, not the stall clock. The window is renewed by each notice, up to the park
                 # cap, since a keepalive every two seconds means the wrapper below never times out
-                # and never gets to apply its own grace. Fed to the excuse and relayed.
+                # and never gets to apply its own grace. Fed to the excuse and relayed. Checked
+                # here because the keepalives keep the read returning, so the deadline below
+                # (widened by the park cap again when the grace is installed) is never reached.
                 _park_renews_first_window()
+                if time.monotonic() >= first_token_deadline:
+                    raise httpx.ReadTimeout("The model did not produce a first token in time.")
                 if park_above is not None:
                     park_above.feed_line(item)
                 yield item

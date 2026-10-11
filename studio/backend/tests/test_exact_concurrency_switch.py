@@ -456,3 +456,17 @@ class TestTheParkingBudgetHoldsTheWholePool:
     def test_a_budget_someone_named_keeps_its_say(self, args, env):
         from core.inference.llama_cpp import _exact_parking_budget_mib
         assert _exact_parking_budget_mib(64 * 1024 * 1024 * 1024, args = args, env = env) is None
+
+
+def test_a_required_mode_is_judged_before_the_backend_is_published():
+    """`on` that the server cannot keep kills the child; published first, a request admitted in
+    between would be cut off mid-answer."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    source = inspect.getsource(LlamaCppBackend.load_model)
+    refusal = source.index("Exact concurrency is set to 'on', but ")
+    assert source.count("if not self._publish_healthy():") == 1
+    publish = source.index("if not self._publish_healthy():")
+    assert publish > refusal, "the backend went live before its required mode was checked"

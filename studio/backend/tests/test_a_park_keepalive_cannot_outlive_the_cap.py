@@ -95,3 +95,39 @@ class TestARawRelayParkedAfterItsFirstToken:
         ]
         seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0))
         assert seen[-1].endswith('"b"}}]}')
+
+
+class TestARawRelayParkedBeforeItsFirstToken:
+    """Keepalives before any token renew the first-token window, never past the park cap."""
+
+    @staticmethod
+    async def _relay(items, monkeypatch, cap, window):
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", cap)
+        monkeypatch.setattr(inference, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", window)
+
+        async def upstream():
+            for item in items:
+                await asyncio.sleep(0.01)
+                yield item
+
+        seen = []
+        async for item in inference._aiter_llama_stream_items(
+            upstream(), first_token_deadline = time.monotonic() + window
+        ):
+            seen.append(item)
+        return seen
+
+    def test_the_cap_is_counted_from_the_park_not_from_the_last_keepalive(self, monkeypatch):
+        # Shorter window than cap, as in production (20 minutes against 30).
+        items = [": preempted"] + [": preempt-keepalive"] * 400
+        started = time.monotonic()
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(self._relay(items, monkeypatch, cap = 1.0, window = 0.8))
+        assert time.monotonic() - started < 1.5, "a renewal reached a whole window past the cap"
+
+    def test_a_park_that_resumes_inside_the_cap_answers(self, monkeypatch):
+        items = [": preempted"] + [": preempt-keepalive"] * 5 + [": resumed", 'data: {"choices":[{"delta":{"content":"a"}}]}']
+        seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0, window = 30.0))
+        assert seen[-1].startswith("data:")
