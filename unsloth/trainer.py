@@ -290,6 +290,129 @@ def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
 
 
+# Columns a processor turns into image / audio / video inputs. A dataset carrying any of them
+# goes through the multimodal path, which cannot be flattened into one packed row today.
+_MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
+    {
+        "audio",
+        "audios",
+        "audio_values",
+        "input_features",
+        "input_features_mask",
+        "pixel_values_images",
+    }
+)
+_MULTIMODAL_FEATURE_TYPES = ("Image", "Audio", "Video", "Pdf")
+
+
+def _features_have_media(features) -> bool:
+    """True if a `datasets` feature tree holds an Image / Audio / Video feature anywhere,
+    e.g. images embedded inside a `messages` column's content parts."""
+    stack = [features]
+    seen = 0
+    while stack:
+        node = stack.pop()
+        seen += 1
+        if seen > 10_000:
+            return True  # pathological schema: assume media rather than guess
+        if type(node).__name__ in _MULTIMODAL_FEATURE_TYPES:
+            return True
+        if isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+        else:
+            inner = getattr(node, "feature", None)  # Sequence / List / LargeList
+            if inner is not None:
+                stack.append(inner)
+    return False
+
+
+def _is_text_only_dataset(dataset) -> bool:
+    """Positively text-only: a known schema with no image / audio / video column or feature.
+
+    Unknown schemas (plain lists, feature-less streams) are not text-only, since probing a
+    stream can drop a sample and a list of dicts can hold PIL images under any key."""
+    if dataset is None:
+        return False
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is None:
+        return False
+    if not _MULTIMODAL_DATASET_KEYS.isdisjoint(column_names):
+        return False
+    features = getattr(dataset, "features", None)
+    if features is None:
+        # A streaming dataset can name its columns but not their types; without types an
+        # embedded image cannot be ruled out.
+        return False
+    return not _features_have_media(features)
+
+
+def _is_text_only_eval_dataset(dataset) -> bool:
+    if dataset is None:
+        return True
+    if isinstance(dataset, dict):
+        return all(_is_text_only_dataset(split) for split in dataset.values())
+    return _is_text_only_dataset(dataset)
+
+
+def _uses_multimodal_rope(model_config) -> bool:
+    """Qwen2-VL style multimodal RoPE (`mrope_section`). Those models only build a packed mask
+    from 4-row `position_ids` (text row first); the 2D ids the padding-free collator emits leave
+    the mask causal across the whole row, so documents attend to each other."""
+    if model_config is None:
+        return True  # unknown: assume the worst
+    try:
+        stack = [model_config.to_dict()]
+    except Exception:
+        return True
+    seen = 0
+    while stack:
+        node = stack.pop()
+        seen += 1
+        if seen > 10_000:
+            return True
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("mrope_section", "mrope_interleaved"):
+                    return True
+                if key in ("rope_type", "type") and value == "mrope":
+                    return True
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(x for x in node if isinstance(x, (dict, list, tuple)))
+    return False
+
+
+def _processor_text_only(
+    processing_class, data_collator, train_dataset, eval_dataset, model_config
+) -> bool:
+    """A processor trained on text-only rows tokenizes exactly like its tokenizer, so packing
+    and padding-free are as safe as with the tokenizer passed directly."""
+    if os.environ.get("UNSLOTH_PROCESSOR_TEXT_PACKING", "1") == "0":
+        return False
+    if data_collator is not None:
+        return False
+    if _uses_multimodal_rope(model_config):
+        return False
+    if getattr(processing_class, "tokenizer", None) is None:
+        return False
+    return _is_text_only_dataset(train_dataset) and _is_text_only_eval_dataset(eval_dataset)
+
+
+# TRL < 0.24 raises these on `_is_vlm` (any processor) before it looks at the dataset.
+_TRL_VLM_PACKING_REJECTIONS = (
+    "packing is not supported for vision-language models",
+    "padding-free training is yet not supported for vision-language models",
+)
+
+
+def _is_trl_vlm_packing_rejection(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(msg in message for msg in _TRL_VLM_PACKING_REJECTIONS)
+
+
 _HYBRID_CONFIG_MARKERS = (
     "linear_conv_kernel_dim",
     "linear_key_head_dim",
@@ -1578,6 +1701,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
         eval_dataset = args[4] if len(args) >= 5 else kwargs.get("eval_dataset")
         is_processor = isinstance(processing_class, ProcessorMixin)
+        # A processor on a text-only dataset packs through its tokenizer.
+        processor_text_only = is_processor and _processor_text_only(
+            processing_class, data_collator, train_dataset, eval_dataset, model_config
+        )
         is_auto_processor_vlm = is_vlm and processing_class is None
         is_vision_dataset = (
             data_collator is None
@@ -1610,7 +1737,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # condition the post-init check skips on, so leaving it armed is free.
         blocked = (
             (data_collator is not None)
-            or is_processor
+            or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
             or is_unsupported_model
@@ -1677,7 +1804,25 @@ def _patch_sft_trainer_auto_packing(trl_module):
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
-            if packing_active and _should_skip_auto_packing_error(exc):
+            if processor_text_only and not blocked and _is_trl_vlm_packing_rejection(exc):
+                # TRL < 0.24 refuses packing / padding-free for any processor, so fall back to
+                # what this gate did before text-only processors were allowed through.
+                if requested_pack:
+                    logger.warning(
+                        "Unsloth: packing=True ignored (this TRL version refuses it for processors)."
+                    )
+                else:
+                    logger.info(
+                        "Unsloth: padding-free disabled for the processor (%s).", exc
+                    )
+                for _attr in ("packing", "padding_free"):
+                    if hasattr(config_arg, _attr):
+                        setattr(config_arg, _attr, False)
+                packing_active = False
+                auto_padding_free_active = False
+                blocked = True
+                original_init(self, *args, **kwargs)
+            elif packing_active and _should_skip_auto_packing_error(exc):
                 logger.info(
                     "Unsloth: Auto sample packing failed because trainer reported an incompatible setup (%s).",
                     exc,
