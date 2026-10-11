@@ -39,6 +39,12 @@ export function isEngineReady(engine: EngineStatus | undefined): boolean {
   );
 }
 
+/** The backend says this host can run vLLM, installed or not. */
+export function vllmHostSupported(engines: readonly EngineStatus[]): boolean {
+  const vllm = engines.find((engine) => engine.engine === "vllm");
+  return vllm !== undefined && vllm.unsupported_reason === null;
+}
+
 /** A retained INT4 / INT8 the newly picked engine cannot convert would fail only after unloading. */
 export function precisionAfterEngineSwitch<P extends string>(
   precision: P,

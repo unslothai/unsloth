@@ -178,13 +178,12 @@ _TE_QUANT_REQUIREMENTS = {
 
 
 def te_quant_unsupported_reason(mode: str) -> str:
-    """Why ``te_quant_supported`` declined ``mode``, naming what that mode needs."""
     return f"text-encoder '{mode}' needs {_TE_QUANT_REQUIREMENTS[mode]}, which this host does not provide"
 
 
 @lru_cache(maxsize = 1)
 def nvfp4_weight_only_importable() -> bool:
-    """Whether torchao ships a usable ``NVFP4WeightOnlyConfig`` (0.15+; Studio pins 0.14 on torch <= 2.9)."""
+    """requires torchao 0.15+; Studio pins 0.14 with torch <= 2.8."""
     try:
         from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
         from .diffusion_transformer_quant import _quiet_config
@@ -195,9 +194,7 @@ def nvfp4_weight_only_importable() -> bool:
 
 
 def te_quant_supported(target: Any, mode: str) -> bool:
-    """Whether ``mode`` is usable for ``target``: a CUDA bf16 device plus what each backend
-    needs -- fp8 dtype (fp8, nvfp4 block scales), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+
-    (int8). nvfp4 is weight-only, so it has no FP4 tensor-core requirement."""
+    """CUDA bf16: e4m3 for fp8/nvfp4, sm_89+ for dynamic fp8, sm_80+ for int8; no FP4 cores."""
     if getattr(target, "device", None) != "cuda":
         return False
     if nvfp4_blocked(mode):

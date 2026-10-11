@@ -491,8 +491,9 @@ def add_chunks(
         conn.execute(
             "INSERT OR REPLACE INTO chunks("
             "id, document_id, scope, chunk_index, text, page_number, "
-            "source_page_index, token_count, kind, pdf_regions_json) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "source_page_index, page_char_start, page_char_end, token_count, "
+            "whole_document_token_count, kind, pdf_regions_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 chunk_id,
                 document_id,
@@ -501,7 +502,10 @@ def add_chunks(
                 chunk.text,
                 chunk.page_number,
                 chunk.source_page_index,
+                getattr(chunk, "page_char_start", None),
+                getattr(chunk, "page_char_end", None),
                 chunk.token_count,
+                getattr(chunk, "whole_document_token_count", None),
                 getattr(chunk, "kind", "text"),
                 regions_json,
             ),
@@ -556,9 +560,11 @@ def _copy_chunk_rows(
     conn.execute(
         "INSERT INTO chunks("
         "id, document_id, scope, chunk_index, text, page_number, "
-        "source_page_index, token_count, kind, pdf_regions_json) "
+        "source_page_index, page_char_start, page_char_end, token_count, "
+        "whole_document_token_count, kind, pdf_regions_json) "
         "SELECT ? || ':' || chunk_index, ?, ?, chunk_index, text, page_number, "
-        "source_page_index, token_count, kind, pdf_regions_json "
+        "source_page_index, page_char_start, page_char_end, token_count, "
+        "whole_document_token_count, kind, pdf_regions_json "
         "FROM chunks WHERE document_id=?",
         (target_id, target_id, scope, source_id),
     )
@@ -973,7 +979,9 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
     placeholders = ",".join("?" * len(scopes))
     rows = conn.execute(
         f"SELECT c.id, c.text, c.document_id, c.chunk_index, c.page_number, "
-        f"c.token_count, d.filename, d.created_at "
+        f"c.source_page_index, c.page_char_start, c.page_char_end, c.token_count, "
+        f"c.whole_document_token_count, "
+        f"d.filename, d.created_at "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
         f"WHERE c.scope IN ({placeholders}) AND d.status='completed' "
         f"AND NOT EXISTS "
@@ -988,14 +996,17 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
 
 def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:
     """Upper-bound token total for a scope's completed chunks without hydrating text.
-    Mirrors ``all_chunks_for_scope`` + the ``tool._row_token_count`` fallback (stored
-    count, else length/4), so the whole-doc budget can be checked before loading text."""
+    Mirrors ``all_chunks_for_scope`` + whole-document token budgeting (unique stored
+    count, else full stored count, else length/4), so the budget can be checked before loading text."""
     scopes = _scopes(scope)
     if not scopes:
         return 0
     placeholders = ",".join("?" * len(scopes))
     row = conn.execute(
-        f"SELECT COALESCE(SUM(CASE WHEN c.token_count > 0 THEN c.token_count "
+        f"SELECT COALESCE(SUM(CASE "
+        f"WHEN c.whole_document_token_count IS NOT NULL "
+        f"THEN MAX(0, c.whole_document_token_count) "
+        f"WHEN c.token_count > 0 THEN c.token_count "
         f"ELSE MAX(1, length(COALESCE(c.text, '')) / 4) END), 0) AS total "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
         f"WHERE c.scope IN ({placeholders}) AND d.status='completed' "

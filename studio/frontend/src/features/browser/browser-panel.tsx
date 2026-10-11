@@ -34,6 +34,7 @@ import {
   ATTACHMENT_KIND_ICONS,
   ATTACHMENT_KIND_ICON_CLASS,
   attachmentFileKind,
+  useChatRuntimeStore,
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { startLibraryChat } from "@/features/library";
@@ -206,6 +207,9 @@ const PILL = cn(
 const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
 
+/** IconButton's own look, for toolbar buttons rendered elsewhere (DownloadsButton). */
+const TOOLBAR_ICON_BUTTON =
+  "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground";
 const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
@@ -244,7 +248,7 @@ function IconButton({
           onClick={onClick}
           disabled={disabled}
           className={cn(
-            "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground",
+            TOOLBAR_ICON_BUTTON,
             className,
           )}
         >
@@ -1043,6 +1047,8 @@ function tabDownload(tab: BrowserTab | undefined): BrowserDownload | undefined {
     ? {
         ...page,
         url: tab.displayUrl ?? (entry.kind === "web" ? entry.url : null),
+        // Only a temporary page's own flag: otherwise the chat shown when Download is clicked decides.
+        temporary: entry.kind === "web" && entry.temporary ? true : undefined,
       }
     : undefined;
 }
@@ -1057,7 +1063,7 @@ function WebActions({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
     <>
       <AnnotatePageButton tab={tab} />
       {/* Recent downloads and the one in flight; saving the page itself is in the menu. */}
-      <DownloadsButton className={NAV_BUTTON} visible={visible} />
+      <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} />
     </>
   );
 }
@@ -1134,6 +1140,8 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
 }
 
 async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
+  const shown = currentEntry(tab);
+  const temporary = useChatRuntimeStore.getState().incognito || (shown.kind === "web" && shown.temporary === true);
   let blob: Blob | null;
   try {
     blob = await screenshotPage(tab, page);
@@ -1152,7 +1160,7 @@ async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<
   const pad = (value: number) => String(value).padStart(2, "0");
   const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
   const name = `Screenshot ${entry.kind === "web" ? hostOf(entry.url) : tab.title || "page"} ${stamp}.png`.replace(/[\\/:*?"<>|]+/g, "-");
-  const download: BrowserDownload = { blob, name, contentType: "image/png", url: null };
+  const download: BrowserDownload = { blob, name, contentType: "image/png", url: null, temporary };
   const attach = useBrowserStore.getState().attachToChat;
   if (attach && (await attach(new File([blob], name, { type: "image/png" })))) {
     toast.success(t("browser.screenshot.added"), {
@@ -1675,7 +1683,7 @@ function BrowserFileToolbar({
         >
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
-        <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
+        <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} idleHidden={true} />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
@@ -2233,7 +2241,7 @@ function VideoFileToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
+      <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} idleHidden={true} />
       <PanelMenu tab={tab} />
     </>
   );
@@ -2456,6 +2464,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               key={`${activeTab.id}:${activeEntry.fileId}`}
               page={pageElement}
               fileName={activeEntry.name}
+              zoom={activeTab.zoom}
             />
           ) : null}
           {activeTab && activeEntry && (pageAnnotating === "frame" || pageAnnotating === "native") ? (
@@ -2475,6 +2484,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               page={pageElement}
               fileName={tabTitle(activeTab, activeEntry)}
               url={webAddress(activeTab) ?? undefined}
+              zoom={activeTab.zoom}
             />
           ) : null}
         </div>

@@ -249,15 +249,13 @@ _TORCHAO_EXPORT_MIN = (0, 15)
 
 
 def torchao_export_loadable() -> bool:
-    """Whether an export worker can get real torchao: always off Windows ROCm; there, torchao must
-    be installed and unsloth must ship the shim. Searches sys.path, so a stub already in
-    sys.modules does not count, and imports nothing."""
+    """checks Windows ROCm for torchao and unsloth's shim without imports; true elsewhere."""
     if not _is_windows_rocm():
         return True
     try:
         if importlib.machinery.PathFinder.find_spec("torchao") is None:
             return False
-        # transformers 5's TorchAoConfig minimum; torch <= 2.9 is paired with torchao 0.14.
+        # TorchAoConfig requires torchao 0.15; torch <= 2.8 is paired with torchao 0.14
         found = re.match(r"(\d+)\.(\d+)", importlib.metadata.version("torchao"))
         if not found or (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
             return False
@@ -272,8 +270,7 @@ _STUB_CONSUMERS = ("transformers", "peft", "diffusers", "accelerate", "unsloth",
 
 
 def install_torchao_windows_rocm_real_or_stub() -> bool:
-    """Export worker: real torchao on Windows ROCm when it is installed and unsloth can import it
-    without torch.distributed, else the stub. True iff real torchao is loaded. No-op elsewhere."""
+    """load real torchao on Windows ROCm when its no-distributed shim works; return true iff loaded."""
     if not _is_windows_rocm():
         return False
     # A spawn child re-runs run.py as __mp_main__, which stubs torchao first. Drop that stub

@@ -11,6 +11,7 @@ from collections import deque
 import fnmatch
 import functools
 import hashlib
+from html.parser import HTMLParser
 import json
 import http.client
 import os
@@ -64,6 +65,8 @@ from core.inference.mcp_image import (
     image_input_mappings,
     image_mapping,
     public_tool,
+    settle_image_call,
+    strip_attached_image_note,
 )
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
@@ -88,6 +91,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
 from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils import sandbox_memory_limit, tool_result_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -115,6 +119,15 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# Not "connection error": DNS failures and refused connections are not resets (#12638).
+_DDGS_RESET_MARKERS = (
+    "connection reset",
+    "h2 connection driver error",
+    "server disconnected",
+    "broken pipe",
+    "forcibly closed",  # Windows WSAECONNRESET (10054)
+)
+_DDGS_HTTP1_RETRY_LOCK = threading.Lock()
 
 # Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
 # an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
@@ -161,7 +174,17 @@ def _env_int(name: str, default: int) -> int:
 
 # Model-visible cap on python/terminal tool results. The live UI stream is capped separately and higher, so
 # _truncate's notice stays mode-neutral (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
-_MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
+_MAX_OUTPUT_CHARS = _env_int(tool_result_limit.MAX_CHARS_ENV, tool_result_limit.DEFAULT_MAX_CHARS)
+
+
+def _tool_result_max_chars() -> int:
+    """The cap before the window lowers it: Settings > Chat, unless the env var decides. Read per call so a save
+    applies to the next tool call; no saved value keeps `_MAX_OUTPUT_CHARS`."""
+    if tool_result_limit.locked_by_environment():
+        return _MAX_OUTPUT_CHARS
+    return tool_result_limit.saved_max_chars() or _MAX_OUTPUT_CHARS
+
+
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
@@ -9867,6 +9890,15 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     return env
 
 
+# Read by _sandbox_preexec after the fork, so it is resolved here first: the settings store cannot be read in the child.
+_sandbox_as_bytes = 8 * 1024 * 1024 * 1024
+
+
+def _refresh_sandbox_memory_limit() -> None:
+    global _sandbox_as_bytes
+    _sandbox_as_bytes = sandbox_memory_limit.memory_limit_bytes()
+
+
 def _sandbox_preexec():
     """Best-effort sandbox setup for sandboxed subprocesses (modules are resolved at import time so
     the forked child runs no imports)."""
@@ -9906,8 +9938,9 @@ def _sandbox_preexec():
         except (ValueError, OSError):
             pass
         try:
-            as_bytes = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")) * 1024 * 1024 * 1024
-            _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
+            as_bytes = _sandbox_as_bytes
+            if as_bytes is not None:
+                _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
         except (ValueError, OSError, AttributeError):
             pass
         try:
@@ -13524,12 +13557,26 @@ def _mcp_image_destination(url: str) -> str:
 
 
 def mcp_image_share(name, arguments, mcp_image) -> dict | None:
-    """Approval-card details plus the image bound to this server when the call would send it, else None."""
+    """Approval-card details plus the image bound to this server when the call would send it, else None.
+
+    A call that would send it has ``arguments`` rewritten in place to what goes out (settle_image_call).
+    """
     if mcp_image is None or not isinstance(arguments, dict):
         return None
+    from .tool_loop_controller import UNPARSED_ARGUMENTS_KEY  # noqa: PLC0415
+
     server, tool, tool_name = _mcp_resolve_tool(name)
     mapping = image_mapping(server, tool) if server else None
-    if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
+    if mapping is None:
+        return None
+    # Arguments that could not be read are not a call to rewrite: they keep their ordinary path.
+    schema = _mcp_input_schema(tool)
+    properties = schema.get("properties") or {}
+    if UNPARSED_ARGUMENTS_KEY in arguments or (
+        set(arguments) == {"raw"} and "raw" not in properties
+    ):
+        return None
+    if not settle_image_call(arguments, mapping["field"], schema.get("required") or ()):
         return None
     # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
     return {
@@ -13552,6 +13599,17 @@ def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
     return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
 
 
+def mcp_image_targets(names) -> list[tuple[str, str]]:
+    """(catalog name, field) for each of these tools with a field mapped to the attached image."""
+    targets = []
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        mapping = image_mapping(server, tool) if server else None
+        if mapping:
+            targets.append((name, mapping["field"]))
+    return targets
+
+
 def mcp_catalog_takes_image(names) -> bool:
     """Whether any of these catalog tools has a field mapped to the attached image."""
     for name in names:
@@ -13567,7 +13625,7 @@ def mcp_tool_input_schema(name) -> dict | None:
 
 
 def _mcp_schema_page(prefix: str, text: str, offset: int) -> str:
-    page_chars = _tool_result_char_budget()
+    page_chars = _other_tool_result_char_budget()
     while True:
         end = min(offset + page_chars, len(text))
         page = prefix + text[offset:end]
@@ -13803,17 +13861,19 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     return _mcp_listing(listed), complete
 
 
-async def get_enabled_mcp_tools() -> list[dict]:
-    # Keep the SQLite-backed server list off the event loop.
+async def get_enabled_mcp_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
+    # keep the SQLite-backed server list off the event loop.
     servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
-    # Never spawn stdio servers when stdio is disabled on this host.
-    if not stdio_mcp_enabled():
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
+    if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
         return []
 
-    # Skip servers still in their post-failure cool-off, otherwise a down server gets re-probed, and blocks the send
-    # for the full timeout, on every message.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down.
     uncached = [
         s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
     ]
@@ -13863,8 +13923,64 @@ async def get_enabled_mcp_tools() -> list[dict]:
     return _mcp_listing(listed)
 
 
+def mcp_search_argument(name: str, tool: dict) -> str | None:
+    schema = _mcp_input_schema(tool)
+    required = schema.get("required") or []
+    properties = schema.get("properties") or {}
+    if len(required) != 1 or not isinstance(properties, dict):
+        return None
+    key = required[0]
+    prop = properties.get(key) if isinstance(key, str) else None
+    if not isinstance(prop, dict) or prop.get("type") != "string" or "enum" in prop:
+        return None
+    if is_potentially_unsafe_tool_call(name, {key: ""}):
+        return None
+    return key
+
+
+async def mcp_search_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is False:
+        return []
+    await get_enabled_mcp_tools(include_stdio = include_stdio, server_ids = server_ids)
+    servers = _enabled_mcp_servers(await asyncio.to_thread(mcp_servers_db.list_servers))
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
+    if not include_stdio or not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+    found = []
+    for server in servers:
+        for tool in get_cached_tools(server["id"]) or ():
+            raw_name = tool.get("name") if isinstance(tool, dict) else None
+            if not isinstance(raw_name, str) or not tool_visible_to(tool, "model"):
+                continue
+            name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+            argument = mcp_search_argument(name, public_tool(server, tool))
+            if argument:
+                found.append(
+                    {
+                        "name": name,
+                        "serverId": server["id"],
+                        "serverName": server.get("display_name") or server["id"],
+                        "tool": raw_name,
+                        "description": tool.get("description") or "",
+                        "argument": argument,
+                    }
+                )
+    return found
+
+
+def execute_mcp_tool(name: str, arguments: dict, **kwargs) -> str:
+    if not name.startswith(MCP_TOOL_PREFIX):
+        return f"Error: '{name}' is not an MCP tool"
+    return execute_tool(name, arguments, **kwargs)
+
+
 def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
-    """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
+    """cache only: callers must not spawn a stdio subprocess or block on a probe."""
     tools = get_cached_tools(server_id) or ()
     return next((t for t in tools if isinstance(t, dict) and t.get("name") == tool_name), None)
 
@@ -13978,7 +14094,10 @@ def execute_tool(
             "arguments to save room, not content, so nothing ran. Write the actual content "
             "out in full."
         )
-    effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    # By type, not `is _TIMEOUT_UNSET`: see `_request_context_tokens`.
+    effective_timeout = (
+        timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
+    )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -14616,10 +14735,10 @@ def _last_user_text(conversation: list[dict]) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return strip_current_date_update_note(content).strip()
+            return strip_current_date_update_note(strip_attached_image_note(content)).strip()
         if isinstance(content, list):
             parts = [
-                p.get("text", "")
+                strip_attached_image_note(p.get("text", ""))
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
@@ -15055,34 +15174,31 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     return built
 
 
-_MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+_MAX_PAGE_CHARS = 16000  # fetched page cap after HTML-to-Markdown conversion
 
-# Share of the loaded window one fetched page may claim. The same window also has to hold the system prompt, the
-# carried-forward block, the user's turn, the call itself and room to answer, so a third is already generous.
+# one page may use 35% of the window, leaving room for prompts, context, calls, and answers.
 _PAGE_CONTEXT_SHARE = 0.35
-# Below this a page is too clipped to answer from, so the fetch is not worth making small. Half, when the room has to
-# be converted to characters with no way to check the answer: see `_dense_char_limit`, the conversion charges ASCII an
-# English four characters per token and the dense ASCII these tools print runs nearer two.
+# unmeasurable token budgets are halved because dense ASCII can cost twice the English estimate.
 _UNMEASURED_ROOM_MARGIN = 0.5
 
 _MIN_PAGE_CHARS = 2000
-# A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
+# a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections stripped during conversion; 512 KB
-# still reaches article content.
+# raw cap exceeds _MAX_PAGE_CHARS because conversion strips large SSR <head> sections.
 _MAX_FETCH_BYTES = 512 * 1024
-# "%" is safe so an already-encoded URL is not re-encoded into %25.
+# news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
+_MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
+# keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
-# PDF cross-reference data lives at EOF, so extraction needs the whole body.
+# PDF cross-reference data at EOF requires the whole body.
 _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
-# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs). Binary when they exceed 12.5%, after
-# allowing 16 minor encoding glitches.
+# binary threshold excludes whitespace and ESC; allow 16 glitches or 12.5%, whichever is larger.
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
-# Common binary signatures that can otherwise look text-heavy when mislabeled.
+# signatures catch mislabeled binaries that pass text heuristics.
 _PDF_MAGIC = b"%PDF-"
 _BINARY_MAGIC = (
     _PDF_MAGIC,
@@ -15744,7 +15860,7 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     def _resolve():
         try:
             result.put(_validate_and_resolve_host(hostname, port))
-        except Exception as exc:  # defensive: never let the worker die silently
+        except Exception as exc:  # prevent the resolver thread from failing silently
             result.put((False, f"Failed to resolve host: {exc}", []))
 
     threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
@@ -15758,15 +15874,184 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
             continue
 
 
-def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
-    """read at most ``max_bytes`` within the overall budget and return ``(error_or_None, body_bytes)``."""
-    # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
+class _HTMLBodyLocator(HTMLParser):
+    """locate the explicit or implied document body without matching markup inside head content."""
+
+    _PENDING_LIMIT = 65536
+    _CDATA_TAIL_BYTES = 64
+    _HEAD_ELEMENTS = frozenset(
+        {
+            "base",
+            "basefont",
+            "bgsound",
+            "link",
+            "meta",
+            "noframes",
+            "noscript",
+            "script",
+            "style",
+            "template",
+            "title",
+        }
+    )
+    _HEAD_TEXT_ELEMENTS = frozenset({"noframes", "noscript", "script", "style", "title"})
+
+    def __init__(self, charset = None):
+        super().__init__(convert_charrefs = False)
+        self.body_at = None
+        self._absolute_offset = 0
+        self._head_text_depth = 0
+        self._template_depth = 0
+        self._prefix = b""
+        self._decoder = None
+        self._codec = "latin-1"
+        self._deferred = []
+        self._deferred_chars = 0
+        try:
+            codec = codecs.lookup(charset).name if charset else None
+        except (LookupError, ValueError):
+            codec = None
+        if codec in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"):
+            self._codec = codec if codec.endswith(("-le", "-be")) else codec + "-le"
+
+    def feed_bytes(self, data):
+        if self._decoder is None:
+            self._prefix += data
+            if len(self._prefix) < 4:
+                return
+            data, self._prefix = self._prefix, b""
+            for bom, codec in (
+                (codecs.BOM_UTF32_LE, "utf-32-le"),
+                (codecs.BOM_UTF32_BE, "utf-32-be"),
+                (codecs.BOM_UTF16_LE, "utf-16-le"),
+                (codecs.BOM_UTF16_BE, "utf-16-be"),
+            ):
+                if data.startswith(bom):
+                    self._codec = codec
+                    self._absolute_offset = len(bom)
+                    data = data[len(bom) :]
+                    break
+            self._decoder = codecs.getincrementaldecoder(self._codec)(errors = "replace")
+        decoded = self._decoder.decode(data)
+        if len(self.rawdata) > self._PENDING_LIMIT and not self.cdata_elem:
+            self._deferred.append(decoded)
+            self._deferred_chars += len(decoded)
+            if self._deferred_chars < len(self.rawdata):
+                return
+            decoded = "".join(self._deferred)
+            self._deferred.clear()
+            self._deferred_chars = 0
+        self.feed(decoded)
+        if self.body_at is not None or len(self.rawdata) <= self._PENDING_LIMIT:
+            return
+        if self.cdata_elem:
+            discard = len(self.rawdata) - self._CDATA_TAIL_BYTES
+            self.updatepos(0, discard)
+            self.rawdata = self.rawdata[discard:]
+
+    def updatepos(self, i, j):
+        if j > i:
+            self._absolute_offset += (
+                j - i
+                if self._codec == "latin-1"
+                else len(self.rawdata[i:j].encode(self._codec, errors = "replace"))
+            )
+        return super().updatepos(i, j)
+
+    def _offset(self):
+        return self._absolute_offset
+
+    def _mark_body(self):
+        if self.body_at is None:
+            self.body_at = self._offset()
+
+    def handle_starttag(self, tag, attrs):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth += 1
+            return
+        if tag == "template":
+            self._template_depth = 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth += 1
+            return
+        if tag in ("html", "head"):
+            return
+        if tag == "body":
+            self._mark_body()
+            return
+        if tag in self._HEAD_ELEMENTS:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth = 1
+            return
+        self._mark_body()
+
+    def handle_startendtag(self, tag, attrs):
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and tag not in self._HEAD_ELEMENTS
+            and tag not in ("html", "head")
+        ):
+            self._mark_body()
+
+    def handle_endtag(self, tag):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth -= 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth -= 1
+            return
+        if tag == "head":
+            self._mark_body()
+
+    def handle_data(self, data):
+        if self._offset() == 0 and data.startswith(codecs.BOM_UTF8.decode("latin-1")):
+            data = data[len(codecs.BOM_UTF8) :]
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and data.strip()
+        ):
+            self._mark_body()
+
+    def handle_entityref(self, name):
+        from html import unescape
+        self.handle_data(unescape("&" + name + ";"))
+
+    def handle_charref(self, name):
+        self.handle_entityref("#" + name)
+
+
+def _read_capped_body(
+    resp,
+    max_bytes,
+    timeout,
+    deadline,
+    cancel_event,
+    body_window = None,
+    charset = None,
+):
+    """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
+    # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
-    # use read1 because buffered read(n) can keep receiving until n bytes arrive and bypass the budget check
+    # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
+    body_at = None
+    body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
@@ -15785,6 +16070,15 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        if body_locator is not None and body_at is None:
+            got = max_bytes - remaining
+            try:
+                body_locator.feed_bytes(chunk)
+            except Exception:
+                body_locator = None
+            if body_locator is not None and body_locator.body_at is not None:
+                body_at = body_locator.body_at
+                remaining = max(0, min(remaining, body_at + body_window - got))
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
         try:
@@ -15796,8 +16090,7 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-# ASCII-only because str.isdigit() is True for digits int() refuses, and capped at 5 digits so the range check never
-# converts an unbounded integer.
+# ASCII-only: str.isdigit() accepts digits int() rejects; five digits bounds integer conversion
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 
 
@@ -16005,7 +16298,7 @@ def _fetch_url_raw(
                         return hop_error, "", ""
                     continue
 
-            # get_content_type() defaults missing headers to "text/plain" per RFC 2045; use "" to distinguish them.
+            # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
             else:
@@ -16013,10 +16306,16 @@ def _fetch_url_raw(
 
             # chunked reads recheck the fetch budget between chunks.
             declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
+            declared_html = raw_bytes_max is None and content_type in (
+                "text/html",
+                "application/xhtml+xml",
+            )
             if raw_bytes_max is not None:
                 read_limit = raw_bytes_max + 1
             elif declared_pdf:
                 read_limit = _MAX_PDF_FETCH_BYTES + 1
+            elif declared_html:
+                read_limit = _MAX_HTML_FETCH_BYTES
             else:
                 read_limit = max_bytes
             body_error, raw_bytes = _read_capped_body(
@@ -16025,6 +16324,8 @@ def _fetch_url_raw(
                 timeout,
                 deadline,
                 cancel_event,
+                body_window = max_bytes if declared_html else None,
+                charset = resp.headers.get_content_charset() if declared_html else None,
             )
             if body_error is not None:
                 return body_error, "", ""
@@ -16041,10 +16342,10 @@ def _fetch_url_raw(
                     meta_out["cache_control"] = resp.headers.get("Cache-Control")
                     meta_out["age"] = resp.headers.get("Age")
                 return http_error, raw_bytes, content_type
-            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+            if not declared_pdf and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
-                    _MAX_PDF_FETCH_BYTES - max_bytes + 1,
+                    _MAX_PDF_FETCH_BYTES - len(raw_bytes) + 1,
                     timeout,
                     deadline,
                     cancel_event,
@@ -16058,7 +16359,7 @@ def _fetch_url_raw(
             if not refresh_url:
                 break
             current_url = refresh_url
-            # A refresh is a new GET, like a browser's.
+            # a refresh starts a new GET like a browser.
             pending_post = None
             hop_error, current_host, pinned_ips = _redirect_hop(
                 current_url,
@@ -16259,6 +16560,15 @@ def _loaded_context_tokens() -> int | None:
     return None
 
 
+def _request_context_tokens() -> int | None:
+    """The request's window (an int, or None = unknowable: never probed), else the process probe. By type, not
+    `is _UNSET_CONTEXT_TOKENS`: an `execute_tool` held across a reload stores the old sentinel (#11384)."""
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    if scoped is None or isinstance(scoped, int):
+        return scoped
+    return _loaded_context_tokens()
+
+
 def _result_char_budget(cap: int) -> int:
     """`cap`, lowered to what the serving window can actually hold. Shared by fetched pages and by
     terminal/python results, because the failure is the same: a fixed character cap has no
@@ -16267,10 +16577,7 @@ def _result_char_budget(cap: int) -> int:
     that does not fit and the request goes irreducible. Measured live on a 5120-token window:
     7043 and 6684 token requests refused, both on the code tools, whose 16,000-character cap is
     about 4,000 tokens on its own."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return cap
     # Clamped to `cap` on the way out, not only on the way in. The floor keeps a result worth reading when the WINDOW
@@ -16283,6 +16590,16 @@ def _result_char_budget(cap: int) -> int:
 
 def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
+    cap = _tool_result_max_chars()
+    if not _request_context_tokens():
+        # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
+        cap = min(cap, _MAX_OUTPUT_CHARS)
+    return _result_char_budget(cap)
+
+
+def _other_tool_result_char_budget() -> int:
+    """Non-code tools keep the install cap: the setting names Python and Terminal, and these results have no spill to
+    page back through."""
     return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
@@ -16298,10 +16615,7 @@ def _page_char_budget() -> int:
     Above roughly an 11k window this returns the old constant unchanged, so only the models that
     cannot afford a whole page are affected.
     """
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return _MAX_PAGE_CHARS
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
@@ -16323,10 +16637,7 @@ def _request_result_room() -> int | None:
 
 def _window_context_tokens() -> int | None:
     """The window this request is served by, or None when it cannot be read."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     return ctx if ctx else None
 
 
@@ -16875,7 +17186,7 @@ def _fetch_page_text(
             # Markdown README that merely opens with a block tag is kept as-is (see _HTML_DOCUMENT_RE).
             if _looks_like_html_document(body):
                 from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True)
+                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
                 readme_body = converted if converted.strip() else body
             if readme_body.strip():
                 return _truncate_page_text(
@@ -16902,9 +17213,17 @@ def _fetch_page_text(
         return _truncate_page_text(body.strip(), max_chars)
 
     # Convert HTML to Markdown with the builtin converter (no external deps).
-    from ._html_to_md import html_to_markdown
+    from ._html_to_md import SiteLinks, html_to_markdown
 
-    return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
+    site_links = SiteLinks(url)
+    # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
+    text = html_to_markdown(
+        body, main_content = True, site_links = site_links, max_span_chars = max_chars // 2
+    )
+    # a page that fits keeps same-site links so the model can follow them.
+    if text and len(text) <= max_chars and len(text) <= _dense_char_limit(text, max_chars):
+        return text
+    return _truncate_page_text(site_links.strip(text), max_chars)
 
 
 def _search_failure_message(exc: BaseException, timeout: int) -> str:
@@ -16995,6 +17314,122 @@ def _install_yahoo_layout_parser(text_engines) -> None:
             return results
 
     text_engines["yahoo"] = _Yahoo
+
+
+def _is_connection_reset(exc) -> bool:
+    return any(marker in f"{type(exc).__name__}: {exc}".lower() for marker in _DDGS_RESET_MARKERS)
+
+
+def _ddgs_http1_replay(args, kwargs, config):
+    import httpx
+
+    verify = config["verify"]
+    if isinstance(verify, str):
+        verify = ssl.create_default_context(cafile = verify)
+    with httpx.Client(
+        headers = config["headers"],
+        cookies = config["cookies"],
+        proxy = config["proxy"],
+        timeout = config["timeout"],
+        verify = verify,
+        follow_redirects = config["follow_redirects"],
+        http1 = True,
+        http2 = False,
+    ) as client:
+        resp = client.request(*args, **kwargs)
+        resp.read()
+        return resp
+
+
+def _install_ddgs_http1_retry() -> None:
+    """Replay a ddgs request once over plain HTTP/1.1 after a connection reset (#12638): primp has
+    no HTTP/1.1-only mode. Successful requests are untouched; wraps each class once; never raises."""
+    try:
+        import inspect
+
+        from ddgs import http_client
+        from ddgs.exceptions import DDGSException
+
+        def _wrapper(response_cls):
+            # ddgs 9.14's primp Response wraps the raw response; 9.8.0's and HttpClient2's take fields.
+            if "status_code" not in inspect.signature(response_cls).parameters:
+                return response_cls
+            return lambda resp: response_cls(
+                status_code = resp.status_code, content = resp.content, text = resp.text
+            )
+
+        targets = [(http_client.HttpClient, _wrapper(http_client.Response), True)]
+        try:
+            from ddgs import http_client2
+        except ImportError:
+            http_client2 = None
+        if http_client2 is not None and hasattr(http_client2, "HttpClient2"):
+            # HttpClient2 does not follow redirects; primp does.
+            targets.append((http_client2.HttpClient2, _wrapper(http_client2.Response), False))
+
+        with _DDGS_HTTP1_RETRY_LOCK:
+            for cls, wrap, follow_redirects in targets:
+                if cls.__dict__.get("_unsloth_http1_retry"):
+                    continue
+                _wrap_ddgs_client(
+                    cls, wrap, follow_redirects, inspect.signature(cls.__init__), DDGSException
+                )
+    except Exception:  # noqa: BLE001 - the retry is a hardening layer, never a reason to fail a search
+        logger.debug("ddgs HTTP/1.1 retry not installed", exc_info = True)
+
+
+def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) -> None:
+    orig_init, orig_request = cls.__init__, cls.request
+
+    @functools.wraps(orig_init)
+    def __init__(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        try:
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            config = dict(bound.arguments)
+            config.pop("self", None)  # no client -> config -> client cycle
+            self._unsloth_http1_config = config
+        except TypeError:
+            pass
+
+    @functools.wraps(orig_request)
+    def request(self, *args, **kwargs):
+        start = time.monotonic()
+        try:
+            return orig_request(self, *args, **kwargs)
+        except Exception as exc:
+            config = getattr(self, "_unsloth_http1_config", None)
+            if config is None or not _is_connection_reset(exc):
+                raise
+            timeout = config.get("timeout")
+            if timeout:
+                timeout -= time.monotonic() - start
+                if timeout <= 0:
+                    raise
+            client = getattr(self, "client", None)
+            # httpx's jar only: primp 0.15 (ddgs 9.8.0) get_cookies aborts the process on a miss.
+            cookies = getattr(client, "cookies", None)
+            # httpx may lack primp's zstd decoder, so let it pick accept-encoding.
+            session = getattr(client, "headers", None) or {}
+            headers = {k: v for k, v in dict(session).items() if k.lower() != "accept-encoding"}
+            replay = {
+                "headers": headers,
+                "cookies": cookies,
+                "proxy": config.get("proxy"),
+                "timeout": timeout,
+                "verify": config.get("verify", True),
+                "follow_redirects": follow_redirects,
+            }
+            try:
+                return wrap(_ddgs_http1_replay(args, kwargs, replay))
+            except Exception as retry_exc:
+                raise ddgs_exception(
+                    f"{exc}; HTTP/1.1 retry failed: {type(retry_exc).__name__}: {retry_exc}"
+                ) from retry_exc
+
+    cls.__init__, cls.request = __init__, request
+    cls._unsloth_http1_retry = True
 
 
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
@@ -17142,6 +17577,7 @@ def _web_search(
 
             text_engines = ENGINES.get("text") or {}
             _install_yahoo_layout_parser(text_engines)
+            _install_ddgs_http1_retry()
             engine_tiers = _resolve_engine_tiers(text_engines)
             if not engine_tiers:
                 raise RuntimeError("no approved search engine is available.")
@@ -17321,6 +17757,7 @@ def _image_search(
         from .web_access_policy import scope_search_query
     except Exception as e:
         return _search_failure_message(e, timeout)
+    _install_ddgs_http1_retry()
     if not callable(getattr(DDGS, "images", None)):
         return "Image search is unavailable in this install."
 
@@ -20727,7 +21164,7 @@ def _fit_result_to_room(text, name = None):
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body)
+    fitted = _truncate(body, _other_tool_result_char_budget())
     return fitted + suffix if fitted is not body else text
 
 
@@ -20759,7 +21196,7 @@ _TOOL_TEXT_READERS = frozenset({"terminal", "python"})
 def _hard_cap_chars() -> int:
     """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
     spilled) passes through with its own spill reference intact."""
-    return max(MAX_TOOL_TEXT_CHARS, _MAX_OUTPUT_CHARS + 4_000)
+    return max(MAX_TOOL_TEXT_CHARS, max(_MAX_OUTPUT_CHARS, _tool_result_max_chars()) + 4_000)
 
 
 def _tool_text_notice_head() -> str:
@@ -22242,6 +22679,8 @@ def _python_exec(
             if sys.platform == "win32"
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
+        if base_preexec is _sandbox_preexec:
+            _refresh_sandbox_memory_limit()
         # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
         if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
@@ -22501,6 +22940,8 @@ def _bash_exec(
             if sys.platform == "win32"
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
+        if base_preexec is _sandbox_preexec:
+            _refresh_sandbox_memory_limit()
         if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(

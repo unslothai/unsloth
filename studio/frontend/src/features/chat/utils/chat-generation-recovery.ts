@@ -406,7 +406,16 @@ export function requestParsesThinkTags(payload: {
   enable_thinking?: boolean | null;
   reasoning_effort?: string | null;
   thinking?: { type?: string } | null;
+  provider_type?: string | null;
+  external_model?: string | null;
+  model?: string | null;
 }): boolean {
+  const provider = payload.provider_type?.trim().toLowerCase();
+  const model = (payload.external_model ?? payload.model)?.trim().toLowerCase();
+  const sonnet55BetweenTools =
+    provider === "anthropic" &&
+    (model === "claude-sonnet-5-5" || model?.startsWith("claude-sonnet-5-5-") === true);
+  if (sonnet55BetweenTools) return true;
   return !(
     payload.thinking?.type === "disabled" ||
     payload.enable_thinking === false ||

@@ -3,6 +3,7 @@
 
 /** desktop web pages use per-tab native views for bot checks; native views cover the DOM, so overlays use snapshots. */
 
+import { useChatRuntimeStore } from "@/features/chat";
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
@@ -97,7 +98,7 @@ function keepReachedPage(tabId: string): void {
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
   const shown = pages.get(tabId);
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
-  store.navigate(tabId, { url: shown.url }, { replace: false });
+  store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
 }
 
@@ -108,6 +109,9 @@ function closeView(tabId: string): void {
   zooms.delete(tabId);
   icons.delete(tabId);
   pages.delete(tabId);
+  temporaryPages.delete(tabId);
+  pageEntries.delete(tabId);
+  loadingPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
   void call("browser_view_close", { tabId }).catch(() => undefined);
 }
@@ -122,6 +126,27 @@ function listenOnce(): void {
   );
 }
 
+// Prompts asked for beside a temporary chat: their downloads land later, often after the chat is gone.
+const temporaryDownloads = new Set<string>();
+
+// Per tab, whether its page began loading beside a temporary chat: in-page navigation makes no new entry.
+// A page's first load is its entry's, which may start long after the entry was made (a background tab).
+const temporaryPages = new Map<string, boolean>();
+const pageEntries = new Map<string, BrowserEntry>();
+// Tabs mid-load: a redirect starts again within the same navigation, which keeps its state.
+const loadingPages = new Set<string>();
+
+function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
+  const fresh = pageEntries.get(tabId) !== entry;
+  pageEntries.set(tabId, entry);
+  const kept = fresh ? entry.temporary === true : loadingPages.has(tabId) && temporaryPages.get(tabId) === true;
+  temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || kept);
+}
+
+function pageTemporary(tabId: string, entry: BrowserEntry): boolean {
+  return temporaryPages.get(tabId) ?? (entry.kind === "web" && entry.temporary === true);
+}
+
 /** One running download in the Downloads button, from approval until it ends. */
 const downloadKey = (promptId: string) => `native:${promptId}`;
 
@@ -129,6 +154,7 @@ const downloadKey = (promptId: string) => `native:${promptId}`;
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
   const { id, url, site, name, saveAs } = event;
   const entry = tab ? currentEntry(tab) : null;
+  if (useChatRuntimeStore.getState().incognito || (tab && entry && pageTemporary(tab.id, entry))) temporaryDownloads.add(id);
   // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
   // Picked from the context menu: the save dialog is the prompt, whatever the site's remembered answer.
@@ -141,6 +167,7 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
   const key = downloadKey(id);
   void decided
     .then(async (allow) => {
+      if (!allow) temporaryDownloads.delete(id);
       // Begun before deciding: a file that finished while the prompt was open lands at once.
       if (allow) beginDownload(key, name);
       await decideNativeDownload(id, allow, saveAs || useBrowserPrefsStore.getState().askWhereToSave);
@@ -148,7 +175,10 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
       const { active, buttons } = useDownloadActivity.getState();
       if (allow && buttons === 0 && key in active) toast(t("browser.native.downloading", { name }));
     })
-    .catch(() => abandonDownload(key));
+    .catch(() => {
+      temporaryDownloads.delete(id);
+      abandonDownload(key);
+    });
 }
 
 
@@ -160,6 +190,7 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (event.kind === "downloadCancelled") {
+    temporaryDownloads.delete(event.promptId);
     abandonDownload(downloadKey(event.promptId));
     return;
   }
@@ -168,19 +199,27 @@ function onNativeEvent(event: NativeEvent): void {
     if (openedTabs.has(event.tabId)) onDownload(event);
     return;
   }
-  if (!tab || currentEntry(tab).kind !== "web") return;
+  if (!tab) return;
+  const entry = currentEntry(tab);
+  if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
+  if ((event.kind === "load" && event.loading) || event.kind === "url") notePageStart(tab.id, entry);
+  if (event.kind === "load") {
+    if (event.loading) loadingPages.add(tab.id);
+    else loadingPages.delete(tab.id);
+  }
+  const temporary = pageTemporary(tab.id, entry);
   switch (event.kind) {
     case "load":
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
-      if (!event.loading) history.recordVisit(event.url, tab.title);
+      if (!event.loading) history.recordVisit(event.url, tab.title, temporary);
       break;
     case "title":
       store.updateTab(tab.id, { title: event.title });
       page(tab.id).title = event.title;
-      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title);
+      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title, temporary);
       break;
     case "url":
       store.updateTab(tab.id, { displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
@@ -232,15 +271,9 @@ function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
   // Refused before asking, it never ran: there's nothing to end, only a result to show.
   const key = event.promptId ? downloadKey(event.promptId) : `native:${event.tabId}:${event.url}`;
   if (!event.done) return;
-  const historyId = event.success
-    ? useBrowserHistoryStore.getState().recordDownload({
-        name: event.name,
-        url: event.url,
-        size: event.size ?? 0,
-        contentType: "",
-        nativeId: event.downloadId ?? undefined,
-      })
-    : undefined;
+  const temporary = event.promptId ? temporaryDownloads.delete(event.promptId) : false;
+  const item = { name: event.name, url: event.url, size: event.size ?? 0, contentType: "", nativeId: event.downloadId ?? undefined };
+  const historyId = event.success ? useBrowserHistoryStore.getState().recordDownload(item, temporary) : undefined;
   const shown = finishDownload(key, {
     name: event.name,
     size: event.size ?? 0,
@@ -576,6 +609,9 @@ onNativeViewsClosed(() => {
   zooms.clear();
   icons.clear();
   pages.clear();
+  temporaryPages.clear();
+  pageEntries.clear();
+  loadingPages.clear();
   resume.clear();
   recency = [];
   epoch += 1;

@@ -1202,11 +1202,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
         )
-    if request.is_decision:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Decision model training is not supported for MLX training yet.",
-        )
     if request.is_dataset_audio:
         raise HTTPException(
             status_code = 400,
@@ -1281,13 +1276,9 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
         from core.systemone.catalog import clef_unsupported_reason
         from utils.hardware import hardware
 
-        # Runs before _validate_training_platform: name the MLX limit, not a missing GPU.
-        if hardware.get_device() == hardware.DeviceType.MLX:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Decision model training is not supported for MLX training yet.",
-            )
-        if (reason := clef_unsupported_reason()) is not None:
+        # Apple Silicon trains Clef with MLX; elsewhere it needs the GPU the torch path runs on.
+        mlx = hardware.get_device() == hardware.DeviceType.MLX
+        if not mlx and (reason := clef_unsupported_reason()) is not None:
             raise HTTPException(status_code = 400, detail = reason)
         request.decision_layout = "llm" if llm else "clef"
         if request.model_subfolder is not None:
@@ -1516,6 +1507,18 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
     # Off-loop: the first call blocks on detection while the warm is importing torch.
     with gpu_query.display_reads():
         return await asyncio.to_thread(get_gpu_utilization)
+
+
+@router.get("/offload")
+async def get_offload_state(current_subject: str = Depends(get_current_subject)):
+    """Offload layers state from the last logged step: which decoder layers sit on the GPU or in
+    host RAM, prefetch depth, copy / stall / compute time, VRAM. ``{"active": false}`` when the run
+    does not offload. Polled by the live training view."""
+    progress = get_training_backend().trainer.get_training_progress()
+    offload = getattr(progress, "offload", None)
+    if not offload:
+        return {"active": False}
+    return {"active": True, **offload}
 
 
 @router.get("/hardware/visible")
@@ -1982,6 +1985,10 @@ async def start_training(
             "gradient_checkpointing": request.gradient_checkpointing.strip()
             if request.gradient_checkpointing and request.gradient_checkpointing.strip()
             else "unsloth",
+            "offload_layers": request.offload_layers,
+            "offload_vram_gb": request.offload_vram_gb,
+            "offload_vram_gb_per_device": request.offload_vram_gb_per_device,
+            "prefetch_depth": request.prefetch_depth,
             "use_rslora": request.use_rslora,
             "use_loftq": request.use_loftq,
             "use_dora": request.use_dora,
