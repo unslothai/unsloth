@@ -629,11 +629,12 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         classify.assert_called_once_with(config)
         self.assertEqual(captured, [])
 
-    def test_manual_diffusion_keeps_single_device_training_guard(self):
-        captured = []
+    def _guard_diffusion_pick(self, captured, **kwargs):
         config = SimpleNamespace(is_gguf = True)
+        backend = SimpleNamespace(diffusion_split_supported = lambda: True)
         with (
             patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = backend),
             patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
             patch.object(
                 self.route.LlamaCppBackend,
@@ -648,9 +649,23 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 decision = (True, {"mode": "single_device"}),
                 gpu_memory_mode = "manual",
                 requested_gpu_ids = [3, 1],
+                **kwargs,
             )
+
+    def test_manual_diffusion_split_keeps_single_device_training_guard(self):
+        # An explicit layer count runs on the lowest picked GPU only.
+        captured = []
+        self._guard_diffusion_pick(captured, gpu_layers = 20)
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["single_device_gpu"], "1")
+        self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
+
+    def test_auto_layers_diffusion_pick_is_budgeted_as_the_pool(self):
+        # Without a layer count the runner can split the pick over both GPUs (#6347).
+        captured = []
+        self._guard_diffusion_pick(captured)
+        self.assertEqual(len(captured), 1)
+        self.assertIsNone(captured[0]["single_device_gpu"])
         self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
 
     def _guard_zero_layer(self, *, diffusion_kind, captured):

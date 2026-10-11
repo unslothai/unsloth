@@ -9048,14 +9048,15 @@ class LlamaCppBackend:
         A regular GGUF load may narrow the requested placement pool to the
         smallest fitting subset. Accept both the original request and the
         effective status-echoed subset so either can round-trip without a
-        needless reload. Diffusion drives one device and keeps its existing
-        lowest-device normalization.
+        needless reload. Diffusion records the lowest device of a pick that fits it,
+        else the whole pick it split over, so either form matches.
         """
         if self._is_diffusion:
-            requested = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+            full = sorted(int(x) for x in gpu_ids) if gpu_ids else None
             # Raw pick accepted too: a forced-CPU runner records no effective pin, so
             # without it re-sending the same selection would reload every time.
-            return requested in ((self._gpu_ids or None), (self._requested_gpu_ids or None))
+            held = ((self._gpu_ids or None), (self._requested_gpu_ids or None))
+            return (full[:1] if full else None) in held or full in held
 
         requested = [int(x) for x in gpu_ids] if gpu_ids else None
         raw = self._requested_gpu_ids or None
@@ -9079,7 +9080,9 @@ class LlamaCppBackend:
         later reload do not restore GPUs the user just removed.
         """
         if self._is_diffusion:
-            self._requested_gpu_ids = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+            full = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+            split = bool(self._gpu_ids) and len(self._gpu_ids) > 1
+            self._requested_gpu_ids = full if split else (full[:1] if full else None)
         else:
             self._requested_gpu_ids = [int(x) for x in gpu_ids] if gpu_ids else None
         if self._last_load_intent is not None:
@@ -19338,6 +19341,41 @@ class LlamaCppBackend:
                 return first
         return "0"
 
+    @classmethod
+    def _diffusion_fit_gpus(
+        cls, model_path: str, gpu_ids: Optional[List[int]], gpu: str
+    ) -> Optional[List[int]]:
+        """Physical GPUs to layer-split a diffusion GGUF over, or None to keep ``gpu`` alone.
+
+        The visual server loads with llama.cpp's default layer split over every device in
+        its mask, so widening the mask is the whole change. Only a GGUF that does not fit
+        ``gpu`` moves: alone it overflows the card (a hang on Windows, where it spills into
+        shared memory, #6347). The pool is the explicit pick, else every visible GPU; a pool
+        that cannot hold it either still gets all of it."""
+        if not gpu.isdigit() or (not gpu_ids and "DG_GPU" in os.environ):
+            return None
+        try:
+            binary = cls._find_llama_server_binary()
+            # Vulkan ordinals are not the CUDA ids the runner's mask takes.
+            if binary and cls._is_vulkan_backend(binary):
+                return None
+            memory = cls._get_gpu_memory(binary)
+            model_size = cls._get_gguf_size_bytes(model_path)
+        except Exception as e:
+            logger.debug(f"DiffusionGemma GPU fit skipped: {e}")
+            return None
+        pool = set(int(i) for i in gpu_ids) if gpu_ids else None
+        gpus = [(idx, free) for idx, free, _ in memory if pool is None or idx in pool]
+        total_by_idx = {idx: total for idx, _, total in memory}
+        first = [(idx, free) for idx, free in gpus if idx == int(gpu)]
+        if len(gpus) < 2 or not first:
+            return None
+        if cls._select_gpus(model_size, first, total_by_idx = total_by_idx)[0]:
+            return None
+        picked, _ = cls._select_gpus(model_size, gpus, total_by_idx = total_by_idx)
+        picked = sorted(picked) if picked else sorted(idx for idx, _ in gpus)
+        return None if picked == [int(gpu)] else picked
+
     def _start_diffusion_server(
         self,
         *,
@@ -19402,11 +19440,17 @@ class LlamaCppBackend:
         # weights off every backend, and a real --gpu token there would let the child hold a
         # CUDA context while _gpu_offload_active reports False, which the coordinator trusts.
         holds_no_gpu = manual_ngl == 0
-        # Honor the GPU picker first: the diffusion runner takes a single device,
-        # so use the lowest selected GPU (matches the sorted set recorded below, so
-        # the device used == the echoed gpu_ids[0]). With no pick, fall back to the
-        # CPU-only mask, else DG_GPU / 0.
+        # Honor the GPU picker first: start from the lowest selected GPU. With no pick,
+        # fall back to the CPU-only mask, else DG_GPU / 0. A manual split already says
+        # where the layers go; otherwise a GGUF too big for that one device is
+        # layer-split over the pool (#6347).
         gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = holds_no_gpu)
+        fit_gpus = (
+            self._diffusion_fit_gpus(model_path, gpu_ids, gpu) if manual_ngl is None else None
+        )
+        if fit_gpus:
+            gpu = ",".join(str(i) for i in fit_gpus)
+            logger.info(f"DiffusionGemma does not fit one GPU; splitting layers over GPUs {gpu}")
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -19445,7 +19489,7 @@ class LlamaCppBackend:
             env.setdefault("UNSLOTH_ALLOW_CPU", "1")
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
-        if gpu_ids:
+        if gpu_ids or fit_gpus:
             # The visual server remasks via CUDA_VISIBLE_DEVICES=<gpu>; pin PCI
             # order (as the llama-server path does) so the picked physical id maps
             # to the GPU the picker showed, not CUDA's default fastest-first order.
@@ -19592,18 +19636,19 @@ class LlamaCppBackend:
         # leftover arch-gate flag would answer holds_no_vram True and let the arbiter
         # run a competing workload into its memory (#7624).
         self._arch_gate_forced_cpu = False
-        # The single-device runner records only the lowest selected GPU (chosen
-        # above), not the whole pick, and clears any explicit pin from a prior
-        # chat load; a multi-GPU list would misreport placement and mis-dedup.
+        # Record the devices the runner got: the lowest selected GPU, or the split above.
+        # Unused members of a pick that fits one device are dropped, or /status misreports
+        # placement and the dedup reloads. Clears any explicit pin from a prior chat load.
         # A zero-layer split on virtualised Metal masks the child's devices outright, so
         # it pins nothing: record no effective pin, or /status names a device the runner
         # never used and clearing that pick reloads the same CPU runner.
         _pv_diffusion_cpu = manual_ngl == 0 and _metal_device_is_paravirtual()
-        self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids and not _pv_diffusion_cpu else None
+        _pinned = (fit_gpus or [sorted(gpu_ids)[0]]) if gpu_ids else None
+        self._gpu_ids = _pinned if not _pv_diffusion_cpu else None
         # The frontend prefers requested_gpu_ids when hydrating the picker.
-        # Diffusion uses only one device, so echo the collapsed effective pin,
-        # not unused members of the original request.
-        self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
+        self._requested_gpu_ids = (
+            sorted(int(i) for i in gpu_ids) if gpu_ids and fit_gpus else _pinned
+        )
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:

@@ -16505,7 +16505,14 @@ def _guard_chat_load_against_training(
         return
 
     diffusion_gpu = None
-    if is_gguf and diffusion_kind is not False and not gpu_ids_are_vulkan_ordinals:
+    # Without a manual split the runner layer-splits a multi-GPU pick it cannot fit on one
+    # card (#6347), so that pick is budgeted as the pool, as for llama-server.
+    if (
+        is_gguf
+        and diffusion_kind is not False
+        and not gpu_ids_are_vulkan_ordinals
+        and not (diffusion_ngl is None and len(requested_gpu_ids or ()) > 1)
+    ):
         # Use the same token selection as the runner: an explicit pick wins,
         # followed by DG_GPU, the first parent-visible token, then GPU 0. Suppressed
         # for a Vulkan-ordinal pin so single-device CUDA budgeting can't override the
