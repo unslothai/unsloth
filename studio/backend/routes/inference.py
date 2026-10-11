@@ -2961,7 +2961,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         occupancy = read_slot_occupancy(
             lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
         )
-        controller.note_resident(
+        recorded_seq = controller.note_resident(
             None if occupancy is None else occupancy.get("resident"),
             0 if occupancy is None else int(occupancy.get("idle_tokens") or 0),
             started_at_seq = sample_epoch,
@@ -3004,10 +3004,13 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     waiting = waiting,
                     resident = occupancy.get("resident"),
                 )
-                controller.note_resident(
+                # Against the reading just recorded: that record advanced the epoch, so
+                # passed `sample_epoch` again this was dropped as stale and the plan after
+                # it still saw the cells the erase took.
+                controller.note_erased_since(
+                    recorded_seq,
                     max(0, int(occupancy.get("resident") or 0) - freed),
                     max(0, int(occupancy.get("idle_tokens") or 0) - freed),
-                    started_at_seq = sample_epoch,
                 )
                 # ONLY when every idle slot went: the erase can stop after one, and after a
                 # partial erase the release would hand back commitments whose cells are
@@ -3125,6 +3128,29 @@ def _note_tool_loop_state(note_state, event) -> None:
         # Streamed arguments are decoded tokens too, and a chat left TOOLS_RUNNING through
         # them cannot be paused as it grows.
         note_state(ParticipantState.DECODING)
+
+
+def _openai_llama_parked_self(llama_backend, gen_id: str) -> Optional[dict]:
+    """This holder's entry in `parked_holders()`, or None when it is not parked or the
+    switch is off."""
+    if not preemption_enabled():
+        return None
+    try:
+        seq = get_preemption_controller(_preempt_key(llama_backend)).parked_holders().get(gen_id)
+    except Exception:
+        return None
+    return None if seq is None else {gen_id: seq}
+
+
+def _openai_llama_note_self_erased(llama_backend, parked: Optional[dict]) -> None:
+    """An approval erase took this holder's cells. Its lease has already handed the
+    commitment back, so only the ledger's view moves."""
+    if not parked:
+        return
+    try:
+        get_preemption_controller(_preempt_key(llama_backend)).note_cells_reclaimed(parked)
+    except Exception:
+        logger.debug("could not record the approval erase", exc_info = True)
 
 
 def _openai_llama_publish_round_charge(
@@ -33534,9 +33560,15 @@ async def produce_openai_chat_completions(
                             erased = _gguf_decode["erased"]
                         if target is None or _reclaim_stop.is_set():
                             return
+                        # Before the erase, so the ledger is told about this park and not one
+                        # that began while the erase was out.
+                        parked_now = _openai_llama_parked_self(llama_backend, completion_id)
                         if not erased and not await asyncio.to_thread(_erase_and_record, target):
                             return
                         lease.release_parked_cache()
+                        # The cells went: the next round prefills the whole prompt, not
+                        # its growth, and the ledger must reserve for that.
+                        _openai_llama_note_self_erased(llama_backend, parked_now)
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -47629,11 +47661,6 @@ async def _openai_passthrough_stream_admitted(
                         continue
                     if not raw_line.startswith("data:"):
                         continue
-                    if not _raw_measured:
-                        _raw_measured = True
-                        _openai_llama_note_raw_measured(
-                            llama_backend = llama_backend, gen_id = completion_id
-                        )
                     saw_stream_item = True
                     data_text = raw_line[5:].strip()
                     if data_text == "[DONE]":
@@ -47702,6 +47729,13 @@ async def _openai_passthrough_stream_admitted(
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
                             mark_response_failed(getattr(request, "scope", None))
+                    # Not on a progress frame: `return_progress` is forced upstream, and the
+                    # prompt is still prefilling batch by batch while those arrive.
+                    if not _raw_measured and not _is_prefill_progress_only(chunk_data):
+                        _raw_measured = True
+                        _openai_llama_note_raw_measured(
+                            llama_backend = llama_backend, gen_id = completion_id
+                        )
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
                         _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
                         if progress_keepalive.due():
