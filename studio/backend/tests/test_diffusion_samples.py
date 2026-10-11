@@ -542,3 +542,37 @@ def test_sample_rounds_are_left_out_of_the_reported_rate(module):
     sample = sample[: sample.index("\n\n")]
     assert "t_rate += spent" in sample and "t_steady += spent" in sample
     assert "/ max(now - t_rate, 1e-6)" in src and "/ max(now - t_start, 1e-6)" not in src
+
+
+def test_flux2_dev_previews_use_the_pipeline_guidance_and_training_keeps_its_own(monkeypatch):
+    pytest.importorskip("diffusers")
+    import core.training.diffusion_dit_trainer as dit
+
+    seen = []
+
+    class _Transformer:
+        config = SimpleNamespace(guidance_embeds = True)
+
+        def __call__(self, *, hidden_states, guidance, **_):
+            seen.append(float(guidance[0]))
+            return (torch.zeros_like(hidden_states),)
+
+    noisy = torch.zeros(1, 128, 4, 4)
+    embeds = (torch.zeros(1, 2, 8), torch.zeros(1, 2, 4))
+    args = (_Transformer(), noisy, torch.tensor([500.0]), None, embeds, None, "cpu", torch.float32)
+    dit._flux2_forward(*args)
+    dit._flux2_forward(*args, **dit._SPECS["flux.2-dev"].sample_forward_kwargs)
+    # Flux2Pipeline defaults guidance_scale to 4.0; training stays on the reference 3.5.
+    assert seen == [dit._FLUX2_TRAIN_GUIDANCE, 4.0]
+
+
+def test_sdxl_previews_zero_the_empty_negative_like_the_pipeline():
+    import inspect
+
+    import core.training.diffusion_lora_trainer as sdxl
+
+    src = inspect.getsource(sdxl)
+    render = src[src.index("def _render_sdxl(") :]
+    render = render[: render.index("\n\n")]
+    assert 'pipe.config.get("force_zeros_for_empty_prompt", False)' in render
+    assert "torch.zeros_like(npe), torch.zeros_like(npooled)" in render

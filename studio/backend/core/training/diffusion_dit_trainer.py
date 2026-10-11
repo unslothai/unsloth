@@ -1153,7 +1153,17 @@ def _flux2_static_img_ids(latents, device):
     return hit
 
 
-def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+def _flux2_forward(
+    transformer,
+    noisy,
+    timesteps,
+    sigmas,
+    embeds_batch,
+    cfg,
+    device,
+    weight_dtype,
+    guidance_value = None,
+):
     import torch
     from diffusers import Flux2Pipeline
 
@@ -1165,7 +1175,10 @@ def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
     guidance = None
     if getattr(transformer.config, "guidance_embeds", False):
         guidance = torch.full(
-            (noisy.shape[0],), _FLUX2_TRAIN_GUIDANCE, device = device, dtype = torch.float32
+            (noisy.shape[0],),
+            _FLUX2_TRAIN_GUIDANCE if guidance_value is None else guidance_value,
+            device = device,
+            dtype = torch.float32,
         )
     pred = transformer(
         hidden_states = packed,
@@ -1543,6 +1556,8 @@ _SPECS: dict[str, _FamilySpec] = {
         save = _flux2_save,
         latent_shape = _flux2_latent_shape,
         decode_latents = _flux2_decode_latents,
+        # Flux2Pipeline's default guidance_scale, which Studio's FLUX.2-dev inference also uses.
+        sample_forward_kwargs = {"guidance_value": 4.0},
     ),
     "ltx-2": _FamilySpec(
         family = "ltx-2",

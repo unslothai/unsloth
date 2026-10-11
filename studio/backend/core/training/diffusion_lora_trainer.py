@@ -595,6 +595,9 @@ def run_diffusion_lora_training(
             npe = npooled = None
             if sample_plan.uses_cfg:
                 npe, npooled = (t.to(device, dtype = weight_dtype) for t in sample_embeds[""])
+                # Studio inference sends no negative, so the pipeline zeros it on SDXL base (force_zeros_for_empty_prompt).
+                if pipe.config.get("force_zeros_for_empty_prompt", False):
+                    npe, npooled = torch.zeros_like(npe), torch.zeros_like(npooled)
             noise = initial_noise(sample_plan, index, (1, 4, res // 8, res // 8), device)
             latents = pipe(
                 prompt_embeds = pe,

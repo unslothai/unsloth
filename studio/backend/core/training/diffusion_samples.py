@@ -85,7 +85,7 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
     if family == "flux.2-klein":
         return SampleSettings(28, 4.0) if "base" in name else SampleSettings(4, 0.0)
     if family == "flux.2-dev":
-        # Guidance-distilled: the forward already feeds the 3.5 guidance embedding.
+        # Guidance-distilled: the forward feeds the guidance embedding (4.0, the pipeline default) instead of true CFG.
         return SampleSettings(28, 0.0)
     if family == "flux.1":
         return SampleSettings(20, 0.0)
