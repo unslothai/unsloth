@@ -42058,8 +42058,7 @@ class LlamaCppBackend:
 
             from utils.audio_tokens import SNAC_PROBE_TOKEN_IDS
 
-            # Codec-specific tokens (not generic ones that non-audio models may have).
-            # An id past the vocab makes llama-server log a range-check 500 (#10336).
+            # Codec-specific tokens; ids past the vocab log a llama-server 500 (#10336).
             vocab_size = getattr(self, "_vocab_size", None)
             if (not vocab_size or vocab_size > max(SNAC_PROBE_TOKEN_IDS)) and all(
                 "<custom_token_" in _detok(tid) for tid in SNAC_PROBE_TOKEN_IDS

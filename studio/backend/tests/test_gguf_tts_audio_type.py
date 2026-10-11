@@ -179,8 +179,7 @@ def test_remote_prefix_rejects_truncation(tmp_path):
 
 
 class _ProbeServer:
-    """Stands in for llama-server's /detokenize and /tokenize: an id past the vocab
-    answers 500 with the range-check error, as llama.cpp does."""
+    """Fake llama-server: an id past the vocab answers 500, as llama.cpp does."""
 
     def __init__(self, vocab):
         self.vocab = vocab
