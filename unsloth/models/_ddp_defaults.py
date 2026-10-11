@@ -77,6 +77,9 @@ def _config_may_skip(config):
             value = getattr(c, key, None)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return True
+        # Optional cross-attention (GPT-2 style) only runs when encoder states are passed.
+        if getattr(c, "add_cross_attention", False) and not getattr(c, "is_encoder_decoder", False):
+            return True
         for key in ("layerdrop", "encoder_layerdrop", "decoder_layerdrop"):
             value = getattr(c, key, 0)
             if isinstance(value, (int, float)) and value > 0:
@@ -116,11 +119,19 @@ def _lora_uses_every_trainable_param(model):
     base = getattr(model, "get_base_model", lambda: None)()
     if _config_may_skip(getattr(base, "config", None) or getattr(model, "config", None)):
         return False
+    # The output head under any name (output, output_layer, embed_out): fused losses read its weight.
+    try:
+        head = base.get_output_embeddings()
+        head_params = {id(p) for p in head.parameters()} if head is not None else set()
+    except Exception:
+        head_params = set()
     n_trainable = 0
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
         n_trainable += 1
+        if id(param) in head_params:
+            return False
         if not any(m in name for m in _LORA_PARAM_MARKERS):
             return False
         lowered = name.lower()

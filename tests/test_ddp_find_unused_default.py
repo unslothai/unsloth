@@ -125,6 +125,7 @@ def test_skippable_models_keep_transformers_default(ddp_env, make):
         {"layerdrop": 0.1},
         {"encoder_layerdrop": 0.1},
         {"decoder_layerdrop": 0.1},
+        {"add_cross_attention": True},
     ],
 )
 def test_moe_and_layerdrop_config_keys_keep_default(ddp_env, extra):
@@ -205,6 +206,15 @@ def test_lora_on_linear_embedding_projection_keeps_default(ddp_env):
     model.model.embed_proj = torch.nn.Linear(16, 16, bias = False)
     model = _lora(model, target_modules = ["q_proj", "embed_proj"])
     assert any("embed_proj.lora_A" in n for n, _ in model.named_parameters())
+    assert _helper()(_args(), model) is None
+
+
+def test_lora_on_an_output_head_alias_keeps_default(ddp_env):
+    # remote-code heads named output / output_layer: found through get_output_embeddings, not the name.
+    model = _llama()
+    model.output_layer = torch.nn.Linear(16, 64, bias = False)
+    model.get_output_embeddings = lambda: model.output_layer
+    model = _lora(model, target_modules = ["q_proj", "output_layer"])
     assert _helper()(_args(), model) is None
 
 
