@@ -68,7 +68,6 @@ test("Show full hands keyboard focus to the block header before its button unmou
     reasoning.indexOf("function ReasoningTail("),
     reasoning.indexOf("// With the fold preference on"),
   );
-  // Otherwise focus falls back to <body> and a keyboard user loses their place.
   assert.match(
     tail,
     /event\.currentTarget === document\.activeElement\)[\s\S]*?closest\('\[data-slot="reasoning-root"\]'\)[\s\S]*?querySelector<HTMLElement>\('\[data-slot="reasoning-trigger"\]'\)[\s\S]*?\.focus\(\{ preventScroll: true \}\);\s*onShowFull\(\);/,
@@ -81,7 +80,6 @@ test("focus landing in the clipped lines lifts the cap instead of staying invisi
     reasoning.indexOf("function ReasoningTail("),
     reasoning.indexOf("// With the fold preference on"),
   );
-  // Links in the clipped top stay in the tab order; nothing can scroll them into the box.
   assert.match(
     tail,
     /onFocus=\{\(event\) => \{[\s\S]*?clipped &&[\s\S]*?event\.target\.getBoundingClientRect\(\)\.top <\s*event\.currentTarget\.getBoundingClientRect\(\)\.top[\s\S]*?onShowFull\(\);/,
