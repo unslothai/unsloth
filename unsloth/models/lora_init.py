@@ -441,8 +441,24 @@ def patch_peft_calibration_eager():
             __original = original,
             **kwargs,
         ):
-            with torch.compiler.set_stance("force_eager"):
-                return __original(*args, **kwargs)
+            # preprocess_loraga trains on the user's batches before get_peft_model, while the tokenizer still
+            # pads left; Unsloth drops the padding mask for labelled training forwards unless told to keep it.
+            model = args[0] if args else kwargs.get("model")
+            masked = []
+            if isinstance(model, torch.nn.Module):
+                masked = [
+                    m
+                    for m in model.modules()
+                    if not getattr(m, "_unsloth_keep_padding_mask", False)
+                ]
+            for m in masked:
+                m._unsloth_keep_padding_mask = True
+            try:
+                with torch.compiler.set_stance("force_eager"):
+                    return __original(*args, **kwargs)
+            finally:
+                for m in masked:
+                    m._unsloth_keep_padding_mask = False
 
         eager._unsloth_eager = True
         # vars(), not getattr: getattr on lazy modules (transformers) imports submodules.

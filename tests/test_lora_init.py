@@ -236,6 +236,33 @@ def test_calibration_patch_does_not_trigger_lazy_module_getattr(monkeypatch):
     assert names and not set(asked) & set(names)
 
 
+def test_loraga_calibration_keeps_the_padding_mask(monkeypatch):
+    loraga = pytest.importorskip("peft.tuners.lora.loraga")
+    fn = loraga.preprocess_loraga
+    monkeypatch.setattr(loraga, "preprocess_loraga", getattr(fn, "__wrapped__", fn))
+    lora_init.patch_peft_calibration_eager()
+    if not getattr(loraga.preprocess_loraga, "_unsloth_eager", False):
+        pytest.skip("torch without torch.compiler.set_stance")
+
+    model = torch.nn.Sequential(torch.nn.Linear(8, 8))
+    model[0]._unsloth_keep_padding_mask = False
+    seen = []
+
+    def train_step():
+        seen.append(model[0]._unsloth_keep_padding_mask)
+        model(torch.randn(2, 8)).sum().backward()
+
+    config = LoraConfig(
+        r = 2,
+        target_modules = ["0"],
+        init_lora_weights = "lora_ga",
+        lora_ga_config = peft.LoraGAConfig(),
+    )
+    loraga.preprocess_loraga(model, config, train_step)
+    assert seen == [True]
+    assert model[0]._unsloth_keep_padding_mask is False
+
+
 def test_fast_init_kill_switch_and_force(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FAST_LORA_INIT", "0")
     original = LoraLayer.pissa_init
