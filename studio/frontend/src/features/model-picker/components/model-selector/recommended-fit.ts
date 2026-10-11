@@ -53,9 +53,10 @@ export function isCapableCheckpointQuant(
   id: string,
   quantMethod: string | undefined,
   checkpointQuantFormats: readonly string[],
+  hintedIsGguf?: boolean,
 ): boolean {
   return (
-    !isGgufId(id) &&
+    !isGgufId(id, hintedIsGguf) &&
     matchesRecommended(
       { id, isGguf: false, quantMethod },
       checkpointQuantFormats,

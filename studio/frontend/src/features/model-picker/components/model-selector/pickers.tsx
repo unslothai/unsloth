@@ -3062,12 +3062,13 @@ export function HubModelPicker({
   // whatever their size. Task pages keep their own formats.
   const quantFormatsKey = gpu.checkpointQuantFormats.join(",");
   const runsCheckpointQuant = useCallback(
-    (r: { id: string; quantMethod?: string }) =>
+    (r: { id: string; quantMethod?: string; isGguf?: boolean }) =>
       !task &&
       isCapableCheckpointQuant(
         r.id,
         r.quantMethod,
         quantFormatsKey ? quantFormatsKey.split(",") : [],
+        r.isGguf,
       ),
     [task, quantFormatsKey],
   );
@@ -3669,7 +3670,10 @@ export function HubModelPicker({
   const chatSupportedCheckpointQuant = useCallback(
     (r: HfModelResult) =>
       isChatSupported(r) ||
-      (runsCheckpointQuant(r) && isChatSupported({ ...r, quantMethod: undefined })),
+      // Only compressed-tensors: the vLLM engine loads it; fbgemm / fine-grained FP8 stay refused.
+      (runsCheckpointQuant(r) &&
+        r.quantMethod?.toLowerCase() === "compressed-tensors" &&
+        isChatSupported({ ...r, quantMethod: undefined })),
     [isChatSupported, runsCheckpointQuant],
   );
 

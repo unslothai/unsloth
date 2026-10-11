@@ -86,6 +86,11 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
     isCapableCheckpointQuant("unsloth/X-FP8-GGUF", undefined, ["fp8"]),
     false,
   );
+  // The listing's GGUF verdict wins over an id without a -GGUF suffix.
+  assert.equal(
+    isCapableCheckpointQuant("someone/Model-FP8", undefined, ["fp8"], true),
+    false,
+  );
 
   const picker = await readSrcAsync(
     "features/model-picker/components/model-selector/pickers.tsx",
@@ -95,7 +100,7 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
   // Only the quant-method check is waived: an FP8 image model is still not a chat model.
   assert.match(
     picker,
-    /runsCheckpointQuant\(r\) &&\s*isChatSupported\(\{ \.\.\.r, quantMethod: undefined \}\)/,
+    /runsCheckpointQuant\(r\) &&\s*r\.quantMethod\?\.toLowerCase\(\) === "compressed-tensors" &&\s*isChatSupported\(\{ \.\.\.r, quantMethod: undefined \}\)/,
   );
   assert.match(
     picker,
@@ -108,7 +113,7 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
   // Task pages (images, audio) keep their own formats.
   assert.match(
     picker,
-    /\(r: \{ id: string; quantMethod\?: string \}\) =>\s*!task &&/,
+    /\(r: \{ id: string; quantMethod\?: string; isGguf\?: boolean \}\) =>\s*!task &&/,
   );
 });
 
