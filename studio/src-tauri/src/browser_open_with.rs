@@ -4,9 +4,11 @@
 //! Open a browser file tab in another app, as ChatGPT's Open menu does. A tab holds its bytes in
 //! the webview, and another app can only open a file on disk, so each is copied out first.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -19,6 +21,25 @@ const MAX_APPS: usize = 12;
 
 static CLEARED: AtomicBool = AtomicBool::new(false);
 static PARTIAL: AtomicU64 = AtomicU64::new(0);
+// Each id's own copy: Finder leaves a .DS_Store beside it once shown, and that lists first.
+static COPIES: Mutex<Option<HashMap<String, PathBuf>>> = Mutex::new(None);
+
+fn remember(id: &str, path: &Path) {
+    if let Ok(mut copies) = COPIES.lock() {
+        copies
+            .get_or_insert_with(HashMap::new)
+            .insert(id.to_string(), path.to_path_buf());
+    }
+}
+
+fn recall(id: &str) -> Option<PathBuf> {
+    let copies = COPIES.lock().ok()?;
+    copies
+        .as_ref()?
+        .get(id)
+        .filter(|path| path.is_file())
+        .cloned()
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,24 +65,8 @@ fn root(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
-fn copy_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
-    // The id names a folder under the root, so nothing else on disk can be reached through it.
-    if id.len() != 32
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err("Unknown file.".to_string());
-    }
-    fs::read_dir(root(app)?.join(id))
-        .ok()
-        .and_then(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .find(|path| path.is_file())
-        })
-        .ok_or_else(|| "The file is no longer there.".to_string())
+fn copy_path(id: &str) -> Result<PathBuf, String> {
+    recall(id).ok_or_else(|| "The file is no longer there.".to_string())
 }
 
 /// Write a tab's file to the app cache and return its id and path. The same bytes and name reuse
@@ -106,6 +111,7 @@ pub async fn browser_file_local_copy(
             let _ = crate::browser_webview::mark_downloaded(&path, &blank);
         }
     }
+    remember(&id, &path);
     Ok(LocalCopy {
         id,
         path: path.to_string_lossy().into_owned(),
@@ -114,13 +120,9 @@ pub async fn browser_file_local_copy(
 
 /// The apps that can open a copy, its default first. Empty where the system can't list them.
 #[tauri::command]
-pub fn browser_file_apps(
-    webview: tauri::Webview,
-    app: AppHandle,
-    id: String,
-) -> Result<Vec<OpenWithApp>, String> {
+pub fn browser_file_apps(webview: tauri::Webview, id: String) -> Result<Vec<OpenWithApp>, String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    let path = copy_path(&app, &id)?;
+    let path = copy_path(&id)?;
     if crate::browser_downloads::runs_code(&path) {
         return Ok(Vec::new());
     }
@@ -131,12 +133,11 @@ pub fn browser_file_apps(
 #[tauri::command]
 pub fn browser_file_open(
     webview: tauri::Webview,
-    app: AppHandle,
     id: String,
     with: Option<String>,
 ) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    let path = copy_path(&app, &id)?;
+    let path = copy_path(&id)?;
     // As for downloads: programs and scripts stay a Show in folder away.
     if crate::browser_downloads::runs_code(&path) {
         return Err("Programs and scripts open from their folder.".to_string());
@@ -150,13 +151,9 @@ pub fn browser_file_open(
 }
 
 #[tauri::command]
-pub fn browser_file_reveal(
-    webview: tauri::Webview,
-    app: AppHandle,
-    id: String,
-) -> Result<(), String> {
+pub fn browser_file_reveal(webview: tauri::Webview, id: String) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    crate::native_intents::reveal_in_file_manager(&copy_path(&app, &id)?)
+    crate::native_intents::reveal_in_file_manager(&copy_path(&id)?)
 }
 
 #[cfg(target_os = "macos")]
@@ -277,6 +274,31 @@ fn platform_apps(_path: &Path) -> Vec<OpenWithApp> {
 #[cfg(not(target_os = "macos"))]
 fn open_with(_path: &Path, _with: &str) -> Result<(), String> {
     Err("Choosing an app isn't supported here.".to_string())
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+
+    #[test]
+    fn an_id_resolves_to_its_own_copy_not_a_sidecar_beside_it() {
+        let dir = std::env::temp_dir().join(format!("open-with-copy-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // .DS_Store sorts first in an APFS listing, so the first regular file would be it.
+        fs::write(dir.join(".DS_Store"), b"finder").unwrap();
+        let clip = dir.join("clip.mp4");
+        fs::write(&clip, b"video").unwrap();
+        let id = "0123456789abcdef0123456789abcdef";
+        remember(id, &clip);
+        let found = copy_path(id);
+        let unknown = copy_path("ffffffffffffffffffffffffffffffff");
+        fs::remove_file(&clip).unwrap();
+        let gone = copy_path(id);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(found.unwrap(), clip);
+        assert!(unknown.is_err());
+        assert!(gone.is_err());
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

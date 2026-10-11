@@ -45,6 +45,12 @@ test("the video player uses Studio's icons and full screen turns into exit full 
   assert.match(video, /fullscreened \? t\("browser\.video\.exitFullscreen"\) : t\("browser\.video\.fullscreen"\)/);
 });
 
+test("a full screen video drops the floating toolbar inset", () => {
+  const css = read("index.css");
+  assert.match(css, /\.browser-file-page \.browser-video \{\s*padding-top: var\(--browser-file-toolbar-inset\);/);
+  assert.match(css, /\.browser-file-page \.browser-video:fullscreen \{\s*padding-top: 0;\s*\}/);
+});
+
 test("video tabs share the document bar: Copy and Open splits and a download icon, no Save as", () => {
   const panel = read("features/browser/browser-panel.tsx");
   assert.doesNotMatch(panel, /VideoFileToolbar|isVideoEntry|browser\.video\.saveAs|browser\.video\.copyName/);

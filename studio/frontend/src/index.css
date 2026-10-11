@@ -6045,6 +6045,11 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	padding-top: var(--browser-file-toolbar-inset);
 }
 
+/* Full screen leaves the bar behind, and the UA sheet keeps padding, so drop the inset there. */
+.browser-file-page .browser-video:fullscreen {
+	padding-top: 0;
+}
+
 /* Dark mode: the browser's tabs and controls a step lighter than the panel, their text brighter. */
 .dark .browser-chrome {
 	--accent: color-mix(in oklab, var(--accent-base), white 7%);
