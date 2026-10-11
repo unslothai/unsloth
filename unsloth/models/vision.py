@@ -1133,8 +1133,7 @@ def _is_sparse_moe_config(config):
 def _fp8_moe_fast_inference_refusal(config):
     """Why fast_inference cannot share this FP8 sparse MoE checkpoint's experts, else None.
 
-    unsloth_zoo with `fp8_moe_checkpoint_scheme` shares block FP8 experts with vLLM and names the FP8
-    formats it cannot share; an older unsloth_zoo shares none, and would only refuse after vLLM loaded.
+    An unsloth_zoo without `fp8_moe_checkpoint_scheme` shares no FP8 experts and would refuse only after vLLM loaded.
     """
     try:
         from unsloth_zoo.empty_model import fp8_moe_checkpoint_scheme
