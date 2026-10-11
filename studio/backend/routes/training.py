@@ -1005,6 +1005,10 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> None:
                     "training."
                 ),
             )
+        if not is_cached():
+            # The same Hub probe a selected model gets: a private, missing or misspelled base
+            # fails here with its access or not-found error, not later in the loader.
+            _remote_untrainable_model_format(base, hf_token)
     if cached_read_refused(
         hf_token,
         repo_id = repo_id,

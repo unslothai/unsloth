@@ -549,7 +549,10 @@ def test_start_checks_the_cached_base_a_local_adapter_names(tmp_path, refused):
         asked.append(repo_id)
         return refused
 
-    with patch.object(route, "cached_read_refused", side_effect = fake_refused):
+    with (
+        patch.object(route, "cached_read_refused", side_effect = fake_refused),
+        patch.object(route, "_remote_untrainable_model_format", return_value = None),
+    ):
         if refused:
             with pytest.raises(HTTPException) as exc_info:
                 route._reject_untrainable_model_request(request)
@@ -644,12 +647,34 @@ def test_managed_adapter_base_needs_a_grant_only_for_a_cached_read(tmp_path, cac
         patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = cached),
         patch.object(route, "cached_read_refused", return_value = False),
         patch.object(route, "hf_env_offline", return_value = False),
+        patch.object(route, "_remote_untrainable_model_format", return_value = None),
     ):
         if cached:
             with pytest.raises(HTTPException):
                 route._reject_untrainable_model_request(request, None, "hf_own")
         else:
             route._reject_untrainable_model_request(request, None, "hf_own")
+
+
+def test_start_probes_an_uncached_hub_base_named_by_a_local_adapter(tmp_path):
+    route = _load_route_module("training_route_adapter_base_probe")
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/missing-base"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+    not_found = HTTPException(status_code = 404, detail = {"code": "hf_model_verification_failed"})
+
+    with (
+        patch("hub.utils.hf_cache_state.repo_cache_has_usable_snapshot", return_value = False),
+        patch.object(route, "hf_env_offline", return_value = False),
+        patch.object(route, "_remote_untrainable_model_format", side_effect = not_found) as probe,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request, None, "hf_tok")
+
+    assert exc_info.value.status_code == 404
+    assert probe.call_args.args[0] == "org/missing-base"
 
 
 def test_adapter_trains_embeddings_reads_saved_modules():
