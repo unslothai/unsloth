@@ -26,7 +26,6 @@ from .cfb import CompoundFile, CompoundFileError
 
 Section = tuple[str, "int | None"]
 
-# Bounds on what a small archive may expand to.
 _MAX_MEMBER_BYTES = 128 * 1024 * 1024
 _MAX_TOTAL_BYTES = 512 * 1024 * 1024
 _MAX_COLUMNS = 1024

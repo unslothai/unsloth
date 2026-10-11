@@ -392,7 +392,6 @@ function findComponent(node: unknown, name: string): StubElement | undefined {
   return findComponent(element.props.children, name);
 }
 
-/** The KB panel's "Manage files" button. */
 function manageFiles(tree: StubElement): StubElement {
   const panel = findComponent(tree, "ChatFilesPanel")!;
   return panel.props.headerControls as StubElement;

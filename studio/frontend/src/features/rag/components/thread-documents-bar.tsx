@@ -256,7 +256,6 @@ function useLinkedFolderNames(
         setNames(new Map(folders.map((f) => [f.id, f.displayName])));
       })
       .catch(() => {
-        // The card falls back to a generic label.
       });
     return () => {
       cancelled = true;
@@ -473,7 +472,6 @@ function useDocumentThumbnail(
   return enabled ? thumbnail : null;
 }
 
-/** An indexed document, drawn as a composer attachment card. */
 function DocumentCard({
   doc,
   shared,
@@ -618,7 +616,6 @@ function DocumentCard({
   );
 }
 
-/** Trailing "Add files" card. */
 function AddFilesCard({
   disabled,
   onClick,
@@ -661,11 +658,9 @@ function ChatFilesPanel({
 }: {
   icon: typeof Folder02Icon;
   title: string;
-  /** Muted text after the title. */
   titleSuffix?: string;
   /** Shown in a tooltip on the file count. */
   info?: string;
-  /** "4 files", drawn as a pill apart from the title. */
   count?: string;
   note?: ReactNode;
   headerControls?: ReactNode;

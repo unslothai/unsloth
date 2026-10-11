@@ -6537,7 +6537,6 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return pickerAcceptForTextBasenames(enabledAccept);
 }
 
-/** "+" > attach: picked files become composer attachments. */
 function usePickComposerAttachment(): () => void {
   const aui = useAui();
   const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
