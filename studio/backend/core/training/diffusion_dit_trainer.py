@@ -477,6 +477,14 @@ def _lowp_targets(transformer, base_filter, family: Optional[str]) -> list:
     ]
 
 
+def _require_lowp_modules(transformer, mode: str) -> bool:
+    """True once any linear carries ``mode``; raises otherwise, so a model with no eligible linear
+    (FLUX.1 / LTX-2 on torchao 0.17, all biased) records bf16 instead of claiming ``mode``."""
+    if not any(getattr(mod, "_studio_lowp", None) == mode for mod in transformer.modules()):
+        raise RuntimeError("no eligible linear layers")
+    return True
+
+
 def _apply_fp8_training(
     transformer,
     on_event,
@@ -497,7 +505,7 @@ def _apply_fp8_training(
         for fqn, mod in transformer.named_modules():
             if fqn in names:
                 mod._studio_lowp = "fp8"
-        return True
+        return _require_lowp_modules(transformer, "fp8")
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
@@ -628,7 +636,7 @@ def _apply_mxfp8_training(
                 mod.register_forward_pre_hook(_autocast_mx_input)
         for _, mod in targets:
             mod._studio_lowp = "mxfp8"
-        return True
+        return _require_lowp_modules(transformer, "mxfp8")
     except Exception as exc:  # noqa: BLE001 -- mxfp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}")
         return False

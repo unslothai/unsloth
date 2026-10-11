@@ -804,8 +804,10 @@ def test_mxfp8_torchao_0_17_keeps_biased_linears_dense(monkeypatch):
     # Without MXFP8Linear the quantize_ weight wrapper is the only path, and it drops F.linear's bias (pytorch/ao#4846).
     _, quantized = _fake_mx_backend(monkeypatch, with_linear_cls = False)
     m = _block_model(bias = True)
-    assert dit._apply_mxfp8_training(m, None, "flux.1") is True
-    assert quantized == []
+    events = []
+    # Nothing eligible: report bf16 rather than an mxfp8 run that converted no layer.
+    assert dit._apply_mxfp8_training(m, events.append, "flux.1") is False
+    assert quantized == [] and "no eligible linear layers" in events[0]["message"]
     m2 = _block_model(bias = False)
     assert dit._apply_mxfp8_training(m2, None, "flux.1") is True
     assert quantized == ["blocks.0.ff", "blocks.1.ff"]
