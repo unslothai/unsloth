@@ -148,8 +148,14 @@ class TestAProviderThatReadsOnlyResultsGetsThemInCallOrder:
         }
 
     def test_a_repeated_call_behind_a_running_one_answers_after_it(self, rendezvous, monkeypatch):
-        monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kw: f"R<{arguments['query']}>")
-        first = {"index": 0, "id": "r1_0", "function": {"name": "web_search", "arguments": json.dumps({"query": "seen"})}}
+        monkeypatch.setattr(
+            loop_mod, "execute_tool", lambda name, arguments, **kw: f"R<{arguments['query']}>"
+        )
+        first = {
+            "index": 0,
+            "id": "r1_0",
+            "function": {"name": "web_search", "arguments": json.dumps({"query": "seen"})},
+        }
         transport = FakeTransport(
             [
                 [_sse({"tool_calls": [first]}), _sse(finish = "tool_calls"), _DONE],
