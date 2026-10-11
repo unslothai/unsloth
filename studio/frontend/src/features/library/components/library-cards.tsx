@@ -281,10 +281,14 @@ function FolderCard({
 }) {
   const t = useT();
   const actions = useLibraryActions();
+  const select = useContext(CardSelectionContext);
+  const selectKey = `folder:${folder.id}`;
+  // While selecting, the caption selects like the card above it rather than opening the folder.
+  const selecting = select && select.selection.size > 0;
   return (
     <div>
       <CardFrame
-        selectKey={`folder:${folder.id}`}
+        selectKey={selectKey}
         label={folder.name}
         onOpen={() => actions.openFolder(folder.id)}
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}
@@ -296,7 +300,9 @@ function FolderCard({
       </CardFrame>
       <button
         type="button"
-        onClick={() => actions.openFolder(folder.id)}
+        onClick={(event) =>
+          selecting ? select.toggle(selectKey, event.shiftKey) : actions.openFolder(folder.id)
+        }
         className="mt-2 block w-full px-1 text-left"
       >
         <p className="truncate font-medium text-ui-14 text-foreground">{folder.name}</p>
