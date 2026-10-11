@@ -3,21 +3,8 @@
 
 """Read a pre-quant checkpoint's ``format`` + ``metadata`` without reading its weights.
 
-The loader's compatibility checks (scheme, base, exclusion set, filters, rotation) only look at the
-metadata, but a hosted checkpoint used to be downloaded in full (tens of GB) before they ran, so a
-stale artifact cost its whole download and THEN the dense fallback's. Both containers keep the
-metadata in a small region:
-
-- ``.safetensors``: the JSON header at the front (``unsloth_format`` / ``unsloth_metadata``).
-- ``.pt`` (``torch.save``): a zip whose ``data.pkl`` member holds the whole dict structure, while
-  every tensor's bytes live in separate members. The zip central directory sits at the end.
-
-Both are read through ``read_range(start, end)`` (inclusive), so the same code serves a local file
-and a Hub file over HTTP range requests. ``data.pkl`` is unpickled with EVERY global replaced by an
-inert stand-in and persistent ids (tensor storages) answered with None: nothing in the file is ever
-constructed or executed, and only the plain ``format`` / ``metadata`` values are kept.
-
-Every reader fails open (returns None): an unreadable header is "unknown", never "incompatible".
+Safe: ``data.pkl`` is unpickled with EVERY global replaced by an inert stand-in and persistent ids
+answered with None, so nothing in the file is constructed or executed. Readers fail open (None).
 """
 
 from __future__ import annotations
@@ -233,7 +220,6 @@ def read_checkpoint_header(name: str, read_range: ReadRange, size: int) -> Optio
 
 
 def read_local_checkpoint_header(path: str) -> Optional[dict]:
-    """``read_checkpoint_header`` for a file on disk (a cached Hub file or a local override)."""
     import os
 
     try:
@@ -305,10 +291,7 @@ def read_hub_checkpoint_header(
     revision: Optional[str] = None,
     timeout_seconds: float = TIMEOUT_SECONDS,
 ) -> tuple:
-    """``(header or None, exists)`` for a Hub file, read by HTTP range requests (no download).
-
-    ``exists`` is False only on a definite 404 for this name (the resolver's cue to try the next
-    name); True when the file is there; None when the Hub could not be asked."""
+    """``(header or None, exists)`` via HTTP range requests; ``exists`` is False only on a definite 404."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.utils import build_hf_headers

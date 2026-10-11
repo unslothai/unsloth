@@ -1262,13 +1262,10 @@ def declares_nvfp4_checkpoint(model_path: Optional[str]) -> bool:
     return raw.rstrip("/\\").lower().endswith("-nvfp4")
 
 
-# The legacy algorithm: md5 of torchao's INTERNAL attributes (names + raw bytes). Those differ between
-# torchao generations for the same numbers (0.17 int8 hashes ``int_data`` + a bf16 ``scale``; 0.18 hashes
-# ``qdata`` + the same scale + an int8 ``zero_point``), so a v1 record only matches on the generation that
-# wrote it. Still read for the hosted files that carry it; never written any more.
+# Legacy (read-only): md5 of torchao internal attrs, which differ per version (0.17 ``int_data`` + bf16
+# scale; 0.18 ``qdata`` + scale + int8 ``zero_point``), so v1 only matches the generation that wrote it.
 FINGERPRINT_ALGO = "md5-packed-v1"
-# The canonical algorithm, recorded under ``canonical_modules`` (not ``modules``: a loader predating it
-# would compare its v1 hash against these and refuse every new file; with no ``modules`` it skips the check).
+# Stored under ``canonical_modules``, not ``modules``: older loaders would refuse it as a v1 mismatch.
 CANONICAL_FINGERPRINT_ALGO = "md5-canonical-v2"
 CANONICAL_FINGERPRINT_KEY = "canonical_modules"
 
@@ -1353,8 +1350,7 @@ def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
     }
 
 
-# torchao class NAME -> (role, attribute) pairs, or ("inner", attribute) to unwrap. Roles are torchao-version
-# neutral: 0.17's ``int_data`` and 0.18's ``qdata`` are both the quantized values ``q``.
+# torchao class name -> (role, attr); ("inner", attr) unwraps. Roles are version neutral (``q`` = int_data / qdata).
 _CANONICAL_PARTS: dict = {
     "LinearActivationQuantizedTensor": (("inner", "original_weight_tensor"),),
     "AffineQuantizedTensor": (("inner", "tensor_impl"),),
@@ -1384,7 +1380,6 @@ _ZERO_POINT_ROLES = ("zero_point", "act_quant_zero_point")
 
 
 def _canonical_parts(tensor: Any, depth: int = 0) -> Optional[dict]:
-    """role -> plain tensor for one quantized weight, or None when its class is not modelled."""
     spec = _CANONICAL_PARTS.get(type(tensor).__name__)
     if spec is None or depth > 4:
         return None
@@ -1411,9 +1406,7 @@ def _all_zero(value: Any, torch: Any) -> bool:
 
 
 def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
-    """``value`` in a layout no torchao generation changes: ``q`` keeps its dtype and shape (the stored
-    values ARE the quantization), every other part is flattened and widened to float32 (exact for the
-    bf16 / fp16 / fp8 / e8m0 scales any generation stores) or int64 for a zero point."""
+    """Version-stable bytes: ``q`` as stored; others flattened to float32 (exact for stored scales) / int64 zero point."""
     t = value.detach()
     if role == "q":
         head = f"q:{str(t.dtype).replace('torch.', '')}:{tuple(t.shape)}".encode("utf-8")
@@ -1428,12 +1421,7 @@ def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
 
 
 def canonical_weight_digest(tensor: Any) -> Optional[str]:
-    """Version-neutral md5 of one quantized weight, or None when its class is not modelled.
-
-    The same quantized numbers give the same digest whichever torchao produced or loaded them: the
-    payload is named by role (not attribute), scales are compared as float32 values regardless of
-    the stored dtype / ``[n]`` vs ``[n, 1]`` shape, and an all-zero zero point (symmetric int8, which
-    0.17 leaves as None and 0.18 stores as zeros) is the same as none."""
+    """Version-neutral md5 of one quantized weight (None if unmodelled); an all-zero zero point equals none."""
     import hashlib
 
     import torch
@@ -1451,7 +1439,6 @@ def canonical_weight_digest(tensor: Any) -> Optional[str]:
 
 
 def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
-    """``canonical_weight_digest`` of every quantized weight by fqn; what the builder records."""
     modules: dict = {}
     skipped: list = []
     items = state_dict.items() if hasattr(state_dict, "items") else ()
@@ -1476,7 +1463,6 @@ def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict
     }
 
 
-# The attribute paths torchao generations have used for the same int8 payload, in v1 hashing order.
 _V1_INT8_PREFIXES = (
     ("original_weight_tensor", "tensor_impl", "int_data"),  # torchao <= 0.17
     ("qdata",),  # torchao >= 0.18 Int8Tensor
@@ -1488,15 +1474,10 @@ def _v1_cross_generation_match(
     recorded: str,
     hint: Optional[list] = None,
 ) -> bool:
-    """Whether ``recorded`` (a v1 digest) is this int8 weight as another torchao generation laid it out.
+    """Whether v1 digest ``recorded`` matches this int8 weight in any torchao generation's layout.
 
-    A v1 record hashed torchao's attribute names and raw bytes, so the same quantized values hash
-    differently once the loading torchao rebuilds them in its own layout. Re-encodes the loaded
-    values in each layout a generation has written (attribute names, stored scale dtype, zero point
-    absent or as int8 zeros) so a valid file is not refused for having been built elsewhere. Every
-    variant still hashes the full ``q`` and scale bytes, so a changed value matches none of them.
-    ``hint`` (one mutable slot) carries the layout that matched last, tried first on the next weight,
-    so a whole file costs about one extra pass over its bytes."""
+    Every variant hashes the full ``q`` and scale bytes, so changed values still fail. ``hint`` caches
+    the last matching layout to try first."""
     import hashlib
 
     import torch
@@ -1679,7 +1660,6 @@ def _verify_packed_fingerprint(
     differing = sorted(k for k in checked if actual.get(k) != expected[k])
     reencoded = 0
     if differing and not canonical and hasattr(state_dict, "get"):
-        # A v1 record built under another torchao generation: same values, other attribute layout.
         still = []
         hint: list = []
         for key in differing:
@@ -1764,15 +1744,9 @@ def hosted_prequant_refusal(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """Why the hosted checkpoint ``source`` would be refused, decided from its header BEFORE any weight
-    byte is downloaded; None when it is usable or the header cannot be read (unknown is never a refusal).
+    """Why hosted ``source`` would be refused, from its header alone (no weight download).
 
-    The loader's checks read only the recorded metadata, yet used to run after the full download, so
-    a stale artifact (e.g. an exclusion set older than the runtime's) cost tens of GB and then the
-    dense fallback's download on top. A cached file is read locally (zip directory + ``data.pkl`` or
-    the safetensors header, a few MB at most); an uncached one by HTTP range requests against the
-    same name order the resolver walks. Offline / ``local_files_only`` with nothing cached asks
-    nothing. Memoised per (file, request) for ``_HEADER_PROBE_TTL_S``. Never raises."""
+    None when usable or unreadable: unknown is never a refusal. Never raises."""
     import os
     import time
 
@@ -1940,8 +1914,7 @@ def usable_prequant_source(
                     return None
             except Exception:  # noqa: BLE001 -- unreadable: the scheme check above already decided
                 pass
-    # A hosted checkpoint whose recorded metadata the loader would refuse is no source at all: planning
-    # then budgets the dense path up front instead of downloading the artifact only to discard it.
+    # Refused metadata = no source, so planning budgets the dense path before any download.
     if src.kind == "repo" and hosted_prequant_refusal(src, scheme) is not None:
         return None
     return src
@@ -2834,9 +2807,7 @@ def _validate_checkpoint(
     metadata_only: bool = False,
 ) -> bool:
     """Reject a wrong format / scheme / base / filter / denoiser; absent ``min_features`` / ``fast_accum`` pass.
-
-    ``metadata_only`` runs every check that reads ``format`` / ``metadata`` alone (what a header probe
-    has before the weights are downloaded) and skips the ones that need the tensors."""
+    ``metadata_only`` skips the checks that need tensors."""
     if not isinstance(ckpt, dict) or ckpt.get("format") not in PREQUANT_FORMATS:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False
