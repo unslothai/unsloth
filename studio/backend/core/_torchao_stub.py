@@ -294,7 +294,18 @@ def _load_torchao_nodist():
         return None
 
 
-_TORCHAO_EXPORT_MIN = (0, 15)
+_TORCHAO_EXPORT_MIN = "0.15.0"
+
+
+def _torchao_below_export_min(version: str) -> bool:
+    """PEP 440 compare, as transformers and diffusers do: 0.15.0rc1 and 0.15.0.dev are below 0.15.0."""
+    try:
+        from packaging.version import Version
+
+        return Version(version) < Version(_TORCHAO_EXPORT_MIN)
+    except Exception:  # noqa: BLE001 -- packaging missing or an unparseable version
+        found = re.match(r"(\d+)\.(\d+)", version or "")
+        return bool(found) and (int(found[1]), int(found[2])) < (0, 15)
 
 
 def torchao_too_old_for_export() -> Optional[str]:
@@ -305,10 +316,7 @@ def torchao_too_old_for_export() -> Optional[str]:
         version = importlib.metadata.version("torchao")
     except Exception:  # noqa: BLE001 -- absent or unreadable: nothing to name
         return None
-    found = re.match(r"(\d+)\.(\d+)", version or "")
-    if found and (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
-        return version
-    return None
+    return version if version and _torchao_below_export_min(version) else None
 
 
 def torchao_export_loadable() -> bool:
@@ -320,8 +328,8 @@ def torchao_export_loadable() -> bool:
         if importlib.machinery.PathFinder.find_spec("torchao") is None:
             return False
         # TorchAoConfig requires torchao 0.15
-        found = re.match(r"(\d+)\.(\d+)", importlib.metadata.version("torchao"))
-        if not found or (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
+        version = importlib.metadata.version("torchao")
+        if not re.match(r"\d+\.\d+", version or "") or _torchao_below_export_min(version):
             return False
         spec = importlib.util.find_spec("unsloth")
         locations = list(spec.submodule_search_locations or ()) if spec else []

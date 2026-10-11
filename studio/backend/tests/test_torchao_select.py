@@ -77,7 +77,9 @@ def _load_module(monkeypatch):
         ("2.8.0+cu128", "torchao==0.15.0"),
         ("2.7.1+cu126", "torchao==0.15.0"),
         ("2.6.0+cu124", "torchao==0.15.0"),
-        ("2.4.0", "torchao==0.15.0"),
+        # torchao 0.15 dropped torch <= 2.5, so those keep 0.14.0.
+        ("2.5.1+cu124", "torchao==0.14.0"),
+        ("2.4.0", "torchao==0.14.0"),
         # malformed, missing, and non-2.x versions use the conservative default.
         (None, "torchao==0.15.0"),
         ("", "torchao==0.15.0"),
@@ -92,7 +94,7 @@ def test_select_torchao_spec(monkeypatch, torch_version, expected):
 
 
 def test_default_spec_matches_table(monkeypatch):
-    """torch <= 2.8 shares torch 2.9's torchao: below 0.15 transformers and diffusers refuse TorchAoConfig."""
+    """torch 2.6-2.8 shares torch 2.9's torchao: below 0.15 transformers and diffusers refuse TorchAoConfig."""
     mod = _load_module(monkeypatch)
     assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.15.0"
     assert mod._select_torchao_spec("2.8.0") == mod._TORCHAO_DEFAULT_SPEC
@@ -182,14 +184,14 @@ def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
                 starved.add((leaf, minor, wanted))
     assert starved == {
         # cu118 lacks every selected torchao release for torch 2.5 through 2.7.
-        ("cu118", 5, "0.15.0"),
+        ("cu118", 5, "0.14.0"),
         ("cu118", 6, "0.15.0"),
         ("cu118", 7, "0.15.0"),
-        ("cu124", 4, "0.15.0"),
-        ("cu124", 5, "0.15.0"),
+        ("cu124", 4, "0.14.0"),
+        ("cu124", 5, "0.14.0"),
         ("cu124", 6, "0.15.0"),
-        ("rocm6.1", 4, "0.15.0"),
-        ("rocm6.1", 5, "0.15.0"),
+        ("rocm6.1", 4, "0.14.0"),
+        ("rocm6.1", 5, "0.14.0"),
         ("rocm6.1", 6, "0.15.0"),
         # cu129 lacks releases after 0.17.0 (it does carry 0.15.0, which torch 2.8 now selects).
         ("cu129", 12, "0.18.0"),
@@ -632,6 +634,9 @@ def test_export_capability_fails_open_off_windows_rocm(monkeypatch, platform, is
         ("0.14.0", "0.14.0"),
         ("0.14.1+cu128", "0.14.1+cu128"),
         ("0.13.0", "0.13.0"),
+        # PEP 440, as transformers compares: prereleases of 0.15.0 are still below it.
+        ("0.15.0rc1", "0.15.0rc1"),
+        ("0.15.0.dev20250901", "0.15.0.dev20250901"),
         ("0.15.0", None),
         ("0.15.0+cu126", None),
         ("0.17.0", None),
@@ -700,7 +705,7 @@ def test_torchao_export_loadable_ignores_the_stub(monkeypatch):
 
 @pytest.mark.parametrize(
     ("installed", "expect"),
-    [("0.14.0", False), ("0.15.0", True), ("0.17.0", True), ("0.18.0+rocm", True)],
+    [("0.14.0", False), ("0.15.0rc1", False), ("0.15.0", True), ("0.17.0", True), ("0.18.0+rocm", True)],
 )
 def test_torchao_export_loadable_needs_transformers_minimum(
     monkeypatch, tmp_path, installed, expect
