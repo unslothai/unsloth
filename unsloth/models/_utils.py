@@ -4151,7 +4151,7 @@ def _get_statistics(statistics = None, force_download = True):
 
 
 def get_statistics(local_files_only = False):
-    # Counts one download each of unslothai/<environment>, repeat, vram-<bucket> and <gpu count>; no model names, prompts or data are sent. Skipped when UNSLOTH_DISABLE_STATISTICS is set (any value), offline, or with local_files_only.
+    # Counts one download each of unslothai/<environment>, repeat, vram-<bucket> and <gpu count, 9 = 9+>; no model names, prompts or data are sent. Skipped when UNSLOTH_DISABLE_STATISTICS is set (any value), offline, with local_files_only, or with UNSLOTH_USE_MODELSCOPE=1.
     import os
 
     if (
