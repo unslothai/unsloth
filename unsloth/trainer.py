@@ -66,13 +66,34 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     of silently training on empty video tensors (issue #5085).
     """
 
-    __slots__ = ("_checked_video_paths",)
+    __slots__ = ("_checked_video_paths", "_padding_free")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, padding_free = False, **kwargs):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
+        # padding_free=True packs every batch into one row (documents keep their own positions,
+        # images, audio and attention); see unsloth/utils/mm_packing.py.
+        self._padding_free = bool(padding_free)
+        if self._padding_free:
+            from unsloth.utils.mm_packing import prepare_packed_multimodal_model
+
+            prepare_packed_multimodal_model(args[0] if args else kwargs.get("model"))
+
+    @property
+    def padding_free(self):
+        return getattr(self, "_padding_free", False)
 
     def __call__(self, examples):
+        if getattr(self, "_padding_free", False):
+            from unsloth.utils.mm_packing import pack_multimodal_documents
+
+            return pack_multimodal_documents(
+                [self._collate_unpacked([example]) for example in examples],
+                ignore_index = self.ignore_index,
+            )
+        return self._collate_unpacked(examples)
+
+    def _collate_unpacked(self, examples):
         formatting_func = self.formatting_func
         if formatting_func is not None:
             examples = [formatting_func(example) for example in examples]
