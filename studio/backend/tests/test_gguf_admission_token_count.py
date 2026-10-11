@@ -611,3 +611,60 @@ def test_cancel_during_stream_admission_exits_tracker(monkeypatch):
             await asyncio.gather(task, return_exceptions = True)
 
     asyncio.run(scenario())
+
+
+def test_an_exactly_counted_round_is_bounded_by_its_count_not_the_estimate(monkeypatch):
+    """With the prompt counted by the tokenizer, the wire bound drops the estimate margin."""
+    seen = {}
+    real = inference._openai_llama_admission_enforced_max_tokens
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(inference, "_openai_llama_admission_enforced_max_tokens", spy)
+
+    async def scenario():
+        queue = LlamaAdmissionQueue("counted-wire")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        backend = _backend(4000)
+        payload = _payload()
+        reservation, _ = await inference._reserve_counted_gguf_chat(
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            messages = payload.messages,
+            tool_loop = True,
+        )
+        lease = reservation.lease_nowait()
+        assert lease is not None
+        try:
+            inference._openai_llama_admission_recost(
+                reservation,
+                payload.messages,
+                request = None,
+                llama_backend = backend,
+                payload = payload,
+                output_tokens = 1024,
+                count_prepared_prompt = True,
+            )
+            assert seen.get("prompt_tokens") == 4000
+            assert seen.get("prompt_counted") is True
+            seen.clear()
+            # A different wire catalogue was not what the tokenizer counted.
+            inference._openai_llama_admission_recost(
+                reservation,
+                payload.messages,
+                request = None,
+                llama_backend = backend,
+                payload = payload,
+                output_tokens = 1024,
+                injected_tools = [{"type": "function", "function": {"name": "a"}}],
+                wire_tools = None,
+                count_prepared_prompt = True,
+            )
+            assert not seen.get("prompt_counted")
+        finally:
+            lease.release()
+
+    asyncio.run(scenario())
