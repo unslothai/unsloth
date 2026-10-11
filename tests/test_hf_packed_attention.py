@@ -421,3 +421,24 @@ def test_a_refusing_torch_varlen_hands_the_call_back(monkeypatch):
     )
     assert out == ("orig", None)
     assert hpa._TORCH_VARLEN == [None]
+
+
+@_CUDA
+def test_a_disabled_flash_backend_keeps_torch_varlen_off(monkeypatch):
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [lambda *args, **kwargs: None])
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
+    device = torch.device("cuda", 0)
+    assert hpa._torch_varlen(device) is not None
+    with sdpa_kernel([SDPBackend.MATH]):
+        assert hpa._torch_varlen(device) is None
+    assert hpa._torch_varlen(device) is not None
+
+
+def test_torch_varlen_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_TORCH_VARLEN", "0")
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [])
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN_GQA", [])
+    assert hpa._torch_varlen(torch.device("cuda", 0)) is None
+    assert hpa._TORCH_VARLEN == [None]

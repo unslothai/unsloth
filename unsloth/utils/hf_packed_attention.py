@@ -104,6 +104,9 @@ def _torch_varlen(device):
     if not _TORCH_VARLEN:
         fn, native_gqa = None, False
         try:
+            # attention_dispatch's kill switch for torch's varlen_attn covers this path too.
+            if os.environ.get("UNSLOTH_TORCH_VARLEN", "1").lower() in ("0", "false", "no", "off"):
+                raise ImportError
             from torch.nn.attention.varlen import varlen_attn
 
             # 2.11 added scale / window_size, 2.12 enable_gqa; 2.10 only had is_causal and is not used.
@@ -115,7 +118,8 @@ def _torch_varlen(device):
         _TORCH_VARLEN.append(fn)
         _TORCH_VARLEN_GQA[:] = [native_gqa]
     fn = _TORCH_VARLEN[0]
-    if fn is None or torch.version.hip is not None:
+    # varlen_attn runs flash directly: a disabled flash SDPA backend keeps the xformers / flash-attn / sdpa path.
+    if fn is None or torch.version.hip is not None or not torch.backends.cuda.flash_sdp_enabled():
         return None
     ok = _TORCH_VARLEN_DEVICES.get(device.index)
     if ok is None:
