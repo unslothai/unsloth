@@ -285,18 +285,20 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
 
 
 def _first_mainline_loadable(names: list[str]) -> Optional[str]:
-    """First of *names*, skipping fork-only packs while anything else is left."""
-    tokens = {name: extract_quant_token(name) or "" for name in names}
-    loadable = [name for name in names if not _FORK_ONLY_QUANT_RE.match(tokens[name])]
-    # Beside a fork-only pack or its own plain Q2_0, an explicit group size (Q2_g64) is the pack mainline reads; the plain one is the fork's group-128 pack.
-    plain = {token.upper() for token in tokens.values()}
-    grouped = [
+    """First of *names*, skipping packs mainline llama.cpp cannot read while anything else is left."""
+    tokens = {name: (extract_quant_token(name) or "").upper() for name in names}
+    # A plain Q2_0 published beside its own grouped Q2_g64 / Q2_0_g64 is the fork's group-128 pack.
+    shadowed = {
+        f"{match.group(1)}_0".upper()
+        for token in tokens.values()
+        if (match := _GROUPED_QUANT_RE.match(token))
+    }
+    loadable = [
         name
-        for name in loadable
-        if (match := _GROUPED_QUANT_RE.match(tokens[name]))
-        and (len(loadable) < len(names) or f"{match.group(1)}_0".upper() in plain)
+        for name in names
+        if not _FORK_ONLY_QUANT_RE.match(tokens[name]) and tokens[name] not in shadowed
     ]
-    return next(iter(grouped or loadable or names), None)
+    return next(iter(loadable or names), None)
 
 
 def _gguf_stem(filename: str) -> str:
