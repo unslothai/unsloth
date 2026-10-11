@@ -91,13 +91,15 @@ async def test_the_hard_deadline_bounds_a_pool_that_moves_forever():
         ticks["n"] += 1
         return ticks["n"]
 
+    # Sized off the multiple, so the bound is about one second whatever it is set to.
+    timeout_s = 1.0 / llama_admission._MAX_REPARK_WAIT_MULTIPLE
     started = time.monotonic()
     granted = waiter.recost_waiting(
-        4000, timeout_s = 0.05, poll_s = 0.01, progress = progress, gen_id = "waiter"
+        4000, timeout_s = timeout_s, poll_s = 0.005, progress = progress, gen_id = "waiter"
     )
     elapsed = time.monotonic() - started
     assert granted is False
-    # 0.05 s * the repark multiple (20) = 1 s, give or take a poll.
+    # timeout_s * the repark multiple = 1 s, give or take a poll.
     assert 0.9 <= elapsed < 3.0, elapsed
     leader.release()
     waiter.release()
