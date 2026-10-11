@@ -91,6 +91,7 @@ test("a picked folder leaves out dependency, hidden and secret files", () => {
     inFolder("repo/.venv/lib/site.py"),
     inFolder("repo/prod.env"),
     inFolder("repo/package-lock.json"),
+    inFolder("repo/pnpm-lock.yml"),
     inFolder("repo/src/__init__.py", ""),
   ]);
   assert.deepEqual(

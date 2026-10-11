@@ -31,7 +31,8 @@ function skippedFile(name: string): boolean {
     lower.endsWith(".tfstate") ||
     lower === "package-lock.json" ||
     lower === "npm-shrinkwrap.json" ||
-    lower === "pnpm-lock.yaml"
+    lower === "pnpm-lock.yaml" ||
+    lower === "pnpm-lock.yml"
   );
 }
 
