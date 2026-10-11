@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""A user's UNSLOTH_RETURN_LOGITS=1 must survive trainer.train() (#3071).
-
-train() and the trainer's __init__ call model.for_training(), which forced the flag to "0", so a
-compute_loss or compute_metrics reading logits got EmptyLogits even with the flag set. for_training()
-now only undoes the "1" that for_inference() forced, and the trainer __init__'s trailing
-for_inference() leaves the flag as it found it. The methods are lifted out with ``ast`` so this
-runs without ``import unsloth``.
+"""A user's UNSLOTH_RETURN_LOGITS=1 must survive trainer.train() (#3071): for_training() may only undo
+for_inference()'s forced "1". Methods are lifted out with ``ast`` so this runs without ``import unsloth``.
 """
 
 from __future__ import annotations
@@ -149,7 +144,6 @@ def _trailing_for_inference_block():
 
 
 def test_trainer_init_leaves_the_flag_for_train(fbm, monkeypatch):
-    # Building the trainer must not arm a restore of "0" over a flag the user sets before train().
     model = _Model()
     model.for_inference = lambda: fbm.for_inference(model)
     monkeypatch.setenv(FLAG, "0")
