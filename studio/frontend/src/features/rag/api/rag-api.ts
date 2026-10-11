@@ -6,6 +6,7 @@ import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import { terminalJobStatus } from "../types/rag";
 import type {
   DocumentUploadResult,
   FolderSyncJob,
@@ -580,7 +581,7 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
         try {
           const job = await getFolderSyncJob(jobId);
           consecutiveFailures = 0;
-          if (job.status === "completed" || job.status === "failed") {
+          if (terminalJobStatus(job.status)) {
             break;
           }
         } catch (error) {

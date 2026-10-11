@@ -42,6 +42,7 @@ function percent(progress?: number | null): number | null {
 }
 
 function jobSummary(job: FolderSyncJob): string {
+  if (job.status === "cancelled") return "Indexing cancelled";
   if (job.status === "failed") return job.error ?? "Sync failed";
   if (job.status === "completed") {
     const indexed = job.indexedFiles ?? job.processedFiles;

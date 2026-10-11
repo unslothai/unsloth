@@ -73,7 +73,7 @@ export interface IndexJob {
 
 /** One SSE frame from /jobs/{jobId}/events. */
 export interface JobEvent {
-  type: "progress" | "complete" | "error";
+  type: "progress" | "complete" | "error" | "cancelled";
   stage?: string | null;
   progress?: number | null;
   error?: string | null;
@@ -146,7 +146,7 @@ export interface FolderSyncJob {
 
 /** One SSE frame from /linked-folder-jobs/{jobId}/events. */
 export interface FolderSyncJobEvent extends Partial<FolderSyncJob> {
-  type: "progress" | "complete" | "error";
+  type: "progress" | "complete" | "error" | "cancelled";
 }
 
 export function retainActiveFolderJobs(
