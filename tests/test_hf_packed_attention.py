@@ -197,10 +197,16 @@ def test_a_missing_mask_is_not_block_causal():
     assert not hpa._mask_is_block_causal(None, _cu([6]), 6)
 
 
+def _plain_sdpa(module, q, k, v, mask, dropout = 0.0, scaling = None, is_causal = None, **kwargs):
+    # Not transformers' sdpa_attention_forward: compiling that after importing unsloth trips a Dynamo
+    # guard bug on torch <= 2.13, with or without this wrapper.
+    out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = mask, scale = scaling)
+    return out.transpose(1, 2), None
+
+
 @_CUDA
 def test_fullgraph_compile_keeps_the_wrapped_sdpa(monkeypatch):
-    from transformers.integrations.sdpa_attention import sdpa_attention_forward
-
+    sdpa_attention_forward = _plain_sdpa
     hpa._ORIG_SDPA[0] = sdpa_attention_forward
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     lengths = [3, 3]
@@ -346,9 +352,7 @@ def test_long_masks_are_checked_in_row_blocks(monkeypatch):
 
 @_CUDA
 def test_compiling_leaves_the_counters_alone(monkeypatch):
-    from transformers.integrations.sdpa_attention import sdpa_attention_forward
-
-    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    hpa._ORIG_SDPA[0] = _plain_sdpa
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     lengths = [3, 3]
     module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = False)
