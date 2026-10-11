@@ -10,6 +10,8 @@ path so the test stays CPU-only and does not import ``unsloth``.
 import importlib.util
 from pathlib import Path
 
+import types
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -206,6 +208,13 @@ def test_lora_on_linear_embedding_projection_keeps_default(ddp_env):
     model.model.embed_proj = torch.nn.Linear(16, 16, bias = False)
     model = _lora(model, target_modules = ["q_proj", "embed_proj"])
     assert any("embed_proj.lora_A" in n for n, _ in model.named_parameters())
+    assert _helper()(_args(), model) is None
+
+
+def test_layerdrop_in_a_composite_encoder_config_keeps_default(ddp_env):
+    # SpeechEncoderDecoder keeps Wav2Vec2's config (layerdrop 0.1) under config.encoder.
+    model = _lora(_llama())
+    model.get_base_model().config.encoder = types.SimpleNamespace(layerdrop = 0.1)
     assert _helper()(_args(), model) is None
 
 

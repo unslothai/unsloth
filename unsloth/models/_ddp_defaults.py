@@ -63,8 +63,11 @@ def _configs(config):
         if c is None or any(c is s for s in seen):
             continue
         seen.append(c)
-        for key in ("text_config", "language_config", "llm_config"):
-            stack.append(getattr(c, key, None))
+        # encoder / decoder: composite configs (SpeechEncoderDecoder, VisionEncoderDecoder).
+        for key in ("text_config", "language_config", "llm_config", "encoder", "decoder"):
+            value = getattr(c, key, None)
+            if value is not None and not isinstance(value, (str, bool, int, float, list, tuple, dict)):
+                stack.append(value)
     return seen
 
 
