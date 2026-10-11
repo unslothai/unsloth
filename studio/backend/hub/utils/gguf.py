@@ -289,7 +289,7 @@ def _first_mainline_loadable(names: list[str]) -> Optional[str]:
     tokens = {name: (extract_quant_token(name) or "").upper() for name in names}
 
     def _checkpoint(name: str) -> str:
-        return _gguf_stem(name).upper().replace(tokens[name], "", 1)
+        return (gguf_checkpoint_family(name) or "").upper()
 
     # A plain Q2_0 published beside the same checkpoint's grouped Q2_g64 / Q2_0_g64 is the fork's group-128 pack.
     shadowed = {
