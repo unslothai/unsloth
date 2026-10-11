@@ -1137,3 +1137,61 @@ test("a compare load keeps Max as Max when the next pane loads", () => {
   loadAt(QWEN, 35000);
   assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
 });
+
+// A cap the user chose is not Max just because a smaller load clamped it to the
+// window, or met it exactly: the next larger load gets the chosen cap back.
+test("a chosen cap clamped to a smaller window stays the chosen cap", () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+  });
+  loadAt(QWEN, 35000);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, maxTokens: 30000 });
+  assert.equal(useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens, 30000);
+
+  for (const smaller of [20000, 30000]) {
+    loadAt(QWEN, smaller);
+    useChatRuntimeStore.getState().clearCheckpoint();
+    assert.equal(
+      useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens,
+      30000,
+    );
+    loadAt(QWEN, 50000);
+    assert.equal(useChatRuntimeStore.getState().params.maxTokens, 30000);
+  }
+
+  // Moving it to Max is the user saying Max.
+  const chosen = useChatRuntimeStore.getState();
+  chosen.setParams({ ...chosen.params, maxTokens: 50000 });
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens,
+    REMEMBERED_MAX_TOKENS_MAX,
+  );
+  loadAt(QWEN, 60000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 60000);
+});
+
+// The compare pane reloads the model it already shows through setCheckpoint,
+// which replays nothing for an unchanged checkpoint.
+test("a compare reload of the same model keeps Max as Max", () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+  });
+  loadAt(QWEN, 30000);
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint(QWEN, undefined, { maxTokensCap: 35000 });
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+
+  // A chosen cap is left alone.
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, maxTokens: 4096 });
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint(QWEN, undefined, { maxTokensCap: 40000 });
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 4096);
+});

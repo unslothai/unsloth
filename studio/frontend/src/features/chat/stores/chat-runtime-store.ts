@@ -3107,6 +3107,9 @@ function getParamsByModelAfterEdit(
       recordMaxTokensAsMax(
         pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
         rememberedWindow(nextParams.checkpoint),
+        changedParams.maxTokens === undefined
+          ? (outgoing ?? state.paramsByModel)[nextParams.checkpoint]?.maxTokens
+          : undefined,
       ),
     ),
     nextParams.checkpoint,
@@ -3128,6 +3131,7 @@ function rememberOutgoingModel(
   const snapshot = recordMaxTokensAsMax(
     picked,
     rememberedWindow(outgoing.checkpoint),
+    state.paramsByModel[outgoing.checkpoint]?.maxTokens,
   );
   // Only to seed a model with no entry: later changes are written key by key, and a full
   // snapshot would put this browser's copy of untouched keys over another tab's.
@@ -3269,6 +3273,10 @@ function capParamsToLoadedContext(
     ? null
     : state.loadedContextLength;
   const cap = loadedContextFor(params.checkpoint) ?? residentContextCap;
+  // A migrated row can carry the Max marker; on screen it is this load's window.
+  if (params.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+    return { ...params, maxTokens: cap ?? state.params.maxTokens };
+  }
   return cap !== null && params.maxTokens > cap
     ? { ...params, maxTokens: cap }
     : params;
@@ -3443,7 +3451,10 @@ function getHydratedSettingsState(
       }
     }
     if (hasKeys(inherited)) {
-      nextState.paramsByModel = { ...byModel, [left]: inherited };
+      nextState.paramsByModel = {
+        ...byModel,
+        [left]: recordMaxTokensAsMax(inherited, rememberedWindow(left)),
+      };
     }
   }
   // Same fence as the scalar loop: a click made while this response was out is the newer
@@ -3916,7 +3927,10 @@ function adoptMigratedFieldsAfterLocalEdit(
     return {
       // As the normal application path does: applying a thread pin advances no
       // mutation version, so nothing above would have noticed it.
-      params: restoreThreadScopedParams(nextParams),
+      params: capParamsToLoadedContext(
+        state,
+        restoreThreadScopedParams(nextParams),
+      ),
       ...(storedRow
         ? {
             paramsByModel: {
@@ -4874,8 +4888,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           ? rememberOutgoingModel(state, state.params)
           : null;
       // A compare pane's load reaches the store only here.
+      const previousWindow = rememberedWindow(modelId);
       noteLoadedContext(modelId, options?.maxTokensCap);
-      const baseParams = getReplayedParams(
+      let baseParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
         state.params,
@@ -4883,6 +4898,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged,
         options?.maxTokensCap,
       );
+      // The same model reloaded at a new context replays nothing, so Max has to follow the window here.
+      if (
+        !checkpointChanged &&
+        options?.maxTokensCap !== undefined &&
+        ((previousWindow !== null && state.params.maxTokens >= previousWindow) ||
+          (state.rememberParamsPerModel &&
+            state.paramsByModel[modelId]?.maxTokens ===
+              REMEMBERED_MAX_TOKENS_MAX))
+      ) {
+        baseParams = { ...baseParams, maxTokens: options.maxTokensCap };
+      }
       // Clamp maxTokens to the new model's cap when switching into an external model, so a value
       // carried over from a local session cannot exceed the slider's max.
       let nextMaxTokens = baseParams.maxTokens;
@@ -5735,6 +5761,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const remembered = recordMaxTokensAsMax(
         snapshot,
         rememberedWindow(state.params.checkpoint),
+        state.paramsByModel[state.params.checkpoint]?.maxTokens,
       );
       const paramsByModel = trackParamsByModel(
         state,

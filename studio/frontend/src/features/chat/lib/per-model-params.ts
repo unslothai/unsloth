@@ -21,16 +21,28 @@ export type PersistedInferenceParamKey = keyof PersistedInferenceParams;
 export const REMEMBERED_MAX_TOKENS_MAX = 2 ** 31 - 1;
 
 /** An entry with a Max Tokens at or above `contextWindow` (what the slider shows as "Max") recorded
- *  as "Max". The window of the model the entry belongs to; null when unknown or external. */
+ *  as "Max". The window of the model the entry belongs to; null when unknown or external. `kept` is
+ *  the entry's current cap when Max Tokens was not itself edited: a chosen cap the window clamped
+ *  down to Max stays the chosen cap. */
 export function recordMaxTokensAsMax<T extends PersistedInferenceParams>(
   entry: T,
   contextWindow: number | null,
+  kept?: number,
 ): T {
-  return contextWindow !== null &&
-    entry.maxTokens !== undefined &&
-    entry.maxTokens >= contextWindow
-    ? { ...entry, maxTokens: REMEMBERED_MAX_TOKENS_MAX }
-    : entry;
+  if (
+    contextWindow === null ||
+    entry.maxTokens === undefined ||
+    entry.maxTokens < contextWindow
+  ) {
+    return entry;
+  }
+  const maxTokens =
+    kept !== undefined &&
+    kept !== REMEMBERED_MAX_TOKENS_MAX &&
+    kept >= contextWindow
+      ? kept
+      : REMEMBERED_MAX_TOKENS_MAX;
+  return { ...entry, maxTokens };
 }
 
 /** Params that persist across a reload. `checkpoint` is the key, not a value. */
