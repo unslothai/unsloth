@@ -23,15 +23,23 @@ test("a published adapter is matched by its stem, or its full name when the stem
     catalogFileName("C:\\Users\\u\\loras\\diffusion\\my.style.gguf"),
     "my.style.gguf",
   );
+  const st = (id: string) => ({ id, format: "safetensors" });
+  const gg = (id: string) => ({ id, format: "gguf" });
   assert.equal(
-    matchCatalogId(["sksdog", "other"], "sksdog.safetensors"),
+    matchCatalogId([st("sksdog"), st("other")], "sksdog.safetensors"),
     "sksdog",
   );
   assert.equal(
-    matchCatalogId(["s.gguf", "s.safetensors"], "s.safetensors"),
+    matchCatalogId([gg("s.gguf"), st("s.safetensors")], "s.safetensors"),
     "s.safetensors",
   );
-  assert.equal(matchCatalogId(["other"], "sksdog.safetensors"), undefined);
+  // A stale run whose safetensors is gone never picks the same-stem GGUF.
+  assert.equal(matchCatalogId([gg("style")], "style.safetensors"), undefined);
+  assert.equal(
+    matchCatalogId([st("dog.safetensors"), st("dog")], "dog.safetensors"),
+    "dog",
+  );
+  assert.equal(matchCatalogId([st("other")], "sksdog.safetensors"), undefined);
 });
 
 test("the export result names the exports folder unless the path is absolute", () => {

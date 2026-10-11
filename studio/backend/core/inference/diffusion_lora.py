@@ -287,7 +287,7 @@ def _same_ends(
     n: int = 1 << 16,
 ) -> bool:
     try:
-        with open(a, "rb") as fa, open(b, "rb") as fb:
+        with _open_pinned(a) as fa, _open_pinned(b) as fb:
             if fa.read(n) != fb.read(n):
                 return False
             for f in (fa, fb):
@@ -336,13 +336,15 @@ def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
     return tuple(names), weight_default
 
 
-def list_loras(*, family: Optional[str] = None) -> list[LoraCatalogEntry]:
+def list_loras(
+    *, family: Optional[str] = None, include_copies: bool = False
+) -> list[LoraCatalogEntry]:
     """The merged catalog (curated + local), optionally family-filtered.
 
     Cheap: one directory scan plus the in-memory curated list. Network is only touched on
     resolve(), when a hub adapter is selected.
     """
-    merged = [e for e in list(_CURATED) + _scan_local() if not e.copy_of]
+    merged = [e for e in list(_CURATED) + _scan_local() if include_copies or not e.copy_of]
     if family:
         fam = family.strip().lower()
         merged = [e for e in merged if not e.families or fam in {f.lower() for f in e.families}]

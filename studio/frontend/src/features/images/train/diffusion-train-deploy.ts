@@ -67,10 +67,15 @@ export function catalogFileName(catalogPath: string): string {
   return catalogPath.split(/[\\/]/).pop() ?? catalogPath;
 }
 
+// Same format only (a stale run must not pick a same-stem GGUF), stem before full name (`x.safetensors.safetensors`).
 export function matchCatalogId(
-  ids: string[],
+  loras: { id: string; format: string }[],
   fileName: string,
 ): string | undefined {
-  const stem = fileName.replace(/\.(safetensors|gguf)$/i, "");
-  return ids.find((id) => id === fileName) ?? ids.find((id) => id === stem);
+  const match = /^(.*)\.(safetensors|gguf)$/i.exec(fileName);
+  const ids = loras
+    .filter((l) => !match || l.format === match[2].toLowerCase())
+    .map((l) => l.id);
+  const stem = match ? match[1] : fileName;
+  return ids.find((id) => id === stem) ?? ids.find((id) => id === fileName);
 }

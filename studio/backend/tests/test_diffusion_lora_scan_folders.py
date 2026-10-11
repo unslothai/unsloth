@@ -305,6 +305,12 @@ def test_an_export_of_a_listed_adapter_is_listed_once(catalog, tmp_path):
     assert copy.copy_of == "mystyle" and copy.local_path == str(out)
     # Still resolvable, so a recipe saved with the copy's id keeps working.
     assert dl.resolve_one(copy.id, 1.0).path == str(out)
+    # Account checks see the copy's own path, not its bare id.
+    from types import SimpleNamespace
+    from hub.services.models.account_access import media_adapter_references
+
+    request = SimpleNamespace(loras = [SimpleNamespace(id = copy.id)], controlnet = None)
+    assert media_adapter_references(request) == [str(out)]
 
 
 def test_same_sized_adapters_without_metadata_are_not_collapsed(catalog, tmp_path):

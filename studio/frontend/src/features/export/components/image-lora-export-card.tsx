@@ -61,8 +61,7 @@ export function ImageLoraExportCard({ preselect }: { preselect?: string }) {
 
   // From a finished image run: pick it and scroll here, since the text-model card above shows no runs.
   useEffect(() => {
-    const ids = (loras ?? []).map((l) => l.id);
-    const id = preselect ? matchCatalogId(ids, preselect) : undefined;
+    const id = preselect ? matchCatalogId(loras ?? [], preselect) : undefined;
     if (!id) {
       return;
     }
