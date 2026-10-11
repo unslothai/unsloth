@@ -549,6 +549,18 @@ class TestASilentParkStillRenewsTheLease:
         backend._server_park_grace_at = time.monotonic() - 100.0
         assert backend.server_park_grace_recent(10.0) is False
 
+    def test_a_notice_build_ignores_a_neighbours_aggregate_stamp(self, monkeypatch):
+        backend = self._backend(monkeypatch, 1)
+        backend._server_park_notices = True
+        # A non-streaming request's park, which reads the aggregate on any parking build.
+        assert backend._server_park_grace_any() is True
+        assert backend.server_park_grace_recent(60.0) is False, (
+            "a silent stream on a build that writes the notices is not parked; the stamp is "
+            "someone else's park"
+        )
+        backend._server_park_notices = False
+        assert backend.server_park_grace_recent(60.0) is True
+
     def test_the_run_loop_consults_the_stamp(self, monkeypatch):
         class _Backend:
             def server_park_grace_recent(self, within_s):
@@ -1586,7 +1598,7 @@ class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
         window = spawn[rung : rung + 1400]
         assert "continue" in window
         before = window.split("continue")[0]
-        assert "_rebound_named_parking_budget(run_cmd, _exact_budget)" in before
+        assert "_rebound_named_parking_budget(run_cmd, _exact_budget, self)" in before
 
     def test_a_short_budget_is_reported_as_the_mode_running_short_not_as_absent(self):
         # The child keeps the mode after a late shortfall, so the warning, and the `on`

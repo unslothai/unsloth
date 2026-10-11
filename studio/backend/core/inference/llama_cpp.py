@@ -2536,42 +2536,65 @@ def _total_host_memory_mib() -> Optional[int]:
         return None
 
 
-def _exact_parks_held_mib() -> int:
-    """What the resident exact models certified and have not parked yet. A plain park past its
-    budget is only re-prefilled, but one that takes an exact model's room breaks its guarantee."""
-    held = 0
-    for other in _parking_neighbours(None):
-        if getattr(other, "_exact_concurrency", None) != _exact.EXACT_STATE_ON:
+def _neighbour_parking_commitments(backend) -> tuple[list, bool]:
+    """``([(neighbour, MiB)], unlimited)`` for every other server that may park into host RAM: an
+    exact one up to the writes it certified, any other up to the budget it was launched with.
+    ``unlimited`` is a neighbour on `--preempt-ram -1`, which may take all of it."""
+    commitments, unlimited = [], False
+    for other in _parking_neighbours(backend):
+        if getattr(other, "_exact_concurrency", None) == _exact.EXACT_STATE_ON:
+            commitment = getattr(other, "_exact_parking_writes", 0)
+        elif getattr(other, "_server_launched_parking", False):
+            commitment = getattr(other, "_launched_parking_mib", 0)
+        else:
             continue
         try:
-            writes = max(0, int(getattr(other, "_exact_parking_writes", 0) or 0))
+            commitment = int(commitment or 0)
         except (TypeError, ValueError):
             continue
-        if writes:
-            held += max(0, writes - _parked_host_mib(other))
-    return held
+        if commitment < 0:
+            unlimited = True
+        elif commitment:
+            commitments.append((other, commitment))
+    return commitments, unlimited
 
 
-def _host_bounded_parking_mib(need_mib: int) -> int:
+def _free_less_commitments_mib(commitments: list) -> Optional[int]:
+    """Available host RAM less what ``commitments`` have not parked yet. A neighbour's parked
+    figure is read on both sides of the free sample and the smaller kept, so a park that began
+    or ended between the two readings is counted as still to come rather than twice as free."""
+    before = [_parked_host_mib(other) for other, _ in commitments]
+    free = _available_host_memory_mib()
+    if free is None:
+        return None
+    held = 0
+    for (other, commitment), parked in zip(commitments, before):
+        held += max(0, commitment - min(parked, _parked_host_mib(other)))
+    return max(0, int(free) - held)
+
+
+def _host_bounded_parking_mib(need_mib: int, backend = None) -> int:
     """``need_mib`` capped to what this host can pin without pressure; 0 means do not park.
 
     A park past the budget drops its cells and is re-prefilled, which costs about what the copy
-    would, so a short budget is safe; pinning past the host's headroom is not, nor into what a
-    resident exact model certified."""
-    available = _available_host_memory_mib()
+    would, so a short budget is safe; pinning past the host's headroom is not, nor into what the
+    other parking servers may still take, since each budget is only allocated when it parks.
+    ``backend`` is the one launching, left out of its neighbours. An unlimited neighbour is the
+    user's say and reserves nothing here."""
+    commitments, _unlimited = _neighbour_parking_commitments(backend)
+    available = _free_less_commitments_mib(commitments)
     if available is None:
         return 0
-    available = max(0, available - _exact_parks_held_mib())
     total = _total_host_memory_mib() or available
     reserve = max(_PARKING_HOST_RESERVE_MIB, int(total * _PARKING_HOST_RESERVE_FRACTION))
     cap = min(int(available * _PARKING_HOST_AVAILABLE_FRACTION), available - reserve)
     return max(0, min(int(need_mib), cap))
 
 
-def _rebound_named_parking_budget(cmd: list, budget_mib: int) -> Optional[int]:
+def _rebound_named_parking_budget(cmd: list, budget_mib: int, backend = None) -> Optional[int]:
     """Replace the ``--preempt-ram budget_mib`` pair Studio appended to ``cmd`` with the host-bounded
     figure, dropping the pair when that is zero. Returns the budget now in force."""
-    bounded = _host_bounded_parking_mib(budget_mib)
+    bounded = _host_bounded_parking_mib(budget_mib, backend)
     for i in range(len(cmd) - 1, 0, -1):
         if cmd[i - 1] == "--preempt-ram" and cmd[i] == str(budget_mib):
             if bounded > 0:
@@ -2592,6 +2615,7 @@ def _server_owned_parking_budget_mib(
     draft_bytes: int = 0,
     parallel: int = 1,
     bound_to_host: bool = False,
+    backend = None,
 ) -> Optional[int]:
     """The ``--preempt-ram`` Studio names so the SERVER is the one pausing chats, else None.
 
@@ -2616,7 +2640,7 @@ def _server_owned_parking_budget_mib(
     )
     if budget is None or not bound_to_host:
         return budget
-    return _host_bounded_parking_mib(budget) or None
+    return _host_bounded_parking_mib(budget, backend) or None
 
 
 def _named_preempt_ram_mib(args, env: Mapping[str, str]) -> Optional[int]:
@@ -2690,29 +2714,11 @@ def _exact_host_free_mib(backend) -> Optional[int]:
     A park budget is only a cap, allocated when a slot parks, so two exact models measured
     against the same free reading could both pass and then exhaust it together. What a neighbour
     has already parked is gone from the free reading, so only the rest of its budget is held."""
-    free = _available_host_memory_mib()
-    if free is None:
-        return None
-    held = 0
-    for other in _parking_neighbours(backend):
-        # Every neighbour that may park: an exact one up to the writes it certified, any other
-        # up to the budget it was launched with.
-        if getattr(other, "_exact_concurrency", None) == _exact.EXACT_STATE_ON:
-            commitment = getattr(other, "_exact_parking_writes", 0)
-        elif getattr(other, "_server_launched_parking", False):
-            commitment = getattr(other, "_launched_parking_mib", 0)
-        else:
-            continue
-        try:
-            commitment = int(commitment or 0)
-        except (TypeError, ValueError):
-            continue
-        if commitment < 0:
-            # `--preempt-ram -1` is unlimited: it may park into all of it, so none is certifiable.
-            return 0
-        if commitment:
-            held += max(0, commitment - _parked_host_mib(other))
-    return max(0, int(free) - held)
+    commitments, unlimited = _neighbour_parking_commitments(backend)
+    if unlimited:
+        # `--preempt-ram -1` is unlimited: it may park into all of it, so none is certifiable.
+        return None if _available_host_memory_mib() is None else 0
+    return _free_less_commitments_mib(commitments)
 
 
 def _exact_host_shortfall_after_load(
@@ -9177,7 +9183,11 @@ class LlamaCppBackend:
 
     def server_park_grace_recent(self, within_s: float) -> bool:
         """Whether `/metrics` excused a silent stream as parked within the last ``within_s`` seconds.
-        A swap build without the stream notices is silent for the whole park, the one signal left."""
+        A swap build without the stream notices is silent for the whole park, the one signal left.
+        A build with them renews a parked stream from its own notices, and the stamp a neighbour's
+        non-streaming park leaves would excuse a silent stream that is wedged."""
+        if getattr(self, "_server_park_notices", False):
+            return False
         at = getattr(self, "_server_park_grace_at", None)
         return at is not None and time.monotonic() - float(at) <= float(within_s)
 
@@ -31058,6 +31068,7 @@ class LlamaCppBackend:
                         draft_bytes = _exact_draft_bytes,
                         parallel = n_parallel,
                         bound_to_host = not _exact_wanted,
+                        backend = self,
                     )
                     if _exact_budget is not None:
                         cmd.extend(["--preempt-ram", str(_exact_budget)])
@@ -31111,7 +31122,7 @@ class LlamaCppBackend:
                                         # The budget Studio sized for exact parks; the plain
                                         # parking left behind gets the host-bounded one.
                                         _exact_budget = _rebound_named_parking_budget(
-                                            cmd, _exact_budget
+                                            cmd, _exact_budget, self
                                         )
                         # An auto-fit context leaves the pool unknown, so the budget named above is
                         # the unsized figure rather than one measured: it is judged after launch
@@ -32327,7 +32338,7 @@ class LlamaCppBackend:
                                 # Sized whole for exact parks, which judge a short budget
                                 # themselves; the plain server left behind gets the host-bounded one,
                                 # as the preflight shortage fallback does.
-                                _rebound_named_parking_budget(run_cmd, _exact_budget)
+                                _rebound_named_parking_budget(run_cmd, _exact_budget, self)
                             logger.warning(
                                 "llama-server refused exact concurrency (exit code %s); "
                                 "retrying once without it, as the setting is auto. "
