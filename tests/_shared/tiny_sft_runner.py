@@ -36,11 +36,13 @@ def main():
     from transformers import TrainerCallback
     from trl import SFTConfig, SFTTrainer
 
+    # V100 / T4 have no bf16: train in fp16 there, as the notebooks do.
+    use_bf16 = torch.cuda.is_bf16_supported()
     model, tokenizer = FastLanguageModel.from_pretrained(
         MODEL,
         max_seq_length = 64,
         load_in_4bit = False,
-        dtype = torch.bfloat16,
+        dtype = torch.bfloat16 if use_bf16 else torch.float16,
     )
     model = FastLanguageModel.get_peft_model(
         model,
@@ -100,7 +102,8 @@ def main():
         save_steps = a.save_steps or 500,
         report_to = "none",
         seed = 3407,
-        bf16 = True,
+        bf16 = use_bf16,
+        fp16 = not use_bf16,
         dataset_num_proc = 1,
         dataloader_num_workers = 0,
     )
