@@ -42891,7 +42891,18 @@ class LlamaCppBackend:
                                     messages_without_unpriced_media(_probe)
                                 )
 
-                        _round_spent = _round_prompt_tokens(conversation)
+                        # The over-cap notice is appended after the results and is not on the
+                        # assistant message, so the round reserves it, as a sequential call does.
+                        _round_notice = 0
+                        if _over_cap:
+                            _notice_msgs = [tool_call_limit_nudge(_over_cap, _MAX_TOOL_CALLS_PER_TURN)]
+                            try:
+                                _round_notice = self.count_chat_tokens(
+                                    _notice_msgs, None, None, strict = True
+                                )
+                            except Exception:
+                                _round_notice = 2 * estimate_messages_tokens_dense(_notice_msgs)
+                        _round_spent = _round_prompt_tokens(conversation) + _round_notice
                         _round_budget = tool_result_budget(
                             self._effective_context_length,
                             _iteration_fit_max_tokens,
@@ -42905,7 +42916,7 @@ class LlamaCppBackend:
                                 conversation[:] = _roomier
                                 # Re-priced on the room that was just reclaimed, which is
                                 # the whole point of reclaiming it here.
-                                _round_spent = _round_prompt_tokens(conversation)
+                                _round_spent = _round_prompt_tokens(conversation) + _round_notice
                                 _round_budget = tool_result_budget(
                                     self._effective_context_length,
                                     _iteration_fit_max_tokens,
