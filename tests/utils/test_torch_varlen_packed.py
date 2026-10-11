@@ -16,8 +16,9 @@ _REAL_VARLEN = ad._TORCH_VARLEN_ATTN
 needs_varlen = pytest.mark.skipif(
     not has_real_cuda()
     or ad._TORCH_VARLEN_ATTN is None
+    or torch.version.hip is not None
     or torch.cuda.get_device_capability()[0] < 8,
-    reason = "needs sm80+ CUDA and torch.nn.attention.varlen with window_size + enable_gqa (2.12+)",
+    reason = "needs sm80+ CUDA (not ROCm) and torch varlen_attn with window_size + enable_gqa (2.12+)",
 )
 
 
