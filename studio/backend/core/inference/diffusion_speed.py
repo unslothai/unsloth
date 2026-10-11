@@ -467,6 +467,8 @@ def apply_speed_optims(
             install_vae_attn_chunks(getattr(pipe, "vae", None), target, logger)
         except Exception as exc:  # noqa: BLE001 - keep stock attention
             _warn(logger, "vae attention chunks", exc)
+    # Stability, not speed, so also before the `off` return.
+    _enable_miopen_immediate(logger)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
@@ -1729,6 +1731,32 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "cudnn_benchmark", exc)
+        return False
+
+
+def _enable_miopen_immediate(logger: Any) -> bool:
+    """ROCm convs ask MIOpen for a solution instead of running miopenFind*, which trial-launches
+    candidate kernels on every unseen shape. A trial launch faulting inside MIOpen aborts the
+    whole server (#9130). An explicit ``MIOPEN_FIND_MODE`` keeps torch's Find path. Deliberately
+    not in ``snapshot_backend_flags``: an unload restoring it would reopen Find under a co-resident
+    image or video pipeline."""
+    if os.environ.get("MIOPEN_FIND_MODE"):
+        return False
+    try:
+        import torch
+
+        from core._torchao_stub import _module_is_rocm
+
+        miopen = getattr(torch.backends, "miopen", None)
+        if not _module_is_rocm(torch) or miopen is None or not hasattr(miopen, "immediate"):
+            return False
+        if not miopen.immediate:
+            miopen.immediate = True
+            if logger is not None:
+                logger.info("diffusion.speed: MIOpen immediate mode on (no Find trial launches)")
+        return True
+    except Exception as exc:  # noqa: BLE001 - keep torch's Find path
+        _warn(logger, "miopen immediate", exc)
         return False
 
 
