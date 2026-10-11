@@ -39,7 +39,9 @@ _STALE_INT8_EXCLUDES = [
 @pytest.fixture(autouse = True)
 def _fresh_probe(monkeypatch):
     # Tolerant of a build without the probe, so the behavioural tests below run (and fail) there too.
-    monkeypatch.delenv(getattr(pq, "HEADER_PROBE_ENV", "UNSLOTH_PREQUANT_HEADER_PROBE"), raising = False)
+    monkeypatch.delenv(
+        getattr(pq, "HEADER_PROBE_ENV", "UNSLOTH_PREQUANT_HEADER_PROBE"), raising = False
+    )
     monkeypatch.setattr(pq, "_HEADER_PROBE_MEMO", {}, raising = False)
     monkeypatch.setattr(pq, "_HEADER_PROBE_SAID", set(), raising = False)
     monkeypatch.setattr(pq, "hub_offline", lambda: False)
@@ -57,7 +59,12 @@ def _qwen_int8_meta(excludes):
     }
 
 
-def _write_pt(path, meta, *, mb = 8):
+def _write_pt(
+    path,
+    meta,
+    *,
+    mb = 8,
+):
     """A real torch.save checkpoint whose weight bytes dwarf its metadata."""
     state_dict = {
         f"blocks.{i}.weight": torch.zeros(256, 1024, dtype = torch.int8) for i in range(mb * 4)
@@ -66,12 +73,19 @@ def _write_pt(path, meta, *, mb = 8):
     return path
 
 
-def _write_safetensors(path, meta, *, mb = 8):
+def _write_safetensors(
+    path,
+    meta,
+    *,
+    mb = 8,
+):
     from safetensors.torch import save_file
 
     from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
 
-    tensors = {f"blocks.{i}.weight": torch.zeros(256, 1024, dtype = torch.int8) for i in range(mb * 4)}
+    tensors = {
+        f"blocks.{i}.weight": torch.zeros(256, 1024, dtype = torch.int8) for i in range(mb * 4)
+    }
     save_file(
         tensors,
         str(path),
@@ -144,10 +158,20 @@ def hub(tmp_path, monkeypatch):
     root.mkdir()
     server = _RangeServer(str(root))
 
-    def hf_hub_url(repo_id, filename, revision = None, **_):
+    def hf_hub_url(
+        repo_id,
+        filename,
+        revision = None,
+        **_,
+    ):
         return f"{server.url}/{repo_id}/{filename}"
 
-    def get_hf_file_metadata(url, token = None, timeout = None, **_):
+    def get_hf_file_metadata(
+        url,
+        token = None,
+        timeout = None,
+        **_,
+    ):
         path = os.path.join(str(root), url[len(server.url) + 1 :])
         if not os.path.isfile(path):
             err = Exception("404")
@@ -157,7 +181,11 @@ def hub(tmp_path, monkeypatch):
 
     downloads: list = []
 
-    def hf_hub_download(repo_id = None, filename = None, **kwargs):
+    def hf_hub_download(
+        repo_id = None,
+        filename = None,
+        **kwargs,
+    ):
         downloads.append(filename)
         raise RuntimeError("weight download attempted")
 
@@ -265,9 +293,10 @@ def test_offline_with_nothing_cached_asks_nothing(hub, monkeypatch):
     repo = "unsloth/Qwen-Image-2512-FP8"
     _write_pt(_repo_file(hub, repo, "x-INT8.pt"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
     assert pq.hosted_prequant_refusal(_source(repo, "x-INT8.pt"), "int8") is None
-    assert pq.hosted_prequant_refusal(
-        _source(repo, "x-INT8.pt"), "int8", local_files_only = True
-    ) is None
+    assert (
+        pq.hosted_prequant_refusal(_source(repo, "x-INT8.pt"), "int8", local_files_only = True)
+        is None
+    )
     assert hub.server.sent == 0
 
 
@@ -328,12 +357,21 @@ class LinearActivationQuantizedTensor:
 
 
 class Int8Tensor:
-    def __init__(self, q, scale, zero_point = None):
+    def __init__(
+        self,
+        q,
+        scale,
+        zero_point = None,
+    ):
         self.qdata, self.scale, self.zero_point = q, scale, zero_point
         self.act_quant_scale = self.act_quant_zero_point = self.act_pre_scale = None
 
 
-def _int8_values(seed, n = 8, k = 32):
+def _int8_values(
+    seed,
+    n = 8,
+    k = 32,
+):
     g = torch.Generator().manual_seed(seed)
     q = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8)
     scale = (torch.rand(n, generator = g) / 100 + 1e-4).to(torch.bfloat16)
@@ -344,7 +382,12 @@ def _as_017(q, scale):
     return LinearActivationQuantizedTensor(AffineQuantizedTensor(PlainAQTTensorImpl(q, scale)))
 
 
-def _as_018(q, scale, *, zero_point = True):
+def _as_018(
+    q,
+    scale,
+    *,
+    zero_point = True,
+):
     n = q.shape[0]
     zp = torch.zeros(n, 1, dtype = torch.int8) if zero_point else None
     return Int8Tensor(q, scale.float().reshape(n, 1), zp)

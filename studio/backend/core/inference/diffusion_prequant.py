@@ -1483,7 +1483,11 @@ _V1_INT8_PREFIXES = (
 )
 
 
-def _v1_cross_generation_match(tensor: Any, recorded: str, hint: Optional[list] = None) -> bool:
+def _v1_cross_generation_match(
+    tensor: Any,
+    recorded: str,
+    hint: Optional[list] = None,
+) -> bool:
     """Whether ``recorded`` (a v1 digest) is this int8 weight as another torchao generation laid it out.
 
     A v1 record hashed torchao's attribute names and raw bytes, so the same quantized values hash
@@ -1517,10 +1521,7 @@ def _v1_cross_generation_match(tensor: Any, recorded: str, hint: Optional[list] 
     if zp is not None:
         zero_points["stored"] = zp
     layouts = [
-        (p, sk, zk)
-        for p in range(len(_V1_INT8_PREFIXES))
-        for sk in scales
-        for zk in zero_points
+        (p, sk, zk) for p in range(len(_V1_INT8_PREFIXES)) for sk in scales for zk in zero_points
     ]
     if hint and hint[0] in layouts:
         layouts.remove(hint[0])
@@ -1699,7 +1700,9 @@ def _verify_packed_fingerprint(
                 len(expected),
                 mode,
                 CANONICAL_FINGERPRINT_ALGO if canonical else FINGERPRINT_ALGO,
-                f"; {reencoded} matched in another torchao generation's layout" if reencoded else "",
+                f"; {reencoded} matched in another torchao generation's layout"
+                if reencoded
+                else "",
             )
         _remember_verified(marker)
         return True
@@ -1780,7 +1783,9 @@ def hosted_prequant_refusal(
     saved_failure = getattr(_LAST_FAILURE, "text", None)
     try:
         names = [
-            n for n in candidate_filenames_of(source) if restricted_prequant_load_supported(scheme, n)
+            n
+            for n in candidate_filenames_of(source)
+            if restricted_prequant_load_supported(scheme, n)
         ]
         if not names:
             return None

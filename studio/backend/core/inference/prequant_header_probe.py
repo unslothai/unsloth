@@ -46,7 +46,12 @@ class _ProbeBudgetExceeded(Exception):
 class _RangeFile(io.RawIOBase):
     """A seekable read-only file over ``read_range``, block-cached and byte-budgeted."""
 
-    def __init__(self, read_range: ReadRange, size: int, budget: int = MAX_PROBE_BYTES):
+    def __init__(
+        self,
+        read_range: ReadRange,
+        size: int,
+        budget: int = MAX_PROBE_BYTES,
+    ):
         super().__init__()
         self._read_range = read_range
         self._size = int(size)
@@ -64,7 +69,11 @@ class _RangeFile(io.RawIOBase):
     def tell(self) -> int:
         return self._pos
 
-    def seek(self, offset: int, whence: int = 0) -> int:
+    def seek(
+        self,
+        offset: int,
+        whence: int = 0,
+    ) -> int:
         if whence == 0:
             pos = offset
         elif whence == 1:
@@ -314,7 +323,10 @@ def read_hub_checkpoint_header(
         )
     except Exception as exc:  # noqa: BLE001
         status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status == 404 or type(exc).__name__ in ("EntryNotFoundError", "RemoteEntryNotFoundError"):
+        if status == 404 or type(exc).__name__ in (
+            "EntryNotFoundError",
+            "RemoteEntryNotFoundError",
+        ):
             return None, False
         return None, None
     size = getattr(meta, "size", None)
