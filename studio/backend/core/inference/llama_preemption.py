@@ -204,8 +204,20 @@ DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 # under a prompt still going in.
 PENDING_PREFILL_TTL_S = 1200.0
 
-# Far above _MAX_LENGTH_CONTINUATIONS: that caps answer quality, this caps churn.
-DEFAULT_MAX_PREEMPT_RESUMES = 32
+# This many pauses in a row with no output between them end the turn; a pause after progress
+# is never counted. _MAX_LENGTH_CONTINUATIONS caps answer quality; this caps churn.
+DEFAULT_MAX_STALLED_RESUMES = 4
+
+
+def next_stall_count(stalled: int, new_tokens: int) -> int:
+    """Consecutive pauses without output, after one that decoded ``new_tokens``."""
+    return 0 if int(new_tokens or 0) > 0 else max(0, int(stalled or 0)) + 1
+
+
+def resumes_stalled(stalled: int) -> bool:
+    """Whether ``stalled`` pauses in a row without output should end the turn."""
+    return int(stalled or 0) >= DEFAULT_MAX_STALLED_RESUMES
+
 
 # A chat preempted this many times in a row outranks newest-first, so repeatedly losing
 # does not become never finishing.
@@ -926,12 +938,10 @@ class PreemptionController:
         return total
 
     def _solo_ceiling_locked(self) -> int:
-        """The cache less what a lone chat still needs clear. Being alone removes the reaction
-        headroom but not the need to fit the next batch: a lone chat took 16297 cells of 16384."""
-        margin = max(
-            self._draft_tokens + max(64, self._budget // SOLO_MARGIN_DIVISOR),
-            self._batch_tokens + self._draft_tokens,
-        )
+        """The cache less what a lone chat still needs clear: its drafts, the estimate error and
+        the next decode step. No prefill batch: chunks are part of the history, so a lone replay of
+        W needs W cells plus the step after (a 7000 token chat at 8192 fits alone)."""
+        margin = self._draft_tokens + 1 + max(64, self._budget // SOLO_MARGIN_DIVISOR)
         return max(1, self._budget - margin)
 
     def outgrew_the_shared_ceiling(self, want: int) -> bool:
@@ -1628,7 +1638,7 @@ class ControllerPreemptionPolicy:
     ``resume_async`` awaits the queue's slot acquire, so the two are joined with run_coroutine_threadsafe.
     """
 
-    __slots__ = ("_controller", "_gen_id", "_signal", "_resumes", "_loop")
+    __slots__ = ("_controller", "_gen_id", "_signal", "_resumes", "_stalled", "_loop")
 
     def __init__(
         self,
@@ -1642,6 +1652,7 @@ class ControllerPreemptionPolicy:
         self._gen_id = gen_id
         self._signal = signal
         self._resumes = 0
+        self._stalled = 0
         self._loop = loop
 
     def should_preempt(self) -> bool:
@@ -1651,6 +1662,7 @@ class ControllerPreemptionPolicy:
         """The upstream response is closed, so the tokens may go back. Only once nothing can still be
         decoding against the lease, which the stream side guarantees by calling this after teardown."""
         self._resumes = checkpoint.resumes
+        self._stalled = next_stall_count(self._stalled, checkpoint.charged_tokens)
         _log.info(
             "llama preemption paused: gen_id=%s resumes=%s kept_chars=%s kept=%s charged=%s",
             self._gen_id,
@@ -1699,9 +1711,12 @@ class ControllerPreemptionPolicy:
         # None means "caller stated no preference", NOT "wait forever".
         if timeout is None:
             timeout = DEFAULT_RESUME_WAIT_TIMEOUT_S
-        if self._resumes >= DEFAULT_MAX_PREEMPT_RESUMES:
+        if resumes_stalled(self._stalled):
             _log.warning(
-                "llama preemption resume-cap: gen_id=%s resumes=%s", self._gen_id, self._resumes
+                "llama preemption resume-stalled: gen_id=%s resumes=%s stalled=%s",
+                self._gen_id,
+                self._resumes,
+                self._stalled,
             )
             return False
         participant = self._controller.participant(self._gen_id)
@@ -1845,6 +1860,7 @@ class ControllerPreemptionPolicy:
         """The next of `n` choices: the same lease, a fresh count of resumes and the ledger
         back to what admission charged, since the last choice's partials are not replayed."""
         self._resumes = 0
+        self._stalled = 0
         self._controller.restart(self._gen_id)
 
     def on_server_parked(self) -> None:

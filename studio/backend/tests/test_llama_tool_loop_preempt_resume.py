@@ -498,7 +498,7 @@ class TestADeclinedPauseUnsticksTheParticipant:
 
     @staticmethod
     def _capped(monkeypatch):
-        monkeypatch.setattr(preemption, "DEFAULT_MAX_PREEMPT_RESUMES", 0)
+        monkeypatch.setattr(preemption, "DEFAULT_MAX_STALLED_RESUMES", 0)
 
     @staticmethod
     def _declining_run(monkeypatch, *, signal, policy, pause_attempts):

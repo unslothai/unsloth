@@ -628,3 +628,42 @@ class TestTheGateIsTheEnforcementItself:
         assert _openai_llama_preemption_will_apply(backend, BUDGET) is True
         monkeypatch.setenv(switch, "0")
         assert _openai_llama_preemption_will_apply(backend, BUDGET) is False
+
+
+class TestAnExactlyCountedPromptKeepsOnlyTheNextTokenCell:
+    """The 64-token reserve covers template overhead an ESTIMATE can miss. A tokenizer count
+    already includes the template, so only llama-server's next-token check is left."""
+
+    def test_the_boundary_with_preemption_active(self):
+        from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+
+        window = 8192
+        common = dict(share = window // 4, prompt_tokens = 7000, window = window, budget = window)
+        estimated = wire_bound(preemption_active = True, **common)
+        counted = wire_bound(preemption_active = True, prompt_counted = True, **common)
+        assert estimated == window - 7000 - _RESERVE
+        # One cell short of the window: llama-server stops once n_past + 1 reaches n_ctx.
+        assert counted == window - 7000 - 1
+        assert 7000 + counted < window
+
+    def test_a_counted_prompt_at_the_window_still_gets_the_floor(self):
+        from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+        for prompt in (8190, 8191, 8192, 9000):
+            sent = wire_bound(
+                share = 2048,
+                prompt_tokens = prompt,
+                window = 8192,
+                budget = 8192,
+                preemption_active = True,
+                prompt_counted = True,
+            )
+            assert sent == max(1, 8192 - prompt - 1), (prompt, sent)
+
+    def test_without_preemption_a_counted_prompt_still_fits_its_share(self):
+        from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+
+        share = 16384 // 4
+        sent = wire_bound(
+            share = share, prompt_tokens = 1000, window = 16384, budget = 16384, prompt_counted = True
+        )
+        assert 1000 + sent == share - 1

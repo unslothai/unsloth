@@ -1077,3 +1077,26 @@ class TestTheRegistry:
         busy.register("live", tokens = 100)
         get_preemption_controller("port-2")
         assert get_preemption_controller("port-1") is busy
+
+
+class TestALoneChatIsChargedItsNextStepNotABatch:
+    """87 clear cells left no room for the next decode step; a whole batch on top refused a 7000
+    token replay at 8192 that fits alone."""
+
+    def test_the_next_decode_step_stays_clear(self):
+        controller = PreemptionController("solo-step")
+        controller.configure(
+            budget = 16384, kv_unified = True, slots = 4, draft_tokens = 6, batch_tokens = 2048
+        )
+        controller.register("only", tokens = 100, signal = PreemptSignal())
+        assert controller.room_for("only", 16297) is False
+        assert controller.cannot_ever_fit(16297) is True
+        assert controller.room_for("only", 14000) is True
+
+    def test_a_lone_replay_is_not_charged_a_whole_batch(self):
+        controller = PreemptionController("solo-replay")
+        controller.configure(budget = 8192, kv_unified = True, slots = 4, batch_tokens = 2048)
+        controller.register("only", tokens = 100, signal = PreemptSignal())
+        assert controller.cannot_ever_fit(7000) is False
+        assert controller.room_for("only", 7000) is True
+        assert controller.cannot_ever_fit(8192 - 64) is True

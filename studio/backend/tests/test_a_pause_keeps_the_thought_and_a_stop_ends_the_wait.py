@@ -28,6 +28,12 @@ from .preempt_fakes import (
 )
 
 
+def _give_up_from_the_second_pause(monkeypatch):
+    """The first pause is granted and every later one refused, whatever was decoded between."""
+    answers = iter([False])
+    monkeypatch.setattr(p, "resumes_stalled", lambda stalled: next(answers, True))
+
+
 @pytest.mark.parametrize("site", ["plain", "round", "final"])
 def test_a_resume_keeps_the_thought_that_preceded_the_prose(monkeypatch, site):
     signal = p.PreemptSignal()
@@ -96,7 +102,7 @@ def test_a_stop_during_a_pause_ends_the_wait_for_room(monkeypatch):
 
 
 def test_the_resume_cap_in_a_tool_round_keeps_the_attempt_and_its_charge(monkeypatch):
-    monkeypatch.setattr(p, "DEFAULT_MAX_PREEMPT_RESUMES", 1)
+    _give_up_from_the_second_pause(monkeypatch)
     signal = p.PreemptSignal()
     policy = DecliningPolicy()
     recorder = PreemptRecorder(
@@ -408,7 +414,7 @@ def test_a_declined_pause_hands_the_final_pass_the_whole_partial_and_the_whole_c
     # The final pass extends the declined partial in the prompt, so its snapshots carry it (a
     # non-streaming drain keeps only the last one) and its cap deducts every token that call
     # spent, the granted pause's six as well as the declined seven.
-    monkeypatch.setattr(p, "DEFAULT_MAX_PREEMPT_RESUMES", 1)
+    _give_up_from_the_second_pause(monkeypatch)
     signal = p.PreemptSignal()
     rec = PreemptRecorder(
         monkeypatch,
@@ -444,7 +450,7 @@ def test_a_declined_pause_hands_the_final_pass_the_whole_partial_and_the_whole_c
 def test_a_declined_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch):
     # Four one-token deltas spend a cap of four as the pause is declined. The decline handed
     # the final pass a cap floored at one, a token past the caller's; the turn ends instead.
-    monkeypatch.setattr(p, "DEFAULT_MAX_PREEMPT_RESUMES", 0)
+    monkeypatch.setattr(p, "DEFAULT_MAX_STALLED_RESUMES", 0)
     signal = p.PreemptSignal()
     streams = [
         [delta("a") for _ in range(4)] + [finish("length"), done()],
@@ -471,7 +477,7 @@ def test_the_final_pass_gave_up_counts_the_interrupted_attempt_once(monkeypatch,
     # The refusal never folded the attempt, so a stream with no terminal usage reported none
     # of its tokens; the not-resumed end folded it and then added the reading again.
     if ending == "declined":
-        monkeypatch.setattr(p, "DEFAULT_MAX_PREEMPT_RESUMES", 0)
+        monkeypatch.setattr(p, "DEFAULT_MAX_STALLED_RESUMES", 0)
         policy = DecliningPolicy()
     else:
         policy = RecordingPolicy(resume = False)

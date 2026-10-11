@@ -2755,6 +2755,9 @@ def _openai_llama_admission_charged_prompt_tokens(
 # Leave room for template overhead and llama-server's next-token check.
 # This margin does not cover arbitrary prompt-estimator undercounts.
 _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS = 64
+# A tokenizer count already includes the template, so only the next-token check is left:
+# llama-server stops once n_past + 1 reaches n_ctx.
+_OPENAI_LLAMA_ADMISSION_COUNTED_RESERVE_TOKENS = 1
 
 
 def _openai_llama_admission_wire_output_bound(
@@ -2764,8 +2767,10 @@ def _openai_llama_admission_wire_output_bound(
     window: int,
     budget: Optional[int] = None,
     preemption_active: bool = False,
+    prompt_counted: bool = False,
 ) -> int:
     """Bound output by the reserved allowance, context window, and cache budget.
+    ``prompt_counted`` means ``prompt_tokens`` is the tokenizer's count, not an estimate.
     Prompts too large for their share use the flat allowance rather than a one-token cap.
     While preemption can reclaim, the ceiling is the window rather than a share: the cache is
     overcommitted and the controller reclaims as the live total nears it."""
@@ -2780,7 +2785,11 @@ def _openai_llama_admission_wire_output_bound(
     if budget:
         allowance = min(allowance, max(0, budget - prompt_tokens))
     # Deduct the safety margin from the reservation; do not add unreserved output.
-    allowance -= _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS
+    allowance -= (
+        _OPENAI_LLAMA_ADMISSION_COUNTED_RESERVE_TOKENS
+        if prompt_counted
+        else _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS
+    )
     # Never zero, which llama-server refuses.
     return max(1, allowance)
 
@@ -3489,13 +3498,17 @@ def _openai_llama_admission_enforced_max_tokens(
     prompt_tokens: Optional[int] = None,
     capacity: Optional[int] = None,
     pausable: bool = True,
+    prompt_counted: bool = False,
 ) -> Optional[int]:
     """Enforce the reserved output allowance using the finalized conversation.
+    ``prompt_counted`` marks a given ``prompt_tokens`` as the tokenizer's exact count.
     Return None for disabled accounting, unpriceable media, or an explicit cap below
     the context window. Caps at or above the window count as unstated. Where preemption
     can reclaim, the whole window is offered and the controller is the enforcement.
     ``pausable`` is about THIS request: a raw relay has no generator to resume from, so it
     keeps the share unless the server parks raw streams itself."""
+    # Only a count the caller handed in can be exact; one derived below is an estimate.
+    counted_given = prompt_tokens is not None
     if capacity is None:
         capacity = _openai_llama_admission_capacity(request, llama_backend)
     if capacity <= 1:
@@ -3543,6 +3556,7 @@ def _openai_llama_admission_enforced_max_tokens(
         window = window or budget,
         budget = budget,
         preemption_active = pausable and _openai_llama_preemption_will_apply(llama_backend, budget),
+        prompt_counted = prompt_counted and counted_given,
     )
 
 
@@ -3702,6 +3716,20 @@ def _count_gguf_admission_prompt(
 ) -> int:
     """Exact prompt count plus media allowance; the whole pool if counting fails
     (the character estimate undercounts numeric text, #10671)."""
+    return _count_gguf_admission_prompt_detail(
+        llama_backend, payload, messages, tools, cancel_event
+    )[0]
+
+
+def _count_gguf_admission_prompt_detail(
+    llama_backend,
+    payload,
+    messages,
+    tools = None,
+    cancel_event = None,
+) -> tuple[int, bool]:
+    """`_count_gguf_admission_prompt`, plus whether the figure is exact: counted, with no
+    media allowance estimated on top."""
     from core.inference.chat_template_helpers import trailing_assistant_resume_kind
 
     budget = _openai_llama_admission_budget(llama_backend) or 0
@@ -3723,15 +3751,16 @@ def _count_gguf_admission_prompt(
         )
         if type(count) is not int or count <= 0:
             raise ValueError("Invalid prompt token count")
-        return count + _openai_llama_admission_media_tokens(
+        media = _openai_llama_admission_media_tokens(
             payload,
             message_image_parts = images,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             message_video_clips = _conversation_video_clips(messages),
         )
+        return count + media, media == 0
     except Exception:
         logger.debug("Prompt count unavailable; reserving the context pool", exc_info = True)
-        return budget
+        return budget, False
 
 
 async def _reserve_counted_gguf_chat(
@@ -3866,8 +3895,9 @@ def _openai_llama_admission_recost(
             return None
         capacity = _openai_llama_admission_capacity(request, llama_backend)
         vision = bool(getattr(llama_backend, "is_vision", False))
+        prompt_exact = False
         if count_prepared_prompt:
-            prompt_tokens = _count_gguf_admission_prompt(
+            prompt_tokens, prompt_exact = _count_gguf_admission_prompt_detail(
                 llama_backend, payload, conversation, injected_tools, cancel_event = cancel_event
             )
             if cancel_event is not None and cancel_event.is_set():
@@ -3884,12 +3914,18 @@ def _openai_llama_admission_recost(
                 payload, message_video_clips = _conversation_video_clips(conversation)
             )
         # Price the actual outgoing catalogue separately from the reservation catalogue.
-        wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
-            conversation,
-            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-            injected_tools = wire_tools,
-            markup = _openai_llama_admission_markup(llama_backend),
-            vision = vision,
+        # The tokenizer's count stands only when it counted that same catalogue.
+        wire_counted = prompt_exact and wire_tools is injected_tools
+        wire_prompt_tokens = (
+            prompt_tokens
+            if wire_counted
+            else _openai_llama_admission_wire_prompt_tokens(
+                conversation,
+                image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+                injected_tools = wire_tools,
+                markup = _openai_llama_admission_markup(llama_backend),
+                vision = vision,
+            )
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
@@ -3941,6 +3977,7 @@ def _openai_llama_admission_recost(
             conversation = conversation,
             prompt_tokens = wire_prompt_tokens,
             capacity = capacity,
+            prompt_counted = wire_counted,
         )
     except (LlamaAdmissionRecostRefused, LlamaAdmissionCancelled):
         raise

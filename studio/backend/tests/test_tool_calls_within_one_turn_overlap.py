@@ -659,8 +659,9 @@ class TestTheRoundIsPricedOnceForEveryCallInIt:
             )
         )
         assert sorted(budgets) == ["alpha", "beta"], budgets
-        if not isinstance(budgets["alpha"], int):
-            pytest.skip("this build does not pass result_budget_tokens")
+        assert isinstance(
+            budgets["alpha"], int
+        ), f"the call was not handed result_budget_tokens: {budgets}"
         assert budgets["alpha"] > 0, budgets
         assert budgets["beta"] == budgets["alpha"], (
             f"the round handed out {budgets}: the call that was still running priced "
