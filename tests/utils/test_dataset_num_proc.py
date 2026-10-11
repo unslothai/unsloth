@@ -606,19 +606,15 @@ def _anchor_and_count(where):
 
 
 def _num_proc_replacement():
-    """The text the block edit writes in place of the anchor."""
     return ast.literal_eval(_anchor_calls(NUM_PROC_WHERE)[0].args[2])
 
 
 def _zoo_adopted_the_num_proc_edit(source):
-    """Whether the Zoo already ships the replacement itself, which the edit's idempotence check leaves alone."""
     return _num_proc_replacement() in source
 
 
 def _zoo_source_as_anchored():
-    """The installed Zoo source, with an adopted num_proc block put back to the anchor. The drift tests below model
-    what the layered edit does to a Zoo that still carries the old block (any Zoo before the adoption), so on a newer
-    Zoo they run against that older spelling rather than testing nothing."""
+    """Installed Zoo source with an adopted num_proc block reverted to the anchor, so drift tests still bite on a newer Zoo."""
     source = _zoo_dataset_utils_source()
     if _zoo_adopted_the_num_proc_edit(source):
         anchor, _ = _anchor_and_count(NUM_PROC_WHERE)
@@ -767,8 +763,7 @@ def _apply_num_proc_edit(source):
 
 
 def test_a_zoo_that_adopted_the_num_proc_edit_is_left_alone():
-    """A Zoo that ships the replacement block verbatim is already done: no rewrite, no warning, and in particular no
-    narrow-anchor rewrite of its first line, which would leave the call's continuation lines dangling."""
+    """No rewrite and no warning; a narrow-anchor rewrite of its first line would leave continuation lines dangling."""
     source = _zoo_dataset_utils_source()
     adopted = source
     if not _zoo_adopted_the_num_proc_edit(adopted):
