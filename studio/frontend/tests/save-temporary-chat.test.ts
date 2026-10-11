@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Saving a temporary chat to history. runtime-provider.tsx cannot load under stubs, so the
-// ordering helper is run on its own and the rest is pinned on source.
+// runtime-provider.tsx cannot load under stubs, so test its ordering helper directly and pin the rest on source.
 
 import assert from "node:assert/strict";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { orderParentsFirst } from "../src/features/chat/utils/message-order.ts";
 
 const provider = readSrc("features/chat/runtime-provider.tsx");
 const storage = readSrc("features/chat/utils/chat-history-storage.ts");
@@ -16,9 +16,11 @@ const button = readSrc("features/chat/components/temporary-chat-save.tsx");
 const page = readSrc("features/chat/chat-page.tsx");
 
 type Item = { parentId: string | null; message: { id: string } };
+// parentsFirst delegates to dependency-free orderParentsFirst so the isolated scope can use it directly.
 const parentsFirst = new Function(
+  "orderParentsFirst",
   `${stripTypeScriptTypes(provider.slice(provider.indexOf("function parentsFirst("), provider.indexOf("/** Save a temporary chat to history")))}\nreturn parentsFirst;`,
-)() as (items: Item[]) => Item[];
+)(orderParentsFirst) as (items: Item[]) => Item[];
 
 const item = (id: string, parentId: string | null = null): Item => ({ parentId, message: { id } });
 const ids = (items: Item[]) => items.map((i) => i.message.id);
@@ -30,7 +32,7 @@ function persistBody(): string {
 }
 
 test("every message is saved after its parent, on every branch", () => {
-  // Two replies to u1 (a regenerate), and a child listed before its parent.
+  // the input covers a regenerated reply and a child listed before its parent.
   const ordered = ids(
     parentsFirst([item("a2", "u2"), item("u1"), item("a1", "u1"), item("u2", "a1"), item("b1", "u1")]),
   );

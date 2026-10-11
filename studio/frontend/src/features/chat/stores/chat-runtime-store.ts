@@ -59,11 +59,13 @@ import {
 import {
   PERSISTED_INFERENCE_PARAM_KEYS,
   REMEMBERED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_MAX_TOKENS_MAX,
   type PersistedInferenceParamKey,
   getRememberedParamsPatch,
   getReplayedParams,
   pickRememberedChanges,
   pickRememberedParams,
+  recordMaxTokensAsMax,
   setInferenceParam,
 } from "../lib/per-model-params";
 import {
@@ -81,6 +83,7 @@ import {
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
+  normalizeResearchMcpSources,
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
   MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
   normalizeStoredPermissionMode,
@@ -112,7 +115,10 @@ import {
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { MmprojFallbackReason } from "../types/api";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 import {
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
@@ -134,6 +140,9 @@ export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
   "unsloth_chat_deep_research_website_policy";
 export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
   "unsloth_chat_deep_research_model_timeout";
+export const CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY =
+  "unsloth_chat_deep_research_mcp_sources";
+export { MAX_RESEARCH_MCP_SOURCES } from "../utils/mirrored-chat-settings";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -245,6 +254,19 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
     };
   } catch {
     return DEFAULT_RESEARCH_WEBSITE_POLICY;
+  }
+}
+
+function loadResearchMcpSources(): ResearchMcpSource[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return normalizeResearchMcpSources(
+      JSON.parse(
+        window.localStorage.getItem(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY) || "[]",
+      ),
+    );
+  } catch {
+    return [];
   }
 }
 
@@ -699,6 +721,10 @@ const MIRRORED_SETTINGS = {
   },
   researchWebsitePolicy: {
     storageKey: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
+    ...JSON_SETTING,
+  },
+  researchMcpSources: {
+    storageKey: CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
     ...JSON_SETTING,
   },
   researchModelTimeoutSeconds: {
@@ -1933,6 +1959,7 @@ export function normalizeSpeculativeType(
     return "ngram";
   }
   if (s === "mtp+ngram") return "mtp+ngram";
+  if (s === "eagle3") return s;
   // Comma-chained legacy values (e.g. from older backend echoes).
   const parts = s
     .split(",")
@@ -1952,21 +1979,27 @@ export function normalizeSpeculativeType(
 export function resolveLoadedSpeculativeSettings(response: {
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
 }): {
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  specDraftModel: string | null;
+  loadedSpecDraftModel: string | null;
 } {
   const loadedSpeculativeType = normalizeSpeculativeType(
     response.speculative_type,
   );
   const loadedSpecDraftNMax = response.spec_draft_n_max ?? null;
+  const loadedSpecDraftModel = response.spec_draft_model ?? null;
   return {
     speculativeType: loadedSpeculativeType,
     loadedSpeculativeType,
     specDraftNMax: loadedSpecDraftNMax,
     loadedSpecDraftNMax,
+    specDraftModel: loadedSpecDraftModel,
+    loadedSpecDraftModel,
   };
 }
 
@@ -2336,31 +2369,30 @@ type ChatRuntimeStore = {
   /** Whether the provider exposes server-side image generation (OpenAI Responses API).
    *  Local models never receive it. */
   supportsBuiltinImageGeneration: boolean;
-  /** Whether the provider exposes server-side web_fetch (Anthropic `web_fetch_*`). Gates the
-   *  composer's Fetch pill, independent of Search. */
+  /** Anthropic server-side web_fetch_* gates Fetch independently of Search. */
   supportsBuiltinWebFetch: boolean;
-  /** Mirrors the backend Settings switch "Keep multiple models loaded". */
+  /** mirrors the backend Settings switch "Keep multiple models loaded". */
   keepModelsLoaded: boolean;
   toolsEnabled: boolean;
-  /** Persisted Code preference. Use codeToolsOn() for the effective value. */
+  /** persisted Code preference; codeToolsOn() gives the effective value. */
   codeToolsEnabled: boolean;
-  /** Session-only: a manual Code-off under Full access, so the grant is not re-applied over it.
-   *  Cleared on entering or leaving the level. */
+  /** session-only Code opt-out under Full access; cleared on level changes. */
   codeToolsDeclinedUnderFullAccess: boolean;
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
   researchModelTimeoutSeconds: number;
-  // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
+  researchMcpSources: ResearchMcpSource[];
+  // offers the Canvas toggle in the composer + menu; hidden by default.
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
-  // web_search also returns images the model can place inline; read by the backend per call.
+  // backend reads per call: web_search returns images for inline model output.
   searchImages: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
   projectAttachmentTarget: ProjectAttachmentTarget;
-  /** Per-chat override of that default, so a pick in one chat does not redirect the rest. Session-only. */
+  /** session-only per-chat target override; leaves other chats unchanged. */
   projectAttachmentTargetByThread: Record<string, ProjectAttachmentTarget>;
   ragMode: RagMode;
   ragTopK: number;
@@ -2414,6 +2446,7 @@ type ChatRuntimeStore = {
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
+  deduplicateToolCalls: boolean;
   autoCompactEnabled: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
@@ -2439,6 +2472,9 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** MLX companion drafter, a repo id or local path (null = discovery). */
+  specDraftModel: string | null;
+  loadedSpecDraftModel: string | null;
   /** User reply-width override, for either backend (null = server default). GGUF spends it
    *  on llama-server's --parallel slots; MLX on how many replies decode together.
    *  Never re-seeded from an echo: the resolved count would pin a blank control. */
@@ -2648,6 +2684,7 @@ type ChatRuntimeStore = {
   setDeepResearchEnabled: (enabled: boolean) => void;
   setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
   setResearchModelTimeoutSeconds: (seconds: number) => void;
+  setResearchMcpSources: (sources: ResearchMcpSource[]) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setSearchImages: (enabled: boolean) => void;
@@ -2707,6 +2744,7 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
+  setDeduplicateToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
@@ -2752,6 +2790,7 @@ type ScalarSettingKey =
   | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
+  | "deduplicateToolCalls"
   | "autoCompactEnabled"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
@@ -2762,6 +2801,7 @@ type ScalarSettingKey =
   | "webFetchToolsEnabled"
   | "deepResearchEnabled"
   | "researchWebsitePolicy"
+  | "researchMcpSources"
   | "researchModelTimeoutSeconds"
   | "mcpEnabledForChat"
   | "confirmToolCalls"
@@ -2802,6 +2842,7 @@ const SCALAR_SETTING_KEYS = [
   "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "autoCompactEnabled",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
@@ -2812,6 +2853,7 @@ const SCALAR_SETTING_KEYS = [
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
   "mcpEnabledForChat",
   "confirmToolCalls",
@@ -3062,7 +3104,13 @@ function getParamsByModelAfterEdit(
       changedParams,
       // Same filter as the outgoing snapshot: an edit to a key the memory keeps but the chat does
       // not still records the WHOLE snapshot, riding the chat's sampling into the entry.
-      pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
+      recordMaxTokensAsMax(
+        pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
+        rememberedWindow(nextParams.checkpoint),
+        changedParams.maxTokens === undefined
+          ? (outgoing ?? state.paramsByModel)[nextParams.checkpoint]?.maxTokens
+          : undefined,
+      ),
     ),
     nextParams.checkpoint,
   );
@@ -3077,8 +3125,13 @@ function rememberOutgoingModel(
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
   }
-  const snapshot = pickRememberedParams(
+  const picked = pickRememberedParams(
     withoutActiveThreadParams(state, outgoing),
+  );
+  const snapshot = recordMaxTokensAsMax(
+    picked,
+    rememberedWindow(outgoing.checkpoint),
+    state.paramsByModel[outgoing.checkpoint]?.maxTokens,
   );
   // Only to seed a model with no entry: later changes are written key by key, and a full
   // snapshot would put this browser's copy of untouched keys over another tab's.
@@ -3114,7 +3167,10 @@ function persistParamEdit(
   }
   // Only what moved: the server merges per key, so sending the rest would overwrite another
   // tab's copy of every other key.
-  const rememberedChanges = pickRememberedChanges(changedParams);
+  const rememberedChanges = recordMaxTokensAsMax(
+    pickRememberedChanges(changedParams),
+    modelId ? rememberedWindow(modelId) : null,
+  );
   saveSettingsPatch({
     inferenceParams: changedParams,
     ...(paramsByModel && modelId && hasKeys(rememberedChanges)
@@ -3202,6 +3258,13 @@ function loadedContextFor(checkpoint: string): number | null {
   return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
 }
 
+/** The window a memory entry's "Max" is measured against. Keyed by checkpoint, never
+ *  loadedContextLength: a switch records the outgoing model after the incoming one may have
+ *  published its own. An external model's cap is the provider's, not a window. */
+function rememberedWindow(checkpoint: string): number | null {
+  return isExternalModelId(checkpoint) ? null : loadedContextFor(checkpoint);
+}
+
 function capParamsToLoadedContext(
   state: ChatRuntimeStore,
   params: InferenceParams,
@@ -3210,6 +3273,10 @@ function capParamsToLoadedContext(
     ? null
     : state.loadedContextLength;
   const cap = loadedContextFor(params.checkpoint) ?? residentContextCap;
+  // A migrated row can carry the Max marker; on screen it is this load's window.
+  if (params.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+    return { ...params, maxTokens: cap ?? state.params.maxTokens };
+  }
   return cap !== null && params.maxTokens > cap
     ? { ...params, maxTokens: cap }
     : params;
@@ -3342,7 +3409,10 @@ function getHydratedSettingsState(
     // The entry arriving for this model predates the fenced edit, so lay the edit over it or the
     // next defaults update replays the stale one.
     if (checkpoint) {
-      const edited = pickLocallyEditedParams(params, versions);
+      const edited = recordMaxTokensAsMax(
+        pickLocallyEditedParams(params, versions),
+        rememberedWindow(checkpoint),
+      );
       if (hasKeys(edited)) {
         hydrated[checkpoint] = { ...hydrated[checkpoint], ...edited };
       }
@@ -3351,7 +3421,10 @@ function getHydratedSettingsState(
   } else if (checkpoint) {
     // No map in the response: an install upgraded from before this feature. With no entry the
     // next defaults update puts the recommendation back over the fenced edit.
-    const edited = pickLocallyEditedParams(params, versions);
+    const edited = recordMaxTokensAsMax(
+      pickLocallyEditedParams(params, versions),
+      rememberedWindow(checkpoint),
+    );
     if (hasKeys(edited)) {
       nextState.paramsByModel = {
         ...state.paramsByModel,
@@ -3378,7 +3451,10 @@ function getHydratedSettingsState(
       }
     }
     if (hasKeys(inherited)) {
-      nextState.paramsByModel = { ...byModel, [left]: inherited };
+      nextState.paramsByModel = {
+        ...byModel,
+        [left]: recordMaxTokensAsMax(inherited, rememberedWindow(left)),
+      };
     }
   }
   // Same fence as the scalar loop: a click made while this response was out is the newer
@@ -3472,6 +3548,15 @@ function getHydratedSettingsState(
       ) {
         setInferenceParam(replayed, key, value);
       }
+    }
+    // "Max" is the window this model is on; with none known, what is on screen stands.
+    if (replayed.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+      replayed.maxTokens =
+        rememberedWindow(params.checkpoint) ??
+        (isExternalModelId(params.checkpoint)
+          ? null
+          : state.loadedContextLength) ??
+        params.maxTokens;
     }
     // The same cap the load and status replays apply.
     nextState.params = replayed;
@@ -3842,7 +3927,10 @@ function adoptMigratedFieldsAfterLocalEdit(
     return {
       // As the normal application path does: applying a thread pin advances no
       // mutation version, so nothing above would have noticed it.
-      params: restoreThreadScopedParams(nextParams),
+      params: capParamsToLoadedContext(
+        state,
+        restoreThreadScopedParams(nextParams),
+      ),
       ...(storedRow
         ? {
             paramsByModel: {
@@ -4158,6 +4246,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
   researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
+  researchMcpSources: loadResearchMcpSources(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -4165,11 +4254,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
-  // Mirrors permissionMode (gate requested for ask/auto) so both controls agree on load.
+  // mirrors permissionMode so both controls agree on load.
   confirmToolCalls:
     INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
-  // Never restore Bypass Permissions from storage: it disables the sandbox and the
-  // confirmation gate, so it needs the warning dialog each session.
+  // no stored bypass: sandbox and gate removal needs a warning each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
   sandboxLevel: loadSandboxLevel(),
@@ -4199,6 +4287,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
+  deduplicateToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
@@ -4218,6 +4307,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  specDraftModel: null,
+  loadedSpecDraftModel: null,
   nParallel: null,
   loadedNParallel: null,
   reasoningBudget: -1,
@@ -4796,7 +4887,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged && options?.persist !== false
           ? rememberOutgoingModel(state, state.params)
           : null;
-      const baseParams = getReplayedParams(
+      // A compare pane's load reaches the store only here.
+      const previousWindow = rememberedWindow(modelId);
+      noteLoadedContext(modelId, options?.maxTokensCap);
+      let baseParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
         state.params,
@@ -4804,6 +4898,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged,
         options?.maxTokensCap,
       );
+      // The same model reloaded at a new context replays nothing, so Max has to follow the window here.
+      if (
+        !checkpointChanged &&
+        options?.maxTokensCap !== undefined &&
+        ((previousWindow !== null && state.params.maxTokens >= previousWindow) ||
+          (state.rememberParamsPerModel &&
+            state.paramsByModel[modelId]?.maxTokens ===
+              REMEMBERED_MAX_TOKENS_MAX))
+      ) {
+        baseParams = { ...baseParams, maxTokens: options.maxTokensCap };
+      }
       // Clamp maxTokens to the new model's cap when switching into an external model, so a value
       // carried over from a local session cannot exceed the slider's max.
       let nextMaxTokens = baseParams.maxTokens;
@@ -5167,6 +5272,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      specDraftModel: null,
+      loadedSpecDraftModel: null,
       nParallel: null,
       loadedNParallel: null,
       reasoningBudget: -1,
@@ -5416,6 +5523,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setResearchMcpSources: (researchMcpSources) =>
+    set((state) => {
+      const sources = normalizeResearchMcpSources(researchMcpSources);
+      persistSetting(
+        CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
+        JSON.stringify(sources),
+      );
+      return {
+        researchMcpSources: sources,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set(() => {
       saveBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, collapseHtmlArtifacts);
@@ -5638,14 +5757,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const snapshot = pickRememberedParams(
         withoutActiveThreadParams(state, state.params),
       );
+      // The global set keeps the number; only the model's entry records "Max".
+      const remembered = recordMaxTokensAsMax(
+        snapshot,
+        rememberedWindow(state.params.checkpoint),
+        state.paramsByModel[state.params.checkpoint]?.maxTokens,
+      );
       const paramsByModel = trackParamsByModel(
         state,
         getRememberedParamsPatch(
           rememberParamsPerModel,
           state.paramsByModel,
           state.params.checkpoint,
-          snapshot,
-          snapshot,
+          remembered,
+          remembered,
         ),
         state.params.checkpoint,
       );
@@ -5821,6 +5946,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         nudgeToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setDeduplicateToolCalls: (deduplicateToolCalls) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "deduplicateToolCalls",
+        deduplicateToolCalls,
+        state.deduplicateToolCalls,
+      );
+      return {
+        deduplicateToolCalls,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

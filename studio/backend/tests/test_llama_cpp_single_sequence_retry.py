@@ -155,8 +155,9 @@ def test_the_fit_recovery_rungs_stand_down_for_this_refusal():
 
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_capability_crash = _tensor_capability_crash or self._is_kv_unified_refused" in src
-    # Every --fit rung, and only those: the HIP rung keeps its narrower gate.
-    assert src.count("and not _capability_crash") == 3
+    # Every --fit rung and the MoE cache rung, and only those: the HIP rung keeps its
+    # narrower gate.
+    assert src.count("and not _capability_crash") == 4
     assert src.count("and not _tensor_capability_crash") == 1
 
 

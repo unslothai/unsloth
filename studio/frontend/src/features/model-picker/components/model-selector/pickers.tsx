@@ -123,7 +123,6 @@ import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
   Add01Icon,
   ArrowUpDownIcon,
-  AudioWave01Icon,
   Cancel01Icon,
   Copy01Icon,
   DashboardCircleIcon,
@@ -139,6 +138,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
@@ -560,7 +560,7 @@ const CAPABILITY_BADGES: {
     // vision indigo's lightness and chroma, as sky-300 read brighter than the tags beside it.
     tone: "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]",
     Glyph: (props) => (
-      <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
+      <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.8} {...props} />
     ),
   },
 ];
