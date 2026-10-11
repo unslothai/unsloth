@@ -54,6 +54,11 @@ export function openLocalCopy(id: string, app?: string): Promise<void> {
   return invoke<void>("browser_file_open", { id, with: app ?? null });
 }
 
+/** The copy's path, refused once the file is gone so withLocalCopy writes it again. */
+export function localCopyPath(id: string): Promise<string> {
+  return invoke<string>("browser_file_path", { id });
+}
+
 export function revealLocalCopy(id: string): Promise<void> {
   return invoke<void>("browser_file_reveal", { id });
 }

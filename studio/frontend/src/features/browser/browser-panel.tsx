@@ -110,7 +110,7 @@ import { isDangerousDownload } from "./download-safety";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
 import {
   type OpenWithApp,
-  localCopy,
+  localCopyPath,
   openLocalCopy,
   openWithApps,
   revealLocalCopy,
@@ -2138,7 +2138,7 @@ function CopySplit({
   };
   const copyPath = () => {
     if (!blob) return;
-    void copyToClipboardFrom(() => localCopy(blob, entry.name).then((copy) => copy.path)).then((ok) =>
+    void copyToClipboardFrom(() => withLocalCopy(blob, entry.name, (copy) => localCopyPath(copy.id))).then((ok) =>
       ok ? toast.success(t("browser.file.pathCopied")) : toast.error(t("browser.file.copyFailed")),
     );
   };

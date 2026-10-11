@@ -2271,6 +2271,7 @@ fn main() {
             browser_open_with::browser_file_local_copy,
             browser_open_with::browser_file_apps,
             browser_open_with::browser_file_open,
+            browser_open_with::browser_file_path,
             browser_open_with::browser_file_reveal,
             browser_capture::browser_view_print,
             set_training_active,

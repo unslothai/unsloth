@@ -68,11 +68,13 @@ test("the desktop Open lists apps, opens a local copy, and never opens programs"
   assert.match(openWith, /"browser_file_local_copy"/);
   const panel = read("features/browser/browser-panel.tsx");
   assert.match(panel, /const runsCode = isDangerousDownload\(entry\.name\);/);
+  // Copy path revalidates the copy like Open does, so a moved or deleted one is written again.
+  assert.match(panel, /withLocalCopy\(blob, entry\.name, \(copy\) => localCopyPath\(copy\.id\)\)/);
   const rust = readFileSync(new URL("../../src-tauri/src/browser_open_with.rs", import.meta.url), "utf8");
   assert.match(rust, /if crate::browser_downloads::runs_code\(&path\) \{\s*return Err/);
   assert.match(rust, /if !app_paths\(path\)\.0\.iter\(\)\.any\(\|app\| app == with\)/);
   const main = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
-  for (const command of ["browser_file_local_copy", "browser_file_apps", "browser_file_open", "browser_file_reveal"]) {
+  for (const command of ["browser_file_local_copy", "browser_file_apps", "browser_file_open", "browser_file_path", "browser_file_reveal"]) {
     assert.match(main, new RegExp(`browser_open_with::${command},`), command);
   }
 });

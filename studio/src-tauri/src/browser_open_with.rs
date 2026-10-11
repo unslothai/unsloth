@@ -151,6 +151,12 @@ pub fn browser_file_open(
 }
 
 #[tauri::command]
+pub fn browser_file_path(webview: tauri::Webview, id: String) -> Result<String, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    Ok(copy_path(&id)?.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 pub fn browser_file_reveal(webview: tauri::Webview, id: String) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&webview)?;
     crate::native_intents::reveal_in_file_manager(&copy_path(&id)?)
