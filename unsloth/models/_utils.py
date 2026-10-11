@@ -4053,7 +4053,7 @@ def has_internet(
 
 
 def _get_statistics(statistics = None, force_download = True):
-    # Download counter: fetches the tiny public repo unslothai/<statistics> from HF so broken environments show up in its download total. Only per-repo totals are public; HF still sees each request like any download.
+    # Download counter: after an 8.8.8.8:53 reachability probe, fetches the tiny public repo unslothai/<statistics> from HF so broken environments show up in its download total. Only per-repo totals are public; HF still sees each request like any download.
     n_cpus = psutil.cpu_count(logical = False)
     keynames = "\n" + "\n".join(os.environ.keys())
     global USE_MODELSCOPE
@@ -4123,11 +4123,13 @@ def _get_statistics(statistics = None, force_download = True):
 
             def stats_check():
                 with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
+                    # token=False: a logged-in user's HF token must not tie these buckets to their account.
                     snapshot_download(
                         f"unslothai/{statistics}",
                         force_download = True,
                         cache_dir = f,
                         local_dir = f,
+                        token = False,
                     )
 
             time_limited_stats_check = execute_with_time_limit(120)(stats_check)
