@@ -181,3 +181,48 @@ def test_chunked_ce_backward_follows_forward_autocast():
         torch.autograd.grad(ours, [hidden, weight]), torch.autograd.grad(ref, [hidden, weight])
     ):
         torch.testing.assert_close(a, b, rtol = 1e-3, atol = 1e-3)
+
+
+def test_chunked_ce_empty_input_is_zero_with_grad():
+    # DiffusionGemma's encoder AR slice of a one-token batch has no rows at all.
+    hidden = torch.randn(0, 8, requires_grad = True)
+    weight = torch.randn(11, 8, requires_grad = True)
+    weighted, total, count = chunked_cross_entropy(
+        hidden, torch.empty(0, dtype = torch.long), weight = weight
+    )
+    weighted.backward()
+    assert float(weighted) == 0.0 and int(count) == 0
+    assert weight.grad is not None and float(weight.grad.abs().sum()) == 0.0
+
+
+def test_chunked_ce_leaves_the_autocast_cache_alone():
+    # A later projection of the same weight in the same autocast region must still reach the weight (older
+    # torch reused the gradient-less cast made inside the custom forward).
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.manual_seed(0)
+    weight = torch.randn(11, 8, device = device, requires_grad = True)
+    hidden = torch.randn(5, 8, device = device)
+    targets = torch.randint(0, 11, (5,), device = device)
+
+    def grads(with_ce):
+        weight.grad = None
+        with torch.autocast(device, dtype = torch.bfloat16):
+            total = F.linear(hidden, weight).float().sum() * 0
+            if with_ce:
+                total = total + chunked_cross_entropy(hidden, targets, weight = weight)[0]
+            total = total + F.linear(hidden, weight).float().sum()
+        total.backward()
+        return weight.grad.clone()
+
+    ce_only = torch.func.grad(
+        lambda w: _dense(hidden, targets, (targets >= 0).float(), weight = w)[0]
+    )(weight.detach())
+    torch.testing.assert_close(grads(True) - grads(False), ce_only, rtol = 5e-2, atol = 5e-2)
+
+
+def test_chunked_ce_ignored_overflow_rows_do_not_poison_grads():
+    hidden = torch.tensor([[1.0, 0.0], [float("inf"), 0.0]], requires_grad = True)
+    targets = torch.tensor([0, -100])
+    weighted, _, _ = chunked_cross_entropy(hidden, targets)
+    weighted.backward()
+    assert torch.isfinite(hidden.grad).all()

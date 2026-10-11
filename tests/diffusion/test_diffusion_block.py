@@ -311,3 +311,27 @@ def test_unknown_time_weighting_is_rejected():
     inputs = _batch([3], [20], 20)
     with pytest.raises(ValueError, match = "diffusion_time_weighting"):
         llada2.compute_loss(_LM(), inputs, SimpleNamespace(diffusion_time_weighting = "inverse-t"))
+
+
+def test_inverse_t_with_zero_noise_floor_stays_finite():
+    # diffusion_eps = 0 can draw p = 0 for a row with nothing masked: no 0 / 0 in its weights.
+    llada2, sdar = _profiles()
+    for profile in (llada2, sdar):
+        model = _LM()
+        inputs = _batch([2, 3], [12, 10], 12)
+        clean, maskable, valid = profile.build_batch(model, inputs, SimpleNamespace())
+        p = torch.tensor([0.0, 0.5])
+        masked = torch.zeros_like(maskable)
+        masked[1, 4] = True
+        noisy = torch.where(masked, 0, clean)
+        loss = profile.loss_from_noise(
+            model,
+            clean,
+            noisy,
+            masked,
+            maskable,
+            p,
+            valid,
+            SimpleNamespace(diffusion_time_weighting = "inverse_t"),
+        )
+        assert torch.isfinite(loss), profile.name

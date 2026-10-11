@@ -48,6 +48,9 @@ def _text_tokenizer(tokenizer):
     return getattr(tokenizer, "tokenizer", tokenizer)
 
 
+_UNIFORM_NOISE = frozenset({"diffusion_gemma"})
+
+
 def _profile_mask_id(base, tokenizer, name):
     from .diffusion_profiles import diffusion_profiles
 
@@ -63,6 +66,8 @@ def _profile_mask_id(base, tokenizer, name):
     for value in candidates:
         if value is not None:
             return int(value)
+    if name in _UNIFORM_NOISE:
+        return None  # uniform-noise families (DiffusionGemma) have no [MASK] token to strip
     raise ValueError(f"Unsloth: no [MASK] token id for the {name} sampler.")
 
 
@@ -437,19 +442,31 @@ def _cancellation(base, stop_callback):
         if stop_callback():
             raise DiffusionGenerationCancelled("Unsloth: diffusion generation cancelled.")
 
-    # On the input embeddings: every forward goes through them, including DiffusionGemma's generate, which
-    # calls its encoder / decoder directly rather than the top-level forward.
-    try:
-        target = base.get_input_embeddings()
-    except (AttributeError, NotImplementedError):
-        target = None
-    handle = (target if isinstance(target, torch.nn.Module) else base).register_forward_pre_hook(
-        check, with_kwargs = True
-    )
+    # On every embedding table: each denoising forward reads one, including DiffusionGemma's generate, which
+    # calls its encoder and decoder (separate embeddings) directly rather than the top-level forward.
+    targets = [m for m in base.modules() if isinstance(m, torch.nn.Embedding)] or [base]
+    handles = [m.register_forward_pre_hook(check, with_kwargs = True) for m in targets]
     try:
         yield
     finally:
-        handle.remove()
+        for handle in handles:
+            handle.remove()
+
+
+@contextlib.contextmanager
+def _restore_attention_modes(base):
+    """Nemotron-Labs-Diffusion's generate flips each layer's `self_attn.diffusion_lm` for its causal prefill
+    and flips it back at the end; a cancelled generate would leave the model causal. Put them back."""
+    saved = [
+        (module, module.diffusion_lm)
+        for module in base.modules()
+        if isinstance(getattr(module, "diffusion_lm", None), bool)
+    ]
+    try:
+        yield
+    finally:
+        for module, value in saved:
+            module.diffusion_lm = value
 
 
 @contextlib.contextmanager
@@ -495,7 +512,7 @@ def generate_text(
         if seed is not None
         else contextlib.nullcontext()
     )
-    with rng, _eval_mode(base), _cancellation(base, stop_callback):
+    with rng, _eval_mode(base), _restore_attention_modes(base), _cancellation(base, stop_callback):
         if seed is not None:
             torch.manual_seed(int(seed))
         generated = sampler(
@@ -516,5 +533,6 @@ def generate_text(
         if token in eos_ids:
             tokens = tokens[:index]
             break
-    tokens = [token for token in tokens if token != mask_id]
+    if mask_id is not None:
+        tokens = [token for token in tokens if token != mask_id]
     return _text_tokenizer(tokenizer).decode(tokens, skip_special_tokens = True).strip()

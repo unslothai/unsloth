@@ -435,3 +435,61 @@ def test_diffusion_lora_init_follows_random_state():
         return next(p for n, p in model.named_parameters() if "lora_A" in n).detach().clone()
 
     assert torch.equal(lora_a(0), lora_a(1))
+
+
+def test_get_peft_model_keeps_an_existing_adapter():
+    # Continued training from a saved adapter must not re-inject a fresh one over the learned weights.
+    import torch.nn as nn
+
+    from unsloth.models.diffusion import FastDiffusionModel
+
+    class Toy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(model_type = "toy", to_dict = lambda: {})
+            self.q_proj = nn.Linear(8, 8)
+
+    model = FastDiffusionModel.get_peft_model(
+        Toy(), r = 4, target_modules = ["q_proj"], use_gradient_checkpointing = False
+    )
+    lora_b = next(p for n, p in model.named_parameters() if "lora_B" in n)
+    with torch.no_grad():
+        lora_b.fill_(0.75)
+    again = FastDiffusionModel.get_peft_model(
+        model, r = 4, target_modules = ["q_proj"], use_gradient_checkpointing = False
+    )
+    assert again is model
+    kept = next(p for n, p in again.named_parameters() if "lora_B" in n)
+    assert torch.all(kept == 0.75) and kept.requires_grad
+
+
+def test_cancellation_hooks_every_embedding_and_restores_attention_modes():
+    import torch.nn as nn
+
+    from unsloth.models import diffusion_samplers
+
+    class Attn(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.diffusion_lm = True
+
+    class EncDec(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.encoder_embed = nn.Embedding(4, 2)
+            self.decoder_embed = nn.Embedding(4, 2)
+            self.attn = Attn()
+
+    base = EncDec()
+    calls = []
+    with pytest.raises(diffusion_samplers.DiffusionGenerationCancelled):
+        with (
+            diffusion_samplers._restore_attention_modes(base),
+            diffusion_samplers._cancellation(base, lambda: calls.append(1) or len(calls) > 1),
+        ):
+            base.encoder_embed(torch.tensor([0]))
+            base.attn.diffusion_lm = False  # generate's causal prefill
+            base.decoder_embed(torch.tensor([0]))  # the decoder's own table also checks
+    assert len(calls) == 2
+    assert base.attn.diffusion_lm is True
+    assert not base.encoder_embed._forward_pre_hooks and not base.decoder_embed._forward_pre_hooks

@@ -21,6 +21,7 @@ __all__ = [
     "fusable_head",
     "head_returns_hidden",
     "is_distributed_wrapper",
+    "is_plain_linear",
 ]
 
 _CHUNK_BYTES = int(os.environ.get("UNSLOTH_DIFFUSION_CE_CHUNK_BYTES", 256 * 1024 * 1024))
@@ -88,6 +89,8 @@ def _chunk_backward(h, weight, bias, targets, token_weights, lse, grad, softcap)
     dz = dz * scale[:, None]
     if softcap is not None:
         dz = dz * (1 - tanh * tanh)
+    # Select, not multiply: an ignored row can overflow (fp16 heads), and 0 * inf is NaN.
+    dz = torch.where(valid[:, None], dz, 0.0)
     return dz.to(h.dtype)
 
 
@@ -115,6 +118,26 @@ def _chunk(tensor, start, rows, fill):
 class _ChunkedCrossEntropy(torch.autograd.Function):
     @staticmethod
     def forward(ctx, hidden, weight, bias, targets, token_weights, softcap, compiled):
+        device_type = hidden.device.type
+        ctx.autocast = (
+            device_type,
+            torch.is_autocast_enabled(device_type),
+            torch.get_autocast_dtype(device_type),
+        )
+        # Casts made here carry no autograd history, so they must not land in the enclosing autocast cache,
+        # where a later projection of the same weight would reuse them and lose its weight gradient.
+        with torch.autocast(
+            device_type = device_type,
+            dtype = ctx.autocast[2],
+            enabled = ctx.autocast[1],
+            cache_enabled = False,
+        ):
+            return _ChunkedCrossEntropy._forward(
+                ctx, hidden, weight, bias, targets, token_weights, softcap, compiled
+            )
+
+    @staticmethod
+    def _forward(ctx, hidden, weight, bias, targets, token_weights, softcap, compiled):
         forward_kernel, _ = _kernels(compiled)
         n = hidden.shape[0]
         vocab = hidden.shape[1] if weight is None else weight.shape[0]
@@ -135,22 +158,19 @@ class _ChunkedCrossEntropy(torch.autograd.Function):
             weighted = weighted + w_sum
             total = total + ce_sum
             lses.append(lse)
-        ctx.save_for_backward(hidden, weight, bias, targets, token_weights, torch.cat(lses))
+        lse = torch.cat(lses) if lses else hidden.new_zeros((0,), dtype = torch.float32)
+        ctx.save_for_backward(hidden, weight, bias, targets, token_weights, lse)
         ctx.rows, ctx.softcap, ctx.compiled = rows, softcap, compiled
-        # Backward must recompute the logits in the forward's precision, or softmax and logsumexp disagree.
-        device_type = hidden.device.type
-        ctx.autocast = (
-            device_type,
-            torch.is_autocast_enabled(device_type),
-            torch.get_autocast_dtype(device_type),
-        )
         ctx.mark_non_differentiable(total)
         return weighted, total
 
     @staticmethod
     def backward(ctx, grad_weighted, grad_total):
+        # Recompute the logits in the forward's precision, or softmax and logsumexp disagree.
         device_type, enabled, dtype = ctx.autocast
-        with torch.autocast(device_type = device_type, dtype = dtype, enabled = enabled):
+        with torch.autocast(
+            device_type = device_type, dtype = dtype, enabled = enabled, cache_enabled = False
+        ):
             return _ChunkedCrossEntropy._backward(ctx, grad_weighted)
 
     @staticmethod
@@ -238,6 +258,18 @@ def is_distributed_wrapper(model):
     )
 
 
+def is_plain_linear(module):
+    """An nn.Linear whose output is exactly F.linear(x, weight, bias): no subclass (LoRA / quantized), no
+    accelerate offload hook, no instance-level forward and no forward hooks."""
+    return (
+        type(module) is torch.nn.Linear
+        and not hasattr(module, "_hf_hook")
+        and "forward" not in vars(module)
+        and not module._forward_hooks
+        and not module._forward_pre_hooks
+    )
+
+
 def fusable_head(model, base):
     """The plain nn.Linear output head whose input can be taken instead of logits, or None (dense logits).
 
@@ -252,9 +284,7 @@ def fusable_head(model, base):
         return cached[1]
     config = getattr(base, "config", None)
     ok = (
-        type(head) is torch.nn.Linear
-        and not hasattr(head, "_hf_hook")
-        and "forward" not in vars(head)
+        is_plain_linear(head)
         and not getattr(
             config, "weight_tying", False
         )  # LLaDA: tied head is F.linear on wte, not this module

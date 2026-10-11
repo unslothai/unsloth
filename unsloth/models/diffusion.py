@@ -528,7 +528,20 @@ class FastDiffusionModel:
             raise ValueError(
                 "Unsloth: LoftQ is not supported for text-diffusion models yet. Use loftq_config = None."
             )
-        from peft import LoraConfig, get_peft_model as peft_get_peft_model
+        from peft import LoraConfig, PeftModel, get_peft_model as peft_get_peft_model
+
+        if isinstance(model, PeftModel):
+            # A loaded adapter (continued training, resume) keeps its weights: re-injecting would start over.
+            for name, param in model.named_parameters():
+                if "lora_" in name:
+                    param.requires_grad_(True)
+            if use_gradient_checkpointing:
+                model.gradient_checkpointing_enable()
+                if hasattr(model, "enable_input_require_grads"):
+                    model.enable_input_require_grads()
+            model._unsloth_slow_diffusion = True
+            model._unsloth_gradient_checkpointing = use_gradient_checkpointing
+            return model
 
         profile = resolve_diffusion_profile(getattr(model, "config", None))
         if target_modules is None:

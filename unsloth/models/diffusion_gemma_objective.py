@@ -170,7 +170,15 @@ class DiffusionGemmaProfile(DiffusionProfile):
         hidden_states = outputs.encoder_last_hidden_state.to(lm_head.weight.dtype)
         ar_mask = attention_mask[:, :-1].bool() & attention_mask[:, 1:].bool()
         ar_targets = torch.where(ar_mask, input_ids[:, 1:], -100)
-        with _gather_lm_head(lm_head.weight, lm_head.bias):
+        if hasattr(lm_head.weight, "ds_id"):
+            # ZeRO-3 re-partitions the head when the gather exits, so the projection must happen inside it
+            # (autograd then keeps the gathered tensor); the fused path would re-read it in backward.
+            with _gather_lm_head(lm_head.weight, lm_head.bias):
+                encoder_logits = F.linear(hidden_states[:, :-1], lm_head.weight, lm_head.bias)
+            ar_sum, _, ar_count = chunked_cross_entropy(
+                encoder_logits, ar_targets, softcap = softcap, compiled = compiled
+            )
+        else:
             ar_sum, _, ar_count = chunked_cross_entropy(
                 hidden_states[:, :-1],
                 ar_targets,

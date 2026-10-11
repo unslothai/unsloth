@@ -956,12 +956,20 @@ def _vllm_unavailable_error():
     )
 
 
-def _diffusion_peft_kwargs(model, args, kwargs):
-    """FastLanguageModel.get_peft_model's arguments, bound against its own signature so positional ones keep
-    their meaning, for FastDiffusionModel.get_peft_model. Omitted ones stay omitted (profile defaults apply)."""
+def _diffusion_peft_kwargs(
+    model,
+    args,
+    kwargs,
+    signature_of = None,
+):
+    """The caller's get_peft_model arguments, bound against its own signature (FastLanguageModel's by default)
+    so positional ones keep their meaning, for FastDiffusionModel.get_peft_model. Omitted ones stay omitted
+    (profile defaults apply)."""
     import inspect
 
-    bound = inspect.signature(FastLlamaModel.get_peft_model).bind(model, *args, **kwargs)
+    bound = inspect.signature(signature_of or FastLlamaModel.get_peft_model).bind(
+        model, *args, **kwargs
+    )
     arguments = dict(bound.arguments)
     arguments.pop("model", None)
     arguments.update(arguments.pop("kwargs", {}))
@@ -1854,7 +1862,10 @@ class FastModel(FastBaseModel):
     def get_peft_model(model, *args, **kwargs):
         # Route text-diffusion models (slow path) to the transformers-only PEFT helper.
         if getattr(model, "_unsloth_slow_diffusion", False):
-            return FastDiffusionModel.get_peft_model(model, *args, **kwargs)
+            return FastDiffusionModel.get_peft_model(
+                model,
+                **_diffusion_peft_kwargs(model, args, kwargs, FastBaseModel.get_peft_model),
+            )
         return FastBaseModel.get_peft_model(model, *args, **kwargs)
 
     @staticmethod

@@ -18,7 +18,12 @@ import types
 import torch
 import torch.nn.functional as F
 
-from .diffusion_loss import chunked_cross_entropy, compile_loss, is_distributed_wrapper
+from .diffusion_loss import (
+    chunked_cross_entropy,
+    compile_loss,
+    is_distributed_wrapper,
+    is_plain_linear,
+)
 from .diffusion_profiles import (
     DiffusionProfile,
     register_diffusion_profile,
@@ -250,13 +255,14 @@ class BlockDiffusionProfile(DiffusionProfile):
                 f"Unsloth: {self.name} does not support diffusion_time_weighting={weighting!r}."
             )
         hidden, head = self.noisy_hidden_and_head(model, noisy, clean, valid, block_size)
-        if head is not None and (type(head) is not torch.nn.Linear or hasattr(head, "_hf_hook")):
-            # A quantized / LoRA / offloaded head only runs through its own forward.
+        if head is not None and not is_plain_linear(head):
+            # A quantized / LoRA / offloaded / hooked head only runs through its own forward.
             hidden, head = head(hidden), None
         targets = torch.where(masked, clean, -100)
         weights = masked.float()
         if weighting == "inverse_t":
-            weights = weights / p[:, None].float()
+            # Divide only where masked: an unmasked row with p = 0 (diffusion_eps = 0) would give 0 / 0.
+            weights = weights / torch.where(masked, p[:, None].float(), 1.0)
         # Every noisy position goes through the chunked CE (head applied per chunk, never [B, L, V] fp32);
         # unmasked rows are ignored targets, so the shape is fixed whatever was masked.
         weighted, ce_sum, count = chunked_cross_entropy(
