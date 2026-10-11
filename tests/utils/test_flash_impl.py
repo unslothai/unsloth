@@ -60,9 +60,16 @@ def fake(monkeypatch):
     monkeypatch.setattr(fi, "_probe_error", probe)
     monkeypatch.setitem(fi.FLASH_IMPL_STATE, "active", None)
     monkeypatch.setitem(fi.FLASH_IMPL_STATE, "verdicts", {})
-    monkeypatch.delenv(fi._ENV, raising = False)
+    # Off by default; the gate tests below exercise auto.
+    monkeypatch.setenv(fi._ENV, "auto")
     registry.probes = probes
     return registry
+
+
+def test_off_by_default(fake, monkeypatch):
+    monkeypatch.delenv(fi._ENV, raising = False)
+    assert fi.maybe_activate_flash_attention_impl(_model()) is None
+    assert fake.calls == [] and fake.probes == []
 
 
 def test_auto_activates_fa4_on_sm100(fake):
@@ -75,7 +82,7 @@ def test_auto_activates_fa4_on_sm100(fake):
     assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
 
 
-@pytest.mark.parametrize("value", ["off", "0", "false", "bogus"])
+@pytest.mark.parametrize("value", ["off", "0", "false", "", "bogus"])
 def test_kill_switch_and_unknown_value_stay_off(fake, monkeypatch, value):
     monkeypatch.setenv(fi._ENV, value)
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
@@ -283,7 +290,7 @@ def _fa4_ready():
 
 needs_fa4 = pytest.mark.skipif(
     not _fa4_ready(),
-    reason = "needs sm90 / sm100 CUDA, torch >= 2.13 flash impl registry and flash_attn.cute (FA4)",
+    reason = "needs sm90 / sm100 CUDA, torch >= 2.12 flash impl registry and flash_attn.cute (FA4)",
 )
 
 

@@ -3,14 +3,16 @@
 """Run torch's flash kernels as FA4 (flash_attn.cute) or FA3 (flash_attn_interface) while a packed /
 padding-free trainer trains, on Hopper / datacenter Blackwell, when the user installed the kernels.
 
-torch (2.13+) swaps the implementation behind its flash ops process-wide, so this also changes dense
+torch (2.12+) swaps the implementation behind its flash ops process-wide, so this also changes dense
 SDPA calls that pick flash (on sm100 only decode-shaped calls and dropout: cuDNN takes the rest). FA4
 raises instead of falling back on dropout and on head dims it lacks, and its Python launch costs about
 0.2 ms per call, so it is turned on only inside ``trainer.train()`` and only when the model has no
 attention dropout, every head dim it can send to flash is one the kernel has, and a probe on the
 model's own shapes matches torch's bundled flash. Anything uncertain leaves torch untouched.
 
-UNSLOTH_FLASH_ATTENTION_IMPL = auto (default: FA4 on sm100 only) | fa4 | fa3 (sm90) | off
+UNSLOTH_FLASH_ATTENTION_IMPL = off (default) | auto (FA4 on sm100 when every gate passes) | fa4 | fa3 (sm90).
+Opt-in: FA4 helps long documents (about 13% per step at 16k on B200) and is neutral to slower on short
+ones, where its launch cost dominates.
 """
 
 import contextlib
@@ -44,12 +46,12 @@ _logger = logging.getLogger(__name__)
 
 
 def _requested():
-    value = os.environ.get(_ENV, "auto").strip().lower()
-    if value in ("", "auto", "1", "on", "true"):
+    value = os.environ.get(_ENV, "off").strip().lower()
+    if value in ("auto", "1", "on", "true"):
         return "auto"
     if value in ("fa4", "fa3"):
         return value.upper()
-    if value not in ("0", "off", "false", "no", "none"):
+    if value not in ("", "0", "off", "false", "no", "none"):
         _log_once(f"Unsloth: {_ENV}={value!r} is not auto / fa4 / fa3 / off; leaving torch's flash kernels as they are.")
     return None
 
