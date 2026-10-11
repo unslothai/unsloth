@@ -3996,6 +3996,8 @@ export const hi = {
     selection: {
       startChat: "चैट शुरू करें",
       move: "ले जाएँ",
+      selectAll: "सभी चुनें",
+      countOfTotal: "{total} में से {count} चुने गए",
       clear: "चयन हटाएँ",
     },
     menu: {

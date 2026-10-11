@@ -4117,6 +4117,8 @@ export const he = {
     selection: {
       startChat: "התחל צ'אט",
       move: "העברה",
+      selectAll: "בחר הכל",
+      countOfTotal: "{count} מתוך {total} נבחרו",
       clear: "ניקוי הבחירה",
     },
     menu: {

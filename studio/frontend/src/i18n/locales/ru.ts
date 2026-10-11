@@ -4015,6 +4015,8 @@ export const ru = {
     selection: {
       startChat: "Начать чат",
       move: "Переместить",
+      selectAll: "Выбрать все",
+      countOfTotal: "Выбрано: {count} из {total}",
       clear: "Снять выделение",
     },
     menu: {

@@ -4060,6 +4060,8 @@ export const it = {
     selection: {
       startChat: "Avvia chat",
       move: "Sposta",
+      selectAll: "Seleziona tutto",
+      countOfTotal: "{count} di {total} selezionate",
       clear: "Annulla selezione",
     },
     menu: {

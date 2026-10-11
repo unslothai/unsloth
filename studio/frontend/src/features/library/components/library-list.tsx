@@ -74,20 +74,25 @@ function GutterCheckbox({
   checked,
   visible,
   group,
-  onCheckedChange,
+  onToggle,
   label,
 }: {
   checked: boolean;
   visible: boolean;
   group: "row" | "head";
-  onCheckedChange: () => void;
+  /** `range` is a shift click. */
+  onToggle: (range: boolean) => void;
   label: string;
 }) {
   return (
     <div className="absolute right-full top-1/2 mr-3 flex -translate-y-1/2">
       <Checkbox
         checked={checked}
-        onCheckedChange={onCheckedChange}
+        // onClick to read shift.
+        onClick={(event) => {
+          event.preventDefault();
+          onToggle(event.shiftKey);
+        }}
         aria-label={label}
         className={cn(
           "rounded-full border-neutral-300 opacity-0 transition-opacity focus-visible:opacity-100 dark:border-input",
@@ -105,7 +110,7 @@ function Row({
   target,
   selected,
   selecting,
-  onSelectedChange,
+  onToggle,
   onOpen,
   tile,
   name,
@@ -117,7 +122,7 @@ function Row({
   target: LibraryTarget;
   selected: boolean;
   selecting: boolean;
-  onSelectedChange: (selected: boolean) => void;
+  onToggle: (range: boolean) => void;
   onOpen: () => void;
   tile: ReactNode;
   name: ReactNode;
@@ -140,14 +145,16 @@ function Row({
         checked={selected}
         visible={selecting}
         group="row"
-        onCheckedChange={() => onSelectedChange(!selected)}
+        onToggle={onToggle}
         label={t("library.selectItem", {
           name: target.kind === "item" ? target.item.name : target.folder.name,
         })}
       />
+      {/* While selecting, a click selects, as a card's does. */}
       <button
         type="button"
-        onClick={onOpen}
+        aria-pressed={selecting ? selected : undefined}
+        onClick={(event) => (selecting ? onToggle(event.shiftKey) : onOpen())}
         className="flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {tile}
@@ -176,6 +183,7 @@ export function LibraryList({
   counts,
   selection,
   onSelectionChange,
+  onToggle,
   sort,
   onSortChange,
   activity,
@@ -187,6 +195,8 @@ export function LibraryList({
   counts: Map<string, number>;
   selection: Set<string>;
   onSelectionChange: (next: Set<string>) => void;
+  /** Select or deselect one row; `range` (a shift click) takes every row since the last click. */
+  onToggle: (key: string, range: boolean) => void;
   sort: LibrarySortState;
   onSortChange: (key: LibrarySortKey) => void;
   activity: boolean;
@@ -202,13 +212,6 @@ export function LibraryList({
   const allSelected = targets.length > 0 && targets.every((t) => selection.has(targetKey(t)));
   const selecting = selection.size > 0;
 
-  const setSelected = (target: LibraryTarget, selected: boolean) => {
-    const next = new Set(selection);
-    if (selected) next.add(targetKey(target));
-    else next.delete(targetKey(target));
-    onSelectionChange(next);
-  };
-
   return (
     <div>
       <div className="pb-2">
@@ -222,7 +225,7 @@ export function LibraryList({
             checked={allSelected}
             visible={selecting}
             group="head"
-            onCheckedChange={() =>
+            onToggle={() =>
               onSelectionChange(allSelected ? new Set() : new Set(targets.map(targetKey)))
             }
             label={t("library.list.selectAll")}
@@ -251,7 +254,7 @@ export function LibraryList({
             target={{ kind: "folder", folder }}
             selected={selection.has(`folder:${folder.id}`)}
             selecting={selecting}
-            onSelectedChange={(selected) => setSelected({ kind: "folder", folder }, selected)}
+            onToggle={(range) => onToggle(`folder:${folder.id}`, range)}
             onOpen={() => actions.openFolder(folder.id)}
             tile={
               <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
@@ -276,7 +279,7 @@ export function LibraryList({
             target={{ kind: "item", item }}
             selected={selection.has(`item:${item.id}`)}
             selecting={selecting}
-            onSelectedChange={(selected) => setSelected({ kind: "item", item }, selected)}
+            onToggle={(range) => onToggle(`item:${item.id}`, range)}
             onOpen={() => actions.openItem(item)}
             tile={<ItemTile item={item} />}
             name={

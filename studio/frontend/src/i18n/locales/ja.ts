@@ -3936,6 +3936,8 @@ export const ja = {
     selection: {
       startChat: "チャットを開始",
       move: "移動",
+      selectAll: "すべて選択",
+      countOfTotal: "{total} 件中 {count} 件選択中",
       clear: "選択を解除",
     },
     menu: {

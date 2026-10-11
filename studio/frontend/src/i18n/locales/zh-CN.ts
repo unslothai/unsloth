@@ -3893,6 +3893,8 @@ export const zhCN = {
     selection: {
       startChat: "开始聊天",
       move: "移动",
+      selectAll: "全选",
+      countOfTotal: "已选择 {count} 个，共 {total} 个",
       clear: "清除选择",
     },
     menu: {

@@ -4019,6 +4019,9 @@ export const en = {
     selection: {
       startChat: "Start chat",
       move: "Move",
+      // The bar's count, with the select all link beside it; {total} is everything currently shown.
+      selectAll: "Select all",
+      countOfTotal: "{count} of {total} selected",
       clear: "Clear selection",
     },
     menu: {

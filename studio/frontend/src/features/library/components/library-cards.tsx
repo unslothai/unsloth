@@ -146,7 +146,9 @@ function CardFrame({
         type="button"
         aria-label={label}
         aria-pressed={select && selecting ? selected : undefined}
-        onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
+        onClick={
+          select && selecting ? (event) => select.toggle(selectKey, event.shiftKey) : onOpen
+        }
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-2 ring-foreground",
@@ -158,7 +160,11 @@ function CardFrame({
       {select && (
         <Checkbox
           checked={selected}
-          onCheckedChange={() => select.toggle(selectKey)}
+          // onClick to read shift.
+          onClick={(event) => {
+            event.preventDefault();
+            select.toggle(selectKey, event.shiftKey);
+          }}
           aria-label={t("library.selectItem", { name: label })}
           className={cn(
             OVERLAY_CONTROL,
@@ -273,10 +279,14 @@ function FolderCard({
 }) {
   const t = useT();
   const actions = useLibraryActions();
+  const select = useContext(CardSelectionContext);
+  const selectKey = `folder:${folder.id}`;
+  // While selecting, the caption selects like the card above it rather than opening the folder.
+  const selecting = select && select.selection.size > 0;
   return (
     <div>
       <CardFrame
-        selectKey={`folder:${folder.id}`}
+        selectKey={selectKey}
         label={folder.name}
         onOpen={() => actions.openFolder(folder.id)}
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}
@@ -288,7 +298,9 @@ function FolderCard({
       </CardFrame>
       <button
         type="button"
-        onClick={() => actions.openFolder(folder.id)}
+        onClick={(event) =>
+          selecting ? select.toggle(selectKey, event.shiftKey) : actions.openFolder(folder.id)
+        }
         className="mt-2 block w-full px-1 text-left"
       >
         <p className="truncate font-medium text-ui-14 text-foreground">{folder.name}</p>

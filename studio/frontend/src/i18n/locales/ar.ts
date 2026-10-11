@@ -3988,6 +3988,8 @@ export const ar = {
     selection: {
       startChat: "بدء محادثة",
       move: "نقل",
+      selectAll: "تحديد الكل",
+      countOfTotal: "{count} من {total} محددة",
       clear: "مسح التحديد",
     },
     menu: {
