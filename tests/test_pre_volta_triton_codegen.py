@@ -62,6 +62,7 @@ def _rope_qk_constexprs(capability, monkeypatch):
         n_heads_K = 4,
         BACKWARD_PASS = False,
         HAS_ROPE_INDICES = True,
+        LONG_INDEXING = False,
         BLOCK_SIZE = 64,
         EVICT_INDICES = evict,
     )
