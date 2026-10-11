@@ -96,3 +96,18 @@ test("an open turn card reads its reply live while it streams", async () => {
     /role === "user"\) \{\s*return messages\[index\]\.id === previewOpenerId/,
   );
 });
+
+test("the turn card stays inside a phone-width viewport", async () => {
+  const nav = await readFile(
+    new URL(
+      "../src/components/assistant-ui/turn-navigation.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // the card is positioned from the right, so the cap is what keeps its left edge on screen
+  assert.match(
+    nav,
+    /right: `calc\(\$\{preview\.right\}px \+ 1\.5rem\)`,[\s\S]{0,160}maxWidth: `calc\(100vw - \$\{preview\.right\}px - 2rem\)`/,
+  );
+});

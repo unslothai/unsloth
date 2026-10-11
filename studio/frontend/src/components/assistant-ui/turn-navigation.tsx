@@ -868,6 +868,8 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
               ? {
                   top: preview.top,
                   right: `calc(${preview.right}px + 1.5rem)`,
+                  // a phone-width viewport or a larger ui text scale would push the card off the left edge
+                  maxWidth: `calc(100vw - ${preview.right}px - 2rem)`,
                 }
               : undefined
           }
