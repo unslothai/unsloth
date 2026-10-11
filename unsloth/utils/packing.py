@@ -205,8 +205,7 @@ def _enable_hf_packed_attention() -> None:
 
 
 def _mask_padding_free_boundary_labels(batch) -> None:
-    """TRL < 0.23.1 leaves each packed document's first token a target of the previous one, which the FastModel
-    forward does not mask while the zoo's num_items_in_batch excludes it. Idempotent; flattened single row only."""
+    """TRL < 0.23.1 leaves each document's first token a target; the zoo count excludes it. Single row only."""
     labels = batch.get("labels") if isinstance(batch, Mapping) else None
     if not isinstance(labels, torch.Tensor) or labels.dim() != 2 or labels.shape[0] != 1:
         return
