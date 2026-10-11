@@ -1294,6 +1294,8 @@ def _diffusion_fit_host(
     monkeypatch.setattr(
         LlamaCppBackend, "_get_gguf_size_bytes", staticmethod(lambda _p: int(gguf_gib * _GIB))
     )
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
 
 
 _TWO_3090 = [(0, 23_500, 24_576), (1, 23_500, 24_576)]
@@ -1314,29 +1316,44 @@ def test_diffusion_fit_gpus_splits_only_what_one_gpu_cannot_hold(
     monkeypatch, gguf_gib, gpu_ids, gpu, expected
 ):
     _diffusion_fit_host(monkeypatch, gguf_gib, _TWO_3090)
-    assert LlamaCppBackend._diffusion_fit_gpus("/m.gguf", gpu_ids, gpu) == expected
+    assert LlamaCppBackend._diffusion_fit_gpus(int(gguf_gib * _GIB), gpu_ids, gpu) == expected
 
 
 def test_diffusion_fit_gpus_keeps_explicit_pool_and_operator_overrides(monkeypatch):
     _diffusion_fit_host(monkeypatch, 26.9, _TWO_3090 + [(2, 23_500, 24_576)])
+    _size = int(26.9 * _GIB)
     # The pick bounds the pool: GPU 2 is never added to a [1, 2] pick's split.
-    assert LlamaCppBackend._diffusion_fit_gpus("/m.gguf", [1, 2], "1") == [1, 2]
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, [1, 2], "1") == [1, 2]
     # A device token that is not a physical index (UUID / MIG / CPU mask) is left alone.
-    assert LlamaCppBackend._diffusion_fit_gpus("/m.gguf", None, "GPU-abc") is None
-    assert LlamaCppBackend._diffusion_fit_gpus("/m.gguf", None, "") is None
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "GPU-abc") is None
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "") is None
     monkeypatch.setenv("DG_GPU", "0")
-    assert LlamaCppBackend._diffusion_fit_gpus("/m.gguf", None, "0") is None
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "0") is None
+
+
+def test_diffusion_auto_fit_only_on_pci_ids_without_an_inherited_mask(monkeypatch):
+    # Under PCI_BUS_ID the child would re-read torch ordinals or masked ids as other cards.
+    _diffusion_fit_host(monkeypatch, 26.9, _TWO_3090)
+    _size = int(26.9 * _GIB)
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "0") == [0, 1]
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "0") is None
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", False)
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "0") is None
+    # An explicit pick comes from the PCI-ordered picker and is pinned as before.
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, [0, 1], "0") == [0, 1]
 
 
 def test_diffusion_fit_gpus_moves_to_one_card_that_fits(monkeypatch):
     # GPU 0 is busy, GPU 1 holds the whole model: one card beats a layer split.
     _diffusion_fit_host(monkeypatch, 16.8, [(0, 4_000, 24_576), (1, 23_500, 24_576)])
-    assert LlamaCppBackend._diffusion_fit_gpus("/m.gguf", [0, 1], "0") == [1]
+    assert LlamaCppBackend._diffusion_fit_gpus(int(16.8 * _GIB), [0, 1], "0") == [1]
 
 
 def test_diffusion_fit_gpus_never_reads_vulkan_ordinals(monkeypatch):
     _diffusion_fit_host(monkeypatch, 26.9, _TWO_3090, vulkan = True)
-    assert LlamaCppBackend._diffusion_fit_gpus("/m.gguf", None, "0") is None
+    assert LlamaCppBackend._diffusion_fit_gpus(int(26.9 * _GIB), None, "0") is None
 
 
 class _StopAtHealth(Exception):

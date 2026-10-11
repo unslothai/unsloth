@@ -16505,14 +16505,7 @@ def _guard_chat_load_against_training(
         return
 
     diffusion_gpu = None
-    # Without a manual split the runner layer-splits a multi-GPU pick it cannot fit on one
-    # card (#6347), so that pick is budgeted as the pool, as for llama-server.
-    if (
-        is_gguf
-        and diffusion_kind is not False
-        and not gpu_ids_are_vulkan_ordinals
-        and not (diffusion_ngl is None and len(requested_gpu_ids or ()) > 1)
-    ):
+    if is_gguf and diffusion_kind is not False and not gpu_ids_are_vulkan_ordinals:
         # Use the same token selection as the runner: an explicit pick wins,
         # followed by DG_GPU, the first parent-visible token, then GPU 0. Suppressed
         # for a Vulkan-ordinal pin so single-device CUDA budgeting can't override the
@@ -16610,6 +16603,16 @@ def _guard_chat_load_against_training(
             required_override_gb, diffusion_ngl, _gguf_layer_count(config)
         )
 
+    # Without a manual split the runner layer-splits a GGUF its one device cannot hold
+    # (#6347): budget the devices that same decision picks, not the single token.
+    guard_gpu_ids = requested_gpu_ids
+    if diffusion_gpu and diffusion_ngl is None and required_override_gb:
+        fit_gpus = LlamaCppBackend._diffusion_fit_gpus(
+            int(required_override_gb * (1024**3)), requested_gpu_ids, diffusion_gpu
+        )
+        if fit_gpus:
+            diffusion_gpu, guard_gpu_ids = None, fit_gpus
+
     vulkan_free_vram_gb = None
     if is_gguf:
         if is_vulkan_backend and (gpu_ids_are_vulkan_ordinals or diffusion_kind is False):
@@ -16647,7 +16650,7 @@ def _guard_chat_load_against_training(
         hf_token = request.hf_token,
         load_in_4bit = load_in_4bit,
         max_seq_length = request.max_seq_length,
-        requested_gpu_ids = requested_gpu_ids,
+        requested_gpu_ids = guard_gpu_ids,
         is_gguf = is_gguf,
         gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
         vulkan_free_vram_gb = vulkan_free_vram_gb,

@@ -19343,7 +19343,7 @@ class LlamaCppBackend:
 
     @classmethod
     def _diffusion_fit_gpus(
-        cls, model_path: str, gpu_ids: Optional[List[int]], gpu: str
+        cls, model_size_bytes: int, gpu_ids: Optional[List[int]], gpu: str
     ) -> Optional[List[int]]:
         """Physical GPUs to layer-split a diffusion GGUF over, or None to keep ``gpu`` alone.
 
@@ -19351,8 +19351,13 @@ class LlamaCppBackend:
         its mask, so widening the mask is the whole change. Only a GGUF that does not fit
         ``gpu`` moves: alone it overflows the card (a hang on Windows, where it spills into
         shared memory, #6347). The pool is the explicit pick, else every visible GPU; a pool
-        that cannot hold it either still gets all of it."""
-        if not gpu.isdigit() or (not gpu_ids and "DG_GPU" in os.environ):
+        that cannot hold it either still gets all of it. Shared with the training guard,
+        so both budget the devices the runner will use."""
+        if not gpu.isdigit() or not model_size_bytes:
+            return None
+        # Unpinned: only ids the child resolves the same way under PCI order (no inherited
+        # mask to reinterpret, ids from nvidia-smi / NVML), as for llama-server auto fits.
+        if not gpu_ids and ("DG_GPU" in os.environ or "CUDA_VISIBLE_DEVICES" in os.environ):
             return None
         try:
             binary = cls._find_llama_server_binary()
@@ -19360,9 +19365,10 @@ class LlamaCppBackend:
             if binary and cls._is_vulkan_backend(binary):
                 return None
             memory = cls._get_gpu_memory(binary)
-            model_size = cls._get_gguf_size_bytes(model_path)
         except Exception as e:
             logger.debug(f"DiffusionGemma GPU fit skipped: {e}")
+            return None
+        if not gpu_ids and cls._GPU_IDS_ARE_PCI_INDICES is not True:
             return None
         pool = set(int(i) for i in gpu_ids) if gpu_ids else None
         gpus = [(idx, free) for idx, free, _ in memory if pool is None or idx in pool]
@@ -19370,9 +19376,9 @@ class LlamaCppBackend:
         first = [(idx, free) for idx, free in gpus if idx == int(gpu)]
         if len(gpus) < 2 or not first:
             return None
-        if cls._select_gpus(model_size, first, total_by_idx = total_by_idx)[0]:
+        if cls._select_gpus(model_size_bytes, first, total_by_idx = total_by_idx)[0]:
             return None
-        picked, _ = cls._select_gpus(model_size, gpus, total_by_idx = total_by_idx)
+        picked, _ = cls._select_gpus(model_size_bytes, gpus, total_by_idx = total_by_idx)
         picked = sorted(picked) if picked else sorted(idx for idx, _ in gpus)
         return None if picked == [int(gpu)] else picked
 
@@ -19445,9 +19451,14 @@ class LlamaCppBackend:
         # where the layers go; otherwise a GGUF too big for that one device is
         # layer-split over the pool (#6347).
         gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = holds_no_gpu)
-        fit_gpus = (
-            self._diffusion_fit_gpus(model_path, gpu_ids, gpu) if manual_ngl is None else None
-        )
+        fit_gpus = None
+        if manual_ngl is None:
+            try:
+                fit_gpus = self._diffusion_fit_gpus(
+                    self._get_gguf_size_bytes(model_path), gpu_ids, gpu
+                )
+            except OSError as e:
+                logger.debug(f"DiffusionGemma GPU fit skipped: {e}")
         if fit_gpus:
             gpu = ",".join(str(i) for i in fit_gpus)
             logger.info(f"DiffusionGemma does not fit one GPU; splitting layers over GPUs {gpu}")

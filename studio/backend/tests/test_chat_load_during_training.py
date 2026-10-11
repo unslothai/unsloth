@@ -629,10 +629,21 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         classify.assert_called_once_with(config)
         self.assertEqual(captured, [])
 
-    def _guard_diffusion_pick(self, captured, **kwargs):
+    def _guard_diffusion_pick(
+        self,
+        captured,
+        fit = None,
+        **kwargs,
+    ):
         config = SimpleNamespace(is_gguf = True)
         backend = SimpleNamespace(diffusion_split_supported = lambda: True)
+        fits = []
         with (
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_diffusion_fit_gpus",
+                side_effect = lambda *a: fits.append(a) or fit,
+            ),
             patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
             patch.object(self.route, "get_llama_cpp_backend", return_value = backend),
             patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
@@ -651,6 +662,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 requested_gpu_ids = [3, 1],
                 **kwargs,
             )
+        return fits
 
     def test_manual_diffusion_split_keeps_single_device_training_guard(self):
         # An explicit layer count runs on the lowest picked GPU only.
@@ -660,12 +672,19 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertEqual(captured[0]["single_device_gpu"], "1")
         self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
 
-    def test_auto_layers_diffusion_pick_is_budgeted_as_the_pool(self):
-        # Without a layer count the runner can split the pick over both GPUs (#6347).
+    def test_auto_layers_diffusion_split_is_budgeted_on_its_gpus(self):
+        # Without a layer count the runner splits what GPU 1 cannot hold (#6347): the
+        # guard budgets the GPUs that same decision picks.
         captured = []
-        self._guard_diffusion_pick(captured)
-        self.assertEqual(len(captured), 1)
+        fits = self._guard_diffusion_pick(captured, fit = [1, 3])
+        self.assertEqual(fits, [(int(12.5 * 1024**3), [3, 1], "1")])
         self.assertIsNone(captured[0]["single_device_gpu"])
+        self.assertEqual(captured[0]["requested_gpu_ids"], [1, 3])
+
+    def test_auto_layers_diffusion_pick_that_fits_one_gpu_keeps_its_budget(self):
+        captured = []
+        self._guard_diffusion_pick(captured, fit = None)
+        self.assertEqual(captured[0]["single_device_gpu"], "1")
         self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
 
     def _guard_zero_layer(self, *, diffusion_kind, captured):
