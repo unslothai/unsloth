@@ -400,7 +400,6 @@ class TestExactParksAreCountedAcrossModels:
 
     def test_the_launch_records_the_budget_it_spawned_with(self):
         import inspect
-
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert (
             "self._launched_parking_mib = ( _named_preempt_ram_mib(_last_spawn_cmd or cmd, env) "
