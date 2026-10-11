@@ -36,8 +36,19 @@ def _adapter(
     r = 8,
     lora_alpha = 16,
     modules_to_save = None,
+    **extra,
 ):
-    return {"default": SimpleNamespace(r = r, lora_alpha = lora_alpha, modules_to_save = modules_to_save)}
+    fields = {
+        "r": r,
+        "lora_alpha": lora_alpha,
+        "modules_to_save": modules_to_save,
+        "lora_dropout": 0.0,
+        "use_dora": False,
+        "use_rslora": False,
+        "target_modules": {"q_proj", "v_proj"},
+    }
+    fields.update(extra)
+    return {"default": SimpleNamespace(**fields)}
 
 
 def test_matching_request_ignores_nothing():
@@ -60,3 +71,29 @@ def test_unknown_peft_config_shape_is_ignored():
     ignored = _helper()
     assert ignored(None, 8, 16, None) == []
     assert ignored({}, 8, 16, None) == []
+
+
+def test_reports_targets_dropout_and_variant_kept_from_adapter():
+    ignored = _helper()(
+        _adapter(),
+        8,
+        16,
+        None,
+        target_modules = ["q_proj", "k_proj", "v_proj"],
+        lora_dropout = 0.1,
+        use_dora = True,
+    )
+    assert ignored == [
+        "dropout 0.1 (adapter has 0.0)",
+        "DoRA on",
+        "target modules k_proj, q_proj, v_proj (adapter has q_proj, v_proj)",
+    ]
+
+
+def test_matching_targets_and_all_linear_are_not_reported():
+    ignored = _helper()
+    assert ignored(_adapter(), 8, 16, None, target_modules = ["model.q_proj", "v_proj"]) == []
+    assert ignored(_adapter(), 8, 16, None, target_modules = ["all-linear"]) == []
+    assert (
+        ignored(_adapter(target_modules = "all-linear"), 8, 16, None, target_modules = ["q_proj"]) == []
+    )

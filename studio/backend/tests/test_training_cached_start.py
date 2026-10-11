@@ -1151,6 +1151,30 @@ def test_untrainable_gate_allows_remote_adapter_for_lora():
     assert result.model_name == "unsloth/test"
 
 
+def test_remote_format_probe_flags_adapter_repo_without_weights():
+    route = _load_route_module("training_route_remote_adapter_no_weights")
+    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+
+    with _patch_model_info(return_value = info):
+        assert (
+            route._remote_untrainable_model_format("org/adapter", None) == "adapter_without_weights"
+        )
+
+
+def test_untrainable_gate_rejects_remote_adapter_without_weights_for_lora():
+    route = _load_route_module("training_route_remote_adapter_no_weights_lora")
+    request = _request(model_format = "adapter")
+
+    with patch.object(
+        route, "_remote_untrainable_model_format", return_value = "adapter_without_weights"
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "training_remote_model_adapter_weights_missing"
+
+
 def test_untrainable_gate_rejects_remote_gguf_only_repository():
     route = _load_route_module("training_route_remote_gguf")
     request = _request()
@@ -1166,7 +1190,12 @@ def test_untrainable_gate_rejects_remote_gguf_only_repository():
 
 def test_remote_format_probe_preserves_root_level_repo_id():
     route = _load_route_module("training_route_remote_adapter_metadata")
-    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "adapter_config.json"),
+            SimpleNamespace(rfilename = "adapter_model.safetensors"),
+        ]
+    )
 
     with _patch_model_info(return_value = info) as model_info:
         assert route._remote_untrainable_model_format("bert-base-uncased", "hf-token") == "adapter"
@@ -1197,7 +1226,12 @@ def test_remote_format_probe_resolves_the_bicodec_alias():
 
 def test_remote_format_probe_retries_transient_failure():
     route = _load_route_module("training_route_remote_adapter_metadata_retry")
-    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "adapter_config.json"),
+            SimpleNamespace(rfilename = "adapter_model.safetensors"),
+        ]
+    )
 
     with _patch_model_info(
         side_effect = [OSError("timed out"), info],
@@ -1223,7 +1257,12 @@ def test_remote_format_probe_retries_transient_hub_status(status_code):
     route = _load_route_module(f"training_route_remote_status_retry_{status_code}")
     transient_error = RuntimeError("transient Hub failure")
     transient_error.response = SimpleNamespace(status_code = status_code)
-    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "adapter_config.json"),
+            SimpleNamespace(rfilename = "adapter_model.safetensors"),
+        ]
+    )
 
     with _patch_model_info(
         side_effect = [transient_error, info],

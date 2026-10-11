@@ -339,11 +339,24 @@ def normalize_gradient_checkpointing(value) -> Union[str, bool]:
     return "unsloth"
 
 
-def _ignored_adapter_settings(peft_config, lora_r, lora_alpha, modules_to_save) -> list[str]:
+def _ignored_adapter_settings(
+    peft_config,
+    lora_r,
+    lora_alpha,
+    modules_to_save,
+    target_modules = None,
+    lora_dropout = None,
+    use_dora = False,
+    use_rslora = False,
+) -> list[str]:
     """Requested LoRA settings a continued adapter keeps from its own config instead."""
     adapter = next(iter(peft_config.values()), None) if isinstance(peft_config, dict) else None
     if adapter is None:
         return []
+
+    def leaf(module):
+        return str(module).rsplit(".", 1)[-1]
+
     ignored = []
     saved_r = getattr(adapter, "r", None)
     if saved_r is not None and saved_r != lora_r:
@@ -351,10 +364,24 @@ def _ignored_adapter_settings(peft_config, lora_r, lora_alpha, modules_to_save) 
     saved_alpha = getattr(adapter, "lora_alpha", None)
     if saved_alpha is not None and saved_alpha != lora_alpha:
         ignored.append(f"alpha {lora_alpha} (adapter has {saved_alpha})")
-    saved_modules = {
-        str(m).rsplit(".", 1)[-1] for m in (getattr(adapter, "modules_to_save", None) or [])
-    }
-    missing = [m for m in (modules_to_save or []) if str(m).rsplit(".", 1)[-1] not in saved_modules]
+    saved_dropout = getattr(adapter, "lora_dropout", None)
+    if lora_dropout is not None and saved_dropout is not None and saved_dropout != lora_dropout:
+        ignored.append(f"dropout {lora_dropout} (adapter has {saved_dropout})")
+    if bool(use_dora) != bool(getattr(adapter, "use_dora", False)):
+        ignored.append("DoRA on" if use_dora else "DoRA off")
+    if bool(use_rslora) != bool(getattr(adapter, "use_rslora", False)):
+        ignored.append("rsLoRA on" if use_rslora else "rsLoRA off")
+    # A string target is a PEFT regex or "all-linear"; only explicit lists compare cleanly.
+    saved_targets = getattr(adapter, "target_modules", None)
+    requested = [m for m in (target_modules or []) if m != "all-linear"]
+    if requested and isinstance(saved_targets, (list, set, tuple)):
+        if {leaf(m) for m in requested} != {leaf(m) for m in saved_targets}:
+            ignored.append(
+                f"target modules {', '.join(sorted({leaf(m) for m in requested}))} "
+                f"(adapter has {', '.join(sorted({leaf(m) for m in saved_targets}))})"
+            )
+    saved_modules = {leaf(m) for m in (getattr(adapter, "modules_to_save", None) or [])}
+    missing = [m for m in (modules_to_save or []) if leaf(m) not in saved_modules]
     if missing:
         ignored.append(f"training {', '.join(missing)} (adapter does not train them)")
     return ignored
@@ -1520,7 +1547,14 @@ class UnslothTrainer:
             # Saved LoRA dirs load as PeftModel via from_pretrained; do not stack a second adapter (#13140).
             if getattr(self.model, "peft_config", None):
                 ignored = _ignored_adapter_settings(
-                    self.model.peft_config, lora_r, lora_alpha, modules_to_save
+                    self.model.peft_config,
+                    lora_r,
+                    lora_alpha,
+                    modules_to_save,
+                    target_modules = target_modules,
+                    lora_dropout = lora_dropout,
+                    use_dora = use_dora,
+                    use_rslora = use_rslora,
                 )
                 status = "Continuing from existing LoRA adapters"
                 if ignored:

@@ -654,7 +654,10 @@ def _remote_untrainable_model_format(
             if normalized.startswith(root) and "/" not in normalized[len(root) :]:
                 root_files.add(normalized[len(root) :])
     if "adapter_config.json" in root_files:
-        return "adapter"
+        # Same weight files the local check accepts; config-only repos fail later in the loader.
+        if any(re.fullmatch(r"adapter_model.*\.(?:safetensors|bin)", name) for name in root_files):
+            return "adapter"
+        return "adapter_without_weights"
     has_trainable_weights = any(name in root_files for name, _ in _MODEL_WEIGHT_CANDIDATES)
     if has_gguf and not has_trainable_weights:
         return "gguf"
@@ -1150,6 +1153,12 @@ def _reject_untrainable_model_request(
                     400,
                     "training_remote_model_adapter_only",
                     "Adapter models are inference-only and cannot be trained as base models.",
+                )
+            if remote_format == "adapter_without_weights":
+                raise _training_start_error(
+                    400,
+                    "training_remote_model_adapter_weights_missing",
+                    "Adapter repository is missing adapter_model weights.",
                 )
             return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _is_decision_checkpoint(request):
