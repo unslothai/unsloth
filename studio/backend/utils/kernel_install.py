@@ -209,8 +209,8 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
         return None
     if name == "xformers":
         return xformers_wheel_url(env)
-    # flash-attn, causal-conv1d and mamba-ssm publish Linux wheels only.
-    if not str(env.get("platform_tag") or "").startswith("linux"):
+    # flash-attn, causal-conv1d and mamba-ssm publish Linux wheels, plus the Windows ones wheel_utils lists.
+    if not str(env.get("platform_tag") or "").startswith(("linux", "win_")):
         return None
     if name == "flash_attn":
         return flash_attn_wheel_url(env)

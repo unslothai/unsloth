@@ -571,21 +571,55 @@ class TestEnsureFlashAttn:
         mock_probe.assert_not_called()
         mock_install_wheel.assert_not_called()
 
-    def test_windows_skips_install_without_probing(self):
-        # flash-attn is Linux-only: on Windows the installer returns before probing the torch env or resolving a
-        # wheel (no Windows wheels are published upstream).
+    def test_windows_probes_with_windows_opt_in_and_installs_the_wheel(self):
+        # Windows resolves only the wheels wheel_utils lists for it (our win_amd64 build, NVIDIA's win_arm64 one).
+        url = "https://example.invalid/flash_attn-2.8.4+cu13torch2.13cxx11abiFALSE-cp313-cp313-win_amd64.whl"
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
+            mock.patch.object(
+                ips, "probe_torch_wheel_env", return_value = {"platform_tag": "win_amd64"}
+            ) as mock_probe,
+            mock.patch.object(ips, "_build_flash_attn_wheel_url", return_value = url),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(
+                ips,
+                "install_wheel",
+                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+            ) as mock_install_wheel,
+            mock.patch.object(ips, "_flash_attn_importable", side_effect = [False, True]),
         ):
             ips._ensure_flash_attn()
 
-        mock_probe.assert_not_called()
+        mock_probe.assert_called_once_with(include_windows = True)
+        assert mock_install_wheel.call_args.args[0] == url
+
+    def test_windows_without_a_wheel_notes_it_quietly(self):
+        notes: list[str] = []
+        steps: list[tuple[str, str]] = []
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", True),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(
+                ips, "probe_torch_wheel_env", return_value = {"platform_tag": "win_amd64"}
+            ),
+            mock.patch.object(ips, "_build_flash_attn_wheel_url", return_value = None),
+            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
+            mock.patch.object(ips, "_flash_attn_importable", return_value = False),
+            mock.patch.object(ips, "_note", side_effect = lambda message, *a: notes.append(message)),
+            mock.patch.object(
+                ips, "_step", side_effect = lambda kind, message, *a: steps.append((kind, message))
+            ),
+        ):
+            ips._ensure_flash_attn()
+
         mock_install_wheel.assert_not_called()
+        assert steps == []
+        assert any("flash-attn" in note for note in notes)
 
 
 class TestInstallPythonStackFlashAttnIntegration:
@@ -629,5 +663,5 @@ class TestInstallPythonStackFlashAttnIntegration:
     def test_macos_install_skips_flash_attn_step(self):
         assert self._run_install(no_torch = False, is_macos = True, is_windows = False) == 0
 
-    def test_windows_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0
+    def test_windows_install_calls_flash_attn_step(self):
+        assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 1
