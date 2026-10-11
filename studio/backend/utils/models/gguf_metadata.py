@@ -7,6 +7,7 @@ pair weights and projectors via ``general.base_model.0.repo_url``."""
 from __future__ import annotations
 
 import os
+import re
 import struct
 import threading
 from pathlib import Path
@@ -1068,7 +1069,23 @@ def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optiona
             f"{arch}.embedding_length {embedding_length} != "
             f"clip.vision.projection_dim {projection_dim}"
         )
+    # Sizes share widths (Qwen3.5 2B and 35B-A3B are both 2048) but not vision towers.
+    weight_sizes = _model_size_tokens(weight_path)
+    projector_sizes = _model_size_tokens(mmproj_path)
+    if weight_sizes and projector_sizes and weight_sizes.isdisjoint(projector_sizes):
+        return False, f"model size {sorted(weight_sizes)} != {sorted(projector_sizes)}"
     return True, ""
+
+
+_SIZE_TOKEN_RE = re.compile(r"[ae]?\d+(?:\.\d+)?b", re.IGNORECASE)
+
+
+def _model_size_tokens(path: str) -> frozenset[str]:
+    """Parameter-count tokens in ``general.name`` (``35b``, ``a3b``, ``e4b``)."""
+    name = (read_gguf_general_metadata(path) or {}).get("general.name") or ""
+    return frozenset(
+        token.lower() for token in re.split(r"[\s_\-]+", name) if _SIZE_TOKEN_RE.fullmatch(token)
+    )
 
 
 def pairing_score(

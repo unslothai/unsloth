@@ -526,6 +526,35 @@ def test_qwen35_projector_from_another_quantizer_pairs_by_function(
     assert mmproj_matches_model_family(str(model), str(projector)) == paired
 
 
+def test_qwen35_same_width_projector_of_another_size_is_not_picked(tmp_path):
+    """Qwen3.5 2B and 35B-A3B share width 2048, not vision towers; bartowski-style names tie otherwise."""
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": "qwen35moe",
+            "general.name": "Qwen_Qwen3.5 35B A3B",
+            "general.basename": "Qwen_Qwen3.5",
+            "qwen35moe.embedding_length": 2048,
+        },
+    )
+    projectors = {}
+    for size in ("2B", "35B-A3B"):
+        projectors[size] = _gguf_with_general(
+            tmp_path / f"mmproj-Qwen_Qwen3.5-{size}-bf16.gguf",
+            {
+                "general.architecture": "clip",
+                "general.type": "mmproj",
+                "general.name": f"Qwen3.5 {size.replace('-', ' ')}",
+                "general.basename": "Qwen3.5",
+                "clip.projector_type": "qwen3vl_merger",
+                "clip.vision.projection_dim": 2048,
+                "clip.vision.is_deepstack_layers": [False, False],
+            },
+        )
+    assert detect_mmproj_file(str(model)) == str(projectors["35B-A3B"].resolve())
+    assert not mmproj_matches_model_family(str(model), str(projectors["2B"]))
+
+
 def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
     model = _gguf_with_general(tmp_path / "model.gguf", {"general.basename": "Foo"})
     _gguf_with_general(tmp_path / "mmproj.gguf", {"general.basename": "Bar"})
