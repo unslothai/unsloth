@@ -110,6 +110,11 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
     picker.match(/runsCheckpointQuant\(\{ id \}\) \|\| !\/-FP8/g)?.length,
     2,
   );
+  // The curated-search fit gate waives size for them too.
+  assert.match(
+    picker,
+    /cachedIdFor\(id\) !== null \|\|\s*runsCheckpointQuant\(\{ id \}\) \|\|\s*searchRowFits\(\{ id \}\)/,
+  );
   // Task pages (images, audio) keep their own formats.
   assert.match(
     picker,

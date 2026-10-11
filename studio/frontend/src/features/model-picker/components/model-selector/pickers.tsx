@@ -5248,6 +5248,7 @@ export function HubModelPicker({
           (id) =>
             !fitOnDeviceOnly ||
             cachedIdFor(id) !== null ||
+            runsCheckpointQuant({ id }) ||
             searchRowFits({ id }),
         )
     );
@@ -5262,6 +5263,7 @@ export function HubModelPicker({
     fitOnDeviceOnly,
     cachedIdFor,
     searchRowFits,
+    runsCheckpointQuant,
   ]);
 
   // Aliases included, so a vendor hit whose mirror row is listed is not shown twice.
