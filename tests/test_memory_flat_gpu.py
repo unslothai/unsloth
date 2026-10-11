@@ -83,6 +83,6 @@ def test_allocated_memory_is_flat_after_warmup(tmp_path):
 def test_check_catches_an_injected_leak(tmp_path):
     result = _run(tmp_path / "leak", "--leak-bytes", str(LEAK_BYTES))
     drift, slope, _, _ = _drift(result)
-    assert drift >= BOUND_BYTES, (
-        f"a {LEAK_BYTES} B/step leak was not flagged (slope {slope:.0f} B/step)"
-    )
+    assert (
+        drift >= BOUND_BYTES
+    ), f"a {LEAK_BYTES} B/step leak was not flagged (slope {slope:.0f} B/step)"
