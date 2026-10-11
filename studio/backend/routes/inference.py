@@ -144,6 +144,7 @@ from core.inference.llama_preemption import (
     PreemptSignal,
     ParticipantState,
     ServerParkNotices,
+    parse_server_park_notice,
     get_preemption_controller,
     preemption_eligible,
     preemption_enabled,
@@ -1980,7 +1981,13 @@ def _server_park_sse(raw_line) -> Optional[str]:
     """
     if isinstance(raw_line, (bytes, bytearray)):
         raw_line = bytes(raw_line).decode("utf-8", "replace")
-    return _SERVER_PARK_SSE_BY_COMMENT.get(str(raw_line or "").strip())
+    raw_line = str(raw_line or "").strip()
+    found = _SERVER_PARK_SSE_BY_COMMENT.get(raw_line)
+    if found is not None:
+        return found
+    # A batched request's notices carry the prompt index; the client reads one stream state.
+    notice = parse_server_park_notice(raw_line)
+    return None if notice is None else _SERVER_PARK_SSE_BY_COMMENT.get(": " + notice[0])
 
 
 def _server_recompute_counted(chunk) -> bool:

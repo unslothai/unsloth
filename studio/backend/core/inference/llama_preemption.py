@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import math
+import re
 import sys
 import threading
 import time
@@ -44,11 +45,26 @@ DEFAULT_PREEMPT_ENABLED = False
 
 
 # The park notices a llama-server built with unslothai/llama.cpp#197 writes on the very stream it
-# parks, matched as bytes at the start of a line so a `data:` payload quoting one is not mistaken
-# for it. `llama_cpp` spells the same two comments for its own relay; a test pins the pair.
+# parks, as SSE comment lines so a `data:` payload quoting one is not mistaken for it. A batched
+# request gets the prompt index appended (`: preempted 1`); unindexed means prompt 0. `llama_cpp`
+# spells the same comments for its own relay; a test pins the pair.
 _PARK_NOTICE_PARKED = b"\n: preempted"
 _PARK_NOTICE_RESUMED = b"\n: resumed"
-_PARK_NOTICE_TAIL = max(len(_PARK_NOTICE_PARKED), len(_PARK_NOTICE_RESUMED))
+_PARK_NOTICE_RE = re.compile(r": (preempted|resumed|recomputed)(?: (0|[1-9][0-9]{0,8}))?")
+# Longest line worth buffering: anything longer is not a notice.
+_PARK_NOTICE_MAX_LINE = 32
+
+
+def parse_server_park_notice(line) -> Optional[tuple]:
+    """``(kind, index)`` for one comment line that is exactly a park notice, else None."""
+    if isinstance(line, (bytes, bytearray)):
+        line = bytes(line).decode("utf-8", "replace")
+    if not isinstance(line, str):
+        return None
+    match = _PARK_NOTICE_RE.fullmatch(line.strip())
+    if match is None:
+        return None
+    return match.group(1), int(match.group(2) or 0)
 
 
 class ServerParkNotices:
@@ -59,17 +75,29 @@ class ServerParkNotices:
     as the neighbour did. A build that writes the notices says which request is parked, so they
     decide; the aggregate probe stays as the documented fallback for a swap build that predates
     them (unslothai/llama.cpp#184), bounded by the same cap, and it stops applying to a stream
-    that has said anything about itself.
+    that has said anything about itself. A batched request is parked while any prompt is.
     """
 
-    __slots__ = ("_probe", "_parked", "_heard", "_tail")
+    __slots__ = ("_probe", "_parked", "_heard", "_line", "_skip")
 
     def __init__(self, probe: Optional[Callable[[], bool]] = None) -> None:
         self._probe = probe
-        self._parked = False
+        self._parked: set = set()
         self._heard = False
-        # A notice on the first body line has no newline in front of it yet.
-        self._tail = b"\n"
+        # The unterminated tail of the current line, and whether it is already too long.
+        self._line = b""
+        self._skip = False
+
+    def _take_line(self, line: bytes) -> None:
+        notice = parse_server_park_notice(line) if line.startswith(b":") else None
+        if notice is None:
+            return
+        self._heard = True
+        kind, index = notice
+        if kind == "preempted":
+            self._parked.add(index)
+        elif kind == "resumed":
+            self._parked.discard(index)
 
     def feed(self, data) -> None:
         """Read a piece of this stream's body for its own park notices."""
@@ -77,21 +105,32 @@ class ServerParkNotices:
             return
         if isinstance(data, str):
             data = data.encode("utf-8", "replace")
-        blob = self._tail + bytes(data)
-        parked_at = blob.rfind(_PARK_NOTICE_PARKED)
-        resumed_at = blob.rfind(_PARK_NOTICE_RESUMED)
-        if parked_at >= 0 or resumed_at >= 0:
-            self._heard = True
-            # Whichever came last: one read can carry a whole park and its resume.
-            self._parked = parked_at > resumed_at
-        self._tail = blob[-_PARK_NOTICE_TAIL:]
+        data = bytes(data)
+        # Fast path: no line ends in this piece.
+        if b"\n" not in data and b"\r" not in data:
+            if not self._skip:
+                self._line += data
+                if len(self._line) > _PARK_NOTICE_MAX_LINE:
+                    self._line, self._skip = b"", True
+            return
+        parts = re.split(rb"\r|\n", data)
+        last = parts.pop()
+        for part in parts:
+            if not self._skip:
+                line = self._line + part
+                if len(line) <= _PARK_NOTICE_MAX_LINE:
+                    self._take_line(line)
+            self._line, self._skip = b"", False
+        self._line = last[: _PARK_NOTICE_MAX_LINE + 1]
+        if len(self._line) > _PARK_NOTICE_MAX_LINE:
+            self._line, self._skip = b"", True
 
     def feed_line(self, line) -> None:
-        """One line from a line-oriented source, which has stripped the newline the match reads
-        on. A line always starts one, so the carried tail is that newline."""
+        """One line from a line-oriented source, which has stripped the newline."""
         if isinstance(line, (str, bytes, bytearray)):
-            self._tail = b"\n"
+            self._line, self._skip = b"", False
             self.feed(line)
+            self.feed(b"\n")
 
     @property
     def heard_a_notice(self) -> bool:
@@ -100,7 +139,7 @@ class ServerParkNotices:
 
     @property
     def parked(self) -> bool:
-        return self._parked
+        return bool(self._parked)
 
     def excuses_silence(self) -> bool:
         """Whether this stream's silence is its own park. Blocks when it falls back to the probe,
