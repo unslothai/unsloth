@@ -138,7 +138,6 @@ def _sdpa_requested(query, key) -> bool:
     if not _SDPA_MATH:
         from torch.nn.attention import SDPBackend
         from .attention_dispatch import _sdpa_backend_state
-
         _SDPA_MATH[:] = [int(SDPBackend.MATH), _sdpa_backend_state]
     math, backend_state = _SDPA_MATH
     n_heads, n_kv_heads = query.shape[1], key.shape[1]

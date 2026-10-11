@@ -202,7 +202,17 @@ def test_a_missing_mask_is_not_block_causal():
     assert not hpa._mask_is_block_causal(None, _cu([6]), 6)
 
 
-def _plain_sdpa(module, q, k, v, mask, dropout = 0.0, scaling = None, is_causal = None, **kwargs):
+def _plain_sdpa(
+    module,
+    q,
+    k,
+    v,
+    mask,
+    dropout = 0.0,
+    scaling = None,
+    is_causal = None,
+    **kwargs,
+):
     # Not transformers' sdpa_attention_forward: compiling that after importing unsloth trips a Dynamo
     # guard bug on torch <= 2.13, with or without this wrapper.
     out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = mask, scale = scaling)
@@ -469,7 +479,11 @@ def test_an_sdpa_policy_keeps_every_varlen_kernel_off(monkeypatch, policy):
 
     def run():
         return hpa._sdpa_packed_varlen(
-            module, q, k, k, _block_causal(lengths, "cuda"),
+            module,
+            q,
+            k,
+            k,
+            _block_causal(lengths, "cuda"),
             packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
         )
 
