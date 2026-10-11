@@ -413,8 +413,7 @@ export function providerSupportsBuiltinWebSearch(
   );
 }
 
-/** Kimi keeps the Search and Think pills exclusive ($web_search wanted thinking off), except on
- *  kimi-k3, which always reasons and has no off switch to trade. */
+/** Search and Think stay exclusive on Kimi, except kimi-k3, which has no thinking off switch. */
 export function kimiSearchExcludesThinking(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -1484,8 +1483,7 @@ export function reasoningFieldsAfterCatalogRefresh(
   };
 }
 
-/** kimi-k3 keeps prior reasoning on every turn and wants each assistant message back whole,
- *  reasoning_content included (https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model). */
+/** kimi-k3 wants every assistant message back whole (https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model). */
 export function providerModelReplaysReasoning(
   providerType: string | null | undefined,
   modelId: string | null | undefined,

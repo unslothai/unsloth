@@ -27746,7 +27746,6 @@ def _build_external_messages(
             return {"type": "compaction", "encrypted_content": item.encrypted_content}
         return None
 
-    # kimi-k3 always keeps prior reasoning and wants each assistant message back whole.
     replays_reasoning = provider_type == "llama_cpp" or _is_kimi_k3(provider_type, model)
     result = []
     for msg in messages:
