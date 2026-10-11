@@ -187,6 +187,16 @@ def test_canvases_follow_each_image(tmp_path):
     assert plan_image_canvases(off, paths) == (None, None)
 
 
+def test_an_all_square_dataset_keeps_the_unbucketed_run(tmp_path):
+    # Same sampler, cache plan and cache keys as before bucketing existed, so an existing square cache stays warm.
+    paths = [_img(tmp_path / f"s{i}.png", 700 + i, 700) for i in range(3)]
+    cfg = _cfg(tmp_path).normalized()
+    assert cfg.bucketing is True
+    assert plan_image_canvases(cfg, paths) == (None, None)
+    mixed = paths + [_img(tmp_path / "l.png", 900, 600)]
+    assert plan_image_canvases(cfg, mixed)[0] is not None
+
+
 def test_an_epoch_covers_every_bucket_batch(tmp_path):
     # 3 buckets x 3 images, batch 2: 6 batches per pass, not ceil(9 / 2) = 5.
     paths = [
