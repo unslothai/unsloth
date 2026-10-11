@@ -446,7 +446,6 @@ class TestExactParksAreCountedAcrossModels:
 
     def test_a_launch_that_parks_is_noted(self):
         import inspect
-
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "if self._server_launched_parking: _note_parking_backend(self)" in source
 
