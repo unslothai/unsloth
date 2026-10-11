@@ -654,10 +654,10 @@ def test_torchao_export_loadable_needs_015_on_every_platform(monkeypatch, instal
     saved = {n: m for n, m in sys.modules.items() if n == "torchao" or n.startswith("torchao.")}
     for name in saved:
         monkeypatch.delitem(sys.modules, name)
-    assert _stub.torchao_too_old_for_export() == too_old
     assert _stub.torchao_export_loadable() is (too_old is None)
-    # metadata only: neither call may import torchao.
+    # metadata only: never imports torchao.
     assert "torchao" not in sys.modules
+    assert _stub.torchao_too_old_for_export() == too_old
 
 
 @pytest.mark.parametrize("alias", ["torchao_fp8", "portable_int8"])
@@ -665,7 +665,7 @@ def test_torchao_export_rejected_early_when_torchao_is_too_old(monkeypatch, alia
     mod = _load_export_module_no_torch(monkeypatch)
     monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
-    monkeypatch.setattr(_stub, "torchao_too_old_for_export", lambda: "0.14.0")
+    monkeypatch.setattr(_stub.importlib.metadata, "version", lambda name: "0.14.0")
     _set_torchao(monkeypatch, "real")
     _install_fake_unsloth_save(monkeypatch, has_method = True)
 
@@ -678,7 +678,7 @@ def test_too_old_torchao_does_not_block_other_formats(monkeypatch):
     mod = _load_export_module_no_torch(monkeypatch)
     monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
-    monkeypatch.setattr(_stub, "torchao_too_old_for_export", lambda: "0.14.0")
+    monkeypatch.setattr(_stub.importlib.metadata, "version", lambda name: "0.14.0")
     _install_fake_unsloth_save(monkeypatch, has_method = True)
 
     ok, message, _ = _bare_backend(mod).export_merged_model("/tmp/x", compressed_method = None)
