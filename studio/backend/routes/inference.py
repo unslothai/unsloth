@@ -2125,11 +2125,9 @@ def _openai_llama_admission_output_allowance(
 ) -> int:
     """Reserve output KV, treating caps at or above the per-request window as unstated.
 
-    Unstated requests reserve their full share when the prompt and wire margin fit.
-    Larger prompts receive the flat allowance and a larger charge, reducing concurrency
-    instead of forcing a one-token reply. Only ``preemption_active`` charges less than the
-    share: with no preemptor to take the difference back, a small prompt would overrun the
-    cache beside a large one."""
+    A prompt too large for its share takes the flat allowance (less concurrency), not a one-token
+    reply. Only ``preemption_active`` charges less than the share: with no preemptor to take the
+    difference back, a small prompt would overrun the cache beside a large one."""
     window = context_window or budget
     stated = cap if (cap is not None and cap < window) else None
     if stated is not None and not preemption_active:
@@ -2664,9 +2662,8 @@ def _openai_llama_admission_wire_prompt_tokens(
     markup = None,
     vision: bool = True,
 ) -> int:
-    """Price the sanitized conversation and catalogue actually sent.
-    Exclude audio/video transport bytes and top-level fields already folded into messages.
-    Use the loaded markup profile so pricing matches the builders."""
+    """Price what is actually sent, under the loaded markup profile, without audio/video transport
+    bytes or top-level fields already folded into messages."""
     from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
     conversation = neutralize_control_markup_in_messages(conversation, None, markup)
@@ -2721,8 +2718,7 @@ def _openai_llama_admission_charged_prompt_tokens(
     )
 
 
-# Leave room for template overhead and llama-server's next-token check.
-# This margin does not cover arbitrary prompt-estimator undercounts.
+# Template overhead and llama-server's next-token check; not a cover for estimator undercounts.
 _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS = 64
 # A tokenizer count already includes the template, so only the next-token check is left:
 # llama-server stops once n_past + 1 reaches n_ctx.
@@ -3479,11 +3475,10 @@ def _openai_llama_admission_enforced_max_tokens(
     preemptable: bool = True,
     prompt_counted: bool = False,
 ) -> Optional[int]:
-    """Enforce the reserved output allowance using the finalized conversation.
-    ``prompt_counted`` marks a given ``prompt_tokens`` as the tokenizer's exact count.
-    Return None for disabled accounting, unpriceable media, or an explicit cap below
-    the context window. Caps at or above the window count as unstated. Where preemption
-    can reclaim, the whole window is offered and the controller is the enforcement."""
+    """Enforce the reserved output allowance on the finalized conversation. None when accounting is
+    off, media is unpriceable, or the caller stated a cap below the window. ``prompt_counted``
+    marks ``prompt_tokens`` as the tokenizer's exact count. Where preemption can reclaim, the
+    whole window is offered and the controller is the enforcement."""
     # Only a count the caller handed in can be exact; one derived below is an estimate.
     counted_given = prompt_tokens is not None
     if capacity is None:
@@ -3854,9 +3849,8 @@ def _openai_llama_admission_recost(
 ) -> Optional[int]:
     """Re-cost the current tool conversation and return its output allowance.
 
-    Waiting releases the old commitment, so it requires reclaimable idle KV or
-    `cache_is_empty`. Otherwise, growth that cannot fit is refused.
-    `wire_tools` is the catalogue actually sent, or None for the final answer.
+    Waiting releases the old commitment, so it needs reclaimable idle KV or `cache_is_empty`;
+    otherwise growth that cannot fit is refused. `wire_tools` is None for the final answer.
 
     `count_prepared_prompt` charges the ledger the tokenizer's exact count of the round.
 
