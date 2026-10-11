@@ -238,6 +238,8 @@ def test_rollout_copy_without_tools_needs_no_family(patched):
     child = _child_accepts(handed, originals)
     assert child.chat_template == PLAIN
     assert _parser(tokenizer) == (None, None)
+    if not hasattr(child, "parse_response"):
+        return  # transformers 4.x: TRL's worker cannot parse any completion, Unsloth or not
     # The worker parses every completion, tools or not.
     prompt = child.apply_chat_template(
         [{"role": "user", "content": "hi"}], add_generation_prompt = True, return_dict = False
