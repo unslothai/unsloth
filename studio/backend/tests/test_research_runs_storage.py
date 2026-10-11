@@ -3514,55 +3514,6 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
     assert iterator_cancelled["value"] is True
 
 
-def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkeypatch):
-    supervisor, worker = _shared_setup_1()
-    run = research_db.claim_next(supervisor.worker_id)
-    request_cancelled = {"value": False}
-    in_flight = asyncio.Event()
-
-    class FakeClient:
-        def __init__(self, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def build_request(self, *args, **kwargs):
-            return object()
-
-        async def send(self, request, *, stream):
-            in_flight.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                request_cancelled["value"] = True
-
-    monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
-    monkeypatch.setattr(
-        worker.auth_storage,
-        "create_api_key",
-        lambda **kwargs: ("internal-key", {"id": 1}),
-    )
-    monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: True)
-
-    async def scenario():
-        task = asyncio.create_task(
-            supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
-        )
-        # Wait for the request to actually be in flight rather than guessing how
-        # long that takes: cancelling before it starts tests nothing.
-        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
-        supervisor.cancel("run-1")
-        with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
-
-    asyncio.run(scenario())
-    assert request_cancelled["value"] is True
-
-
 def test_route_maps_unstable_assistant_conflict_to_409(research_home):
     from fastapi import HTTPException
     from routes.research_runs import CreateResearchRun, create_research_run

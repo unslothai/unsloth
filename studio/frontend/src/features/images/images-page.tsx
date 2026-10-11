@@ -20,6 +20,7 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
+  FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
@@ -151,6 +152,7 @@ import {
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { ChevronDown } from "lucide-react";
 import { NegativePromptField } from "@/components/negative-prompt-field";
@@ -187,7 +189,15 @@ import {
 import { toast } from "@/lib/toast";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import { DEFAULT_GEN, defaultsFor, defaultsKeyFor, residentDefaultsKey, resolutionFor } from "./image-generation-defaults";
+import {
+  DEFAULT_GEN,
+  defaultsFor,
+  defaultsKeyFor,
+  loadedRecipeFor,
+  residentDefaultsKey,
+  residentRecipeFor,
+  resolutionFor,
+} from "./image-generation-defaults";
 import {
   MIN_DIM,
   type SizeLimits,
@@ -1474,10 +1484,13 @@ export function ImagesPage({
   // Whether the user has taken the recipe since the pick still waiting for its status: a preset
   // selected while the model downloaded is newer than that pick.
   const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
+  // The recipe the last pick applied, so a load that reveals the family can replace a fallback.
+  const pickDefaults = useRef<{ steps: number; guidance: number } | null>(null);
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
     setPendingModelDefaults(null);
+    pickDefaults.current = null;
     // Equality alone cannot tell "nobody touched this" from "the user chose the same number": a
     // preset selected after the pick owns these fields.
     if (!pickRecipeSuperseded.current?.()) {
@@ -1555,6 +1568,7 @@ export function ImagesPage({
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
   // Bumped when a training run completes, so the LoRA discovery effect rescans without a model reload.
   const [loraRefreshKey, setLoraRefreshKey] = useState(0);
+  const [loraFoldersOpen, setLoraFoldersOpen] = useState(false);
   // ControlNet for the next generation: model id, control image, how to derive the map, and the strength.
   const [controlnetId, setControlnetId] = useState<string>("");
   const [controlImage, setControlImage] = useState<string | null>(null);
@@ -1703,10 +1717,12 @@ export function ImagesPage({
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
   const residentDefaults = residentDefaultsKey(status?.repo_id ?? "", status?.base_repo, status?.resolved?.family_override);
+  const { steps: residentSteps, guidance: residentGuidance } = residentRecipeFor(
+    residentDefaults,
+    status?.generation_defaults,
+  );
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
-    const recommended =
-      pendingModelDefaults ??
-      defaultsFor(residentDefaults);
+    const recommended = pendingModelDefaults ?? { steps: residentSteps, guidance: residentGuidance };
     // Reset restores the resident build's canvas, the same one the seed above applied. A constant
     // here would quietly undo it and put a 24 GB card back over its budget.
     const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
@@ -1725,7 +1741,8 @@ export function ImagesPage({
     };
   }, [
     pendingModelDefaults,
-    residentDefaults,
+    residentSteps,
+    residentGuidance,
     status?.base_repo,
     status?.repo_id,
     status?.model_kind,
@@ -1770,6 +1787,7 @@ export function ImagesPage({
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
       const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
+      pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -2636,6 +2654,17 @@ export function ImagesPage({
           setRememberedModel(remembered);
         }
         setBusy(null);
+        // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
+        const loadedRecipe = loadedRecipeFor(
+          pickDefaults.current,
+          residentDefaultsKey(loaded.repo_id ?? "", loaded.base_repo, loaded.resolved?.family_override),
+          loaded.generation_defaults,
+        );
+        pickDefaults.current = null;
+        if (loadedRecipe && !pickRecipeSuperseded.current?.()) {
+          setSteps((cur) => (cur === DEFAULT_GEN.steps ? loadedRecipe.steps : cur));
+          setGuidance((cur) => (cur === DEFAULT_GEN.guidance ? loadedRecipe.guidance : cur));
+        }
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
@@ -2801,7 +2830,7 @@ export function ImagesPage({
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
-    const seedKey = `${repoId}\0${residentDefaults}`;
+    const seedKey = `${repoId}\0${residentDefaults}\0${residentSteps}\0${residentGuidance}`;
     if (seededResident.current === seedKey) return;
     seededResident.current = seedKey;
     // Wire Reapply to the resident model too. Only a full pipeline is reloadable by repo id
@@ -2815,7 +2844,7 @@ export function ImagesPage({
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    const d = defaultsFor(residentDefaults);
+    const d = { steps: residentSteps, guidance: residentGuidance };
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
@@ -2835,6 +2864,8 @@ export function ImagesPage({
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
+    residentSteps,
+    residentGuidance,
     status?.display_repo_id,
     status?.loaded,
     status?.repo_id,
@@ -5434,11 +5465,14 @@ export function ImagesPage({
                 <div className="space-y-2">
                   {availableLoras.length > 0 && (
                     <datalist id="diffusion-lora-suggestions">
-                      {availableLoras.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.display_name}
-                        </option>
-                      ))}
+                      {/* A datalist has no groups, so the label carries the fine-tuned mark. */}
+                      {[...availableLoras]
+                        .sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned)))
+                        .map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.fine_tuned ? `${a.display_name} (fine-tuned)` : a.display_name}
+                          </option>
+                        ))}
                     </datalist>
                   )}
                   {loras.map((sel, i) => (
@@ -5487,27 +5521,44 @@ export function ImagesPage({
                       />
                     </div>
                   ))}
-                  {loras.length < 8 && (
+                  <div className="flex gap-2">
+                    {loras.length < 8 && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => {
+                          // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
+                          const taken = new Set(loras.map((l) => l.id));
+                          const next = availableLoras.find((a) => !taken.has(a.id));
+                          setLoras((prev) => [
+                            ...prev,
+                            next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
+                          ]);
+                        }}
+                      >
+                        <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                        Add LoRA
+                      </Button>
+                    )}
                     <Button
                       type="button"
-                      variant="secondary"
+                      variant="ghost"
                       size="sm"
-                      className="w-full"
-                      onClick={() => {
-                        // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
-                        const taken = new Set(loras.map((l) => l.id));
-                        const next = availableLoras.find((a) => !taken.has(a.id));
-                        setLoras((prev) => [
-                          ...prev,
-                          next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
-                        ]);
-                      }}
+                      title="Add a custom models folder. Image LoRAs exported from Unsloth in it show up here."
+                      onClick={() => setLoraFoldersOpen(true)}
                     >
-                      <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
-                      Add LoRA
+                      <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />
+                      Folders
                     </Button>
-                  )}
+                  </div>
                 </div>
+                <OnDeviceFoldersDialog
+                  open={loraFoldersOpen}
+                  onOpenChange={setLoraFoldersOpen}
+                  onInventoryChange={() => setLoraRefreshKey((k) => k + 1)}
+                />
               </Field>
             )}
             {/* ControlNet: shown when the model supports it, one is discoverable, and txt2img is active. */}

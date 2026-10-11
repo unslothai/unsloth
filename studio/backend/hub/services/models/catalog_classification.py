@@ -252,7 +252,29 @@ def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> 
     arch = _gguf_architecture(str(path))
     if is_audio_cpp_gguf_architecture(arch):
         return _audio_cpp_classification(path, name_hints)[0]
+    if arch is None or arch.lower() == "sdxl":
+        whole = _whole_pipeline_gguf_task(path)
+        if whole is not None:
+            return whole
     return _arch_to_task(arch, name_hints = name_hints)
+
+
+def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
+    """Images task for a whole-pipeline SDXL GGUF: sd.cpp ``convert`` writes no architecture, so the name fallback
+    would call it a chat model."""
+    try:
+        from core.inference.diffusion_content import whole_pipeline_gguf_family
+
+        family = whole_pipeline_gguf_family(str(path))
+        if family is None:
+            return None
+        from core.inference.diffusion_engine_router import family_buildable_here
+        from core.inference.diffusion_families import detect_family
+
+        buildable = family_buildable_here(detect_family("", override = family), model_kind = "gguf")
+    except Exception:
+        return None
+    return "text-to-image" if buildable else _UNSUPPORTED_DIFFUSION_TASK
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:

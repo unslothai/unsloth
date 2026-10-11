@@ -23,10 +23,10 @@ test("token counting waits for the initial skills discovery", () => {
     /if \(pending\) await Promise\.race\(\[pending\.catch\(\(\) => undefined\), deadline\]\);/,
   );
   assert.match(SKILLS_API_SOURCE, /let stale = !snapshot\.initialized;/);
-  assert.match(CHAT_ADAPTER_SOURCE, /await settleSkillsForText\(""\);/);
+  assert.match(CHAT_ADAPTER_SOURCE, /await settleSkillsForText\(userTexts\(messages\)\.join\("\\n"\)\);/);
   assert.match(
     CHAT_ADAPTER_SOURCE,
-    /const hasEnabledSkills = skillToolsOffered\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*\);/,
+    /const skillTools = skillToolNames\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*userTexts\(messages\),\s*\);/,
   );
 });
 
@@ -43,10 +43,8 @@ test("token counting lists the skill tools only when the completion would", () =
     CHAT_ADAPTER_SOURCE.indexOf("export async function buildLocalTokenCountExtras"),
     CHAT_ADAPTER_SOURCE.indexOf("mcp_enabled: mcpEnabledForChat"),
   );
-  assert.match(
-    countExtras,
-    /\.\.\.\(hasEnabledSkills \? \["read_skill", "create_skill"\] : \[\]\),/,
-  );
+  assert.match(countExtras, /skillTools\.length === 0\n\s*\) \{/);
+  assert.match(countExtras, /^\s*\.\.\.skillTools,$/m);
   assert.doesNotMatch(countExtras, /^\s*"read_skill",$/m);
   assert.doesNotMatch(countExtras, /^\s*"create_skill",$/m);
 });
@@ -61,15 +59,15 @@ test("request building waits for skills and preserves the launcher tool catalog"
   );
   assert.match(
     payloadBuilder,
-    /if \(supportsStudioToolsForThisTurn\) \{\s*await settleSkillsForText\(lastUserText\(outboundMessages\)\);/,
+    /if \(supportsStudioToolsForThisTurn\) \{\s*\/\/[^\n]*\n\s*await settleSkillsForText\(userTexts\(outboundMessages\)\.join\("\\n"\)\);/,
   );
   assert.match(
     payloadBuilder,
-    /const hasEnabledSkills = skillToolsOffered\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*\);/,
+    /const skillTools = skillToolNames\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*userTexts\(outboundMessages\),\s*\);/,
   );
   assert.match(
     payloadBuilder,
-    /supportsTools &&\s*\([\s\S]*hasEnabledSkills[\s\S]*\)\s*\? \{\s*enable_tools: true/,
+    /supportsTools &&\s*\([\s\S]*skillTools\.length > 0[\s\S]*\)\s*\? \{\s*enable_tools: true/,
   );
   const localToolCatalog = payloadBuilder.slice(
     payloadBuilder.indexOf("// Sent for every local chat"),
@@ -81,4 +79,15 @@ test("request building waits for skills and preserves the launcher tool catalog"
 test("a sign-out drops the module-level skills snapshot", () => {
   assert.ok(SKILLS_API_SOURCE.includes("window.addEventListener(AUTH_SESSION_CLEARED_EVENT"));
   assert.ok(SKILLS_API_SOURCE.includes("publish(EMPTY_SNAPSHOT)"));
+});
+
+test("the count passes the counted history so a Code-off @mention is priced like the send", () => {
+  const refresh = readFileSync(
+    new URL("../src/features/chat/utils/refresh-context-usage.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    refresh,
+    /buildLocalTokenCountExtras\(\s*payloadThreadId,\s*countHistory\.messages,\s*\)/,
+  );
 });

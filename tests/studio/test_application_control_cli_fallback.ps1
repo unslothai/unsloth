@@ -9,7 +9,7 @@
 # with no exit code to report and no diagnostic worth reading.
 #
 # These checks pin the three things that fix has to get right: the failure is classified off the
-# exception (1260), never off $LASTEXITCODE, which no process was created to set; the CLI is
+# exception (1260 or 4551), never off $LASTEXITCODE, which no process was created to set; the CLI is
 # reached through the interpreter with the trampoline intact as ONE argument; and the .cmd
 # companion is byte-stable, so a re-run rewrites nothing.
 # Run: pwsh -NoProfile -File tests/studio/test_application_control_cli_fallback.ps1
@@ -74,6 +74,7 @@ $preferFn   = Get-FunctionText $install "Test-UnslothCmdShimPreferred"
 
 # An empty or wrong extraction would make every case below pass vacuously.
 Check "extraction kept the policy code"    ($blockFn -match '1260')
+Check "extraction kept the code integrity code"       ($blockFn -match '4551')
 Check "extraction kept the utf8 pin"       ($cmdlineFn -match '-X')
 Check "extraction kept the classifier call" ($invokeFn -match 'Test-ApplicationControlBlock')
 Check "extraction kept the walk-up"        ($relFn -match '\.\.')
@@ -123,12 +124,19 @@ $hresultOnly = New-Object System.Exception("policy")
 $hresultOnly.GetType().GetField("_HResult", "Instance,NonPublic").SetValue($hresultOnly, -2147023636)
 Check "HRESULT 0x800704EC only"   (Invoke-Block $hresultOnly)
 Check "HRESULT inside an ErrorRecord" (Invoke-Block (New-Record $hresultOnly))
+Check "bare Win32Exception 4551"  (Invoke-Block (New-Win32 4551))
+Check "4551 inside an ErrorRecord" (Invoke-Block (New-Record (New-Object System.Exception("outer", (New-Win32 4551)))))
+$sacHresultOnly = New-Object System.Exception("policy")
+$sacHresultOnly.GetType().GetField("_HResult", "Instance,NonPublic").SetValue($sacHresultOnly, -2147020345)
+Check "HRESULT 0x800711C7 only"   (Invoke-Block $sacHresultOnly)
 
 Write-Host "and nothing else is mistaken for one"
 # 5 is ERROR_ACCESS_DENIED, the neighbouring failure Test-AccessDeniedError owns. Reporting a
 # permissions problem as a security policy sends the user to the wrong administrator.
 Check "access denied is not a policy block" (-not (Invoke-Block (New-Win32 5)))
 Check "file not found is not a policy block" (-not (Invoke-Block (New-Win32 2)))
+# 577 is a bad image hash, which can be a damaged file rather than a policy verdict.
+Check "a bad image hash is not a policy block" (-not (Invoke-Block (New-Win32 577)))
 Check "a plain exception"          (-not (Invoke-Block (New-Object System.Exception("boom"))))
 Check "a plain ErrorRecord"        (-not (Invoke-Block (New-Record (New-Object System.Exception("boom")))))
 Check "null"                       (-not (Invoke-Block $null))

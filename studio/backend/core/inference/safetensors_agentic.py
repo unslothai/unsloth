@@ -621,6 +621,7 @@ def run_safetensors_tool_loop(
     execute_tool: Callable[..., str],
     cancel_event: Optional[threading.Event] = None,
     auto_heal_tool_calls: bool = True,
+    deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
@@ -663,6 +664,10 @@ def run_safetensors_tool_loop(
 
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
+    if mcp_image is not None:
+        from core.inference.mcp_image import note_attached_image
+        from core.inference.tools import mcp_image_targets
+        messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
     conversation = list(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
@@ -771,6 +776,7 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        deduplicate_tool_calls = deduplicate_tool_calls,
         session_id = session_id,
         thread_id = thread_id,
     )
@@ -1421,7 +1427,10 @@ def run_safetensors_tool_loop(
             novel_kept = 0
             novel_at_last_keep: dict = {}
             deduped: list = []
-            for _tc in tool_calls:
+            if not deduplicate_tool_calls:
+                deduped = tool_calls[:_MAX_TOOL_CALLS_PER_TURN]
+                over_cap = tool_calls[_MAX_TOOL_CALLS_PER_TURN:]
+            for _tc in tool_calls if deduplicate_tool_calls else ():
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
                 if _fn.get("name") in _WORKSPACE_TOOLS:
@@ -1480,6 +1489,14 @@ def run_safetensors_tool_loop(
             # consecutive results the same way -- so without the id a batch persisted
             # as separate pairs replayed as several pictures on the next request.
             decision.provenance["round_id"] = iteration
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                from core.inference.tools import mcp_image_share
+                image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+                if image_share is not None:
+                    decision = tool_controller.reprepare_call(
+                        decision, provisional = provisional_match
+                    )
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
@@ -1525,8 +1542,6 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
             # high-risk python/terminal call without OS isolation.
-            from core.inference.tools import mcp_image_share
-
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),
                 bypass_permissions = bypass_permissions,
@@ -1536,7 +1551,6 @@ def run_safetensors_tool_loop(
                 sandbox_level = sandbox_level,
             )
             # Sending the user's image always asks, whatever the permission mode.
-            image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
             needs_confirm = needs_confirm or image_share is not None
             strict_isolation = requires_os_isolation(
                 confirm_tool_calls = bool(confirm_tool_calls),

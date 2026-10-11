@@ -77,6 +77,8 @@ export interface DiffusionStatus {
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
+  // Default steps / guidance the backend renders the loaded model with (file header before base repo).
+  generation_defaults?: { steps?: number; guidance?: number } | null;
 }
 
 export interface DiffusionConditioning {
@@ -239,6 +241,7 @@ export interface DiffusionLoraInfo {
   families: string[];
   size_bytes: number;
   weight_default: number;
+  fine_tuned?: boolean;
 }
 
 // A persisted image's full generation recipe (also embedded in the PNG).

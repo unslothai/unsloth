@@ -21,6 +21,7 @@ import { isTauri } from "./lib/api-base";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
+import { watchSpellCheck } from "./lib/spellcheck";
 
 setHubSessionRefresh(refreshSession);
 
@@ -59,6 +60,9 @@ watchMathBlockContainmentOverride();
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
 watchInputModality(window);
+
+// Before the first render, so a disabled spell check never flashes underlines.
+watchSpellCheck(window);
 
 function renderApp(): void {
   root.render(

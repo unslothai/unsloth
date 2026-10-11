@@ -43,12 +43,14 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
 
-# Fresh spawned interpreter: re-apply the process-wide network injections.
+# Fresh spawned interpreter: re-apply the process-wide network injections and CPU thread caps.
+from utils.cpu_threads import install_openblas_runtime_cap
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
 activate_happy_eyeballs()
+install_openblas_runtime_cap()
 
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
@@ -1636,6 +1638,108 @@ def _parse_mem_fraction_env(env_value: str | None) -> float | None:
     return override if 0.0 < override <= 1.0 else None
 
 
+def _training_vram_budget_fraction(
+    budget_gb: float | None,
+    denominator_bytes: int,
+    current: float = 1.0,
+) -> float | None:
+    """The memory fraction that holds this process to ``budget_gb``, never looser than ``current``
+    (the OOM guard's cap); None when there is no budget or no total to divide by."""
+    try:
+        budget = float(budget_gb)
+    except (TypeError, ValueError):
+        return None
+    if not (budget > 0) or denominator_bytes <= 0:
+        return None
+    return min(current, budget * 1024**3 / denominator_bytes)
+
+
+def _apply_training_vram_budget(
+    torch_mod: Any, single_gb: float | None, per_device_gb: list | None, gpu_ids: list | None
+) -> dict[int, float]:
+    """Cap each visible device at its own budget; returns {ordinal: fraction} for what was set."""
+    applied: dict[int, float] = {}
+    if not torch_mod.cuda.is_available():
+        return applied
+    get_fraction = getattr(torch_mod.cuda, "get_per_process_memory_fraction", None)
+    divides_by_props = _allocator_divides_by_props_total(getattr(torch_mod, "__version__", ""))
+    for index in range(torch_mod.cuda.device_count()):
+        budget = _device_budget_gb(single_gb, per_device_gb, index, gpu_ids)
+        if not budget:
+            continue
+        props = torch_mod.cuda.get_device_properties(index)
+        denominator = int(getattr(props, "total_memory", 0) or 0)
+        if not divides_by_props:
+            denominator = int(torch_mod.cuda.mem_get_info(index)[1])
+        current = get_fraction(index) if get_fraction is not None else 1.0
+        fraction = _training_vram_budget_fraction(budget, denominator, current)
+        if fraction is None:
+            continue
+        torch_mod.cuda.set_per_process_memory_fraction(fraction, index)
+        applied[index] = fraction
+        logger.info(
+            "Training VRAM budget: set_per_process_memory_fraction(%.4f, cuda:%d), "
+            "%.1f GiB of %.1f GiB",
+            fraction,
+            index,
+            fraction * denominator / 1024**3,
+            denominator / 1024**3,
+        )
+    return applied
+
+
+def _device_budget_gb(
+    single_gb: float | None,
+    per_device_gb: list | None,
+    ordinal: int,
+    gpu_ids: list | None = None,
+) -> float | None:
+    """The budget for torch device ``ordinal``. ``per_device_gb`` is indexed by physical GPU id, so
+    the ordinal goes through ``gpu_ids`` (the CUDA_VISIBLE_DEVICES narrowing) first; when it is
+    given, a missing or null entry means no cap on that card."""
+    if not per_device_gb:
+        return single_gb
+    physical = gpu_ids[ordinal] if gpu_ids and ordinal < len(gpu_ids) else ordinal
+    try:
+        return per_device_gb[int(physical)]
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def _offload_plan_shape(config: dict) -> dict:
+    """The per-device batch and LoRA rank an Auto offload plan sizes its training reserve for."""
+    return {"batch_size": config.get("batch_size"), "lora_rank": config.get("lora_r")}
+
+
+def _visible_gpu_count() -> int:
+    """GPUs the load spreads over when no ids were resolved (a UUID / MIG mask is inherited as is)."""
+    try:
+        import torch
+        return torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:
+        return 0
+
+
+def _with_vram_budget_hint(config: dict, message: str) -> str:
+    """Point a run that does not fit at its own VRAM budget, the one cause the generic advice omits."""
+    budget = config.get("offload_vram_gb")
+    per_device = [gb for gb in config.get("offload_vram_gb_per_device") or [] if gb]
+    lower = (message or "").lower()
+    if not (budget or per_device) or not any(
+        k in lower for k in ("out of memory", "out of vram", "does not fit")
+    ):
+        return message
+    cap = (
+        f"a {budget:g} GiB VRAM budget"
+        if budget and not per_device
+        else "per-GPU VRAM budgets (" + ", ".join(f"{gb:g}" for gb in per_device) + " GiB)"
+    )
+    return (
+        f"{message}\nThis run is capped at {cap}. Raise or clear the "
+        "VRAM budget under Training Hyperparameters > Memory."
+    )
+
+
 def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
     """Whether ``set_per_process_memory_fraction`` scales ``props.total_memory``. c10's
     ``CUDACachingAllocator::setMemoryFraction`` caps at ``fraction * device_prop.totalGlobalMem``
@@ -2631,10 +2735,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
-    if config.get("is_decision"):
-        message = "Decision model training is not supported for MLX training yet."
-        _send("error", error = message)
-        raise NotImplementedError(message)
     if config.get("training_type") == "Continued Pretraining":
         message = "Continued Pretraining is not supported for MLX training yet."
         _send("error", error = message)
@@ -3431,7 +3531,19 @@ def run_mlx_training_process(
 
     try:
         try:
-            _run_mlx_training(event_queue, stop_queue, config)
+            if config.get("is_decision"):
+                # Its own pipeline, as on the torch path, behind the same security gate.
+                security_error = _model_load_security_error(
+                    config, model_load_target, _worker_hf_token(config)
+                )
+                if security_error:
+                    event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                else:
+                    _download_decision_checkpoint(event_queue, config)
+                    from core.training.decision_trainer import run_decision_training
+                    run_decision_training(event_queue, stop_queue, config)
+            else:
+                _run_mlx_training(event_queue, stop_queue, config)
         finally:
             try:
                 stop_queue.put({"type": _MLX_WORKER_COMPLETE})
@@ -4183,6 +4295,44 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
+    # and two runs on one card can each take their share.
+    # ── 2b. Training VRAM budget ──
+    # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
+    _wants_budget = bool(
+        (config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"))
+        and config.get("offload_layers") == "auto"
+        and config.get("training_type", "LoRA/QLoRA") in ("LoRA/QLoRA", "Continued Pretraining")
+        and not config.get("is_decision")
+        and not config.get("is_embedding")
+    )
+    # Vision / audio loads on several GPUs cannot offload at load, and LoRA setup allocates adapters before it swaps:
+    # a cap would OOM either step, so those runs offload Auto uncapped.
+    _budget_unsupported = (
+        _wants_budget
+        and (len(gpu_ids) if gpu_ids else _visible_gpu_count()) > 1
+        and bool(config.get("is_dataset_image") or config.get("is_dataset_audio"))
+    )
+
+    if _budget_unsupported:
+        logger.info(
+            "Training VRAM budget not applied: multi-GPU vision / audio runs offload at LoRA setup"
+        )
+        # An out-of-memory error then must not blame a cap that was never set.
+        config["offload_vram_gb"] = None
+        config["offload_vram_gb_per_device"] = None
+    elif _wants_budget:
+        try:
+            import torch as _torch_budget
+            _apply_training_vram_budget(
+                _torch_budget,
+                config.get("offload_vram_gb"),
+                config.get("offload_vram_gb_per_device"),
+                gpu_ids,
+            )
+        except Exception as _budget_err:
+            logger.warning("Could not apply the training VRAM budget: %s", _budget_err)
+
     if config.get("is_decision", False):
         try:
             _download_decision_checkpoint(event_queue, config)
@@ -4459,6 +4609,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 actual_model_repo_id = config.get("actual_model_repo_id"),
                 model_revision = model_revision,
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                offload_layers = config.get("offload_layers", 0),
+                prefetch_depth = config.get("prefetch_depth", 2),
+                offload_plan_shape = _offload_plan_shape(config),
             )
             fallback_error = (
                 _model_cache_fallback_error(config, trainer.model_load_error)
@@ -4525,6 +4678,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         actual_model_repo_id = config.get("actual_model_repo_id"),
                         model_revision = model_revision,
                         use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                        offload_layers = config.get("offload_layers", 0),
+                        prefetch_depth = config.get("prefetch_depth", 2),
+                        offload_plan_shape = _offload_plan_shape(config),
                     )
         finally:
             _load_watchdog_stop.set()
@@ -4533,7 +4689,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             if trainer.should_stop:
                 event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
-                error_msg = trainer.training_progress.error or "Failed to load model"
+                error_msg = _with_vram_budget_hint(
+                    config, trainer.training_progress.error or "Failed to load model"
+                )
                 event_queue.put(
                     {
                         "type": "error",
@@ -4627,7 +4785,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 event_queue.put(
                     {
                         "type": "error",
-                        "error": trainer.training_progress.error or "Failed to prepare model",
+                        "error": _with_vram_budget_hint(
+                            config, trainer.training_progress.error or "Failed to prepare model"
+                        ),
                         "stack": "",
                         "ts": time.time(),
                     }
@@ -4778,7 +4938,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             event_queue.put(
                 {
                     "type": "error",
-                    "error": _oom_msg,
+                    "error": _with_vram_budget_hint(config, _oom_msg),
                     "stack": traceback.format_exc(limit = 20),
                     "ts": time.time(),
                 }
@@ -4946,6 +5106,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
                     "status_message": progress.status_message,
+                    "offload": getattr(progress, "offload", None),
                     "ts": time.time(),
                 }
             )
