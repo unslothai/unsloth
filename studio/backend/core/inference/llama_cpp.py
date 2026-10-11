@@ -19547,6 +19547,7 @@ class LlamaCppBackend:
             # The probe runs under the load lock and can be slow: honour a Stop that came in.
             if cancelled is not None and cancelled():
                 logger.info("Load cancelled before diffusion server start")
+                self._health_wait_cancelled = True
                 return False
             if fit_ngl is not None and not _shim_supports_ngl(shim_cmd):
                 logger.warning(
