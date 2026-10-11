@@ -68,9 +68,12 @@ PLATFORM_TAG = "linux_x86_64"
 #
 # `abi` is what torch._C._GLIBCXX_USE_CXX11_ABI reports on that platform, and it goes into the
 # filename because that is what each upstream setup.py writes there on every platform: their own
-# get_wheel_url() names a Windows wheel `...cxx11abiFALSE-cp313-cp313-win_amd64.whl`, because the
-# attribute is False on an MSVC build of torch. Keeping their naming means the resolver builds the
-# filename the same way on both platforms and needs no Windows special case.
+# get_wheel_url() formats the attribute verbatim. It is True on the Windows torch 2.13 and 2.14
+# cu130 wheels as well (measured on windows-2022: "cxx11abi True"; the macro means nothing to MSVC,
+# but torch still reports it), so a Windows wheel is `...cxx11abiTRUE-cp313-cp313-win_amd64.whl`.
+# Keeping their naming means the resolver builds the filename the same way on both platforms and
+# needs no Windows special case. The build asserts the attribute, so a torch that ever flips it
+# fails the job instead of publishing a misnamed wheel.
 #
 # `pytorch_nvcc` is the compiler line torch's cpp_extension writes into build.ninja (it honours
 # PYTORCH_NVCC on every OS, verbatim and unquoted, and on Windows that variable is the only way to
@@ -93,7 +96,7 @@ PLATFORMS = {
         "os": "windows",
         # Visual Studio 2022 (MSVC 14.4x), a host compiler CUDA 13.0's Windows guide supports.
         "runner": "windows-2022",
-        "abi": "FALSE",
+        "abi": "TRUE",
         "label": " / win_amd64",
         "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
     },
@@ -258,8 +261,8 @@ def _build_env(spec: dict, platform: str) -> str:
 
     The only per-platform value is flash-attn's FORCE_CXX11_ABI, which makes its setup.py set
     torch._C._GLIBCXX_USE_CXX11_ABI before it builds and names the wheel. It follows the platform's
-    real ABI, so a Windows build does not claim, or compile with -D_GLIBCXX_USE_CXX11_ABI=1, a
-    libstdc++ ABI that MSVC does not have. Linux keeps the exact string it always had.
+    `abi`, so the name it writes always agrees with the one the build asserts. Today that is TRUE on
+    both platforms, which on a torch already reporting True is a no-op.
     """
     abi = PLATFORMS[platform]["abi"]
     pairs = []

@@ -341,9 +341,20 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
           & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
 
-      # Linux gets 10 GB of swap for nvcc's peak RSS. Windows runners already have a
-      # system-managed page file that grows on demand, so this records how much room there is
-      # instead, which is what makes an out-of-memory nvcc readable from the log.
+      # The Windows counterpart of the Linux swap file below. windows-2022 ships a FIXED 2.9 GB
+      # page file (measured: 16 GB RAM, 18.9 GB commit limit, not system-managed), so nvcc's peak
+      # commit on the sm_100 flash-attn kernels has almost no headroom. This adds one on D:, which
+      # has ~220 GB free, through NtCreatePagingFile, so it takes effect without a reboot.
+      - name: Add a page file (Windows)
+        if: runner.os == 'Windows'
+        uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: 'D:'
+
+      # Records how much room there is after the page file above, which is what makes an
+      # out-of-memory nvcc readable from the log.
       - name: Report memory, page file and disk (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -383,8 +394,8 @@ jobs:
               sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
           if not torch.version.cuda.startswith("13."):
               sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
-          # Verify the ABI matches the wheel's cxx11abi tag: TRUE on Linux, FALSE on an MSVC
-          # build of torch, which is what every upstream setup.py writes into a Windows name.
+          # Verify the ABI matches the wheel's cxx11abi tag, which every upstream setup.py copies
+          # from this attribute. It is True on the Windows cu130 wheels too, not just on Linux.
           want = os.environ["MATRIX_ABI"]
           if bool(torch._C._GLIBCXX_USE_CXX11_ABI) != (want == "TRUE"):
               sys.exit(f"torch reports _GLIBCXX_USE_CXX11_ABI={torch._C._GLIBCXX_USE_CXX11_ABI}; the cxx11abi{want} tag would be wrong")
@@ -674,9 +685,20 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
           & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
 
-      # Linux gets 10 GB of swap for nvcc's peak RSS. Windows runners already have a
-      # system-managed page file that grows on demand, so this records how much room there is
-      # instead, which is what makes an out-of-memory nvcc readable from the log.
+      # The Windows counterpart of the Linux swap file below. windows-2022 ships a FIXED 2.9 GB
+      # page file (measured: 16 GB RAM, 18.9 GB commit limit, not system-managed), so nvcc's peak
+      # commit on the sm_100 flash-attn kernels has almost no headroom. This adds one on D:, which
+      # has ~220 GB free, through NtCreatePagingFile, so it takes effect without a reboot.
+      - name: Add a page file (Windows)
+        if: runner.os == 'Windows'
+        uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: 'D:'
+
+      # Records how much room there is after the page file above, which is what makes an
+      # out-of-memory nvcc readable from the log.
       - name: Report memory, page file and disk (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -713,8 +735,8 @@ jobs:
               sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
           if not torch.version.cuda.startswith("13."):
               sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
-          # Verify the ABI matches the wheel's cxx11abi tag: TRUE on Linux, FALSE on an MSVC
-          # build of torch, which is what every upstream setup.py writes into a Windows name.
+          # Verify the ABI matches the wheel's cxx11abi tag, which every upstream setup.py copies
+          # from this attribute. It is True on the Windows cu130 wheels too, not just on Linux.
           want = os.environ["MATRIX_ABI"]
           if bool(torch._C._GLIBCXX_USE_CXX11_ABI) != (want == "TRUE"):
               sys.exit(f"torch reports _GLIBCXX_USE_CXX11_ABI={torch._C._GLIBCXX_USE_CXX11_ABI}; the cxx11abi{want} tag would be wrong")

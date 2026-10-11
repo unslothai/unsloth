@@ -8,7 +8,7 @@ across every Dao-AILab and state-spaces release. These pin the parts of the Wind
 be checked without a Windows runner:
 
 * the Linux cells are byte-for-byte what they were, only gaining keys;
-* Windows names follow each upstream setup.py's own Windows naming (`cxx11abiFALSE`, `win_amd64`);
+* Windows names follow each upstream setup.py's own naming (`cxx11abiTRUE`, as torch reports, and `win_amd64`);
 * the shard selector understands Windows ninja targets, and can never run a targetless ninja;
 * the deadline wrapper ends the whole process tree;
 * SHA256SUMS is rebuilt over every wheel on the release, so a one-platform publish keeps the other;
@@ -116,18 +116,18 @@ class TestMatrix:
         for cell in cells:
             assert cell["os"] == "windows"
             assert cell["runner"] == "windows-2022"
-            assert cell["abi"] == "FALSE"
-            assert cell["wheel_name"].endswith("cxx11abiFALSE-cp313-cp313-win_amd64.whl")
+            assert cell["abi"] == "TRUE"
+            assert cell["wheel_name"].endswith("cxx11abiTRUE-cp313-cp313-win_amd64.whl")
             assert cell["label"].endswith(" / win_amd64")
             assert cell["pytorch_nvcc"] == "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe"
 
-    def test_windows_flash_attn_does_not_claim_the_gnu_abi(self):
-        """FORCE_CXX11_ABI=TRUE makes flash-attn's setup.py set the libstdc++ ABI flag and
-        compile with -D_GLIBCXX_USE_CXX11_ABI=1. MSVC has no such ABI."""
+    def test_windows_flash_attn_names_the_abi_torch_reports(self):
+        """The Windows cu130 torch reports _GLIBCXX_USE_CXX11_ABI=True (measured on windows-2022),
+        and FORCE_CXX11_ABI follows the platform's `abi`, so the name and the assert agree."""
         (cell,) = prebuilt_wheels.build_matrix(
             packages = "flash-attn", torches = "2.14.0", platforms = "win_amd64"
         )
-        assert "FLASH_ATTENTION_FORCE_CXX11_ABI=FALSE" in cell["build_env"].split()
+        assert "FLASH_ATTENTION_FORCE_CXX11_ABI=TRUE" in cell["build_env"].split()
         assert "FLASH_ATTN_CUDA_ARCHS=80;90;100;120" in cell["build_env"].split()
         assert cell["shards"] == 8
 
@@ -195,15 +195,15 @@ class TestNames:
         `+cu{cuda}torch{mm}cxx11abi{torch._C._GLIBCXX_USE_CXX11_ABI}` and `win_amd64`."""
         assert (
             prebuilt_wheels.wheel_name("flash-attn", "2.13.0", "3.13", "win_amd64")
-            == "flash_attn-2.8.4+cu13torch2.13cxx11abiFALSE-cp313-cp313-win_amd64.whl"
+            == "flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
         )
         assert (
             prebuilt_wheels.wheel_name("causal-conv1d", "2.14.0", "3.13", "win_amd64")
-            == "causal_conv1d-1.7.0+cu13torch2.14cxx11abiFALSE-cp313-cp313-win_amd64.whl"
+            == "causal_conv1d-1.7.0+cu13torch2.14cxx11abiTRUE-cp313-cp313-win_amd64.whl"
         )
         assert (
             prebuilt_wheels.wheel_name("mamba-ssm", "2.14.0", "3.12", "win_amd64")
-            == "mamba_ssm-2.3.2.post1+cu13torch2.14cxx11abiFALSE-cp312-cp312-win_amd64.whl"
+            == "mamba_ssm-2.3.2.post1+cu13torch2.14cxx11abiTRUE-cp312-cp312-win_amd64.whl"
         )
 
     def test_the_default_platform_is_still_linux(self):
@@ -230,7 +230,7 @@ class TestNames:
             capture_output = True,
             text = True,
         ).stdout.strip()
-        assert out == "causal_conv1d-1.7.0+cu13torch2.13cxx11abiFALSE-cp313-cp313-win_amd64.whl"
+        assert out == "causal_conv1d-1.7.0+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
 
     def test_round_trip_on_both_platforms(self):
         for platform in prebuilt_wheels.PLATFORMS:
@@ -245,7 +245,7 @@ class TestNames:
     @pytest.mark.parametrize(
         "name",
         [
-            "flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl",
+            "flash_attn-2.8.4+cu13torch2.13cxx11abiFALSE-cp313-cp313-win_amd64.whl",
             "flash_attn-2.8.4+cu13torch2.13cxx11abiFALSE-cp313-cp313-linux_x86_64.whl",
             "flash_attn-2.8.4+cu13torch2.14-cp313-cp313-win_arm64.whl",
         ],
