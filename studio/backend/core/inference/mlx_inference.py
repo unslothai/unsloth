@@ -933,6 +933,10 @@ def _mlx_fused_residual_norm_handoff(model):
     return _mlx_optional_fusion("fused_residual_norm_handoff", model)
 
 
+def _mlx_exact_speculative_verify(model):
+    return _mlx_optional_fusion("exact_speculative_verify", model)
+
+
 def _int8_prefill_zoo():
     """unsloth_zoo's MLX inference module when it can run int8 prefill, else None."""
     try:
@@ -6368,6 +6372,7 @@ class MLXInferenceBackend:
                 if draft is not None:
                     from unsloth_zoo.mlx.generate import SamplingParams
 
+                    generation_scope.enter_context(_mlx_exact_speculative_verify(self._model))
                     # Under the lock: the load's one draft serves one generation at a time.
                     draft.prepare(
                         vlm_kwargs["input_ids"][0].tolist(),

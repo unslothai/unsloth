@@ -5356,6 +5356,7 @@ def _drive_vlm_generation(
     max_new_tokens = 1,
     session = None,
     video = None,
+    on_stream = None,
     **request,
 ):
     import sys
@@ -5370,6 +5371,8 @@ def _drive_vlm_generation(
     def _stream(*_a, **kwargs):
         seen.clear()
         seen.update(kwargs)
+        if on_stream is not None:
+            on_stream()
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _stream
@@ -5412,17 +5415,39 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     utils = types.ModuleType("mlx_vlm.utils")
     utils.prepare_inputs = lambda *_a, **_k: {"input_ids": [_Ids([7, 8, 9])], "extra": 1}
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
-    prepared = []
+    prepared, verify_scope, scopes = [], [], []
+    # A Zoo without the scope leaves the reply drafted and unfused.
+    with monkeypatch.context() as patch:
+        patch.setattr(mlx_inference, "_mlx_inference_patch", lambda name: verify_scope.append(name))
+        with mlx_inference._mlx_exact_speculative_verify(utils) as active:
+            assert active is utils and verify_scope.pop() == "exact_speculative_verify"
+
+    @contextmanager
+    def exact_verify(model):
+        verify_scope.append("open")
+        try:
+            yield model
+        finally:
+            verify_scope.append("closed")
+
+    monkeypatch.setattr(mlx_inference, "_mlx_exact_speculative_verify", exact_verify)
     draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
-    draft.prepare = lambda ids, sampling, given: prepared.append(
-        (ids, sampling.temperature, sampling.top_k)
-    ) or setattr(draft, "given", given)
+    draft.prepare = (
+        lambda ids, sampling, given: prepared.append((ids, sampling.temperature, sampling.top_k))
+        or setattr(draft, "given", given)
+        or scopes.append(list(verify_scope))
+    )
     backend = mlx_inference.MLXInferenceBackend()
     backend._speculative_draft = draft
 
     # top_k -1 is the API's "disabled", which the drafter's sampling settings spell 0.
     seen = _drive_vlm_generation(
-        backend, monkeypatch, temperature = 0.5, top_k = -1, repetition_penalty = 1.1
+        backend,
+        monkeypatch,
+        temperature = 0.5,
+        top_k = -1,
+        repetition_penalty = 1.1,
+        on_stream = lambda: scopes.append(list(verify_scope)),
     )
     assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5, 0)]
     # The draft is told every processor the reply runs: none reaches mlx-vlm as a shortcut.
@@ -5440,7 +5465,8 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
         seen = _drive_vlm_generation(backend, monkeypatch, **request)
         assert "max_tokens" in seen and "draft_model" not in seen
         assert "draft_n" not in backend.last_generation_stats["timings"]
-    assert len(prepared) == 1
+    # Only the drafted reply entered the verify scope: open from preparing the draft through decoding.
+    assert len(prepared) == 1 and scopes == [["open"]] * 2 and verify_scope == ["open", "closed"]
     opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r: None
     backend._vlm_resident_unavailable_reason = lambda r, gaps = iter(["no stream"]): next(gaps, None)
     assert backend.batch_unavailable_reason([{}, {}]) == "no stream"
