@@ -108,7 +108,14 @@ import { stageEditsPrompt } from "./stage-edits";
 import { revealLabelKey } from "./download-format";
 import { isDangerousDownload } from "./download-safety";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
-import { type OpenWithApp, localCopy, openLocalCopy, openWithApps, revealLocalCopy } from "./open-with";
+import {
+  type OpenWithApp,
+  localCopy,
+  openLocalCopy,
+  openWithApps,
+  revealLocalCopy,
+  withLocalCopy,
+} from "./open-with";
 import { DownloadsButton } from "./downloads-button";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
@@ -2211,21 +2218,15 @@ function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }
   const listApps = () => {
     if (!isTauri || !blob || runsCode || listing.current) return;
     listing.current = true;
-    localCopy(blob, entry.name)
-      .then((copy) => openWithApps(copy.id))
-      .then(setApps, () => setApps([]));
+    withLocalCopy(blob, entry.name, (copy) => openWithApps(copy.id)).then(setApps, () => setApps([]));
   };
   const openWith = (app?: string) => {
     if (!blob) return;
-    void localCopy(blob, entry.name)
-      .then((copy) => openLocalCopy(copy.id, app))
-      .catch(failed);
+    void withLocalCopy(blob, entry.name, (copy) => openLocalCopy(copy.id, app)).catch(failed);
   };
   const reveal = () => {
     if (!blob) return;
-    void localCopy(blob, entry.name)
-      .then((copy) => revealLocalCopy(copy.id))
-      .catch(failed);
+    void withLocalCopy(blob, entry.name, (copy) => revealLocalCopy(copy.id)).catch(failed);
   };
   const openInNewChat = () => {
     if (!blob) return;

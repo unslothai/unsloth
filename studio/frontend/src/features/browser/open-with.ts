@@ -34,6 +34,17 @@ export function localCopy(blob: Blob, name: string): Promise<LocalCopy> {
   return pending;
 }
 
+/** Run `use` on the copy; one moved or deleted since (say from Finder) is written again and retried. */
+export async function withLocalCopy<T>(blob: Blob, name: string, use: (copy: LocalCopy) => Promise<T>): Promise<T> {
+  const pending = localCopy(blob, name);
+  try {
+    return await use(await pending);
+  } catch {
+    if (copies.get(blob)?.get(name) === pending) copies.get(blob)?.delete(name);
+    return use(await localCopy(blob, name));
+  }
+}
+
 export function openWithApps(id: string): Promise<OpenWithApp[]> {
   return invoke<OpenWithApp[]>("browser_file_apps", { id });
 }
