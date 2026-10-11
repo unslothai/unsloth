@@ -782,6 +782,12 @@ def test_amd_on_windows_installs_rocm_inside_wsl(amd, monkeypatch):
     assert install.support_reason("vllm", wait = False) is None
     assert install.support_reason("vllm", 1) is None
     assert install.support_reason("vllm", 0).endswith("(found gfx1030).")
+    # When torch cannot map the selection, the supported card does not vouch for it.
+    monkeypatch.setattr(install, "_rocm_gpu_arches", lambda: {})
+    assert install.support_reason("vllm", 1).endswith("(found gfx1030).")
+    assert install.support_reason("vllm", wait = False) is None
+    inventory["devices"][0]["gfx"] = "gfx1151"
+    assert install.support_reason("vllm", 1) is None
     assert (
         install.support_reason("sglang") == "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."
     )

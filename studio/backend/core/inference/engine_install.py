@@ -830,8 +830,12 @@ def _rocm_reason(
                 for device in get_physical_gpu_inventory(block = wait).get("devices") or []
                 if device.get("vendor") == "amd" and device.get("gfx")
             ]
-        if known and not any(target in wanted["gfx"] for target in known):
-            return _unsupported_amd_gpu(known)
+        # Without a mapping for the selected GPU, another adapter's target is no evidence for it.
+        unmapped = gpu_id is not None and gpu_id not in arches
+        if known and not (all if unmapped else any)(target in wanted["gfx"] for target in known):
+            return _unsupported_amd_gpu(
+                [target for target in known if target not in wanted["gfx"]] if unmapped else known
+            )
         return None
     found = rocm_version()
     # The ROCm 7 libraries the engine links keep one soname for every 7.x release.
