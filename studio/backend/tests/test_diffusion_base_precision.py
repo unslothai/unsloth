@@ -874,7 +874,11 @@ def test_lowp_backward_on_odd_token_counts(mode, compiled):
     m.load_state_dict(ref.state_dict())
     apply = dit._apply_fp8_training if mode == "fp8" else dit._apply_mxfp8_training
     events = []
-    assert apply(m, events.append, "flux.1") is True, events
+    applied = apply(m, events.append, "flux.1")
+    # torchao 0.17 on torch 2.11 (the installer's pairing) refuses MX training on any GPU; the fallback is the test.
+    if not applied and mode == "mxfp8" and any("unavailable" in str(e) for e in events):
+        pytest.skip(f"this torch / torchao cannot run mxfp8 training: {events}")
+    assert applied is True, events
     assert type(m.blocks[0].ff) is not nn.Linear
     run = torch.compile(m, fullgraph = True, dynamic = True) if compiled else m
     for tokens in (60, 240, 1008, 1024):
