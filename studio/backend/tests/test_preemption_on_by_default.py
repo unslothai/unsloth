@@ -195,9 +195,12 @@ class TestADefaultLaunch:
         # on an implicit budget Studio never launched and so never excuses.
         env = {}
         cmd = list(_Launch._ARGV)
-        assert llama_mod._stand_down_child_parking(
-            env, cmd, server_supports = False, probe_inconclusive = True
-        ) == []
+        assert (
+            llama_mod._stand_down_child_parking(
+                env, cmd, server_supports = False, probe_inconclusive = True
+            )
+            == []
+        )
         assert env == {"LLAMA_ARG_PREEMPT_RAM": "0"} and cmd == _Launch._ARGV
 
     def test_a_parking_server_is_asked_to_park(self, monkeypatch):

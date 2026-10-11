@@ -144,7 +144,10 @@ def test_a_second_park_before_the_first_token_gets_its_own_cap(monkeypatch):
     """Two parks during prefill, each inside the cap, together over it: the resume between them
     starts the second one's clock afresh."""
     items = [": preempted"] + [": preempt-keepalive"] * 30 + [": resumed", ": preempted"]
-    items += [": preempt-keepalive"] * 30 + [": resumed", 'data: {"choices":[{"delta":{"content":"a"}}]}']
+    items += [": preempt-keepalive"] * 30 + [
+        ": resumed",
+        'data: {"choices":[{"delta":{"content":"a"}}]}',
+    ]
     seen = asyncio.run(
         TestARawRelayParkedBeforeItsFirstToken._relay(items, monkeypatch, cap = 0.5, window = 0.4)
     )
@@ -176,4 +179,3 @@ class TestAChatParkedAfterItsFirstToken:
         chunks = [data, ": preempted\n\n"] + [": preempt-keepalive\n\n"] * 5
         chunks += [": resumed\n\n", data.replace('"a"', '"b"')]
         assert "".join(self._read(chunks)).endswith('"b"}}]}\n\n')
-

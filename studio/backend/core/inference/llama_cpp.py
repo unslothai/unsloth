@@ -37910,7 +37910,9 @@ class LlamaCppBackend:
                         elif now - last_chunk_at >= stall_timeout_s:
                             # The keepalives keep the socket busy, so no read ever times out.
                             response.close()
-                            raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+                            raise httpx.ReadTimeout(
+                                "The model stopped producing tokens mid-response."
+                            )
                     else:
                         last_chunk_at = now
                         parked_since = None
