@@ -292,3 +292,37 @@ def test_an_unreadable_sibling_keeps_the_root_listed(catalog, tmp_path, monkeypa
 
     monkeypatch.setattr(Path, "is_dir", is_dir)
     assert [e.display_name for e in _local().values()] == ["good"]
+
+
+def test_an_export_of_a_listed_adapter_is_listed_once(catalog, tmp_path):
+    meta = {"family": "sdxl", "source": "studio-trained", "created_at": 1.5, **_MARK}
+    _safetensors(catalog / "mystyle.safetensors", sidecar = meta)
+    folder = tmp_path / "my-models"
+    out = dl.export_local_lora("mystyle", folder / "image-loras")
+    register(folder)
+    assert list(_local()) == ["mystyle"]
+    copy = next(e for e in dl._scan_local() if e.copy_of)
+    assert copy.copy_of == "mystyle" and copy.local_path == str(out)
+    # Still resolvable, so a recipe saved with the copy's id keeps working.
+    assert dl.resolve_one(copy.id, 1.0).path == str(out)
+
+
+def test_same_sized_adapters_without_metadata_are_not_collapsed(catalog, tmp_path):
+    _safetensors(catalog / "a.safetensors")
+    folder = tmp_path / "my-models"
+    _safetensors(folder / "b.safetensors", sidecar = _MARK)
+    register(folder)
+    assert len(_local()) == 2
+
+
+def test_a_different_training_run_with_the_same_name_is_not_a_copy(catalog, tmp_path):
+    _safetensors(
+        catalog / "style.safetensors", sidecar = {"source": "studio-trained", "created_at": 1.0}
+    )
+    folder = tmp_path / "my-models"
+    _safetensors(
+        folder / "style.safetensors",
+        sidecar = {"source": "studio-trained", "created_at": 2.0, **_MARK},
+    )
+    register(folder)
+    assert len(_local()) == 2

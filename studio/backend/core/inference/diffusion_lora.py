@@ -59,6 +59,8 @@ class LoraCatalogEntry:
     size_bytes: int = 0
     weight_default: float = 1.0
     fine_tuned: bool = False
+    # Id of the loras/diffusion adapter this custom-folder file is an export of: listed once, still resolvable.
+    copy_of: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -240,11 +242,23 @@ def _scan_local() -> list[LoraCatalogEntry]:
             found.append((p, entry_id))
 
     entries: list[LoraCatalogEntry] = []
+    # An export carries its source's sidecar plus ``kind``; trainer sidecars hold ``created_at``, so size + sidecar
+    # identifies a copy. A file with no metadata is never treated as a copy (same-rank LoRAs share sizes).
+    originals: dict[tuple, str] = {}
     for p, entry_id in found:
         try:
             size = p.stat().st_size
         except OSError:
             size = 0
+        sidecar = _sidecar_data(p) or {}
+        meta = {k: v for k, v in sidecar.items() if k != "kind"}
+        signature = (size, json.dumps(meta, sort_keys = True, default = str)) if meta else None
+        copy_of = None
+        if p.parent == root_dir:
+            if signature:
+                originals.setdefault(signature, entry_id)
+        elif signature:
+            copy_of = originals.get(signature)
         # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so
         # it is family-gated instead of "unknown". Best-effort.
         families, weight_default = _read_lora_sidecar(p)
@@ -258,7 +272,8 @@ def _scan_local() -> list[LoraCatalogEntry]:
                 size_bytes = size,
                 families = families,
                 weight_default = weight_default,
-                fine_tuned = (_sidecar_data(p) or {}).get("source") == "studio-trained",
+                fine_tuned = sidecar.get("source") == "studio-trained",
+                copy_of = copy_of,
             )
         )
     return entries
@@ -309,7 +324,7 @@ def list_loras(*, family: Optional[str] = None) -> list[LoraCatalogEntry]:
     Cheap: one directory scan plus the in-memory curated list. Network is only touched on
     resolve(), when a hub adapter is selected.
     """
-    merged = list(_CURATED) + _scan_local()
+    merged = [e for e in list(_CURATED) + _scan_local() if not e.copy_of]
     if family:
         fam = family.strip().lower()
         merged = [e for e in merged if not e.families or fam in {f.lower() for f in e.families}]

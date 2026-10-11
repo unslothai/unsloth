@@ -18,8 +18,9 @@ import {
 } from "@/features/images/api";
 import { ImageAdd02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { exportDiffusionLora } from "../api/export-api";
+import { savedLabel } from "../constants";
 
 function imageLoraLabel(lora: DiffusionLoraInfo, clashes: boolean): string {
   const tags = [...lora.families, ...(lora.fine_tuned ? ["fine-tuned"] : [])];
@@ -27,9 +28,10 @@ function imageLoraLabel(lora: DiffusionLoraInfo, clashes: boolean): string {
   return tags.length > 0 ? `${name} (${tags.join(", ")})` : name;
 }
 
-export function ImageLoraExportCard() {
+export function ImageLoraExportCard({ preselect }: { preselect?: string }) {
   const [loras, setLoras] = useState<DiffusionLoraInfo[] | null>(null);
   const [loraId, setLoraId] = useState("");
+  const cardRef = useRef<HTMLDivElement>(null);
   const [saveDirectory, setSaveDirectory] = useState("image-loras");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(
@@ -55,6 +57,14 @@ export function ImageLoraExportCard() {
     };
   }, []);
 
+  // Arriving from a finished image training run: pick that LoRA and bring the card into view, since the
+  // text-model export card above it reports no runs for an image-only user.
+  useEffect(() => {
+    if (!preselect || !loras?.some((l) => l.id === preselect)) return;
+    setLoraId(preselect);
+    cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [preselect, loras]);
+
   const canExport = !running && loraId !== "" && saveDirectory.trim() !== "";
 
   async function handleExport() {
@@ -67,7 +77,7 @@ export function ImageLoraExportCard() {
       });
       setResult({
         ok: true,
-        text: `Saved to ${response.details?.output_path ?? saveDirectory}`,
+        text: `Saved to ${savedLabel(String(response.details?.output_path ?? saveDirectory))}. To use it on another install, copy that folder over and add it from Images > LoRAs > Folders.`,
       });
     } catch (error) {
       setResult({
@@ -80,6 +90,7 @@ export function ImageLoraExportCard() {
   }
 
   return (
+    <div ref={cardRef}>
     <SectionCard
       icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />}
       title="Export an image LoRA"
@@ -144,5 +155,6 @@ export function ImageLoraExportCard() {
         </Button>
       </div>
     </SectionCard>
+    </div>
   );
 }

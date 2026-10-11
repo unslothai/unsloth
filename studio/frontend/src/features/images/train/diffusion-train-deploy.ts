@@ -59,3 +59,9 @@ export function resolveDiffusionTrainingBase(
     family.base_repos.find((repo) => normalizedRepo(repo.split("/").pop() ?? "") === name) ?? null
   );
 }
+
+// Catalog id of a published adapter: its loras/diffusion file stem.
+export function catalogId(catalogPath: string): string {
+  const name = catalogPath.split(/[\\/]/).pop() ?? catalogPath;
+  return name.replace(/\.(safetensors|gguf)$/i, "");
+}

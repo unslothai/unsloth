@@ -14,6 +14,8 @@ export type ExportSearch = {
   // Preselect a training run on the Export page (its output-dir basename, which
   // equals the checkpoint scan's model name). Set when arriving from a run view.
   run?: string;
+  // Preselect an image LoRA (its catalog id) in the image LoRA card. Set from the Images > Train result.
+  imageLora?: string;
 };
 
 export const Route = createRoute({
@@ -23,6 +25,7 @@ export const Route = createRoute({
   beforeLoad: () => requireAuth(),
   validateSearch: (search: Record<string, unknown>): ExportSearch => ({
     run: typeof search.run === "string" ? search.run : undefined,
+    imageLora: typeof search.imageLora === "string" ? search.imageLora : undefined,
   }),
   component: ExportPage,
 });
