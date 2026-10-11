@@ -284,7 +284,9 @@ def PatchRL(FastLanguageModel):
         # for_inference restores use_cache, and transformers drops its packed-sequence mask once a cache
         # exists (masking_utils._preprocess_mask_arguments), so packed rows would attend across (#3470).
         if "packed_seq_lengths" in inputs and "use_cache" not in inputs:
-            inputs = {**inputs, "use_cache": False}
+            from unsloth.models._utils import _forward_takes_use_cache
+            if _forward_takes_use_cache(model):
+                inputs = {**inputs, "use_cache": False}
         if ignore_keys is None:
             if hasattr(self.model, "config"):
                 ignore_keys = getattr(self.model.config, "keys_to_ignore_at_inference", [])

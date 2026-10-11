@@ -82,11 +82,12 @@ class _Trainer:
         return torch.tensor(0.0)
 
 
-def _compute_loss(inputs):
+def _compute_loss(inputs, model = None):
     from unsloth.models._utils import _unsloth_pre_compute_loss
 
     trainer = _Trainer()
-    model = SimpleNamespace(config = SimpleNamespace(model_type = "llama"), training = True)
+    if model is None:
+        model = SimpleNamespace(config = SimpleNamespace(model_type = "llama"), training = True)
     _unsloth_pre_compute_loss(trainer, model, inputs, num_items_in_batch = torch.tensor(4))
     return trainer.seen[0]
 
@@ -111,3 +112,23 @@ def test_an_explicit_use_cache_in_the_batch_wins():
         "use_cache": True,
     }
     assert _compute_loss(inputs)["use_cache"] is True
+
+
+def test_a_forward_without_use_cache_is_not_handed_one():
+    # Remote code may name packed_seq_lengths but neither use_cache nor **kwargs: the extra key would raise.
+    class _Explicit(torch.nn.Module):
+        config = SimpleNamespace(model_type = "llama")
+
+        def forward(
+            self,
+            input_ids = None,
+            labels = None,
+            packed_seq_lengths = None,
+        ):
+            return input_ids
+
+    inputs = {
+        "input_ids": torch.zeros(1, 4, dtype = torch.long),
+        "packed_seq_lengths": torch.tensor([2, 2]),
+    }
+    assert "use_cache" not in _compute_loss(inputs, _Explicit())

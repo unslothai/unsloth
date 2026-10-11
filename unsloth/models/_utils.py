@@ -4794,6 +4794,20 @@ def test_mask_creation():
         assert torch.all(correct_mask == our_mask)
 
 
+def _forward_takes_use_cache(model) -> bool:
+    """A forward naming packed_seq_lengths without use_cache or **kwargs would raise on the extra key;
+    for_training's config-level disable covers it. Cached on the model: read every step."""
+    takes = getattr(model, "_unsloth_forward_takes_use_cache", None)
+    if takes is None:
+        from unsloth.trainer import _forward_accepts_packing_kwargs
+        takes = _forward_accepts_packing_kwargs(model, "use_cache")
+        try:
+            model._unsloth_forward_takes_use_cache = takes
+        except Exception:
+            pass
+    return takes
+
+
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     num_items_in_batch = None
 
@@ -4805,7 +4819,11 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             inputs["num_items_in_batch"] = num_items_in_batch
 
     # Training twin of the #3470 prediction_step guard: a KV cache drops the packed-sequence mask.
-    if "packed_seq_lengths" in inputs and "use_cache" not in inputs:
+    if (
+        "packed_seq_lengths" in inputs
+        and "use_cache" not in inputs
+        and _forward_takes_use_cache(model)
+    ):
         inputs = {**inputs, "use_cache": False}
 
     if (
