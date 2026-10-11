@@ -970,6 +970,38 @@ def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(
 
 
 @pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("flux-2-klein-9b.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-9b-fp8.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-9b-Q4_K_M.gguf", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-base-9b.safetensors", "black-forest-labs/FLUX.2-klein-base-9B"),
+        ("flux-2-klein-base-4b.safetensors", "black-forest-labs/FLUX.2-klein-base-4B"),
+        ("flux-2-klein-4b.safetensors", "black-forest-labs/FLUX.2-klein-4B"),
+        ("flux-2-klein-4b-Q4_K_M.gguf", "black-forest-labs/FLUX.2-klein-4B"),
+    ],
+)
+def test_a_local_klein_file_resolves_its_variant_base_by_name(
+    monkeypatch, tmp_path, name, expected
+):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_compat import flux2_pick_mismatch
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, token: None)
+    monkeypatch.setattr(dmod, "_remember_companion_base", lambda repo_id, base: None)
+    fam = detect_family_for_pick(str(tmp_path), name, "flux.2-klein")
+    base = dmod._resolve_base_repo(str(tmp_path), None, fam, None, name)
+    assert base == expected
+    if name.endswith(".gguf"):
+        import core.inference.diffusion_compat as compat
+
+        dim = 4096 if "9b" in name else 3072
+        monkeypatch.setattr(compat, "flux2_inner_dim_for_pick", lambda *a, **k: dim)
+        assert flux2_pick_mismatch(fam, str(tmp_path), name, base) is None
+
+
+@pytest.mark.parametrize(
     "repo, gguf, expected",
     [
         (

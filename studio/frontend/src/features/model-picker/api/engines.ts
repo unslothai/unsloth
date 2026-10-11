@@ -15,6 +15,11 @@ export interface EngineStatus {
   restored?: boolean;
   can_rollback: boolean;
   unsupported_reason: string | null;
+  /** Load precisions this host's build of the engine supports; absent from older backends. */
+  precisions?: string[];
+  /** "rocm": the engine runs on an AMD GPU. */
+  platform?: "cuda" | "rocm";
+  /** "wsl": on Windows the engine runs inside Studio's own WSL2 distro. */
   host?: "local" | "wsl";
   wsl?: { state: string | null; distro: string | null };
   download_bytes?: number | null;
@@ -42,15 +47,25 @@ export function vllmHostSupported(engines: readonly EngineStatus[]): boolean {
   return vllm !== undefined && vllm.unsupported_reason === null;
 }
 
-/** A retained INT4 / INT8 the newly picked engine cannot convert would fail only after unloading. */
+/** A retained precision the newly picked engine cannot load would fail only after unloading. */
 export function precisionAfterEngineSwitch<P extends string>(
   precision: P,
   engine: EngineStatus | undefined,
 ): P | "auto" {
-  return (precision === "int4" || precision === "int8") &&
+  return supportsPrecision(engine, precision) ? precision : "auto";
+}
+
+export function supportsPrecision(
+  engine: EngineStatus | undefined,
+  precision: string,
+): boolean {
+  if (
+    (precision === "int4" || precision === "int8") &&
     !convertsToInteger(engine)
-    ? "auto"
-    : precision;
+  ) {
+    return false;
+  }
+  return !engine?.precisions || engine.precisions.includes(precision);
 }
 
 export function wslNoticeKey(
