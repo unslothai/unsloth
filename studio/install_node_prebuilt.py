@@ -83,7 +83,7 @@ RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
 HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
-# The record is an optimisation, so do not block a launch waiting for the lock.
+# The record is an optimisation: wait for the lock only briefly, never the full install timeout.
 RECORD_LOCK_TIMEOUT_SECONDS = 5
 INSTALL_STAGING_ROOT_NAME = ".staging"
 METADATA_FILENAME = "UNSLOTH_NODE_PREBUILT_INFO.json"

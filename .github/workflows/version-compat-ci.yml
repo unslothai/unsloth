@@ -192,7 +192,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             ${{ matrix.torch_pins }}
-          # torchcodec is required on transformers 5.x (audio_utils reads its metadata). It is
+          # torchcodec is required on transformers 5.x: audio_utils reads its metadata unconditionally.
           # ABI-coupled to torch, so the pair is chosen per lane. huggingface_hub unpinned: 4.x wants <1.0, 5.x >=1.5.0.
           pip install ${{ matrix.pkg_pins }} \
             sentencepiece protobuf safetensors numpy 'pytest>=8' \

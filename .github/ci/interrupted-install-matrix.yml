@@ -17,6 +17,6 @@ interrupt:
   - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch', pr: true}
 
 interrupt_windows:
-  # install.ps1 parses `--no-torch`; `-SkipTorch` is silently dropped.
+  # install.ps1 parses --no-torch and silently drops -SkipTorch; the torch leg must NOT skip torch.
   - {label: studio-deps, marker: 'Unsloth Studio deps', installArgs: '--tauri --no-torch --local', pr: false}
   - {label: torch, marker: 'Installing PyTorch', installArgs: '--tauri --local', pr: false}

@@ -77,9 +77,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Prebuilt frontend dist is safe: --api-only never serves a frontend and install time is
-      # not measured. RESTORE ONLY: no push/schedule trigger, so a save could never run;
-      # tests/studio/test_frontend_dist_cache.py enforces this from the `on:` block.
+      # Restore only: no push/schedule trigger, so a main-gated save fires only on manual dispatch.
       - name: Restore the uv download cache
         id: uv-cache
         uses: ./.github/actions/uv-cache-restore

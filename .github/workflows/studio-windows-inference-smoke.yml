@@ -1231,7 +1231,7 @@ jobs:
             logs/llama-server/*.log
           retention-days: 7
 
-  # Install and run with no Visual Studio.
+  # Folded in from studio-windows-no-vs-smoke.yml: install and run with no Visual Studio.
   no-vs-cpu:
     name: Unsloth install + inference without Visual Studio
     runs-on: windows-latest

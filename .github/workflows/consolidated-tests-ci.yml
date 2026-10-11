@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# ubuntu-24.04, not ubuntu-latest: same image, much shorter queue. Bump for 26.04.
+# CPU coverage for repo tests not covered elsewhere and the unsloth_zoo suite, as two jobs.
 
 name: Core
 
@@ -1551,7 +1551,7 @@ jobs:
           rm -f tests/_trl_trainer_discovery_shim.py
 
       - name: MoE per-family coverage + GRPO patches + grouped_gemm AST
-        # Routed through pytest for the GPU spoof harness.
+        # Catches recurring MoE, GRPO and gradient-accumulation regressions from past PRs.
         run: |
           set -euxo pipefail
           cat > tests/_moe_coverage_shim.py <<'PY'

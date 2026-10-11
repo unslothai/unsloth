@@ -3,9 +3,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -euo pipefail
 
-# Qwen3.6 MLX one-command setup. The uv installer payload is pinned by SHA-256;
-# rotate with: curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
-
+# Uv installer pinned by SHA-256; rotate the digest only after verifying the new payload.
 RULE=""
 _rule_i=0
 while [ "$_rule_i" -lt 52 ]; do

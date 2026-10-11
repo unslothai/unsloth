@@ -58,8 +58,7 @@ jobs:
       - name: Backend still runs on the oldest interpreter the matrix claims
         run: python3 scripts/lint_backend_python_floor.py
 
-      # One pytest invocation (conftest is expensive to import), -n 4 fixed rather than `auto`,
-      # which spawns a worker per core. tests/security rides along. Not in Lint CI, which installs
+      # One pytest invocation for the guards: -n 4 fixed, not auto; tests/security rides along.
       # shellcheck from apt, so its harden-runner has to permit escalation and an apt
       # mirror; a security gate there would run under a weaker harden-runner policy.
       # Every module here reads a workflow file, so it belongs in this unfiltered job

@@ -163,7 +163,7 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
-        # Get-Item -Force, not Test-Path, which follows a dangling link.
+        # Get-Item -Force, not Test-Path: a dangling link reads as absent, then the write escapes the root.
         $marker = Join-Path $Path ".unsloth-studio-owned"
         if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
         try { [System.IO.File]::WriteAllText($marker, "") } catch { }
@@ -986,7 +986,7 @@ Environment:
             _RemovePath $customSdCpp
         }
     }
-    # Same sentinels as a custom root.
+    # Gated like a custom root: an ungated run would delete a hand-made one, then ~/.unsloth if empty.
     if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
         -not (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
         _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"

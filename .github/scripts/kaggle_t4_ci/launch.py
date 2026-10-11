@@ -981,7 +981,7 @@ def main() -> int:
         )
         return False
 
-    # Check the remaining window before anything else: once the job is killed, release() cannot finish.
+    # Check the window before authenticating and pushing; once killed, release() cannot finish.
     if not window_fits("after the setup steps"):
         return finish()
 

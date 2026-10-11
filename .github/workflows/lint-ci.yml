@@ -110,8 +110,7 @@ jobs:
           python scripts/verify_import_hoist.py --self-test
 
       - name: Import-hoist / alias-rename safety (changed Python files)
-        # Diff merge-base..PR head SHA, both fetched by SHA: the base tip or the merge ref HEAD would
-        # pull in base-branch commits and flag their refactors. -M only: hoist refactors are in-place edits.
+        # Diff merge-base..PR head SHA, fetched by SHA; --diff-filter=M so only in-place edits are checked
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -206,7 +205,7 @@ jobs:
             unsloth unsloth_cli studio scripts tests cli.py unsloth-cli.py
 
       - name: No silent llama-server parallel-slot downgrades
-        # Launch fewer llama-server slots only for a real capability
+        # Fewer llama-server slots only for a real capability or VRAM limit (PR 7717 cost 4x throughput)
         # or VRAM limit, marked '# allow-slot-clamp: <reason>'. Self-test first,
         # so a regression in the rule fails before we trust it on the tree.
         run: |
@@ -390,7 +389,7 @@ jobs:
           PY
 
       - name: codespell typo check (informational)
-        # Skips lockfiles, generated/binary assets and LICENSE files. The ignore-words-list holds terms
+        # Skips lockfiles, generated/binary assets and LICENSE files; ignore-words-list holds valid terms.
         # codespell's default dictionary would otherwise flag
         # (e.g. `ans`, `parm`). Non-blocking until existing typos are fixed.
         continue-on-error: true

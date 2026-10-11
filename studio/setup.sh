@@ -1301,7 +1301,7 @@ _clear_webview_caches() {
             _wvc_root="$HOME/Library/Application Support/$_wvc_bid"
             ;;
         Linux)
-            # A relative XDG_DATA_HOME is invalid per XDG and dropped, matching Tauri.
+            # A relative XDG_DATA_HOME is invalid per XDG: use the default, never rm -rf under the cwd.
             _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}"
             case "$_wvc_data" in /*) ;; *) _wvc_data="$HOME/.local/share" ;; esac
             _wvc_data="$_wvc_data/$_wvc_bid"
@@ -2902,7 +2902,7 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
     while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
     # Exact, lowercased leaf: a suffix match (…/private-xpu) would force a pass _ensure_xpu_torch declines.
     _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
-    # Read from disk: a wedged Intel driver can hang `import torch`.
+    # Read from disk with no interpreter: a wedged Intel driver cannot hang import torch.
     _setup_pin_ok=false
     _setup_pin_is_xpu=false
     for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do

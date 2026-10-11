@@ -3201,8 +3201,7 @@ def _runtime_gfx_target(
     # a copied gcnArchName still keys the routing tables.
     _explicit_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":", 1)[0]
     if _explicit_gfx:
-        # The early return skips _hsa_spoofed_physical_gfx, so check the spoof here: leaving
-        # HSA_OVERRIDE_GFX_VERSION set with per-arch wheels hands torch an agent they have no code for.
+        # The early return skips the spoof check; only an HSA override naming a different arch is a spoof.
         _spoofed = _explicit_gfx if _hsa_spoof_contradicts(_explicit_gfx) else None
         # Only explicit ROCm requests with a mask pay for these probes (up to 15s each).
         if _rocm_torch_explicitly_requested() and _visible_devices_pinned():

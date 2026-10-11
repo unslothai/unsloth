@@ -9952,7 +9952,7 @@ main()
             substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {
             if ($HipSdkInstalled -and -not $HasROCm -and -not $ROCmUnsupportedGfxArch) {
-                # Guarded like the gpu step: on these cards an installed HIP SDK is the symptom.
+                # Guarded like the gpu step: an installed HIP SDK is the symptom here and must not outrank the arm.
                 substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
             } elseif ($ROCmUnsupportedGfxArch) {
                 substep "Installing CPU PyTorch -- Unsloth has no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch." "Yellow"
@@ -10696,7 +10696,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     }
 
-    # setup.ps1 comes from PyPI and may predate ARM64 support: test by capability, not version.
+    # setup.ps1 is fetched live, not from PyPI; it may predate ARM64 support, so test by capability.
     if ($script:WoaNativeCudaTorch) {
         $WoaStudioSetup = $null
         try {

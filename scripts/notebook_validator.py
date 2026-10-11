@@ -2645,7 +2645,7 @@ def _effective_version(
                 # pip takes the newest release a bounded window admits.
                 current, exact_known = landing, True
             elif floor is not None:
-                # An inexact floor is only read by checks that hold above it, so `>V` may include V.
+                # A >V bound does not admit V itself; an inexact floor is read only by checks that hold above it.
                 current, exact_known = floor, False
             elif (
                 forced_off

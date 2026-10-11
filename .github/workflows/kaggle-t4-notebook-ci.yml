@@ -25,11 +25,7 @@
 # WEEKLY accelerator quota is exhausted (the gate says so before any kernel is pushed). An UNREADABLE
 # quota and every other infrastructure outcome skips; the in-job recheck uses --soft-fail.
 #
-# CREDENTIALS: only the gate sees both KAGGLE_API_TOKEN secrets and publishes the chosen SECRET NAME,
-# never a token; later steps index secrets by that name. Tokens never reach the Kaggle kernel.
-# The trust boundary is repository write access, as for every secret (on pull_request the PR's own
-# YAML runs, so a base-branch copy of the scripts protects nothing); a tighter one would be an
-# environment secret with required reviewers.
+# Red only for a failed payload on a T4 or an exhausted weekly quota; every other outcome skips.
 
 name: Kaggle T4 Notebook CI
 

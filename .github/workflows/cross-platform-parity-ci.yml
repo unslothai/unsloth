@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Installer parity and autostart opt-out tests on Linux and Windows. Windows read_text() defaults to
-# cp1252, so the tests pin encoding="utf-8"; this matrix keeps that from regressing.
-# Linux also runs the POSIX rollback test under dash. Installer paths are globbed so a newly named
-# installer still triggers the interactive-prompt guard.
-# The setup-output encoding tests need real Windows PowerShell 5.1, so only the Windows row exercises them.
+# Installer parity and autostart opt-out tests on all three platforms; Windows reads pin utf-8.
 
 name: Cross-platform parity
 

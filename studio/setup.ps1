@@ -21,7 +21,7 @@
 
 $ErrorActionPreference = "Stop"
 
-# Windows PowerShell 5.1 redraws the progress bar per read, making downloads ~100x slower.
+# Windows PowerShell 5.1 progress bar redraws make downloads ~130x slower (38.18s vs 0.29s).
 $ProgressPreference = 'SilentlyContinue'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -1076,7 +1076,7 @@ function Exit-PathAccessDenied {
         -UserSupplied:$UserSupplied -OwnershipUnverified:$OwnershipUnverified)
 }
 
-# Twin of setup.sh _llama_update_fail_reason.
+# Why the prebuilt update failed, for the keep message; twin of the setup.sh fail reason.
 function Get-LlamaUpdateFailReason {
     param([string]$Output)
     if ($Output -match '(?i)429|rate limit') { return "GitHub rate limit" }
@@ -3956,7 +3956,7 @@ function Resolve-ShadowingGfxPick {
                   else { @() }
     $discreteArch = $candidates | Select-Object -First 1
     if (-not $discreteArch) { return $Picked }
-    # Not always device 1.
+    # Not always device 1; the pick can be a later index, e.g. device 2 for gfx1036,gfx803,gfx1200.
     $discreteIdx = [array]::IndexOf(@($AllArches), $discreteArch)
     if ($discreteIdx -lt 0) { $discreteIdx = 1 }
     substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
@@ -4235,7 +4235,7 @@ if (-not $HasNvidiaSmi) {
                     Where-Object { $null -ne $_ }
                 $unsupPeerCovered = $false
                 if ($unsupMasked) {
-                    # Under a mask a peer cannot answer for the named card.
+                    # Under a mask a peer cannot answer for the named card; an unseen peer gives no verdict.
                     $unsupPeerCovered = ($script:ROCmPeerLabels.Count -gt $gpuNames.Count)
                 } else {
                     foreach ($peerName in $script:ROCmPeerLabels) {
@@ -6577,7 +6577,7 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
             if ($_venvPyVer) { substep $_venvPyVer }
         } catch {}
     } else {
-        # Stop here: a missing activation script is non-terminating and setup would install outside the venv.
+        # Stop here: with no python.exe, setup would install the whole stack on PATH python and exit 0.
         Write-StudioLine "[ERROR] $VenvDir has no interpreter at Scripts\python.exe." -ForegroundColor Red
         Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
         Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
@@ -7472,7 +7472,7 @@ if ($PinnedTorchIndexUrl) {
         substep "could not read the CUDA driver version; installing torch $CuTag" "Yellow"
     }
 } elseif ($script:IsIntelXpu) {
-    # The AMD reroute below needs $CuTag -eq "cpu".
+    # XPU wheels ship under the /xpu leaf, so TorchInstallIndexUrl resolves to mirror/xpu.
     $CuTag = "xpu"
 } else {
     $CuTag = "cpu"
@@ -7484,7 +7484,7 @@ $script:ROCmMultiArch = $false
 # Also on a name-inferred gfx: the wheels bundle the runtime, so no HIP SDK is needed.
 if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
-    # Null _grouped_mm kernel on torch < 2.11.0 for these arches. Mirrors $torchFloorMap in install.ps1.
+    # gfx120X, Strix, gfx103X, gfx110X: null _grouped_mm on torch <2.11.0; mirrors install.ps1 floor.
     $torchFloorMap = @{
         "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
         "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
@@ -8974,7 +8974,7 @@ if ($LocalLlamaCppLinked) {
 # llama. Failure is never fatal: local dictation falls back to Transformers STT.
 $WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
 $WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
-# Same opt-outs as setup.sh.
+# A user-configured whisper binary/dir or an explicit skip disables the managed install entirely.
 if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
 } elseif ($env:UNSLOTH_SKIP_WHISPER_INSTALL -eq "1") {
@@ -9256,7 +9256,7 @@ if ($LocalLlamaCppLinked) {
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
-    # Before Resolve-CudaToolkit, which copies the CUDA .targets into the generator's dir.
+    # Finalize the VS generator before Resolve-CudaToolkit, which copies the CUDA .targets into it.
     if ($CmakeGenerator -match 'Visual Studio 18\b') {
         if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
             $cmakeVerObj = Get-CmakeVersion

@@ -11,7 +11,7 @@ name: Cache janitor
 
 on:
   schedule:
-    # CodeQL writes a new overlay base on every push to main, so a daily sweep lets them pile up.
+    # Every two hours, since a daily cadence let the CodeQL per-push overlay bases pile up 10+ GB.
     - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:

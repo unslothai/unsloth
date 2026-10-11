@@ -4821,8 +4821,7 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
         if not (is_busy_lock_error(exc) or is_cross_device_error(exc)):
             raise
         log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
-        # symlinks=True keeps soname links instead of duplicating libraries; a NON-empty dst never
-        # reaches here, so dirs_exist_ok cannot half-merge two installs.
+        # symlinks=True keeps soname links; a leftover non-empty dst fails in os.symlink, not a merge.
         shutil.copytree(staging_dir, dst, dirs_exist_ok = True, symlinks = True)
         remove_tree(staging_dir)
 

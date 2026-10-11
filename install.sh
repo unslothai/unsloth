@@ -1060,7 +1060,7 @@ _start_studio_venv_replacement() {
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
         rm -rf "$_candidate" 2>/dev/null || true
-        # rm -f can still fail (immutable, busy mount); report what is actually on disk.
+        # rm -f can fail (immutable, busy mount): report what is on disk; never re-arm rollback.
         if [ -e "$_candidate" ] || [ -L "$_candidate" ]; then
             _VENV_DISCARD_LEFTOVER="$_candidate"
             substep "could not discard the previous environment at $_candidate" "$C_WARN"
@@ -4587,7 +4587,7 @@ _kfd_node_is_amds() {
     [ "$_kina_state" -ne 1 ]
 }
 
-# Mirrors utils/hardware/amd.py::_amd_nodes_the_runtime_lacks; the two must agree.
+# AMD silicon behind a missing /dev/kfd; if KFD is unreadable, a render node must be CONFIRMED AMD.
 _amd_silicon_behind_a_missing_kfd() {
     if _kfd_topology_has_an_amd_gpu; then return 0; fi
     _asbmk_state=0
@@ -5211,8 +5211,7 @@ _rocm_tag_from_dpkg() {
 
 _rocm_tag_from_rpm() {
     command -v rpm >/dev/null 2>&1 || return 0
-    # Bounded: rpm -q can wedge on stale BerkeleyDB locks or a running dnf.
-    # Query all names at once and emit every version; Fedora may lack rocm-core (unslothai#8731).
+    # Bounded: rpm -q can hang on stale db locks or dnf; query all names once, emit every version.
     _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core rocm-runtime rocm-hip 2>/dev/null \
         | awk '/^[0-9]/{print}') || return 0
     [ -n "$_rt_ver" ] || return 0
@@ -5853,7 +5852,7 @@ print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
         _RADEON_LISTING=$(wget -qO- --timeout=20 "$_RADEON_BASE_URL" 2>/dev/null) || _radeon_rc=$?
     fi
     [ "$_radeon_rc" -eq 0 ] || _RADEON_LISTING=""
-    # curl -f exits 22 on 429/5xx too, and wget's 8 is any error.
+    # Only 404 and 410 mean no such release; curl -f exits 22 on 429/5xx too, wget 8 on any error.
     case "$_radeon_http" in
         404|410) [ "$_RADEON_HOST_ANSWERED" = inconclusive ] || _RADEON_HOST_ANSWERED=true ;;
         *) [ -n "$_RADEON_LISTING" ] || _RADEON_HOST_ANSWERED=inconclusive ;;

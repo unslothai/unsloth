@@ -752,7 +752,7 @@ def main() -> int:
             f"{MAX_CONCURRENT_GPU_KERNELS} kernel slots free{moved}",
         )
 
-    # Only all-exhausted candidates are red; unreadable or credential-less accounts stay green.
+    # Red if all candidates are exhausted; unreadable stays green; no-credential accounts are ignored.
     candidates = {i: p for i, p in probes.items() if p["outcome"] != "credential_absent"}
     outcomes = {i: p["outcome"] for i, p in candidates.items()}
 

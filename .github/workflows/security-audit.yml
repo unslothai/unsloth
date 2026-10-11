@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Supply-chain audit on dependency PRs, push to main, nightly and dispatch. Nothing is installed:
-# pip-audit resolves via PyPI metadata and the scanners inspect archives without running hooks.
+# Supply-chain audit on every PR (deliberately unfiltered), push to main, nightly and dispatch.
 
 name: Security audit
 
@@ -66,8 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      # Per-job egress allowlist: PyPI, npm, crates.io advisories, GitHub releases (osv-scanner),
-      # Semgrep registry and TruffleHog.
+      # Per-job egress allowlist. Audit mode for now: logs dialed hosts, does not block them.
       - name: Harden runner (egress block)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:

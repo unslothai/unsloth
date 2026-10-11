@@ -516,7 +516,7 @@ _LIFECYCLE_FETCH_EXEC = re.compile(
     """,
 )
 
-# Tuned against the router_init.js shape (2.3 MB blob).
+# Large base64-ish blob passed to Function() or eval(); tuned on the router_init.js shape.
 _OBFUSC_BLOB = re.compile(
     r"""(?xs)
     (?:Function|eval)\s*\(\s*['"`]?
@@ -635,7 +635,7 @@ def download_tarball(
     max_bytes: int = HARD_MAX_TARBALL_BYTES,
 ) -> tuple[Path, str | None]:
     """Stream-download entry.resolved to dest and verify SRI integrity. Returns (downloaded_path, error_or_none); on error the path may not exist. Network access is restricted to ALLOWED_DOWNLOAD_HOST."""
-    # Re-assert the host (defence in depth beyond parse_lockfile).
+    # Re-assert the hostname as defence in depth against a future refactor.
     parsed = urllib.parse.urlparse(entry.resolved)
     if parsed.scheme != "https" or parsed.hostname != ALLOWED_DOWNLOAD_HOST:
         return dest, (f"refused download from non-allowlisted URL {entry.resolved!r}")
@@ -904,7 +904,7 @@ _MAX_EVIDENCE_MATCHES = 64
 
 def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
     """(start, end) line indices of the bracket group enclosing line ``idx`` in one blanked view: scan back to the still-open opener, then forward to its close."""
-    # Order-aware bracket reduction keeps a trailing opener visible on lines like `}); x = {`.
+    # Order-aware reduction keeps a trailing opener visible; net counts would hide changed headers.
     start = idx
     depth = 0
     for j in range(max(0, idx - _MAX_CONT_LINES), idx):
@@ -1254,7 +1254,7 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         body = scripts.get(hook)
         if not isinstance(body, str):
             continue
-        # One digest pins the whole lifecycle body, so changing any line reopens the finding.
+        # One digest pins the whole lifecycle body; real edits reopen it, but a reindent alone does not.
         body_digest = hashlib.sha256(
             _canon_preserve_strings(body).encode("utf-8", "replace")
         ).hexdigest()
@@ -1573,12 +1573,11 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
             pass
 
 
-# Baseline keyed on (package, relative path, pattern, evidence hash); version bumps do not reopen.
-# Mirrors scan_packages.py; regenerate with --write-baseline.
+# Matched on (package, relative path, pattern), not evidence text, so version bumps do not reopen.
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 
-# v3 adds an evidence hash. Pre-v2 baselines with entries are ignored (fail closed).
+# v3 adds an evidence hash; a pre-v3 baseline with entries is ignored (fail closed).
 _BASELINE_SCHEMA_VERSION = 3
 
 

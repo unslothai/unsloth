@@ -259,8 +259,7 @@ jobs:
           boot "$HOME_A" "$PORT_A" a
           boot "$HOME_B" "$PORT_B" b
 
-      # Both arms must start with no threads, or leftovers manufacture differences. Read sqlite,
-      # not the API: until must_change_password clears, every API route returns 403.
+      # Both arms must start empty; read sqlite since authenticated routes 403 until the password changes.
       - name: Both arms start from an empty thread list
         timeout-minutes: 2
         run: |
@@ -315,9 +314,7 @@ jobs:
             --parity-shots "$SHOT_DIR" \
             --out "$OUT_DIR"
 
-      # Not --assert-liveness: this job reads no timings. A slot missed on both arms yields
-      # NOT_EXERCISED (coverage, floored by --min-compared); on one arm it counts as a
-      # difference. Null-side misses are caught by the null audit in the verdict job.
+      # Missed on both arms gives NOT_EXERCISED; a slot missed on one arm is only a warning.
       - name: The payload records a session at all
         run: |
           test -s "$OUT_DIR/payload.jsonl"

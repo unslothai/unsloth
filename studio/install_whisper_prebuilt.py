@@ -518,8 +518,7 @@ def slim_pairing_for_artifact(
         and _ships_gpu_ggml_module(llama_bin_dir, "linux")
         and _ggml_stack_imports_libomp(llama_bin_dir, backend) is False
     ):
-        # arm64: libomp is required only by the cpu bundle. `is False`: dropping it on no evidence
-        # is unrecoverable. linux-x64 really imports it (test_linux_slim_still_requires_manifest_libomp).
+        # Drop libomp only on evidence it is unneeded; the arm64 Vulkan bundle really imports it.
         required_sonames = [name for name in required_sonames if not _is_linux_libomp_soname(name)]
     missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:

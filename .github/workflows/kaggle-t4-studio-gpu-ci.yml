@@ -14,8 +14,7 @@
 # The percentage is LOWER than the notebook leg's yet buys more hours (bigger stream, costlier launch);
 # the harness test asserts that inversion. One payload: the second T4 is left idle on purpose.
 #
-# Paths are deliberately NOT studio/**: that would double the eligible stream for coverage this CUDA
-# job cannot see.
+# Studio vs notebook leg: ~38 vs 13-35 launches, ~28 vs 3.3-8.7 GPU-h a week, 5% vs 15% sampling.
 #
 # Red only when the payload ran on a GPU and its assertions failed; every other outcome skips.
 # Not a required check. Only the gate job sees both tokens; later steps get the chosen one by SECRET

@@ -72,7 +72,7 @@ RENDERER_APPLIED = re.compile(r"set ((?:[A-Za-z_][A-Za-z_0-9]*=1\s*)+)for WebKit
 WARMUP = int(os.environ.get("UNSLOTH_FREEZE_WARMUP", 90))
 WINDOW = int(os.environ.get("UNSLOTH_FREEZE_WINDOW", 150))
 POLL_EVERY = 15
-# Three poll intervals so a single missed sample is not stale.
+# Both counters flat this long while the app runs means the backend is no longer being recorded.
 STALE_AFTER = 3 * POLL_EVERY
 # Must match desktop_candidate_ports() in desktop_backend_owner.rs (8888..=8908).
 PORTS = tuple(range(8888, 8909))
