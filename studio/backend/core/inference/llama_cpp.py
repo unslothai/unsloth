@@ -9081,8 +9081,10 @@ class LlamaCppBackend:
         """
         if self._is_diffusion:
             full = sorted(int(x) for x in gpu_ids) if gpu_ids else None
-            split = bool(self._gpu_ids) and len(self._gpu_ids) > 1
-            self._requested_gpu_ids = full if split else (full[:1] if full else None)
+            # Keep the whole pick when the fit moved off its lowest GPU (a split, or one
+            # higher card), or a later pick of that lowest GPU would match and not reload.
+            moved = bool(self._gpu_ids) and bool(full) and self._gpu_ids != full[:1]
+            self._requested_gpu_ids = full if moved else (full[:1] if full else None)
         else:
             self._requested_gpu_ids = [int(x) for x in gpu_ids] if gpu_ids else None
         if self._last_load_intent is not None:

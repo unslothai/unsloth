@@ -1345,6 +1345,23 @@ def test_diffusion_auto_fit_only_on_pci_ids_without_an_inherited_mask(monkeypatc
     assert LlamaCppBackend._diffusion_fit_gpus(_size, [0, 1], "0") == [0, 1]
 
 
+def test_diffusion_moved_fit_keeps_the_pool_on_a_dedup_match():
+    # The fit moved a [0, 1] pick onto GPU 1 alone: re-sending [0, 1] must keep that pick
+    # recorded, or a later pick of GPU 0 matches and the runner stays on GPU 1.
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._is_diffusion = True
+    backend._last_load_intent = None
+    backend._gpu_ids, backend._requested_gpu_ids = [1], [0, 1]
+    assert backend.matches_gpu_ids([0, 1])
+    backend._record_matching_gpu_request([0, 1])
+    assert backend.requested_gpu_ids == [0, 1]
+    assert not backend.matches_gpu_ids([0])
+    # The usual single-device fit still collapses to its lowest GPU.
+    backend._gpu_ids, backend._requested_gpu_ids = [0], [0]
+    backend._record_matching_gpu_request([1, 0])
+    assert backend.requested_gpu_ids == [0]
+
+
 def test_diffusion_fit_gpus_moves_to_one_card_that_fits(monkeypatch):
     # GPU 0 is busy, GPU 1 holds the whole model: one card beats a layer split.
     _diffusion_fit_host(monkeypatch, 16.8, [(0, 4_000, 24_576), (1, 23_500, 24_576)])

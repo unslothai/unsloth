@@ -16604,12 +16604,17 @@ def _guard_chat_load_against_training(
         )
 
     # Without a manual split the runner layer-splits a GGUF its one device cannot hold
-    # (#6347): budget the devices that same decision picks, not the single token.
+    # (#6347): budget the devices that same decision picks, from the same weight bytes the
+    # launcher reads. A GGUF not on disk yet keeps the stricter single-device budget.
     guard_gpu_ids = requested_gpu_ids
-    if diffusion_gpu and diffusion_ngl is None and required_override_gb:
-        fit_gpus = LlamaCppBackend._diffusion_fit_gpus(
-            int(required_override_gb * (1024**3)), requested_gpu_ids, diffusion_gpu
-        )
+    _gguf_file = getattr(config, "gguf_file", None) if is_gguf else None
+    if diffusion_gpu and diffusion_ngl is None and _gguf_file and os.path.isfile(_gguf_file):
+        try:
+            fit_gpus = LlamaCppBackend._diffusion_fit_gpus(
+                LlamaCppBackend._get_gguf_size_bytes(_gguf_file), requested_gpu_ids, diffusion_gpu
+            )
+        except OSError:
+            fit_gpus = None
         if fit_gpus:
             diffusion_gpu, guard_gpu_ids = None, fit_gpus
 
