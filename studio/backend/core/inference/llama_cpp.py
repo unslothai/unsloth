@@ -19544,6 +19544,10 @@ class LlamaCppBackend:
         fit_ngl = None
         if manual_ngl is None:
             fit_ngl = self._diffusion_fit_ngl(model_path, gpu, maxtok, pinned = bool(gpu_ids))
+            # The probe runs under the load lock and can be slow: honour a Stop that came in.
+            if cancelled is not None and cancelled():
+                logger.info("Load cancelled before diffusion server start")
+                return False
             if fit_ngl is not None and not _shim_supports_ngl(shim_cmd):
                 logger.warning(
                     "DiffusionGemma does not fit GPU %s and the installed unsloth_zoo shim "

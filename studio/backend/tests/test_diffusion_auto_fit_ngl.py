@@ -251,6 +251,32 @@ def test_zero_layer_fit_runs_on_the_cpu(monkeypatch, tmp_path):
     assert backend.holds_no_vram is True
 
 
+def test_stop_during_the_fit_probe_spawns_nothing(monkeypatch, tmp_path):
+    backend = _fit_host(monkeypatch, [(0, 7_800, 8_188)])
+    monkeypatch.setattr(
+        backend, "_find_diffusion_assets", lambda: (["python", "-m", "shim"], "/bin/vs", None)
+    )
+    monkeypatch.setattr(backend, "_kill_process", lambda: None)
+    monkeypatch.setattr(backend, "_find_free_port", lambda: 18_123)
+    monkeypatch.setattr(LlamaCppBackend, "_effective_gpu_count", staticmethod(lambda *_a: 1))
+
+    def _no_spawn(*_a, **_k):
+        raise AssertionError("spawned after Stop")
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", _no_spawn)
+    stopped = backend._start_diffusion_server(
+        model_path = "/m.gguf",
+        gguf_path = "/m.gguf",
+        hf_repo = None,
+        hf_variant = None,
+        model_identifier = "unsloth/diffusiongemma-26B-A4B-it-GGUF",
+        n_ctx = 4096,
+        extra_args = None,
+        cancelled = lambda: True,
+    )
+    assert stopped is False
+
+
 def test_auto_launch_that_fits_is_unchanged(monkeypatch, tmp_path):
     for n_ctx in (0, 4096, 32768):
         cmd, _backend = _launch(monkeypatch, tmp_path, [(0, 23_500, 24_576)], n_ctx = n_ctx)
