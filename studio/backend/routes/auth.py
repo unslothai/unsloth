@@ -855,7 +855,12 @@ def _api_key_caller_expiry(credentials: Optional[HTTPAuthorizationCredentials]) 
     if not raw.startswith(storage.API_KEY_PREFIX):
         return None
     validated = storage.validate_api_key_account(raw, touch = False)
-    return validated[0].get("expires_at") if validated else None
+    if validated is None:
+        # Expired or revoked since it authenticated: no cap to apply, so refuse rather than mint uncapped.
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED, detail = "Invalid or expired token"
+        )
+    return validated[0].get("expires_at")
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)

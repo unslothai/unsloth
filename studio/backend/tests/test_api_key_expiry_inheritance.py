@@ -77,3 +77,16 @@ def test_a_shorter_requested_expiry_is_kept(client):
 def test_child_of_a_non_expiring_key_is_unchanged(client):
     raw = _parent(None)
     assert _mint(client, raw) is None
+
+
+def test_a_parent_key_revoked_mid_request_mints_nothing(client, monkeypatch):
+    raw = _parent((datetime.now(timezone.utc) + timedelta(hours = 2)).isoformat())
+    # Authentication passed; the key is gone by the time the cap is read.
+    monkeypatch.setattr(storage, "validate_api_key_account", lambda key, touch = True: None)
+    response = client.post(
+        "/api/auth/api-keys", headers = {"Authorization": f"Bearer {raw}"}, json = {"name": "child"}
+    )
+    assert response.status_code == 401
+    assert [row["name"] for row in storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME)] == [
+        "parent"
+    ]
