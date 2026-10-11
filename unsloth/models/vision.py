@@ -846,6 +846,53 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     return True
 
 
+def _host_offloaded_embeddings(model):
+    return [
+        module
+        for module in model.modules()
+        if getattr(module, "_unsloth_offload_hooks_installed", False)
+        and getattr(getattr(module, "weight", None), "device", None) is not None
+        and module.weight.device.type == "cpu"
+    ]
+
+
+def _wrap_move_keeps_host_embeddings(owner, name):
+    original = getattr(owner, name, None)
+    if original is None or getattr(original, "_unsloth_keeps_host_embeddings", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(self, model, *args, **kwargs):
+        pinned = _host_offloaded_embeddings(model) if isinstance(model, torch.nn.Module) else []
+        for module in pinned:
+            # nn.Module._apply recurses through module._apply, so an instance attribute skips just this subtree.
+            module._apply = lambda fn, recurse = True, _module = module: _module
+        try:
+            return original(self, model, *args, **kwargs)
+        finally:
+            for module in pinned:
+                module.__dict__.pop("_apply", None)
+
+    wrapped._unsloth_keeps_host_embeddings = True
+    setattr(owner, name, wrapped)
+
+
+def _patch_trainer_move_keeps_host_embeddings():
+    # Trainer.train() (under bf16/fp16 full eval, Unsloth's default) and Accelerator.prepare_model both call
+    # model.to(device) when no hf_device_map is set, as on a block swap load; that pulled offloaded tables back onto
+    # the card at the first step (the 4.4 GB Gemma 4 E2B per-layer table, unslothai/unsloth#7055).
+    try:
+        from transformers.trainer import Trainer
+        _wrap_move_keeps_host_embeddings(Trainer, "_move_model_to_device")
+    except Exception:
+        pass
+    try:
+        from accelerate import Accelerator
+        _wrap_move_keeps_host_embeddings(Accelerator, "prepare_model")
+    except Exception:
+        pass
+
+
 def _pin_device_to_decoder(model):
     # `model.device` is the device of the first parameter, and the embedding we offload is it, so
     # the documented `inputs.to(model.device)` hands a CUDA model CPU ids. The lookup itself still
@@ -1027,6 +1074,7 @@ def offload_input_embedding(model, embeddings = None):
             embedding.to("cpu")
         nbytes += weight.numel() * weight.element_size()
         _install_offload_embedding_hooks(embedding, out_embed, _embed_device)
+    _patch_trainer_move_keeps_host_embeddings()
     print(f"Unsloth: Offloading embeddings to RAM to save {round(nbytes / 1024**3, 2)} GB.")
     # The transformers model, not a PEFT wrapper: its `device` property is the one callers read.
     _pin_device_to_decoder(model.get_base_model() if hasattr(model, "get_base_model") else model)
