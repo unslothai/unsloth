@@ -301,6 +301,46 @@ test("an original job failure is preserved after its event stream ends", async (
   }
 });
 
+test("a refresh that lists the failure first keeps the row retryable", async () => {
+  let listed = false;
+  let release = () => {};
+  const polled = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const app = harness({
+    events: async function* () {},
+    // The job poll answers only after the list has already reported the failure.
+    getJob: async () => {
+      await polled;
+      return { id: "job", documentId: "doc", status: "failed", error: "Invalid PDF" };
+    },
+    list: async () =>
+      listed
+        ? ([{ id: "doc", filename: "report.pdf", status: "failed", error: "Invalid PDF" }] as unknown as RagDocument[])
+        : [],
+  });
+  try {
+    let hook = app.render();
+    await flush();
+    const uploading = hook.upload([report()]);
+    await flush();
+    listed = true;
+    await app.render().refresh({ quiet: true });
+    await flush();
+    release();
+    await uploading;
+    await flush();
+    hook = app.render();
+    assert.deepEqual(
+      hook.documents.map(({ id, status }) => ({ id, status })),
+      [{ id: "doc", status: "failed" }],
+    );
+    assert.equal(hook.canRetry("doc"), true);
+  } finally {
+    app.dispose();
+  }
+});
+
 test("a refused upload stays as a failed chip and Retry sends the same file again", async () => {
   const app = harness({ failUploads: 1 });
   try {

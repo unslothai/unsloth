@@ -302,8 +302,11 @@ export function useRagDocuments(
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
-        // live "running %" chip. Failed docs hidden (toast warned at upload).
-        const rows = (await lister()).filter((row) => row.status !== "failed");
+        // live "running %" chip. Failed docs hidden (toast warned at upload), except ones this
+        // session can retry: a poll can see the failure before the upload marks the row.
+        const rows = (await lister()).filter(
+          (row) => row.status !== "failed" || retryItems.current.has(row.id),
+        );
         if (refreshSeq.current !== requestId) return true;
         setDocuments((prev) => {
           const merged = rows.map((row) => {
