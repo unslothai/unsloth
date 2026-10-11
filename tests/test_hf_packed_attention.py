@@ -179,7 +179,7 @@ _TORCH_VARLEN_HOST = pytest.mark.skipif(
         "dropout",
         "batched",
         "cpu",
-        "head_dim_512",
+        "head_dim_640",
         "mla_value_width",
         "autocast_dtype",
         "paged_cache",
@@ -228,8 +228,9 @@ def test_packed_calls_that_varlen_cannot_express_fall_back(monkeypatch, why):
         B = 2
     elif why == "cpu":
         device, mask = "cpu", _block_causal(lengths)
-    elif why == "head_dim_512":
-        D = v_width = 512
+    elif why == "head_dim_640":
+        # Past both flash (256) and the efficient route's tested width (512).
+        D = v_width = 640
     elif why == "mla_value_width":
         D, v_width = 192, 128
     elif why == "paged_cache":
@@ -670,3 +671,346 @@ def test_tiny_mistral_packed_row_matches_the_masked_path(monkeypatch, window):
     torch.testing.assert_close(fast_logits, ref_logits, atol = 3e-2, rtol = 3e-2)
     for a, b in zip(fast_grads, ref_grads):
         torch.testing.assert_close(a, b, atol = 3e-2, rtol = 5e-2)
+
+
+# Gemma-4 global layers: head_dim 512, past every flash kernel, take SDPA's efficient kernel over cu_seqlens.
+_EFFICIENT_HOST = pytest.mark.skipif(
+    torch.version.hip is not None, reason = "the efficient varlen route is off on ROCm"
+)
+
+
+@pytest.fixture
+def _efficient_fresh(monkeypatch):
+    monkeypatch.setattr(hpa, "_EFFICIENT_VARLEN", [])
+    monkeypatch.setattr(hpa, "_EFFICIENT_DEVICES", {})
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.delenv(hpa._EFFICIENT_ENV, raising = False)
+
+
+def _wide_inputs(lengths, H, n_kv, D, scale = 0.1):
+    T = sum(lengths)
+
+    def make(heads):
+        x = torch.randn(1, heads, T, D, device = "cuda", dtype = torch.bfloat16) * scale
+        return x.requires_grad_()
+
+    return make(H), make(n_kv), make(n_kv)
+
+
+@_CUDA
+@_EFFICIENT_HOST
+@pytest.mark.parametrize("window", [None, 5])
+@pytest.mark.parametrize("n_kv", [8, 2, 1])
+def test_wide_heads_match_sdpa_over_the_dense_mask(_efficient_fresh, n_kv, window):
+    """Output and dQ / dK / dV equal transformers' sdpa over the real mask, Gemma-4 scaling 1.0."""
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 230]
+    H, D = 8, 512
+    module = types.SimpleNamespace(
+        is_causal = True, num_key_value_groups = H // n_kv, training = True, sliding_window = window
+    )
+    q, k, v = _wide_inputs(lengths, H, n_kv, D)
+    mask = (
+        _block_causal(lengths, "cuda")
+        if window is None
+        else _hf_window_mask(lengths, window, "cuda")
+    )
+    psl = torch.tensor(lengths, dtype = torch.int32)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    fast, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 1.0, packed_seq_lengths = psl)
+    assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before["efficient"] + 1
+    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 1
+    ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 1.0)
+    assert fast.shape == ref.shape == (1, sum(lengths), H, D)
+    torch.testing.assert_close(fast.float(), ref.float(), atol = 1e-2, rtol = 1e-2)
+    g = torch.randn_like(ref)
+    for a, b in zip(torch.autograd.grad(fast, (q, k, v), g), torch.autograd.grad(ref, (q, k, v), g)):
+        torch.testing.assert_close(a.float(), b.float(), atol = 2e-2, rtol = 2e-2)
+
+
+@_CUDA
+@_EFFICIENT_HOST
+def test_wide_heads_keep_documents_apart(_efficient_fresh):
+    """Each document of the packed row equals that document attended alone."""
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    torch.manual_seed(1)
+    lengths = [60, 3, 130]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 4, training = True)
+    q, k, v = _wide_inputs(lengths, 8, 2, 512)
+    fast, _ = hpa._sdpa_packed_varlen(
+        module,
+        q,
+        k,
+        v,
+        _block_causal(lengths, "cuda"),
+        scaling = 1.0,
+        packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
+    )
+    start = 0
+    for n in lengths:
+        sl = slice(start, start + n)
+        alone, _ = sdpa_attention_forward(
+            module, q[:, :, sl], k[:, :, sl], v[:, :, sl], None, scaling = 1.0, is_causal = True
+        )
+        torch.testing.assert_close(fast[:, sl].float(), alone.float(), atol = 1e-2, rtol = 1e-2)
+        start += n
+
+
+@_CUDA
+@_EFFICIENT_HOST
+@pytest.mark.parametrize(
+    "why",
+    [
+        "none",
+        "cross_document",
+        "wrong_window",
+        "softcap",
+        "sinks",
+        "dropout",
+        "fp32",
+        "head_dim_640",
+        "kill_switch",
+        "deterministic",
+        "math_only",
+        "efficient_disabled",
+        "no_op",
+    ],
+)
+def test_wide_heads_fall_back_to_the_wrapped_sdpa(_efficient_fresh, monkeypatch, why):
+    """Each reason alone sends a head_dim 512 call to the wrapped sdpa; "none" is the control."""
+    import contextlib
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    seen, orig = _calls()
+    hpa._ORIG_SDPA[0] = orig
+    lengths, D, dtype = [5, 7], 512, torch.bfloat16
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 2)
+    mask, dropout, context = _block_causal(lengths, "cuda"), 0.0, contextlib.nullcontext()
+    if why == "cross_document":
+        mask = mask.clone()
+        mask[0, 0, 6, 1] = True
+    elif why == "wrong_window":
+        module.sliding_window = 3  # the mask has no band
+    elif why == "softcap":
+        module.config = types.SimpleNamespace(attn_logit_softcapping = 50.0)
+    elif why == "sinks":
+        module.sinks = torch.zeros(4)
+    elif why == "dropout":
+        dropout = 0.1
+    elif why == "fp32":
+        dtype = torch.float32
+    elif why == "head_dim_640":
+        D = 640
+    elif why == "kill_switch":
+        monkeypatch.setenv(hpa._EFFICIENT_ENV, "0")
+    elif why == "math_only":
+        context = sdpa_kernel([SDPBackend.MATH])
+    elif why == "efficient_disabled":
+        context = sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH])
+    elif why == "no_op":
+        monkeypatch.setattr(hpa, "_EFFICIENT_VARLEN", [False])
+    q = torch.randn(1, 4, 12, D, device = "cuda", dtype = dtype)
+    k = torch.randn(1, 2, 12, D, device = "cuda", dtype = dtype)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    deterministic = torch.are_deterministic_algorithms_enabled()
+    if why == "deterministic":
+        torch.use_deterministic_algorithms(True)
+    try:
+        with context:
+            out = hpa._sdpa_packed_varlen(
+                module,
+                q,
+                k,
+                k,
+                mask,
+                dropout = dropout,
+                scaling = 1.0,
+                packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
+            )
+    finally:
+        torch.use_deterministic_algorithms(deterministic)
+    if why == "none":
+        assert out[0].shape == (1, 12, 4, D) and seen == []
+        assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before["efficient"] + 1
+    else:
+        assert out == ("orig", None)
+        assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before["efficient"]
+        assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"] + 1
+
+
+@_CUDA
+@_EFFICIENT_HOST
+def test_a_refusing_efficient_kernel_hands_the_call_back(_efficient_fresh, monkeypatch):
+    seen, orig = _calls()
+    hpa._ORIG_SDPA[0] = orig
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("No available kernel.")
+
+    monkeypatch.setattr(hpa._EfficientVarlenAttention, "apply", refuse)
+    lengths = [3, 3]
+    q = torch.randn(1, 4, 6, 512, device = "cuda", dtype = torch.bfloat16)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    out = hpa._sdpa_packed_varlen(
+        types.SimpleNamespace(is_causal = True),
+        q,
+        q,
+        q,
+        _block_causal(lengths, "cuda"),
+        packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
+    )
+    assert out == ("orig", None) and len(seen) == 1
+    assert hpa._EFFICIENT_VARLEN == [False]
+    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"]
+    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"] + 1
+
+
+@_CUDA
+@_EFFICIENT_HOST
+@pytest.mark.parametrize("backend", ["sdpa", "flash_varlen"])
+def test_a_shape_the_flash_impl_refuses_takes_the_efficient_kernel(_efficient_fresh, monkeypatch, backend):
+    """FA4 on sm100 lacks head_dim 256 + window: without flash-attn / xformers that row ran SDPA over
+    the dense mask; now the efficient kernel. With flash-attn installed, run_attention keeps it."""
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+    from unsloth.utils import attention_dispatch as ad
+    from unsloth.utils import flash_impl
+
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip("no torch varlen_attn to refuse")
+    monkeypatch.setattr(flash_impl, "flash_impl_allows", lambda head_dim, window, device: False)
+    monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: backend)
+    dispatched = []
+    monkeypatch.setattr(ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"].transpose(1, 2))
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    torch.manual_seed(2)
+    lengths, window = [9, 20, 4], 6
+    module = types.SimpleNamespace(
+        is_causal = True, num_key_value_groups = 4, training = True, sliding_window = window
+    )
+    q, k, v = _wide_inputs(lengths, 8, 2, 256)
+    mask = _hf_window_mask(lengths, window, "cuda")
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    fast, _ = hpa._sdpa_packed_varlen(
+        module, q, k, v, mask, scaling = 1.0, packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32)
+    )
+    if backend == "flash_varlen":
+        assert dispatched == [1]
+        assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before["efficient"]
+        return
+    assert dispatched == []
+    assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before["efficient"] + 1
+    ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 1.0)
+    torch.testing.assert_close(fast.float(), ref.float(), atol = 1e-2, rtol = 1e-2)
+    g = torch.randn_like(ref)
+    for a, b in zip(torch.autograd.grad(fast, (q, k, v), g), torch.autograd.grad(ref, (q, k, v), g)):
+        torch.testing.assert_close(a.float(), b.float(), atol = 2e-2, rtol = 2e-2)
+
+
+@_CUDA
+@_EFFICIENT_HOST
+def test_wide_heads_under_reentrant_checkpoint(_efficient_fresh):
+    from torch.utils.checkpoint import checkpoint
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    lengths = [40, 24]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 4, training = True)
+    q, k, v = _wide_inputs(lengths, 8, 2, 512)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    fn = lambda q, k, v: hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 1.0, packed_seq_lengths = psl)[0]
+    out = checkpoint(fn, q, k, v, use_reentrant = True)
+    g = torch.randn_like(out)
+    out.backward(g)
+    grads = [x.grad for x in (q, k, v)]
+    ref = sdpa_attention_forward(module, q, k, v, mask, scaling = 1.0)[0]
+    torch.testing.assert_close(out.float(), ref.float(), atol = 1e-2, rtol = 1e-2)
+    for a, b in zip(grads, torch.autograd.grad(ref, (q, k, v), g)):
+        torch.testing.assert_close(a.float(), b.float(), atol = 2e-2, rtol = 2e-2)
+
+
+@_CUDA
+@_EFFICIENT_HOST
+def test_wide_heads_leave_a_compiled_caller_alone(_efficient_fresh):
+    """Under fullgraph compile the wrapper returns the wrapped sdpa: no graph break, no counters."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    lengths = [3, 5]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = False)
+    q = torch.randn(1, 4, 8, 512, device = "cuda", dtype = torch.bfloat16)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    fn = torch.compile(
+        lambda q: hpa._sdpa_packed_varlen(module, q, q, q, mask, scaling = 1.0, packed_seq_lengths = psl)[0],
+        backend = "eager",
+        fullgraph = True,
+    )
+    torch.testing.assert_close(fn(q), _plain_sdpa(module, q, q, q, mask, scaling = 1.0)[0])
+    assert hpa.HF_PACKED_ATTENTION_STATS == before
+
+
+@_CUDA
+@_EFFICIENT_HOST
+@pytest.mark.parametrize("k_eq_v", [False, True])
+def test_tiny_gemma4_packed_row_matches_each_document(_efficient_fresh, monkeypatch, k_eq_v):
+    """Real Gemma4ForCausalLM with global_head_dim 512: the global layer takes the efficient kernel,
+    and packed logits / grads equal the wrapped sdpa and each document alone."""
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(transformers, "Gemma4TextConfig"):
+        pytest.skip("this transformers has no Gemma 4")
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    hpa._ORIG_SDPA[0] = None
+    original = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", original)
+    assert hpa.enable_hf_packed_attention()
+    torch.manual_seed(0)
+    config = transformers.Gemma4TextConfig(
+        vocab_size = 128,
+        vocab_size_per_layer_input = 128,
+        hidden_size = 64,
+        hidden_size_per_layer_input = 8,
+        intermediate_size = 128,
+        num_hidden_layers = 2,
+        layer_types = ["sliding_attention", "full_attention"],
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_global_key_value_heads = 1 if k_eq_v else None,
+        attention_k_eq_v = k_eq_v,
+        head_dim = 256,
+        global_head_dim = 512,
+        sliding_window = 4,
+        attn_implementation = "sdpa",
+    )
+    model = transformers.Gemma4ForCausalLM(config).cuda().to(torch.bfloat16)
+    global_attn = model.model.layers[1].self_attn
+    assert global_attn.head_dim == 512 and model.model.layers[0].self_attn.head_dim == 256
+    lengths = [3, 11, 7]
+    ids = torch.randint(0, 128, (1, sum(lengths)), device = "cuda")
+    position_ids = torch.cat([torch.arange(n) for n in lengths])[None].cuda()
+    psl = torch.tensor(lengths, dtype = torch.int32)
+
+    def run():
+        model.zero_grad()
+        out = model(input_ids = ids, position_ids = position_ids, packed_seq_lengths = psl, use_cache = False)
+        out.logits.float().square().mean().backward()
+        return out.logits.detach().float(), [p.grad.float() for p in model.parameters() if p.grad is not None]
+
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    fast_logits, fast_grads = run()
+    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 2
+    assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before["efficient"] + 1
+    monkeypatch.setenv("UNSLOTH_HF_PACKED_VARLEN", "0")
+    ref_logits, ref_grads = run()
+    torch.testing.assert_close(fast_logits, ref_logits, atol = 3e-2, rtol = 3e-2)
+    for a, b in zip(fast_grads, ref_grads):
+        torch.testing.assert_close(a, b, atol = 3e-2, rtol = 5e-2)
+    with torch.no_grad():
+        start = 0
+        for n in lengths:
+            alone = model(input_ids = ids[:, start : start + n], use_cache = False).logits.float()
+            torch.testing.assert_close(fast_logits[:, start : start + n], alone, atol = 3e-2, rtol = 3e-2)
+            start += n
