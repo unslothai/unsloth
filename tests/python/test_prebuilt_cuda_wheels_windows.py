@@ -609,3 +609,89 @@ class TestWorkflow:
         assert "sha256:unknown" not in run
         # Built before the notes, from the same listing.
         assert run.index("prebuilt_wheels.py sums") < run.index("prebuilt_wheels.py notes")
+
+
+# The MSVC preprocessor failure measured on windows-2022, reduced to the text the patch keys on.
+_MAMBA_KERNEL = """#include <c10/cuda/CUDAException.h>
+
+#ifndef USE_ROCM
+    #include <cub/block/block_load.cuh>
+#else
+    #include <hipcub/hipcub.hpp>
+#endif
+
+constexpr float kLog2e = M_LOG2E;
+
+void launch() {
+    BOOL_SWITCH(x, kX, [&] {
+        BOOL_SWITCH(y, kY, [&] {
+                    if (kSmemSize >= 48 * 1024) {
+                        #ifndef USE_ROCM
+                        C10_CUDA_CHECK(cudaFuncSetAttribute(
+                            kernel, cuda_branch));
+                        #else
+                        C10_CUDA_CHECK(cudaFuncSetAttribute(
+                            (void *) kernel, rocm_branch));
+                        #endif
+                    }
+        });
+    });
+}
+
+void dispatch() {
+    #ifndef USE_ROCM
+    cuda_dispatch();
+    #else
+    rocm_dispatch();
+    #endif
+}
+"""
+
+
+class TestMambaMsvcPatch:
+    def _tree(
+        self,
+        tmp_path,
+        text = _MAMBA_KERNEL,
+    ):
+        kernels = tmp_path / "csrc" / "selective_scan"
+        kernels.mkdir(parents = True)
+        for name in ("selective_scan_fwd_kernel.cuh", "selective_scan_bwd_kernel.cuh"):
+            (kernels / name).write_text(text, encoding = "utf-8")
+        return kernels
+
+    def _run(self, root):
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / "patch_mamba_msvc.py"), str(root)],
+            capture_output = True,
+            text = True,
+        )
+
+    def test_keeps_the_cuda_branch_and_is_idempotent(self, tmp_path):
+        kernels = self._tree(tmp_path)
+        assert self._run(tmp_path).returncode == 0
+        first = (kernels / "selective_scan_fwd_kernel.cuh").read_text(encoding = "utf-8")
+        assert "cuda_branch" in first and "rocm_branch" not in first
+        # File-scope USE_ROCM blocks are legal under MSVC and stay.
+        assert "hipcub" in first
+        # Function-scope USE_ROCM blocks are legal under MSVC and stay.
+        assert "rocm_dispatch()" in first
+        again = self._run(tmp_path)
+        assert again.returncode == 0 and "already patched" in again.stdout
+        assert (kernels / "selective_scan_fwd_kernel.cuh").read_text(encoding = "utf-8") == first
+
+    def test_a_second_in_lambda_block_fails_loudly(self, tmp_path):
+        body = _MAMBA_KERNEL.split("void launch()")[1].split("void dispatch()")[0]
+        self._tree(tmp_path, _MAMBA_KERNEL + "void launch2()" + body)
+        result = self._run(tmp_path)
+        assert result.returncode == 1
+        assert "found 2" in result.stderr
+
+    def test_runs_on_windows_mamba_cells_only(self, workflow):
+        for job in ("warm", "build"):
+            step = next(
+                s
+                for s in workflow["jobs"][job]["steps"]
+                if "patch_mamba_msvc.py" in s.get("run", "")
+            )
+            assert step["if"] == "runner.os == 'Windows' && matrix.package == 'mamba-ssm'"

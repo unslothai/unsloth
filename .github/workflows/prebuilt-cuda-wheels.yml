@@ -315,6 +315,10 @@ jobs:
             }
           }
           'DISTUTILS_USE_SDK=1' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # flash-attn's softmax.h and mamba's selective-scan kernels use M_LOG2E, which MSVC's
+          # <cmath> only defines under _USE_MATH_DEFINES (measured: `identifier "M_LOG2E" is
+          # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
+          'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Visual Studio at $vs"
 
       # Upstream's Windows build of ccache, pinned by version and sha256. It caches nvcc, which is
@@ -414,6 +418,13 @@ jobs:
         if: matrix.patch == 'cxx20'
         run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
 
+      # MSVC's preprocessor rejects the #ifndef USE_ROCM block mamba puts inside a BOOL_SWITCH
+      # macro argument, which gcc accepts. Asserting text patch, Windows only, so the Linux
+      # sources stay untouched. See patch_mamba_msvc.py.
+      - name: Patch mamba-ssm for the MSVC host compiler (Windows)
+        if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
+        run: python unsloth/.github/scripts/patch_mamba_msvc.py src
+
       - name: Restore this slice's ccache from earlier runs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -447,9 +458,13 @@ jobs:
               python ../unsloth/.github/scripts/prebuilt_wheels_shard.py "$SHARD" "$SHARDS"
           fi
 
+      # Verbose on Windows: the first staging run reported every nvcc call as uncacheable (3/3,
+      # all failed compiles), and -v is what names the reason. A Windows warm slice that caches
+      # nothing would leave the flash-attn build job compiling from scratch.
       - name: ccache stats
         if: always()
-        run: ccache -s
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then ccache -sv; else ccache -s; fi
 
       - name: Hand the slice to the build job
         if: always()
@@ -659,6 +674,10 @@ jobs:
             }
           }
           'DISTUTILS_USE_SDK=1' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # flash-attn's softmax.h and mamba's selective-scan kernels use M_LOG2E, which MSVC's
+          # <cmath> only defines under _USE_MATH_DEFINES (measured: `identifier "M_LOG2E" is
+          # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
+          'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Visual Studio at $vs"
 
       # Upstream's Windows build of ccache, pinned by version and sha256. It caches nvcc, which is
@@ -749,6 +768,13 @@ jobs:
         if: matrix.patch == 'cxx20'
         run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
 
+      # MSVC's preprocessor rejects the #ifndef USE_ROCM block mamba puts inside a BOOL_SWITCH
+      # macro argument, which gcc accepts. Asserting text patch, Windows only, so the Linux
+      # sources stay untouched. See patch_mamba_msvc.py.
+      - name: Patch mamba-ssm for the MSVC host compiler (Windows)
+        if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
+        run: python unsloth/.github/scripts/patch_mamba_msvc.py src
+
       - name: Download the warm slices
         if: matrix.shards > 0
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -797,9 +823,13 @@ jobs:
               python setup.py bdist_wheel --dist-dir=dist
           fi
 
+      # Verbose on Windows: the first staging run reported every nvcc call as uncacheable (3/3,
+      # all failed compiles), and -v is what names the reason. A Windows warm slice that caches
+      # nothing would leave the flash-attn build job compiling from scratch.
       - name: ccache stats
         if: always()
-        run: ccache -s
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then ccache -sv; else ccache -s; fi
 
       # Upstream's own naming, reproduced rather than approximated: the local version segment is
       # what stops pip installing a torch 2.13 wheel into a torch 2.14 environment. Asserting the
