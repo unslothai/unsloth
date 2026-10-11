@@ -14516,6 +14516,7 @@ class LlamaCppBackend:
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
+        unsized_ids: list[int] = []
         try:
             from utils.hardware import gpu_query
 
@@ -14547,6 +14548,9 @@ class LlamaCppBackend:
                         idx = int(parts[0])
                         free_mib = int(parts[1])
                     except ValueError:
+                        # Jetson answers "[N/A]": no dedicated VRAM (#4862).
+                        if parts[0].isdigit() and (allowed is None or int(parts[0]) in allowed):
+                            unsized_ids.append(int(parts[0]))
                         continue
                     # Total parsed separately: a two-column line or a non-integer
                     # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
@@ -14584,6 +14588,43 @@ class LlamaCppBackend:
             return rocm_gpus
 
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
+        gpus = LlamaCppBackend._get_gpu_memory_torch(binary, for_llama_server)
+        if gpus or not (for_llama_server and unsized_ids):
+            return gpus
+        return LlamaCppBackend._tegra_unified_memory_rows(unsized_ids)
+
+    @staticmethod
+    def _tegra_unified_memory_rows(gpu_ids: list[int]) -> list[tuple[int, int, int]]:
+        """Price a Jetson's GPU from system RAM when nvidia-smi answers ``[N/A]`` and
+        torch cannot see it (a generic aarch64 wheel), so the context is still capped
+        (#4862). llama-server only: it runs on JetPack's CUDA, torch-backed callers do not."""
+        from utils.tegra import is_tegra
+
+        if not is_tegra():
+            return []
+        avail = LlamaCppBackend._available_system_memory_mib()
+        if avail is None:
+            return []
+        cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
+        # Same policy as the torch integrated branch: a cgroup-bound pool publishes no total.
+        total = (
+            0
+            if cgroup_mib is not None and cgroup_mib <= avail
+            else LlamaCppBackend._total_system_memory_mib() or 0
+        )
+        free = _apply_igpu_host_reserve_mib(avail, True)
+        LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+        # Torch never saw these, so record them as integrated or the pool is credited twice.
+        LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = set(
+            gpu_ids
+        )
+        return [(idx, free, total) for idx in sorted(gpu_ids)]
+
+    @staticmethod
+    def _get_gpu_memory_torch(
+        binary: Optional[str], for_llama_server: bool
+    ) -> list[tuple[int, int, int]]:
+        """The torch arm of ``_get_gpu_memory``."""
         try:
             import torch
 
@@ -16057,6 +16098,11 @@ class LlamaCppBackend:
             # unified" question, and a discrete card next to an APU still has a pool of
             # its own, so re-ask per row rather than forfeit a fit that is really there.
             shared |= {idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])}
+        # Integrated CUDA SoCs (Jetson, DGX Spark) too. Cache only: _get_gpu_memory filled it.
+        _integrated = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+            LlamaCppBackend._integrated_cuda_mask_key(), ()
+        )
+        shared |= {idx for idx, _free in rows if idx in _integrated}
         # --no-kv-offload puts the WHOLE cache in host RAM whatever the layer placement
         # says (llama-kv-cache.cpp upgrades a layer's buffer type only inside
         # `if (offload)`), so free VRAM may not pay for it. Resolved off the same
