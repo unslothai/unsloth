@@ -95,24 +95,25 @@ def _sliding_or_softcapped(module, kwargs) -> bool:
 
 
 _TORCH_VARLEN = []
+_TORCH_VARLEN_GQA = []
 _TORCH_VARLEN_DEVICES = {}
 
 
 def _torch_varlen(device):
-    """torch's own flash varlen (native GQA, a third of xformers' host cost per call), else None."""
+    """torch's own flash varlen (a third of xformers' host cost per call), else None."""
     if not _TORCH_VARLEN:
-        fn = None
+        fn, native_gqa = None, False
         try:
             from torch.nn.attention.varlen import varlen_attn
 
-            # Older releases spell causality differently; only the window_size / enable_gqa API is used.
-            if {"scale", "window_size", "enable_gqa"} <= inspect.signature(
-                varlen_attn
-            ).parameters.keys():
-                fn = varlen_attn
+            # 2.11 added scale / window_size, 2.12 enable_gqa; 2.10 only had is_causal and is not used.
+            parameters = inspect.signature(varlen_attn).parameters.keys()
+            if {"scale", "window_size"} <= parameters:
+                fn, native_gqa = varlen_attn, "enable_gqa" in parameters
         except Exception:
             fn = None
         _TORCH_VARLEN.append(fn)
+        _TORCH_VARLEN_GQA[:] = [native_gqa]
     fn = _TORCH_VARLEN[0]
     if fn is None or torch.version.hip is not None:
         return None
@@ -222,18 +223,26 @@ def _sdpa_packed_varlen(
     n_kv_heads = key.shape[1]
     _, cu_seqlens, max_seqlen = seq_info
     if torch_varlen is not None:
+        gqa, k_in, v_in = {}, key, value
+        if n_kv_heads != n_heads:
+            if not _TORCH_VARLEN_GQA or _TORCH_VARLEN_GQA[0]:
+                gqa = {"enable_gqa": True}
+            else:
+                # torch 2.11: no enable_gqa, so repeat the K/V heads as transformers' sdpa path does.
+                k_in = key.repeat_interleave(n_heads // n_kv_heads, dim = 1)
+                v_in = value.repeat_interleave(n_heads // n_kv_heads, dim = 1)
         try:
             out = torch_varlen(
                 query[0].transpose(0, 1),
-                key[0].transpose(0, 1),
-                value[0].transpose(0, 1),
+                k_in[0].transpose(0, 1),
+                v_in[0].transpose(0, 1),
                 cu_seqlens,
                 cu_seqlens,
                 max_seqlen,
                 max_seqlen,
                 scale = scale,
                 window_size = (-1, 0),
-                enable_gqa = n_kv_heads != n_heads,
+                **gqa,
             )
         except torch.OutOfMemoryError:
             raise

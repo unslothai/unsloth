@@ -280,13 +280,23 @@ def test_install_forwards_router_sentinels_and_runs_once(monkeypatch):
 
 
 @_CUDA
-@pytest.mark.parametrize("route", ["torch", "dispatch"])
+@pytest.mark.parametrize("route", ["torch", "torch_2_11", "dispatch"])
 @pytest.mark.parametrize("n_kv", [8, 2])
 def test_varlen_matches_sdpa_over_the_dense_mask(monkeypatch, n_kv, route):
     from unsloth.utils.attention_dispatch import HAS_FLASH_ATTENTION, HAS_XFORMERS
 
-    if route == "torch" and hpa._torch_varlen(torch.device("cuda", 0)) is None:
-        pytest.skip("this torch has no window_size / enable_gqa varlen_attn")
+    if route != "dispatch" and hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip("this torch has no window_size varlen_attn")
+    if route == "torch_2_11":
+        # torch 2.11's varlen_attn has scale / window_size but no enable_gqa.
+        native = hpa._TORCH_VARLEN[0]
+
+        def without_gqa(*args, **kwargs):
+            assert "enable_gqa" not in kwargs
+            return native(*args, **kwargs)
+
+        monkeypatch.setattr(hpa, "_TORCH_VARLEN", [without_gqa])
+        monkeypatch.setattr(hpa, "_TORCH_VARLEN_GQA", [False])
     if route == "dispatch":
         if not (HAS_FLASH_ATTENTION or HAS_XFORMERS):
             pytest.skip("needs xformers or flash-attn")
