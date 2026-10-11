@@ -50,4 +50,6 @@ def test_nothing_is_counted_with_preemption_off(backend, monkeypatch):
 def test_both_completions_branches_count_and_release():
     source = inspect.getsource(inference.openai_completions)
     assert source.count("_openai_llama_count_completions_holder(llama_backend, prompt_text)") == 2
-    assert source.count("_openai_llama_release_completions_holder(llama_backend, _cmpl_holder)") == 2
+    assert (
+        source.count("_openai_llama_release_completions_holder(llama_backend, _cmpl_holder)") == 2
+    )
