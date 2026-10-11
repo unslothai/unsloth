@@ -20,8 +20,10 @@ const {
   buildTitleRefreshRequest,
   buildTitleRequest,
   heuristicChatTitle,
+  titleCheckpoint,
   titleRefreshExcerpt,
 } = await import("../src/features/chat/utils/chat-title.ts");
+const { buildExternalModelId, parseExternalModelId } = await import("../src/features/chat/external-providers.ts");
 type MessageRecord = import("../src/features/chat/types.ts").MessageRecord;
 
 const LOCAL = "unsloth/gemma-4-E2B-it-GGUF";
@@ -115,7 +117,7 @@ test("a refresh is as cheap as the automatic title, with its own prompt", async 
   );
 });
 
-test("a refresh asks the selected model only while it is serving, and writes the title guarded", () => {
+test("a refresh follows the connection that answered, and asks a local model only while it is serving", () => {
   const source = readFileSync(
     new URL("../src/features/chat/components/chat-row-menu.ts", import.meta.url),
     "utf8",
@@ -131,13 +133,31 @@ test("a refresh asks the selected model only while it is serving, and writes the
     source.indexOf("export async function regenerateChatTitle"),
     source.indexOf("/** The sandbox"),
   );
-  assert.match(body, /const checkpoint = !modelLoading \? params\.checkpoint : "";/);
+  assert.match(body, /const selected = !modelLoading \? params\.checkpoint : "";/);
+  // The latest answer on the branch names the connection; never the live selection alone.
+  assert.match(body, /const lastMessage = branch\.at\(-1\);/);
+  assert.match(
+    body,
+    /lastMessage\?\.role === "assistant" \? answeringCheckpoint\(lastMessage\.metadata\?\.custom\) : "";/,
+  );
+  assert.match(body, /const checkpoint = titleCheckpoint\(answeredWith, selected\);/);
   assert.match(
     body,
     /\(serving \? await titleFromModel\(checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
   );
   assert.match(body, /updateChatThread\(id, \{ title \}, startTitle === undefined \? \{\} : \{ expectedTitle: startTitle \}\)/);
-  assert.doesNotMatch(body, /answeringCheckpoint|titleCheckpoint/);
+});
+
+test("a locally answered chat is never sent to a selected external provider", () => {
+  const external = buildExternalModelId("prov-1", "gpt-x");
+  assert.notEqual(parseExternalModelId(external), null);
+  // Local answer, external selected: no model asked, the messages pick the title.
+  assert.equal(titleCheckpoint(LOCAL, external), "");
+  assert.equal(titleCheckpoint("", external), "");
+  // Local answer, local selected: unchanged.
+  assert.equal(titleCheckpoint(LOCAL, LOCAL), LOCAL);
+  // External answer: the connection that already has these messages.
+  assert.equal(titleCheckpoint(external, LOCAL), external);
 });
 
 const DRIFTED: MessageRecord[] = [

@@ -4726,10 +4726,32 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             if _has_ccm and _inner.training:
                 inputs["mm_token_type_ids"] = torch.zeros_like(inputs["input_ids"])
 
+    _unsloth_attach_accelerator_scaler(self, model)
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
 
 
+def _unsloth_attach_accelerator_scaler(trainer, model):
+    # Fused CE saves d(loss * scale)/d(hidden) in the forward; without the fp16 scale it underflows (#3529).
+    scaler = getattr(getattr(trainer, "accelerator", None), "scaler", None)
+    if scaler is None or getattr(model, "accelerator_scaler", None) is scaler:
+        return
+    current, seen = model, set()
+    while isinstance(current, torch.nn.Module) and id(current) not in seen:
+        seen.add(id(current))
+        current.accelerator_scaler = scaler
+        current = next(
+            (
+                getattr(current, attr)
+                for attr in _UNSLOTH_WRAPPED_MODULE_ATTRS + ("model",)
+                if isinstance(getattr(current, attr, None), torch.nn.Module)
+            ),
+            None,
+        )
+
+
+# The attributes a training wrapper keeps its wrappee under. DDP, FSDP1 and DataParallel use
+# `module`; `torch.compile` uses `_orig_mod`; FSDP's own wrapper policy uses `_fsdp_wrapped_module`.
 _UNSLOTH_WRAPPED_MODULE_ATTRS = ("module", "_orig_mod", "_fsdp_wrapped_module")
 
 

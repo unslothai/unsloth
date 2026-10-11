@@ -41,8 +41,10 @@ import {
 import { savedBranchHead } from "../utils/branch-head";
 import { orderByParentChain } from "../utils/message-order";
 import {
+  answeringCheckpoint,
   buildTitleRefreshRequest,
   heuristicChatTitle,
+  titleCheckpoint,
   titleFromStream,
   titleRefreshExcerpt,
 } from "../utils/chat-title";
@@ -174,8 +176,10 @@ async function titleModelServing(checkpoint: string): Promise<boolean> {
   }
 }
 
-/** Uses the selected model, never the one that answered, and only while it is serving; else the
- *  messages. A comparison's panes share user turns, so one is read. */
+/** Asks the connection that answered when it is external; a locally answered chat asks the selected
+ *  local model, and only while it is serving, so its messages never reach a provider they were not
+ *  sent to. Else the title is picked from the messages. A comparison's panes share user turns, so one
+ *  is read. */
 export async function regenerateChatTitle(
   item: SidebarItem,
 ): Promise<RegenerateTitleOutcome> {
@@ -185,11 +189,10 @@ export async function regenerateChatTitle(
     const threadId = getSidebarItemThreadIds(item)[0];
     const liveBranch = liveThreadBranch(threadId);
     const { params, modelLoading } = useChatRuntimeStore.getState();
-    const checkpoint = !modelLoading ? params.checkpoint : "";
-    const [startTitle, raw, serving] = await Promise.all([
+    const selected = !modelLoading ? params.checkpoint : "";
+    const [startTitle, raw] = await Promise.all([
       getStoredChatThread(threadId).then((thread) => thread?.title),
       listStoredChatMessages(threadId),
-      checkpoint ? titleModelServing(checkpoint) : false,
     ]);
     // The branch on screen, else the one reopening the chat shows, as the exports read it.
     const storedIds = new Set(raw.map((m) => m.id));
@@ -201,6 +204,14 @@ export async function regenerateChatTitle(
       : raw;
     const excerpt = titleRefreshExcerpt(branch);
     if (!excerpt) return "empty";
+    // Only a branch that ends in a stamped answer names a recipient: an unstamped one (stopped,
+    // interrupted) or a trailing user turn (its answer deleted) must not fall back to an older
+    // answer's provider, which never saw the later turns.
+    const lastMessage = branch.at(-1);
+    const answeredWith =
+      lastMessage?.role === "assistant" ? answeringCheckpoint(lastMessage.metadata?.custom) : "";
+    const checkpoint = titleCheckpoint(answeredWith, selected);
+    const serving = checkpoint ? await titleModelServing(checkpoint) : false;
     const title =
       (serving ? await titleFromModel(checkpoint, excerpt) : null) ?? heuristicChatTitle(branch);
     if (!title) return "empty";
