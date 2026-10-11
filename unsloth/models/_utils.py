@@ -4855,8 +4855,28 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             if _has_ccm and _inner.training:
                 inputs["mm_token_type_ids"] = torch.zeros_like(inputs["input_ids"])
 
+    _unsloth_attach_accelerator_scaler(self, model)
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
+
+
+def _unsloth_attach_accelerator_scaler(trainer, model):
+    # Fused CE saves d(loss * scale)/d(hidden) in the forward; without the fp16 scale it underflows (#3529).
+    scaler = getattr(getattr(trainer, "accelerator", None), "scaler", None)
+    if scaler is None or getattr(model, "accelerator_scaler", None) is scaler:
+        return
+    current, seen = model, set()
+    while isinstance(current, torch.nn.Module) and id(current) not in seen:
+        seen.add(id(current))
+        current.accelerator_scaler = scaler
+        current = next(
+            (
+                getattr(current, attr)
+                for attr in _UNSLOTH_WRAPPED_MODULE_ATTRS + ("model",)
+                if isinstance(getattr(current, attr, None), torch.nn.Module)
+            ),
+            None,
+        )
 
 
 # The attributes a training wrapper keeps its wrappee under. DDP, FSDP1 and DataParallel use
@@ -7212,8 +7232,22 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     torchao_config = getattr(model, "torchao_config", None)
     if torchao_config is not None and torchao_config.qat_scheme is None:
         return torch.no_grad()
-    else:
-        return torch.inference_mode()
+    # FSDP keeps the parameters it all-gathers for one forward and reuses them in the next, so a
+    # gather under inference mode poisons the training step: "Inference tensors cannot be saved
+    # for backward" (unsloth#3551). TRL generates under no_grad for the same reason.
+    import os, sys
+
+    if os.environ.get("ACCELERATE_USE_FSDP", "").strip().lower() in ("1", "true", "yes", "on"):
+        return torch.no_grad()
+    if os.environ.get("FSDP_VERSION", "").strip() not in ("", "0"):
+        return torch.no_grad()
+    accelerate_state = sys.modules.get("accelerate.state", None)
+    shared_state = getattr(
+        getattr(accelerate_state, "AcceleratorState", None), "_shared_state", None
+    )
+    if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
+        return torch.no_grad()
+    return torch.inference_mode()
 
 
 def hf_login(token: Optional[str] = None) -> Optional[str]:

@@ -292,15 +292,13 @@ export const zhCN = {
       loop: "循环播放",
       pictureInPicture: "画中画",
       fullscreen: "全屏",
+      exitFullscreen: "退出全屏",
       copyFrame: "复制帧",
       frameCopied: "已复制帧",
       copyFrameFailed: "无法复制帧。",
-      copyName: "复制文件名",
-      nameCopied: "已复制文件名",
       copyOptions: "复制选项",
       open: "打开",
       openOptions: "打开选项",
-      saveAs: "另存为…",
     },
     file: {
       openIn: "打开方式",
@@ -316,6 +314,9 @@ export const zhCN = {
       copy: "复制内容",
       copied: "已复制",
       copyFailed: "无法复制文件。",
+      copyPath: "复制路径",
+      pathCopied: "已复制路径",
+      openFailed: "无法打开 {name}。",
       wrap: "自动换行",
     },
     pages: {
@@ -2449,6 +2450,15 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "工具输出长度",
+      toolResultLimitDescription: "模型读取的单个 Python 或终端结果的字符数。默认值为 {count}。",
+      toolResultLimitHint: "更长的输出会保存到文件中，模型可以分段读取。更高的上限适用于在 Unsloth 中运行的模型，上下文窗口较小时仍会获得更少的内容。API 模型保持默认值，除非你将其调低。",
+      toolResultLimitDefault: "{count}（默认）",
+      toolResultLimitLocked: "由 UNSLOTH_TOOL_RESULT_MAX_CHARS 设置",
+      toolResultLimitLoadError: "无法加载工具输出长度。",
+      toolResultLimitSaveError: "无法保存工具输出长度。",
+      toolResultLimitKeywords:
+        "输出 结果 截断 限制 字符 长度 tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "折叠",
         auto: "运行时展开",
@@ -3900,6 +3910,8 @@ export const zhCN = {
     selection: {
       startChat: "开始聊天",
       move: "移动",
+      selectAll: "全选",
+      countOfTotal: "已选择 {count} 个，共 {total} 个",
       clear: "清除选择",
     },
     menu: {

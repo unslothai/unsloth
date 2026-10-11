@@ -78,7 +78,7 @@ test("without a thread on the page the scan is the whole document", () => {
 
 test("nothing that can cover a native page renders inside the thread", () => {
   const native = readSrc("features/browser/native-view.ts");
-  assert.match(native, /for \(const element of outsideThread\(OVERLAY_SELECTOR\)\)/);
+  assert.match(native, /for \(const element of outsideThread(?:<HTMLElement>)?\(selector\)\)/);
   assert.match(native, /for \(const dock of outsideThread\(\s*"\.chat-full-view-dock, \.chat-full-view-dock-minimized, \[data-native-inset\]",\s*\)\)/);
   assert.doesNotMatch(native, /document\.querySelectorAll/, "a document-wide scan walked every message of a long thread on each 300 ms recheck, about 10 ms a time beside a native page");
   for (const wrapper of ["dialog", "sheet", "alert-dialog", "popover", "dropdown-menu", "select", "tooltip", "hover-card", "context-menu", "combobox", "menubar"]) {

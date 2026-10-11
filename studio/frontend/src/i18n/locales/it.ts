@@ -291,15 +291,13 @@ export const it = {
       loop: "Ripeti",
       pictureInPicture: "Picture in picture",
       fullscreen: "Schermo intero",
+      exitFullscreen: "Esci da schermo intero",
       copyFrame: "Copia fotogramma",
       frameCopied: "Fotogramma copiato",
       copyFrameFailed: "Impossibile copiare il fotogramma.",
-      copyName: "Copia nome file",
-      nameCopied: "Nome file copiato",
       copyOptions: "Opzioni di copia",
       open: "Apri",
       openOptions: "Opzioni di apertura",
-      saveAs: "Salva con nome…",
     },
     file: {
       openIn: "Apri in",
@@ -315,6 +313,9 @@ export const it = {
       copy: "Copia contenuto",
       copied: "Copiato",
       copyFailed: "Impossibile copiare il file.",
+      copyPath: "Copia percorso",
+      pathCopied: "Percorso copiato",
+      openFailed: "Impossibile aprire {name}.",
       wrap: "A capo automatico",
     },
     pages: {
@@ -2485,6 +2486,15 @@ export const it = {
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "Lunghezza dell'output degli strumenti",
+      toolResultLimitDescription: "Caratteri di un risultato Python o Terminale che il modello legge. Il valore predefinito è {count}.",
+      toolResultLimitHint: "L'output più lungo viene salvato in un file che il modello può leggere a parti. Un limite più alto si applica ai modelli eseguiti in Unsloth, e le finestre di contesto piccole ricevono comunque meno. I modelli API mantengono il valore predefinito a meno che tu non lo abbassi.",
+      toolResultLimitDefault: "{count} (predefinito)",
+      toolResultLimitLocked: "Impostato da UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Impossibile caricare la lunghezza dell'output degli strumenti.",
+      toolResultLimitSaveError: "Impossibile salvare la lunghezza dell'output degli strumenti.",
+      toolResultLimitKeywords:
+        "output risultato troncare troncato limite caratteri lunghezza tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Compresso",
         auto: "Espandi durante l’esecuzione",
@@ -4068,6 +4078,8 @@ export const it = {
     selection: {
       startChat: "Avvia chat",
       move: "Sposta",
+      selectAll: "Seleziona tutto",
+      countOfTotal: "{count} di {total} selezionate",
       clear: "Annulla selezione",
     },
     menu: {
