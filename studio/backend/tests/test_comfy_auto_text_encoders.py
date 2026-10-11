@@ -17,7 +17,6 @@ safetensors_torch = pytest.importorskip("safetensors.torch")
 transformers = pytest.importorskip("transformers")
 
 import core.inference.diffusion_comfy_components as C  # noqa: E402
-from hub.utils.comfy_models import comfy_text_encoder_files  # noqa: E402
 
 INDEX = {"text_encoder": ["transformers", "Qwen3Model"], "vae": ["diffusers", "AutoencoderKL"]}
 
@@ -91,6 +90,8 @@ def _comfy_tree(tmp_path: Path) -> Path:
 
 
 def test_text_encoder_folders_of_the_dits_own_layout(tmp_path):
+    from hub.utils.comfy_models import comfy_text_encoder_files
+
     models = _comfy_tree(tmp_path)
     te = _encoder_file(models / "text_encoders" / "qwen_3_4b.safetensors")
     legacy = _encoder_file(models / "clip" / "sub" / "t5.safetensors")
@@ -181,3 +182,34 @@ def test_backend_takes_the_comfy_encoder_for_a_local_dit(tmp_path, monkeypatch):
 def test_backend_opt_out_and_pipeline_loads_keep_the_base_repo(tmp_path, monkeypatch, env, kind):
     picked, _ = _backend_pick(tmp_path, monkeypatch, env = env, kind = kind)
     assert picked == []
+
+
+def test_download_plan_drops_the_base_encoder_a_comfy_file_replaces(tmp_path, monkeypatch):
+    """Through the plan the Images page stages: the base repo's text_encoder/ is no longer fetched."""
+    from core.inference import diffusion
+
+    models = tmp_path / "ComfyUI" / "models"
+    for name in ("diffusion_models", "text_encoders", "vae", "loras"):
+        (models / name).mkdir(parents = True, exist_ok = True)
+    (models / "diffusion_models" / "z_image_turbo_bf16.safetensors").write_bytes(b"x")
+    _encoder_file(models / "text_encoders" / "qwen_3_4b.safetensors")
+    base = _base(tmp_path)
+    seen = {}
+
+    def _estimate(*args, **kwargs):
+        seen.update(kwargs)
+        return 0, []
+
+    monkeypatch.setattr(
+        diffusion.DiffusionBackend, "_estimate_download_bytes", staticmethod(_estimate)
+    )
+    monkeypatch.setattr(diffusion, "_resolve_base_repo", lambda *a, **k: base)
+    backend = diffusion.DiffusionBackend.__new__(diffusion.DiffusionBackend)
+    backend.download_plan(
+        str(models / "diffusion_models"),
+        gguf_filename = "z_image_turbo_bf16.safetensors",
+        model_kind = "single_file",
+        allow_device_probe = False,
+        memory_verdict = False,
+    )
+    assert "text_encoder" in seen["skip_te_components"]
