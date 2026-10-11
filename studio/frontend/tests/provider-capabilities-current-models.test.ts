@@ -588,3 +588,12 @@ test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they wer
   assert.equal(kimiSearchExcludesThinking("openai", "kimi-k3"), false);
   assert.equal(providerModelReplaysReasoning("kimi", "kimi-k2.6"), false);
 });
+
+test("a saved Search choice survives selecting or reloading Kimi K3", () => {
+  const page = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/features/chat/chat-page.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(page, /const isKimi = \w+\?\.providerType === "kimi"/);
+  assert.equal(page.match(/const isKimi = kimiSearchExcludesThinking\(/g)?.length, 2);
+});
