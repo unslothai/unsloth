@@ -185,17 +185,15 @@ def test_wsl_and_windows_disable_offload():
 
 
 @pytest.mark.skipif(not hasattr(os, "uname"), reason = "os.uname is POSIX only")
-@pytest.mark.parametrize(
-    "release", ["6.6.87.2-microsoft-standard-WSL2", "5.15.153.1-microsoft-standard-WSL2"]
-)
-def test_docker_on_wsl2_disables_offload(release):
+def test_docker_on_wsl2_disables_offload():
     # A container on WSL2 sets no WSL_* variables; only the shared kernel says WSL (unslothai/unsloth#3511).
-    with _as_platform("posix", release = release):
-        assert unsupported_platform() == "WSL"
-        assert resolve(_untied_model(), True) is False
+    for release in ("6.6.87.2-microsoft-standard-WSL2", "5.15.153.1-microsoft-standard-WSL2"):
+        with _as_platform("posix", release = release):
+            assert unsupported_platform() == "WSL"
+            assert resolve(_untied_model(), True) is False
 
-    for other in ("6.8.0-1021-azure", "6.10.14-linuxkit"):
-        with _as_platform("posix", release = other):
+    for release in ("6.8.0-1021-azure", "6.10.14-linuxkit"):
+        with _as_platform("posix", release = release):
             assert unsupported_platform() is None
 
 
