@@ -14,6 +14,7 @@
 
 import torch
 import gc
+import contextlib
 import math
 import functools
 from typing import Optional, Tuple, List, Union
@@ -1951,8 +1952,13 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
         from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
         rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
-        # Under the meta-device load context yarn's inner aranges land on meta and the copy to CPU fails.
-        with torch.device("cpu"):
+        # Under the meta-device load context yarn's inner aranges land on meta and the copy to CPU fails;
+        # the device mode is only entered then, as it slows every op inside it.
+        with (
+            torch.device("cpu")
+            if torch.get_default_device().type != "cpu"
+            else contextlib.nullcontext()
+        ):
             try:
                 inv_freq, attention_scaling = rope_init_fn(config, torch.device("cpu"))
             except Exception:
