@@ -2301,11 +2301,9 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     assert labels.reshape(-1).tolist() == list(range(seq))
 
 
-# 3. the collator wrappers mask boundary targets the way TRL >= 0.23.1 does, and unsloth_zoo, which zeroes those
-#    slots in num_items_in_batch rather than subtracting them, still counts every real target exactly once
+# 3. the collator wrappers mask boundary targets like TRL >= 0.23.1; the zoo count still sees each real target once
 class _UnmaskedPackingCollator:
-    """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.23.1 - a test
-    built on newer TRL output would pass either way."""
+    """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.23.1."""
 
     def __init__(self):
         self.padding_free = True
@@ -2320,8 +2318,7 @@ class _UnmaskedPackingCollator:
 
 
 def _zoo_num_items_in_batch(batch):
-    """The count unsloth_zoo._unsloth_get_batch_samples derives from a batch: shifted targets, with the
-    slot predicting each following document's first token zeroed (idempotent, so pre-masking is harmless)."""
+    """unsloth_zoo._unsloth_get_batch_samples' count: boundary slots zeroed, not subtracted."""
     token_count = batch["labels"][..., 1:] != -100
     lengths = batch.get("packed_seq_lengths")
     if lengths is not None:
@@ -2350,11 +2347,9 @@ def test_collator_masks_boundary_targets_and_num_items_counts_them_once(wrapper)
         {"input_ids": [13, 14, 15], "seq_lengths": [3]},
     ]
     batch = trainer.data_collator.torch_call(examples)
-    # docs [10,11] [12] [13,14,15]: 12 and 13 start a document, so they are nobody's target; slot 0 is never a
-    # target either, the same labels TRL >= 0.23.1 produces
+    # docs [10,11] [12] [13,14,15]: same labels as TRL >= 0.23.1
     assert batch["labels"].reshape(-1).tolist() == [-100, 11, -100, -100, 14, 15]
     assert batch["input_ids"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
-    # 1 + 0 + 2 real CE targets, the same as the zoo counted before the labels were masked
     assert _zoo_num_items_in_batch(batch) == 3
     assert examples[0] == {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]}
 

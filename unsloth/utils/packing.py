@@ -205,13 +205,8 @@ def _enable_hf_packed_attention() -> None:
 
 
 def _mask_padding_free_boundary_labels(batch) -> None:
-    """Stop each packed document's first token from being a target of the previous document.
-
-    TRL >= 0.23.1's padding-free collator masks these itself (labels[position_ids == 0] = -100); older TRL
-    leaves them in. FastLanguageModel's forward masks them anyway, but the transformers modeling path
-    (FastModel) does not, while unsloth_zoo's num_items_in_batch already discounts them, so the loss was
-    inflated. Idempotent, out of place, and only for a flattened single row, where seq_lengths index it.
-    """
+    """TRL < 0.23.1 leaves each packed document's first token a target of the previous one, which the FastModel
+    forward does not mask while the zoo's num_items_in_batch excludes it. Idempotent; flattened single row only."""
     labels = batch.get("labels") if isinstance(batch, Mapping) else None
     if not isinstance(labels, torch.Tensor) or labels.dim() != 2 or labels.shape[0] != 1:
         return
