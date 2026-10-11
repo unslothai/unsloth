@@ -3969,6 +3969,7 @@ from core.inference.providers import (
 )
 from core.inference.external_provider import (
     ExternalProviderClient,
+    _is_kimi_k3,
     _is_openai_family_cloud,
     compacts_server_side,
 )
@@ -9834,7 +9835,7 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # Mixed catalogs require model-level vision capability; family flags do not
 # identify which models accept images. Qwen has unrestricted text defaults;
 # its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Kimi is excluded
-# because its allowlist permits only multimodal kimi-k2.5/k2.6.
+# because its allowlist permits only multimodal kimi-k3/k2.5/k2.6.
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
 _MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen"})
@@ -27615,6 +27616,7 @@ def _build_external_messages(
     api_type: Optional[str] = None,
     promoted_out: "Optional[list]" = None,
     promote_mcp_images: "Optional[bool]" = None,
+    model: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -27759,11 +27761,12 @@ def _build_external_messages(
             return {"type": "compaction", "encrypted_content": item.encrypted_content}
         return None
 
+    replays_reasoning = provider_type == "llama_cpp" or _is_kimi_k3(provider_type, model)
     result = []
     for msg in messages:
         replay = (
             {"reasoning_content": msg.reasoning_content}
-            if provider_type == "llama_cpp" and msg.role == "assistant" and msg.reasoning_content
+            if replays_reasoning and msg.role == "assistant" and msg.reasoning_content
             else {}
         )
         has_message_extra_content = bool(
@@ -28952,6 +28955,7 @@ async def _proxy_to_external_provider(
         promote_mcp_images = _external_takes_mcp_images(
             provider_type, _supports_vision, model, _pinfo
         ),
+        model = model,
     )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
