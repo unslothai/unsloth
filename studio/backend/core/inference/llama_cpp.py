@@ -784,9 +784,7 @@ def _apply_seeded_llama_request(
 ) -> None:
     """Disable prompt caching for fixed seeds so repeated requests stay reproducible.
 
-    ``reuse_prompt_cache`` keeps it on for tool-loop continuations: they extend a prefix
-    this run already evaluated, so a cold cache re-prefills the whole context every round
-    (#10698) without making the reply any more reproducible.
+    ``reuse_prompt_cache``: a tool-loop continuation of this run; cold, it re-prefills (#10698).
     """
     if seed is None:
         return
