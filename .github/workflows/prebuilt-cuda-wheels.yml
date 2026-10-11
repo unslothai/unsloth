@@ -458,9 +458,9 @@ jobs:
               python ../unsloth/.github/scripts/prebuilt_wheels_shard.py "$SHARD" "$SHARDS"
           fi
 
-      # Verbose on Windows: the first staging run reported every nvcc call as uncacheable (3/3,
-      # all failed compiles), and -v is what names the reason. A Windows warm slice that caches
-      # nothing would leave the flash-attn build job compiling from scratch.
+      # Verbose on Windows, where -v names the reason for any uncacheable call. ccache does cache
+      # nvcc there (a causal-conv1d build on windows-2022 counted 3/3 nvcc calls cacheable), and a
+      # Windows warm slice that cached nothing would leave flash-attn compiling from scratch.
       - name: ccache stats
         if: always()
         run: |
@@ -816,6 +816,14 @@ jobs:
           done
           echo "MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS timeout=$BUILD_TIMEOUT"
           if [ "$RUNNER_OS" = "Windows" ]; then
+            # Git Bash puts /usr/bin first, and its coreutils `link.exe` (hard links) shadows MSVC's
+            # linker: setuptools found it on PATH and every object compiled, then the final link
+            # failed. MSVC's own bin goes back in front for this step.
+            PATH="$(cygpath -u "${VCToolsInstallDir}bin\Hostx64\x64"):$PATH"
+            export PATH
+            link_exe="$(command -v link.exe)"
+            echo "linker: $link_exe"
+            case "$link_exe" in */usr/bin/*) echo "::error::GNU link.exe still first on PATH"; exit 1 ;; esac
             python ../unsloth/.github/scripts/prebuilt_wheels_timeout.py "$BUILD_TIMEOUT" -- \
               python setup.py bdist_wheel --dist-dir=dist
           else
@@ -823,9 +831,9 @@ jobs:
               python setup.py bdist_wheel --dist-dir=dist
           fi
 
-      # Verbose on Windows: the first staging run reported every nvcc call as uncacheable (3/3,
-      # all failed compiles), and -v is what names the reason. A Windows warm slice that caches
-      # nothing would leave the flash-attn build job compiling from scratch.
+      # Verbose on Windows, where -v names the reason for any uncacheable call. ccache does cache
+      # nvcc there (a causal-conv1d build on windows-2022 counted 3/3 nvcc calls cacheable), and a
+      # Windows warm slice that cached nothing would leave flash-attn compiling from scratch.
       - name: ccache stats
         if: always()
         run: |
