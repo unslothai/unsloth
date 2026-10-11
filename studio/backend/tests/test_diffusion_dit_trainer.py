@@ -361,8 +361,7 @@ def test_mx_module_filter_accepts_dense_block_linear():
 
 
 def test_mx_module_filter_keeps_biased_linear():
-    # MXFP8Linear adds the bias itself, so FLUX.1 / LTX-2 (all-biased blocks) are covered; only torchao 0.17's weight
-    # wrapper drops it, and _apply_mxfp8_training skips biased linears on that path alone.
+    # MXFP8Linear adds the bias; only torchao 0.17's quantize_ wrapper drops it (biased skipped there alone).
     assert _mx_module_filter(_linear(3072, 3072, bias = True).bfloat16(), "blocks.0.ff.up") is True
 
 
@@ -544,8 +543,7 @@ def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
     ],
 )
 def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp):
-    # fp8 is offered (and an explicit request accepted) only on sm89+, mxfp8 only on sm100+; anything else is refused
-    # by the child and by the pre-eviction preflight alike, before any load.
+    # fp8 only on sm89+, mxfp8 only on sm100+, refused by the child and the pre-eviction preflight alike.
     import core.training.diffusion_train_common as dtc
     from core.training.diffusion_train_common import training_precision_preflight_error
 
@@ -600,8 +598,7 @@ def test_compile_engagement_warning():
 
 
 def test_compile_engagement_reads_real_dynamo_counters():
-    # suppress_errors (the trainer's setting) turns a failed compile into a silently eager frame, and the non-fullgraph
-    # nf4 path splits on a graph break; both must surface.
+    # suppress_errors hides failed compiles and nf4 splits on graph breaks; both must surface.
     import torch
 
     from core.training.diffusion_dit_trainer import (

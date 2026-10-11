@@ -661,10 +661,8 @@ def test_float8_filters_stay_inside_the_repeated_blocks():
     for base in (dit._fp8_module_filter, dit._mx_module_filter):
         f = dit._in_repeated_blocks(m, base)
         assert f(m.blocks[1].ff, "blocks.1.ff") is True
-        # Top-level linears run eager (not regionally compiled) and are a sliver of the FLOPs.
         assert f(m.time_mod_proj, "time_mod_proj") is False
         assert f(m.blocks[0].ff, "blocks.0.ff.lora_A.default") is False
-    # No _repeated_blocks: the historical unrestricted filter.
     assert (
         dit._in_repeated_blocks(nn.Linear(64, 64), dit._fp8_module_filter) is dit._fp8_module_filter
     )
@@ -798,7 +796,6 @@ def test_mxfp8_swaps_biased_and_unbiased_block_linears_once(monkeypatch):
     assert m.blocks[0].ff.wgrad_with_hp is True and quantized == []
     assert [id(p) for p in m.parameters()] == params  # the Parameters stay
     hooks = len(m.blocks[0].ff._forward_pre_hooks)
-    # Idempotent: a second call converts nothing and stacks no hook.
     assert dit._apply_mxfp8_training(m, None, "flux.1") is True
     assert len(m.blocks[0].ff._forward_pre_hooks) == hooks == 1
 
@@ -808,7 +805,6 @@ def test_mxfp8_torchao_0_17_keeps_biased_linears_dense(monkeypatch):
     _, quantized = _fake_mx_backend(monkeypatch, with_linear_cls = False)
     m = _block_model(bias = True)
     events = []
-    # Nothing eligible: report bf16 rather than an mxfp8 run that converted no layer.
     assert dit._apply_mxfp8_training(m, events.append, "flux.1") is False
     assert quantized == [] and "no eligible linear layers" in events[0]["message"]
     m2 = _block_model(bias = False)
@@ -821,8 +817,7 @@ def test_fp8_config_runs_the_frozen_weight_grad_in_high_precision():
     from torchao.float8.config import ScalingGranularity, ScalingType
 
     c = dit._fp8_training_config()
-    # The forward and grad_input GEMMs stay rowwise float8; only the discarded grad_weight GEMM (inner dim = tokens,
-    # which _scaled_mm needs 16-aligned) is high precision.
+    # Only the discarded grad_weight GEMM (inner dim = tokens, _scaled_mm needs 16-aligned) is high precision.
     assert c.cast_config_input.scaling_granularity is ScalingGranularity.AXISWISE
     assert c.cast_config_input.scaling_type is ScalingType.DYNAMIC
     assert c.cast_config_grad_output.scaling_type is ScalingType.DYNAMIC
@@ -842,8 +837,7 @@ def _lowp_gpu_ready(mode):
 @pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
 @pytest.mark.parametrize("compiled", [False, True])
 def test_lowp_backward_on_odd_token_counts(mode, compiled):
-    """Token counts not divisible by 16 / 32 (LTX-2 192x320 = 60, Krea 2 320x192 = 240, a 4:3 bucket at 512 =
-    1008) used to raise in the frozen base's grad_weight GEMM, eager and compiled."""
+    """Token counts not divisible by 16 / 32 (LTX-2 192x320 = 60) raised in the frozen grad_weight GEMM."""
     import torch
 
     if not _lowp_gpu_ready(mode):
