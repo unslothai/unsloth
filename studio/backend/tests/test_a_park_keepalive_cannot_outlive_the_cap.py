@@ -328,7 +328,9 @@ def test_a_probe_excused_deadline_renews_the_configured_window():
     import routes.inference as inference
 
     source = inspect.getsource(inference._aiter_llama_stream_items)
-    excused = source[source.index("if not await _probe_off_the_loop(park_above.excuses_silence):"):]
+    excused = source[
+        source.index("if not await _probe_off_the_loop(park_above.excuses_silence):") :
+    ]
     excused = excused[: excused.index("return True")]
     assert "first_token_deadline = now + _first_token_timeout_s()" in excused
     assert "_DEFAULT_FIRST_TOKEN_TIMEOUT_S" not in excused

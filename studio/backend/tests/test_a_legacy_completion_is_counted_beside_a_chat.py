@@ -49,7 +49,12 @@ def test_nothing_is_counted_with_preemption_off(backend, monkeypatch):
 
 def test_both_completions_branches_count_and_release():
     source = inspect.getsource(inference.openai_completions)
-    assert source.count('_openai_llama_count_completions_holder(llama_backend, body.get("prompt", ""))') == 2
+    assert (
+        source.count(
+            '_openai_llama_count_completions_holder(llama_backend, body.get("prompt", ""))'
+        )
+        == 2
+    )
     assert (
         source.count("_openai_llama_release_completions_holder(llama_backend, _cmpl_holder)") == 2
     )
@@ -103,4 +108,6 @@ def test_the_captioner_states_its_footprint():
 
     source = inspect.getsource(captioner._vision_complete)
     assert "_direct_llama_slot(prompt = prompt, max_tokens = max_tokens)" in source
-    assert "_direct_llama_request(kv_tokens = kv_tokens)" in inspect.getsource(captioner._direct_llama_slot)
+    assert "_direct_llama_request(kv_tokens = kv_tokens)" in inspect.getsource(
+        captioner._direct_llama_slot
+    )

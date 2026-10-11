@@ -102,7 +102,6 @@ def _direct_llama_slot(*, prompt: str = "", max_tokens: int = 0):
             _prompt_kv_tokens,
             get_llama_cpp_backend,
         )
-
         kv_tokens = (
             _openai_llama_admission_image_tokens(get_llama_cpp_backend())
             + _prompt_kv_tokens(prompt)
