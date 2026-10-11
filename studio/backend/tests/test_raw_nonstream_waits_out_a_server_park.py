@@ -33,11 +33,12 @@ class _Backend:
     def __init__(self, port: int, *, server: bool, parked: bool):
         self.base_url = f"http://127.0.0.1:{port}"
         self.context_length = 4096
-        self.server_preempts_kv = server
+        self.server_may_park = server
         self._parked = parked
         self.probes = 0
 
-    def _server_park_grace(self) -> bool:
+    def _server_park_grace_any(self) -> bool:
+        # A non-streaming body carries no notices, so it is always the aggregate reading.
         self.probes += 1
         return self._parked
 

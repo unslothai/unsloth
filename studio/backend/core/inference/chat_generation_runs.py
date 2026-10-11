@@ -526,7 +526,7 @@ def _server_park_probe_now(backend: Any) -> bool:
     by the wrapper's own _SERVER_PARK_STALL_CAP_S, so this cannot keep a wedged run alive. Blocking
     (one HTTP GET); only ever called from a worker thread.
     """
-    if not bool(getattr(backend, "server_preempts_kv", False)):
+    if not bool(getattr(backend, "server_may_park", False)):
         return False  # nothing parks slots, so silence is a stall and /metrics is noise
     probe = getattr(backend, "_server_park_grace", None)
     if not callable(probe):

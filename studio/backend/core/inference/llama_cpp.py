@@ -9006,6 +9006,16 @@ class LlamaCppBackend:
             return False
         return _preemption.resolve_preempt_mode(True) == _preemption.PREEMPT_MODE_SERVER
 
+    @property
+    def server_may_park(self) -> bool:
+        """Whether the running llama-server can hold a slot parked, confirmed or not: what
+        decides that a silent stream may be a park rather than a stall."""
+        if not (getattr(self, "_server_preempts_kv", False) or getattr(self, "_server_launched_parking", False)):
+            return False
+        if not getattr(self, "_kv_cache_unified", False):
+            return False
+        return _preemption.resolve_preempt_mode(True) == _preemption.PREEMPT_MODE_SERVER
+
     def _server_park_grace(self) -> bool:
         """The AGGREGATE park reading, and the legacy fallback only: `requests_preempted` counts
         every request, so it cannot say that THIS stream is the parked one. A build that writes
@@ -9017,6 +9027,11 @@ class LlamaCppBackend:
         excused an unrelated stream's stall for as long as somebody else stayed parked."""
         if getattr(self, "_server_park_notices", False):
             return False
+        return self._server_park_grace_any()
+
+    def _server_park_grace_any(self) -> bool:
+        """The aggregate reading whatever the build writes: a non-streaming response carries no
+        notices, so on any parking build it is the only signal."""
         try:
             from core.inference.llama_stats import scrape_llama_metrics
 
@@ -20322,6 +20337,7 @@ class LlamaCppBackend:
         self._swa_full = False
         self._kv_cache_unified = False
         self._server_preempts_kv = False
+        self._server_launched_parking = False
         # The diffusion runner is not llama-server and reads no llama.cpp environment, so a
         # previous GGUF's mode must not be reported against it.
         self._requested_exact_concurrency = _exact.EXACT_OFF
@@ -25881,6 +25897,7 @@ class LlamaCppBackend:
             # Nothing parks until a launch names a budget (unslothai/llama.cpp#197), so the
             # capability alone sets nothing; the launch below records what it turned on.
             self._server_preempts_kv = False
+            self._server_launched_parking = False
             self._reserves_micro_batch_outputs = self.reserves_micro_batch_outputs(binary)
             self._resumes_thoughts = self.resumes_thoughts(binary)
 
@@ -29496,7 +29513,8 @@ class LlamaCppBackend:
 
                 server_caps = _launch_caps(binary)
                 self._server_preempts_kv = False
-                _preemption.note_server_parking(False)
+                self._server_launched_parking = False
+                _preemption.note_server_parking(False, self)
 
                 # Before the extras, like the batch pair: a hand-typed flag still
                 # last-wins over the control. Each is gated on the capability
@@ -33891,9 +33909,12 @@ class LlamaCppBackend:
                 # that actually spawned, which the retries can rewrite under the decision above.
                 if _preempt_ram_disabled_in(_last_spawn_cmd or cmd, env = env):
                     self._server_preempts_kv = False
+                # Asked to park even where auto cannot confirm it: such a child still parks, so
+                # its silence is read through the park probe, while admission stays fair share.
+                self._server_launched_parking = self._server_preempts_kv
                 if self._server_preempts_kv:
                     self._server_preempts_kv = self._server_confirms_parking()
-                _preemption.note_server_parking(self._server_preempts_kv and kv_cache_unified)
+                _preemption.note_server_parking(self._server_preempts_kv and kv_cache_unified, self)
                 # Read off the argv that LAUNCHED and the env it launched with, not the intent: respawns rewrite them.
                 self._requested_exact_concurrency = _exact_setting
                 _exact_short = getattr(self, "_exact_parking_short", None)
@@ -35214,7 +35235,8 @@ class LlamaCppBackend:
             self._swa_full = False
             self._kv_cache_unified = False
             self._server_preempts_kv = False
-            _preemption.note_server_parking(False)
+            self._server_launched_parking = False
+            _preemption.note_server_parking(False, self)
             self._requested_exact_concurrency = _exact.EXACT_OFF
             self._exact_concurrency = _exact.EXACT_STATE_OFF
             self._memory_state = None
@@ -37692,7 +37714,7 @@ class LlamaCppBackend:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             # A swap-capable server that predates the stream notices is silent while it holds
             # a slot parked, so the read wrapper asks before calling that silence a stall.
-            stall_grace = self._server_park_grace if self.server_preempts_kv else None
+            stall_grace = self._server_park_grace if self.server_may_park else None
             with self._stream_with_retry(
                 client,
                 url,

@@ -150,6 +150,7 @@ from core.inference.llama_preemption import (
     preemption_enabled,
     read_slot_occupancy,
     reclaim_idle_slots,
+    set_routed_backend,
 )
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
@@ -5100,11 +5101,12 @@ async def _aiter_llama_stream_items(
 _RAW_PARK_STALL_CAP_S = 1800.0
 
 
-def _raw_park_grace(llama_backend) -> Optional[Callable[[], bool]]:
-    """The `/metrics` park probe for a raw relay, or None when the server does not park."""
-    if not getattr(llama_backend, "server_preempts_kv", False):
+def _raw_park_grace(llama_backend, *, streaming: bool = True) -> Optional[Callable[[], bool]]:
+    """The `/metrics` park probe for a raw relay, or None when the server does not park. A
+    non-streaming response hears no notices, so it always takes the aggregate reading."""
+    if not getattr(llama_backend, "server_may_park", False):
         return None
-    probe = getattr(llama_backend, "_server_park_grace", None)
+    probe = getattr(llama_backend, "_server_park_grace" if streaming else "_server_park_grace_any", None)
     return probe if callable(probe) else None
 
 
@@ -5120,7 +5122,7 @@ async def _nonstreaming_post_through_park(
     closing it would cancel the request upstream. Elsewhere this is the plain POST.
     """
     timeout = _llama_non_streaming_generation_timeout()
-    stall_grace = _raw_park_grace(llama_backend)
+    stall_grace = _raw_park_grace(llama_backend, streaming = False)
     if stall_grace is None or timeout.read is None:
         return await client.post(url, json = json, headers = upstream_headers, timeout = timeout)
     window = float(timeout.read)
@@ -10463,6 +10465,9 @@ register_serving_backend(_llama_cpp_backend)
 def get_llama_cpp_backend() -> LlamaCppBackend:
     slot = routed_slot.get()
     return slot.llama if slot is not None else _llama_cpp_backend
+
+
+set_routed_backend(get_llama_cpp_backend)
 
 
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:

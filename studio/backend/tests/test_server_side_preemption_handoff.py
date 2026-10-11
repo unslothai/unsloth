@@ -374,7 +374,7 @@ class TestTheAggregateReadingIsOnlyTheFallback:
         import inspect
 
         opened = inspect.getsource(LlamaCppBackend._open_stream)
-        assert "stall_grace = self._server_park_grace if self.server_preempts_kv else None" in (
+        assert "stall_grace = self._server_park_grace if self.server_may_park else None" in (
             opened
         )
         wrapper = inspect.getsource(LlamaCppBackend._install_cancel_aware_read)

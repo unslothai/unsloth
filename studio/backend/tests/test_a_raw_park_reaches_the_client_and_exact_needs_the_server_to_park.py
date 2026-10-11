@@ -567,7 +567,7 @@ class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
     class _Backend:
         """A swap build that parks in silence and has never been asked, so it has no stamp."""
 
-        server_preempts_kv = True
+        server_may_park = True
 
         def __init__(self):
             self.asked = 0
@@ -587,7 +587,7 @@ class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
 
     def test_a_server_that_does_not_park_is_never_scraped(self, monkeypatch):
         backend = self._Backend()
-        backend.server_preempts_kv = False
+        backend.server_may_park = False
         monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
         assert runs._server_park_excused_recently() is False
         assert backend.asked == 0
@@ -769,13 +769,13 @@ class TestARawRelayWaitsThroughAServerPark:
 
     def test_the_probe_is_the_backends_and_only_when_the_server_parks(self):
         class _Parks:
-            server_preempts_kv = True
+            server_may_park = True
 
             def _server_park_grace(self):
                 return True
 
         class _DoesNot:
-            server_preempts_kv = False
+            server_may_park = False
 
             def _server_park_grace(self):
                 return True

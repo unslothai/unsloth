@@ -239,3 +239,71 @@ class TestAnExactFallbackKeepsTheHostBound:
         assert reprice < source.index(
             '_exact_host_short = getattr(self, "_exact_host_short", None)'
         )
+
+
+class TestAnUnconfirmedParkIsStillReadAsAPark:
+    """A swap build without the ``/props`` report still parks when the launch asked it to."""
+
+    @staticmethod
+    def _backend(*, launched, confirmed, notices = False):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._server_launched_parking = launched
+        backend._server_preempts_kv = confirmed
+        backend._kv_cache_unified = True
+        backend._server_park_notices = notices
+        return backend
+
+    def test_auto_keeps_fair_share_but_reads_the_silence_as_a_park(self):
+        backend = self._backend(launched = True, confirmed = False)
+        assert backend.server_preempts_kv is False, "admission stays fair share"
+        assert backend.server_may_park is True, "but the child does park"
+        from routes.inference import _raw_park_grace
+
+        assert _raw_park_grace(backend) is not None
+
+    def test_nothing_launched_means_nothing_parks(self):
+        backend = self._backend(launched = False, confirmed = False)
+        assert backend.server_may_park is False
+        from routes.inference import _raw_park_grace
+
+        assert _raw_park_grace(backend) is None
+        assert _raw_park_grace(backend, streaming = False) is None
+
+    def test_a_non_streaming_response_reads_the_aggregate_even_beside_notices(self, monkeypatch):
+        import core.inference.llama_stats as llama_stats
+        from routes.inference import _raw_park_grace
+
+        backend = self._backend(launched = True, confirmed = True, notices = True)
+        backend._port = 1
+        backend._api_key = None
+        monkeypatch.setattr(llama_stats, "scrape_llama_metrics", lambda *a, **k: {"requests_preempted": 1.0})
+        assert _raw_park_grace(backend)() is False, "a stream hears its own notice instead"
+        assert _raw_park_grace(backend, streaming = False)() is True
+
+
+class TestEachServerAnswersForItself:
+    def test_the_routed_backend_decides_and_a_helper_cannot_flip_it(self):
+        main = LlamaCppBackend.__new__(LlamaCppBackend)
+        helper = LlamaCppBackend.__new__(LlamaCppBackend)
+        routed = [main]
+        preemption.set_routed_backend(lambda: routed[0])
+        try:
+            preemption.note_server_parking(True, main)
+            preemption.note_server_parking(False, helper)
+            assert preemption.preemption_enabled() is True, "the helper's load is not the main's"
+            routed[0] = helper
+            assert preemption.preemption_enabled() is False
+            routed[0] = object()
+            preemption.note_server_parking(True)
+            assert preemption.preemption_enabled() is True, "an unknown route takes the fallback"
+        finally:
+            import routes.inference as routes_inference
+
+            preemption.set_routed_backend(routes_inference.get_llama_cpp_backend)
+
+    def test_every_launch_writes_its_own_entry(self):
+        import inspect
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        assert "note_server_parking(False)" not in source
+        assert "note_server_parking(self._server_preempts_kv and kv_cache_unified, self)" in source
