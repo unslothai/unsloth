@@ -144,3 +144,33 @@ def test_wrapping_is_idempotent():
     save = model.save_pretrained
     snapshot_residual_lora_init(model, "lora_ga")
     assert model.save_pretrained is save
+
+
+def test_trainer_checkpoints_resume_and_reload(tmp_path):
+    from datasets import Dataset
+    from transformers import Trainer, TrainingArguments
+
+    g = torch.Generator().manual_seed(1)
+    rows = [torch.randint(0, 1000, (16,), generator = g).tolist() for _ in range(16)]
+    data = Dataset.from_list([{"input_ids": r, "labels": r} for r in rows])
+
+    def train(model, resume = None):
+        args = TrainingArguments(
+            str(tmp_path),
+            max_steps = 4,
+            save_steps = 2,
+            per_device_train_batch_size = 2,
+            learning_rate = 1e-2,
+            use_cpu = True,
+            report_to = [],
+            seed = 3407,
+        )
+        Trainer(model = model, args = args, train_dataset = data).train(resume_from_checkpoint = resume)
+        return _logits(model)
+
+    reference = train(_lora_ga_model(seed = 3407))
+    plain = PeftModel.from_pretrained(_base(), tmp_path / "checkpoint-4")
+    torch.testing.assert_close(_logits(plain), reference, atol = 1e-4, rtol = 1e-4)
+    # A fresh run draws another LoRA-GA init, then resumes steps 3-4 from the converted checkpoint.
+    resumed = train(_lora_ga_model(seed = 7), resume = str(tmp_path / "checkpoint-2"))
+    torch.testing.assert_close(resumed, reference, atol = 1e-3, rtol = 1e-3)
