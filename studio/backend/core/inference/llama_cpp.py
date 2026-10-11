@@ -14614,6 +14614,10 @@ class LlamaCppBackend:
         )
         free = _apply_igpu_host_reserve_mib(avail, True)
         LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+        # Torch never saw these, so record them as integrated or the pool is credited twice.
+        LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = set(
+            gpu_ids
+        )
         return [(idx, free, total) for idx in sorted(gpu_ids)]
 
     @staticmethod

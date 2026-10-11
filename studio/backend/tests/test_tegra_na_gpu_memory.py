@@ -38,6 +38,7 @@ def _probe(
 ):
     for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
         monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _b = None: False))
     monkeypatch.setattr(
         gpu_query,
@@ -67,6 +68,8 @@ def _probe(
 
 def test_jetson_na_is_priced_from_system_ram(monkeypatch):
     assert _probe(monkeypatch) == [(0, _apply_igpu_host_reserve_mib(AVAIL_MIB, True), TOTAL_MIB)]
+    # One shared pool: it must not also be credited as discrete VRAM.
+    assert LlamaCppBackend._integrated_cuda_unified_memory([0])
 
 
 def test_cgroup_bound_jetson_publishes_no_total(monkeypatch):
@@ -84,6 +87,7 @@ def test_cgroup_bound_jetson_publishes_no_total(monkeypatch):
 )
 def test_other_hosts_and_callers_are_unchanged(monkeypatch, kwargs):
     assert _probe(monkeypatch, **kwargs) == []
+    assert not LlamaCppBackend._integrated_cuda_unified_memory([0])
 
 
 def test_jetson_na_caps_native_context(tmp_path, monkeypatch):
