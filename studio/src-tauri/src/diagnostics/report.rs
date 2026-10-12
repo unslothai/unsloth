@@ -597,8 +597,7 @@ fn read_tail(path: &Path, max_lines: usize, max_bytes: usize) -> Result<TailRead
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if start > 0 {
-        // Drop the partial first line: a value cut away from its key would get past
-        // the redactor, which keys on the name beside the value.
+        // Drop the partial first line: a value cut from its key escapes the key-based redactor.
         match bytes.iter().position(|&b| b == b'\n') {
             Some(newline) => drop(bytes.drain(..=newline)),
             None => bytes.clear(),
@@ -986,13 +985,12 @@ mod tests {
     #[test]
     fn a_byte_cut_tail_never_starts_mid_line() {
         let path = std::env::temp_dir().join(format!("unsloth-cut-tail-{}", std::process::id()));
-        // The cut lands inside the first line, after its key: the bare value must not survive.
+        // Cut after the key: the bare value must not survive.
         fs::write(&path, "{\"password\": \"opaque0123456789\"}\nkept line\n").unwrap();
         let tail = read_tail(&path, 10, 29).unwrap();
         assert!(!tail.text.contains("opaque"), "{}", tail.text);
         assert!(tail.text.contains("kept line"), "{}", tail.text);
 
-        // A cut exactly on a line start keeps that line.
         fs::write(&path, "first\nsecond\n").unwrap();
         let tail = read_tail(&path, 10, 7).unwrap();
         assert!(tail.text.contains("second"), "{}", tail.text);

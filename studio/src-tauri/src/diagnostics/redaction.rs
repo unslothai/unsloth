@@ -57,8 +57,7 @@ fn replace_regex(
     }
 }
 
-// Like replace_regex, but the closure can decline a match (returns it unchanged) and
-// only real changes are counted.
+// replace_regex whose closure may decline a match; only real changes are counted.
 fn replace_with(
     regex: &'static Regex,
     input: &str,
@@ -90,7 +89,6 @@ fn redact_kv(caps: &Captures) -> Option<String> {
     if value.as_str().bytes().all(|b| b.is_ascii_digit()) && !numeric_is_secret {
         return None;
     }
-    // An Authorization value carries its scheme inside the quotes; keep the scheme readable.
     let (scheme, rest) = value
         .as_str()
         .split_once(' ')
@@ -113,8 +111,7 @@ fn redact_kv(caps: &Captures) -> Option<String> {
     ))
 }
 
-// A bare "token" key also names tokenizer settings ("eos_token": "</s>"), so only a
-// credential-shaped value counts.
+// Bare token keys also name tokenizer settings ("eos_token": "</s>"): need a credential-shaped value.
 fn redact_weak_kv(caps: &Captures) -> Option<String> {
     let value = ["ev2", "ev", "dv", "sv", "uv"]
         .iter()
@@ -216,22 +213,17 @@ fn url_fragment_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?i)(https?://[^\s`#]+)#[^\s`]+").unwrap())
 }
 
-// Key names whose value is a secret. "token" alone is absent so max_tokens and eos_token
-// survive; this mirrors studio/backend/utils/log_redaction.py.
+// "token" alone is absent so max_tokens and eos_token survive; mirrors studio/backend/utils/log_redaction.py.
 const SECRET_KEYS: &str = r"proxy-authorization|authorization|x-api-key|api[-_]?key|apikey|(?:hf|access|refresh|auth|bearer|id|session|wandb|hub)[-_]?token|aws_session_token|client[-_]?secret|aws_secret_access_key|secret[-_]?access[-_]?key|secret[-_]?key|private[-_]?key|password|passwd|secret";
 
-// Checked against the value's shape instead, see redact_weak_kv.
+// See redact_weak_kv.
 const WEAK_SECRET_KEYS: &str = r"(?:[A-Za-z0-9]+[-_]?)?token|credentials?";
 
-// Quoted values come in three shapes: "plain", 'single', and \"escaped\" (a dict logged
-// inside a JSON log line, which is how the backend's server-*.log files are written; a
-// body logged as a string inside that is escaped twice, \\\"like this\\\"). Each escaped
-// shape ends only at a quote with its own backslash count; a quote escaped deeper than that
-// is part of the value.
+// "plain", 'single', \"escaped\" (a dict inside a server-*.log JSON line) and \\\"twice\\\";
+// an escaped shape ends only at a quote with its own backslash count.
 const SECRET_VALUE: &str = r#"(?:\\\\\\"(?P<ev2>(?:[^"\\\r\n]|\\{4,}"|\\+[^"\\\r\n])+)(?:\\\\\\")?|\\"(?P<ev>(?:[^"\\\r\n]|\\{2,}"|\\+[^"\\\r\n])+)(?:\\")?|"(?P<dv>(?:[^"\\\r\n]|\\.)+)"?|'(?P<sv>(?:[^'\\\r\n]|\\.)+)'?|(?P<uv>[^"'\\\s,;}\]<>]{6,}))"#;
 
-// The leading class stands in for a lookbehind (the regex crate has none), so the key
-// still matches inside OPENAI_API_KEY or x-goog-api-key.
+// The leading class stands in for a lookbehind (regex has none), so OPENAI_API_KEY matches.
 fn kv_re(keys: &str) -> Regex {
     Regex::new(&format!(
         r#"(?i)(?:^|[^A-Za-z0-9]|\\[nrt])(?P<key>{keys})\b(?:\\*["'])?[ \t]*[:=][ \t]*{SECRET_VALUE}"#
@@ -570,7 +562,6 @@ mod tests {
                 "opaque0123456789",
                 "",
             ),
-            // A dict logged inside a JSON log line arrives with escaped quotes.
             (
                 r#"{"event": "h {\"Authorization\": \"Bearer opaque0123456789\"}"}"#,
                 "opaque0123456789",
@@ -581,7 +572,6 @@ mod tests {
                 "opaque0123456789",
                 r#"\"access_token\": \"<redacted>\", \"n\": 1}"#,
             ),
-            // A response body logged as a string inside that is escaped twice.
             (
                 r#"{"event": "body='{\\\"access_token\\\": \\\"opaque0123456789\\\"}'"}"#,
                 "opaque0123456789",
@@ -609,8 +599,7 @@ mod tests {
                 "",
             ),
         ];
-        // Failures name the case by index: printing a fixture secret trips CodeQL's
-        // cleartext-logging rule.
+        // By index: printing a fixture secret trips CodeQL's cleartext-logging rule.
         for (i, (input, secret, kept)) in cases.iter().enumerate() {
             let mut report = RedactionReport::default();
             let redacted = redact_text(input, &mut report);
@@ -649,8 +638,6 @@ mod tests {
 
     #[test]
     fn an_escaped_newline_counts_as_a_boundary() {
-        // Multi-line text inside a JSON log event (a traceback, a config dump) keeps its
-        // newlines as a literal \n, which word boundaries do not see.
         for body in [
             r"api_key: opaque0123456789",
             r"Authorization: Basic opaque0123456789",
