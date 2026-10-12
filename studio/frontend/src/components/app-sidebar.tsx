@@ -2912,7 +2912,11 @@ export function AppSidebar() {
       if (unlisted.length > 0) {
         void fetchSidebarThreadRows(unlisted)
           .then((rows) => {
-            if (rows && Object.keys(rows).length > 0) markThreadsUnread(unlisted, rows);
+            if (!rows || Object.keys(rows).length === 0) return;
+            // a chat opened while the lookup was out is read; do not mark it again
+            const { unreadThreadIds: unread } = useChatNavigationStore.getState();
+            const still = unlisted.filter((id) => unread.has(id));
+            if (still.length > 0) markThreadsUnread(still, rows);
           })
           .catch(() => undefined);
       }
