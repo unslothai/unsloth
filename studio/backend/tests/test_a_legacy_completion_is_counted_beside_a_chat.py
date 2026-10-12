@@ -59,7 +59,9 @@ def test_an_unpausable_holder_plans_before_its_request_goes_out(backend, monkeyp
     # The chat has outgrown its lease: the cache already holds near all of it. Registering the
     # completion has to pick the chat at once, not at the chat's next token report.
     fake, controller = backend
-    monkeypatch.setattr(inference, "_refresh_residency_before_planning", lambda c: c.note_resident(16000))
+    monkeypatch.setattr(
+        inference, "_refresh_residency_before_planning", lambda c: c.note_resident(16000)
+    )
     controller.register("chat", tokens = 4000)
     holder = inference._openai_llama_count_completions_holder(fake, "x" * 16000)
     assert controller.participant("chat").state == ParticipantState.PREEMPTING
@@ -68,7 +70,10 @@ def test_an_unpausable_holder_plans_before_its_request_goes_out(backend, monkeyp
 
 
 def test_both_unpausable_registrations_plan():
-    for helper in (inference._openai_llama_count_raw_holder, inference._openai_llama_count_direct_holder):
+    for helper in (
+        inference._openai_llama_count_raw_holder,
+        inference._openai_llama_count_direct_holder,
+    ):
         assert "_plan_for_unpausable_holder(controller, gen_id)" in inspect.getsource(helper)
     assert "_openai_llama_count_direct_holder(" in inspect.getsource(
         inference._openai_llama_count_completions_holder
@@ -98,4 +103,6 @@ def test_the_captioner_states_its_footprint():
 
     source = inspect.getsource(captioner._vision_complete)
     assert "_direct_llama_slot(prompt = prompt, max_tokens = max_tokens)" in source
-    assert "_direct_llama_request(kv_tokens = kv_tokens)" in inspect.getsource(captioner._direct_llama_slot)
+    assert "_direct_llama_request(kv_tokens = kv_tokens)" in inspect.getsource(
+        captioner._direct_llama_slot
+    )

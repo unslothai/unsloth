@@ -474,7 +474,6 @@ class TestStarvation:
         controller.plan_preemptions()
         assert starved.consecutive_preemptions <= 1
 
-
     def test_a_sweep_that_passes_a_promoted_chat_over_clears_its_debt(self):
         controller = _controller(budget = 16384)
         starved = self._starve(controller)
@@ -482,9 +481,9 @@ class TestStarvation:
         _fill(controller, "newcomer", 0.28)
         victims = [p.gen_id for p in controller.plan_preemptions()]
         assert victims and "starved" not in victims, victims
-        assert starved.consecutive_preemptions == 0, (
-            "it ran while another chat was paused, so its losses were no longer in a row"
-        )
+        assert (
+            starved.consecutive_preemptions == 0
+        ), "it ran while another chat was paused, so its losses were no longer in a row"
         assert not starved.promoted
 
     def test_promotion_does_not_outlive_the_streak_for_everyone(self):

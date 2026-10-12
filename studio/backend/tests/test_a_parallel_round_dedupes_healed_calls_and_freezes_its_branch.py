@@ -41,9 +41,7 @@ def _call(index, call_id, function):
 class TestTheRoundKeyIsTheHealedOne:
     def test_a_bare_and_an_object_call_share_a_key(self):
         controller = ToolLoopController(tools = [WEB])
-        keys = loop_mod.round_call_keys(
-            controller, [{"function": _BARE}, {"function": _OBJECT}]
-        )
+        keys = loop_mod.round_call_keys(controller, [{"function": _BARE}, {"function": _OBJECT}])
         assert keys[0] == keys[1]
         # The raw key the gate used to read tells them apart, which is the gap.
         assert loop_mod.round_call_key("web_search", "alpha") != loop_mod.round_call_key(
@@ -118,7 +116,13 @@ class TestEveryCallOfARoundSeesTheSameBranch:
     def test_each_call_holds_its_own_pre_round_branch(self, monkeypatch):
         handed: dict = {}
 
-        def _execute(name, arguments, *, conversation_branch = None, **_kwargs):
+        def _execute(
+            name,
+            arguments,
+            *,
+            conversation_branch = None,
+            **_kwargs,
+        ):
             query = (arguments or {}).get("query")
             handed[query] = (conversation_branch, len(conversation_branch or []))
             return f"RESULT<{query}>"
@@ -126,8 +130,12 @@ class TestEveryCallOfARoundSeesTheSameBranch:
         _gguf_events(
             monkeypatch,
             [
-                _call(0, "call_a", {"name": "web_search", "arguments": json.dumps({"query": "alpha"})}),
-                _call(1, "call_b", {"name": "web_search", "arguments": json.dumps({"query": "beta"})}),
+                _call(
+                    0, "call_a", {"name": "web_search", "arguments": json.dumps({"query": "alpha"})}
+                ),
+                _call(
+                    1, "call_b", {"name": "web_search", "arguments": json.dumps({"query": "beta"})}
+                ),
             ],
             _execute,
         )
@@ -135,7 +143,7 @@ class TestEveryCallOfARoundSeesTheSameBranch:
         (first, first_len), (second, second_len) = handed["alpha"], handed["beta"]
         assert first is not second, "both workers were handed the one shared live list"
         # The live branch keeps growing as the round settles; a call's view must not.
-        assert len(first) == first_len and len(second) == second_len, (
-            "the branch a call was handed changed under it after the round settled"
-        )
+        assert (
+            len(first) == first_len and len(second) == second_len
+        ), "the branch a call was handed changed under it after the round settled"
         assert [id(m) for m in first] == [id(m) for m in second]

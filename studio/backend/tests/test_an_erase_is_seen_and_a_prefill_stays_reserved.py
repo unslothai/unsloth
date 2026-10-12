@@ -86,9 +86,9 @@ class TestThePostEraseReadingLands:
         controller.note_measured("raw")
         assert controller.note_erased_since(recorded, 5000, 0) is True
         assert controller._resident == 5000
-        assert controller.participant("raw").measured is False, (
-            "measured after the probe left, so this reading cannot hold its cells"
-        )
+        assert (
+            controller.participant("raw").measured is False
+        ), "measured after the probe left, so this reading cannot hold its cells"
 
     def test_a_dropped_or_failed_reading_records_nothing(self):
         controller = _controller()
@@ -113,9 +113,9 @@ class TestAnApprovalEraseIsRecorded:
         assert controller.participant("chat").holds_kv is False
 
         controller.note_tokens("chat", 4200, 4200)
-        assert controller.snapshot().prefilling == 4200, (
-            "the erase took every cell, so the round prefills the whole prompt, not its growth"
-        )
+        assert (
+            controller.snapshot().prefilling == 4200
+        ), "the erase took every cell, so the round prefills the whole prompt, not its growth"
 
     def test_nothing_is_told_when_it_was_not_parked(self, monkeypatch):
         controller = _controller()
@@ -182,14 +182,22 @@ class TestAPlainChatCannotNestPastTheLimit:
 
         @contextlib.contextmanager
         def fake_stream_with_retry(
-            _client, _url, payload, _cancel_event, headers = None, first_token_deadline = None,
+            _client,
+            _url,
+            payload,
+            _cancel_event,
+            headers = None,
+            first_token_deadline = None,
             preempt_event = None,
         ):
             opened.append(copy.deepcopy(payload))
             yield type("FakeResponse", (), {"status_code": 200})()
 
         def fake_iter_text_cancellable(
-            response, _cancel_event, first_token_deadline = None, preempt_event = None
+            response,
+            _cancel_event,
+            first_token_deadline = None,
+            preempt_event = None,
         ):
             # Every attempt decodes a token and is paused: progress each time, so the
             # zero-output guard never ends it.

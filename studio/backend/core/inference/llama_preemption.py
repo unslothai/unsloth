@@ -1106,7 +1106,9 @@ class PreemptionController:
                 participant.measured_at_seq = None
             return self._last_sample_seq
 
-    def note_erased_since(self, recorded_seq: Optional[int], resident: int, reclaimable: int) -> bool:
+    def note_erased_since(
+        self, recorded_seq: Optional[int], resident: int, reclaimable: int
+    ) -> bool:
         """The reading `note_resident` recorded at ``recorded_seq``, less what an erase it
         planned has since freed.
 
@@ -1206,7 +1208,9 @@ class PreemptionController:
                 # is the cheapest room anyway: its idle cells are reclaimed, and the next sweep
                 # can choose it again.
                 participant.preempt_chosen_at = 0.0
-                participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
+                participant.consecutive_preemptions = max(
+                    0, participant.consecutive_preemptions - 1
+                )
                 participant.preempt_event.clear()
                 participant.state = ParticipantState.DECODING
             if participant is None or participant.state not in self._LIVE_STATES:
@@ -1879,9 +1883,7 @@ class ControllerPreemptionPolicy:
             # its own bound on progress up to its hard deadline, so this waits as long, and on
             # giving up cancels it: left running, it kept its place in the slot line.
             try:
-                got = bool(
-                    future.result(timeout = timeout * _MAX_REPARK_WAIT_MULTIPLE + 5.0)
-                )
+                got = bool(future.result(timeout = timeout * _MAX_REPARK_WAIT_MULTIPLE + 5.0))
             except BaseException:
                 future.cancel()
                 raise

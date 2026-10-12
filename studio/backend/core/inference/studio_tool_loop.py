@@ -2188,10 +2188,14 @@ async def stream_with_studio_tools(
                         _unrun_call_card(
                             tool_name = decision.tool_name,
                             tool_call_id = (
-                                call.get("card_id") or call.get("stream_id") or decision.tool_call_id
+                                call.get("card_id")
+                                or call.get("stream_id")
+                                or decision.tool_call_id
                             ),
                             arguments = decision.arguments,
-                            result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
+                            result = _TOOL_SKIPPED.get(
+                                decision.action, "Unsloth did not run this call."
+                            ),
                             provenance = decision.provenance,
                         )
                     )
@@ -2248,7 +2252,9 @@ async def stream_with_studio_tools(
                 try:
                     # A gated call has not started, so it must not read as running.
                     yield _status_sse(
-                        awaiting_approval_status(name) if needs_confirmation else decision.status_text
+                        awaiting_approval_status(name)
+                        if needs_confirmation
+                        else decision.status_text
                     )
                     yield _sse(start_event)
                     verdict = None
@@ -2394,7 +2400,17 @@ async def stream_with_studio_tools(
                 pump = asyncio.create_task(
                     _pump_tool_stream(tool_stream, outcome, events, cancel_event)
                 )
-                entry = ("call", decision, name, call_id, card_id, tool_stream, outcome, events, pump)
+                entry = (
+                    "call",
+                    decision,
+                    name,
+                    call_id,
+                    card_id,
+                    tool_stream,
+                    outcome,
+                    events,
+                    pump,
+                )
                 if parallel_round:
                     # Started, not awaited: the next call's tool is launched while this one
                     # works, and both are drained below in the order the model asked.

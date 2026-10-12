@@ -57,7 +57,15 @@ class TestEveryProviderRouteCarriesIt:
         codex = " ".join(inspect.getsource(openai_codex_tool_loop).split())
         assert "parallel_tool_calls = policy.parallel_tool_calls," in codex
         # And the wrapper's own policy has the field it reads, filled by its route.
-        assert openai_codex_tool_loop.CodexToolPolicy(
-            tools = [], max_calls = 1, timeout = 1, permission_mode = "auto",
-            confirm_calls = False, bypass_permissions = False, rag_scope = None,
-        ).parallel_tool_calls is None
+        assert (
+            openai_codex_tool_loop.CodexToolPolicy(
+                tools = [],
+                max_calls = 1,
+                timeout = 1,
+                permission_mode = "auto",
+                confirm_calls = False,
+                bypass_permissions = False,
+                rag_scope = None,
+            ).parallel_tool_calls
+            is None
+        )

@@ -38458,7 +38458,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _cmpl_holder = None
             _direct_llama_request_started()
             try:
-                _cmpl_holder = _openai_llama_count_completions_holder(llama_backend, body.get("prompt", ""))
+                _cmpl_holder = _openai_llama_count_completions_holder(
+                    llama_backend, body.get("prompt", "")
+                )
                 req = client.build_request(
                     "POST",
                     target_url,
@@ -38608,7 +38610,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _cmpl_holder = None
         _direct_llama_request_started()
         try:
-            _cmpl_holder = _openai_llama_count_completions_holder(llama_backend, body.get("prompt", ""))
+            _cmpl_holder = _openai_llama_count_completions_holder(
+                llama_backend, body.get("prompt", "")
+            )
             try:
                 resp = await _client.post(
                     target_url,
