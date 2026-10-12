@@ -1302,6 +1302,8 @@ class PreemptionController:
         then recorded), else whether the state changed."""
         revoked = False
         participant = self._participants.get(gen_id)
+        # Approval to tools is the same park: no request refilled the idle slot in between.
+        was_parked = participant is not None and participant.parked_on_a_tool
         if (
             participant is not None
             and participant.state == ParticipantState.PREEMPTING
@@ -1323,7 +1325,7 @@ class PreemptionController:
         if participant.state == state:
             return None if revoked else False
         participant.state = state
-        if state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING):
+        if state in _PARKED_ON_A_TOOL and not was_parked:
             participant.park_seq += 1
             participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
         if state == ParticipantState.DECODING:
@@ -1510,10 +1512,7 @@ class PreemptionController:
                 return
             # A park is counted once, however many times it is reported: a repeat would
             # make a holder that really was in the reading look like a newcomer to it.
-            if state != participant.state and state in (
-                ParticipantState.PARKED_ON_TOOL,
-                ParticipantState.TOOLS_RUNNING,
-            ):
+            if state in _PARKED_ON_A_TOOL and not participant.parked_on_a_tool:
                 participant.park_seq += 1
                 participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
             participant.state = state
