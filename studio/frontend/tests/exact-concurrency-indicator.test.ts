@@ -143,10 +143,11 @@ test("the chip reads the store and hangs the sentence off a title", () => {
 
 test("the chat header renders it beside the model selector, for the resident local model only", () => {
   // The state is the local llama-server's, which stays resident when a hosted model is picked
-  // beside it, so unconditionally the chip put the local guarantee next to hosted output.
+  // beside it, so unconditionally the chip put the local guarantee next to hosted output. The
+  // window leaves room for the model notice main renders between the two.
   assert.match(
     CHAT_PAGE,
-    /triggerDataTour="chat-model-selector"[\s\S]{0,600}exactConcurrencyChipApplies\(\{[\s\S]{0,120}\}\) && <ExactConcurrencyChip \/>/,
+    /triggerDataTour="chat-model-selector"[\s\S]{0,1500}exactConcurrencyChipApplies\(\{[\s\S]{0,120}\}\) && <ExactConcurrencyChip \/>/,
   );
 });
 
