@@ -21,8 +21,7 @@
 	   and page navigation. Window controls paint above it, keeping their glyphs
 	   and hover feedback sharp without changing hit testing.
 	   Only viewport backdrops participate; a panel-local dialog or a menu must
-	   not dim the window chrome. :has also keeps stacked modals correct without
-	   a separate counter or document-wide MutationObserver. */
+	   not dim the window chrome. */
 	[data-slot="window-titlebar"]::after {
 		content: "";
 		position: absolute;
@@ -35,8 +34,7 @@
 		opacity: 0;
 		transition: opacity 100ms;
 	}
-	body:has(> [data-viewport-backdrop="true"][data-state="open"])
-		[data-slot="window-titlebar"]::after {
+	[data-slot="window-titlebar"][data-viewport-backdrop-open]::after {
 		opacity: 1;
 	}
 
@@ -1842,7 +1840,8 @@ html[data-contrast-adjust].dark .hub-page :is([class*="bg-background"], [class*=
 
 /* Code font size: only overrides when the user sets an explicit size, so the
    per-element Tailwind sizes stay authoritative by default. */
-html[data-code-font-size] :is(pre, code, kbd, samp) {
+html[data-code-font-size] :is(pre, code, kbd, samp),
+html[data-code-font-size] .aui-reasoning-code-lines {
 	font-size: var(--custom-code-font-size) !important;
 }
 
@@ -2426,14 +2425,14 @@ html[data-chat-font] .aui-root {
 		margin-right: calc(3.4px * var(--ui-space-scale, 1));
 	}
 	.aui-branch-chevron-btn,
-	.aui-branch-chevron-btn + * {
+	.aui-branch-chevron-btn + .aui-branch-picker-state {
 		--aui-chevron-slot: calc(20px * var(--ui-space-scale, 1));
 		--aui-chevron-hit: max(calc(24px * var(--ui-interface-scale, 1)), var(--aui-chevron-slot));
 		--aui-chevron-extra: calc(var(--aui-chevron-hit) - var(--aui-chevron-slot));
 	}
 	/* The count between the chevrons is at least as wide as both extensions, so they cannot meet over it even
 	   in a narrow custom chat font. Wider counts, the usual case, are untouched. */
-	.aui-branch-chevron-btn + :not(.aui-branch-chevron-btn) {
+	.aui-branch-chevron-btn + .aui-branch-picker-state {
 		/* 1px of slack: two targets that only touch can still trade a sub-pixel once snapped to device pixels. */
 		min-inline-size: calc(var(--aui-chevron-extra) * 2 + 1px);
 		text-align: center;
@@ -3139,74 +3138,19 @@ html[data-chat-font] .aui-root {
 		background-color: var(--sidebar) !important;
 	}
 
-	/* Menus portal after the dialog or picker they open from. There they glow
-	   in its surface, and stock menus lift to the Hub tone. Sibling selectors,
-	   as body:has() restyles the whole page on every <body> insert.
-	   Defined on <html> so --accent can be reassigned without a cycle. */
+	/* On <html> so --accent can be reassigned without a cycle. */
 	.dark {
 		--dropdown-lift-surface: color-mix(in srgb, var(--accent) 60%, var(--popover));
 		--dropdown-lift-accent: color-mix(in srgb, var(--foreground) 6%, var(--accent));
 	}
-	.dark
-		body
-		> :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[data-state="open"]:is(
-			.dialog-soft-surface,
-			.settings-surface,
-			[class*="dark:bg-card"]
-		)
-		~ *
-		:is(
-			[data-slot="dropdown-menu-content"],
-			[data-slot="dropdown-menu-sub-content"],
-			[data-slot="context-menu-content"],
-			[data-slot="context-menu-sub-content"],
-			[data-slot="select-content"],
-			[data-slot="combobox-content"],
-			[data-slot="popover-content"],
-			.dropdown-surface
-		) {
+	.dark [data-dropdown-glow="card"] {
 		--dropdown-glow: var(--card);
 	}
-	/* After the dialog rule, so a picker in a dialog wins. */
-	.dark
-		body
-		> [data-radix-popper-content-wrapper]:has(> .unsloth-model-selector-menu[data-state="open"])
-		~ *
-		:is(
-			[data-slot="dropdown-menu-content"],
-			[data-slot="dropdown-menu-sub-content"],
-			[data-slot="context-menu-content"],
-			[data-slot="context-menu-sub-content"],
-			[data-slot="select-content"],
-			[data-slot="combobox-content"],
-			[data-slot="popover-content"],
-			.dropdown-surface
-		) {
+	.dark [data-dropdown-glow="picker"] {
 		--dropdown-glow: var(--sidebar);
 	}
 	.dark
-		:is(
-			body
-			> :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[data-state="open"]:is(
-				.dialog-soft-surface,
-				.settings-surface,
-				[class*="dark:bg-card"]
-			)
-			~ *,
-			body
-			> [data-radix-popper-content-wrapper]:has(> .unsloth-model-selector-menu[data-state="open"])
-			~ *
-		)
-		:is(
-			[data-slot="dropdown-menu-content"],
-			[data-slot="dropdown-menu-sub-content"],
-			[data-slot="context-menu-content"],
-			[data-slot="context-menu-sub-content"],
-			[data-slot="select-content"],
-			[data-slot="combobox-content"],
-			[data-slot="popover-content"],
-			.dropdown-surface
-		):not(
+		[data-dropdown-glow]:not(
 			.unsloth-model-selector-menu,
 			.sidebar-menu,
 			.sidebar-more-menu,
@@ -3538,21 +3482,6 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
 	}
 
-	/* At the editor's top right; with attachment cards above, at the surface's instead. */
-	.unsloth-composer-expand {
-		top: 0;
-		right: calc(var(--spacing) * -1);
-	}
-
-	.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-editor {
-		position: static;
-	}
-
-	.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-expand {
-		top: calc(var(--spacing) * 2.5);
-		right: calc(var(--spacing) * 2.5);
-	}
-
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
 	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
 	/* Either composer root: the thread's form or compare's wrapper. */
@@ -3610,11 +3539,6 @@ html[data-chat-font] .aui-root {
 			padding-right: 0;
 			/* One gap for every control, so the row spaces evenly. */
 			--composer-tight-gap: calc(0.125rem * var(--ui-space-scale, 1));
-		}
-
-		/* The line's gutter is gone here, so the pinned toggle sits that much closer to the edge. */
-		.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-expand {
-			right: calc(var(--spacing) * 1.5);
 		}
 
 		.unsloth-composer-left,
@@ -3809,55 +3733,46 @@ html[data-chat-font] .aui-root {
 	   The gutters here are on the pane's width, not the window's: an artifact
 	   split can leave a 42% thread pane inside a wide window, and a viewport
 	   breakpoint would keep the full 20px there. */
-	@container (max-width: 31.5rem) {
-		.unsloth-composer-dock-inner {
-			padding-left: calc(0.75rem * var(--ui-space-scale, 1));
-			padding-right: calc(0.75rem * var(--ui-space-scale, 1));
-		}
+	:where(.aui-thread-root[data-thread-narrow]) .unsloth-composer-dock-inner {
+		padding-left: calc(0.75rem * var(--ui-space-scale, 1));
+		padding-right: calc(0.75rem * var(--ui-space-scale, 1));
+	}
 
-		/* The welcome screen is inside the viewport's own 20px gutter, so pull
-		   back to the dock's 12px rather than adding to it; otherwise the empty
-		   state is 40px narrower than the thread it turns into. */
-		.aui-thread-welcome-message {
-			padding-left: 0;
-			padding-right: 0;
-			margin-left: calc(-0.5rem * var(--ui-space-scale, 1));
-			margin-right: calc(-0.5rem * var(--ui-space-scale, 1));
-			/* w-full would pin the width and the margins would only shift the
-			   box left. An explicit width widens it into the gutter instead;
-			   auto would shrink-wrap, since the parent centres its children. */
-			width: calc(100% + 1rem * var(--ui-space-scale, 1));
-		}
+	/* Pull back into the viewport's gutter, or the empty state is 40px narrower than the thread. */
+	:where(.aui-thread-root[data-thread-narrow]) .aui-thread-welcome-message {
+		padding-left: 0;
+		padding-right: 0;
+		margin-left: calc(-0.5rem * var(--ui-space-scale, 1));
+		margin-right: calc(-0.5rem * var(--ui-space-scale, 1));
+		width: calc(100% + 1rem * var(--ui-space-scale, 1));
+	}
 
-		.unsloth-welcome-title {
-			font-size: var(--text-2xl);
-		}
+	:where(.aui-thread-root[data-thread-narrow]) .unsloth-welcome-title {
+		font-size: var(--text-2xl);
+	}
 
-		.unsloth-welcome-sloth {
-			width: calc(2.125rem * var(--ui-space-scale, 1));
-			height: calc(2.125rem * var(--ui-space-scale, 1));
-		}
+	:where(.aui-thread-root[data-thread-narrow]) .unsloth-welcome-sloth {
+		width: calc(2.125rem * var(--ui-space-scale, 1));
+		height: calc(2.125rem * var(--ui-space-scale, 1));
+	}
 
-		.unsloth-welcome-greeting {
-			gap: calc(0.625rem * var(--ui-space-scale, 1));
-		}
+	:where(.aui-thread-root[data-thread-narrow]) .unsloth-welcome-greeting {
+		gap: calc(0.625rem * var(--ui-space-scale, 1));
 	}
 
 	/* ~300px and under: one step further, so the greeting holds a single line
 	   beside the mascot instead of wrapping over the composer. */
-	@container (max-width: 18.75rem) {
-		.unsloth-welcome-title {
-			font-size: var(--text-xl);
-		}
+	:where(.aui-thread-root[data-thread-tiny]) .unsloth-welcome-title {
+		font-size: var(--text-xl);
+	}
 
-		.unsloth-welcome-sloth {
-			width: calc(1.75rem * var(--ui-space-scale, 1));
-			height: calc(1.75rem * var(--ui-space-scale, 1));
-		}
+	:where(.aui-thread-root[data-thread-tiny]) .unsloth-welcome-sloth {
+		width: calc(1.75rem * var(--ui-space-scale, 1));
+		height: calc(1.75rem * var(--ui-space-scale, 1));
+	}
 
-		.unsloth-welcome-greeting {
-			gap: calc(0.5rem * var(--ui-space-scale, 1));
-		}
+	:where(.aui-thread-root[data-thread-tiny]) .unsloth-welcome-greeting {
+		gap: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
@@ -4280,6 +4195,59 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	/* Transform-only so it stays on the compositor (a background-clip: text sweep restyles every
+	   frame); lighten/darken with the page colour are no-ops over the background. */
+	.generating-glint {
+		position: relative;
+		display: inline-block;
+		overflow: hidden;
+		vertical-align: bottom;
+		white-space: nowrap;
+	}
+
+	.generating-glint::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		/* Cosine falloff; straight ramps leave visible edges. */
+		background: linear-gradient(
+			105deg,
+			transparent 20%,
+			color-mix(in oklab, var(--background) 8%, transparent) 27.5%,
+			color-mix(in oklab, var(--background) 27%, transparent) 35%,
+			color-mix(in oklab, var(--background) 46%, transparent) 42.5%,
+			color-mix(in oklab, var(--background) 54%, transparent) 50%,
+			color-mix(in oklab, var(--background) 46%, transparent) 57.5%,
+			color-mix(in oklab, var(--background) 27%, transparent) 65%,
+			color-mix(in oklab, var(--background) 8%, transparent) 72.5%,
+			transparent 80%
+		);
+		mix-blend-mode: lighten;
+		transform: translateX(-100%);
+		animation: generating-glint 3s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+	}
+
+	.dark .generating-glint::after {
+		mix-blend-mode: darken;
+	}
+
+	@keyframes generating-glint {
+		0% {
+			transform: translateX(-100%);
+		}
+		60%,
+		100% {
+			transform: translateX(100%);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		html:not(.force-motion) .generating-glint::after {
+			display: none;
+		}
+	}
+
 	/* Indeterminate loading bar: a 1/3-width segment sweeping the track. */
 	.loading-bar-slide {
 		animation: loading-bar-slide 1.3s ease-in-out infinite;
@@ -4355,7 +4323,7 @@ html[data-chat-font] .aui-root {
 		border-bottom-left-radius: 1.5rem;
 		border-bottom-right-radius: 1.5rem;
 	}
-	.aui-reasoning-code-fragment pre,
+	.aui-reasoning-code-fragment .aui-reasoning-code-lines,
 	.aui-reasoning-code-fragment code {
 		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
 	}
@@ -4427,7 +4395,11 @@ html[data-chat-font] .aui-root {
 		font-size: calc(0.6875rem * var(--ui-font-scale, 1));
 	}
 
-	@container (min-width: 36rem) {
+	.aui-thread-root:where([data-thread-wide]) [data-streamdown="code-block-header"] {
+		font-size: calc(0.75rem * var(--ui-font-scale, 1));
+	}
+
+	@media print {
 		.aui-thread-root [data-streamdown="code-block-header"] {
 			font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		}
@@ -4439,12 +4411,12 @@ html[data-chat-font] .aui-root {
 		margin-right: calc(var(--spacing) * 1);
 	}
 
-	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative {
+	.aui-thread-root [data-streamdown="table-wrapper"] > div > .relative {
 		display: flex;
 	}
 
-	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > button,
-	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative > button {
+	.aui-thread-root [data-streamdown="table-wrapper"] > div > button,
+	.aui-thread-root [data-streamdown="table-wrapper"] > div > .relative > button {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -4455,8 +4427,8 @@ html[data-chat-font] .aui-root {
 		color: var(--color-chat-icon-fg);
 	}
 
-	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > button:hover:not(:disabled),
-	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative > button:hover:not(:disabled) {
+	.aui-thread-root [data-streamdown="table-wrapper"] > div > button:hover:not(:disabled),
+	.aui-thread-root [data-streamdown="table-wrapper"] > div > .relative > button:hover:not(:disabled) {
 		background-color: var(--color-chat-icon-bg-hover);
 		color: var(--color-chat-icon-fg-hover);
 	}
@@ -4495,10 +4467,10 @@ html[data-chat-font] .aui-root {
 	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
 	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none.
 	   Not `* + *`: that restyles the whole page when Radix inserts its focus guard. */
-	:where(.aui-assistant-message-content > :not(:first-child)) {
+	:where(.aui-assistant-message-content > *):where(:not(:first-child)) {
 		margin-top: calc(1rem * var(--ui-space-scale, 1));
 	}
-	:where(.aui-assistant-message-content > .h-0 + *) {
+	:where(.aui-assistant-message-content > *):where(.h-0 + *) {
 		margin-top: 0;
 	}
 
@@ -4723,6 +4695,44 @@ html[data-chat-font] .aui-root {
 	@media print {
 		.aui-thread-root .aui-math-block,
 		.aui-thread-root .aui-math-display {
+			content-visibility: visible !important;
+			contain-intrinsic-size: none !important;
+		}
+	}
+
+	html[data-code-block-containment="on"] .aui-thread-root [data-streamdown="code-block"]:not([data-incomplete]) > [data-unsloth-fence-windowed] {
+		content-visibility: auto;
+		contain-intrinsic-size: auto var(--unsloth-fence-height);
+	}
+
+	html[data-interface-zooming] .aui-thread-root [data-slot="reasoning-transcript"] > [data-reasoning-chunk],
+	html[data-interface-zooming] .aui-thread-root [data-unsloth-fence-windowed],
+	html[data-interface-zooming] .aui-thread-root .aui-math-block,
+	html[data-interface-zooming] .aui-thread-root .aui-math-display {
+		content-visibility: visible !important;
+	}
+
+	@media print {
+		.aui-thread-root [data-unsloth-fence-windowed] {
+			content-visibility: visible !important;
+			contain-intrinsic-size: none !important;
+		}
+	}
+
+	.aui-thread-root [data-slot="reasoning-transcript"] > [data-reasoning-chunk] {
+		contain-intrinsic-size: auto var(--unsloth-chunk-estimate);
+	}
+
+	html[data-reasoning-row-containment="on"] .aui-thread-root [data-slot="reasoning-transcript"] > [data-reasoning-chunk] {
+		display: flow-root;
+	}
+
+	html[data-reasoning-row-containment="on"] .aui-thread-root [data-slot="reasoning-transcript"] > [data-reasoning-chunk][data-settled] {
+		content-visibility: auto;
+	}
+
+	@media print {
+		.aui-thread-root [data-slot="reasoning-transcript"] > [data-reasoning-chunk] {
 			content-visibility: visible !important;
 			contain-intrinsic-size: none !important;
 		}
@@ -5166,18 +5176,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	clip-path: inset(-0.625rem 0 0 0 round 28px 28px 0 0);
 }
 
-/* Keep attachment cards clear of the expand toggle in the top right corner. */
-.aui-composer-root[data-writing-toggle="true"] .unsloth-composer-surface .aui-composer-attachment-cards {
-	padding-right: calc(var(--spacing) * 9);
-}
-
-/* A scrolling strip paints cards through its padding, so end the scrollport before the toggle. */
-.aui-composer-root[data-writing-toggle="true"] .unsloth-composer-surface .aui-composer-attachment-cards[data-layout="strip"] {
-	width: calc(100% - var(--spacing) * 9 + 0.625rem);
-	padding-right: 1rem;
-	clip-path: inset(-0.625rem 0 0 0 round 28px 0 0 0);
-}
-
 /* Avoid iOS Safari focus zoom. Important in the base layer, because an important
    declaration in an earlier layer beats important utilities such as text-ui-13!. */
 @layer base {
@@ -5358,11 +5356,10 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 /* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set, and its standard
-   Windows scrollbar draws arrows. :hover too, or the reveal rules flip it back; the width
-   stays overridable so !important and inline hides still win. */
+   Windows scrollbar draws arrows. The width stays overridable so !important and inline
+   hides still win. */
 @supports selector(::-webkit-scrollbar) {
-	:root.client-windows *,
-	:root.client-windows *:hover {
+	:root.client-windows * {
 		scrollbar-width: auto;
 		scrollbar-color: auto !important;
 	}
@@ -5376,15 +5373,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	:root.client-windows .no-scrollbar::-webkit-scrollbar {
 		display: block;
 	}
-
-	:root.client-windows {
-		--thread-scrollbar-gutter: 8px;
-	}
-}
-
-/* Start the classic scrollbar below the chat header, which overlays the thread. */
-:root.client-windows .aui-thread-viewport::-webkit-scrollbar-track {
-	margin-top: var(--thread-header-offset, 0px);
 }
 
 /* Run settings: always reserve the scrollbar gutter so the header close
@@ -5399,8 +5387,10 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 /* Chromium's thin scrollbar width; scrollbars ignore the UI scale. */
-:root {
-	--thread-scrollbar-gutter: 10px;
+@property --thread-scrollbar-gutter {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 10px;
 }
 
 /* Chat viewport: scrollbar styled with Run settings above, so no track to clip at the corner. */
@@ -5410,6 +5400,35 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	   both-edges: a one-sided gutter pushes the centred column off-centre by
 	   half the scrollbar, and away from the dock, which sits outside here. */
 	scrollbar-gutter: stable both-edges;
+}
+
+.aui-thread-host[data-aui-following] + .aui-thread-root .aui-thread-viewport {
+	overflow-anchor: none;
+}
+
+@supports selector(::-webkit-scrollbar) {
+	:root.client-windows .aui-thread-viewport {
+		scrollbar-width: thin;
+		scrollbar-color: transparent transparent !important;
+	}
+
+	:root.client-windows .aui-thread-viewport:hover {
+		scrollbar-color: oklch(0.5 0 0 / 0.4) transparent !important;
+	}
+
+	.dark:root.client-windows .aui-thread-viewport:hover,
+	:root.client-windows .dark .aui-thread-viewport:hover {
+		scrollbar-color: oklch(0.72 0 0 / 0.4) transparent !important;
+	}
+
+	@media screen and (forced-colors: none) {
+		:root.client-windows[data-low-device-scale] .aui-thread-viewport:not(.chat-full-view-dock *) {
+			scrollbar-gutter: auto;
+			overflow-y: scroll;
+			border-inline-start: var(--thread-scrollbar-gutter) solid transparent;
+			background-color: var(--background);
+		}
+	}
 }
 
 /* An unregistered custom property always inherits, so writing
@@ -5431,6 +5450,24 @@ html.force-reduced-motion .sidebar-section-drop-line {
    Engines without @property (Firefox below 128) ignore this block and keep the
    inherited behaviour: slower, still correct. */
 @property --aui-scroll-stabilizer {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+
+@property --removed-body-scroll-bar-size {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+
+@property --unsloth-fence-height {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+
+@property --unsloth-chunk-estimate {
 	syntax: "<length>";
 	inherits: false;
 	initial-value: 0px;
@@ -5914,15 +5951,18 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	top: calc(var(--studio-content-top-inset, 0px) + 3.5rem);
 }
 
-/* Nothing notifies JS when these mount, so CSS keeps the portaled bars under them. */
-html:has([aria-modal="true"], [data-blocking-screen]) [data-find-bar-layer],
-html:has([data-blocking-screen]) .interface-zoom-position {
+html[data-blocking-screen-open] [data-find-bar-layer],
+html[data-blocking-screen-open] .interface-zoom-position {
+	display: none;
+}
+
+html[data-browser-overlay-open] [data-find-bar-layer] {
 	display: none;
 }
 
 /* Toasts stack under the open find bar: its top, its h-13, then 8px. Not the zoom popup, which
    shares the surface class. */
-:root:has([data-find-bar-layer]:not([hidden]) .find-bar-surface) [data-sonner-toaster][data-y-position="top"] {
+html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	--offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
 	--mobile-offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
 }
@@ -5962,13 +6002,17 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	/* No header above this thread. */
 	--studio-content-top-inset: 0px;
 	--studio-chat-header-height: 0px;
-	--thread-scrollbar-gutter: 0px;
+	--studio-chat-scroller-top: 0px;
 	height: auto;
 	border-radius: 28px;
 	background-color: var(--dock-surface);
 	box-shadow:
 		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
 		0 12px 32px -8px rgb(0 0 0 / 0.22);
+}
+
+.chat-full-view-dock .aui-thread-composer-dock {
+	--thread-scrollbar-gutter: 0px;
 }
 
 .dark .chat-full-view-dock {

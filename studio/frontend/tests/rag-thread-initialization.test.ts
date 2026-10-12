@@ -15,6 +15,13 @@ const OUTGOING_ID = "__LOCALID_outgoing";
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 type Scope = { type: "thread"; threadId: string };
 
+type AnnouncedRow = {
+  id: string;
+  projectId?: string | null;
+  updatedAt?: number;
+  modifiedAt?: number | null;
+};
+
 function harness(
   options: {
     propId?: string | null;
@@ -24,6 +31,7 @@ function harness(
     persist?: Promise<void>;
     itemId?: string;
     storedIds?: string[];
+    row?: AnnouncedRow;
     ragSource?: { type: "thread" } | { type: "kb"; kbId: string };
   } = {},
 ) {
@@ -43,6 +51,9 @@ function harness(
   }> = [];
   const dismissed: number[] = [];
   const adopted: string[] = [];
+  let threadReads = 0;
+  const announce: Array<(detail: { thread?: AnnouncedRow }) => void> = [];
+  const scopes: unknown[] = [];
   const itemId = options.itemId ?? ID;
   const storedIds = new Set(options.storedIds ?? []);
   const state = {
@@ -115,7 +126,10 @@ function harness(
           return [
             slots[index],
             (next: unknown) => {
-              slots[index] = next;
+              slots[index] =
+                typeof next === "function"
+                  ? (next as (previous: unknown) => unknown)(slots[index])
+                  : next;
             },
           ];
         },
@@ -163,7 +177,16 @@ function harness(
         isThreadIncognito: () => incognito,
         isPastedTextFile: () => false,
         annotationsOfFile: () => null,
-        getStoredChatThread: async () => undefined,
+        getStoredChatThread: async () => {
+          threadReads += 1;
+          return options.row;
+        },
+        subscribeChatHistoryUpdated: (listener: (typeof announce)[number]) => {
+          announce.push(listener);
+          return () => {
+            announce.splice(announce.indexOf(listener), 1);
+          };
+        },
         ensureStoredChatThread: async (threadId: string) => {
           if (storedIds.has(threadId)) return { id: threadId };
           if (!initialized || options.missing) return undefined;
@@ -215,7 +238,8 @@ function harness(
           token: intent.path.token,
           name: intent.displayLabel,
         }),
-        useRagDocuments: () => ({
+        useRagDocuments: (scope: unknown) => ({
+          ...(scopes.push(scope), {}),
           documents: [],
           uploading: false,
           hasIndexing: false,
@@ -270,6 +294,20 @@ function harness(
     },
     get initializeCalls() {
       return initializeCalls;
+    },
+    get threadReads() {
+      return threadReads;
+    },
+    get projectScopes() {
+      return scopes.filter(
+        (scope) => (scope as { type?: string } | null)?.type === "project",
+      );
+    },
+    setActiveProjectId(projectId: string | null) {
+      state.activeProjectId = projectId as never;
+    },
+    announce(thread: AnnouncedRow) {
+      for (const listener of [...announce]) listener({ thread });
     },
   };
 }
@@ -352,6 +390,49 @@ test("overlapping attachments initialize once and wait for persistence", async (
   assert.deepEqual(app.errors, []);
   assert.equal(app.uploads.length, 2);
   assert.ok(app.uploads.every((scope) => scope.threadId === ID));
+});
+
+test("the chat's row is read once, however often the open project changes", async () => {
+  const app = harness({ row: { id: ID, projectId: "p1" } });
+  app.render();
+  await flush();
+  app.render();
+  app.setActiveProjectId("p1");
+  app.render();
+  await flush();
+  app.render();
+  assert.equal(app.threadReads, 1);
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p1" });
+});
+
+test("a row announced on the history event moves the chat without another read", async () => {
+  const app = harness({ row: { id: ID, projectId: "p1" } });
+  app.render();
+  await flush();
+  app.render();
+  app.announce({ id: ID, projectId: "p2" });
+  app.render();
+  assert.equal(app.threadReads, 1);
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p2" });
+  app.announce({ id: "someone-else", projectId: "p3" });
+  app.render();
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p2" });
+});
+
+test("announcements are ordered by the row's edit clock, not by message activity", async () => {
+  const app = harness({ row: { id: ID, projectId: "p1", updatedAt: 9_000, modifiedAt: 100 } });
+  app.render();
+  await flush();
+  app.render();
+  app.announce({ id: ID, projectId: "p2", updatedAt: 5_000, modifiedAt: 200 });
+  app.render();
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p2" }, "a move after a pruned message lowered updatedAt still lands");
+  app.announce({ id: ID, projectId: "p1", updatedAt: 9_500, modifiedAt: 100 });
+  app.render();
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p2" }, "a response written before the move cannot move it back");
+  app.announce({ id: ID, projectId: "p3", modifiedAt: 300 });
+  app.render();
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p3" });
 });
 
 test("initialization tags a temporary chat before the persistence check", async () => {

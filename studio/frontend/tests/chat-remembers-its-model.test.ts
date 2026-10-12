@@ -293,7 +293,7 @@ test("the conversation and research panel reserve only the chat header", () => {
   }
   assert.match(
     thread,
-    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\] pt-\[var\(--thread-header-offset\)\]/,
+    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)-var\(--studio-chat-scroller-top,0px\)\+var\(--studio-chat-header-height,48px\)\)\] mt-\[var\(--studio-chat-scroller-top,0px\)\] pt-\[var\(--thread-header-offset\)\]/,
   );
   const fade = slice(page, "chat-header-fade", '"');
   assert.match(
