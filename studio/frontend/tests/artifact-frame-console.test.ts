@@ -170,6 +170,20 @@ test("the fix prompt quotes each error with its location and labels it as data",
   );
 });
 
+test("a React preview's fix prompt asks for a component fix and leaves out compiled-code positions", () => {
+  const errors = [
+    parseCanvasReport(thrown("TypeError: x is undefined", 12, 3))!,
+    parseCanvasReport(thrown("Compile error at line 2, column 5: Unexpected token"))!,
+  ];
+  const prompt = buildCanvasFixPrompt("Dashboard.tsx", errors, "react");
+  assert.match(prompt, /^The React component "Dashboard\.tsx" hit 2 errors when it ran\. Fix the component so it runs cleanly\./);
+  assert.match(prompt, /1\. TypeError: x is undefined\n/);
+  assert.match(prompt, /2\. Compile error at line 2, column 5: Unexpected token$/);
+  // The HTML prompt is unchanged, whether the kind is given or not.
+  assert.equal(buildCanvasFixPrompt("t", errors, "html"), buildCanvasFixPrompt("t", errors));
+  assert.match(buildCanvasFixPrompt("t", errors), /\(line 12, column 3\)\n/);
+});
+
 test("the fix prompt lists five errors and counts the rest", () => {
   const errors = Array.from({ length: 8 }, (_, i) =>
     parseCanvasReport(thrown(`error ${i}`))!,
@@ -250,7 +264,7 @@ test("the source view hides the frame instead of unmounting it", () => {
 });
 
 test("the Fix button stages text in the composer and never sends it", () => {
-  assert.match(frameSource, /onFixWithModel\(buildCanvasFixPrompt\(title, errors\)\)/);
+  assert.match(frameSource, /onFixWithModel\(buildCanvasFixPrompt\(title, errors, kind\)\)/);
   assert.doesNotMatch(frameSource, /\.send\(/);
   assert.match(readBrowserSource("file-view.tsx"), /onFixWithModel=\{requestEdits \?\? stageEditsPrompt\}/);
   assert.match(readBrowserSource("stage-edits.ts"), /stageFixPrompt\(prompt\);/);

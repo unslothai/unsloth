@@ -857,9 +857,10 @@ def _slim_phase(**over):
 def _llama_installed_as(monkeypatch, backend, asset, *, whisper_kind):
     monkeypatch.setattr(wupd, "_installed_llama_bundle", lambda: (backend, asset))
     monkeypatch.setattr(wupd, "_find_binary", lambda: "whisper-server")
-    monkeypatch.setattr(
-        wupd, "read_install_marker", lambda _b: {"install_kind": whisper_kind, "backend": "rocm"}
-    )
+    marker = {"backend": "rocm"}
+    if whisper_kind is not None:
+        marker["install_kind"] = whisper_kind
+    monkeypatch.setattr(wupd, "read_install_marker", lambda _b: dict(marker))
 
 
 def test_a_migrated_llama_re_pairs_the_chained_phase(monkeypatch):
@@ -978,7 +979,8 @@ def test_a_legacy_fat_install_is_pre_flighted_too(monkeypatch):
 
     monkeypatch.setattr(wupd, "run_chained_phase", must_not_install)
 
-    # No install_kind at all: the legacy fat marker.
+    # No install_kind at all: the legacy fat marker, read because llama moved backends.
+    _llama_installed_as(monkeypatch, "vulkan", "vulkan.zip", whisper_kind = None)
     assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {
         "skipped": True,
         "skip_reason": "paired_llama_unavailable",

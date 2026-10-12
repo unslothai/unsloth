@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
+import { AgentBar } from "./agent/agent-bar";
 import {
   Tooltip,
   TooltipContent,
@@ -36,7 +37,6 @@ import {
   attachmentFileKind,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { formatBytes } from "@/features/hub";
 import { startLibraryChat } from "@/features/library";
 import {
   useSettingsDialogStore,
@@ -48,10 +48,11 @@ import { registerZoomScope } from "@/features/interface-zoom";
 import { useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
+import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
+import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -66,7 +67,8 @@ import {
   Clock01Icon,
   ComputerTerminal01Icon,
   Copy01Icon,
-  CursorRectangleSelection02Icon,
+  Folder01Icon,
+  Link01Icon,
   Download01Icon,
   InternetIcon,
   MinusSignIcon,
@@ -104,7 +106,17 @@ import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./capture";
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
+import { revealLabelKey } from "./download-format";
+import { isDangerousDownload } from "./download-safety";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
+import {
+  type OpenWithApp,
+  localCopyPath,
+  openLocalCopy,
+  openWithApps,
+  revealLocalCopy,
+  withLocalCopy,
+} from "./open-with";
 import { DownloadsButton } from "./downloads-button";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
@@ -112,7 +124,7 @@ import { SiteFavicon } from "./site-favicon";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { BookmarkStar, BookmarksBar } from "./bookmarks";
 import { useBookmarkFor } from "./bookmarks-store";
-import { browserTabType, mediaKind, textFileKind } from "./file-kind";
+import { browserTabType, fileBarKind, mediaKind } from "./file-kind";
 import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
@@ -126,6 +138,7 @@ import {
 import {
   hasNativeView,
   nativeAction,
+  nativePageHasKeys,
   returnToNativePage,
   startNativeViews,
   useNativeBrowser,
@@ -207,12 +220,14 @@ const PILL = cn(
 const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
 
+/** IconButton's own look, for toolbar buttons rendered elsewhere (DownloadsButton). */
+const TOOLBAR_ICON_BUTTON =
+  "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground";
 const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
 const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-full p-0 text-foreground";
-// The dashed box sits up-left of the glyph's centre, so nudge it to look centred.
-const ANNOTATE_GLYPH = "size-4.5 translate-x-[4%] translate-y-[4%]";
+const ANNOTATE_GLYPH = "size-4.5";
 const NAV_STROKE = 2;
 const URLBAR =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
@@ -245,7 +260,7 @@ function IconButton({
           onClick={onClick}
           disabled={disabled}
           className={cn(
-            "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground",
+            TOOLBAR_ICON_BUTTON,
             className,
           )}
         >
@@ -1060,7 +1075,7 @@ function WebActions({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
     <>
       <AnnotatePageButton tab={tab} />
       {/* Recent downloads and the one in flight; saving the page itself is in the menu. */}
-      <DownloadsButton className={NAV_BUTTON} visible={visible} />
+      <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} />
     </>
   );
 }
@@ -1396,7 +1411,7 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
           "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
       )}
     >
-      <HugeiconsIcon icon={CursorRectangleSelection02Icon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
+      <HugeiconsIcon icon={SquareDashedMousePointerIcon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
     </IconButton>
   );
 }
@@ -1470,12 +1485,8 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
 
 /** HTML and code use the browser chrome; other files keep the floating controls. */
 function usesBrowserChrome(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
-  return kind === "html" || kind === "code" || isVideoEntry(entry);
-}
-
-function isVideoEntry(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
-  return !entry.plainText && mediaKind(entry.name, entry.contentType) === "video";
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
+  return kind === "html" || kind === "code";
 }
 
 function BrowserFileToolbar({
@@ -1493,7 +1504,7 @@ function BrowserFileToolbar({
   const { goBack, goForward } = useBrowserStore.getState();
   const download = tabDownload(tab);
   const blob = download?.blob;
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const hasSource = kind === "html" || kind === "markdown";
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
@@ -1633,7 +1644,7 @@ function BrowserFileToolbar({
           )}
         >
           <HugeiconsIcon
-            icon={CursorRectangleSelection02Icon}
+            icon={SquareDashedMousePointerIcon}
             strokeWidth={1.75}
             className={ANNOTATE_GLYPH}
           />
@@ -1680,7 +1691,7 @@ function BrowserFileToolbar({
         >
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
-        <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
+        <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} idleHidden={true} />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
@@ -1756,8 +1767,10 @@ function FloatingFileToolbar({
   const [copied, setCopied] = useState(false);
   const download = tabDownload(tab);
   const blob = download?.blob;
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const hasSource = kind === "html" || kind === "markdown";
+  const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
+  const timed = media === "video" || media === "audio";
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
   const setView = (patch: Partial<FileViewState>) => useBrowserStore.getState().setFileView(tab.id, patch);
@@ -1937,29 +1950,31 @@ function FloatingFileToolbar({
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
-      {/* A true circle, glyph centred; the label is its tooltip. */}
-      <IconButton
-        label={t("browser.file.requestEdits")}
-        // Without a chat to send marks to, stages a prompt naming the file.
-        onClick={() =>
-          canAnnotate
-            ? toggleAnnotating()
-            : (requestEdits ?? stageEditsPrompt)(
-                t("browser.file.requestEditsPrompt", { name: entry.name }),
-              )
-        }
-        className={cn(
-          PILL,
-          "size-9 rounded-full p-0 text-foreground",
-          annotating && "text-primary hover:text-primary",
-        )}
-      >
-        <HugeiconsIcon
-          icon={CursorRectangleSelection02Icon}
-          strokeWidth={1.75}
-          className={ANNOTATE_GLYPH}
-        />
-      </IconButton>
+      {/* A true circle, glyph centred; the label is its tooltip. A clip or a track has nothing to mark. */}
+      {timed ? null : (
+        <IconButton
+          label={t("browser.file.requestEdits")}
+          // Without a chat to send marks to, stages a prompt naming the file.
+          onClick={() =>
+            canAnnotate
+              ? toggleAnnotating()
+              : (requestEdits ?? stageEditsPrompt)(
+                  t("browser.file.requestEditsPrompt", { name: entry.name }),
+                )
+          }
+          className={cn(
+            PILL,
+            "size-9 rounded-full p-0 text-foreground",
+            annotating && "text-primary hover:text-primary",
+          )}
+        >
+          <HugeiconsIcon
+            icon={SquareDashedMousePointerIcon}
+            strokeWidth={1.75}
+            className={ANNOTATE_GLYPH}
+          />
+        </IconButton>
+      )}
       <span
         aria-hidden={true}
         className="min-w-0 flex-1 pointer-events-none!"
@@ -2040,16 +2055,9 @@ function FloatingFileToolbar({
           </Tooltip>
         </>
       ) : null}
-      {kind ? (
-        <CircleButton
-          label={copied ? t("browser.file.copied") : t("browser.file.copy")}
-          icon={copied ? Tick02Icon : Copy01Icon}
-          disabled={!blob}
-          onClick={copyContents}
-          className="hidden size-9 @[40rem]:flex"
-        />
-      ) : null}
-      <ScaleMenu
+      <CopySplit tab={tab} entry={entry} blob={blob} copied={copied} onCopyContents={copyContents} />
+      {timed ? null : (
+        <ScaleMenu
         value={tab.zoom}
         scales={ATTACHMENT_PAGE_SCALES}
         contentClassName="browser-menu"
@@ -2059,7 +2067,9 @@ function FloatingFileToolbar({
             .setZoom(tab.id, value === "fit" ? 1 : value)
         }
         className={cn(PILL, "mr-0 hidden h-9 pr-2.5 @[28rem]:flex")}
-      />
+        />
+      )}
+      <OpenSplit key={entry.fileId} entry={entry} blob={blob} />
       <CircleButton
         label={t("browser.download")}
         icon={Download01Icon}
@@ -2072,9 +2082,13 @@ function FloatingFileToolbar({
   );
 }
 
-const SPLIT_PILL = cn(PILL, "flex h-9 shrink-0 items-center rounded-full");
+const SPLIT_PILL = cn(
+  PILL,
+  "flex h-9 shrink-0 items-center rounded-full",
+  "has-[[data-state=open]]:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
+);
 const SPLIT_PART =
-  "flex h-full cursor-pointer items-center rounded-full text-ui-13p5 text-foreground outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)] focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)]";
+  "flex h-full cursor-pointer items-center rounded-full text-ui-13p5 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 
 function SplitChevron() {
   return (
@@ -2086,34 +2100,34 @@ function SplitChevron() {
   );
 }
 
-/** Video file bar: the name, then Copy and Open, each with its options. */
-function VideoFileToolbar({
+type FileEntry = Extract<BrowserEntry, { kind: "file" }>;
+
+function CopySplit({
   tab,
   entry,
-  visible,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
+  blob,
+  copied,
+  onCopyContents,
+}: {
+  tab: BrowserTab;
+  entry: FileEntry;
+  blob: Blob | undefined;
+  copied: boolean;
+  onCopyContents: () => void;
+}) {
   const t = useT();
-  const navigate = useNavigate();
-  const download = tabDownload(tab);
-  const blob = download?.blob;
-  const { goBack, goForward } = useBrowserStore.getState();
-  // A blob URL can't be handed to another app from the desktop app.
-  const tabType = isTauri ? null : browserTabType(entry.name, entry.contentType || blob?.type || "");
-  const canOpenTab = tabType !== null;
-  const frameCopies = canCopyVideoFrame();
-  const openInBrowser = () => {
-    if (!blob || !tabType) return;
-    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
-    window.open(url, "_blank", "noopener,noreferrer");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  };
-  const openInNewChat = () => {
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
+  const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
+  // The desktop app's clipboard takes no images (video-registry.ts), so it copies the path instead.
+  const images = canCopyVideoFrame();
+  const copyImage = () => {
     if (!blob) return;
-    startLibraryChat(navigate, {
-      files: [new File([blob], entry.name, { type: entry.contentType || blob.type })],
-    });
+    // The item is made now, inside the click, and resolves later: Safari refuses a write made after.
+    navigator.clipboard.write([new ClipboardItem({ "image/png": asPng(blob) })]).then(
+      () => toast.success(t("imageViewer.copied")),
+      () => toast.error(t("imageViewer.copyFailed")),
+    );
   };
-  const save = () => download && void saveBrowserDownload(download);
   const copyFrame = () => {
     const video = tabVideo(tab.id);
     if (!video) return;
@@ -2121,126 +2135,189 @@ function VideoFileToolbar({
       ok ? toast.success(t("browser.video.frameCopied")) : toast.error(t("browser.video.copyFrameFailed")),
     );
   };
-  const copyName = () =>
-    void copyToClipboard(entry.name).then((ok) => ok && toast.success(t("browser.video.nameCopied")));
-  const extension = /\.([a-z0-9]+)$/i.exec(entry.name)?.[1]?.toUpperCase();
-  const meta = [extension, blob ? formatBytes(blob.size) : null].filter(Boolean).join(" · ");
+  const copyPath = () => {
+    if (!blob) return;
+    void copyToClipboardFrom(() => withLocalCopy(blob, entry.name, (copy) => localCopyPath(copy.id))).then((ok) =>
+      ok ? toast.success(t("browser.file.pathCopied")) : toast.error(t("browser.file.copyFailed")),
+    );
+  };
+  const options: { label: string; icon: IconSvgElement; run: () => void }[] = [];
+  if (kind) options.push({ label: t("browser.file.copy"), icon: Copy01Icon, run: onCopyContents });
+  if (media === "image" && images) options.push({ label: t("imageViewer.copy"), icon: Copy01Icon, run: copyImage });
+  if (media === "video" && images) {
+    options.push({ label: t("browser.video.copyFrame"), icon: Copy01Icon, run: copyFrame });
+  }
+  if (isTauri) options.push({ label: t("browser.file.copyPath"), icon: Link01Icon, run: copyPath });
+  const [first, ...rest] = options;
+  if (!first) return null;
   return (
-    <>
-      {/* As the panel narrows, back/forward and then Copy hide before the name does. */}
-      <div className="hidden shrink-0 items-center gap-0.5 @[34rem]:flex">
-        <IconButton
-          label={t("browser.back")}
-          disabled={tab.index === 0}
-          onClick={() => goBack(tab.id)}
-          className={NAV_BUTTON}
-        >
-          <ArrowLeft strokeWidth={NAV_STROKE} className={NAV_ICON} />
-        </IconButton>
-        <IconButton
-          label={t("browser.forward")}
-          disabled={tab.index >= tab.history.length - 1}
-          onClick={() => goForward(tab.id)}
-          className={NAV_BUTTON}
-        >
-          <ArrowRight strokeWidth={NAV_STROKE} className={NAV_ICON} />
-        </IconButton>
-      </div>
-      <div
-        title={entry.name}
-        className={cn(PILL_SURFACE, "flex h-9 min-w-24 flex-1 items-center gap-2 rounded-full px-3.5")}
-      >
-        <KindIcon name={entry.name} contentType={entry.contentType} className="size-4.5" />
-        <span className="min-w-0 truncate text-ui-13p5 text-foreground">{entry.name}</span>
-        {meta ? (
-          <span className="hidden shrink-0 text-ui-12 text-muted-foreground @[30rem]:inline">{meta}</span>
-        ) : null}
-      </div>
-      {/* Without Copy frame (desktop app) the name is all there is to copy. */}
-      <div className={cn(SPLIT_PILL, "hidden @[26rem]:flex")}>
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <button
-              type="button"
-              aria-label={frameCopies ? t("browser.video.copyFrame") : t("browser.video.copyName")}
-              onClick={frameCopies ? copyFrame : copyName}
-              className={cn(SPLIT_PART, frameCopies ? "pl-2.5 pr-1" : "px-2.5")}
-            >
-              <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4.5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="tooltip-compact">
-            {frameCopies ? t("browser.video.copyFrame") : t("browser.video.copyName")}
-          </TooltipContent>
-        </Tooltip>
-        {frameCopies ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <button type="button" aria-label={t("browser.video.copyOptions")} className={cn(SPLIT_PART, "pr-2 pl-1")}>
-                <SplitChevron />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-[20px] p-1.5">
-              <DropdownMenuItem onSelect={copyFrame}>
-                <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4" />
-                {t("browser.video.copyFrame")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={copyName}>
-                <HugeiconsIcon icon={TextWrapIcon} strokeWidth={1.75} className="size-4" />
-                {t("browser.video.copyName")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
-      </div>
-      <div className={SPLIT_PILL}>
-        <button
-          type="button"
-          disabled={!blob}
-          onClick={canOpenTab ? openInBrowser : save}
-          title={canOpenTab ? t("browser.file.newBrowserTab") : t("browser.video.saveAs")}
-          className={cn(SPLIT_PART, "gap-1.5 pr-1.5 pl-3")}
-        >
-          <HugeiconsIcon
-            icon={canOpenTab ? ArrowUpRight01Icon : Download01Icon}
-            strokeWidth={1.75}
-            className="size-4.5"
-          />
-          {canOpenTab ? t("browser.video.open") : t("browser.video.saveAs")}
-        </button>
+    <div className={cn(SPLIT_PILL, "hidden @[40rem]:flex")}>
+      <Tooltip>
+        <TooltipTrigger asChild={true}>
+          <button
+            type="button"
+            aria-label={first.label}
+            disabled={!blob}
+            onClick={first.run}
+            className={cn(SPLIT_PART, rest.length > 0 ? "pl-2.5 pr-1" : "px-2.5")}
+          >
+            <HugeiconsIcon icon={copied ? Tick02Icon : first.icon} strokeWidth={1.75} className="size-4.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="tooltip-compact">
+          {first.label}
+        </TooltipContent>
+      </Tooltip>
+      {rest.length > 0 ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild={true}>
             <button
               type="button"
               disabled={!blob}
-              aria-label={t("browser.video.openOptions")}
-              className={cn(SPLIT_PART, "pr-2.5 pl-1")}
+              aria-label={t("browser.video.copyOptions")}
+              className={cn(SPLIT_PART, "pr-2 pl-1")}
             >
               <SplitChevron />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-56 rounded-[20px] p-1.5">
-            {canOpenTab ? (
-              <DropdownMenuItem onSelect={openInBrowser}>
-                <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4.5" />
-                {t("browser.file.newBrowserTab")}
+          <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-[20px] p-1.5">
+            {options.map((option) => (
+              <DropdownMenuItem key={option.label} onSelect={option.run}>
+                <HugeiconsIcon icon={option.icon} strokeWidth={1.75} className="size-4" />
+                {option.label}
               </DropdownMenuItem>
-            ) : null}
-            <DropdownMenuItem onSelect={openInNewChat}>
-              <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
-              {t("browser.file.newChat")}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={save}>
-              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
-              {t("browser.video.saveAs")}
-            </DropdownMenuItem>
+            ))}
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-      <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
-      <PanelMenu tab={tab} />
-    </>
+      ) : null}
+    </div>
+  );
+}
+
+function AppIcon({ app }: { app: OpenWithApp }) {
+  return app.icon ? (
+    <img src={app.icon} alt="" aria-hidden={true} className="size-4.5 shrink-0" />
+  ) : (
+    <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4.5" />
+  );
+}
+
+function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }) {
+  const t = useT();
+  const navigate = useNavigate();
+  const [apps, setApps] = useState<OpenWithApp[] | null>(null);
+  const listing = useRef(false);
+  // Programs and scripts never open from here (browser_open_with.rs); their folder still does.
+  const runsCode = isDangerousDownload(entry.name);
+  const tabType = isTauri ? null : browserTabType(entry.name, entry.contentType || blob?.type || "");
+  const failed = () => toast.error(t("browser.file.openFailed", { name: entry.name }));
+  const listApps = () => {
+    if (!isTauri || !blob || runsCode || listing.current) return;
+    listing.current = true;
+    withLocalCopy(blob, entry.name, (copy) => openWithApps(copy.id)).then(setApps, () => setApps([]));
+  };
+  const openWith = (app?: string) => {
+    if (!blob) return;
+    void withLocalCopy(blob, entry.name, (copy) => openLocalCopy(copy.id, app)).catch(failed);
+  };
+  const reveal = () => {
+    if (!blob) return;
+    void withLocalCopy(blob, entry.name, (copy) => revealLocalCopy(copy.id)).catch(failed);
+  };
+  const openInNewChat = () => {
+    if (!blob) return;
+    startLibraryChat(navigate, {
+      files: [new File([blob], entry.name, { type: entry.contentType || blob.type })],
+    });
+  };
+  const openInBrowser = () => {
+    if (!blob || !tabType) return;
+    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
+    window.open(url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
+  const defaultApp = apps?.find((app) => app.default) ?? null;
+  const primary = isTauri
+    ? runsCode
+      ? { label: t(revealLabelKey()), run: reveal }
+      : { label: t("browser.video.open"), run: () => openWith() }
+    : tabType
+      ? { label: t("browser.video.open"), run: openInBrowser }
+      : { label: t("browser.file.newChat"), run: openInNewChat };
+  return (
+    <div className={SPLIT_PILL} onPointerEnter={listApps} onFocus={listApps}>
+      <button
+        type="button"
+        disabled={!blob}
+        onClick={primary.run}
+        title={defaultApp ? defaultApp.name : undefined}
+        className={cn(SPLIT_PART, "gap-2 pr-1.5 pl-3")}
+      >
+        {defaultApp && !runsCode ? (
+          <AppIcon app={defaultApp} />
+        ) : (
+          <HugeiconsIcon
+            icon={isTauri && runsCode ? Folder01Icon : ArrowUpRight01Icon}
+            strokeWidth={1.75}
+            className="size-4.5"
+          />
+        )}
+        {primary.label}
+      </button>
+      <DropdownMenu onOpenChange={(open) => open && listApps()}>
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            disabled={!blob}
+            aria-label={t("browser.video.openOptions")}
+            className={cn(SPLIT_PART, "pr-2.5 pl-1")}
+          >
+            <SplitChevron />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-56 rounded-[20px] p-1.5">
+          {isTauri && !runsCode ? (
+            <>
+              {apps === null ? (
+                <div className="flex h-8 items-center px-2.5">
+                  <Spinner className="size-4" />
+                </div>
+              ) : (
+                apps.map((app) => (
+                  <DropdownMenuItem key={app.path} onSelect={() => openWith(app.path)}>
+                    <AppIcon app={app} />
+                    {app.name}
+                  </DropdownMenuItem>
+                ))
+              )}
+              {apps?.length === 0 ? (
+                <DropdownMenuItem onSelect={() => openWith()}>
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4.5" />
+                  {t("browser.video.open")}
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
+          {isTauri ? (
+            <DropdownMenuItem onSelect={reveal}>
+              <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4.5" />
+              {t(revealLabelKey())}
+            </DropdownMenuItem>
+          ) : null}
+          {tabType ? (
+            <DropdownMenuItem onSelect={openInBrowser}>
+              <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4.5" />
+              {t("browser.file.newBrowserTab")}
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem onSelect={openInNewChat}>
+            <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
+            {t("browser.file.newChat")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 
@@ -2329,6 +2406,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         const tabId = useBrowserStore.getState().activeTabId;
         if (tabId) zoomTab(tabId, direction);
       },
+      holdsKeys: nativePageHasKeys,
     });
   }, [active]);
   // Studio's find bar searches the page while focus is in here, or when switched to it.
@@ -2400,8 +2478,6 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           {activeTab && activeEntry?.kind === "file" ? (
             floatingFileControls ? (
               <FloatingFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
-            ) : isVideoEntry(activeEntry) ? (
-              <VideoFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             ) : (
               <BrowserFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             )
@@ -2409,10 +2485,11 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
             <WebToolbar tab={activeTab} visible={active} />
           )}
         </div>
-        {floatingFileControls || (activeEntry?.kind === "file" && isVideoEntry(activeEntry)) ? null : (
+        {floatingFileControls ? null : (
           <BookmarksBar tab={activeTab} />
         )}
         {deviceWidth ? <DeviceBar /> : null}
+        <AgentBar activeTabId={activeTabId} />
         <div
           ref={setPageElement}
           data-browser-page=""

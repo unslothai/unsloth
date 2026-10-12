@@ -47,8 +47,15 @@ export const BUDGET = {
   // message action bar rework (#12735) 2.9 KB raw, and the other merges in that range the rest,
   // all in the eager chat, index and settings chunks. Headroom ran out, so the same margin is put
   // back.
-  transferBytes: 1_991_000,
-  rawBytes: 6_646_000,
+  // The long-chat render work (#13255: deferred fences and reasoning rows) adds 33.3 KB raw / 13.1 KB
+  // transfer to the eager chat chunk (6,477.1 -> 6,510.4 KB raw, 1,942.6 -> 1,955.7 KB transfer at
+  // 160cb41fe, one machine and build); raised by that so main's margin stays where it was.
+  // Project sources follow-ups (#13224: queued drops, retry on failed sources, folder drops) add
+  // 6.6 KB raw / 2.0 KB transfer, mostly in the eager chat chunk (6,513.0 -> 6,519.6 KB raw,
+  // 1,956.4 -> 1,958.4 KB transfer against d4ea5a51d, one machine and build). Lazy-loading the
+  // folder walker recovered 0.5 KB raw and no transfer, so the budget is raised by that growth.
+  transferBytes: 2_007_100,
+  rawBytes: 6_687_800,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
@@ -360,6 +367,36 @@ export function eagerChunksFromHtml(html: string): string[] {
   return [...blocking, ...entry, ...preloads];
 }
 
+/**
+ * Text that marks React-preview runtime code. The preview libraries and the bootstrap that imports
+ * them are only ever fetched when a preview opens, so either string in a startup chunk means that
+ * code was pulled onto the startup path: a static import where a lazy one was meant.
+ */
+export const LAZY_ONLY_NEEDLES = ["__unslothModules", "__vite_ssr_import__"];
+
+/** Every (chunk, needle) pair where an eager chunk contains a needle. A chunk that cannot be read is skipped. */
+export function eagerChunksContaining(
+  distDir: string,
+  chunks: string[],
+  needles: string[],
+): { chunk: string; needle: string }[] {
+  const found: { chunk: string; needle: string }[] = [];
+  for (const chunk of chunks) {
+    let text: string;
+    try {
+      text = readFileSync(join(distDir, chunk), "utf8");
+    } catch {
+      continue; // measure() reports a missing chunk; this only looks inside the ones that exist.
+    }
+    for (const needle of needles) {
+      if (text.includes(needle)) {
+        found.push({ chunk, needle });
+      }
+    }
+  }
+  return found;
+}
+
 type Measured = { name: string; raw: number; transfer: number };
 
 /**
@@ -454,6 +491,18 @@ function main(): number {
     console.log(
       `  ${kb(c.raw).padStart(10)} raw  ${kb(c.transfer).padStart(9)} transfer  ${c.name}`,
     );
+  }
+
+  const lazyOnly = eagerChunksContaining(DIST, names, LAZY_ONLY_NEEDLES);
+  if (lazyOnly.length > 0) {
+    console.error("\nReact-preview runtime code is on the startup path:");
+    for (const { chunk, needle } of lazyOnly) {
+      console.error(`  ${chunk} contains ${needle}`);
+    }
+    console.error(
+      "It belongs only in chunks reached through import(). Find the static import that pulled it in.",
+    );
+    return 1;
   }
 
   const over: string[] = [];

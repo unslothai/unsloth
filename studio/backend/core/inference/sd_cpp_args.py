@@ -13,6 +13,7 @@ one knob drives both engines. Ref: sd.cpp ``examples/cli`` and ``docs/z_image.md
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Optional
@@ -136,50 +137,139 @@ class SdCppUpscaleParams:
 
 
 # Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa +
-# --diffusion-conv-direct (numerically exact; direct conv took z-image Q8_0 sampling 56.1 -> 51.3 s). max keeps it
-# (profiles chain).
+# --diffusion-conv-direct (numerically exact), except Apple Metal keeps only --diffusion-fa. max keeps it (profiles chain).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
 NATIVE_SPEED_MODES = (NATIVE_SPEED_OFF, NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX)
 
 
-def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
+def native_speed_flags(
+    speed_mode: Optional[str], backend_args: Optional[Sequence[str]] = None
+) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
-    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site."""
+    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
+    ``backend_args``: the other argv flags, whose ``--backend`` decides whether the graph runs on Metal."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
+        if _runs_on_apple_metal(backend_args or ()):
+            return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
+    """The backend the diffusion module gets from ``--backend`` specs: ``diffusion=`` beats a bare default; None = auto-fit."""
+    explicit = default = None
+    for spec in specs:
+        for part in str(spec).split(","):
+            key, sep, value = part.strip().partition("=")
+            if not sep:
+                default = key or default
+            elif key.strip().lower() == "diffusion":
+                explicit = value.strip()
+    return explicit or default
+
+
+def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
+    """True when sd.cpp runs the diffusion model on Apple Metal (macOS; an explicit ``--backend`` for it decides,
+    else an Apple Silicon machine whose GPU is not paravirtual).
+
+    Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    args = list(backend_args)
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    if target is not None:
+        return target.lower() != "cpu"
+    return apple_silicon_machine() and not metal_is_paravirtual()
+
+
+@functools.lru_cache(maxsize = 1)
+def apple_silicon_machine() -> bool:
+    """True on an Apple Silicon Mac, including an x86_64 Python under Rosetta (``hw.optional.arm64``, as install.sh)."""
+    import platform
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        return True
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        value = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if (
+            libc.sysctlbyname(
+                b"hw.optional.arm64", ctypes.byref(value), ctypes.byref(size), None, 0
+            )
+            == 0
+        ):
+            return value.value == 1
+    except Exception:  # noqa: BLE001 -- no answer means an Intel Mac
+        pass
+    return False
+
+
+def forces_cpu_backend(device: Optional[str]) -> bool:
+    """True when an sd.cpp run on resolved ``device`` is placed on the CPU backend (a paravirtual Mac GPU)."""
+    return device == "mps" and metal_is_paravirtual()
 
 
 # Kill switch for the Metal text-encoder placement below (1/true keeps the encoder on Metal).
 _METAL_TE_ON_GPU_ENV = "UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU"
 
 
+@functools.lru_cache(maxsize = 1)
+def metal_is_paravirtual() -> bool:
+    """True when this Mac's Metal device is Apple's paravirtual GPU (a macOS VM). Reuses the llama.cpp probe."""
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    try:
+        from core.inference.llama_cpp import _metal_device_is_paravirtual
+    except Exception:  # noqa: BLE001 -- no probe means no evidence of a VM
+        return False
+    try:
+        return bool(_metal_device_is_paravirtual())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def metal_text_encoder_flags() -> list[str]:
-    """Keep the TEXT ENCODER on CPU when sd.cpp runs on Apple Metal, else nothing.
+    """Placement flags for sd.cpp on Apple Metal, else nothing.
 
-    ggml's Metal backend gates RMS_NORM on contiguous rows and calls ``GGML_ABORT`` when that does
-    not hold, with no per-op CPU fallback, so an LLM text encoder (Qwen3 for FLUX.2 / Z-Image, T5
-    for FLUX.1) takes the whole sd-server process down mid-generation:
-        ggml_metal_op_encode_impl: error: unsupported op 'RMS_NORM' -> ggml_abort
-        LLMEmbedder::encode_prompt -> LLMRunner::compute -> GGMLRunner::compute
-
-    Observed on macos-14 arm64 with FLUX.2-klein-4B Q2_K: the model loads on ``mps`` and the first
-    generation dies with exit code -6. The encoder runs once per prompt while the DiT runs every
-    step, so pinning only the encoder keeps Metal for the part that matters. Set
-    ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` to opt back in once ggml grows the kernel."""
+    A paravirtual GPU gets ``--backend cpu``: the bundled ggml segfaults there on CPU-fallback buffers. Otherwise the
+    text encoder stays on the CPU (``--clip-on-cpu``) since ggml-metal can abort an LLM encoder;
+    ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` keeps it on Metal."""
     import os
     import sys
 
     if sys.platform != "darwin":
         return []
+    if metal_is_paravirtual():
+        return list(CPU_BACKEND_FLAGS)
     if os.environ.get(_METAL_TE_ON_GPU_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
         return []
     return ["--clip-on-cpu"]
+
+
+def metal_placement_flags(offload: Sequence[str]) -> list[str]:
+    """``metal_text_encoder_flags()`` minus what ``offload`` already says.
+
+    ``--backend cpu`` is a flag pair: per-item filtering would leave a dangling ``cpu``, so an explicit pin drops it."""
+    flags = metal_text_encoder_flags()
+    if flags == list(CPU_BACKEND_FLAGS):
+        return [] if "--backend" in offload else flags
+    return [f for f in flags if f not in offload]
 
 
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
@@ -392,7 +482,7 @@ def build_sd_cpp_command(
     offload = list(offload or [])
     if offload:
         cmd += offload
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    cmd += metal_placement_flags(offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -484,7 +574,7 @@ def build_sd_cpp_video_command(
     offload = list(offload or [])
     if offload:
         cmd += offload
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    cmd += metal_placement_flags(offload)
     if verbose:
         cmd.append("-v")
     if extra_args:
@@ -523,6 +613,9 @@ def build_sd_cpp_upscale_command(
     if params.tile_size is not None:
         cmd += ["--upscale-tile-size", str(int(params.tile_size))]
     cmd += ["--output", output_path]
+    # Same paravirtual-GPU CPU placement as generation; an explicit --backend in extra_args wins.
+    if metal_is_paravirtual() and "--backend" not in (extra_args or ()):
+        cmd += list(CPU_BACKEND_FLAGS)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -589,8 +682,10 @@ def build_sd_cpp_server_command(
     if offload:
         cmd += offload
     # De-dup speed flags against offload (may already include --diffusion-fa).
-    cmd += [f for f in native_speed_flags(native_speed) if f not in offload]
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    placement = metal_placement_flags(offload)
+    backend_args = [*offload, *placement, *(extra_args or ())]
+    cmd += [f for f in native_speed_flags(native_speed, backend_args) if f not in offload]
+    cmd += placement
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -615,6 +710,7 @@ def build_img_gen_request(
     lora: Optional[list[dict]] = None,
     ref_images: Optional[list[str]] = None,
     qwen_image_layers: Optional[int] = None,
+    custom_sigmas: Optional[list[float]] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -638,6 +734,9 @@ def build_img_gen_request(
         sample_params["sample_method"] = str(sample_method)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
+    if custom_sigmas:
+        # Same key the server's sample_params parser reads for sd-cli's --sigmas.
+        sample_params["custom_sigmas"] = [float(s) for s in custom_sigmas]
     if guidance:
         sample_params["guidance"] = guidance
 

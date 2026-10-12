@@ -28,6 +28,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
+from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
@@ -581,6 +582,13 @@ def _scratch(kind, device, numel, dtype):
     return buffer[:numel]
 
 
+def _nf4_kernels_supported():
+    # ptxas rejects their ld eviction hints below sm_70 (Maxwell, Pascal).
+    if DEVICE_TYPE == "hip":
+        return True
+    return all(torch.cuda.get_device_capability(i)[0] >= 7 for i in range(DEVICE_COUNT))
+
+
 # Fused NF4 kernels, traceable by torch.compile and on the live stream by construction.
 # UNSLOTH_BNB_TRITON=0 keeps the bitsandbytes ctypes path.
 _USE_NF4_KERNELS = False
@@ -591,6 +599,7 @@ if (
     DEVICE_TYPE in ("cuda", "hip")
     and HAS_CUDA_STREAM
     and os.environ.get("UNSLOTH_BNB_TRITON", "1") != "0"
+    and _nf4_kernels_supported()
 ):
     try:
         import triton

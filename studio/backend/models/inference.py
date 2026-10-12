@@ -2858,6 +2858,14 @@ class ChatCompletionRequest(BaseModel):
             "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
+    deduplicate_tool_calls: Optional[bool] = Field(
+        True,
+        description = (
+            "[x-unsloth] When false, a tool call identical to one that already "
+            "succeeded in this response runs again instead of being answered "
+            "with a duplicate notice. Default on."
+        ),
+    )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
@@ -3403,6 +3411,14 @@ class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
+
+
+class BrowserActionResultRequest(BaseModel):
+    """What the chat tab's browser did for one ``browser_action`` (``state.browser_actions``)."""
+
+    session_id: Optional[str] = None
+    action_id: str = Field(min_length = 1, max_length = 64)
+    result: dict[str, Any]
 
 
 class ToolApprovalStatusRequest(BaseModel):
@@ -4375,7 +4391,9 @@ class DiffusionLoadRequest(BaseModel):
         "model_path, so ../text_encoders/x.safetensors works from a ComfyUI diffusion_models folder) or "
         "owner/repo/path.safetensors under the same repo rule as model_path. Unquantized, scaled fp8 and "
         "int8 (ConvRot) files load; other ComfyUI formats are refused. Only with a gguf / single_file load; "
-        "the base repo then supplies only configs and tokenizers for these encoders.",
+        "the base repo then supplies only configs and tokenizers for these encoders. Unset on a local DiT "
+        "inside a ComfyUI models tree, the tree's text_encoders file that fits is used when exactly one is "
+        "best (UNSLOTH_DIFFUSION_COMFY_TEXT_ENCODERS=0 turns that off).",
     )
     vae_file: Optional[str] = Field(
         None,
@@ -5230,7 +5248,10 @@ class DiffusionStatusResponse(BaseModel):
         "max_output_side, max_output_pixels, reference_resolutions and localized_edit_modes. "
         "Null when nothing is loaded.",
     )
-    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    engine: Optional[str] = Field(
+        None,
+        description = "Active diffusion engine: diffusers | sd_cpp | mlx (opt-in, Apple Silicon)",
+    )
     native_mode: Optional[str] = Field(
         None,
         description = "Native sd.cpp execution mode: server (resident sd-server) | oneshot "
@@ -5239,6 +5260,11 @@ class DiffusionStatusResponse(BaseModel):
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
+    )
+    mlx_fallback_reason: Optional[str] = Field(
+        None,
+        description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
+        "MLX was not requested or is in use)",
     )
     supports_lora: bool = Field(
         False,
@@ -6126,21 +6152,23 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
-    # Keyframe conditioning (MiniMax-H3). Bounded like the image backend's init_image so one
-    # request cannot buffer a multi-GB payload; ~32 MiB fits a full 4096px source.
+    # Bounded so one request cannot buffer a multi-GB payload; ~32 MiB fits a 4096px source.
     first_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
-        description = "Base64/data-URL image the clip starts from (image-to-video). It sets the "
-        "geometry and is stretched onto the canvas. Omit for text-to-video. Rejected by a "
-        "family that takes no keyframes.",
+        description = "Base64/data-URL image the clip starts from (image-to-video). With width "
+        "and height omitted it picks the canvas: MiniMax-H3 matches its aspect and stretches it "
+        "on; Wan2.2-TI2V-5B and LTX-2 take the resolution preset nearest its aspect and "
+        "centre-crop it on. Omit for text-to-video. Rejected by a family that takes no first "
+        "frame (status supports_first_frame).",
     )
     last_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
-        description = "Base64/data-URL image the clip ends on. Valid on its own (generate up "
-        "TO a frame) or with first_frame (first-and-last-frame video), in which case it "
-        "follows the first and is centre cover-cropped onto the canvas.",
+        description = "Base64/data-URL image the clip ends on (MiniMax-H3 only, status "
+        "supports_last_frame). Valid on its own (generate up TO a frame) or with first_frame "
+        "(first-and-last-frame video), in which case it follows the first and is centre "
+        "cover-cropped onto the canvas.",
     )
 
     # Separate lists preserve the model's image, video, then audio packing order.
@@ -6392,6 +6420,12 @@ class VideoGenerationDefaults(BaseModel):
     canvas_max_pixels: Optional[int] = Field(
         None, description = "Area budget of a source-derived canvas, or null (see canvas_short_edge)"
     )
+    canvas_from_presets: bool = Field(
+        False,
+        description = "True when a first frame without width/height takes the resolution preset "
+        "nearest its aspect ratio (a declared image-to-video pipeline), instead of the "
+        "canvas_short_edge rule",
+    )
     flow_shift: Optional[float] = Field(
         None,
         description = "Released video-schedule sigma shift, or null when the family does not "
@@ -6490,6 +6524,17 @@ class VideoStatusResponse(BaseModel):
         False,
         description = "Whether the LOADED checkpoint takes first/last-frame conditioning images "
         "(gates the image-to-video controls)",
+    )
+    supports_first_frame: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes a first_frame (image-to-video): "
+        "MiniMax-H3 keyframes, or a family's declared image-to-video pipeline (Wan2.2-TI2V-5B, "
+        "LTX-2 / LTX-2.3) built over the loaded components",
+    )
+    supports_last_frame: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes a last_frame. Only MiniMax-H3's "
+        "keyframe partition does; the image-to-video pipelines condition on a first frame alone",
     )
     supports_references: bool = Field(
         False,

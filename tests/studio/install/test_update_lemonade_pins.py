@@ -96,6 +96,13 @@ def test_a_digest_mismatch_is_refused():
         up.update_pins(lp.load_pins(), releases, _hasher)
 
 
+def test_an_asset_without_a_published_digest_is_refused():
+    name = "fastflowlm_99.0.1_linux.tar.gz"
+    releases = _releases("v1.0.0", "v99.0.1", **{name: {"digest": None}})
+    with pytest.raises(RuntimeError, match = "publishes no digest"):
+        up.update_pins(lp.load_pins(), releases, _hasher)
+
+
 def test_a_release_missing_an_asset_is_refused():
     release = _release("v99.0.1", {"linux-x64": "fastflowlm_99.0.1_linux.tar.gz"})
     releases = {"lemonade-sdk/lemonade": {"tag_name": "v1.0.0", "assets": []}}
