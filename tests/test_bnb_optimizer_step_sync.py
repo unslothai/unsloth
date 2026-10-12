@@ -33,7 +33,7 @@ _RUNNER = textwrap.dedent(
     """
     import importlib.util, json, sys
     import torch, bitsandbytes as bnb
-    patched, optim_name = sys.argv[1] == "patched", sys.argv[2]
+    patched, optim_name, side_stream = sys.argv[1] == "patched", sys.argv[2], sys.argv[4] == "stream"
     if patched:
         spec = importlib.util.spec_from_file_location("unsloth_import_fixes_under_test", sys.argv[3])
         fixes = importlib.util.module_from_spec(spec)
@@ -51,12 +51,16 @@ _RUNNER = textwrap.dedent(
     params = [torch.nn.Parameter(torch.randn(s, device = "cuda")) for s in shapes]
     opt = getattr(bnb.optim, optim_name)(params, lr = 1e-2)
     per_step = []
+    stream = torch.cuda.Stream() if side_stream else torch.cuda.current_stream()
     for i in range(10):
         g = torch.Generator(device = "cuda").manual_seed(i)
         for p in params:
             p.grad = torch.randn(p.shape, device = "cuda", generator = g)
         before = syncs[0]
-        opt.step()
+        with torch.cuda.stream(stream):
+            stream.wait_stream(torch.cuda.default_stream())
+            opt.step()
+        torch.cuda.default_stream().wait_stream(stream)
         per_step.append(syncs[0] - before)
     real_sync()
     out = [p.detach().float().cpu().flatten().tolist() for p in params]
@@ -66,9 +70,9 @@ _RUNNER = textwrap.dedent(
 )
 
 
-def _run(mode, optim_name):
+def _run(mode, optim_name, stream = "default"):
     proc = subprocess.run(
-        [sys.executable, "-c", _RUNNER, mode, optim_name, _FIXES],
+        [sys.executable, "-c", _RUNNER, mode, optim_name, _FIXES, stream],
         capture_output = True,
         text = True,
         timeout = 600,
@@ -102,6 +106,17 @@ def test_step_matches_stock_and_drops_only_non_paged_syncs(optim_name):
     else:
         assert min(stock["syncs"]) >= 4  # the stock step syncs once per parameter
         assert patched["syncs"] == [0] * 10
+
+
+@pytest.mark.skipif(not _gpu_ready(), reason = "bitsandbytes optimizers need a CUDA device")
+def test_step_on_a_side_stream_keeps_every_sync():
+    # bitsandbytes launches on the legacy default stream, so off it the per-parameter sync is the only ordering.
+    stock = _run("stock", "AdamW8bit", "stream")
+    patched = _run("patched", "AdamW8bit", "stream")
+    if not patched["wrapped"]:
+        pytest.skip("this bitsandbytes inlines torch.cuda.synchronize; the patch leaves it alone")
+    assert patched["syncs"] == stock["syncs"] and min(stock["syncs"]) >= 4
+    assert patched["params"] == stock["params"]
 
 
 def _load_fixes():
