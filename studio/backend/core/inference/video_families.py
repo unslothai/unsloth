@@ -478,7 +478,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 
 
 # Wan2.1 / FastWan names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan spellings so no other
-# family's name can match.
+# family's name can match. Conditioning markers count only in the last path segment (an owner or folder named "fun" is
+# not a Fun checkpoint), and "fun" only right after the Wan2.1 token, where every Fun release puts it.
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
 _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
     (
@@ -497,8 +498,9 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         "Wan-AI/Wan2.1-T2V-14B-Diffusers) instead.",
     ),
     (
-        r"^(?=.*" + _WAN21_TOKEN + r")(?=.*(?<![a-z0-9])"
-        r"(?:vace|fun|magref|phantom|multitalk|infinitetalk|controlnet|recammaster)(?![a-z0-9]))",
+        r"(?:^|[/\\])(?=[^/\\]*" + _WAN21_TOKEN + r")(?=[^/\\]*(?:(?<![a-z0-9])"
+        r"(?:vace|magref|phantom|multitalk|infinitetalk|controlnet|recammaster)|" + _WAN21_TOKEN + r"-fun)"
+        r"(?![a-z0-9]))[^/\\]*[/\\]*$",
         "This is a Wan2.1 conditioning variant (VACE, Fun, MAGREF, Phantom, talking-head, "
         "ControlNet or ReCamMaster). Its transformer takes extra control inputs the text-to-video "
         "pipeline does not provide, so Studio cannot run it. Load a plain Wan2.1 text-to-video "

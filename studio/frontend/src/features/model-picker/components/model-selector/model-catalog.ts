@@ -569,14 +569,14 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     displayName: "Wan 2.1 T2V 1.3B",
     description: "Text-to-video 480p, small",
     scope: "video",
-    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 29, { totalParams: 1418996800 })],
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 15, { totalParams: 1418996800 })],
   },
   {
     canonicalId: "Wan-AI/Wan2.1-T2V-14B",
     displayName: "Wan 2.1 T2V 14B",
     description: "Text-to-video 480p / 720p",
     scope: "video",
-    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-14B-Diffusers", 80, { totalParams: 14288491584 })],
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-14B-Diffusers", 41, { totalParams: 14288491584 })],
   },
   {
     canonicalId: "hunyuanvideo-community/HunyuanVideo-1.5",

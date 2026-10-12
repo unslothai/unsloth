@@ -109,6 +109,9 @@ def test_detection_table(identifier, expected):
         ("Wan-AI/Wan2.1-VACE-1.3B", _VARIANT),
         ("wan2.1_fun_inp_1.3B_bf16.safetensors", _VARIANT),
         ("QuantStack/Wan2.1_T2V_14B_FusionX_VACE-GGUF", _VARIANT),
+        ("alibaba-pai/Wan2.1-Fun-1.3B-InP", _VARIANT),
+        ("alibaba-pai/Wan2.1-Fun-V1.1-14B-Control", _VARIANT),
+        ("/models/Wan2.1-VACE-14B-diffusers/", _VARIANT),
         ("FastVideo/FastWan2.1-T2V-1.3B-Diffusers", _FASTWAN),
         ("FastVideo/FastWan-QAD-1.3B", _FASTWAN),
     ],
@@ -122,6 +125,20 @@ def test_unsupported_wan21_checkpoints_name_their_reason(identifier, reason):
 @pytest.mark.parametrize("identifier, expected", [row for row in _TABLE if row[1] is not None])
 def test_supported_names_carry_no_refusal(identifier, expected):
     assert vf.unsupported_video_checkpoint_reason(identifier) is None
+
+
+@pytest.mark.parametrize(
+    "identifier, expected",
+    [
+        ("fun/Wan2.1-T2V-14B-Diffusers", "wan2.1-t2v-14b"),
+        ("someone/Wan2.1-T2V-14B-fun-style", "wan2.1-t2v-14b"),
+        ("/home/fun/models/Wan2.1-T2V-1.3B-Diffusers", "wan2.1-t2v-1.3b"),
+        ("vace-lab/Wan2.1-T2V-1.3B-Diffusers", "wan2.1-t2v-1.3b"),
+    ],
+)
+def test_conditioning_markers_outside_the_model_name_do_not_refuse(identifier, expected):
+    assert vf.unsupported_video_checkpoint_reason(identifier) is None
+    assert vf.detect_video_family(identifier).name == expected
 
 
 def test_comfyui_template_defaults():
