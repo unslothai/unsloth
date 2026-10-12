@@ -7488,9 +7488,19 @@ elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     # Apple Silicon: PyTorch gets Metal (MPS) acceleration over unified memory, so not CPU-only.
     step "gpu" "Apple Silicon (Metal, unified memory)"
 elif _has_amd_rocm_gpu; then
+    # The arch read fine and get_torch_index_url sent it to CPU for having no wheels (#8529),
+    # so "no usable ROCm" would blame a working install. Same filter as that function.
+    _amd_unsup_read=""
+    if [ "$_torch_index_pinned" != true ]; then
+        _amd_unsup_read=$(_probe_amd_gfx_arch 2>/dev/null | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+                   END { if (!bad && l != "") print l }') || _amd_unsup_read=""
+    fi
     if [ "$_torch_index_pinned" = true ]; then
         # An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY pin skipped all probing; do not claim ROCm is unusable when a CPU or other index was requested.
         step "gpu" "AMD GPU (torch index pinned: $_torch_index_leaf)" "$C_WARN"
+    elif [ -n "$_amd_unsup_read" ]; then
+        step "gpu" "AMD GPU ($_amd_unsup_read, no ROCm PyTorch wheels -- CPU fallback)" "$C_WARN"
     else
         # AMD GPU visible to the kernel but the torch index stayed CPU: no usable ROCm userspace to pick a wheel. "none" would repeat the false diagnosis this installer used to give.
         step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"
@@ -7520,6 +7530,7 @@ case "$TORCH_INDEX_URL" in
                 else
                     _unsup_disp_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null) || _unsup_disp_gfx=""
                 fi
+                [ -n "$_unsup_disp_gfx" ] || _unsup_disp_gfx="${_amd_unsup_read:-}"
                 if [ -n "$_unsup_disp_gfx" ]; then
                     # Scoped to the card, as above: the SDK may still help another one.
                     substep "AMD GPU detected ($_unsup_disp_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." "$C_WARN"

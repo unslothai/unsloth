@@ -238,3 +238,61 @@ def test_setup_sh_reports_a_read_uncovered_arch(gfx, gfx_all, mkt):
 def test_setup_sh_other_reports_are_unchanged(gfx, gfx_all, mkt, step):
     out = _setup_report(gfx, gfx_all, mkt)
     assert f"STEP: {step}" in out, out
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "gfx,gfx_all",
+    [("gfx1010", "gfx1100"), ("gfx1010", "gfx1010\ngfx1100"), ("gfx803", "gfx1030")],
+)
+def test_setup_sh_a_declared_uncovered_arch_ignores_the_physical_peer(monkeypatch, gfx, gfx_all):
+    """install.sh and _runtime_gfx_target route on UNSLOTH_ROCM_GFX_ARCH alone."""
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", gfx)
+    out = _setup_report(gfx, gfx_all, "AMD Radeon RX 7900 XTX")
+    assert f"STEP: AMD GPU detected ({gfx}) -- no ROCm PyTorch wheels" in out, out
+
+
+@_POSIX
+def test_setup_sh_a_declared_covered_arch_is_unchanged(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1030")
+    out = _setup_report("gfx1030", "gfx1010", "")
+    assert "STEP: AMD ROCm (gfx1030)" in out, out
+
+
+# ── install.sh final GPU summary ────────────────────────────────────────────
+
+
+def _install_summary_gpu_step(probe: str, pinned: bool = False) -> str:
+    src = _INSTALL_SH.read_text(encoding = "utf-8")
+    start = src.index("    # The arch read fine and get_torch_index_url sent it to CPU")
+    tail = '        step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"\n    fi\n'
+    end = src.index(tail, start) + len(tail)
+    script = (
+        'step() { echo "STEP: $2"; }\n_has_amd_rocm_gpu() { return 0; }\n'
+        f"_probe_amd_gfx_arch() {{ printf '%s\\n' '{probe}'; }}\n"
+        f"_torch_index_pinned={'true' if pinned else 'false'}\n_torch_index_leaf=cpu\n"
+        "if false; then :\nelif _has_amd_rocm_gpu; then\n" + src[start:end] + "fi\n"
+    )
+    out = subprocess.run(["sh", "-c", script], stdout = subprocess.PIPE, text = True, timeout = 30)
+    return out.stdout
+
+
+@_POSIX
+@pytest.mark.parametrize("probe", ["gfx1010", "gfx1010:xnack-\ngfx1010", "gfx803"])
+def test_install_summary_names_the_uncovered_arch(probe):
+    bare = probe.split(":")[0].split("\n")[0]
+    out = _install_summary_gpu_step(probe)
+    assert f"STEP: AMD GPU ({bare}, no ROCm PyTorch wheels -- CPU fallback)" in out, out
+    assert "no usable ROCm" not in out, out
+
+
+@_POSIX
+@pytest.mark.parametrize("probe", ["", "gfx1010\ngfx1100", "gfx1030"])
+def test_install_summary_other_hosts_are_unchanged(probe):
+    assert "STEP: AMD GPU (no usable ROCm -- CPU fallback)" in _install_summary_gpu_step(probe)
+
+
+@_POSIX
+def test_install_summary_a_pin_still_wins():
+    out = _install_summary_gpu_step("gfx1010", pinned = True)
+    assert "STEP: AMD GPU (torch index pinned: cpu)" in out, out

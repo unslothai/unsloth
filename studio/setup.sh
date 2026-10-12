@@ -4348,8 +4348,11 @@ EOF
     # per GPU agent by _rocminfo_gpu_records and ordered by _amd_smi_hip_order.
     # An arch READ as uncovered on every probed GPU gets the warning too, not only a missing
     # one: a host with ROCm installed reads gfx1010 fine and still has no wheels (#8529).
-    # install.sh's get_torch_index_url holds the same list.
-    _setup_unsup_gfx=$(printf '%s\n' "$_setup_gfx" "$_setup_gfx_all" | sed 's/:.*$//' \
+    # install.sh's get_torch_index_url holds the same list. A declared arch is all the
+    # installers route on, so the physical inventory is not consulted beside it.
+    _setup_unsup_inv="$_setup_gfx_all"
+    [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _setup_unsup_inv=""
+    _setup_unsup_gfx=$(printf '%s\n' "$_setup_gfx" "$_setup_unsup_inv" | sed 's/:.*$//' \
         | tr '[:upper:]' '[:lower:]' \
         | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                END { if (!bad && l != "") print l }')
