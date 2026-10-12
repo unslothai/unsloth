@@ -67,12 +67,17 @@ def _for_training(module, class_name):
             "_is_unarmed",
             "arm_gradient_checkpointing",
             "set_module_gradient_checkpointing",
+            "switch_training_mode",
+            "_mode_switch_class_info",
+            "_has_gradient_checkpointing",
         )
     ]
     for node in shared:
         node.decorator_list = []
     compiled = ast.Module(body = shared + _helpers_used_by(method, tree) + [method], type_ignores = [])
-    namespace = _Namespace(os = os, inspect = inspect)
+    namespace = _Namespace(
+        os = os, inspect = inspect, torch = __import__("torch"), functools = __import__("functools")
+    )
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
     return namespace["for_training"]
 
