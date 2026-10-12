@@ -206,7 +206,12 @@ def apple_silicon_machine() -> bool:
         libc = ctypes.CDLL(ctypes.util.find_library("c"))
         value = ctypes.c_int(0)
         size = ctypes.c_size_t(ctypes.sizeof(value))
-        if libc.sysctlbyname(b"hw.optional.arm64", ctypes.byref(value), ctypes.byref(size), None, 0) == 0:
+        if (
+            libc.sysctlbyname(
+                b"hw.optional.arm64", ctypes.byref(value), ctypes.byref(size), None, 0
+            )
+            == 0
+        ):
             return value.value == 1
     except Exception:  # noqa: BLE001 -- no answer means an Intel Mac
         pass

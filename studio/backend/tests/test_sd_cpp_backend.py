@@ -1563,9 +1563,12 @@ def test_paravirtual_mac_load_records_the_cpu_device(monkeypatch):
     _run_server_load(monkeypatch, b, servers, device = "mps")
     assert b._state.device == "cpu" and b.status()["device"] == "cpu"
     # A CPU-backend abort is then not retried as a GPU-placement problem.
-    assert b._restart_server_on_cpu_backend(
-        b._state, "unsupported op 'MUL_MAT' ggml_abort", threading.Event()
-    ) is None
+    assert (
+        b._restart_server_on_cpu_backend(
+            b._state, "unsupported op 'MUL_MAT' ggml_abort", threading.Event()
+        )
+        is None
+    )
 
     monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
     b = SdCppDiffusionBackend()

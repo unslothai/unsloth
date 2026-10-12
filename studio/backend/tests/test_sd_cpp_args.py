@@ -74,7 +74,9 @@ def _physical_metal(monkeypatch):
     import platform
 
     monkeypatch.setattr(
-        sd_cpp_args, "apple_silicon_machine", lambda: platform.machine().lower() in ("arm64", "aarch64")
+        sd_cpp_args,
+        "apple_silicon_machine",
+        lambda: platform.machine().lower() in ("arm64", "aarch64"),
     )
 
 
@@ -147,7 +149,9 @@ def test_paravirtual_metal_runs_the_whole_graph_on_the_cpu_backend(monkeypatch):
     assert metal_text_encoder_flags() == ["--backend", "cpu"]
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU")
     files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
-    server = build_sd_cpp_server_command(binary = "sd-server", files = files, host = "127.0.0.1", port = 1234)
+    server = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
+    )
     cli = build_sd_cpp_command(
         binary = "sd-cli", files = files, params = SdCppGenParams(prompt = "x"), output_path = "/o/x.png"
     )
@@ -272,7 +276,12 @@ def test_native_speed_honours_an_explicit_metal_pin_on_a_paravirtual_gpu(monkeyp
     ]
     files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
     server = build_sd_cpp_server_command(
-        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, offload = pin, native_speed = "default"
+        binary = "sd-server",
+        files = files,
+        host = "127.0.0.1",
+        port = 1234,
+        offload = pin,
+        native_speed = "default",
     )
     assert "--diffusion-conv-direct" not in server
     unpinned = build_sd_cpp_server_command(
@@ -304,7 +313,7 @@ def test_video_load_route_skips_the_video_claim_for_a_forced_cpu_h3_load():
     guard = source.index("await asyncio.to_thread(forces_cpu_backend, device)")
     branch = source.index("if forced_cpu:", guard)
     # Neither acquires nor releases VIDEO: an old MPS model keeps its claim until the worker tears it down.
-    assert source[branch : source.index("elif device != \"cpu\":", branch)].strip() == (
+    assert source[branch : source.index('elif device != "cpu":', branch)].strip() == (
         "if forced_cpu:\n            status_dict = await asyncio.to_thread(_begin_load)"
     )
     assert branch < source.index("return acquire_for_request(VIDEO, _begin_load)")
@@ -320,7 +329,10 @@ def test_partial_backend_specs_leave_the_diffusion_model_on_metal(monkeypatch):
     assert native_speed_flags("default", ["--backend", "vae=cpu,te=cpu"]) == fa_only
     assert native_speed_flags("default", ["--backend", "diffusion=cpu"]) == full
     # An explicit diffusion entry beats the bare default, as in sd.cpp.
-    assert native_speed_flags("default", ["--backend", "cpu", "--backend", "diffusion=MTL0"]) == fa_only
+    assert (
+        native_speed_flags("default", ["--backend", "cpu", "--backend", "diffusion=MTL0"])
+        == fa_only
+    )
     assert native_speed_flags("default", ["--backend", "MTL0,diffusion=cpu"]) == full
 
 
@@ -361,7 +373,9 @@ def test_upscale_on_paravirtual_metal_runs_on_the_cpu_backend(monkeypatch):
     )
     assert pinned.count("--backend") == 1 and pinned[-1] == "MTL0"
     monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
-    assert "--backend" not in build_sd_cpp_upscale_command("sd-cli", params, output_path = "/o/out.png")
+    assert "--backend" not in build_sd_cpp_upscale_command(
+        "sd-cli", params, output_path = "/o/out.png"
+    )
 
 
 def test_native_speed_flags():

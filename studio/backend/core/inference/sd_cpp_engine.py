@@ -744,7 +744,8 @@ class SdCppEngine:
         """
         offload = list(offload or [])
         speed = [
-            f for f in native_speed_flags(native_speed, [*offload, *(extra_args or ())])
+            f
+            for f in native_speed_flags(native_speed, [*offload, *(extra_args or ())])
             if f not in offload
         ]
         merged_extra = speed + list(extra_args or [])
