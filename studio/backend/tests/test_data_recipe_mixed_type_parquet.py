@@ -277,3 +277,13 @@ def test_batch_unify_leaves_agreeing_columns_and_promotes_with_arrow(tmp_path: P
     assert table.column("ts").to_pylist() == [stamp, stamp]
     assert table.column("maybe").to_pylist() == [None, stamp]
     assert table.column("r").to_pylist() == [{"o": '{"d": true}'}, {"o": "x"}]
+
+
+def test_dates_and_datetimes_on_one_path_keep_their_time() -> None:
+    import datetime
+
+    from core.data_recipe.service import _unify_cell_types
+
+    values = [datetime.date(2026, 1, 2), datetime.datetime(2026, 1, 2, 12, 34, 56, 123456), None]
+    assert _unify_cell_types(values) == ["2026-01-02", "2026-01-02T12:34:56.123456", None]
+    assert _unify_cell_types([1, 2.5]) == [1, 2.5]

@@ -266,7 +266,9 @@ def _as_json_text(value: Any) -> Any:
     if isinstance(value, str):
         return value
     value = to_jsonable(value)
-    return None if value is None else json.dumps(value, ensure_ascii = False, default = str)
+    if value is None or isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii = False, default = str)
 
 
 def _unify_cell_types(values: list[Any]) -> list[Any]:
@@ -301,6 +303,10 @@ def _unify_cell_types(values: list[Any]) -> list[Any]:
                 result.append(value)
         return result
     elif not any(isinstance(value, (dict, list, tuple)) for value in present):
+        kinds = {type(value) for value in present}
+        # Arrow infers a mixed path from its first value (a date then a datetime drops the time); int/float is safe.
+        if len(kinds) > 1 and not kinds <= {int, float}:
+            return [_as_json_text(value) for value in values]
         try:
             pyarrow.array(present, from_pandas = True)
             return values
