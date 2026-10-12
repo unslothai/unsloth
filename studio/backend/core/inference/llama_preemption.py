@@ -702,6 +702,9 @@ class Participant:
     # The state this holder was in when the sweep chose it. Only read while PREEMPTING, so
     # a value left behind by an earlier round is never consulted.
     preempted_from: str = ""
+    # Who an unpausable holder's plan chose, for its route to wait on before it sends: the
+    # victims hold their cells until their streams see the signal.
+    awaiting_victims: List[str] = field(default_factory = list)
 
     def in_reading_tokens(self) -> int:
         """The part of the charge a reading taken now can hold: none until measured, and not a
@@ -836,6 +839,7 @@ class PreemptionController:
         "_resident",
         "_resident_seq",
         "_last_sample_seq",
+        "_last_sample_started",
         "_resident_at",
         "_clock",
         "_resume_tickets",
@@ -873,6 +877,9 @@ class PreemptionController:
         # The clock as it stood when the last reading was recorded: a probe that started
         # before that is older than what is already here.
         self._last_sample_seq = 0
+        # The epoch the last recorded reading's probe STARTED at, what ordering compares: a
+        # mark between two overlapping probes moves `_last_sample_seq` past the newer one.
+        self._last_sample_started = 0
         # When the last good reading was taken, on `_clock` (monotonic; tests swap it).
         self._resident_at = 0.0
         self._clock = time.monotonic
@@ -1215,7 +1222,11 @@ class PreemptionController:
         count back over a newer sample. Returns the sequence it was recorded at, for
         `note_erased_since`, or None when nothing was recorded."""
         with self._lock:
-            if started_at_seq is not None and started_at_seq < self._last_sample_seq:
+            if (
+                started_at_seq is not None
+                and self._last_sample_seq
+                and started_at_seq <= self._last_sample_started
+            ):
                 return None
             if resident is None:
                 if (
@@ -1234,6 +1245,10 @@ class PreemptionController:
             ceiling = self._budget if self._budget > 0 else int(resident)
             self._resident = max(0, min(int(resident), ceiling))
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
+            # Taken now when the start is unknown, so it outranks every probe already out.
+            self._last_sample_started = (
+                self._resident_seq if started_at_seq is None else int(started_at_seq)
+            )
             self._resident_seq += 1
             self._last_sample_seq = self._resident_seq
             self._resident_at = self._clock()
@@ -1510,6 +1525,44 @@ class PreemptionController:
                 participant.tokens = max(participant.tokens, participant.prompt_tokens)
             else:
                 participant.tokens = max(participant.tokens, participant.base_tokens)
+
+    def wait_released(
+        self,
+        gen_ids,
+        timeout: float,
+        *,
+        poll_s: float = 0.02,
+    ) -> bool:
+        """Block until each of ``gen_ids`` has stopped being a pending victim, or ``timeout``.
+
+        A chosen chat keeps decoding into its cells until its stream sees the signal and
+        closes upstream, so the room a plan projected is not free yet. True when every one
+        has paused, finished, or declined. Blocking: never call it on the event loop."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        pending = list(gen_ids or ())
+        while True:
+            with self._lock:
+                pending = [
+                    gid
+                    for gid in pending
+                    if (p := self._participants.get(gid)) is not None
+                    and p.state == ParticipantState.PREEMPTING
+                ]
+            if not pending:
+                return True
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(poll_s, left))
+
+    def take_awaited_victims(self, gen_id: str) -> List[str]:
+        """The victims ``gen_id``'s plan chose and its route has not waited on yet."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return []
+            taken, participant.awaiting_victims = participant.awaiting_victims, []
+            return taken
 
     def set_state(self, gen_id: str, state: str) -> None:
         """Report a safe point."""

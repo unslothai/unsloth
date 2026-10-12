@@ -447,7 +447,7 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
   );
   assert.match(
     thread,
-    /const remedy = reason \? incompleteRemedy\(reason\) : null/,
+    /const remedy = reason \? incompleteRemedyFor\(reason, canResume\) : null/,
     "the bar no longer asks whether resuming can help",
   );
   assert.match(
