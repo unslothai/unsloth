@@ -391,6 +391,24 @@ class TestTheFinalPassPausesAndResumes:
         )
         assert recorder.payloads[0]["max_tokens"] == 512, "the rounds were already clamped"
 
+    def test_an_allowance_does_not_hand_a_paused_pass_its_cap_back(self, monkeypatch):
+        # Each attempt re-derives max_tokens from its attempt cap and the allowance.
+        signal = preemption.PreemptSignal()
+        recorder, _events = _final_pass(
+            monkeypatch,
+            [
+                _tool_call_turn(),
+                [_delta("The current kernel"), _finish(), _done()],
+                [_delta(" is 6.10."), _finish(), _done()],
+            ],
+            signal = signal,
+            policy = _RecordingPolicy(),
+            max_tokens = 60,
+            admission_output_allowance = 2048,
+        )
+        assert recorder.payloads[1]["max_tokens"] == 60
+        assert 1 <= recorder.payloads[2]["max_tokens"] < 60, recorder.payloads[2]["max_tokens"]
+
 
 class TestTheFinalPassReportsItsGrowth:
     """The sweep is only as good as the thing feeding it."""

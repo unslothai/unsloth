@@ -651,7 +651,7 @@ def test_an_exactly_counted_round_is_bounded_by_its_count_not_the_estimate(monke
             assert seen.get("prompt_tokens") == 4000
             assert seen.get("prompt_counted") is True
             seen.clear()
-            # A different wire catalogue was not what the tokenizer counted.
+            # A different wire catalogue is counted on its own, so its bound is exact too.
             inference._openai_llama_admission_recost(
                 reservation,
                 payload.messages,
@@ -663,7 +663,8 @@ def test_an_exactly_counted_round_is_bounded_by_its_count_not_the_estimate(monke
                 wire_tools = None,
                 count_prepared_prompt = True,
             )
-            assert not seen.get("prompt_counted")
+            assert seen.get("prompt_counted") is True
+            assert seen.get("prompt_tokens") == 4000
         finally:
             lease.release()
 

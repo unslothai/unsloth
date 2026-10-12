@@ -108,6 +108,8 @@ def _load_torch_varlen_attn():
 
 _TORCH_VARLEN_ATTN = _load_torch_varlen_attn()
 
+from .flash_impl import flash_impl_allows  # noqa: E402
+
 
 def _torch_varlen_takes(
     Q: Tensor,
@@ -135,6 +137,9 @@ def _torch_varlen_takes(
         return False
     # torch 2.14 routes bidirectional MHA to cuDNN ragged on sm90/sm100: no head_dim 256 plan.
     if not is_causal and Q.shape[1] == K.shape[1]:
+        return False
+    # An FA4 / FA3 impl behind torch's flash op lacks some shapes (sm100: hd 136-248, hd256 + window).
+    if not flash_impl_allows(Q.shape[-1], sliding_window, Q.device):
         return False
     return not torch.are_deterministic_algorithms_enabled()
 

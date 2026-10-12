@@ -2992,6 +2992,8 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # it waits, but aborting leaves llama-server holding the prompt cache. So idle slots go.
         waiting = int(getattr(snapshot, "paused", 0) or 0)
         needed = over if over > 0 else (int(occupancy.get("resident") or 0) if waiting else 0)
+        # Whether this reading's residue was already offered: see `_gguf_idle_residue_wanted`.
+        _gguf_slots_seen["reclaim_tried"] = needed > 0
         if needed > 0 and occupancy.get("idle"):
             freed = reclaim_idle_slots(
                 occupancy,
@@ -3023,6 +3025,16 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                 if freed >= int(occupancy.get("idle_tokens") or 0):
                     controller.note_cells_reclaimed(parked_before)
                 _gguf_slots_seen["occupancy"] = None
+
+    def _gguf_idle_residue_wanted(controller) -> bool:
+        """Whether the cached reading holds idle residue it never offered, and the ledger is
+        now over the ceiling: inside the refresh throttle the plan would otherwise pause a
+        live chat for room that residue gives."""
+        occupancy = _gguf_slots_seen.get("occupancy")
+        if not occupancy or not occupancy.get("idle") or _gguf_slots_seen.get("reclaim_tried"):
+            return False
+        snapshot = controller.snapshot()
+        return int(snapshot.committed or 0) > max(0, snapshot.budget - snapshot.buffer)
 
     _gguf_live_state = {"state": ParticipantState.DECODING}
 
@@ -3069,7 +3081,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
             contended = controller.contended()
             victims = controller.observe(completion_id, generated, plan = not contended)
             if contended:
-                _gguf_refresh_residency(controller)
+                _gguf_refresh_residency(controller, force = _gguf_idle_residue_wanted(controller))
                 victims = controller.plan_preemptions(needed = 0)
             if victims:
                 # Dead residue first: an idle slot's cache belongs to a finished request, so
@@ -4116,8 +4128,9 @@ def _openai_llama_admission_recost(
                 payload, message_video_clips = _conversation_video_clips(conversation)
             )
         # Price the actual outgoing catalogue separately from the reservation catalogue.
-        # The tokenizer's count stands only when it counted that same catalogue.
-        wire_counted = prompt_exact and wire_tools is injected_tools
+        # The tokenizer's count stands only when it counted that same catalogue; compared by
+        # value, since the tool loop hands each round a copy.
+        wire_counted = prompt_exact and wire_tools == injected_tools
         wire_prompt_tokens = (
             prompt_tokens
             if wire_counted
@@ -4129,6 +4142,14 @@ def _openai_llama_admission_recost(
                 vision = vision,
             )
         )
+        if count_prepared_prompt and prompt_exact and not wire_counted:
+            # Another catalogue (none on the final pass): counted too, since the estimate
+            # undercounts dense text by several times.
+            wire_prompt_tokens, wire_counted = _count_gguf_admission_prompt_detail(
+                llama_backend, payload, conversation, wire_tools, cancel_event = cancel_event
+            )
+            if cancel_event is not None and cancel_event.is_set():
+                raise LlamaAdmissionCancelled("stopped while the round was being counted")
         if counted_out is not None and wire_counted:
             counted_out["prompt"] = wire_prompt_tokens
         # Reading "Max" literally here would put the run back on the whole cache at its
@@ -6182,6 +6203,24 @@ async def artifact_preview_page(token: str):
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+from core.inference import react_preview
+
+
+class ArtifactReactCompileRequest(BaseModel):
+    source: str
+    lang: Literal["jsx", "tsx"] = "tsx"
+
+
+@studio_router.post("/artifact-react-compile", include_in_schema = False)
+async def compile_artifact_react_preview(
+    request: ArtifactReactCompileRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Compile a chat React component for the preview frame; Node only transpiles, never runs it."""
+    if len(request.source.encode("utf-8", "surrogatepass")) > react_preview.MAX_SOURCE_BYTES:
+        raise HTTPException(status_code = 413, detail = "This component is too large to preview")
+    return await react_preview.compile_react_preview_async(request.source, request.lang)
 
 
 # A bare "*" is refused: such a template gets the default-deny.
@@ -33948,6 +33987,14 @@ async def produce_openai_chat_completions(
                             _stream_finish = event.get("finish_reason")
                             continue
 
+                        if event["type"] == "context_usage":
+                            # Must not reach the content branch below: its empty text resets prev_text.
+                            if _ui_events:
+                                yield f"data: {json.dumps(event)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
+
                         if event["type"] == "quote_cut":
                             # Bypass content handling to avoid resetting the text cursor.
                             if _ui_events:
@@ -37648,6 +37695,44 @@ async def reveal_sandbox_dir(
         logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to open file manager")
     return {"status": "ok", "path": sandbox_dir}
+
+
+@router.post("/sandbox/{session_id}/upload")
+async def upload_sandbox_file(
+    session_id: str,
+    file: UploadFile = File(...),
+    overwrite: bool = Form(False),
+    session: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Put one file into this chat's sandbox folder, where its tools read and write.
+
+    Saved at the folder's root under the file's own name. A taken name is a 409 unless
+    ``overwrite``, so a second upload never silently replaces what a tool wrote.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from core.inference.tools import SandboxUploadExists, save_sandbox_upload
+    from utils.upload_limits import SANDBOX_UPLOAD_MAX_BYTES
+
+    def _chunks():
+        total = 0
+        while chunk := file.file.read(1 << 20):
+            total += len(chunk)
+            if total > SANDBOX_UPLOAD_MAX_BYTES:
+                raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
+            yield chunk
+
+    try:
+        saved = await run_in_threadpool(
+            save_sandbox_upload, session or session_id, file.filename, _chunks(), overwrite
+        )
+    except SandboxUploadExists as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} already exists") from None
+    except OSError:
+        logger.error("Failed to save a sandbox upload", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Could not save the file") from None
+    return saved
 
 
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
@@ -44230,6 +44315,7 @@ async def anthropic_messages(
     def _anthropic_recost(conversation, round_tools = None) -> Optional[int]:
         # RE-COST FIRST, as the GGUF loop does: the publish below reads `lease.tokens`,
         # and this is what grows it for the round that just began.
+        _anthropic_counted: dict = {}
         _recosted_allowance = _openai_llama_admission_recost(
             _anthropic_admission_hold["reservation"],
             conversation,
@@ -44241,9 +44327,12 @@ async def anthropic_messages(
             output_tokens = payload.max_tokens,
             injected_tools = openai_tools,
             wire_tools = round_tools,
+            # Counted as the GGUF loop counts: tool results estimate far below their tokens.
+            count_prepared_prompt = True,
             cancel_event = cancel_event,
             # Erased by an idle-slot reclaim while parked: yielding is honest, so it may wait.
             cache_is_empty = _openai_llama_self_erased(llama_backend, message_id),
+            counted_out = _anthropic_counted,
         )
         _openai_llama_publish_round_charge(
             llama_backend = llama_backend,
@@ -44254,6 +44343,7 @@ async def anthropic_messages(
             # What this round SENDS: None on the final pass, which renders none.
             rendered_tools = round_tools,
             observe_tokens = _anthropic_observe_tokens,
+            counted_prompt_tokens = _anthropic_counted.get("prompt"),
         )
         return _recosted_allowance
 
@@ -48765,6 +48855,14 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
         )
 
 
+def _refuse_mlx_loras(request: DiffusionLoadRequest) -> None:
+    if request.loras:
+        raise HTTPException(
+            status_code = 400,
+            detail = "LoRA adapters are not supported on the MLX engine yet.",
+        )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -48794,7 +48892,7 @@ async def diffusion_download_plan(
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
-    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+    from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -48846,13 +48944,27 @@ async def diffusion_download_plan(
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
         # Plan for the engine /images/load will pick: a GGUF on a GPU-less host routes to native
         # sd.cpp, which reads different files. Card-scoped, since the failure records are per card.
-        if (
-            fam is not None
-            and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
-        ):
+        predicted = (
+            predict_engine(
+                fam,
+                model_kind = kind,
+                gpu_ordinal = gpu_ordinal,
+                gguf_filename = request.gguf_filename,
+            )
+            if fam is not None
+            else None
+        )
+        if predicted == ENGINE_SD_CPP:
             _refuse_native_component_files(request)
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
+        elif predicted == ENGINE_MLX:
+            # Opt-in MLX engine (UNSLOTH_DIFFUSION_MLX=1): same single-GGUF contract as native.
+            _refuse_native_component_files(request)
+            _refuse_mlx_loras(request)
+            from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
+
+            planner = get_mlx_diffusion_backend()
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -49054,7 +49166,8 @@ async def load_diffusion_model_gated(
     )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
-    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+    from core.inference.sd_cpp_args import forces_cpu_backend
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -49120,12 +49233,20 @@ async def load_diffusion_model_gated(
         try:
             # Card-scoped like the activation below, or the wrong engine's preflight runs.
             pending_name = (
-                predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal)
+                predict_engine(
+                    fam,
+                    model_kind = kind,
+                    gpu_ordinal = gpu_ordinal,
+                    gguf_filename = request.gguf_filename,
+                )
                 if fam is not None
                 else None
             )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
+        # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
+        if pending_name == ENGINE_MLX:
+            needs_gpu = True
         # Before selection: switching to diffusers would unload the resident off-torch model, then refuse.
         if off_torch is not None and pending_name != ENGINE_SD_CPP:
             _guard_diffusion_load_against_training()
@@ -49149,8 +49270,11 @@ async def load_diffusion_model_gated(
                 repo_id = request.model_path,
                 base_repo = request.base_repo,
             )
-        elif fam is not None and pending_name == ENGINE_SD_CPP:
+        elif fam is not None and pending_name in (ENGINE_SD_CPP, ENGINE_MLX):
+            # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
             _refuse_native_component_files(request)
+            if pending_name == ENGINE_MLX:
+                _refuse_mlx_loras(request)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
             # loads it "works" for are precisely the silent mismatch this whole change exists to
@@ -49196,6 +49320,8 @@ async def load_diffusion_model_gated(
                 before_fallback = (
                     _guard_diffusion_load_against_training if off_torch is not None else None
                 ),
+                # Only the opt-in MLX engine reads it (to judge the GGUF quant).
+                gguf_filename = request.gguf_filename,
             )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
@@ -49212,8 +49338,10 @@ async def load_diffusion_model_gated(
         # only when the prediction was inconclusive or wrong; a correct one already paid it.
         activated = active_engine_name()
         if fam is not None and activated != pending_name:
-            if activated == ENGINE_SD_CPP:
+            if activated in (ENGINE_SD_CPP, ENGINE_MLX):
                 _refuse_native_component_files(request)
+                if activated == ENGINE_MLX:
+                    _refuse_mlx_loras(request)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
@@ -49237,6 +49365,15 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        if activated == ENGINE_MLX:
+            needs_gpu = True
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
+        if (
+            activated == ENGINE_SD_CPP
+            and device == "mps"
+            and await asyncio.to_thread(forces_cpu_backend, device)
+        ):
+            needs_gpu = False
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,

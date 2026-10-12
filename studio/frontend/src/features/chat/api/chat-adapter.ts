@@ -6495,6 +6495,29 @@ export function createOpenAIStreamAdapter(
         usage?: ServerUsage;
         timings?: ServerTimings;
       } | null = null;
+      // Gate on the captured checkpoint and thread so a late write from provider A cannot repaint
+      // the bar after a switch to B. A first turn is adopted onto an id mid-run and autosave moves
+      // activeThreadId with it, so read the adopted key, or the bar stays blank for life.
+      const publishContextUsage = (
+        usage: NonNullable<
+          ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"]
+        >,
+      ) => {
+        const usageKey = liveThreadKey(serverCancel);
+        const usageThreadKey = usageKey === "__default" ? null : usageKey;
+        const store = useChatRuntimeStore.getState();
+        // File it under this run's own thread even when the gate blocks the visible write, so
+        // switching back re-applies it.
+        if (usageThreadKey !== null) {
+          store.setThreadContextUsage(usageThreadKey, usage);
+        }
+        if (
+          store.activeThreadId === (usageThreadKey ?? activeThreadIdAtRunStart) &&
+          store.params.checkpoint === params.checkpoint
+        ) {
+          store.setContextUsage(usage);
+        }
+      };
       // llama.cpp output count, including reasoning.
       let windowCount: number | null = null;
 
@@ -7354,6 +7377,37 @@ export function createOpenAIStreamAdapter(
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
               if (reasoningDurationTracker.recordServerDuration(reasoningMs)) {
+                continue;
+              }
+
+              // A tool loop handing off to a tool: show its context now rather than at turn end, which
+              // still writes the final figure.
+              const liveContext = (
+                chunk as unknown as {
+                  _contextUsage?: {
+                    prompt_tokens?: unknown;
+                    completion_tokens?: unknown;
+                    context_tokens?: unknown;
+                    cached_tokens?: unknown;
+                  };
+                }
+              )._contextUsage;
+              if (liveContext !== undefined) {
+                const { prompt_tokens, completion_tokens, context_tokens, cached_tokens } =
+                  liveContext ?? {};
+                if (
+                  typeof prompt_tokens === "number" &&
+                  typeof completion_tokens === "number" &&
+                  typeof context_tokens === "number"
+                ) {
+                  publishContextUsage({
+                    promptTokens: prompt_tokens,
+                    completionTokens: completion_tokens,
+                    totalTokens: context_tokens,
+                    contextTokens: context_tokens,
+                    cachedTokens: typeof cached_tokens === "number" ? cached_tokens : 0,
+                  });
+                }
                 continue;
               }
 
@@ -8656,23 +8710,13 @@ export function createOpenAIStreamAdapter(
           0;
         const cacheWriteTokens = usageCacheWriteTokens(meta?.usage);
 
-        // Gate on the captured checkpoint and thread so a late completion from provider A cannot
-        // repaint the bar after a switch to B. A first turn is adopted onto an id mid-run, so read
-        // the adopted key or the bar stays blank for life.
-        // A first turn is adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
-        // adopted key, or the run stays "unresolved" for life and the bar stays blank.
-        const usageKey = liveThreadKey(serverCancel);
-        const usageThreadKey = usageKey === "__default" ? null : usageKey;
-        const usageThreadIsVisible =
-          useChatRuntimeStore.getState().activeThreadId ===
-          (usageThreadKey ?? activeThreadIdAtRunStart);
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
           typeof meta.usage.total_tokens === "number"
         ) {
-          const usage = {
+          publishContextUsage({
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
@@ -8681,21 +8725,7 @@ export function createOpenAIStreamAdapter(
               : {}),
             cachedTokens,
             cacheWriteTokens,
-          };
-          // File it under this run's own thread even when the gate blocks the visible write, so
-          // switching back re-applies it.
-          if (usageThreadKey !== null) {
-            useChatRuntimeStore
-              .getState()
-              .setThreadContextUsage(usageThreadKey, usage);
-          }
-          if (
-            usageThreadIsVisible &&
-            useChatRuntimeStore.getState().params.checkpoint ===
-              params.checkpoint
-          ) {
-            useChatRuntimeStore.getState().setContextUsage(usage);
-          }
+          });
         }
 
         if (

@@ -8859,7 +8859,7 @@ def test_h3_guidance_normalises_to_its_own_default_not_a_neighbours(monkeypatch)
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
-    local = "/models/wan/minimax_h3_fl2va-Q4_K_M.gguf"
+    local = "/models/ltx/minimax_h3_fl2va-Q4_K_M.gguf"
     backend._state = dataclasses.replace(backend._state, repo_id = local)
 
     # Precondition: the identifier really does resolve to a different family's guidance, so the
@@ -9920,7 +9920,7 @@ def _stub_denoiser_seed(
         kind = "repo", location = repo, filename = "x.pt", fallback_filename = None
     )
     monkeypatch.setattr(
-        dq, "denoiser_prequant_sources", lambda fam, s, base: {c: source for c in components}
+        dq, "denoiser_prequant_sources", lambda fam, s, base, **_: {c: source for c in components}
     )
     modules = {c: object() for c in components}
     calls = []
@@ -10318,7 +10318,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
     monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
 
@@ -10379,7 +10379,7 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
     monkeypatch.setattr(
         video_mod, "select_transformer_quant_scheme", lambda target, requested, **kw: requested
     )
@@ -10477,7 +10477,7 @@ def _a14b_plan(monkeypatch):
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
 
 
 def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(monkeypatch):
@@ -11402,7 +11402,7 @@ def test_an_nvfp4_video_family_with_no_hosted_checkpoint_installs_no_flashinfer(
     import core.inference.video_denoiser_prequant as dq
 
     installs, listed, _ = _video_install_probe(monkeypatch)
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: None)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: None)
     _video_load_to_the_install_gate()
     assert installs == []
     assert listed == []

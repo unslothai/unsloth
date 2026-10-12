@@ -8213,6 +8213,33 @@ def _preempt_gave_up_event(context_length, max_tokens) -> dict:
     return event
 
 
+def _context_usage_event(usage, timings):
+    """UI frame pricing the context one finished tool-loop pass leaves behind, or None.
+
+    ``timings.prompt_n`` excludes the KV-cache hit (``cache_n``) while ``usage.prompt_tokens``
+    includes it, so a prompt read from timings adds the hit back.
+    """
+    usage = usage or {}
+    timings = timings or {}
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or timings.get(
+        "cache_n"
+    )
+    prompt = usage.get("prompt_tokens")
+    if not prompt and timings.get("prompt_n") is not None:
+        prompt = int(timings.get("prompt_n") or 0) + int(timings.get("cache_n") or 0)
+    completion = usage.get("completion_tokens") or timings.get("predicted_n")
+    if not prompt:
+        return None
+    prompt, completion = int(prompt), int(completion or 0)
+    return {
+        "type": "context_usage",
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "context_tokens": prompt + completion,
+        "cached_tokens": int(cached or 0),
+    }
+
+
 def _llama_chunk_has_generated_output(data: dict) -> bool:
     if data.get("type") == "diffusion_frame":
         return True
@@ -39829,6 +39856,10 @@ class LlamaCppBackend:
                 )
                 yield from _finish_after_giving_up()
                 return
+            # Cleared before `on_resumed`, as the tool paths do: the policy protocol does not
+            # promise a clear, and a signal still set aborts the resumed attempt at once.
+            if preempt_event is not None:
+                preempt_event.clear()
             # Tell the controller this one is decoding again, or the participant stays PAUSED in
             # the ledger while generating and its cells count as reclaimable.
             preempt_policy.on_resumed()
@@ -42480,6 +42511,9 @@ class LlamaCppBackend:
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
                 _remember_attempt(_fu, _it)
+                # Refreshes the context meter from the usage llama-server already reported (no
+                # recount). Sent once the first tool is running, so it never delays a tool.
+                _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
@@ -42864,6 +42898,10 @@ class LlamaCppBackend:
                             ),
                         }
                         yield start_event
+                        if needs_confirm and _pending_context_usage is not None:
+                            # Nothing runs while a human decides, so the meter need not wait for it.
+                            yield _pending_context_usage
+                            _pending_context_usage = None
 
                         _decision = (
                             wait_tool_decision(
@@ -43596,6 +43634,12 @@ class LlamaCppBackend:
                                 **kwargs,
                             )
 
+                        # Rides the round's first tool, sequential or overlapped, so the
+                        # meter refreshes once per round and only after that tool is running.
+                        _started_events = (
+                            (_pending_context_usage,) if _pending_context_usage is not None else ()
+                        )
+                        _pending_context_usage = None
                         # Without this the handler below re-raises and a bad
                         # argument kills the whole answer. A raising tool is the
                         # tool's failure; the other two loops hand it back.
@@ -43604,6 +43648,7 @@ class LlamaCppBackend:
                             tool_name = decision.tool_name,
                             tool_call_id = decision.tool_call_id,
                             cancel_event = cancel_event,
+                            started_events = _started_events,
                         )
                         if _parallel_round:
                             # Prepared here, started below the loop once every call is attached to
@@ -43980,6 +44025,11 @@ class LlamaCppBackend:
                             "result": "",
                             "provenance": provisional_tool_provenance(_pname),
                         }
+
+                # No call in the batch ran (denied, duplicate, capped), so nothing was waiting on it.
+                if _pending_context_usage is not None:
+                    yield _pending_context_usage
+                    _pending_context_usage = None
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
@@ -45381,7 +45431,9 @@ class LlamaCppBackend:
                 # accumulator. Floored at 1: a request for zero tokens returns nothing.
                 _cap_left_p = _remaining_output_budget(0)
                 if _cap_left_p is not None:
-                    stream_payload["max_tokens"] = max(1, _cap_left_p)
+                    # The attempt cap too: the next attempt re-derives max_tokens from it.
+                    _final_attempt_cap = max(1, _cap_left_p)
+                    stream_payload["max_tokens"] = _final_attempt_cap
                 _stream_done = False
                 _metadata_finish_reason = None
                 # Per attempt: this attempt's charge has just been folded into the accumulator,

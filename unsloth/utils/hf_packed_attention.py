@@ -16,8 +16,8 @@ _FLAG = "_unsloth_hf_packed_varlen"
 _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
 HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0}
-# All layers of a forward share one mask object: weakref, (cu_seqlens, versions), verdict.
-_MASK_CHECK = [None, None, None]
+# Layers of one window share a mask object: window -> [weakref, (cu_seqlens, versions), verdict].
+_MASK_CHECK = {}
 _MASK_CHECK_ROWS = 1024
 
 
@@ -25,9 +25,14 @@ def _disabled() -> bool:
     return os.environ.get(_ENV, "1").lower() in ("0", "false", "no", "off")
 
 
-def _mask_is_block_causal(attention_mask, cu_seqlens, total) -> bool:
-    """Exactly causal inside each packed segment and closed across them; windows, bidirectional
-    spans, pad tails and None (one document, already is_causal) keep the wrapped path."""
+def _mask_is_block_causal(
+    attention_mask,
+    cu_seqlens,
+    total,
+    window = None,
+) -> bool:
+    """Exactly causal (k > q - window when windowed) inside each packed segment and closed across
+    them; other windows, bidirectional spans, pad tails and None keep the wrapped path."""
     if not (
         isinstance(attention_mask, torch.Tensor)
         and attention_mask.dtype == torch.bool
@@ -40,7 +45,7 @@ def _mask_is_block_causal(attention_mask, cu_seqlens, total) -> bool:
     # Versions catch in-place edits; inference tensors have none, so are always rechecked.
     cacheable = not (torch.is_inference(attention_mask) or torch.is_inference(cu_seqlens))
     key = (attention_mask._version, cu_seqlens._version, total) if cacheable else None
-    ref, checked, verdict = _MASK_CHECK
+    ref, checked, verdict = _MASK_CHECK.get(window, (None, None, None))
     if (
         cacheable
         and ref is not None
@@ -53,23 +58,27 @@ def _mask_is_block_causal(attention_mask, cu_seqlens, total) -> bool:
     verdict = False
     if int(cu_seqlens[-1].item()) == total:
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to(torch.int64)
+        # output_size: no host sync to size the result.
         segment = torch.repeat_interleave(
             torch.arange(lengths.numel(), device = attention_mask.device),
             lengths.to(attention_mask.device),
+            output_size = total,
         )
         position = torch.arange(total, device = attention_mask.device)
-        # Row blocks keep the reference to _MASK_CHECK_ROWS x T, not a second T x T mask.
-        verdict = True
+        # Row blocks avoid a second T x T mask; one host sync for the whole mask.
+        mismatch = torch.zeros((), dtype = torch.bool, device = attention_mask.device)
         for start in range(0, total, _MASK_CHECK_ROWS):
             rows = slice(start, min(start + _MASK_CHECK_ROWS, total))
             expected = (segment[rows, None] == segment[None, :]) & (
                 position[None, :] <= position[rows, None]
             )
-            if not torch.equal(attention_mask[0, 0, rows], expected):
-                verdict = False
-                break
+            if window is not None:
+                # transformers' sliding_window_overlay: kv_idx > q_idx - sliding_window.
+                expected &= position[None, :] > position[rows, None] - window
+            mismatch |= (attention_mask[0, 0, rows] != expected).any()
+        verdict = not bool(mismatch)
     if cacheable:
-        _MASK_CHECK[:] = [weakref.ref(attention_mask), (cu_seqlens, key), verdict]
+        _MASK_CHECK[window] = [weakref.ref(attention_mask), (cu_seqlens, key), verdict]
     return verdict
 
 
@@ -83,9 +92,22 @@ def _autocast_dtype_differs(query) -> bool:
     return enabled and dtype != query.dtype
 
 
-def _sliding_or_softcapped(module, kwargs) -> bool:
-    if kwargs.get("sliding_window") or getattr(module, "sliding_window", None):
-        return True
+_NO_WINDOW = object()
+
+
+def _sliding_window(module, kwargs):
+    """None, a positive int window, or _NO_WINDOW when the window is not one varlen can take."""
+    window = kwargs.get("sliding_window")
+    if window is None:
+        window = getattr(module, "sliding_window", None)
+    if window is None:
+        return None
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return _NO_WINDOW
+    return window
+
+
+def _softcapped(module, kwargs) -> bool:
     if kwargs.get("softcap") or getattr(module, "sinks", None) is not None:
         return True
     if getattr(module, "attn_logit_softcapping", None):
@@ -187,6 +209,7 @@ def _sdpa_packed_varlen(
             is_causal = is_causal,
             **kwargs,
         )
+    from .flash_impl import flash_impl_allows
     from .attention_dispatch import (
         _VARLEN_INT32_GUARD_DISABLED,
         FLASH_VARLEN,
@@ -198,6 +221,7 @@ def _sdpa_packed_varlen(
 
     bsz, n_heads, q_len, head_dim = query.shape
     seq_info = torch_varlen = backend = None
+    window = _sliding_window(module, kwargs)
     if (
         bsz == 1
         and q_len > 0
@@ -220,11 +244,18 @@ def _sdpa_packed_varlen(
         and kwargs.get("cache") is None
         and kwargs.get("past_key_values") is None
         and n_heads % key.shape[1] == 0
-        and not _sliding_or_softcapped(module, kwargs)
+        and window is not _NO_WINDOW
+        and not _softcapped(module, kwargs)
         and not _sdpa_requested(query, key)
     ):
         torch_varlen = _torch_varlen(query.device)
+        # An FA4 / FA3 impl behind torch's flash op lacks some shapes (sm100: hd 136-248, hd256 + window).
+        if torch_varlen is not None and not flash_impl_allows(head_dim, window, query.device):
+            torch_varlen = None
         backend = select_attention_backend(use_varlen = True)
+        # flash-attn's ROCm backend lists sliding windows as work in progress: windowed rows keep sdpa there.
+        if window is not None and torch.version.hip is not None:
+            backend = None
         # Flash-2 varlen backward faults past int32 indexing. Keyed on training / grad mode, not
         # requires_grad, so a reentrant checkpoint's no_grad forward and its recompute agree.
         if (
@@ -237,7 +268,7 @@ def _sdpa_packed_varlen(
             torch_varlen, backend = None, None
         if torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
             seq_info = get_packed_info_from_kwargs(kwargs, query.device)
-    if seq_info is None or not _mask_is_block_causal(attention_mask, seq_info[1], q_len):
+    if seq_info is None or not _mask_is_block_causal(attention_mask, seq_info[1], q_len, window):
         HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(
             module,
@@ -273,7 +304,7 @@ def _sdpa_packed_varlen(
                 max_seqlen,
                 max_seqlen,
                 scale = scale,
-                window_size = (-1, 0),
+                window_size = (-1, 0) if window is None else (window - 1, 0),
                 **gqa,
             )
         except torch.OutOfMemoryError:
@@ -303,7 +334,12 @@ def _sdpa_packed_varlen(
         backend = backend,
         n_kv_heads = n_kv_heads,
         n_groups = n_heads // n_kv_heads,
-        flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True, "softmax_scale": scale},
+        flash_varlen_kwargs = {
+            "dropout_p": 0.0,
+            "causal": True,
+            "softmax_scale": scale,
+            **({} if window is None else {"window_size": (window - 1, 0)}),
+        },
         sdpa_kwargs = {"scale": scale},
         xformers_kwargs = {"scale": scale},
     )
@@ -319,6 +355,7 @@ def _sdpa_packed_varlen(
         seq_info = seq_info,
         attention_mask = None,
         causal_mask = None,
+        sliding_window = window,
     )
     out = run_attention(config = config, context = context, Q = query, K = key, V = value)
     return out.contiguous(), None

@@ -692,7 +692,8 @@ class Participant:
     # returns later while describing a cache from before the prefill.
     measured_at_seq: Optional[int] = None
     # A measured holder's round growth no reading holds yet: on top of the resident figure,
-    # its prefix inside it, until a sample STARTED after `growth_at_seq` lands.
+    # its prefix inside it. Stamped at the round's first decoded token, so only a sample
+    # STARTED after `growth_at_seq` lands can hold it; a probe before dispatch cannot.
     unconfirmed_growth: int = 0
     growth_at_seq: Optional[int] = None
     # What admission charged and the prompt part of it, kept so a request that starts over
@@ -843,6 +844,7 @@ class PreemptionController:
         "_resident_at",
         "_clock",
         "_resume_tickets",
+        "_replaced_by",
         "_reclaimable",
         "_residency_probe",
         "_drift_logged_at",
@@ -871,8 +873,9 @@ class PreemptionController:
         # True cells resident from the last GET /slots, or None when it could not be read.
         # Includes the residue of FINISHED requests, which the ledger cannot see.
         self._resident: Optional[int] = None
-        # Bumped per successful reading AND per `note_measured`, so a mark can be ordered
-        # against a probe that was already in flight when it was made.
+        # Bumped per successful reading, per `note_measured` and per probe start, so a mark can
+        # be ordered against a probe that was already in flight when it was made, and two
+        # probes against each other.
         self._resident_seq = 0
         # The clock as it stood when the last reading was recorded: a probe that started
         # before that is older than what is already here.
@@ -886,6 +889,9 @@ class PreemptionController:
         # Resume order, taken BEFORE the room test, so a later smaller resume cannot book the
         # space an older one waits for; the admission queue keeps the same rule one layer down.
         self._resume_tickets: "OrderedDict[str, int]" = OrderedDict()
+        # A revoked victim -> who the re-plan chose in its place, so a holder waiting on it
+        # waits on them. None while that re-plan is still running.
+        self._replaced_by: Dict[str, Optional[List[str]]] = {}
         # Set by the route to a callable that re-reads GET /slots. Optional: everything works
         # from the ledger alone, less precisely.
         self._residency_probe: Optional[Callable[[], None]] = None
@@ -977,6 +983,7 @@ class PreemptionController:
         with self._lock:
             self._participants.pop(gen_id, None)
             self._resume_tickets.pop(gen_id, None)
+            self._replaced_by.pop(gen_id, None)
 
     def begin_resume(self, gen_id: str, want: int) -> None:
         """Take a place in the resume line, before asking whether there is room.
@@ -1067,7 +1074,11 @@ class PreemptionController:
                 if participant.prompt_tokens > 0:
                     # `want` is the whole replayed prompt, which is what becomes resident.
                     participant.prompt_tokens = max(participant.prompt_tokens, need)
+                # The replay is not in yet, so no stamp or growth from the paused attempt holds.
                 participant.measured = False
+                participant.measured_at_seq = None
+                participant.unconfirmed_growth = 0
+                participant.growth_at_seq = None
                 participant.state = ParticipantState.RESUMING
                 # Announced under the same lock that booked the room.
                 participant.announce_prefill(need)
@@ -1165,6 +1176,9 @@ class PreemptionController:
                     if not participant.measured and participant.measured_at_seq is None:
                         self._resident_seq += 1
                         participant.measured_at_seq = self._resident_seq
+                    if participant.unconfirmed_growth > 0 and participant.growth_at_seq is None:
+                        self._resident_seq += 1
+                        participant.growth_at_seq = self._resident_seq
                     participant.cells_reclaimed = False
                     participant.replay_pending = False
                     participant.prefill_done()
@@ -1198,13 +1212,15 @@ class PreemptionController:
             _log.debug("residency probe failed", exc_info = True)
 
     def residency_epoch(self) -> int:
-        """The ordering clock, read before a `/slots` probe is sent.
+        """The ordering clock, taken before a `/slots` probe is sent.
 
         Hand it back to `note_resident` as ``started_at_seq`` so a sample that was already
         in flight when a holder called `note_measured` is not mistaken for one taken after
-        its prefill.
+        its prefill. Advanced on every call, so two probes with nothing recorded between
+        their starts are still ordered, and the later one is not dropped as stale.
         """
         with self._lock:
+            self._resident_seq += 1
             return self._resident_seq
 
     def note_resident(
@@ -1342,8 +1358,8 @@ class PreemptionController:
                     # The prefix is in the cache, the growth is not: a reading from before this
                     # round, larger than the ledger, would otherwise fold the growth into it.
                     participant.unconfirmed_growth += growth
-                    self._resident_seq += 1
-                    participant.growth_at_seq = self._resident_seq
+                    # Unstamped until a token shows the prefill ran.
+                    participant.growth_at_seq = None
                 if replayed:
                     participant.measured = False
                     participant.measured_at_seq = None
@@ -1373,7 +1389,14 @@ class PreemptionController:
             # The plan that chose it counted its cells as leaving, and nothing else may sweep
             # before the room is used: an unpausable holder plans once and reports no growth.
             # Planned again, in memory only, since the streaming drains call this on the loop.
-            self.plan_preemptions(needed = 0)
+            replacements: List[str] = []
+            try:
+                replacements = [
+                    v.gen_id for v in self.plan_preemptions(needed = 0) if not v.parked_on_a_tool
+                ]
+            finally:
+                with self._lock:
+                    self._replaced_by[gen_id] = replacements
             return True
         return changed
 
@@ -1382,6 +1405,8 @@ class PreemptionController:
         then recorded), else whether the state changed."""
         revoked = False
         participant = self._participants.get(gen_id)
+        # Approval to tools is the same park: no request refilled the idle slot in between.
+        was_parked = participant is not None and participant.parked_on_a_tool
         if (
             participant is not None
             and participant.state == ParticipantState.PREEMPTING
@@ -1395,13 +1420,15 @@ class PreemptionController:
             participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
             participant.preempt_event.clear()
             participant.state = ParticipantState.DECODING
+            # Held pending for a waiter until the re-plan says who replaces it.
+            self._replaced_by[gen_id] = None
             revoked = True
         if participant is None or participant.state not in self._LIVE_STATES:
             return False
         if participant.state == state:
             return None if revoked else False
         participant.state = state
-        if state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING):
+        if state in _PARKED_ON_A_TOOL and not was_parked:
             participant.park_seq += 1
             participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
         if state == ParticipantState.DECODING:
@@ -1540,14 +1567,26 @@ class PreemptionController:
         has paused, finished, or declined. Blocking: never call it on the event loop."""
         deadline = time.monotonic() + max(0.0, float(timeout))
         pending = list(gen_ids or ())
+        seen = set(pending)
         while True:
             with self._lock:
-                pending = [
-                    gid
-                    for gid in pending
-                    if (p := self._participants.get(gid)) is not None
-                    and p.state == ParticipantState.PREEMPTING
-                ]
+                # A victim revoked into a tool was replaced by the re-plan: wait on those too.
+                still: List[str] = []
+                work = list(pending)
+                while work:
+                    gid = work.pop()
+                    replaced = self._replaced_by.get(gid, ())
+                    if replaced is None:
+                        still.append(gid)
+                        continue
+                    for new in replaced:
+                        if new not in seen:
+                            seen.add(new)
+                            work.append(new)
+                    p = self._participants.get(gid)
+                    if p is not None and p.state == ParticipantState.PREEMPTING:
+                        still.append(gid)
+                pending = still
             if not pending:
                 return True
             left = deadline - time.monotonic()
@@ -1572,10 +1611,7 @@ class PreemptionController:
                 return
             # A park is counted once, however many times it is reported: a repeat would
             # make a holder that really was in the reading look like a newcomer to it.
-            if state != participant.state and state in (
-                ParticipantState.PARKED_ON_TOOL,
-                ParticipantState.TOOLS_RUNNING,
-            ):
+            if state in _PARKED_ON_A_TOOL and not participant.parked_on_a_tool:
                 participant.park_seq += 1
                 participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
             participant.state = state
@@ -1839,6 +1875,8 @@ class PreemptionController:
                 # holder's cells are an idle slot's, which is what the reclaim keys on.
                 victim.preempted_from = victim.state
                 victim.state = ParticipantState.PREEMPTING
+                # Chosen afresh: whoever replaced an earlier revoked choice is not its stand-in.
+                self._replaced_by.pop(victim.gen_id, None)
                 victim.preempt_chosen_at = time.monotonic()
                 victim.preempt_event.set()
                 chosen.append(victim)

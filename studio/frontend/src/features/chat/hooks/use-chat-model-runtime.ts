@@ -880,7 +880,7 @@ function pickOf(info: {
 }
 
 export function useChatModelRuntime() {
-  const params = useChatRuntimeStore((state) => state.params);
+  const checkpoint = useChatRuntimeStore((state) => state.params.checkpoint);
   const models = useChatRuntimeStore((state) => state.models);
   const loras = useChatRuntimeStore((state) => state.loras);
   const setParams = useChatRuntimeStore((state) => state.setParams);
@@ -1291,7 +1291,7 @@ export function useChatModelRuntime() {
       if (
         !forceReload &&
         (!modelId ||
-          (params.checkpoint === modelId &&
+          (checkpoint === modelId &&
             (ggufVariant ?? null) === (currentVariant ?? null) &&
             !loadingModelRef.current &&
             !useChatRuntimeStore.getState().loadingModelPick &&
@@ -3743,9 +3743,9 @@ export function useChatModelRuntime() {
     },
     [
       cancelLoading,
+      checkpoint,
       loras,
       models,
-      params.checkpoint,
       refresh,
       renderLoadDescription,
       resetLoadingUiForRun,
@@ -3898,7 +3898,7 @@ export function useChatModelRuntime() {
     modelId?: string,
     confirmed?: StopRunningChatsDecision,
   ): Promise<boolean> => {
-    if (modelId && modelId !== params.checkpoint) {
+    if (modelId && modelId !== checkpoint) {
       const toastId = toast.loading("Unloading model");
       try {
         if (!(await unloadKeptModel(modelId))) {
@@ -3916,7 +3916,7 @@ export function useChatModelRuntime() {
         return false;
       }
     }
-    if (!params.checkpoint) {
+    if (!checkpoint) {
       return false;
     }
     const bailIfLoading = (): boolean => {
@@ -3933,7 +3933,7 @@ export function useChatModelRuntime() {
     };
     if (bailIfLoading()) return false;
     setModelsError(null);
-    if (isExternalModelId(params.checkpoint)) {
+    if (isExternalModelId(checkpoint)) {
       clearCheckpoint();
       await refresh();
       return true;
@@ -3955,7 +3955,7 @@ export function useChatModelRuntime() {
       // loaded, so it must not be worded as a reload. With several loaded only this one's chats stop.
       const scope =
         !confirmed && useChatRuntimeStore.getState().loadedModels.length > 1
-          ? params.checkpoint
+          ? checkpoint
           : undefined;
       const stopDecision =
         confirmed ??
@@ -3972,7 +3972,7 @@ export function useChatModelRuntime() {
       async function performUnload(): Promise<void> {
         stopQueuedRuns(stopDecision, Boolean(scope));
         await unloadModel({
-          model_path: params.checkpoint,
+          model_path: checkpoint,
           force_cancel_active: stopDecision.forceCancelActive,
         });
         if (!scope) {
@@ -4003,15 +4003,15 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
       }
     }
-  }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
+  }, [checkpoint, clearCheckpoint, refresh, setModelsError]);
 
   const ejectAllModels = useCallback(async (): Promise<boolean> => {
     const others = useChatRuntimeStore
       .getState()
       .loadedModels.map((m) => m.checkpoint ?? m.id)
-      .filter((id) => id !== params.checkpoint);
+      .filter((id) => id !== checkpoint);
     const selectedLocal =
-      Boolean(params.checkpoint) && !isExternalModelId(params.checkpoint);
+      Boolean(checkpoint) && !isExternalModelId(checkpoint);
     const decision = await confirmStopRunningChatsIfNeeded(
       "Unloading every model",
       "unload",
@@ -4039,7 +4039,7 @@ export function useChatModelRuntime() {
       return false;
     }
     return true;
-  }, [ejectModel, params.checkpoint, refresh, setModelsError]);
+  }, [checkpoint, ejectModel, refresh, setModelsError]);
 
   return {
     refresh,

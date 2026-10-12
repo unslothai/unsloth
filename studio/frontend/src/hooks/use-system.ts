@@ -24,6 +24,11 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
+  /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */
+  gpu_utilization_pct?: number | null;
+  temperature_c?: number | null;
+  power_draw_w?: number | null;
+  power_limit_w?: number | null;
 }
 
 export interface SystemGpuInfo {

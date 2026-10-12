@@ -45,7 +45,14 @@ function harness(slices: string[]) {
   return loadWithStubs<Module>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
-      "@/features/auth": { authFetch: async () => sseResponse(slices) },
+      "@/features/auth": {
+        authFetch: async () => sseResponse(slices),
+        getAuthSessionEpoch: () => 1,
+      },
+      "./thread-read-cache.ts": loadWithStubs(
+        new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
+        {},
+      ),
       "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
       "../types": {},
       "../types/api": {},
@@ -57,6 +64,8 @@ function harness(slices: string[]) {
       "../utils/chat-history-revision": {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
+        publishChatHistoryRevision: () => {},
+        CHAT_HISTORY_REVISION_KEY: "unsloth_chat_history_revision",
       },
       // Pure and import-free, so the real module rather than a stub that drifts from it.
       "./generation-length.ts": generationLength,
