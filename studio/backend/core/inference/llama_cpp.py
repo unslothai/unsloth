@@ -19522,7 +19522,6 @@ class LlamaCppBackend:
         gpu_ids: Optional[List[int]],
         gpu: str,
         visual_bin: Optional[str],
-        one_device_fits: Optional[bool] = None,
     ) -> Optional[List[int]]:
         """Physical GPUs to layer-split a diffusion GGUF over, or None to keep ``gpu`` alone.
 
@@ -19531,10 +19530,10 @@ class LlamaCppBackend:
         ``gpu`` moves: alone it overflows the card (a hang on Windows, where it spills into
         shared memory, #6347). The pool is the explicit pick, else every visible GPU; when
         no subset holds it, None leaves the single-device GPU / CPU layer fit in charge.
-        ``one_device_fits=False`` is the launcher's stricter layer fit already saying ``gpu``
-        is too small; None checks it here. Shared with the training guard, so both budget
-        the devices the runner will use. A runner that cannot split keeps today's single
-        device."""
+        Each device is charged the runner's own context on top of its weights, the same fit
+        test as _diffusion_auto_ngl, so the two never disagree on whether ``gpu`` suffices.
+        Shared with the training guard, so both budget the devices the runner will use. A
+        runner that cannot split keeps today's single device."""
         if not gpu.isdigit() or not model_size_bytes or not _visual_server_splits_gpus(visual_bin):
             return None
         # Unpinned: only ids the child resolves the same way under PCI order (no inherited
@@ -19558,18 +19557,13 @@ class LlamaCppBackend:
         first = [(idx, free) for idx, free in gpus if idx == int(gpu)]
         if len(gpus) < 2 or not first:
             return None
-        if one_device_fits is None:
-            one_device_fits = bool(
-                cls._select_gpus(model_size_bytes, first, total_by_idx = total_by_idx)[0]
-            )
-        if one_device_fits:
+        overhead = int(_DIFFUSION_RUNNER_OVERHEAD_MIB * 1024 * 1024)
+        need = model_size_bytes + overhead
+        if cls._select_gpus(need, first, total_by_idx = total_by_idx)[0]:
             return None
-        picked, _ = cls._select_gpus(model_size_bytes, gpus, total_by_idx = total_by_idx)
-        if picked == [int(gpu)] and one_device_fits is False:
-            # Weights alone fit; the context reserve the layer fit adds does not.
-            picked, _ = cls._select_gpus(
-                model_size_bytes, gpus, total_by_idx = total_by_idx, min_gpus = 2
-            )
+        picked, _ = cls._select_gpus(
+            need, gpus, total_by_idx = total_by_idx, per_device_overhead_bytes = overhead
+        )
         if not picked or sorted(picked) == [int(gpu)]:
             return None
         return sorted(picked)
@@ -19697,7 +19691,6 @@ class LlamaCppBackend:
                     gpu_ids,
                     gpu,
                     visual_bin,
-                    one_device_fits = False if fit_ngl is not None else None,
                 )
             except OSError as e:
                 logger.debug(f"DiffusionGemma GPU fit skipped: {e}")

@@ -1366,6 +1366,18 @@ def test_diffusion_moved_fit_keeps_the_pool_on_a_dedup_match():
     assert backend.requested_gpu_ids == [0]
 
 
+def test_diffusion_fit_gpus_agrees_with_the_layer_fit_on_one_card(monkeypatch):
+    # Both decide "does gpu 0 hold it" the same way, also in the runner-overhead margin, so
+    # a GGUF never gets CPU layers while a second card is free, nor a split it did not need.
+    _diffusion_fit_host(monkeypatch, 1, _TWO_3090)
+    _, free, total = _TWO_3090[0]
+    for tenth in range(180, 260):
+        size = int(tenth / 10 * _GIB)
+        too_big = llama_cpp_module._diffusion_auto_ngl(size, 30, 8, 4096, free, total) is not None
+        fit = LlamaCppBackend._diffusion_fit_gpus(size, [0, 1], "0", "/bin/vs")
+        assert fit == ([0, 1] if too_big else None), tenth / 10
+
+
 def test_diffusion_fit_gpus_moves_to_one_card_that_fits(monkeypatch):
     # GPU 0 is busy, GPU 1 holds the whole model: one card beats a layer split.
     _diffusion_fit_host(monkeypatch, 16.8, [(0, 4_000, 24_576), (1, 23_500, 24_576)])
@@ -1509,7 +1521,6 @@ def test_diffusion_launch_manual_split_never_spreads(monkeypatch, tmp_path):
     ("gguf_gib", "fit_ngl", "token", "ngl"),
     [
         (26.9, 18, "0,1", None),  # the pair holds Q8_0: split, no CPU layers
-        (16.8, 25, "0,1", None),  # the layer fit's stricter budget says one card is short
         (50.5, 12, "0", "12"),  # BF16 fits no subset: one card plus CPU layers (#6456)
     ],
 )
