@@ -56,3 +56,26 @@ def test_it_ends_once_the_replacement_lets_go():
     started = time.monotonic()
     assert controller.wait_released([revoked], 2.0) is True
     assert time.monotonic() - started >= 0.15
+
+
+
+def test_a_victim_chosen_again_after_it_was_replaced_is_waited_on_again():
+    # The first choice leaves its tool and decodes, then its replacement enters one and the
+    # re-plan picks the first again: the wait has to see that choice too.
+    controller, revoked, replacement = _revoked_into_a_tool()
+    chosen_again = threading.Event()
+
+    def churn():
+        time.sleep(0.1)
+        controller.note_state(revoked, ParticipantState.DECODING)
+        controller.note_state(replacement, ParticipantState.TOOLS_RUNNING)
+        if controller.participant(revoked).state == ParticipantState.PREEMPTING:
+            chosen_again.set()
+        time.sleep(0.4)
+        controller.set_state(revoked, ParticipantState.PAUSED)
+
+    threading.Thread(target = churn, daemon = True).start()
+    started = time.monotonic()
+    assert controller.wait_released([revoked], 2.0) is True
+    assert chosen_again.is_set(), "the re-plan did not choose the first chat again"
+    assert time.monotonic() - started >= 0.45, "the wait ended while it was chosen again"

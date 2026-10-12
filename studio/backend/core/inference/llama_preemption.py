@@ -1471,9 +1471,10 @@ class PreemptionController:
         has paused, finished, or declined. Blocking: never call it on the event loop."""
         deadline = time.monotonic() + max(0.0, float(timeout))
         pending = list(gen_ids or ())
-        seen = set(pending)
         while True:
             with self._lock:
+                # Per poll: a victim chosen again after it was replaced is examined again.
+                seen = set(pending)
                 # A victim revoked into a tool was replaced by the re-plan: wait on those too.
                 still: List[str] = []
                 work = list(pending)
