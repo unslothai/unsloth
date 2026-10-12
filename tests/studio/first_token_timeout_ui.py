@@ -19,7 +19,7 @@ import signal
 import socket
 import subprocess
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont
@@ -269,7 +269,7 @@ def main():
             ) as state:
                 meta["sides"][label] = state
                 api, auth = authenticate(state)
-                with api:
+                with closing(api):
                     for engine in ("chromium", "firefox", "webkit"):
                         meta["facts"].append(
                             scene(playwright, engine, label, state, api, auth, evidence)
@@ -280,7 +280,7 @@ def main():
             args.after.resolve(), output / "after-home", args.backend_python, output / "restart.log"
         ) as state:
             api, _auth = authenticate(state)
-            with api:
+            with closing(api):
                 assert api.get(ROUTE).json()["minutes"] == 0
                 meta["restart_persisted"] = True
     meta["facts_diff"] = {

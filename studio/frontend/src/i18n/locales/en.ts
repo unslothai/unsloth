@@ -2529,7 +2529,7 @@ export const en = {
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
       firstTokenLabel: "First-token waiting limit",
-      firstTokenDescription: "How long local models may wait without prompt-processing progress before the first token. Applies to new waits for all accounts. Unlimited keeps waiting until you stop.",
+      firstTokenDescription: "How long local GGUF models may wait without prompt-processing progress before the first token. Applies to new waits for all accounts. Unlimited keeps waiting until you stop.",
       firstTokenDefault: "20 min (default)",
       firstTokenCustom: "Custom",
       firstTokenUnlimited: "Unlimited",
