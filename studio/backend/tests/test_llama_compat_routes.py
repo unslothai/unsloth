@@ -573,7 +573,6 @@ def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
 
 
 def test_props_advertises_only_the_child_endpoints_studio_forwards():
-    """POST /props is not forwarded, so endpoint_props stays False."""
     upstream = {
         "endpoint_slots": True,
         "endpoint_props": True,

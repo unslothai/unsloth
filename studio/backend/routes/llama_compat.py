@@ -157,7 +157,6 @@ def _server_props() -> dict:
     # flags in the payload).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
-    # Only GET /slots and /metrics are forwarded, and only for the owner.
     props["endpoint_props"] = False
     passthrough = llama_loaded and not _caller_is_managed_account()
     props["endpoint_slots"] = passthrough and props.get("endpoint_slots") is True
