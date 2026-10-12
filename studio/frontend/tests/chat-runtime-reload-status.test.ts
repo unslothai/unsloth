@@ -424,3 +424,24 @@ test("recovery persists the replay prefix statistics it has applied", () => {
   assert.equal(metadata.generationFirstChunkAt, 220);
   assert.equal(metadata.generationChunkCount, 6);
 });
+
+test("an empty turn preemption gave up on is not claimed as cancelled", async () => {
+  // `paused` restores as `cancelled` for want of a better status, which is what the empty
+  // "Cancelled." placeholder keys on; the stamped reason is what tells the two apart.
+  const paused = { custom: { incomplete: { reason: "paused" } } };
+  assert.deepEqual(restoredAssistantStatus(paused), {
+    type: "incomplete",
+    reason: "cancelled",
+  });
+  assert.equal(readIncompleteInfo(paused)?.reason, "paused");
+  const { readFileSync } = await import("node:fs");
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const indicator = thread.slice(thread.indexOf("const CancelledIndicator: FC"));
+  assert.match(
+    indicator.slice(0, 600),
+    /message\.status\?\.reason === "cancelled" &&\s+readIncompleteInfo\(message\.metadata\)\?\.reason !== "paused"/,
+  );
+});

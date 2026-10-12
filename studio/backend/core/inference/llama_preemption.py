@@ -1359,6 +1359,13 @@ class PreemptionController:
                         yield_parked(charged_at = charge_seq)
                 except Exception:  # pragma: no cover - bookkeeping must not fail a run
                     _log.debug("could not yield a parked commitment", exc_info = True)
+            if charge_seq is not None and getattr(lease, "charge_seq", charge_seq) != charge_seq:
+                # Re-charged before the scan, so the lease kept the new commitment: it is a
+                # prompt being prefilled again, and must count, reserve included.
+                with self._lock:
+                    if participant.cells_reclaimed and participant.park_seq == park_seq:
+                        participant.cells_reclaimed = False
+                        participant.announce_prefill(participant.tokens)
         return len(released)
 
     def restart(self, gen_id: str) -> None:

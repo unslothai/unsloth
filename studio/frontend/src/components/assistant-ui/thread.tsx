@@ -7461,13 +7461,15 @@ const GeneratingIndicator: FC = () => {
   return <span className="text-sm text-muted-foreground">Generating...</span>;
 };
 
-// Placeholder when stop fires before any visible content (e.g. mid-think).
+// Placeholder when stop fires before any visible content (e.g. mid-think). Not for a turn
+// preemption paused and gave up on: it takes `cancelled` only for want of a better status.
 const CancelledIndicator: FC = () => {
   const show = useAuiState(
     ({ message }) =>
       message.content.length === 0 &&
       message.status?.type === "incomplete" &&
-      message.status?.reason === "cancelled",
+      message.status?.reason === "cancelled" &&
+      readIncompleteInfo(message.metadata)?.reason !== "paused",
   );
   if (!show) {
     return null;
