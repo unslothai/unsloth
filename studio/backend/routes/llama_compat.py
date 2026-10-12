@@ -341,40 +341,54 @@ async def _resolve_local(public_id: str) -> Optional[tuple]:
     )
 
 
-def _load_in_flight() -> bool:
-    inf = _inference()
-    if inf.model_slots.visible_loading():
-        return True
-    llama = inf.get_llama_cpp_backend()
-    if getattr(llama, "is_active", False) and not getattr(llama, "is_loaded", False):
-        return True
-    backend = inf._peek_inference_backend()
-    return getattr(backend, "get_loading_model", lambda: None)() is not None
+def _same_path(a: Optional[str], b: Optional[str]) -> bool:
+    import os
+    return bool(a and b) and os.path.normpath(a) == os.path.normpath(b)
 
 
-def _resident_identifier(model_id: str) -> str:
-    """The primary resident's concrete identifier when ``model_id`` is the alias it advertises.
+async def _unload_target(model_id: str, row: dict) -> Optional[str]:
+    """What /unload must be named to stop this row, or None when nothing of it runs.
 
-    /unload matches the identifier and the id derived from it, not an alias such as an LM Studio
-    or scan-folder name. Kept slots route by alias inside /unload already.
+    /unload matches the resident or loading identifier, not an alias (LM Studio, scan folder,
+    Ollama tag) nor a path-loaded row's listed id, and on a managed install it releases the
+    caller's shared resident before comparing names, so an unrelated row must never reach it.
     """
-    inf = _inference()
-    from core.inference.openai_auto_download import split_model_ref
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
-    backend = inf.get_llama_cpp_backend()
-    if getattr(backend, "is_loaded", False):
-        resident = getattr(backend, "model_identifier", None)
+    inf = _inference()
+    resolved = await _resolve_local(model_id)
+    path = resolved[0] if resolved else None
+    base, suffix = split_model_ref(model_id)
+    wanted_variant = (resolved[1] if resolved else None) or (
+        suffix if suffix and looks_like_quant(suffix) else None
+    )
+
+    llama = inf.get_llama_cpp_backend()
+    if getattr(llama, "is_loaded", False) or getattr(llama, "is_active", False):
+        backend, running = llama, getattr(llama, "model_identifier", None)
+        running_variant = getattr(llama, "hf_variant", None)
     else:
         backend = inf._peek_inference_backend()
-        resident = getattr(backend, "active_model_name", None)
+        running = (
+            getattr(backend, "active_model_name", None)
+            or getattr(backend, "get_loading_model", lambda: None)()
+        )
+        running_variant = None
     advertised = getattr(backend, "_openai_advertised_id", None)
-    if not (resident and advertised):
-        return model_id
     # The full id first: an Ollama tag such as "llama3:latest" is the advertised id, not a quant pin.
-    for candidate in (model_id, split_model_ref(model_id)[0]):
-        if candidate.strip().lower() == advertised.strip().lower():
-            return resident
-    return model_id
+    names_primary = _same_path(running, path) or any(
+        advertised and name.strip().lower() == advertised.strip().lower()
+        for name in (model_id, base)
+    )
+    if running and names_primary:
+        if wanted_variant and running_variant and wanted_variant.lower() != running_variant.lower():
+            return None
+        return running
+    filling = inf.model_slots.visible_loading()
+    if filling and _same_path(filling[1], path):
+        return path
+    # A kept slot routes by the listed id inside /unload.
+    return model_id if row.get("loaded") else None
 
 
 async def _resolve_load_target(model_id: str):
@@ -456,13 +470,8 @@ async def manage_unload_model(
     from models.inference import UnloadRequest
 
     model_id, row = await _catalog_row(body.model)
-    if row.get("loaded"):
-        target = _resident_identifier(model_id)
-    elif _load_in_flight():
-        # Its alias is published only once the load completes; cancel names the path it runs as.
-        target = ((await _resolve_local(model_id)) or (model_id,))[0]
-    else:
-        # Nothing to stop. /unload itself would still release a managed account's shared resident.
+    target = await _unload_target(model_id, row)
+    if target is None:
         return {"success": True, "model": model_id}
     request = UnloadRequest(model_path = target)
     work = _inference()._unload_model_impl(request, current_subject)

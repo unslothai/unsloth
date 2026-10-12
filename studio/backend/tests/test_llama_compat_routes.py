@@ -1210,7 +1210,7 @@ def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gg
     assert seen == [(2, "q8_0", 20)]
 
 
-def test_management_unload_maps_the_advertised_alias_to_the_resident():
+def test_management_unload_maps_the_advertised_alias_to_the_resident(_no_local_gguf):
     """/unload matches the resident's identifier, not an alias such as an LM Studio name."""
     mod, calls = _management()
     with _client(mod) as c:
@@ -1221,7 +1221,7 @@ def test_management_unload_maps_the_advertised_alias_to_the_resident():
     assert calls == [("unload", "/media/models/qwen/model.gguf")]
 
 
-def test_management_unload_of_an_idle_row_never_reaches_the_lifecycle():
+def test_management_unload_of_an_idle_row_never_reaches_the_lifecycle(_no_local_gguf):
     """/unload releases a managed account's shared resident before it compares names."""
     mod, calls = _management()
     with _client(mod) as c:
@@ -1238,6 +1238,8 @@ def test_management_unload_cancels_a_load_under_the_path_it_runs_as(monkeypatch,
     )
     backend = _Backend(loaded = False)
     backend.is_active = True
+    backend.model_identifier = "/models/laguna"
+    backend._openai_advertised_id = None
     mod, calls = _management(backend = backend)
     with _client(mod) as c:
         assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
@@ -1293,7 +1295,7 @@ def test_unserved_management_operations_still_404(method, path):
     assert "text/html" not in r.headers.get("content-type", "")
 
 
-def test_management_unload_matches_an_ollama_tag_before_its_suffix():
+def test_management_unload_matches_an_ollama_tag_before_its_suffix(_no_local_gguf):
     """ ":latest" is part of the advertised Ollama id, not a quant pin to strip first."""
     tag = "ollama/llama3:latest"
     backend = _Backend()
@@ -1314,3 +1316,45 @@ def test_management_unload_matches_an_ollama_tag_before_its_suffix():
         r = c.post("/models/unload", json = {"model": tag})
     assert r.json() == {"success": True, "model": tag}
     assert calls == ["ollama-manifest:/models/llama3/latest"]
+
+
+def test_management_unload_finds_a_path_loaded_row_with_no_alias_stamp(monkeypatch, _no_local_gguf):
+    """A Studio load by path advertises nothing, yet the catalog lists the row under its own id."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/lms/qwen", None, requested),
+    )
+    backend = _Backend()
+    backend.model_identifier = "/models/lms/qwen"
+    backend._openai_advertised_id = None
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN}).status_code == 200
+    assert calls == [("unload", "/models/lms/qwen")]
+
+
+def test_management_unload_leaves_an_unrelated_load_alone(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", None, requested),
+    )
+    backend = _Backend(loaded = False)
+    backend.is_active = True
+    backend.model_identifier = "/models/other"
+    backend._openai_advertised_id = None
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == []
+
+
+def test_management_unload_keeps_a_resident_of_another_quant(_no_local_gguf):
+    backend = _Backend()
+    backend.hf_variant = "UD-Q4_K_XL"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 200
+        assert c.post("/models/unload", json = {"model": QWEN + ":UD-Q4_K_XL"}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
