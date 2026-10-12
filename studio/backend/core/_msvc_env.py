@@ -256,9 +256,25 @@ def _triton_windows_spec() -> str:
     return "triton-windows<3.7"
 
 
+def _torch_is_rocm_build() -> bool:
+    # Off disk, no torch import: AMD's untagged Windows wheel (2.8.0a0+git...) is only told by version.py's hip field.
+    try:
+        from core._torchao_stub import _installed_torch_is_rocm  # noqa: PLC0415
+        return _installed_torch_is_rocm() is True
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not read the installed torch's ROCm signals", exc_info = True)
+        return False
+
+
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
     if sys.platform != "win32":
         return
+    if _torch_is_rocm_build():
+        try:
+            # triton-windows >= 3.8 imported first loads System32 amdhip64_7.dll, then torch_hip.dll fails with WinError 126.
+            import torch  # noqa: F401, PLC0415
+        except Exception:  # noqa: BLE001
+            logger.debug("The torch preload failed; probing triton anyway", exc_info = True)
     try:
         import triton  # noqa: F401, PLC0415
     except ImportError:

@@ -357,6 +357,15 @@ def _ignored_adapter_settings(
     return ignored
 
 
+def _tokenizer_is_empty(tokenizer) -> bool:
+    # Not a length check: a snapshot keeping tokenizer_config.json but no vocab still lists its special tokens.
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    try:
+        return not inner("hello world", add_special_tokens = False)["input_ids"]
+    except Exception:
+        return False
+
+
 def _load_adapter_aware_tokenizer(lookup_name, hf_token, **kwargs):
     """AutoTokenizer for *lookup_name*. A PEFT adapter saved without tokenizer files falls back
     to the base it names, as Unsloth's own adapter loader does (#13140)."""
@@ -510,6 +519,17 @@ class UnslothTrainer:
                     local_files_only = local_files_only,
                     revision = model_revision,
                     **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
+                )
+            # Transformers 5 builds a one-token tokenizer from a snapshot without vocab files instead of raising, which
+            # skipped the incomplete-cache Hub retry and trained to NaN loss (#6958).
+            if local_files_only and _tokenizer_is_empty(self.tokenizer):
+                raise FileNotFoundError(
+                    f"The cached snapshot of {model_name} has no tokenizer files."
+                )
+            if model_revision and _tokenizer_is_empty(self.tokenizer):
+                raise FileNotFoundError(
+                    f"{model_name} has no tokenizer files at revision {model_revision}, the revision of "
+                    "its cached copy. Delete the cached model and retry to use the latest revision."
                 )
 
         # Probe and tokenizer load are separate reads; a transient 5xx may affect only one.

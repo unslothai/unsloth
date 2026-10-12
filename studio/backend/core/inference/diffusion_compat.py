@@ -432,7 +432,19 @@ def speech_pick_refusal(
     hf_token: Optional[str] = None,
     allow_network: bool = True,
 ) -> Optional[str]:
-    """Family resolves from the folder, so a speech GGUF is checked by its own header; fails open."""
+    """Why this diffusion pick cannot load, when it names a speech or text-encoder GGUF, else None.
+
+    A media pick names its file, and ``detect_family_for_pick`` resolves the family from the FOLDER
+    rather than that name, so a csm quant sitting beside a FLUX denoiser answers flux.1: the pick
+    pulls the checkpoint and tears the resident pipeline down before the loader finds out.
+
+    Metadata only, like the FLUX.2 pairing above: a cached copy answers with no request, else one
+    range request. Fails open on everything -- no filename, an unreadable header, an offline host,
+    a server that ignores Range -- because refusing a pick that works is worse than the download
+    this saves.
+    """
+    # A ".gguf" name only, as the size pairing does: a single_file pick names a .safetensors,
+    # which has no GGUF header, and a range request to learn that on every such load is waste.
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token, allow_network)
@@ -442,6 +454,16 @@ def speech_pick_refusal(
         return (
             f"'{os.path.basename(gguf_filename)}' is a {named}speech checkpoint, which no image "
             "or video backend can decode. Pick one of this folder's media GGUFs instead."
+        )
+    # A text-encoder GGUF (a FLUX.2-klein Qwen3 encoder repo tagged text-to-image, #9875) matches a family by name, then
+    # loads as the denoiser with every tensor unmapped and dies in .to() with "Cannot copy out of meta tensor".
+    from core.inference.diffusion_content import _TE_GGUF_ARCHS
+
+    if arch in _TE_GGUF_ARCHS:
+        return (
+            f"'{os.path.basename(gguf_filename)}' is a text encoder ({arch} GGUF), not a diffusion "
+            "model (DiT/UNet), so it cannot be loaded as the image or video model. Pick the "
+            "model's diffusion GGUF instead."
         )
     return None
 

@@ -4202,7 +4202,6 @@ export const he = {
       chatAboutThis: "שוחח על זה",
       chatWithModel: "שוחח עם מודל זה",
       addToFavorites: "הוסף למועדפים",
-      regenerateTitle: "יצירת כותרת מחדש",
       removeFromFavorites: "הסר מהמועדפים",
       download: "הורדה",
       addToFolder: "הוסף לתיקייה",

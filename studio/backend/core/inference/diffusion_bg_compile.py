@@ -32,6 +32,9 @@ _FORCE_EAGER: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _NO_CAPTURE: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_no_capture", default = False
 )
+_NO_RECORD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "unsloth_diffusion_no_record", default = False
+)
 
 
 def enabled() -> bool:
@@ -53,6 +56,15 @@ def eager_forced() -> bool:
 def capture_suppressed() -> bool:
     """True on the background compile thread: run compiled, never record a CUDA graph."""
     return _NO_CAPTURE.get()
+
+
+@contextlib.contextmanager
+def no_record():
+    token = _NO_RECORD.set(True)
+    try:
+        yield
+    finally:
+        _NO_RECORD.reset(token)
 
 
 @contextlib.contextmanager
@@ -156,7 +168,12 @@ class BackgroundCompile:
             pass
 
     def _record(self, module: Any, args: tuple, kwargs: dict) -> None:
-        if not eager_forced() or len(self.samples) >= self.max_samples or self.state != "recording":
+        if (
+            not eager_forced()
+            or _NO_RECORD.get()
+            or len(self.samples) >= self.max_samples
+            or self.state != "recording"
+        ):
             return None
         try:
             import torch
@@ -241,6 +258,14 @@ class BackgroundCompile:
                 target = self._run, name = "unsloth-diffusion-bg-compile", daemon = True
             )
             self._thread.start()
+            return True
+
+    def abandon(self, reason: str) -> bool:
+        """Give up while still recording, so the next render compiles inline. False once a compile started or ended."""
+        with self._lock:
+            if self.state != "recording":
+                return False
+            self._finish("failed", reason)
             return True
 
     def _finish(

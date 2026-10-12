@@ -1288,3 +1288,44 @@ def test_requested_duration_is_recomputed_for_the_reserved_family(client, backen
     job = _create(client, {"prompt": "five seconds", "seconds": "5"}).json()
     assert backend.last_generate_kwargs["num_frames"] == 121
     assert job["seconds"] == _format_seconds(121 / 24)
+
+
+def _wan_ti2v_switch(switched):
+    async def _fake_switch(model, *, before_switch = None, **_kwargs):
+        pick = types.SimpleNamespace(
+            model_path = "Wan-AI/Wan2.2-TI2V-5B-Diffusers", gguf_filename = None, model_kind = None
+        )
+        if before_switch is not None:
+            before_switch(pick)
+        switched["completed"] = True
+
+    return _fake_switch
+
+
+def test_a_first_frame_without_the_i2v_class_is_refused_before_the_model_switch(
+    client, backend, monkeypatch
+):
+    switched = {"completed": False}
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _wan_ti2v_switch(switched))
+    monkeypatch.setattr(video_module, "_i2v_pipeline_available", lambda name: False)
+    png = _reference_image_bytes("PNG")
+    resp = _create(
+        client,
+        {"prompt": "animate", "model": "Wan2.2-TI2V-5B"},
+        {"input_reference": ("frame.png", png, "image/png")},
+    )
+    assert resp.status_code == 400, resp.json()
+    assert "WanImageToVideoPipeline" in resp.json()["error"]["message"]
+    assert switched["completed"] is False
+
+    resp = client.post(
+        "/api/inference/video/generate",
+        json = {
+            "prompt": "animate",
+            "model": "Wan2.2-TI2V-5B",
+            "first_frame": _reference_data_url("PNG", "image/png"),
+        },
+    )
+    assert resp.status_code == 400, resp.json()
+    assert "WanImageToVideoPipeline" in str(resp.json())
+    assert switched["completed"] is False

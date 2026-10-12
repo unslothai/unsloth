@@ -1128,13 +1128,17 @@ def _resolve_from_index(
         return None
 
 
-def local_gguf_pinned_variant(requested: str) -> Optional[str]:
-    """Unlike resolve_local_gguf, a no-quant suffix like :latest never falls back to the preferred quant."""
+def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Optional[str]:
+    """The on-disk quant ``repo:VARIANT`` pins, by current label or legacy alias, else None.
+
+    Unlike :func:`resolve_local_gguf`, a suffix naming no quant (``:latest``) never falls back to the
+    repo's preferred one. ``allow_scan=False`` answers from the last built index, never rebuilding it.
+    """
     base, sep, wanted = requested.rpartition(":")
     if not sep:
         return None
     try:
-        entry = _index().get(base.strip().lower())
+        entry = (_index() if allow_scan else _snapshot()[1]).get(base.strip().lower())
     except Exception:
         return None
     if entry is None:

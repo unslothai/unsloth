@@ -1259,7 +1259,7 @@ def test_a_forced_cpu_diffusion_runner_records_no_effective_gpu_pin():
     made clearing it reload the same CPU runner; the pick still has to round-trip."""
     src = inspect.getsource(llama_cpp.LlamaCppBackend._start_diffusion_server)
     assert "_pv_diffusion_cpu = manual_ngl == 0 and _metal_device_is_paravirtual()" in src
-    assert "if gpu_ids and not _pv_diffusion_cpu else None" in src
+    assert "self._gpu_ids = _pinned if not _pv_diffusion_cpu else None" in src
 
     backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
     backend._is_diffusion = True

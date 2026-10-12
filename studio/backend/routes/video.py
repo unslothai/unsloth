@@ -578,7 +578,11 @@ async def generate_video(
     def _refuse_unservable_request(pick) -> None:
         """Checks the request against the target family before any eviction or multi-minute load."""
         from core.inference.media_model_index import expected_partition
-        from core.inference.video import _detect_load_family, resolve_video_model_kind
+        from core.inference.video import (
+            _detect_load_family,
+            assert_first_frame_pipeline_available,
+            resolve_video_model_kind,
+        )
         from core.inference.video_minimax_h3 import is_h3_native
         from core.inference.video_families import (
             validate_video_flow_controls,
@@ -593,8 +597,14 @@ async def generate_video(
         validate_video_request_shape(fam, request.width, request.height, request.num_frames)
         h3_task = expected_partition(pick)
         validate_video_keyframe_conditioning(
-            fam, h3_task, has_keyframes = bool(request.first_frame or request.last_frame)
+            fam,
+            h3_task,
+            has_keyframes = bool(request.first_frame or request.last_frame),
+            has_last_frame = bool(request.last_frame),
         )
+        if request.first_frame:
+            assert_first_frame_pipeline_available(fam)
+        # the engine is only knowable up front where the pick decides it, as an h3 gguf does
         kind = resolve_video_model_kind(pick.gguf_filename, pick.model_kind)
         engine = "sd_cpp" if is_h3_native(fam, kind) else None
         validate_video_reference_conditioning(
@@ -1621,7 +1631,7 @@ async def _create_openai_video(
 
     def _refuse_unservable_request(pick) -> None:
         from core.inference.media_model_index import expected_partition
-        from core.inference.video import _detect_load_family
+        from core.inference.video import _detect_load_family, assert_first_frame_pipeline_available
         from core.inference.video_families import (
             validate_video_keyframe_conditioning,
             validate_video_reference_conditioning,
@@ -1651,6 +1661,8 @@ async def _create_openai_video(
         validate_video_keyframe_conditioning(
             fam, h3_task, has_keyframes = reference is not None and not ref2va
         )
+        if reference is not None and not ref2va:
+            assert_first_frame_pipeline_available(fam)
         validate_video_reference_conditioning(
             fam,
             h3_task,
