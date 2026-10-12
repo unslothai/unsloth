@@ -130,11 +130,70 @@ def _load(config: dict) -> tuple[Any, Any]:
     return tokenizer, model
 
 
-def _encode(tokenizer: Any, model: Any, config: dict, prompts: list, max_len: int) -> tuple[Any, Any]:
+# Room an onloaded encode needs beyond the weights: every hidden state stacked for the packed embeddings (49 x 1024 x
+# 3840 bf16 is ~0.4 GB per prompt, twice over while stacking) plus the forward's own activations.
+ENCODE_MARGIN_MIB = 4096
+
+
+def _weights_mib(model: Any) -> int:
+    total = 0
+    for tensor in list(model.parameters()) + list(model.buffers()):
+        total += tensor.numel() * tensor.element_size()
+    return total >> 20
+
+
+def _encode_device(config: dict, model: Any) -> str:
+    """Where a non-resident encoder runs this encode: the configured accelerator when its free memory right now covers
+    the weights plus ``ENCODE_MARGIN_MIB`` (the server is idle at encode time: the denoise has not started), else the
+    CPU. An unreadable free count onloads, as before."""
+    device = str(config["device"])
+    if config.get("resident") or not device.startswith("cuda"):
+        return device
     import torch
 
-    device = config["device"]
+    try:
+        free, _total = torch.cuda.mem_get_info(torch.device(device))
+    except Exception:  # noqa: BLE001 -- unknown free memory: keep the planned onload
+        return device
+    need = _weights_mib(model) + ENCODE_MARGIN_MIB
+    return device if (free >> 20) >= need else "cpu"
+
+
+def _memory_stats(device: str) -> dict:
+    """This worker's own peaks: accelerator bytes since the last reset and the host resident set."""
+    stats: dict = {}
+    try:
+        import torch
+
+        if str(device).startswith("cuda") and torch.cuda.is_available():
+            dev = torch.device(device)
+            stats["gpu_peak_allocated_mib"] = torch.cuda.max_memory_allocated(dev) >> 20
+            stats["gpu_peak_reserved_mib"] = torch.cuda.max_memory_reserved(dev) >> 20
+            stats["gpu_allocated_mib"] = torch.cuda.memory_allocated(dev) >> 20
+            torch.cuda.reset_peak_memory_stats(dev)
+    except Exception:  # noqa: BLE001 -- stats are best-effort
+        pass
+    try:
+        import resource
+
+        stats["host_peak_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
+        with open("/proc/self/statm", encoding = "ascii") as fh:
+            stats["host_rss_mib"] = (int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")) >> 20
+    except Exception:  # noqa: BLE001 -- not Linux
+        pass
+    return stats
+
+
+def _encode(tokenizer: Any, model: Any, config: dict, prompts: list, max_len: int) -> tuple[Any, Any]:
+    embeds, mask, _device = _encode_on(tokenizer, model, config, prompts, max_len)
+    return embeds, mask
+
+
+def _encode_on(tokenizer: Any, model: Any, config: dict, prompts: list, max_len: int) -> tuple[Any, Any, str]:
+    import torch
+
     resident = bool(config.get("resident"))
+    device = _encode_device(config, model)
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -146,7 +205,8 @@ def _encode(tokenizer: Any, model: Any, config: dict, prompts: list, max_len: in
         add_special_tokens = True,
         return_tensors = "pt",
     )
-    if not resident:
+    onloaded = not resident and device != "cpu"
+    if onloaded:
         model.to(device)
     try:
         with torch.inference_mode():
@@ -159,11 +219,11 @@ def _encode(tokenizer: Any, model: Any, config: dict, prompts: list, max_len: in
             mask_host = mask.to("cpu")
             del out, stacked, embeds
     finally:
-        if not resident:
+        if onloaded:
             model.to("cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-    return embeds_host, mask_host
+    return embeds_host, mask_host, device
 
 
 def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
@@ -183,6 +243,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     getattr(model.config, "text_config", model.config), "hidden_size", None
                 ),
                 "resident": bool(config.get("resident")),
+                **_memory_stats(config.get("device") or ""),
             }
         )
     except Exception as exc:  # noqa: BLE001 -- every failure goes back to the server as a message
@@ -202,10 +263,19 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
         if kind != "encode":
             continue
         try:
-            embeds, mask = _encode(
+            embeds, mask, device = _encode_on(
                 tokenizer, model, config, msg["prompts"], msg.get("max_sequence_length") or 1024
             )
-            resp_queue.put({"type": "embeds", "id": msg.get("id"), "embeds": embeds, "mask": mask})
+            resp_queue.put(
+                {
+                    "type": "embeds",
+                    "id": msg.get("id"),
+                    "embeds": embeds,
+                    "mask": mask,
+                    "device": device,
+                    **_memory_stats(config.get("device") or ""),
+                }
+            )
         except Exception as exc:  # noqa: BLE001 -- report, keep serving
             resp_queue.put(
                 {

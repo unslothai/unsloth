@@ -6553,7 +6553,7 @@ class VideoBackend:
         ltx25_dev = False
         if fam.name == "ltx-2.5":
             from .video_families import ltx25_is_dev
-            from .video_ltx25 import start_text_encoder
+            from .video_ltx25 import encoder_resident_for_plan, start_text_encoder
 
             ltx25_dev = kind != "pipeline" and ltx25_is_dev(gguf_filename, repo_id)
             self._close_pending_ltx25_encoder()
@@ -6564,7 +6564,7 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 device = str(target.torch_device),
                 dtype = str(dtype).replace("torch.", ""),
-                resident = plan.offload_policy == OFFLOAD_NONE,
+                resident = encoder_resident_for_plan(plan),
             )
             self._ltx25_pending_encoder = ltx25_client
 

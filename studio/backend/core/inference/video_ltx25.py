@@ -600,6 +600,22 @@ def assemble_ltx25_single_file_pipeline(
 # ── the Gemma 4 encoder worker ───────────────────────────────────────────────
 
 
+def encoder_resident_for_plan(plan: Any) -> bool:
+    """Whether the encoder worker keeps Gemma 4 on the card, by the tier the memory plan budgeted.
+
+    The plan prices the family's text encoder (the table's 23.9 GB) as if it were in-process: resident under ``none``
+    and under ``group`` with resident companions, streamed under ``group`` with streamed text encoders and under
+    ``streaming`` / ``sequential``, alone on the card under ``model``. The worker cannot stream, so on every tier that did
+    not budget it resident it keeps the encoder on the host and onloads it only for an encode, when the card has room
+    (else it encodes on the CPU; see ``video_ltx25_te_worker._encode_device``)."""
+    from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
+
+    policy = getattr(plan, "offload_policy", None)
+    if policy == OFFLOAD_NONE:
+        return True
+    return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_text_encoders", False))
+
+
 def sidecar_missing_message(venv_dir: str) -> str:
     return (
         "LTX-2.5's text encoder is a Gemma 4 model (Gemma4UnifiedForConditionalGeneration) that needs transformers "
@@ -674,6 +690,7 @@ class Ltx25TextEncoderClient:
         self._lock = threading.Lock()
         self._cache: list[tuple[tuple, Any]] = []
         self.info: dict[str, Any] = {}
+        self.last_encode: dict[str, Any] = {}
 
     # process management
     def start(self) -> None:
@@ -797,6 +814,8 @@ class Ltx25TextEncoderClient:
                 if msg.get("type") == "embeds" and msg.get("id") == seq:
                     break
             embeds, mask = msg["embeds"], msg["mask"]
+            self.last_encode = {k: v for k, v in msg.items() if k not in ("type", "id", "embeds", "mask")}
+            logger.info("video.ltx25_te: encoded on %s %s", self.last_encode.get("device"), self.last_encode)
             self._cache.append((key, (embeds, mask)))
             del self._cache[: -self._CACHE_ENTRIES]
             return embeds.clone(), mask.clone()

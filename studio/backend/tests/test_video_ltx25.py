@@ -600,8 +600,8 @@ def test_worker_serves_encodes_until_shutdown(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "_load", lambda config: ("tok", model))
     monkeypatch.setattr(
         worker,
-        "_encode",
-        lambda tok, m, config, prompts, n: (torch.ones(len(prompts), n, 8), torch.ones(len(prompts), n)),
+        "_encode_on",
+        lambda tok, m, config, prompts, n: (torch.ones(len(prompts), n, 8), torch.ones(len(prompts), n), "cpu"),
     )
     cmd, resp = queue.Queue(), queue.Queue()
     cmd.put({"type": "encode", "id": 3, "prompts": ["a", "b"], "max_sequence_length": 5})
@@ -611,6 +611,7 @@ def test_worker_serves_encodes_until_shutdown(monkeypatch, tmp_path):
     assert ready["type"] == "ready" and ready["model_type"] == "gemma4_unified" and ready["hidden_size"] == 4
     out = resp.get_nowait()
     assert out["type"] == "embeds" and out["id"] == 3 and tuple(out["embeds"].shape) == (2, 5, 8)
+    assert out["device"] == "cpu" and out.get("host_rss_mib", 0) > 0
 
 
 class _FakeClient:
@@ -1152,3 +1153,125 @@ def test_encoder_worker_is_spawned_on_the_lifetime_thread(monkeypatch):
     worker.start()
     worker.join()
     assert len(spawned_via) == 1 and spawned_via[0] == client._proc.start
+
+
+# ── the encoder worker inside the memory plan ────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "policy, stream_te, resident",
+    [
+        ("none", False, True),
+        ("group", False, True),  # companions resident: the plan budgeted the encoder on the card
+        ("group", True, False),  # streamed text encoders: the plan did not
+        ("model", False, False),  # one module on the card at a time
+        ("streaming", True, False),
+        ("sequential", False, False),
+    ],
+)
+def test_encoder_placement_follows_the_plan_tier(policy, stream_te, resident):
+    plan = SimpleNamespace(offload_policy = policy, stream_text_encoders = stream_te)
+    assert v25.encoder_resident_for_plan(plan) is resident
+
+
+def test_family_table_prices_the_worker_encoder():
+    """The plan counts the worker's Gemma 4 as the family's text encoder term: the pack's text_encoder/ weights are
+    22.28 GiB (23.9 GB), the table's second entry."""
+    fam = detect_video_family("Lightricks/LTX-2.5-Diffusers")
+    assert fam.bf16_components_gb[1] == pytest.approx(22.28 * 2**30 / 1e9, rel = 0.01)
+
+
+class _FakeEncoderModel:
+    def __init__(self):
+        import torch
+
+        self.weight = torch.zeros(1024, 1024, dtype = torch.bfloat16)  # 2 MiB
+        self.dtype = torch.bfloat16
+        self.moves = []
+
+    def parameters(self):
+        return [self.weight]
+
+    def buffers(self):
+        return []
+
+    def to(self, device):
+        self.moves.append(str(device))
+        return self
+
+    def __call__(self, input_ids, attention_mask, output_hidden_states):
+        import torch
+
+        b, n = input_ids.shape
+        return SimpleNamespace(hidden_states = tuple(torch.full((b, n, 4), float(i)) for i in range(3)))
+
+
+class _FakeTokenizer:
+    padding_side = "right"
+    pad_token = "<pad>"
+
+    def __call__(self, prompts, **kwargs):
+        import torch
+
+        n = kwargs["max_length"]
+        return SimpleNamespace(
+            input_ids = torch.ones(len(prompts), n, dtype = torch.long),
+            attention_mask = torch.ones(len(prompts), n, dtype = torch.long),
+        )
+
+
+def _patch_free(monkeypatch, free_mib):
+    import torch
+
+    def _mem_get_info(device = None):
+        if free_mib is None:
+            raise RuntimeError("no device")
+        return free_mib << 20, 80 << 30
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", _mem_get_info)
+
+
+def test_offloaded_encoder_onloads_only_when_the_card_has_room(monkeypatch):
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _FakeEncoderModel()
+    monkeypatch.setattr(worker, "ENCODE_MARGIN_MIB", 10)
+    offloaded = {"device": "cuda:0", "resident": False}
+    _patch_free(monkeypatch, 12)  # weights 2 MiB + margin 10 MiB
+    assert worker._encode_device(offloaded, model) == "cuda:0"
+    _patch_free(monkeypatch, 11)
+    assert worker._encode_device(offloaded, model) == "cpu"
+    _patch_free(monkeypatch, None)  # unreadable: keep the planned onload
+    assert worker._encode_device(offloaded, model) == "cuda:0"
+    _patch_free(monkeypatch, 0)
+    # A resident encoder is already on the card; other devices are not probed.
+    assert worker._encode_device({"device": "cuda:0", "resident": True}, model) == "cuda:0"
+    assert worker._encode_device({"device": "mps", "resident": False}, model) == "mps"
+
+
+def test_short_card_encodes_on_the_cpu_without_moving_the_encoder(monkeypatch):
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _FakeEncoderModel()
+    _patch_free(monkeypatch, 1)
+    embeds, mask, device = worker._encode_on(
+        _FakeTokenizer(), model, {"device": "cuda:0", "resident": False}, ["a fox"], 6
+    )
+    assert device == "cpu" and model.moves == []
+    # Same packing as the GPU path: every hidden state stacked on a last axis, flattened.
+    assert embeds.shape == (1, 6, 4 * 3) and embeds.dtype == torch.bfloat16
+    assert mask.shape == (1, 6)
+    assert worker._encode(_FakeTokenizer(), model, {"device": "cpu", "resident": False}, ["a"], 2)[0].shape == (
+        1,
+        2,
+        12,
+    )
+
+
+def test_worker_reports_its_own_memory():
+    from core.inference import video_ltx25_te_worker as worker
+
+    stats = worker._memory_stats("cpu")
+    assert stats.get("host_rss_mib", 0) > 0 and "gpu_peak_allocated_mib" not in stats
