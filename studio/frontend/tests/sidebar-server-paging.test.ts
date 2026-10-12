@@ -616,7 +616,10 @@ test("follow-ups that main got from the full list still happen with paged lists"
   assert.ok(write.indexOf("writes.set(scope, generation);") < write.indexOf("const slot ="));
   // project activity follows chat activity, not only project edits
   const projects = readSrc("features/chat/hooks/use-chat-projects.ts");
-  assert.match(projects, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, onChatActivity\);/);
+  // through a per-consumer function, so one consumer unmounting cannot remove another's listener
+  assert.match(projects, /const onActivity = \(\) => onChatActivity\(\);/);
+  assert.match(projects, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, onActivity\);/);
+  assert.match(projects, /window\.removeEventListener\(CHAT_HISTORY_UPDATED_EVENT, onActivity\);/);
   // and that re-read publishes only a project list that changed
   assert.match(projects, /if \(projectsLoaded && JSON\.stringify\(projects\) === JSON\.stringify\(cachedProjects\)\) return;/);
 });

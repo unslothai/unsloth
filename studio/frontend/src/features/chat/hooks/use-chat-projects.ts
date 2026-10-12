@@ -125,13 +125,16 @@ export function useChatProjects(): {
     };
     // Cached rows render immediately, then one shared request reconciles changes made by another
     // browser tab or API client.
+    // its own function per consumer: one shared reference is one DOM listener, so the first
+    // consumer to unmount would remove it for every other (the debounce keeps it one read)
+    const onActivity = () => onChatActivity();
     void refresh(projectsLoaded);
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onChatActivity);
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onActivity);
     return () => {
       cancelled = true;
       window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onChatActivity);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onActivity);
     };
   }, []);
 
