@@ -52,7 +52,7 @@ def seconds_text(value: float) -> str:
 
 def timeout_seconds(family: Optional[str], seconds: float, variations: int, cpu: bool) -> float:
     music = MUSIC_SPECS.get(str(family or ""))
-    rtf = music.rtf if music is not None else 4.0
+    rtf = music.rtf * music.overrun if music is not None else 4.0
     work = rtf * max(0.0, float(seconds)) * max(1, int(variations)) * (_CPU_FACTOR if cpu else 1.0)
     return max(_TIMEOUT_FLOOR, min(_TIMEOUT_CEILING, _TIMEOUT_FLOOR + work))
 
@@ -190,9 +190,10 @@ def song_request(
         request["text"] = lyrics
         request_options["style"] = description
         request_options["lyrics"] = lyrics
-        # 25 fps semantic tokens; the default 200-frame floor outlasts short asks.
+        # Length caps the semantic tokens (25 fps); the default 200-frame floor outlasts short asks.
         frames = int(round(seconds * 25))
-        request_options["semantic_max_tokens"] = frames
+        overrun = MUSIC_SPECS["yue2"].overrun
+        request_options["semantic_max_tokens"] = int(round(seconds * overrun * 25))
         request_options["semantic_min_tokens"] = min(200, frames)
         return _finish(model, request, request_options, seed)
     if instrumental and music is not None and music.instrumental_lyrics is not None:

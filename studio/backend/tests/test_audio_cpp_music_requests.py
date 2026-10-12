@@ -369,7 +369,7 @@ def test_yue2_instrumental_sends_the_instrumental_tag_not_its_style():
     assert request["text"] == "[Instrumental]"
     assert request["options"]["lyrics"] == "[Instrumental]"
     assert request["options"]["style"] == "ambient piano"
-    assert request["options"]["semantic_max_tokens"] == 500
+    assert request["options"]["semantic_max_tokens"] == 750
 
 
 def test_minimax_gguf_keeps_its_body_through_the_studio():
@@ -490,6 +490,7 @@ def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
     assert t(10) < t(60) < t(60, 3) < t(60, 3, cpu = True)
     assert t(0) == 300.0 and t(240, 4, cpu = True) == 4 * 3600.0
     assert cm.timeout_seconds("stable_audio", 10, 1, False) == 310.0
+    assert t(60) == 300.0 + 6.0 * 1.5 * 60
     b = _backend(_model("yue2"))
     _run(b, text = "rock", lyrics = "x", duration_s = 60)
     assert b._server.calls[0][2]["timeout"] == t(60)
