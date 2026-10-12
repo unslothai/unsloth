@@ -5300,6 +5300,11 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
     fi
 fi
 
+# A CMake build next to `tsc -b && vite build` can exhaust a host the overlap gate admitted.
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    _frontend_bg_join
+fi
+
 # ── 9. Build llama.cpp binaries for GGUF inference + export when prebuilt install fails ──
 # Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
 # home directory. This is used by both the inference server and the GGUF
