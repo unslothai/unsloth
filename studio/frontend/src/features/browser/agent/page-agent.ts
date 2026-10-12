@@ -207,6 +207,8 @@ export function installPageAgent(): PageAgent {
     }
     const tag = el.tagName.toLowerCase();
     if (tag === "input" && ["button", "submit", "reset"].includes(field.type) && field.value) return clean(field.value);
+    // An image button is named by its alt text, as assistive technology reads it.
+    if (tag === "input" && field.type === "image" && el.getAttribute("alt")) return clean(el.getAttribute("alt"));
     if (tag === "input" || tag === "textarea") {
       const hint = el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("name");
       return clean(hint);
@@ -489,9 +491,14 @@ export function installPageAgent(): PageAgent {
     node instanceof HTMLButtonElement
       ? node.type === "submit"
       : node instanceof HTMLInputElement && (node.type === "submit" || node.type === "image");
-  /** The button Enter in a field submits with, as a browser picks it: the form's first submit button. */
+  /** The button Enter in a field submits with, as a browser picks it: the form's first submit button
+   *  in tree order (form.elements leaves out <input type=image>). */
   const defaultButton = (form: HTMLFormElement | null) =>
-    Array.from(form?.elements ?? []).find(isSubmitter) as HTMLButtonElement | HTMLInputElement | undefined;
+    form
+      ? (Array.from(document.querySelectorAll("button, input")).find(
+          (node) => (node as HTMLInputElement).form === form && isSubmitter(node),
+        ) as HTMLButtonElement | HTMLInputElement | undefined)
+      : undefined;
 
   /** No ref: the focused element, which a key press would act on. */
   const describe = (ref: string, value?: unknown): Record<string, unknown> => {
@@ -722,7 +729,7 @@ export function installPageAgent(): PageAgent {
     (el as HTMLElement).focus?.({ preventScroll: true });
     const tag = el.tagName.toLowerCase();
     const field = el as HTMLInputElement;
-    if ((tag === "textarea" || tag === "input") && (field.disabled || field.readOnly)) {
+    if ((tag === "textarea" || tag === "input") && (field.matches(":disabled") || field.readOnly)) {
       return { ok: false, error: `${ref} is disabled or read-only.` };
     }
     if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has(field.type.toLowerCase()))) {
@@ -762,7 +769,8 @@ export function installPageAgent(): PageAgent {
   const choose = (ref: string, value: string): Record<string, unknown> => {
     const el = lookup(ref);
     if (el instanceof HTMLSelectElement) {
-      if (el.disabled) return { ok: false, error: `${ref} is disabled or read-only.` };
+      // :disabled, not .disabled: a disabled fieldset disables what is inside it.
+      if (el.matches(":disabled")) return { ok: false, error: `${ref} is disabled or read-only.` };
       const option = findOption(el, value);
       if (!option) return { ok: false, error: `${ref} has no such option; snapshot it to see its options.` };
       el.value = option.value;

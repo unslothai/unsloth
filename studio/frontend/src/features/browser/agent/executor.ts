@@ -522,7 +522,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     // The option the page will select: its value can differ from the label the user sees.
     const chosen = info.role === "combobox" ? { ...info, name: info.option || action.value || "" } : info;
     // A card-expiry or other secret dropdown is the user's to fill, as its text field would be.
-    if (info.role === "combobox") gates.push(gateElement("type", info, before, action.policy, permissions()));
+    if (info.tag === "select" || info.role === "combobox") gates.push(gateElement("type", info, before, action.policy, permissions()));
     gates.push(gateElement("select", chosen, before, action.policy, permissions()));
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
