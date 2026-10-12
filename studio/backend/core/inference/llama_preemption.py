@@ -927,8 +927,11 @@ class PreemptionController:
             participant = self._participants.get(gen_id)
             if participant is not None:
                 need = max(0, int(want or 0))
-                participant.tokens = max(participant.tokens, need)
-                participant.base_tokens = max(participant.base_tokens, need)
+                if need > 0:
+                    # The replay, which is all the lease commits: the charge from before the
+                    # pause still carries an output allowance no cell holds yet.
+                    participant.tokens = need
+                    participant.base_tokens = need
                 if participant.prompt_tokens > 0:
                     # `want` is the whole replayed prompt, which is what becomes resident.
                     participant.prompt_tokens = max(participant.prompt_tokens, need)
