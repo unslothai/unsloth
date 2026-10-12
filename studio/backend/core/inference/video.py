@@ -200,6 +200,8 @@ from .video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
+    assert_local_pipeline_not_ltx25,
+    assert_ltx_pick_supported,
     pipeline_available_video_families,
     VideoFamily,
     default_video_generation_params,
@@ -1045,7 +1047,28 @@ def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) 
     assert_local_pick_is_dit(repo_id, gguf_filename, page)
 
 
+def _refuse_local_ltx25_pipeline(repo_id: str, gguf_filename: Optional[str]) -> None:
+    if not gguf_filename:
+        assert_local_pipeline_not_ltx25(repo_id)
+
+
 def _detect_load_family(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    family_override: Optional[str],
+    display_repo_id: Optional[str] = None,
+    model_kind: Optional[str] = None,
+) -> Optional[VideoFamily]:
+    # An explicit pipeline load never opens the filename, so it must not vouch for the repo.
+    ltx_file = None if str(model_kind or "").strip().lower() == "pipeline" else gguf_filename
+    _refuse_local_ltx25_pipeline(repo_id, ltx_file)
+    fam = _resolve_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+    # After resolution: family_override="ltx-2" must not load LTX-2.5, and a non-LTX pick never trips on the name.
+    assert_ltx_pick_supported(fam.name if fam else None, repo_id, ltx_file, display_repo_id)
+    return fam
+
+
+def _resolve_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
     family_override: Optional[str],
@@ -2681,7 +2704,9 @@ class VideoBackend:
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
         _refuse_non_dit_pick(repo_id, gguf_filename, "video")
-        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+        fam = _detect_load_family(
+            repo_id, gguf_filename, family_override, display_repo_id, model_kind
+        )
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "
@@ -2826,6 +2851,10 @@ class VideoBackend:
                 f"base_repo is limited to unsloth/* repos, the official family base "
                 f"repos, and local paths; '{base_repo}' is neither."
             )
+        if base_repo and base_repo.strip():
+            # The companion supplies the text encoder / VAE, so an LTX-2.5 base is refused like an LTX-2.5 pick.
+            assert_ltx_pick_supported(fam.name, base_repo)
+            assert_local_pipeline_not_ltx25(base_repo)
         # A local base_repo loads as a full pipeline (needs model_index.json); reject a non-pipeline one here, before
         # the load.
         from core.inference.diffusion import _assert_local_base_is_pipeline
@@ -3070,6 +3099,7 @@ class VideoBackend:
                 kwargs.get("gguf_filename"),
                 kwargs.get("family_override"),
                 kwargs.get("display_repo_id"),
+                kwargs.get("model_kind"),
             )
             # Also on the worker, which a direct begin_load reaches without a plan. Here rather than in
             # validate_load_request, which is network-free by contract.
@@ -4990,7 +5020,9 @@ class VideoBackend:
         download manager."""
         from huggingface_hub import HfApi
 
-        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+        fam = _detect_load_family(
+            repo_id, gguf_filename, family_override, display_repo_id, model_kind
+        )
         # _detect_load_family resolves from the REPO id first, so a mixed repo answers its media family for every file
         # in it, a csm quant included. Refuse before the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
@@ -6414,8 +6446,15 @@ class VideoBackend:
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
-            from .video_ltx2 import direct_load_device, is_ltx23_checkpoint, load_ltx23_pipeline
+            from .video_ltx2 import (
+                assert_not_ltx25_checkpoint,
+                direct_load_device,
+                is_ltx23_checkpoint,
+                load_ltx23_pipeline,
+            )
 
+            if fam.name == "ltx-2":
+                assert_not_ltx25_checkpoint(checkpoint_path)
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
                 # Explicit fp8 takes the hosted DiT, resident only: offload hooks' Module.to() rejects torchao tensors.
                 ltx23_override = None
