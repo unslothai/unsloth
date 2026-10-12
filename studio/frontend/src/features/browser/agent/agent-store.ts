@@ -14,7 +14,6 @@ type BrowserAgentState = {
   setEnabled: (enabled: boolean) => void;
   /** The tab the agent drives; the model can't reach any other. */
   tabId: string | null;
-  /** An action is running in the agent's tab. */
   working: boolean;
   question: AgentPrompt | null;
   /** The chat run whose action is running, which Stop applies to. */

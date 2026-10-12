@@ -32,7 +32,6 @@ export type BrowserAction = {
   policy: SitePolicy;
 };
 
-/** The chat run an action belongs to, and what its user asked for. */
 export type ActionContext = { runKey: string; userText: string; signal?: AbortSignal };
 
 type Result = { ok: boolean; error?: string; url?: string; title?: string; text?: string; note?: string; image?: string };
@@ -226,7 +225,6 @@ async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
   return allowed ? null : `The user declined: ${gate.prompt.replace(/\?$/, "")}. Do something else, or ask them.`;
 }
 
-/** The page as the model reads it after an action. */
 async function observe(tab: BrowserTab, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return { ok: false, error: "No web page is open. Use browser_navigate first." };
@@ -249,7 +247,6 @@ async function observe(tab: BrowserTab, note?: string, op: Record<string, unknow
   };
 }
 
-/** Opens `url` in the agent's tab, making the tab if it is gone. */
 async function open(url: string, signal?: AbortSignal): Promise<BrowserTab | null> {
   const store = useBrowserStore.getState();
   const existing = agentTab();

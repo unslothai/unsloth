@@ -42,11 +42,9 @@ export function policyBlocks(url: string, policy: SitePolicy): string | null {
 
 export type NavigationContext = {
   policy: SitePolicy;
-  /** Sites the user approved or the agent already reached this session. */
   knownHosts: ReadonlySet<string>;
   /** Links on the page the agent last read: following one carries nothing the model made up. */
   pageLinks: ReadonlySet<string>;
-  /** What the user asked for, in their own words. */
   userText: string;
 };
 

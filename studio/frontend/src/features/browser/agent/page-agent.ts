@@ -623,7 +623,6 @@ export function installPageAgent(): void {
   Object.defineProperty(host, KEY, { value: { run }, enumerable: false });
 }
 
-/** Statements that install the agent where they run. */
 export function pageAgentSource(): string {
   return `(${installPageAgent.toString()})();`;
 }

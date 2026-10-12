@@ -14,7 +14,6 @@ function useBrowserAgentDisabled(): boolean {
   return useChatRuntimeStore((s) => !!s.params.checkpoint && !s.modelLoading && !s.supportsTools);
 }
 
-/** The composer's + menu row that turns browser use on or off. */
 export function BrowserAgentMenuItem() {
   const disabled = useBrowserAgentDisabled();
   const enabled = useBrowserAgentStore((state) => state.enabled);
