@@ -138,6 +138,16 @@ class PreemptSignal:
         self._depth = 0
         self._pending = False
         self._reason: Optional[str] = None
+        # When the stream last saw its prefill advance, on `time.monotonic()`; 0 is never.
+        self._prefill_progress_at = 0.0
+
+    def note_prefill_progress(self) -> None:
+        """The stream this signal pauses saw its prompt processing move forward."""
+        self._prefill_progress_at = time.monotonic()
+
+    @property
+    def prefill_progress_at(self) -> float:
+        return self._prefill_progress_at
 
     def request(self, reason: str = "kv_pressure") -> None:
         with self._lock:
@@ -549,7 +559,13 @@ class Participant:
         """
         if self.pending_prefill <= 0 or not self.holds_kv:
             return 0
-        if now - self.pending_prefill_at > PENDING_PREFILL_TTL_S:
+        # Counted from the last progress the stream saw as well: a prefill still advancing
+        # keeps its first-token window renewed past this TTL, and still needs the batch.
+        since = max(
+            self.pending_prefill_at,
+            float(getattr(self.preempt_event, "prefill_progress_at", 0.0) or 0.0),
+        )
+        if now - since > PENDING_PREFILL_TTL_S:
             return 0
         return self.pending_prefill
 

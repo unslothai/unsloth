@@ -36806,6 +36806,10 @@ class LlamaCppBackend:
                         ):
                             last_prefill_progress = processed
                             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                            # And the preemptor's batch reserve, which expires on its own clock.
+                            _note_progress = getattr(preempt_event, "note_prefill_progress", None)
+                            if callable(_note_progress):
+                                _note_progress()
                 if chunk and starts_output:
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
