@@ -5434,6 +5434,19 @@ _TARGET_KV_EXCLUDES_NEXTN_ARCHS = frozenset(
     }
 )
 
+# GLM-5.2 indexer layout llama.cpp assumes when a glm-dsa GGUF with a >= 1M training
+# context has no attention.indexer.types (GLM_5_2_DEFAULT_INDEXER_TYPES, glm-dsa.cpp:6):
+# layers 0-2 then every 4th own an indexer, over the 78 listed entries. Older GLM-5 /
+# 5.1 (n_ctx_train < 1M) default to an indexer on every layer (glm-dsa.cpp:59-66).
+_GLM_DSA_PRE_5_2_MAX_CTX = 1048576
+_GLM_5_2_DEFAULT_INDEXER_LAYERS = 78
+
+
+def _glm_5_2_default_indexer_full(layer_idx: int) -> bool:
+    return layer_idx < _GLM_5_2_DEFAULT_INDEXER_LAYERS and (
+        layer_idx < 2 or (layer_idx - 2) % 4 == 0
+    )
+
 
 def _accumulated_spec_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
@@ -8240,6 +8253,11 @@ class LlamaCppBackend:
         self._ssm_group_count: Optional[int] = None
         self._ssm_conv_kernel: Optional[int] = None
         self._kda_head_dim: Optional[int] = None
+        # Sparse-attention indexer key cache (see _indexer_kv_layer_bytes).
+        self._indexer_key_length: Optional[int] = None
+        self._indexer_top_k: Optional[int] = None
+        self._indexer_types: Optional[list[bool]] = None
+        self._compress_ratios: Optional[list[int]] = None
         # Last N layers reuse earlier layers' KV and don't allocate their own
         # cache (Gemma 3n / Gemma 4: <arch>.attention.shared_kv_layers).
         self._shared_kv_layers: Optional[int] = None
@@ -17595,6 +17613,7 @@ class LlamaCppBackend:
         bpe_k = _kv_bytes_per_elem(cache_type_kv)
         bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
         padded_v_width = None if flash_attn else self._max_kv_value_width(val_len, val_len_swa)
+        indexer_rows = self._indexer_kv_layer_bytes(n_layers_kv, bpe_k, bpe_v, flash_attn)
         weights: list[int] = []
         for layer_idx in range(n_layers):
             if layer_idx >= n_layers_kv:
@@ -17609,7 +17628,10 @@ class LlamaCppBackend:
                 else padded_v_width
             ) * bpe_v
             width = key_bytes + value_bytes
-            weights.append(int(width * (swa_cells if is_swa else full_cells)))
+            indexer = indexer_rows[layer_idx] if layer_idx < len(indexer_rows) else 0.0
+            weights.append(
+                int(width * (swa_cells if is_swa else full_cells) + indexer * full_cells)
+            )
         return weights if any(weights) else []
 
     def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
@@ -17848,6 +17870,91 @@ class LlamaCppBackend:
             for layer_idx in range(n_layers)
         )
 
+    def _indexer_kv_layer_bytes(
+        self,
+        n_layers_kv: int,
+        bpe_k: float,
+        bpe_v: float,
+        flash_attn: bool = True,
+    ) -> "list[float]":
+        """Bytes per KV cell of the sparse-attention indexer key cache, per layer.
+
+        DSA / QSA / MSA models keep one indexer key head (attention.indexer.key_length)
+        per indexer layer in a second llama_kv_cache with the attention cache's cells,
+        at the K cache type. Qwen3.8-Flash-Next: 12 layers x 256 x f16 = 6 KiB/token
+        on top of 24 KiB of attention KV. Per llama-model.cpp create_memory:
+          deepseek32 / glm-dsa / hy_v4 / dots3note: llama_kv_cache_dsa(_iswa), K-only
+            (MLA) on trunk layers; all but deepseek32 only on is_indexer_full layers.
+          glm5-next / qwen4exp: llama_memory_hybrid_idx, K-only on the trunk's attention
+            layers, row x indexer_kpool_row when k-pooled (3 / 2); glm5-next is_indexer_full.
+          minimax-m3: llama_kv_cache_msa, not MLA, so a one-head V row too, past the
+            leading dense blocks.
+        deepseek4's ctx/4 compressed indexer (llama-kv-cache-dsv4.cpp) is not modelled;
+        an unknown arch declaring an indexer gets a K row on every KV layer.
+        """
+        head = int(getattr(self, "_indexer_key_length", None) or 0)
+        n_layers_kv = max(0, int(n_layers_kv or 0))
+        arch = str(getattr(self, "_architecture", None) or "").strip().lower()
+        if head <= 0 or n_layers_kv <= 0 or arch == "deepseek4":
+            return []
+        n_all = int(getattr(self, "_n_layers", None) or 0)
+        nextn = int(getattr(self, "_nextn_predict_layers", None) or 0)
+        # Every indexer filter but minimax-m3's stops at hparams.n_layer() (no MTP block).
+        trunk = min(n_layers_kv, max(0, n_all - nextn)) if n_all else n_layers_kv
+        types = getattr(self, "_indexer_types", None)
+        heads = getattr(self, "_n_kv_heads_by_layer", None)
+
+        def full(il: int, default: bool) -> bool:
+            if types is not None and il < len(types):
+                return bool(types[il])
+            return default
+
+        def attention(il: int) -> bool:
+            if heads is not None and il < len(heads):
+                return heads[il] > 0
+            fai = getattr(self, "_full_attention_interval", None)
+            if fai:
+                return (il + 1) % int(fai) == 0
+            return True
+
+        key_row = float(head) * bpe_k
+        rows = [0.0] * n_layers_kv
+        if arch == "deepseek32":
+            layers = range(trunk)
+        elif arch == "glm-dsa":
+            pre_5_2 = (getattr(self, "_context_length", None) or 0) < _GLM_DSA_PRE_5_2_MAX_CTX
+            layers = [
+                il for il in range(trunk) if full(il, pre_5_2 or _glm_5_2_default_indexer_full(il))
+            ]
+        elif arch in ("hy_v4", "dots3note"):
+            # hy_v4 with indexer.top_k 0 is a full-attention checkpoint: plain cache.
+            if arch == "hy_v4" and not getattr(self, "_indexer_top_k", None):
+                return []
+            layers = [il for il in range(trunk) if full(il, False)]
+        elif arch in ("glm5-next", "glm5next"):
+            key_row *= 3
+            layers = [il for il in range(trunk) if attention(il) and full(il, True)]
+        elif arch == "qwen4exp":
+            if any(getattr(self, "_compress_ratios", None) or ()):
+                key_row *= 2
+            layers = [il for il in range(trunk) if attention(il)]
+        elif arch == "minimax-m3":
+            lead = int(getattr(self, "_leading_dense_block_count", None) or 0)
+            val_len = self._kv_value_length or self._kv_key_length or head
+            pattern = self._sliding_window_pattern
+            for il in range(min(lead, n_layers_kv), n_layers_kv):
+                is_swa = bool(pattern) and il < len(pattern) and bool(pattern[il])
+                v_len = (self._kv_value_length_swa or val_len) if is_swa else val_len
+                if not flash_attn:
+                    v_len = max(val_len, self._kv_value_length_swa or val_len)
+                rows[il] = key_row + v_len * bpe_v
+            return rows
+        else:
+            layers = range(n_layers_kv)
+        for il in layers:
+            rows[il] = key_row
+        return rows
+
     def _estimate_kv_cache_bytes(
         self,
         n_ctx: int,
@@ -17915,6 +18022,10 @@ class LlamaCppBackend:
 
         # A hybrid snapshot is the whole recurrent state, not a context-scaled window.
         recurrent_checkpoints = slots * max(0, ctx_checkpoints) * self._rollback_state_bytes(1)
+        # DSA / QSA / MSA indexer keys share the attention cache's cells on every path.
+        indexer_bytes = int(
+            total_cells * sum(self._indexer_kv_layer_bytes(n_layers_kv, bpe_k, bpe_v, flash_attn))
+        )
 
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # One compressed KV latent per token/layer (shared across heads); V is
@@ -17941,6 +18052,7 @@ class LlamaCppBackend:
                 int(n_mla_layers * total_cells * n_kv_mla * key_len * bpe_k)
                 + self._recurrent_state_bytes(n_parallel)
                 + recurrent_checkpoints
+                + indexer_bytes
             )
 
         key_len = self._kv_key_length
@@ -17958,12 +18070,14 @@ class LlamaCppBackend:
                     int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
                     + recurrent
                     + recurrent_checkpoints
+                    + indexer_bytes
                 )
             head_dim = self._legacy_head_dim()
             return (
                 int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k)
                 + recurrent
                 + recurrent_checkpoints
+                + indexer_bytes
             )
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
@@ -18015,7 +18129,10 @@ class LlamaCppBackend:
                             checkpoint_extra_per_slot += ctx_checkpoints * swa * layer_kv_bytes
                     else:
                         global_bytes += total_cells * layer_kv_bytes
-                return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
+                return (
+                    int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
+                    + indexer_bytes
+                )
             n_global = max(1, n_layers_kv // 4)
             n_swa = n_layers_kv - n_global
             global_v_width = n_kv * val_len if padded_v_width is None else padded_v_width
@@ -18029,7 +18146,7 @@ class LlamaCppBackend:
                 if ctx_checkpoints > 0 and not swa_full
                 else 0.0
             )
-            return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
+            return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot) + indexer_bytes
 
         ssm_state = self._mamba_recurrent_state_bytes(n_parallel) + recurrent_checkpoints
 
@@ -18041,7 +18158,7 @@ class LlamaCppBackend:
                 layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
                 v_width = layer_n_kv * val_len if padded_v_width is None else padded_v_width
                 bytes_per_cell += layer_n_kv * key_len * bpe_k + v_width * bpe_v
-            return int(total_cells * bytes_per_cell) + ssm_state
+            return int(total_cells * bytes_per_cell) + ssm_state + indexer_bytes
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._legacy_head_dim()
@@ -18050,7 +18167,11 @@ class LlamaCppBackend:
         heads = [self._kv_heads_for_layer(i, layer_default) for i in range(n_layers_kv)]
         # Without flash attention V is padded to the widest layer, as on Path 4.
         v_heads = sum(heads) if flash_attn else len(heads) * max(heads)
-        return int((sum(heads) * bpe_k + v_heads * bpe_v) * head_dim * total_cells) + ssm_state
+        return (
+            int((sum(heads) * bpe_k + v_heads * bpe_v) * head_dim * total_cells)
+            + ssm_state
+            + indexer_bytes
+        )
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
         """Lightweight backend with a drafter GGUF's metadata, to size its own KV
@@ -18155,7 +18276,24 @@ class LlamaCppBackend:
                 v_len,
                 self._kv_value_length_swa,
             )
-        return int(nextn * (n_kv * k_len * bpe_k + v_width * bpe_v) * cells_per_stream * streams)
+        # qwen4exp / glm5-next MTP contexts give the head its indexer cache too
+        # (filter_idx il >= n_layer, llama-model.cpp create_memory); the DSA MTP
+        # contexts (deepseek32 / glm-dsa / dots3note) are plain attention caches.
+        arch = str(getattr(self, "_architecture", None) or "").strip().lower()
+        indexer_row = 0.0
+        idx_head = int(getattr(self, "_indexer_key_length", None) or 0)
+        if idx_head > 0 and arch in ("qwen4exp", "glm5-next", "glm5next"):
+            if arch != "qwen4exp":
+                idx_head *= 3
+            elif any(getattr(self, "_compress_ratios", None) or ()):
+                idx_head *= 2
+            indexer_row = idx_head * bpe_k
+        return int(
+            nextn
+            * (n_kv * k_len * bpe_k + v_width * bpe_v + indexer_row)
+            * cells_per_stream
+            * streams
+        )
 
     def _cpu_resident_draft_bytes(
         self,
@@ -19487,6 +19625,10 @@ class LlamaCppBackend:
         self._ssm_group_count = None
         self._ssm_conv_kernel = None
         self._kda_head_dim = None
+        self._indexer_key_length = None
+        self._indexer_top_k = None
+        self._indexer_types = None
+        self._compress_ratios = None
         self._shared_kv_layers = None
         self._nextn_predict_layers = None
         self._architecture = None
@@ -19613,6 +19755,10 @@ class LlamaCppBackend:
                                         f"{arch}.ssm.conv_kernel": "ssm_conv_kernel",
                                         f"{arch}.kda.head_dim": "kda_head_dim",
                                         f"{arch}.nextn_predict_layers": "nextn_predict_layers",
+                                        f"{arch}.attention.indexer.key_length": "indexer_key_length",
+                                        f"{arch}.attention.indexer.top_k": "indexer_top_k",
+                                        f"{arch}.attention.indexer.types": "indexer_types",
+                                        f"{arch}.attention.compress_ratios": "compress_ratios",
                                     }
                                 elif key == "tokenizer.chat_template":
                                     self._chat_template = val_s
@@ -19659,6 +19805,10 @@ class LlamaCppBackend:
                                 elif attr == "sliding_window_pattern" and val_a is not None:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
+                                elif attr == "indexer_types" and val_a is not None:
+                                    self._indexer_types = [bool(x) for x in val_a]
+                                elif attr == "compress_ratios" and val_a is not None:
+                                    self._compress_ratios = [int(x) for x in val_a]
                                 elif attr == "feed_forward_length" and val_a:
                                     self._feed_forward_length_by_layer = [int(x) for x in val_a]
                                     self._feed_forward_length = max(
@@ -35222,6 +35372,10 @@ class LlamaCppBackend:
             self._ssm_group_count = None
             self._ssm_conv_kernel = None
             self._kda_head_dim = None
+            self._indexer_key_length = None
+            self._indexer_top_k = None
+            self._indexer_types = None
+            self._compress_ratios = None
             self._shared_kv_layers = None
             self._nextn_predict_layers = None
             # Clean up temp chat template file.
