@@ -121,11 +121,46 @@ def first_frame_pipeline(
             _restore(pipe, saved)
             raise
         try:
-            yield pipe
+            with _offload_vae_after_encode(pipe):
+                yield pipe
         finally:
             pipe.__class__ = original_cls
             _carry_component_registrations(pipe, overlay, saved)
             _restore(pipe, saved)
+
+
+@contextlib.contextmanager
+def _offload_vae_after_encode(pipe: Any) -> Iterator[None]:
+    """Model offload chains vae after the transformer (the t2v order), so the first-frame encode would leave the VAE
+    resident through denoising; send it back once the encode returns."""
+    vae = getattr(pipe, "vae", None)
+    encode = getattr(vae, "encode", None)
+    if not getattr(pipe, "_all_hooks", None) or not callable(encode):
+        yield
+        return
+    try:
+        from accelerate.hooks import CpuOffload
+    except Exception:  # noqa: BLE001 -- no accelerate, no offload hooks
+        yield
+        return
+    own = vae.__dict__.get("encode", _MISSING)
+
+    def _encode(*args: Any, **kwargs: Any) -> Any:
+        out = encode(*args, **kwargs)
+        hook = getattr(vae, "_hf_hook", None)
+        if isinstance(hook, CpuOffload):
+            hook.init_hook(vae)
+        return out
+
+    vae.__dict__["encode"] = _encode
+    try:
+        yield
+    finally:
+        if vae.__dict__.get("encode") is _encode:
+            if own is _MISSING:
+                del vae.__dict__["encode"]
+            else:
+                vae.__dict__["encode"] = own
 
 
 def _carry_component_registrations(

@@ -262,6 +262,14 @@ class BackgroundCompile:
             self._thread.start()
             return True
 
+    def abandon(self, reason: str) -> bool:
+        """Give up while still recording, so the next render compiles inline. False once a compile started or ended."""
+        with self._lock:
+            if self.state != "recording":
+                return False
+            self._finish("failed", reason)
+            return True
+
     def _finish(
         self,
         state: str,

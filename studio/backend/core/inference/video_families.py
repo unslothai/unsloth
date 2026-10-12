@@ -273,7 +273,8 @@ _LTX_VIDEO_09_REFUSAL = (
     "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Studio does not "
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
-_HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])"
+# Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+_HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 _HV15_I2V_REFUSAL = (
     "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
     "transformer and SigLIP image encoder, which Studio does not load yet. Load a HunyuanVideo-1.5 "

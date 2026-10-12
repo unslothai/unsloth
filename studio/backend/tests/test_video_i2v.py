@@ -392,3 +392,97 @@ def test_availability_probe_never_raises():
     from core.inference.video_i2v import i2v_pipeline_available
     assert i2v_pipeline_available(None) is False
     assert i2v_pipeline_available("NoSuchPipelineAnywhere") is False
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [
+        ("/models/i2v/HunyuanVideo-1.5-Diffusers-480p_t2v",),
+        ("i2v-lab/HunyuanVideo-1.5-Diffusers-480p_t2v",),
+        ("C:\\i2v\\HunyuanVideo-1.5-Diffusers-480p_t2v",),
+        ("/models/i2v/hv15", "hunyuanvideo1.5_t2v_480p-Q4_K_M.gguf"),
+    ],
+)
+def test_hv15_i2v_marker_in_an_owner_or_parent_folder_does_not_refuse(ids):
+    assert video_checkpoint_refusal(_fam("hunyuanvideo-1.5"), *ids) is None
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [
+        ("/models/t2v/HunyuanVideo-1.5-Diffusers-480p_i2v/",),
+        ("/models/t2v", "hunyuanvideo1.5_i2v_480p-Q4_K_M.gguf"),
+        ("someone/hunyuanvideo1.5_i2v_480p-GGUF", "hv15-480p-Q4_K_M.gguf"),
+    ],
+)
+def test_hv15_i2v_marker_in_the_checkpoint_name_still_refuses(ids):
+    assert "image-to-video" in (video_checkpoint_refusal(_fam("hunyuanvideo-1.5"), *ids) or "")
+
+
+def test_ltx23_crf_follows_the_declared_base_repo_of_a_neutrally_named_checkpoint():
+    import types
+
+    from core.inference.video import _i2v_state_call_kwargs
+
+    state = types.SimpleNamespace(
+        variant_id = None,
+        gguf_filename = "model.safetensors",
+        display_repo_id = None,
+        repo_id = "/models/finetune",
+        base_repo = "Lightricks/LTX-2.3",
+    )
+    assert _i2v_state_call_kwargs(_fam("ltx-2"), state) == {"image_crf": 18}
+    state.base_repo = "Lightricks/LTX-2"
+    assert _i2v_state_call_kwargs(_fam("ltx-2"), state) == {}
+
+
+def test_an_image_only_session_does_not_leave_the_background_compile_pending():
+    from core.inference import diffusion_bg_compile as bgc
+    from core.inference.video import _settle_bg_compile
+
+    bg = bgc.BackgroundCompile(object())
+    with bgc.force_eager(), bgc.no_record():
+        bg._record(None, (), {})
+    _settle_bg_compile(bg, i2v = True)
+    assert not bg.pending() and bg.state == "failed"
+    assert bg.abandon("again") is False
+
+
+def test_a_text_render_still_kicks_the_background_compile():
+    from core.inference import diffusion_bg_compile as bgc
+    from core.inference.video import _settle_bg_compile
+
+    bg = bgc.BackgroundCompile(object())
+    _settle_bg_compile(bg, i2v = False)
+    assert bg.state == "recording" and bg.eager_generations == 1
+
+
+def test_model_offload_sends_the_vae_back_before_the_first_frame_denoise():
+    from PIL import Image
+
+    from core.inference.video_i2v import first_frame_pipeline
+
+    torch, pipe = _tiny_wan_pipe()
+    pipe.enable_model_cpu_offload(device = "cpu")
+    hook = pipe.vae._hf_hook
+    resident = {"vae": False}
+    pre_forward, init_hook = hook.pre_forward, hook.init_hook
+
+    def _on(module, *args, **kwargs):
+        resident["vae"] = True
+        return pre_forward(module, *args, **kwargs)
+
+    def _off(module):
+        resident["vae"] = False
+        return init_hook(module)
+
+    hook.pre_forward, hook.init_hook = _on, _off
+    seen = []
+    handle = pipe.transformer.register_forward_pre_hook(lambda *_: seen.append(resident["vae"]))
+    try:
+        with first_frame_pipeline(pipe, "WanImageToVideoPipeline"):
+            _render(torch, pipe, image = Image.new("RGB", (32, 32), (200, 40, 40)))
+        assert seen and not any(seen)
+        assert "encode" not in pipe.vae.__dict__
+    finally:
+        handle.remove()

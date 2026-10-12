@@ -1058,6 +1058,34 @@ def _i2v_pipeline_available(name: Optional[str]) -> bool:
     return i2v_pipeline_available(name)
 
 
+def _i2v_state_call_kwargs(fam: VideoFamily, state: Any) -> dict[str, Any]:
+    return video_i2v_call_kwargs(
+        fam,
+        state.variant_id,
+        state.gguf_filename,
+        state.display_repo_id,
+        state.repo_id,
+        state.base_repo,
+    )
+
+
+def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
+    if not i2v:
+        bg.note_eager_generation()
+        bg.kick()
+    elif not bg.kick():
+        # An image-to-video render records nothing; without this an i2v-only session never leaves eager.
+        bg.abandon("an image-to-video render records no compile sample")
+
+
+def assert_first_frame_pipeline_available(fam: VideoFamily) -> None:
+    if video_family_uses_i2v_pipeline(fam) and not _i2v_pipeline_available(fam.i2v_pipeline_class):
+        raise ValueError(
+            f"{fam.name} needs diffusers' {fam.i2v_pipeline_class} for a first frame, which this "
+            "install does not have. Update Unsloth to get a newer diffusers."
+        )
+
+
 def _refuse_local_ltx25_pipeline(repo_id: str, gguf_filename: Optional[str]) -> None:
     if not gguf_filename:
         assert_local_pipeline_not_ltx25(repo_id)
@@ -9428,13 +9456,7 @@ class VideoBackend:
                             config_overrides = dict(getattr(fam, "i2v_pipeline_config", ()) or ()),
                         )
                     )
-                    i2v_extra = video_i2v_call_kwargs(
-                        fam,
-                        state.variant_id,
-                        state.gguf_filename,
-                        state.display_repo_id,
-                        state.repo_id,
-                    )
+                    i2v_extra = _i2v_state_call_kwargs(fam, state)
                     request_shape["pipeline"] = type(pipe).__name__
                     if bg_eager:
                         # LTX-2 i2v passes a per-token timestep (t2v: per sample), so it must not seed the compile.
@@ -9807,9 +9829,8 @@ class VideoBackend:
                         raise RuntimeError(VIDEO_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
-                if bg_eager and not i2v_active:
-                    bg.note_eager_generation()
-                    bg.kick()
+                if bg_eager:
+                    _settle_bg_compile(bg, i2v = i2v_active)
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
@@ -9890,15 +9911,8 @@ class VideoBackend:
             last = decode_b64_image(last_frame, mode = "RGB") if last_frame else None
         # i2v pipelines centre-crop onto the nearest-aspect preset, as the reference workflow does.
         i2v_pipeline = video_family_uses_i2v_pipeline(fam)
-        if (
-            first is not None
-            and i2v_pipeline
-            and not _i2v_pipeline_available(fam.i2v_pipeline_class)
-        ):
-            raise ValueError(
-                f"{fam.name} needs diffusers' {fam.i2v_pipeline_class} for a first frame, which this "
-                "install does not have. Update Unsloth to get a newer diffusers."
-            )
+        if first is not None:
+            assert_first_frame_pipeline_available(fam)
 
         if (width is None or height is None) and first is not None and i2v_pipeline:
             width, height = first_frame_canvas(fam, *first.size)
