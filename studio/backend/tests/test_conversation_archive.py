@@ -3997,6 +3997,8 @@ def test_a_sandbox_result_is_replayed_as_the_text_the_model_saw():
     }
 
     assert _tool_content(_row("terminal", sandbox)) == ["token ZQX-5150"]
+    # edit_file is wrapped the same way when it created a file.
+    assert _tool_content(_row("edit_file", sandbox)) == ["token ZQX-5150"]
     assert _tool_content(_row("python", mcp_image)) == ["chart rendered"]
     # An empty wrapper text still takes the sentinel, as the adapter does.
     assert _tool_content(_row("terminal", {**sandbox, "text": ""})) == ['{"result":""}']

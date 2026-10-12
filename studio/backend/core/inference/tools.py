@@ -12514,6 +12514,27 @@ def _edit_file_replace_all(value: object) -> "bool | None":
     return None
 
 
+def _edit_file_created_sentinel(target: str, workdir: str) -> str:
+    """The ``__FILES__`` row for a file edit_file just created, so its card offers the download
+    python and terminal cards do. Only files the download route can serve: inside the workdir,
+    within its depth, every segment servable. Edits are not reported; the creating call's row
+    already downloads the current bytes."""
+    try:
+        relative = os.path.relpath(target, os.path.realpath(workdir))
+        size = os.stat(target).st_size
+    except (OSError, ValueError):
+        return ""
+    parts = relative.split(os.sep)
+    if (
+        parts[0] == os.pardir
+        or os.path.isabs(relative)
+        or len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS
+        or not all(_servable_segment(part) for part in parts)
+    ):
+        return ""
+    return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -12799,13 +12820,18 @@ def _edit_file(
                 f"combined with the other {len(edits) - 1} edit(s). Create the file "
                 "in one call, then edit it in the next."
             )
-        return _edit_file_create(
+        created = _edit_file_create(
             target,
             edits[0][1],
             name,
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
+        if session_id and created.startswith("Created "):
+            created = _defuse_sentinels(created) + _edit_file_created_sentinel(
+                target, _get_workdir(session_id)
+            )
+        return created
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
             return (
