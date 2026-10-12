@@ -160,15 +160,22 @@ def native_speed_flags(
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
 
 
-def _backend_spec_is_cpu(spec: str) -> bool:
-    """True for ``cpu`` or a per-module spec that maps every module to cpu."""
-    parts = [p for p in str(spec).split(",") if p.strip()]
-    return bool(parts) and all(p.split("=")[-1].strip().lower() == "cpu" for p in parts)
+def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
+    """The backend the diffusion module gets from ``--backend`` specs: ``diffusion=`` beats a bare default; None = auto-fit."""
+    explicit = default = None
+    for spec in specs:
+        for part in str(spec).split(","):
+            key, sep, value = part.strip().partition("=")
+            if not sep:
+                default = key or default
+            elif key.strip().lower() == "diffusion":
+                explicit = value.strip()
+    return explicit or default
 
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
-    """True when sd.cpp runs on Apple Metal (macOS; an explicit ``--backend`` decides, else an Apple Silicon
-    machine whose GPU is not paravirtual).
+    """True when sd.cpp runs the diffusion model on Apple Metal (macOS; an explicit ``--backend`` for it decides,
+    else an Apple Silicon machine whose GPU is not paravirtual).
 
     Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
     import sys
@@ -176,9 +183,9 @@ def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
     if sys.platform != "darwin":
         return False
     args = list(backend_args)
-    specs = [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
-    if specs:
-        return not all(_backend_spec_is_cpu(spec) for spec in specs)
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    if target is not None:
+        return target.lower() != "cpu"
     return apple_silicon_machine() and not metal_is_paravirtual()
 
 

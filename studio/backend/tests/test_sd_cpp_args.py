@@ -302,8 +302,26 @@ def test_video_load_route_skips_the_video_claim_for_a_forced_cpu_h3_load():
 
     source = inspect.getsource(video_routes)
     guard = source.index("await asyncio.to_thread(forces_cpu_backend, device)")
-    assert 'device = "cpu"' in source[guard : guard + 200]
-    assert guard < source.index("return acquire_for_request(VIDEO, _begin_load)")
+    branch = source.index("if forced_cpu:", guard)
+    # Neither acquires nor releases VIDEO: an old MPS model keeps its claim until the worker tears it down.
+    assert source[branch : source.index("elif device != \"cpu\":", branch)].strip() == (
+        "if forced_cpu:\n            status_dict = await asyncio.to_thread(_begin_load)"
+    )
+    assert branch < source.index("return acquire_for_request(VIDEO, _begin_load)")
+
+
+def test_partial_backend_specs_leave_the_diffusion_model_on_metal(monkeypatch):
+    # sd.cpp auto-fits unassigned modules, so te=cpu / vae=cpu alone still runs the denoiser on Metal.
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    fa_only = ["--diffusion-fa"]
+    full = ["--diffusion-fa", "--diffusion-conv-direct"]
+    assert native_speed_flags("default", ["--backend", "te=cpu"]) == fa_only
+    assert native_speed_flags("default", ["--backend", "vae=cpu,te=cpu"]) == fa_only
+    assert native_speed_flags("default", ["--backend", "diffusion=cpu"]) == full
+    # An explicit diffusion entry beats the bare default, as in sd.cpp.
+    assert native_speed_flags("default", ["--backend", "cpu", "--backend", "diffusion=MTL0"]) == fa_only
+    assert native_speed_flags("default", ["--backend", "MTL0,diffusion=cpu"]) == full
 
 
 def test_forces_cpu_backend_only_for_a_paravirtual_mps_device(monkeypatch):
