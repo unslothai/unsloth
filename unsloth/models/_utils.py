@@ -7227,9 +7227,12 @@ def _merged_torchao_config_for_peft_qat(model):
         parts = fqn.split(".")
         if parts[:2] == ["base_model", "model"]:
             parts = parts[2:]
-        # Adapter weights are merged into their base layer.
-        if any(p.startswith("lora_") for p in parts):
+        # Adapter weights are merged into their base layer; a modules_to_save copy is saved under its wrapper's name.
+        if any(p.startswith("lora_") or p == "original_module" for p in parts):
             return None
+        if "modules_to_save" in parts:
+            i = parts.index("modules_to_save")
+            parts = parts[:i] + parts[i + 2 :]
         return ".".join(p for p in parts if p != "base_layer")
 
     configs = model._torchao_config.base_config_and_filter_fns
@@ -7250,12 +7253,10 @@ def _merged_torchao_config_for_peft_qat(model):
     embeddings = set()
     for getter in ("get_input_embeddings", "get_output_embeddings"):
         try:
-            module = getattr(model, getter)()
+            embedding = getattr(model, getter)()
         except Exception:
-            module = None
-        if module is not None:
-            embeddings.add(id(module))
-            embeddings.add(id(getattr(module, "base_layer", module)))
+            embedding = None
+        embeddings.update(_merged_name(fqn) for fqn, m in model.named_modules() if m is embedding)
 
     module_to_fqn_dict = {}
     include_embeddings = False
@@ -7274,7 +7275,7 @@ def _merged_torchao_config_for_peft_qat(model):
             if name in module_to_fqn_dict:
                 raise ValueError(f"Found multiple quantization configs for {name}")
             module_to_fqn_dict[name] = base_config
-            include_embeddings = include_embeddings or id(module) in embeddings
+            include_embeddings = include_embeddings or name in embeddings
 
     kwargs = {}
     if include_embeddings:

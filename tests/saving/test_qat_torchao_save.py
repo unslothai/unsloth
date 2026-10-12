@@ -83,10 +83,11 @@ def test_convert_quantizes_after_manual_convert(manual_convert):
     assert not _is_quantized(block.small.weight)
 
 
-def _peft_qat_model(qat_config):
+def _peft_qat_model(qat_config, **lora_kwargs):
     from peft import LoraConfig, get_peft_model
     peft_model = get_peft_model(
-        _Model(), LoraConfig(r = 8, target_modules = ["q_proj", "down_proj", "small"])
+        _Model(),
+        LoraConfig(r = 8, target_modules = ["q_proj", "down_proj", "small"], **lora_kwargs),
     )
     return _prepare_model_for_qat(peft_model, qat_config)
 
@@ -99,7 +100,8 @@ def test_peft_qat_config_uses_merged_module_names():
     assert sorted(config.modules_to_not_convert) == ["embed_tokens", "layers.0.small"]
 
 
-def test_peft_qat_multi_config_uses_merged_module_names():
+@pytest.mark.parametrize("modules_to_save", [None, ["embed_tokens"]])
+def test_peft_qat_multi_config_uses_merged_module_names(modules_to_save):
     from torchao.quantization import IntxWeightOnlyConfig
     from torchao.quantization.granularity import PerAxis
 
@@ -108,7 +110,8 @@ def test_peft_qat_multi_config_uses_merged_module_names():
     qat_config.base_config_and_filter_fns.append(
         (embedding_config, lambda m, _: isinstance(m, torch.nn.Embedding))
     )
-    config = _merged_torchao_config_for_peft_qat(_peft_qat_model(qat_config))
+    peft_model = _peft_qat_model(qat_config, modules_to_save = modules_to_save)
+    config = _merged_torchao_config_for_peft_qat(peft_model)
     names = config.quant_type.module_fqn_to_config
     assert set(names) == {"layers.0.q_proj", "layers.0.down_proj", "embed_tokens"}
     assert names["embed_tokens"] is embedding_config
