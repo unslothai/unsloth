@@ -116,8 +116,9 @@ export function ChatModelNotice({
           <PopoverTrigger asChild={true}>
             <button
               type="button"
+              data-chat-model-notice=""
               aria-label={`Original model: ${label}`}
-              className="flex h-[var(--studio-chat-control-height,34px)] min-w-0 max-w-56 shrink cursor-pointer items-center gap-1.5 rounded-[10px] px-2 text-ui-13 text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white"
+              className="flex h-[var(--studio-chat-control-height,34px)] min-w-[calc(30px*var(--ui-space-scale,1))] max-w-56 shrink cursor-pointer items-center rounded-[10px] px-2 text-ui-13 text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white max-sm:min-w-[calc(22px*var(--ui-space-scale,1))] max-sm:px-1"
             >
               <HugeiconsIcon
                 icon={ArrowTurnBackwardIcon}
@@ -125,7 +126,10 @@ export function ChatModelNotice({
                 className="size-3.5 shrink-0"
                 aria-hidden={true}
               />
-              <span className="truncate">{label}</span>
+              {/* Keep the label's spacing inside its clipped box so an icon-only trigger fits. */}
+              <span className="min-w-0 truncate before:inline-block before:w-1.5 before:content-['']">
+                {label}
+              </span>
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
