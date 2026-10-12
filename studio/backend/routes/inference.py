@@ -36570,8 +36570,17 @@ def _with_quant_pin_rows(objects: list[dict], pins: dict[str, tuple[str, ...]]) 
     Dropdown-only clients cannot type the pin chat completions accepts (#9340). The bare row
     stays first and keeps serving its preferred quant, and each pin row is exactly what
     ``GET /v1/models/<id>:<quant>`` returns for it."""
-    from core.inference.local_model_resolver import local_gguf_pinned_variant
+    from core.inference.local_model_resolver import (
+        index_is_built,
+        local_gguf_pinned_variant,
+        warm_index_soon,
+    )
 
+    # Build the index once if it never was (a client reading the list once at connect would
+    # otherwise never see a pin), then only read it: rebuilding each time its 5 s TTL lapses is
+    # the multi-root scan the catalog caches exist to avoid.
+    allow_scan = not index_is_built()
+    warm_index_soon()
     listed = {obj["id"] for obj in objects}
     resident_quants = functools.lru_cache(maxsize = 1)(_resident_gguf_quants)
     out: list[dict] = []
@@ -36584,7 +36593,7 @@ def _with_quant_pin_rows(objects: list[dict], pins: dict[str, tuple[str, ...]]) 
             for quant in pins.get(obj["id"], ())
             if f"{obj['id']}:{quant}" not in listed
             # Only a pin the resolver honours, or chat completions would 404 a listed id.
-            and local_gguf_pinned_variant(f"{obj['id']}:{quant}") == quant
+            and local_gguf_pinned_variant(f"{obj['id']}:{quant}", allow_scan = allow_scan) == quant
         )
     return out
 

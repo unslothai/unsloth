@@ -706,8 +706,20 @@ def _multi_quant_listing(
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
     monkeypatch.setattr(inf, "_peek_inference_backend", lambda: None)
-    entry = _LocalGgufEntry("publisher/Qwen3", "/hf/models--publisher--Qwen3/snapshots/a", quants)
-    monkeypatch.setattr(resolver, "_index", lambda: {"publisher/qwen3": entry})
+    _index_holding(monkeypatch, quants)
+
+
+def _index_holding(monkeypatch, quants):
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    index = {
+        "publisher/qwen3": _LocalGgufEntry(
+            "publisher/Qwen3", "/hf/models--publisher--Qwen3/snapshots/a", quants
+        )
+    }
+    monkeypatch.setattr(resolver, "_scan", (1.0, index))
+    monkeypatch.setattr(resolver, "_index", lambda: index)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
 
 
 def _listed():
@@ -758,13 +770,22 @@ def test_list_marks_only_the_resident_quant_pin_loaded(monkeypatch):
 
 
 def test_list_skips_a_quant_pin_the_resolver_would_not_honour(monkeypatch):
-    from core.inference.local_model_resolver import _LocalGgufEntry
-
     _multi_quant_listing(monkeypatch, _FakeLlama(loaded = False))
-    stale = _LocalGgufEntry(
-        "publisher/Qwen3", "/hf/models--publisher--Qwen3/snapshots/a", ("Q8_0",)
-    )
-    monkeypatch.setattr(resolver, "_index", lambda: {"publisher/qwen3": stale})
+    _index_holding(monkeypatch, ("Q8_0",))
     ids = [m["id"] for m in _listed()]
     assert "publisher/Qwen3:Q8_0" in ids
     assert "publisher/Qwen3:Q4_K_M" not in ids
+
+
+def test_list_builds_the_index_for_quant_pins_only_when_it_never_was(monkeypatch):
+    # The index TTL is 5 s; rebuilding it per listing is the multi-root scan the catalog caches avoid.
+    _multi_quant_listing(monkeypatch, _FakeLlama(loaded = False))
+    monkeypatch.setattr(resolver, "_index", lambda: pytest.fail("listing rebuilt the index"))
+    assert "publisher/Qwen3:Q4_K_M" in [m["id"] for m in _listed()]
+
+    # Never built (first listing after start): build it, or a client that reads the list once
+    # at connect never sees a pin.
+    built = resolver._scan[1]
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "_index", lambda: built)
+    assert "publisher/Qwen3:Q4_K_M" in [m["id"] for m in _listed()]
