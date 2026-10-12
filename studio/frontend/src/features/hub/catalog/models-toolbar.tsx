@@ -20,6 +20,7 @@ import {
   FolderSearchIcon,
   Search01Icon,
   SlidersHorizontalIcon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -143,13 +144,22 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   const hasTrailing = Boolean(query) || (isDiscover && isLoading);
   const formatOptions = useMemo<HubOption<FormatMenuValue>[]>(() => {
     const options: HubOption<FormatMenuValue>[] = FORMAT_FILTER_OPTIONS.filter(
-      (option) => option.value !== "mlx" || tab === "discover",
+      (option) =>
+        (option.value !== "mlx" && option.value !== "recommended") ||
+        tab === "discover",
     ).map((option) => ({
       value: option.value,
       triggerLabel: option.label,
       label: (
         <>
           <span className="flex size-3.5 shrink-0 items-center justify-center">
+            {option.value === "recommended" && (
+              <HugeiconsIcon
+                icon={SparklesIcon}
+                strokeWidth={1.75}
+                className="size-3.5 text-muted-foreground"
+              />
+            )}
             {option.value === "gguf" && (
               <span className="size-1.5 rounded-full bg-format-gguf" />
             )}
@@ -420,7 +430,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               }
             }}
             ariaLabel="Format filter"
-            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
+            className={cn(triggerBase, "w-[calc(144px*var(--ui-space-scale,1))]")}
           />
         )}
 
