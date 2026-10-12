@@ -2336,7 +2336,7 @@ async def cached_gguf_variant_source_path(
     variant: str,
     hf_token: Optional[str] = None,
 ) -> Optional[str]:
-    """The exact cached file selected for a variant after online readiness checks."""
+    """return the exact cached file selected after online readiness checks."""
     answer = await get_gguf_variants_answer(
         repo_id,
         hf_token = hf_token,

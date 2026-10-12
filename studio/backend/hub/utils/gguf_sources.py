@@ -170,7 +170,7 @@ def cached_gguf_action_path(
     cache_path: str | None = None,
     preferred_path: str | None = None,
 ) -> str | None:
-    """An explicit folder wins; logical quant actions use the same source as the listing."""
+    """use an explicit folder first; otherwise use the source selected by the listing."""
     if cache_path or not variant:
         return cache_path
     if preferred_path:
