@@ -478,8 +478,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 
 
 # Wan2.1 / FastWan names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan spellings so no other
-# family's name can match. Conditioning markers count only in the last path segment (an owner or folder named "fun" is
-# not a Fun checkpoint), and "fun" only right after the Wan2.1 token, where every Fun release puts it.
+# family's name can match. I2V and conditioning markers count only in the last path segment (an owner or folder named
+# "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun release puts it.
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
 _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
     (
@@ -490,7 +490,8 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
-        r"^(?=.*" + _WAN21_TOKEN + r")(?=.*(?<![a-z0-9])(?:i2v|flf2v)(?![a-z0-9]))",
+        r"(?:^|[/\\])(?=[^/\\]*" + _WAN21_TOKEN + r")(?=[^/\\]*(?<![a-z0-9])(?:i2v|flf2v)(?![a-z0-9]))"
+        r"[^/\\]*[/\\]*$",
         "This is a Wan2.1 image-to-video checkpoint (I2V-14B 480P / 720P or FLF2V). It generates "
         "from a start frame through its own image-conditioned transformer and a CLIP vision "
         "encoder, which Studio does not load yet; image-to-video support is coming. Load a Wan2.1 "

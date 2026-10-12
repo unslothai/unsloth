@@ -134,6 +134,9 @@ def test_supported_names_carry_no_refusal(identifier, expected):
         ("someone/Wan2.1-T2V-14B-fun-style", "wan2.1-t2v-14b"),
         ("/home/fun/models/Wan2.1-T2V-1.3B-Diffusers", "wan2.1-t2v-1.3b"),
         ("vace-lab/Wan2.1-T2V-1.3B-Diffusers", "wan2.1-t2v-1.3b"),
+        ("i2v-lab/Wan2.1-T2V-14B-Diffusers", "wan2.1-t2v-14b"),
+        ("/home/i2v/models/Wan2.1-T2V-14B-Diffusers", "wan2.1-t2v-14b"),
+        ("/data/flf2v/Wan2.1-T2V-1.3B-Diffusers/", "wan2.1-t2v-1.3b"),
     ],
 )
 def test_conditioning_markers_outside_the_model_name_do_not_refuse(identifier, expected):
