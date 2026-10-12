@@ -326,6 +326,9 @@ class TestARawHolderIsMeasuredOnceItProduces:
             base_url = "http://127.0.0.1:1"
 
         inference._openai_llama_note_raw_measured(llama_backend = _Backend(), gen_id = "raw")
+        # No reading in hand: stamped, and promoted by the first probe that starts after it.
+        assert controller.participant("raw").measured_at_seq is not None
+        controller.note_resident(0, started_at_seq = controller.residency_epoch())
         assert controller.participant("raw").measured is True
 
 

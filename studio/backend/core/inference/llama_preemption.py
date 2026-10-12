@@ -1430,11 +1430,11 @@ class PreemptionController:
             participant = self._participants.get(gen_id)
             if participant is None:
                 return
-            if self._resident is None or participant.measured:
-                participant.measured = True
-            else:
+            if not participant.measured:
                 # Bumped so the stamp is strictly past any epoch a probe already in flight
                 # captured; a probe that starts after this reads the same value and matches.
+                # Stamped with no reading in hand too: the ledger counts it whole until one
+                # lands, and a probe already out when the prompt went in must not promote it.
                 self._resident_seq += 1
                 participant.measured_at_seq = self._resident_seq
             participant.cells_reclaimed = False
