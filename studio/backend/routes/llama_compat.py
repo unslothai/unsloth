@@ -338,7 +338,6 @@ def _resident_identifier(model_id: str) -> str:
     inf = _inference()
     from core.inference.openai_auto_download import split_model_ref
 
-    base = split_model_ref(model_id)[0]
     backend = inf.get_llama_cpp_backend()
     if getattr(backend, "is_loaded", False):
         resident = getattr(backend, "model_identifier", None)
@@ -346,14 +345,19 @@ def _resident_identifier(model_id: str) -> str:
         backend = inf._peek_inference_backend()
         resident = getattr(backend, "active_model_name", None)
     advertised = getattr(backend, "_openai_advertised_id", None)
-    if resident and advertised and base.strip().lower() == advertised.strip().lower():
-        return resident
+    if not (resident and advertised):
+        return model_id
+    # The full id first: an Ollama tag such as "llama3:latest" is the advertised id, not a quant pin.
+    for candidate in (model_id, split_model_ref(model_id)[0]):
+        if candidate.strip().lower() == advertised.strip().lower():
+            return resident
     return model_id
 
 
 async def _resolve_load_target(model_id: str):
     """``(LoadRequest, listed id)``, from the on-disk copy and saved launch settings auto-switch would use."""
     from core.inference.local_model_resolver import (
+        local_target_is_gguf,
         resolve_local_gguf,
         resolve_trusted_cached_local_gguf,
     )
@@ -375,7 +379,9 @@ async def _resolve_load_target(model_id: str):
     model_path, variant, loader_id = resolved[:3]
     alias = loader_id or split_model_ref(public_id)[0]
     _, override = resolve_override_for_load(model_path, alias, variant)
-    kwargs = model_override_load_kwargs(override, is_gguf = variant is not None)
+    # Not from the variant: a single-file GGUF or an Ollama tag resolves with no quant to pin.
+    is_gguf = await asyncio.to_thread(local_target_is_gguf, model_path, alias)
+    kwargs = model_override_load_kwargs(override, is_gguf = is_gguf)
     # A stale pin (GPU removed or renumbered) is dropped, as auto-switch does, rather than 400 the load.
     if kwargs.get("gpu_ids") and not await _inference()._override_gpu_ids_still_resolve(
         kwargs["gpu_ids"], stored_gpu_index_kind(override)

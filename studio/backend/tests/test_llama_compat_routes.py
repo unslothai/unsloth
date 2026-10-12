@@ -1130,6 +1130,7 @@ def _no_local_gguf(monkeypatch):
     monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
     monkeypatch.setattr(overrides, "resolve_override_for_load", lambda *a, **k: (None, {}))
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
     return resolver
 
 
@@ -1174,7 +1175,8 @@ def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gg
     monkeypatch.setattr(
         _no_local_gguf,
         "resolve_local_gguf",
-        lambda requested, **k: ("/models/qwen", "UD-Q4_K_XL", QWEN),
+        # A single-file GGUF resolves with no quant, and is still llama.cpp's.
+        lambda requested, **k: ("/models/qwen.gguf", None, QWEN),
     )
     asked = []
 
@@ -1184,7 +1186,7 @@ def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gg
         variant = None,
     ):
         asked.append((load_id, alias_id, variant))
-        return load_id, {"n_parallel": 2, "kv_cache_dtype": "q8_0"}
+        return load_id, {"n_parallel": 2, "kv_cache_dtype": "q8_0", "gpu_layers": 20}
 
     monkeypatch.setattr(overrides, "resolve_override_for_load", _override)
     mod, _ = _management()
@@ -1193,14 +1195,14 @@ def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gg
     original = double.load_model_gated
 
     async def _capture(request, *args, **kwargs):
-        seen.append((request.n_parallel, request.cache_type_kv))
+        seen.append((request.n_parallel, request.cache_type_kv, request.gpu_layers))
         return await original(request, *args, **kwargs)
 
     double.load_model_gated = _capture
     with _client(mod) as c:
         assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
-    assert asked == [("/models/qwen", QWEN, "UD-Q4_K_XL")]
-    assert seen == [(2, "q8_0")]
+    assert asked == [("/models/qwen.gguf", QWEN, None)]
+    assert seen == [(2, "q8_0", 20)]
 
 
 def test_management_unload_maps_the_advertised_alias_to_the_resident():
@@ -1262,3 +1264,26 @@ def test_unserved_management_operations_still_404(method, path):
         r = c.request(method, path, json = {} if method == "POST" else None)
     assert r.status_code == 404, (method, path, r.status_code)
     assert "text/html" not in r.headers.get("content-type", "")
+
+
+def test_management_unload_matches_an_ollama_tag_before_its_suffix():
+    """ ":latest" is part of the advertised Ollama id, not a quant pin to strip first."""
+    tag = "ollama/llama3:latest"
+    backend = _Backend()
+    backend.model_identifier = "ollama-manifest:/models/llama3/latest"
+    backend._openai_advertised_id = tag
+    mod = _load(backend = backend, catalog = [{"id": tag, "object": "model", "loaded": True}])
+    calls = []
+
+    async def _unload_impl(request, current_subject):
+        calls.append(request.model_path)
+
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    mod._inference()._unload_model_impl = _unload_impl
+    mod._inference()._tunnel_safe_json = _tunnel_safe_json
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": tag})
+    assert r.json() == {"success": True, "model": tag}
+    assert calls == ["ollama-manifest:/models/llama3/latest"]
