@@ -89,8 +89,7 @@ _TURN_PROBE = "Unsloth turn probe"
 
 
 def _turn_end_ids(tokenizer):
-    """The special token the chat template writes right after an assistant reply. Dream's eos_token_id is only
-    <|endoftext|>, but its template closes a turn with <|im_end|>, so a chat reply would run on past it."""
+    """The special token closing an assistant turn (Dream: <|im_end|>, while its eos_token_id is <|endoftext|>)."""
     text_tokenizer = _text_tokenizer(tokenizer)
     try:
         rendered = text_tokenizer.apply_chat_template(

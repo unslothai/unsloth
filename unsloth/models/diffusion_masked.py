@@ -191,9 +191,7 @@ class MaskedDiffusionProfile(DiffusionProfile):
             revision = getattr(config, "_commit_hash", None),
             **hub_kwargs,
         )
-        # Register as the Auto classes do: transformers < 5.17 keys is_remote_code() on _auto_class alone, and a
-        # class it takes for library code gets its own _init_weights run over the loaded checkpoint (LLaDA-MoE and
-        # Dream then train from random weights).
+        # transformers < 5.17 reruns a non-Auto hub class's _init_weights over the loaded checkpoint (LLaDA-MoE, Dream).
         if getattr(cls, "_auto_class", None) is None:
             cls.register_for_auto_class(auto_class)
         _accept_new_validate_kwargs(cls)
