@@ -89,12 +89,33 @@ def test_release_maps_to_one_family(version, family):
     assert ltx_family_for_version(version) == family
 
 
+
+@pytest.mark.parametrize(
+    "name, version",
+    [("Lightricks/LTX-2.10", "2.10"), ("ltx-2.12-22b-distilled.safetensors", "2.12"), ("ltx_2_10-dev", "2.10")],
+)
+def test_multi_digit_releases_are_refused_not_routed_to_ltx2(name, version):
+    from core.inference.video import _detect_load_family
+
+    assert unsupported_ltx_version(name) == version
+    assert ltx_family_by_name(name) is None
+    with pytest.raises(ValueError, match = f"LTX-{version}, which Studio does not support yet"):
+        _detect_load_family(name, None, None)
+
+
 @pytest.mark.parametrize("name", LTX25_NAMES)
 def test_ltx25_names_resolve_to_the_ltx25_family(name):
     from core.inference.video import _detect_load_family
 
     assert unsupported_ltx_version(name) is None
     assert ltx_family_by_name(name) == LTX25_FAMILY
+    if name.lower() == v25.LTX25_SINGLE_FILE_REPO.lower():
+        # The split release has no Diffusers pipeline: a load without a DiT file is refused before any download.
+        with pytest.raises(ValueError, match = "single files, not a Diffusers pipeline"):
+            _detect_load_family(name, None, None)
+        with pytest.raises(ValueError, match = "single files, not a Diffusers pipeline"):
+            _detect_load_family(name, "diffusion_models/x.safetensors", None, None, "pipeline")
+        return
     assert _detect_load_family(name, None, None).name == LTX25_FAMILY
 
 
@@ -408,6 +429,12 @@ def test_dev_detection_reads_the_leaf_only():
 def test_keyframe_canvas_and_fit():
     from PIL import Image
 
+    # Rounding both sides up must not leave the pixel cap (an aspect of ~0.3284 used to give 576x1664).
+    for i in range(2500, 40001):
+        ratio = i / 10000
+        w, h = v25.ltx25_canvas_for_aspect(ratio, 1.0)
+        assert w * h <= v25.LTX25_CANVAS_MAX_PIXELS, (ratio, w, h)
+        assert w % 64 == 0 and h % 64 == 0
     assert v25.ltx25_canvas_for_aspect(1920, 1080) == (1280, 704)
     assert v25.ltx25_canvas_for_aspect(1080, 1920) == (704, 1280)
     w, h = v25.ltx25_canvas_for_aspect(1000, 1000)
@@ -766,6 +793,33 @@ def test_client_caches_recent_encodes_and_reports_a_dead_worker(monkeypatch):
     monkeypatch.setattr(client, "start", lambda: None)
     with pytest.raises(v25.TextEncoderWorkerError, match = "exited"):
         client._get(None, "encoding")
+
+
+
+def test_an_abandoned_encodes_error_does_not_fail_the_next_one():
+    import torch
+
+    client = v25.Ltx25TextEncoderClient(
+        repo = "r", hf_token = None, cache_dir = None, local_files_only = True, device = "cpu", dtype = "bfloat16",
+        resident = False, venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
+    client._ready = True
+    # Request 1 was abandoned by a cancel; its error arrives after request 2 was sent.
+    client._seq = 1
+    client._resp.put({"type": "error", "id": 1, "error": "LTX-2.5 text encoder failed: CUDA out of memory"})
+
+    def fake_put(msg):
+        client._resp.put({"type": "embeds", "id": msg["id"], "embeds": torch.zeros(1, 2, 3), "mask": torch.ones(1, 2)})
+
+    client._cmd.put = fake_put
+    embeds, _mask = client.encode(["p"], 2)
+    assert embeds.shape == (1, 2, 3) and client._seq == 2
+    # Its own error still fails it.
+    client._cmd.put = lambda msg: client._resp.put({"type": "error", "id": msg["id"], "error": "boom"})
+    with pytest.raises(v25.TextEncoderWorkerError, match = "boom"):
+        client.encode(["q"], 2)
 
 
 # ── sampler ──────────────────────────────────────────────────────────────────
@@ -1472,6 +1526,35 @@ def test_offloaded_encoder_onloads_only_when_the_card_has_room(monkeypatch):
     # A resident encoder is already on the card; other devices are not probed.
     assert worker._encode_device({"device": "cuda:0", "resident": True}, model) == "cuda:0"
     assert worker._encode_device({"device": "mps", "resident": False}, model) == "mps"
+
+
+
+def test_offloaded_encoder_on_xpu_is_budgeted_too(monkeypatch):
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _FakeEncoderModel()
+    monkeypatch.setattr(worker, "ENCODE_MARGIN_MIB", 10)
+    offloaded = {"device": "xpu:0", "resident": False}
+    free = {"mib": 12}
+
+    def mem_get_info(_device):
+        if free["mib"] is None:
+            raise RuntimeError("no reading")
+        return free["mib"] << 20, 80 << 30
+
+    monkeypatch.setattr(torch, "xpu", SimpleNamespace(mem_get_info = mem_get_info), raising = False)
+    assert worker._encode_device(offloaded, model) == "xpu:0"
+    free["mib"] = 11
+    assert worker._encode_device(offloaded, model) == "cpu"
+    # Neither a free reading nor a budget: an XPU cannot be judged, so the encode stays on the CPU.
+    free["mib"] = None
+    assert worker._encode_device(offloaded, model) == "cpu"
+    budgeted = dict(offloaded, budget_mib = 1000)
+    monkeypatch.setattr(worker, "WORKER_CONTEXT_MIB", 100)
+    assert worker._encode_device(budgeted, model, server_reserved_mib = 888) == "xpu:0"
+    assert worker._encode_device(budgeted, model, server_reserved_mib = 889) == "cpu"
 
 
 def test_short_card_encodes_on_the_cpu_without_moving_the_encoder(monkeypatch):

@@ -36,11 +36,12 @@ VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
 VIDEO_MODEL_CHANGED_MSG = "The requested video model changed before generation was reserved."
 
-# One LTX version token: ltx / ltxv / ltx-video, optional separator, major 2, then ".N" / "_N" (minor), "N" ending the
+# One LTX version token: ltx / ltxv / ltx-video, optional separator, major 2, then ".N" / "_N" (minor, any digits, so
+# "ltx-2.10" reads as 2.10), "N" ending the
 # token ("ltx25"), or nothing ("ltx-2-19b" = 2.0). Anything else ("ltx-24fps", "ltx-transformer") is no name evidence,
 # as is a bare "ltx23" / "ltx-23" (no release uses that spelling, so it cannot outrank the repo).
 _LTX_VERSION = re.compile(
-    r"(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9])(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))"
+    r"(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9]+)(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))"
 )
 
 
@@ -1172,6 +1173,34 @@ def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict
         except (re.error, TypeError, ValueError):
             continue
     return {}
+
+
+def snap_canvas_within_cap(
+    width: float, height: float, multiple: int, max_pixels: int
+) -> tuple[int, int]:
+    """Snap a "match source" canvas to ``multiple`` without leaving ``max_pixels``: each side rounds to the nearest
+    multiple, and when that rounding pushes the area past the cap a side rounds down instead (the largest area under
+    the cap, then the aspect nearest the unsnapped one). The frontend's matchedCanvas mirrors this."""
+    import math
+
+    def down(value: float) -> int:
+        return max(multiple, math.floor(value / multiple) * multiple)
+
+    def near(value: float) -> int:
+        return max(multiple, math.floor(value / multiple + 0.5) * multiple)
+
+    w, h = near(width), near(height)
+    if w * h <= max_pixels:
+        return w, h
+    target = math.log(width / height)
+    fits = [
+        (cw, ch)
+        for cw, ch in ((down(width), h), (w, down(height)), (down(width), down(height)))
+        if cw * ch <= max_pixels
+    ]
+    if not fits:
+        return down(width), down(height)
+    return max(fits, key = lambda wh: (wh[0] * wh[1], -abs(math.log(wh[0] / wh[1]) - target)))
 
 
 def first_frame_canvas(

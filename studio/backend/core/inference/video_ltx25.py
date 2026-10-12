@@ -216,10 +216,9 @@ def ltx25_canvas_for_aspect(aspect_width: float, aspect_height: float) -> tuple[
         scale = math.sqrt(LTX25_CANVAS_MAX_PIXELS / area)
         width, height = width * scale, height * scale
 
-    def snap(value: float) -> int:
-        return max(LTX25_CANVAS_MULTIPLE, round(value / LTX25_CANVAS_MULTIPLE) * LTX25_CANVAS_MULTIPLE)
+    from .video_families import snap_canvas_within_cap
 
-    return snap(width), snap(height)
+    return snap_canvas_within_cap(width, height, LTX25_CANVAS_MULTIPLE, LTX25_CANVAS_MAX_PIXELS)
 
 
 def fit_ltx25_first_frame(image: Any, width: int, height: int) -> Any:
@@ -646,12 +645,13 @@ def ensure_text_encoder_sidecar() -> str:
 
 def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
     """What this (server) process holds on ``device`` right now, for the worker's budget check."""
-    if not str(device or "").startswith("cuda"):
+    kind = str(device or "").split(":", 1)[0]
+    if kind not in ("cuda", "xpu"):
         return None
     try:
         import torch
 
-        return int(torch.cuda.memory_reserved(torch.device(str(device)))) >> 20
+        return int(getattr(torch, kind).memory_reserved(torch.device(str(device)))) >> 20
     except Exception:  # noqa: BLE001 -- unknown: the worker judges by free memory alone
         return None
 
@@ -750,7 +750,15 @@ class Ltx25TextEncoderClient:
     def alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
-    def _get(self, cancel: Optional[threading.Event], what: str, timeout: Optional[float] = None) -> dict:
+    def _get(
+        self,
+        cancel: Optional[threading.Event],
+        what: str,
+        timeout: Optional[float] = None,
+        request_id: Optional[int] = None,
+    ) -> dict:
+        """The next worker reply. With ``request_id``, an error for another request (one a cancel abandoned) is skipped
+        rather than raised, so it cannot fail the encode that follows."""
         began = time.monotonic()
         while True:
             if cancel is not None and cancel.is_set():
@@ -771,6 +779,8 @@ class Ltx25TextEncoderClient:
                     raise TextEncoderWorkerError(f"The LTX-2.5 text encoder worker timed out while {what}.")
                 continue
             if msg.get("type") == "error":
+                if request_id is not None and msg.get("id") is not None and msg.get("id") != request_id:
+                    continue
                 raise TextEncoderWorkerError(str(msg.get("error") or "unknown error"))
             return msg
 
@@ -829,7 +839,7 @@ class Ltx25TextEncoderClient:
                 }
             )
             while True:
-                msg = self._get(cancel, "encoding the prompt")
+                msg = self._get(cancel, "encoding the prompt", request_id = seq)
                 # A reply to a request a cancel abandoned arrives first; skip it.
                 if msg.get("type") == "embeds" and msg.get("id") == seq:
                     break

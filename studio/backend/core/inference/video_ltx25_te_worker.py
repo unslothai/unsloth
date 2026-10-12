@@ -177,16 +177,18 @@ def _encode_device(config: dict, model: Any, server_reserved_mib: Optional[int] 
     ``ENCODE_MARGIN_MIB``, else the CPU. Room is the card's free memory right now AND, when the server sent them, the
     load's memory budget minus what the server holds at this moment: the plan did not budget the encoder on the card,
     so it may only borrow budget the server is not using (encodes run before the denoise). An unreadable free count
-    falls back to the budget alone."""
+    falls back to the budget alone; an XPU with neither reading encodes on the CPU."""
     device = str(config["device"])
-    if config.get("resident") or not device.startswith("cuda"):
+    kind = device.split(":", 1)[0]
+    # MPS shares host memory, so there is no card to keep the encoder off.
+    if config.get("resident") or kind not in ("cuda", "xpu"):
         return device
     import torch
 
     need = _weights_mib(model) + ENCODE_MARGIN_MIB
     room: Optional[int] = None
     try:
-        free, _total = torch.cuda.mem_get_info(torch.device(device))
+        free, _total = getattr(torch, kind).mem_get_info(torch.device(device))
         room = free >> 20
     except Exception:  # noqa: BLE001 -- judged by the budget alone
         pass
@@ -195,7 +197,7 @@ def _encode_device(config: dict, model: Any, server_reserved_mib: Optional[int] 
         allowed = int(budget) - int(server_reserved_mib) - WORKER_CONTEXT_MIB
         room = allowed if room is None else min(room, allowed)
     if room is None:
-        return device
+        return device if kind == "cuda" else "cpu"
     return device if room >= need else "cpu"
 
 

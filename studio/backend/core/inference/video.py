@@ -1107,6 +1107,15 @@ def _detect_load_family(
     fam, by_content = _resolve_load_family_with_source(
         repo_id, gguf_filename, family_override, display_repo_id, ltx_file = ltx_file
     )
+    if fam is not None and fam.name == "ltx-2.5" and not ltx_file:
+        from .video_ltx25 import LTX25_SINGLE_FILE_REPO, is_ltx25_single_file_base
+
+        if is_ltx25_single_file_base(repo_id):
+            # No model_index.json there: a pipeline load would stage ~29 GB of companions and then fail.
+            raise ValueError(
+                f"'{repo_id}' ships LTX-2.5 as single files, not a Diffusers pipeline. Pick one of its DiT files "
+                f"(diffusion_models/), or load {LTX25_SINGLE_FILE_REPO}-Diffusers."
+            )
     if fam is not None and fam.name in LTX_FAMILIES:
         # A local diffusers folder's model_index.json outranks its name, as a file's header does.
         by_content = by_content or (not ltx_file and local_ltx_pipeline_family(repo_id) is not None)
@@ -6635,7 +6644,14 @@ class VideoBackend:
             from .video_ltx25 import encoder_resident_for_plan, start_text_encoder
 
             ltx25_dev = kind != "pipeline" and ltx25_is_dev(gguf_filename, repo_id)
-            self._close_pending_ltx25_encoder()
+            # A stale load's pending worker goes only while this load is current; a superseded load that resumes here
+            # must not stop the newer load's worker.
+            with self._lock:
+                if _load_token is not None and _load_token != self._load_token:
+                    raise RuntimeError("Video load was cancelled or superseded.")
+                stale_encoder, self._ltx25_pending_encoder = self._ltx25_pending_encoder, None
+            if stale_encoder is not None:
+                _stop_ltx25_encoder(stale_encoder[1])
             ltx25_client = start_text_encoder(
                 repo = _base_local_dir or (repo_id if kind == "pipeline" else base),
                 hf_token = hf_token,
