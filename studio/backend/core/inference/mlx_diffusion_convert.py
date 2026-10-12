@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Convert a diffusion GGUF (ComfyUI tensor names) into mflux's pre-quantized transformer layout.
+"""Convert a diffusion GGUF (single-file tensor names) into mflux's pre-quantized transformer layout.
 
 Q4_0 / Q4_1 / Q8_0 blocks map exactly onto MLX affine group-32 weights (dequant = q * scale + bias):
 
@@ -214,7 +214,7 @@ def dequantize_affine(
 
 
 def zimage_rename(name: str) -> str:
-    """ComfyUI Z-Image tensor name -> mflux's (the qkv split happens in the converter)."""
+    """Single-file Z-Image tensor name -> mflux's (the qkv split happens in the converter)."""
     k = re.sub(r"^final_layer\.", "all_final_layer.2-1.", name)
     k = re.sub(r"^x_embedder\.", "all_x_embedder.2-1.", k)
     k = k.replace(
