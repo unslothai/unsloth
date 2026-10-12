@@ -23,6 +23,7 @@ const QUANTIZATION_NAMES: Record<string, string> = {
   "compressed-tensors": "compressed-tensors",
   awq: "AWQ",
   gptq: "GPTQ",
+  "auto-round": "AutoRound",
 };
 
 /** Root-mounted: a Default-engine load only vLLM / SGLang can run waits here for an engine. */
