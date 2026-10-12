@@ -107,7 +107,6 @@ from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_siz
 
 logger = get_logger(__name__)
 
-# Studio's default LoRA target list and the CPT embedding modules, as the training page sends them.
 _STUDIO_DEFAULT_TARGETS = (
     "q_proj",
     "k_proj",
@@ -395,7 +394,6 @@ class UnslothTrainer:
         self.is_audio = False
         self.is_audio_vlm = False
         self._audio_type = None
-        # Text-diffusion LM profile name (LLaDA, Dream, SDAR, DiffusionGemma, ...); None for every other model.
         self.diffusion_lm_profile = None
         self._use_gradient_checkpointing = "unsloth"
         self._offload_layers = 0

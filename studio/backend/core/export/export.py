@@ -710,7 +710,6 @@ class ExportBackend:
         self.is_peft = False
         self._audio_type = None
         self.decision = None
-        # Text-diffusion LM profile of the loaded checkpoint (LLaDA, Dream, DiffusionGemma, ...), else None.
         self.diffusion_lm_profile = None
 
     def _diffusion_refusal(self, method: str) -> Optional[str]:

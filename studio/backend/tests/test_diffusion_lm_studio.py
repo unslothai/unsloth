@@ -75,7 +75,6 @@ def test_mirror_matches_the_core_registry():
         for p in profiles_mod.diffusion_profiles()
     ]
     assert core == [(n, tuple(m), tuple(a)) for n, m, a in DIFFUSION_LM_PROFILES]
-    # And the core resolver agrees with the mirror on every sample config.
     for name, cfg in DIFFUSION_CONFIGS.items():
         resolved = profiles_mod.resolve_diffusion_profile(SimpleNamespace(**cfg))
         assert resolved is not None and resolved.name == name
@@ -109,9 +108,6 @@ def test_adapter_pointing_at_itself_does_not_loop(tmp_path):
         json.dumps({"base_model_name_or_path": str(adapter)}), encoding = "utf-8"
     )
     assert diffusion_lm_profile_for_model(str(adapter)) is None
-
-
-# ---- export ---------------------------------------------------------------------------------------
 
 
 def test_export_refusals():
@@ -162,9 +158,6 @@ def test_export_load_detects_before_the_vision_branch():
     from core.export import export as export_mod
     src = inspect.getsource(export_mod.ExportBackend.load_checkpoint)
     assert src.index("elif self.diffusion_lm_profile:") < src.index("elif self.is_vision:")
-
-
-# ---- training -------------------------------------------------------------------------------------
 
 
 def _trainer(profile = "llada", model = None):
@@ -349,7 +342,6 @@ def test_text_path_builds_diffusion_trainer_before_cpt_and_sft():
     )
     assert 'require_diffusion_api("DiffusionTrainer")' in src
     assert 'require_diffusion_api("DiffusionConfig")' in src
-    # Packing goes off before online tokenization reads it.
     assert src.index("Text-diffusion model: sequence packing turned off") < src.index(
         "self._configure_online_tokenization("
     )
@@ -397,9 +389,6 @@ def test_missing_core_api_names_the_update(monkeypatch):
     monkeypatch.delattr(unsloth, "DefinitelyNotThere", raising = False)
     with pytest.raises(RuntimeError, match = "unsloth studio update"):
         diffusion_lm.require_diffusion_api("DefinitelyNotThere")
-
-
-# ---- chat -----------------------------------------------------------------------------------------
 
 
 class _Sampler:
