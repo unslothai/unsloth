@@ -384,7 +384,7 @@ def test_unload_during_load_waits_for_the_build_and_discards_it(env, monkeypatch
     runtime.build = _slow_build
     backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
     assert started.wait(5)
-    assert backend.loading_repo_ids() == (REPO, BASE)
+    assert backend.loading_repo_ids() == (REPO, BASE, "unsloth/Z-Image-Turbo")
     with pytest.raises(RuntimeError, match = "already in progress"):
         backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
     done = threading.Event()
@@ -1043,11 +1043,13 @@ def test_base_companions_come_from_the_repo_the_plan_staged(monkeypatch):
     assert fetched == [("unsloth/Z-Image-Turbo", f, "abc") for f in files]
 
 
-def _companion_snapshot(root, complete = True):
+def _companion_snapshot(root, complete = True, tokenizer_config = True):
     root.mkdir(parents = True, exist_ok = True)
     for sub in ("text_encoder", "tokenizer", "vae"):
         (root / sub).mkdir(exist_ok = True)
     (root / "tokenizer" / "tokenizer.json").write_text("{}")
+    if tokenizer_config:
+        (root / "tokenizer" / "tokenizer_config.json").write_text("{}")
     (root / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
     (root / "text_encoder" / "model.safetensors.index.json").write_text(
@@ -1307,3 +1309,98 @@ def test_online_companions_land_under_one_cache_root(monkeypatch, tmp_path):
     out = mb.fetch_base_snapshot(BASE, None, local_files_only = False)
     assert roots == [live] * len(files)
     assert out == f"{live}/snapshots/abc"
+
+
+def test_cache_only_companions_skip_a_snapshot_without_tokenizer_config(monkeypatch, tmp_path):
+    # AutoTokenizer cannot resolve the tokenizer class without tokenizer_config.json.
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    import utils.hf_cache_settings as cache_settings
+
+    live = str(tmp_path / "live")
+    monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: live)
+    monkeypatch.setattr(mb, "prefer_ungated_mirror", lambda base, tok = None, **k: base)
+    snapshots = {
+        BASE: _companion_snapshot(tmp_path / "upstream", tokenizer_config = False),
+        "unsloth/Z-Image-Turbo": _companion_snapshot(tmp_path / "mirror"),
+    }
+
+    def _snapshot(repo, *, cache_dir = None, local_files_only = False, **_k):
+        if cache_dir != live or repo not in snapshots:
+            raise LocalEntryNotFoundError("not cached")
+        return snapshots[repo]
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot)
+    assert mb.fetch_base_snapshot(BASE, None, local_files_only = True) == snapshots["unsloth/Z-Image-Turbo"]
+
+
+def test_a_cancelled_load_keeps_the_companion_mirror_guarded(env, monkeypatch):
+    import core.inference.diffusion_engine_router as router
+    from hub.services.models import deletion
+
+    backend, runtime, _calls = env
+    monkeypatch.setattr(router, "get_active_diffusion_engine", lambda: backend)
+    gate = threading.Event()
+    started = threading.Event()
+    real_build = runtime.build
+
+    def _slow_build(*a, **k):
+        started.set()
+        gate.wait(10)
+        return real_build(*a, **k)
+
+    runtime.build = _slow_build
+    backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
+    assert started.wait(5)
+    assert "unsloth/Z-Image-Turbo" in backend.loading_repo_ids()
+    assert "using this repo" in (deletion._diffusion_blocks_delete("unsloth/Z-Image-Turbo") or "")
+    unloader = threading.Thread(target = backend.unload)
+    unloader.start()
+    deadline = time.time() + 5
+    while not backend._unloading and time.time() < deadline:
+        time.sleep(0.01)
+    try:
+        assert "unsloth/Z-Image-Turbo" in backend.draining_repo_ids()
+        assert "still releasing" in (deletion._diffusion_blocks_delete("unsloth/Z-Image-Turbo") or "")
+    finally:
+        gate.set()
+        unloader.join(5)
+    assert backend.draining_repo_ids() == ()
+
+
+class _PlanRecorder:
+    def __init__(self):
+        self.calls = []
+
+    def download_plan(self, repo_id, **kwargs):
+        self.calls.append(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+
+def test_the_mlx_plan_forces_off_the_memory_verdict(monkeypatch):
+    import core.inference.diffusion as diffusion
+
+    recorder = _PlanRecorder()
+    monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: recorder)
+    mb.MlxDiffusionBackend().download_plan(
+        REPO, gguf_filename = GGUF, base_repo = BASE, memory_verdict = True
+    )
+    assert recorder.calls[-1]["memory_verdict"] is False
+
+
+def test_the_mlx_plan_names_the_base_the_load_will_read(monkeypatch, tmp_path):
+    import core.inference.diffusion as diffusion
+
+    recorder = _PlanRecorder()
+    monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: recorder)
+    local = tmp_path / "picks"
+    local.mkdir()
+    gguf = "z-image-Q4_0.gguf"
+    (local / gguf).write_bytes(b"GGUF")
+    mb.MlxDiffusionBackend().download_plan(str(local), gguf_filename = gguf)
+    assert recorder.calls[-1]["base_repo"] == "Tongyi-MAI/Z-Image"
+    mb.MlxDiffusionBackend().download_plan(str(local), gguf_filename = "z-image-turbo-Q4_0.gguf")
+    assert recorder.calls[-1]["base_repo"] == BASE
+    mb.MlxDiffusionBackend().download_plan(str(local), gguf_filename = gguf, base_repo = BASE)
+    assert recorder.calls[-1]["base_repo"] == BASE

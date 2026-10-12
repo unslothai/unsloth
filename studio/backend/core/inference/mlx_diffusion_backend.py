@@ -308,6 +308,7 @@ class _MlxState:
 class _MlxLoading:
     repo_id: str
     base_repo: str
+    fetch_repo: Optional[str] = None
     phase: str = "downloading"
     downloaded_bytes: int = 0
     expected_bytes: int = 0
@@ -359,7 +360,7 @@ def _holds_base_components(snapshot: str) -> bool:
     root = Path(snapshot)
     if not all((root / sub).is_dir() for sub in _LINKED_SUBDIRS):
         return False
-    if not any((root / "tokenizer").iterdir()):
+    if not all((root / "tokenizer" / f).is_file() for f in ("tokenizer.json", "tokenizer_config.json")):
         return False
     for sub in ("text_encoder", "vae"):
         folder = root / sub
@@ -563,6 +564,12 @@ def _named_mlx_base(fam: DiffusionFamily, *names: Optional[str]) -> Optional[str
     return found
 
 
+def _companion_mirror(base: str) -> Optional[str]:
+    if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return None
+    return mirror_repo(base)
+
+
 def _link_base_components(model_dir: Path, base_dir: str) -> None:
     """Relinked every load: a new revision moves the snapshot."""
     for sub in _LINKED_SUBDIRS:
@@ -686,7 +693,9 @@ class MlxDiffusionBackend:
             token = self._load_token
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
-            self._loading = _MlxLoading(repo_id = repo_id, base_repo = base)
+            self._loading = _MlxLoading(
+                repo_id = repo_id, base_repo = base, fetch_repo = _companion_mirror(base)
+            )
             worker = account_thread(
                 target = self._run_load,
                 kwargs = dict(
@@ -754,6 +763,7 @@ class MlxDiffusionBackend:
                 with self._lock:
                     if self._load_token == _load_token and self._loading is not None:
                         self._loading.base_repo = base
+                        self._loading.fetch_repo = _companion_mirror(base)
             t0 = time.perf_counter()
             gguf_path = fetch_gguf(
                 repo_id,
@@ -893,7 +903,19 @@ class MlxDiffusionBackend:
         """The diffusers GGUF plan stages exactly the files this engine opens; its memory verdict does not apply."""
         from core.inference.diffusion import get_diffusion_backend
 
-        kwargs.setdefault("memory_verdict", False)
+        kwargs["memory_verdict"] = False
+        if not (kwargs.get("base_repo") or "").strip():
+            gguf_filename = kwargs.get("gguf_filename")
+            fam = detect_family_for_pick(repo_id, gguf_filename, kwargs.get("family_override"))
+            if fam is not None and gguf_filename and family_mlx_supported(fam):
+                kwargs["base_repo"] = resolve_variant_base(
+                    repo_id,
+                    fam,
+                    kwargs.get("hf_token"),
+                    gguf_filename,
+                    fallback = fam.base_repo,
+                    local_files_only = bool(kwargs.get("local_files_only")),
+                )
         # The loader always opens the base repo's text_encoder/ and vae/, never a single-file component.
         kwargs.pop("text_encoder_files", None)
         kwargs.pop("vae_file", None)
@@ -925,7 +947,11 @@ class MlxDiffusionBackend:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            return tuple(dict.fromkeys((loading.repo_id, loading.base_repo)))
+            return tuple(
+                dict.fromkeys(
+                    r for r in (loading.repo_id, loading.base_repo, loading.fetch_repo) if r
+                )
+            )
 
     def draining_repo_ids(self) -> tuple[str, ...]:
         """Repos a cancelled load is still reading until unload() has joined its worker, for the cache-deletion guards
@@ -1175,7 +1201,15 @@ class MlxDiffusionBackend:
             worker = self._load_thread
             if self._loading is not None and worker is not None:
                 self._draining_repos[id(worker)] = tuple(
-                    dict.fromkeys(r for r in (self._loading.repo_id, self._loading.base_repo) if r)
+                    dict.fromkeys(
+                        r
+                        for r in (
+                            self._loading.repo_id,
+                            self._loading.base_repo,
+                            self._loading.fetch_repo,
+                        )
+                        if r
+                    )
                 )
             self._loading = None
             # Held until the join and free below: a load started meanwhile would build beside the superseded one.
