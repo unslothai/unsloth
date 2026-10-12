@@ -559,8 +559,8 @@ def cancel_research_run(
 def retry_research_run(
     run_id: str,
     request: Request,
-    payload: RetryResearchRun | None = None,
     current_subject: str = Depends(get_current_subject),
+    payload: RetryResearchRun | None = None,
 ):
     _require_run(run_id)
     model_timeout = None
