@@ -318,6 +318,8 @@ export const de = {
       pathCopied: "Pfad kopiert",
       openFailed: "{name} konnte nicht geöffnet werden.",
       wrap: "Zeilen umbrechen",
+      reactNeedsNode: "React-Vorschauen benötigen Node.js 20.19 oder neuer. Installiere es, falls es fehlt, und führe dann das Unsloth-Setup erneut aus.",
+      reactFailed: "Diese Vorschau konnte nicht vorbereitet werden. Führe sie erneut aus, um es noch einmal zu versuchen.",
     },
     pages: {
       searchDownloads: "Downloadverlauf durchsuchen",
