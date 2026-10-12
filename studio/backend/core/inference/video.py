@@ -6643,7 +6643,12 @@ class VideoBackend:
             from .video_families import ltx25_is_dev
             from .video_ltx25 import encoder_resident_for_plan, start_text_encoder
 
-            ltx25_dev = kind != "pipeline" and ltx25_is_dev(gguf_filename, repo_id)
+            # A pipeline load opens no single file, so its repo names the variant (the official pack is distilled).
+            ltx25_dev = (
+                ltx25_is_dev(display_repo_id, repo_id)
+                if kind == "pipeline"
+                else ltx25_is_dev(gguf_filename, repo_id)
+            )
             # A stale load's pending worker goes only while this load is current; a superseded load that resumes here
             # must not stop the newer load's worker.
             with self._lock:
@@ -10337,7 +10342,7 @@ class VideoBackend:
         height: Optional[int],
     ) -> tuple[Any, Any, int, int, str]:
         """LTX-2.5 image-to-video: a first frame only, on a "match source" canvas when no size is given."""
-        from .video_ltx25 import fit_ltx25_first_frame, ltx25_canvas_for_aspect
+        from .video_ltx25 import ltx25_canvas_for_aspect, prepare_ltx25_first_frame
 
         if last_frame:
             raise ValueError(
@@ -10354,7 +10359,8 @@ class VideoBackend:
             default_w, default_h = fam.resolution_presets[0]
             width, height = snap_video_size(fam, width or default_w, height or default_h)
         if first is not None:
-            first = fit_ltx25_first_frame(first, width, height)
+            # Fitted to the canvas later, by LTX2ConditionPipeline after its CRF round trip, as the reference does.
+            first = prepare_ltx25_first_frame(first)
         return first, None, width, height, h3_conditioning_mode(has_first = first is not None)
 
     @staticmethod

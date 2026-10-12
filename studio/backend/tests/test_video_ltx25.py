@@ -441,8 +441,11 @@ def test_keyframe_canvas_and_fit():
     assert w % 64 == 0 and h % 64 == 0 and w == h
     with pytest.raises(ValueError, match = "1:4 to 4:1"):
         v25.ltx25_canvas_for_aspect(5000, 100)
-    fitted = v25.fit_ltx25_first_frame(Image.new("RGB", (300, 100)), 128, 128)
-    assert fitted.size == (128, 128)
+    # The start image keeps its aspect: the condition pipeline crops it to each stage's canvas after the CRF.
+    assert v25.prepare_ltx25_first_frame(Image.new("RGB", (300, 100))).size == (1536, 512)
+    assert v25.prepare_ltx25_first_frame(Image.new("RGB", (1080, 3840))).size == (432, 1536)
+    same = Image.new("RGB", (1536, 864))
+    assert v25.prepare_ltx25_first_frame(same) is same
 
 
 def test_status_canvas_rule_per_family():
@@ -487,7 +490,8 @@ def test_last_frame_is_refused_and_canvas_follows_the_image():
     h3 = detect_video_family("", override = "minimax-h3")
     assert video_family_accepts_last_frame(h3)
     first, last, w, h, mode = VideoBackend._resolve_keyframes(fam, None, b64, None, None, None)
-    assert (w, h) == (1280, 704) and first.size == (1280, 704) and last is None and mode == "i2va"
+    # The canvas is 1280x704; the image itself only gets its longer side at 1536, for the condition pipeline to fit.
+    assert (w, h) == (1280, 704) and first.size == (1536, 864) and last is None and mode == "i2va"
     first, _, w, h, mode = VideoBackend._resolve_keyframes(fam, None, None, None, None, None)
     assert first is None and (w, h) == (1280, 704) and mode == "t2va"
 
@@ -1043,6 +1047,22 @@ class _OffloadedUpsampler(_Upsampler):
         self.moves.append(torch.device(device))
         self.param.device = torch.device(device)
         return self
+
+
+def test_a_cancel_during_the_upsample_skips_stage_two():
+    import threading
+
+    cancel = threading.Event()
+
+    class _CancellingUpsampler(_Upsampler):
+        def __call__(self, latents):
+            cancel.set()
+            return super().__call__(latents)
+
+    pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        v25.render(pipe, _kwargs(), dev = False, upsampler = _CancellingUpsampler(), cancel = cancel)
+    assert len(pipe.calls) == 1
 
 
 def test_an_offloaded_upsampler_goes_back_where_it_was():

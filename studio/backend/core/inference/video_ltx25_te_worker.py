@@ -270,10 +270,12 @@ def _encode_on(
     finally:
         if onloaded:
             model.to("cpu")
-        if str(device).startswith("cuda") and torch.cuda.is_available():
-            # Return the encode's activations (and, onloaded, the weights) to the card: a resident worker otherwise
-            # keeps ~1.7 GB cached through the denoise.
-            torch.cuda.empty_cache()
+        # Return the encode's activations (and, onloaded, the weights) to the card: a resident worker otherwise keeps
+        # ~1.7 GB cached through the denoise, an onloaded one the whole encoder.
+        kind = str(device).split(":", 1)[0]
+        accel = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
+        if accel is not None and accel.is_available():
+            accel.empty_cache()
     return embeds_host, mask_host, device
 
 

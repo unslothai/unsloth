@@ -221,20 +221,21 @@ def ltx25_canvas_for_aspect(aspect_width: float, aspect_height: float) -> tuple[
     return snap_canvas_within_cap(width, height, LTX25_CANVAS_MULTIPLE, LTX25_CANVAS_MAX_PIXELS)
 
 
-def fit_ltx25_first_frame(image: Any, width: int, height: int) -> Any:
-    """Scale to cover the canvas, then centre-crop: the aspect is kept, so a preset of another shape crops rather than
-    stretches the picture."""
+# The reference image-to-video graph scales the start image's longer side to 1536 px (Lanczos) before the CRF 18 round
+# trip; LTX2ConditionPipeline then applies the CRF and fits the result to each stage's canvas (bilinear cover + centre
+# crop), in that order.
+LTX25_FIRST_FRAME_LONG_EDGE = 1536
+
+
+def prepare_ltx25_first_frame(image: Any) -> Any:
+    """The start image as the condition pipeline should receive it: longer side at ``LTX25_FIRST_FRAME_LONG_EDGE``,
+    aspect kept, not yet cropped to the canvas."""
     from PIL import Image
 
-    target_w, target_h = max(1, int(width)), max(1, int(height))
     source_w, source_h = image.size
-    scale = max(target_w / source_w, target_h / source_h)
-    resized = image.resize(
-        (max(target_w, round(source_w * scale)), max(target_h, round(source_h * scale))), Image.LANCZOS
-    )
-    left = (resized.width - target_w) // 2
-    top = (resized.height - target_h) // 2
-    return resized.crop((left, top, left + target_w, top + target_h))
+    scale = LTX25_FIRST_FRAME_LONG_EDGE / max(source_w, source_h)
+    size = (max(1, round(source_w * scale)), max(1, round(source_h * scale)))
+    return image if size == image.size else image.resize(size, Image.LANCZOS)
 
 
 # ── base-pack file selection ─────────────────────────────────────────────────
@@ -1279,6 +1280,10 @@ def render(
         finally:
             if moved:
                 upsampler.to(home)
+    if cancel is not None and cancel.is_set():
+        from .video_families import VIDEO_CANCELLED_MSG
+
+        raise RuntimeError(VIDEO_CANCELLED_MSG)
 
     stage2 = dict(
         base,
