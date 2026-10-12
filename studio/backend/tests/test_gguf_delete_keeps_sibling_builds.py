@@ -203,9 +203,7 @@ def test_a_hidden_only_newer_snapshot_does_not_replace_the_visible_rows_build(tm
 
     partial = "model-Q4_K_M-00001-of-00002.gguf"
     hidden = "model-Q4_K_M-be.gguf"
-    repo, snapshots = _revisioned_repo(
-        tmp_path, (("old", [partial]), ("new", [hidden]))
-    )
+    repo, snapshots = _revisioned_repo(tmp_path, (("old", [partial]), ("new", [hidden])))
 
     _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
     assert not (snapshots / "old" / partial).is_symlink()
@@ -237,9 +235,7 @@ def test_readiness_ranking_selects_the_healthy_rows_build(tmp_path):
     beta = "beta-Q4_K_M.gguf"
     old_revision = "a" * 40
     new_revision = "b" * 40
-    repo, snapshots = _revisioned_repo(
-        tmp_path, ((old_revision, [alpha]), (new_revision, [beta]))
-    )
+    repo, snapshots = _revisioned_repo(tmp_path, ((old_revision, [alpha]), (new_revision, [beta])))
     assert download_manifest.write_manifest(
         "model",
         repo.repo_id,
@@ -252,9 +248,7 @@ def test_readiness_ranking_selects_the_healthy_rows_build(tmp_path):
         commit_hash = new_revision,
         metadata_derived = True,
     )
-    assert not cached_gguf_manifest_complete(
-        repo.repo_id, "Q4_K_M", snapshots / new_revision
-    )
+    assert not cached_gguf_manifest_complete(repo.repo_id, "Q4_K_M", snapshots / new_revision)
     assert cached_gguf_manifest_complete(repo.repo_id, "Q4_K_M", snapshots / old_revision)
 
     _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
@@ -269,17 +263,15 @@ def test_scoped_source_path_selects_the_rows_build(tmp_path):
 
     alpha = "alpha-Q4_K_M.gguf"
     beta = "beta-Q4_K_M.gguf"
-    repo, snapshots = _revisioned_repo(
-        tmp_path, (("old", [alpha]), ("new", [beta]))
-    )
+    repo, snapshots = _revisioned_repo(tmp_path, (("old", [alpha]), ("new", [beta])))
     beta_entry = repo.revisions[1].files[0]
     Path(beta_entry.blob_path).write_bytes(b"x" * 128)
     beta_entry.size_on_disk = 128
     preferred_path = str(snapshots / "old" / alpha)
 
-    assert cached_gguf_action_path(
-        repo.repo_id, "Q4_K_M", preferred_path = preferred_path
-    ) == str(repo.repo_path)
+    assert cached_gguf_action_path(repo.repo_id, "Q4_K_M", preferred_path = preferred_path) == str(
+        repo.repo_path
+    )
     assert _variant_bytes(repo, "Q4_K_M") == 128
     assert _variant_bytes(repo, "Q4_K_M", preferred_path) == 64
     _delete_gguf_variant_from_repos(

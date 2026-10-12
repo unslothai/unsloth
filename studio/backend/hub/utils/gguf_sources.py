@@ -179,14 +179,18 @@ def cached_gguf_action_path(
             selected = Path(preferred_path).expanduser().resolve(strict = False)
         except (OSError, RuntimeError, ValueError):
             selected = None
-        repo_dir = next(
-            (
-                candidate
-                for candidate in (selected, *selected.parents)
-                if candidate.name.lower() == expected
-            ),
-            None,
-        ) if selected is not None else None
+        repo_dir = (
+            next(
+                (
+                    candidate
+                    for candidate in (selected, *selected.parents)
+                    if candidate.name.lower() == expected
+                ),
+                None,
+            )
+            if selected is not None
+            else None
+        )
         if repo_dir is not None:
             return str(repo_dir)
     source = cached_gguf_sources(repo_id).get(variant.lower())

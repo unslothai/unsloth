@@ -272,9 +272,7 @@ def _rank_complete_snapshots(
         for variant in variants:
             key = variant.lower()
             previous = selected.get(key)
-            if previous is None or _prefer_duplicate(
-                repo_id, variant, previous[1], snapshot
-            ):
+            if previous is None or _prefer_duplicate(repo_id, variant, previous[1], snapshot):
                 selected[key] = (index, snapshot)
     return [
         {variant for variant in variants if selected[variant.lower()][0] == index}
@@ -282,9 +280,7 @@ def _rank_complete_snapshots(
     ]
 
 
-def _main_gguf_variant_keys(
-    target_repo, preferred_path: Optional[str] = None
-) -> dict[Path, str]:
+def _main_gguf_variant_keys(target_repo, preferred_path: Optional[str] = None) -> dict[Path, str]:
     """use the lister's cross-snapshot readiness ranking so unlisted builds cannot claim the row."""
     revisions = sorted(
         getattr(target_repo, "revisions", ()), key = _revision_selection_key, reverse = True
@@ -304,12 +300,7 @@ def _main_gguf_variant_keys(
     if preferred_path:
         wanted_path = Path(preferred_path)
         preferred_name = next(
-            (
-                name
-                for revision in matches
-                for snap, _blob, name in revision
-                if snap == wanted_path
-            ),
+            (name for revision in matches for snap, _blob, name in revision if snap == wanted_path),
             None,
         )
         if preferred_name is not None:
@@ -326,16 +317,15 @@ def _main_key(snap: Path, main_keys: dict[Path, str]) -> str:
 
 
 def _variant_keys_to_delete(
-    target_repo, variant: str, preferred_path: Optional[str] = None
+    target_repo,
+    variant: str,
+    preferred_path: Optional[str] = None,
 ) -> set[str]:
     """return lowercase keys, accepting a bare-quant alias only for one path-qualified key."""
     wanted = (variant or "").strip().lower()
     if not wanted or "/" in wanted:
         return {wanted}
-    keys = {
-        key.lower()
-        for key in _main_gguf_variant_keys(target_repo, preferred_path).values()
-    }
+    keys = {key.lower() for key in _main_gguf_variant_keys(target_repo, preferred_path).values()}
     if wanted in keys:
         return {wanted}
     # use path-qualified keys, not is_qualified_gguf_variant_key; H3 bare quants span partitions.
@@ -1125,9 +1115,7 @@ def _delete_cached_model_blocking(
 ) -> dict:
     from hub.utils.gguf_sources import cached_gguf_action_path
 
-    cache_path = cached_gguf_action_path(
-        repo_id, variant, cache_path, preferred_path
-    )
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path, preferred_path)
     # Free up space's list can be minutes old, and a background download finishing turns that orphan
     # into an installed checkpoint neither guard below catches.
     if only_if_orphan:

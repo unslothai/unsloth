@@ -79,18 +79,19 @@ def _repos_by_id(cache_scans) -> dict[str, list]:
 
 
 def _variant_keys(
-    repo_info, variant: str, preferred_path: Optional[str] = None
+    repo_info,
+    variant: str,
+    preferred_path: Optional[str] = None,
 ) -> set[str]:
     """use deletion keys because path-qualified checkpoints do not match bare quant labels."""
     from hub.services.models.deletion import _variant_keys_to_delete
-    return {
-        key.lower()
-        for key in _variant_keys_to_delete(repo_info, variant, preferred_path)
-    }
+    return {key.lower() for key in _variant_keys_to_delete(repo_info, variant, preferred_path)}
 
 
 def _variant_bytes(
-    repo_info, variant: str, preferred_path: Optional[str] = None
+    repo_info,
+    variant: str,
+    preferred_path: Optional[str] = None,
 ) -> int:
     from hub.services.models.deletion import (
         _audio_cpp_package_scope,
@@ -174,9 +175,7 @@ def _delete_impact_blocking(
     all_copies = by_id.get(key, [])
     from hub.utils.gguf_sources import cached_gguf_action_path
 
-    cache_path = cached_gguf_action_path(
-        repo_id, variant, cache_path, preferred_path
-    )
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path, preferred_path)
     repos = all_copies
     surviving = []
     if cache_path:
@@ -277,7 +276,6 @@ async def delete_impact_response(
     if variant is not None:
         try:
             from hub.services.models import gguf_variants
-
             preferred_path = await gguf_variants.cached_gguf_variant_source_path(
                 repo_id, variant, hf_token
             )

@@ -458,10 +458,7 @@ def _paths_by_variant_key(paths: Iterable[str]) -> dict[str, list[str]]:
 
 def _loader_visible_members(members: Sequence[str]) -> list[str]:
     from utils.models.model_config import _extract_quant_label as _loader_quant
-
-    return [
-        path for path in members if not is_big_endian_gguf_path(path, _loader_quant(path))
-    ]
+    return [path for path in members if not is_big_endian_gguf_path(path, _loader_quant(path))]
 
 
 def _listed_identity(members: Sequence[str]) -> Optional[str]:
@@ -474,11 +471,7 @@ def gguf_listed_checkpoints(
     snapshots: Iterable[Iterable[str]], completed: Optional[Iterable[Iterable[str]]] = None
 ) -> dict[str, Optional[str]]:
     groups = [_paths_by_variant_key(paths) for paths in snapshots]
-    whole = (
-        [{key.lower() for key in keys} for keys in completed]
-        if completed is not None
-        else []
-    )
+    whole = [{key.lower() for key in keys} for keys in completed] if completed is not None else []
     if len(whole) < len(groups):
         whole.extend(set() for _ in range(len(groups) - len(whole)))
 
