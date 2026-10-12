@@ -4611,6 +4611,95 @@ def test_metadata_event_context_tokens_count_earlier_passes_once(monkeypatch):
     assert usage["context_tokens"] == 150
 
 
+def test_context_usage_frame_precedes_each_tool_run(monkeypatch):
+    """#12624: the meter refreshes when a pass hands off to a tool, from the usage
+    llama-server already reported, before the tool runs; none on the final pass."""
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "cats"}, "call_1"),
+            _usage_done(
+                {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 30,
+                    "prompt_tokens_details": {"cached_tokens": 64},
+                },
+                "tool_calls",
+            ),
+            _done(),
+        ],
+        [
+            _tool_call_sse("web_search", {"query": "dogs"}, "call_2"),
+            _usage_done({"prompt_tokens": 140, "completion_tokens": 20}, "tool_calls"),
+            _done(),
+        ],
+        [
+            _sse({"content": "Found both."}),
+            _usage_done({"prompt_tokens": 170, "completion_tokens": 10}),
+            _done(),
+        ],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats then dogs"}],
+        [_web_search_tool()],
+        max_tool_iterations = 3,
+    )
+
+    assert len(payloads) == 3
+    frames = [e for e in events if e.get("type") == "context_usage"]
+    assert frames == [
+        {
+            "type": "context_usage",
+            "prompt_tokens": 100,
+            "completion_tokens": 30,
+            "context_tokens": 130,
+            "cached_tokens": 64,
+        },
+        {
+            "type": "context_usage",
+            "prompt_tokens": 140,
+            "completion_tokens": 20,
+            "context_tokens": 160,
+            "cached_tokens": 0,
+        },
+    ]
+    # Each frame lands before its own pass's tool finishes, i.e. while the sandbox works.
+    order = [e["type"] for e in events if e.get("type") in ("context_usage", "tool_end")]
+    assert order == ["context_usage", "tool_end", "context_usage", "tool_end"], order
+    assert [e for e in events if e.get("type") == "metadata"][-1]["usage"]["context_tokens"] == 180
+
+
+def test_context_usage_frame_absent_on_a_single_pass(monkeypatch):
+    stream = [
+        _sse({"content": "hi"}),
+        _usage_done({"prompt_tokens": 5, "completion_tokens": 2}),
+        _done(),
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, [stream])
+
+    events = _run_tool_loop(backend, [{"role": "user", "content": "hi"}], [_web_search_tool()])
+
+    assert not [e for e in events if e.get("type") == "context_usage"]
+
+
+def test_context_usage_event_reads_timings_when_usage_is_missing():
+    """timings.prompt_n leaves out the KV-cache hit that usage.prompt_tokens includes."""
+    from core.inference.llama_cpp import _context_usage_event
+
+    assert _context_usage_event(None, {"prompt_n": 12, "cache_n": 88, "predicted_n": 7}) == {
+        "type": "context_usage",
+        "prompt_tokens": 100,
+        "completion_tokens": 7,
+        "context_tokens": 107,
+        "cached_tokens": 88,
+    }
+    assert _context_usage_event(None, None) is None
+    assert _context_usage_event({"prompt_tokens": 0}, {}) is None
+
+
 def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
     """Finding 6: a rehearsal call whose name (``web_search``) and ``[ARGS]{...}``
     arrive in separate content deltas must hold the bare name in the buffer until

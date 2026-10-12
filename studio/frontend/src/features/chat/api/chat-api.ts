@@ -1828,6 +1828,12 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
+        // A tool loop's context as it hands off to a tool, so the meter moves mid-turn.
+        if ("type" in parsed && parsed.type === "context_usage") {
+          yield { _contextUsage: parsed } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
         const {
           usage: parsedUsage,
           timings: parsedTimings,

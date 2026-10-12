@@ -41,6 +41,7 @@ _CONTROL_TYPES = frozenset(
         "skill_load",
         "diffusion_frame",
         "reasoning_summary",
+        "context_usage",
     }
 )
 

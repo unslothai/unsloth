@@ -7451,6 +7451,33 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _context_usage_event(usage, timings):
+    """UI frame pricing the context one finished tool-loop pass leaves behind, or None.
+
+    ``timings.prompt_n`` excludes the KV-cache hit (``cache_n``) while ``usage.prompt_tokens``
+    includes it, so a prompt read from timings adds the hit back.
+    """
+    usage = usage or {}
+    timings = timings or {}
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or timings.get(
+        "cache_n"
+    )
+    prompt = usage.get("prompt_tokens")
+    if not prompt and timings.get("prompt_n") is not None:
+        prompt = int(timings.get("prompt_n") or 0) + int(timings.get("cache_n") or 0)
+    completion = usage.get("completion_tokens") or timings.get("predicted_n")
+    if not prompt:
+        return None
+    prompt, completion = int(prompt), int(completion or 0)
+    return {
+        "type": "context_usage",
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "context_tokens": prompt + completion,
+        "cached_tokens": int(cached or 0),
+    }
+
+
 def _llama_chunk_has_generated_output(data: dict) -> bool:
     if data.get("type") == "diffusion_frame":
         return True
@@ -39950,6 +39977,11 @@ class LlamaCppBackend:
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
+                # The tools run next, possibly for minutes, so refresh the context meter now from the
+                # usage llama-server already reported (no recount).
+                _context_usage = _context_usage_event(_iter_usage, _iter_timings)
+                if _context_usage is not None:
+                    yield _context_usage
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
