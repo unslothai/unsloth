@@ -19,8 +19,6 @@ export type AutoReadDecision =
   | { kind: "skip" }
   | { kind: "speak"; messageId: string };
 
-/** What to do with the newest message once a run has ended: speak a finished reply with text,
- *  wait while it is still settling, skip anything else (stopped, failed, tool approval, empty). */
 export function decideAutoRead(
   messages: readonly AutoReadMessage[],
 ): AutoReadDecision {
@@ -28,7 +26,7 @@ export function decideAutoRead(
   if (!last || last.role !== "assistant") return { kind: "skip" };
   if (last.status?.type === "running") return { kind: "wait" };
   if (last.status?.type !== "complete") return { kind: "skip" };
-  // A cut-off, stopped or over-length turn can still settle as "complete"; Studio marks it here.
+  // Cut-off turns can still settle as "complete".
   if (readIncompleteInfo(last.metadata)) return { kind: "skip" };
   const hasText = last.content.some(
     (part) => part.type === "text" && !!part.text?.trim(),
