@@ -126,7 +126,6 @@ def test_saving_a_new_port_policy_clears_the_previous_bind_error():
     assert status["configured_port"] is None
 
 
-# a public NIC address, a home Wi-Fi address and a Tailscale (CGNAT) address, as a VPS on a tailnet reports them
 _DETECTED = ["64.227.100.5", "192.168.1.24", "100.101.102.103"]
 
 

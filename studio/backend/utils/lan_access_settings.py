@@ -22,7 +22,6 @@ LAN_ACCESS_PORT_KEY = "lan_access_port"
 DEFAULT_LAN_ACCESS_PORT = 8888
 LAST_LAN_ACCESS_PORT = 8908
 
-# ``None`` is Automatic: every detected address, public ones included, as before this setting existed
 LAN_ACCESS_ADDRESSES_KEY = "lan_access_addresses"
 _MAX_LAN_ACCESS_ADDRESSES = 64
 _UNREADABLE = object()
