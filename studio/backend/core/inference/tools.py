@@ -1417,7 +1417,9 @@ def _blocked_word_re(assignment_prefixes: bool):
         # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
         + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
-        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        # Both prefixes end at a separator: an open-ended drive prefix stopped at the dot of `C:/x/app.exe` and read
+        # it as `.` (source), refusing every absolute Windows path to a program with an extension.
+        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\](?:[\w./\\-]*[/\\])?)?"
         + r"("
         + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
         + r")"

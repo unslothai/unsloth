@@ -427,3 +427,46 @@ def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blockl
     # token as a flag, and never reach the shell name behind it.
     assert not tools._CMD_SWITCH_RE.fullmatch("/bin/bash")
     assert _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], '/bin/bash -c "rm -rf x"') == {"rm"}
+
+
+@pytest.fixture
+def _windows_backstop(monkeypatch, _windows_blocklist):
+    # The command-position backstop is compiled from _BLOCKED_COMMANDS at import as well.
+    monkeypatch.setattr(tools, "_BLOCKED_WORD_RE", tools._blocked_word_re(False))
+    monkeypatch.setattr(tools, "_BLOCKED_WORD_RE_WITH_ASSIGNMENTS", tools._blocked_word_re(True))
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        # #12054: the drive prefix stopped at the dot before the extension and
+        # read it as `.` (source), so these were refused as "Blocked command(s)
+        # for safety: .".
+        r"C:\flutter\bin\flutter.bat create C:\src\my_app",
+        "C:/flutter/bin/flutter.bat create my_app",
+        r"C:\Python312\python.exe -m pip list",
+        "c:/tools/node.exe -v",
+        r"cd C:\src && D:\sdk\dart.exe --version",
+    ],
+)
+def test_an_absolute_windows_program_path_stays_runnable(
+    monkeypatch, bash, command, _windows_backstop
+):
+    assert not _screen_on_windows(monkeypatch, bash, command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -c ls", "powershell"),
+        ("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "powershell"),
+        (r"C:\pwsh.exe -c ls", "pwsh"),
+        (r"echo hi; C:\tools\rm.exe -rf x", "rm"),
+    ],
+)
+def test_a_blocked_program_behind_a_drive_path_is_still_screened(
+    monkeypatch, bash, command, expected, _windows_backstop
+):
+    assert expected in _screen_on_windows(monkeypatch, bash, command)
