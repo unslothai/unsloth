@@ -4,11 +4,12 @@
 import pytest
 import torch
 import torch.nn.functional as F
+from real_accelerator import has_real_cuda
 
 pytestmark = pytest.mark.gpu
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("kernel", ["qkv", "swiglu", "geglu", "geglu_approx"])
 @pytest.mark.parametrize("layout", ["contiguous", "transposed", "columns"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
