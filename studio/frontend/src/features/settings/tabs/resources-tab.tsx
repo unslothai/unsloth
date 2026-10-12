@@ -706,7 +706,7 @@ export function ResourcesTab() {
               }
               detail={t("settings.resources.liveMonitor.gpuLoad")}
               showUsage={detailMetrics.has("gpuLoad")}
-              percent={row.loadPct}
+              percent={hostUnread ? null : row.loadPct}
             />
           ))}
         </div>
