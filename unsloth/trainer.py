@@ -347,7 +347,7 @@ def _attribute_path(obj, path):
     return obj
 
 
-def _forward_accepts_packing_kwargs(model) -> bool:
+def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
     """Can this model's forward be handed the packing metadata at all?
 
     Padding-free passes `packed_seq_lengths` down, and a forward naming neither it
@@ -406,10 +406,10 @@ def _forward_accepts_packing_kwargs(model) -> bool:
             break
         target = unwrapped
 
-    return _forward_signature_accepts_packing(getattr(target, "forward", None))
+    return _forward_signature_accepts_packing(getattr(target, "forward", None), name)
 
 
-def _forward_signature_accepts_packing(forward) -> bool:
+def _forward_signature_accepts_packing(forward, name = "packed_seq_lengths") -> bool:
     """The signature question alone, so a class can be asked it as well as an instance.
 
     Shared, not duplicated: a disagreement would turn padding-free on for one
@@ -423,7 +423,7 @@ def _forward_signature_accepts_packing(forward) -> bool:
         return True
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return True
-    return "packed_seq_lengths" in parameters
+    return name in parameters
 
 
 def _resolve_string_model_class(model_name, model_config, config_arg):

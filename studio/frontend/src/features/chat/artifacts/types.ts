@@ -3,6 +3,8 @@
 
 export type ChatArtifactSource = "tool" | "fence";
 
+export type ChatArtifactKind = "html" | "react";
+
 export interface ChatArtifact {
   id: string;
   title: string;
@@ -107,6 +109,7 @@ export function createChatArtifact(input: ChatArtifactInput): ChatArtifact {
 
 export function getArtifactFilename(
   artifact: Pick<ChatArtifact, "title">,
+  extension: "html" | "jsx" | "tsx" = "html",
 ): string {
   const slug = artifact.title
     .trim()
@@ -114,5 +117,5 @@ export function getArtifactFilename(
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
-  return `${slug || "page"}.html`;
+  return `${slug || (extension === "html" ? "page" : "component")}.${extension}`;
 }

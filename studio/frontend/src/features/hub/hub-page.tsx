@@ -65,6 +65,10 @@ import {
   InventoryTypeFilterControl,
   ResultListHeader,
 } from "./catalog/models-table";
+import {
+  hasModelSearchFilters,
+  type ModelSearchFilters,
+} from "./lib/model-search-filters";
 import { ModelsToolbar } from "./catalog/models-toolbar";
 import { NpuCatalogList } from "./catalog/npu-catalog-list";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
@@ -142,6 +146,8 @@ import type {
   ResourceTypeFilter,
   SelectedModelView,
 } from "./types";
+
+const NO_SEARCH_FILTERS: ModelSearchFilters = {};
 
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
@@ -616,6 +622,14 @@ export function ModelsPage() {
     },
     [isDiscoverTab, urlSection, navigate],
   );
+  const hubSource = useHubSource();
+  const [storedSearchFilters, setSearchFilters] = useState<ModelSearchFilters>(
+    {},
+  );
+  // The publisher and config.json lookups are Hugging Face endpoints.
+  const searchFilters =
+    hubSource === "modelscope" ? NO_SEARCH_FILTERS : storedSearchFilters;
+  const hasSearchFilters = hasModelSearchFilters(searchFilters);
   const [capabilityFilter, setCapabilityFilter] =
     useState<CapabilityFilter>("all");
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
@@ -652,6 +666,8 @@ export function ModelsPage() {
   const handleTabChange = useCallback(
     (next: ModelsTab) => {
       setSortBrowseActive(false);
+      // The filters control is Discover-only, so a hidden filter must not reapply on return.
+      setSearchFilters({});
       setModelsTab(next);
     },
     [setModelsTab],
@@ -663,6 +679,7 @@ export function ModelsPage() {
       setResourceType(next);
       setDownloadedFormat("all");
       setCapabilityFilter("all");
+      setSearchFilters({});
       setSortBrowseActive(false);
       if (next === "models") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
@@ -694,6 +711,7 @@ export function ModelsPage() {
         setDirection("desc");
       }
       setCapabilityFilter("all");
+      setSearchFilters({});
       setSortBrowseActive(false);
       // An active query outranks the section in `mode`, hiding the curated list.
       setQuery("");
@@ -710,6 +728,7 @@ export function ModelsPage() {
     setSortBy(preset?.sort ?? "trendingScore");
     setDirection("desc");
     setCapabilityFilter("all");
+    setSearchFilters({});
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
@@ -722,6 +741,7 @@ export function ModelsPage() {
     setResourceType("models");
     setQuery("");
     setCapabilityFilter("all");
+    setSearchFilters({});
     setDownloadedFormat("all");
     setDiscoverFormat(preset?.format ?? "recommended");
     setSortBy(preset?.sort ?? "trendingScore");
@@ -800,7 +820,7 @@ export function ModelsPage() {
       ? "search"
       : urlSection != null
         ? "channel-list"
-        : sortBrowseActive
+        : sortBrowseActive || hasSearchFilters
           ? "search"
           : "feed"
     : "search";
@@ -815,7 +835,6 @@ export function ModelsPage() {
     return null;
   }, [isChannelListMode, isFeedMode, activeChannel]);
 
-  const hubSource = useHubSource();
   const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
   // ModelScope has no creation-date sort; its closest is last modified.
@@ -873,12 +892,14 @@ export function ModelsPage() {
     direction: effectiveDirection,
     channel: listChannel,
     ownerScope,
+    filters: searchFilters,
   });
 
   const cachedListEntry = useHubFeedStore((state) =>
     liveListChannel ? state.channels[liveListChannel.id] : undefined,
   );
   const visibleResults =
+    !hasSearchFilters &&
     results.length === 0 &&
     liveListChannel &&
     isChannelEntryFresh(cachedListEntry, liveListChannel.id, tokenFingerprint)
@@ -886,7 +907,7 @@ export function ModelsPage() {
       : results;
 
   useFeedWriteBack({
-    channelId: liveListChannel?.id ?? null,
+    channelId: hasSearchFilters ? null : liveListChannel?.id ?? null,
     results,
     isLoading,
     accessToken: apiHfToken,
@@ -1179,6 +1200,7 @@ export function ModelsPage() {
         resourceType,
         deferredFormatFilter,
         deferredCapabilityFilter,
+        searchFilters,
         inventoryTypeFilter,
         effectiveSort,
         effectiveDirection,
@@ -1190,6 +1212,7 @@ export function ModelsPage() {
       resourceType,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      searchFilters,
       inventoryTypeFilter,
       effectiveSort,
       effectiveDirection,
@@ -1212,6 +1235,7 @@ export function ModelsPage() {
       setInventoryTypeFilter("all");
     }
     setCapabilityFilter("all");
+    setSearchFilters({});
   }, [isDiscoverTab, urlSection, navigate]);
   const handleDiscoverFetchIntent = useCallback(() => {
     setDiscoverFetchIntent((value) => value + 1);
@@ -1293,6 +1317,7 @@ export function ModelsPage() {
       setSortBy(preset?.sort ?? "trendingScore");
       setDirection("desc");
       setCapabilityFilter("all");
+      setSearchFilters({});
       setSortBrowseActive(false);
       setQuery("");
       void navigate({
@@ -1311,6 +1336,7 @@ export function ModelsPage() {
       if (next.trim() === "") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
         setCapabilityFilter("all");
+        setSearchFilters({});
         setSortBrowseActive(false);
         if (preset) {
           setDiscoverFormat(preset.format);
@@ -1402,6 +1428,7 @@ export function ModelsPage() {
     setSortBy(preset.sort);
     setDirection("desc");
     setCapabilityFilter("all");
+    setSearchFilters({});
   }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
@@ -1460,6 +1487,7 @@ export function ModelsPage() {
       setResourceType("models");
       setDiscoverFormat("all");
       setCapabilityFilter("all");
+      setSearchFilters({});
       setSortBrowseActive(false);
       // Base models come from other publishers, so search the whole Hub.
       setOwnerScope("all");
@@ -1652,7 +1680,8 @@ export function ModelsPage() {
         manualFetchAvailable: discoverManualFetchAvailable,
         hasActiveFilters:
           !isFeedMode &&
-          (deferredFormatFilter !== "all" ||
+          ((isModelDiscover && hasSearchFilters) ||
+            deferredFormatFilter !== "all" ||
             deferredCapabilityFilter !== "all" ||
             (tab === "downloaded" && typeFilterActive)),
         typeFilterActive,
@@ -1686,6 +1715,7 @@ export function ModelsPage() {
       discoverManualFetchAvailable,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      hasSearchFilters,
       inventoryTypeFilter,
     ],
   );
@@ -1887,6 +1917,8 @@ export function ModelsPage() {
           onResourceTypeChange={handleResourceTypeChange}
           formatFilter={formatFilter}
           onFormatFilterChange={setFormatFilter}
+          searchFilters={searchFilters}
+          onSearchFiltersChange={setSearchFilters}
           capabilityFilter={capabilityFilter}
           onCapabilityFilterChange={setCapabilityFilter}
           fitOnDeviceOnly={fitOnDeviceOnly}

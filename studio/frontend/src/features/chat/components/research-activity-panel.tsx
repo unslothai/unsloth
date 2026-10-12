@@ -62,6 +62,7 @@ import {
   retryResearchRun,
   updateResearchPlan,
 } from "../api/research-api";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ResearchActivity,
   ensureResearchRunFollowed,
@@ -790,7 +791,11 @@ function ResearchActions({ runId }: { runId: string }): ReactElement | null {
   const retry = async () => {
     setPending(true);
     try {
-      const retried = await retryResearchRun(run.id);
+      const settings = useChatRuntimeStore.getState();
+      const retried = await retryResearchRun(run.id, {
+        modelTimeoutSeconds: settings.researchModelTimeoutSeconds,
+        websitePolicy: settings.researchWebsitePolicy,
+      });
       ingestResearchUpdate(retried);
       useResearchRunStore.getState().setConnectionError(retried.id, null);
       ensureResearchRunFollowed(retried.id, retried);

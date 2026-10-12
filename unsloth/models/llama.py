@@ -4741,17 +4741,12 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = True
 
-        # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored
-        # it; the record only exists after a disable.
-        if (
-            use_gradient_checkpointing
-            and getattr(model, "_unsloth_use_cache_originals", None) is not None
-        ):
-            try:
-                from unsloth_zoo.training_utils import disable_use_cache
-                disable_use_cache(model)
-            except ImportError:
-                pass
+        # Not only under GC: with a KV cache transformers drops the packed-sequence mask (padding-free rows leak).
+        try:
+            from unsloth_zoo.training_utils import disable_use_cache
+            disable_use_cache(model)
+        except ImportError:
+            pass
         return model
 
 

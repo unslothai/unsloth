@@ -41,6 +41,8 @@ import type {
   ResourceTypeFilter,
 } from "../types";
 import { type HubOption, HubOptionMenu } from "./hub-option-menu";
+import type { ModelSearchFilters } from "../lib/model-search-filters";
+import { ModelSearchFiltersControl } from "./model-search-filters";
 import { RecentSearches } from "./recent-searches";
 
 // Includes the "Fine-tune ready" pseudo-option, which opens a channel rather than filtering.
@@ -77,7 +79,11 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFreeUpSpace,
   onOpenFineTune,
   npuAvailable = false,
+  searchFilters,
+  onSearchFiltersChange,
 }: {
+  searchFilters: ModelSearchFilters;
+  onSearchFiltersChange: (value: ModelSearchFilters) => void;
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
   query: string;
@@ -431,6 +437,17 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onValueChange={onCapabilityFilterChange}
             ariaLabel="Capability filter"
             className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
+          />
+        )}
+
+        {isDiscover && !isDataset && !npuList && hubSource !== "modelscope" && (
+          <ModelSearchFiltersControl
+            value={searchFilters}
+            onChange={onSearchFiltersChange}
+            className={cn(
+              triggerBase,
+              "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+            )}
           />
         )}
 
