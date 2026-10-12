@@ -8953,6 +8953,9 @@ class LlamaCppBackend:
         # Budget a load has committed to but not published, covering planning ->
         # Popen as _memory_pending_launch does for Model Memory placement.
         self._vram_fraction_pending: Optional[float] = None
+        # The exact setting a load resolved but has not published, read by the settings route
+        # while no child is running yet.
+        self._exact_setting_pending: Optional[str] = None
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
         self._requested_n_ubatch: Optional[int] = None
@@ -25537,6 +25540,7 @@ class LlamaCppBackend:
             finally:
                 self._vram_fraction_pending = None
                 self._binary_revision_pending = None
+                self._exact_setting_pending = None
                 # Same for the placement marker: released at the end of the call instead, a
                 # finished load could blank the marker of a queued one that had published.
                 self._memory_pending_launch = None
@@ -31474,6 +31478,8 @@ class LlamaCppBackend:
 
                 # The mode needs a unified cache, and adding one keeps a single-slot load from being refused.
                 _exact_setting = _exact.resolve_exact_setting(intent.exact_concurrency)
+                # This load runs under it now, so a save from here on needs a reload to apply.
+                self._exact_setting_pending = _exact_setting
                 _exact_wanted = _exact.wants_exact(_exact_setting)
                 if _exact_wanted and _flash_attn_known_off and _exact_setting == _exact.EXACT_AUTO:
                     # V is left transposed without flash attention and the paged pool refuses

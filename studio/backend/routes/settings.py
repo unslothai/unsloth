@@ -2081,8 +2081,14 @@ def _exact_concurrency_reload_required(effective: str) -> bool:
     """True when a child is running under a setting the next load would not repeat. Compared against
     what that child was ASKED for: an `auto` that came up `unavailable` is still this setting.
     Every resident model is asked, not only the primary: an extra slot loaded under the old
-    setting keeps it for every chat routed there."""
+    setting keeps it for every chat routed there. A load still starting has no child yet but has
+    resolved its setting, so it is answered from that."""
     for backend in _resident_llama_backends():
+        pending = getattr(backend, "_exact_setting_pending", None)
+        if pending is not None:
+            if str(pending) != effective:
+                return True
+            continue
         if not getattr(backend, "is_active", False):
             continue
         # A diffusion runner is not llama-server: it records `off` because it cannot apply the
