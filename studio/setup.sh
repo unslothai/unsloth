@@ -138,6 +138,8 @@ _remove_agent_instruction_files() {
 # ── Frontend build overlapped with the Python, sidecar and llama.cpp steps (#8818) ──
 _FRONTEND_BG_PID=""
 _FRONTEND_BG_LOG=""
+# Build state, not a source input, so the CI dist cache key rightly leaves it out.
+_FRONTEND_BUILD_MARK="$SCRIPT_DIR/frontend/.unsloth-build.local"
 
 # Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
 # 7 GB RSS, so ask for 4 CPUs and 12 GiB usable (cgroup-aware); an unreadable probe = serial.
@@ -175,8 +177,8 @@ _frontend_proc_id() {
 # check reads it). A build whose setup was just interrupted is still being stopped for up to
 # ~6 s: wait for it, then undo what it hid, so two builds never share the tree.
 _frontend_build_begin() {
-    local _mark="$SCRIPT_DIR/frontend/.unsloth-build.local" _owner="" _n=0 _self
-    [ -f "$_mark" ] && _owner=$(cat "$_mark" 2>/dev/null)
+    local _owner="" _n=0 _self
+    [ -f "$_FRONTEND_BUILD_MARK" ] && _owner=$(cat "$_FRONTEND_BUILD_MARK" 2>/dev/null)
     while [ -n "$_owner" ] && [ "$_n" -lt 30 ] &&
         [ "$(_frontend_proc_id "${_owner%% *}")" = "$_owner" ]; do
         sleep 1
@@ -184,7 +186,7 @@ _frontend_build_begin() {
     done
     _frontend_build_cleanup
     _self=$(exec sh -c 'echo "$PPID"')
-    _frontend_proc_id "$_self" > "$_mark" 2>/dev/null || :
+    _frontend_proc_id "$_self" > "$_FRONTEND_BUILD_MARK" 2>/dev/null || :
 }
 
 # TERM the build's group, KILL it once the leader is gone or after 5 s (npm ci ignores TERM;
@@ -2297,7 +2299,7 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
 # An earlier build that never finished (killed, failed) left its mark: redo it.
-[ ! -e "$SCRIPT_DIR/frontend/.unsloth-build.local" ] || _NEED_FRONTEND_BUILD=true
+[ ! -e "$_FRONTEND_BUILD_MARK" ] || _NEED_FRONTEND_BUILD=true
 fi  # end packaged/Tauri guard
 
 # OXC validator runtime (below) needs node/npm whenever its dir exists, regardless
@@ -2585,7 +2587,7 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
-rm -f "$SCRIPT_DIR/frontend/.unsloth-build.local"
+rm -f "$_FRONTEND_BUILD_MARK"
 
 _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
 if [ -z "$_MAX_CSS" ]; then

@@ -22,6 +22,7 @@ FNS="setup_fail _remove_agent_instruction_files _frontend_can_build_in_backgroun
     _frontend_bg_join _frontend_bg_reap"
 {
     printf '_FRONTEND_BG_PID=""\n_FRONTEND_BG_LOG=""\n'
+    grep '^_FRONTEND_BUILD_MARK=' "$SETUP_SH"
     for fn in $FNS; do
         sed -n "/^$fn() {/,/^}/p" "$SETUP_SH"
     done
