@@ -54,11 +54,14 @@ def _controller() -> PreemptionController:
 
 def _observe(monkeypatch, controller, readings, erased):
     monkeypatch.setattr(inference, "get_preemption_controller", lambda key: controller)
-    monkeypatch.setattr(
-        inference, "fetch_llama_slots", lambda base, headers = None: readings.pop(0)
-    )
+    monkeypatch.setattr(inference, "fetch_llama_slots", lambda base, headers = None: readings.pop(0))
 
-    def erase(base, slot_id, timeout_s = 3.0, headers = None):
+    def erase(
+        base,
+        slot_id,
+        timeout_s = 3.0,
+        headers = None,
+    ):
         erased.append(slot_id)
         return 3000
 
@@ -72,9 +75,15 @@ def _observe(monkeypatch, controller, readings, erased):
 def test_a_slot_handed_to_another_request_is_not_erased(monkeypatch):
     controller = _controller()
     controller.register("live", lease = _Lease(), tokens = 6000)
-    reading = [_slot(1, task = 7, processing = False, tokens = 3000), _slot(0, task = 5, processing = True, tokens = 6000)]
+    reading = [
+        _slot(1, task = 7, processing = False, tokens = 3000),
+        _slot(0, task = 5, processing = True, tokens = 6000),
+    ]
     # By the erase, slot 1 runs another request's task.
-    taken = [_slot(1, task = 9, processing = True, tokens = 200), _slot(0, task = 5, processing = True, tokens = 6000)]
+    taken = [
+        _slot(1, task = 9, processing = True, tokens = 200),
+        _slot(0, task = 5, processing = True, tokens = 6000),
+    ]
     erased: list = []
     _observe(monkeypatch, controller, [reading, taken, taken, taken], erased)
     assert erased == [], "the erase was sent to a slot another request now holds"
@@ -83,7 +92,10 @@ def test_a_slot_handed_to_another_request_is_not_erased(monkeypatch):
 def test_a_slot_still_idle_on_the_same_task_is_erased(monkeypatch):
     controller = _controller()
     controller.register("live", lease = _Lease(), tokens = 6000)
-    reading = [_slot(1, task = 7, processing = False, tokens = 3000), _slot(0, task = 5, processing = True, tokens = 6000)]
+    reading = [
+        _slot(1, task = 7, processing = False, tokens = 3000),
+        _slot(0, task = 5, processing = True, tokens = 6000),
+    ]
     erased: list = []
     _observe(monkeypatch, controller, [reading, reading, reading, reading], erased)
     assert erased == [1]
@@ -95,9 +107,7 @@ def test_a_newer_task_seen_after_the_erase_replays_the_holder_parked_since(monke
     controller = _controller()
     controller.register("live", lease = _Lease(), tokens = 6000)
     controller.register("later", lease = _Lease(), tokens = 1000)
-    occupancy = read_slot_occupancy(
-        lambda: [_slot(1, task = 7, processing = False, tokens = 3000)]
-    )
+    occupancy = read_slot_occupancy(lambda: [_slot(1, task = 7, processing = False, tokens = 3000)])
     readings = [
         [_slot(1, task = 7, processing = False, tokens = 3000)],
         [_slot(1, task = 9, processing = False, tokens = 1000)],
