@@ -41823,72 +41823,89 @@ class LlamaCppBackend:
                             )
 
                 # Empty unless `_parallel_round`, so the sequential path never reaches here.
-                for (
-                    _p_decision,
-                    _p_stream,
-                    _p_queue,
-                    _p_result,
-                    _p_refused,
-                    _p_budget,
-                    _p_starved,
-                    _p_compact,
-                ) in _pending_calls:
-                    if _p_decision is None:
-                        # A card to close, not a call to settle: an internal no-op whose
-                        # provisional card is still on screen.
-                        yield _p_result
-                        continue
-                    if _p_refused is _TOOL_CALL_REFUSED:
-                        # Declined before it ran, settled the way the sequential branch
-                        # settles it: the refusal is emitted and answered in this call's
-                        # slot of the round, and nothing is recorded as executed.
-                        yield {
-                            "type": "tool_end",
-                            "tool_name": _p_decision.tool_name,
-                            "tool_call_id": _p_decision.tool_call_id,
-                            "result": _p_result,
-                            "provenance": _p_decision.provenance,
-                        }
-                        _refused_message = {
-                            "role": "tool",
-                            "name": _p_decision.tool_name,
-                            "content": _p_result,
-                        }
-                        if _p_decision.tool_call_id:
-                            _refused_message["tool_call_id"] = _p_decision.tool_call_id
-                        conversation.append(_refused_message)
-                        continue
-                    if _p_queue is None:
-                        # Nothing was started: the RAG cap answered first, and this entry
-                        # is here only to keep its place in the round.
-                        result = _p_result
-                    else:
-                        try:
-                            while True:
-                                _kind, _payload = _p_queue.get()
-                                if _kind == "event":
-                                    yield _payload
-                                    continue
-                                if _kind == "result":
-                                    result = _payload
-                                    break
-                                raise _payload
-                        except _LlamaStreamCancelled:
-                            raise
-                        except Exception as _tool_exc:
-                            if cancel_event is not None and cancel_event.is_set():
+                try:
+                    for (
+                        _p_decision,
+                        _p_stream,
+                        _p_queue,
+                        _p_result,
+                        _p_refused,
+                        _p_budget,
+                        _p_starved,
+                        _p_compact,
+                    ) in _pending_calls:
+                        if _p_decision is None:
+                            # A card to close, not a call to settle: an internal no-op whose
+                            # provisional card is still on screen.
+                            yield _p_result
+                            continue
+                        if _p_refused is _TOOL_CALL_REFUSED:
+                            # Declined before it ran, settled the way the sequential branch
+                            # settles it: the refusal is emitted and answered in this call's
+                            # slot of the round, and nothing is recorded as executed.
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": _p_decision.tool_name,
+                                "tool_call_id": _p_decision.tool_call_id,
+                                "result": _p_result,
+                                "provenance": _p_decision.provenance,
+                            }
+                            _refused_message = {
+                                "role": "tool",
+                                "name": _p_decision.tool_name,
+                                "content": _p_result,
+                            }
+                            if _p_decision.tool_call_id:
+                                _refused_message["tool_call_id"] = _p_decision.tool_call_id
+                            conversation.append(_refused_message)
+                            continue
+                        if _p_queue is None:
+                            # Nothing was started: the RAG cap answered first, and this entry
+                            # is here only to keep its place in the round.
+                            result = _p_result
+                        else:
+                            try:
+                                while True:
+                                    _kind, _payload = _p_queue.get()
+                                    if _kind == "event":
+                                        yield _payload
+                                        continue
+                                    if _kind == "result":
+                                        result = _payload
+                                        break
+                                    raise _payload
+                            except _LlamaStreamCancelled:
                                 raise
-                            logger.exception(
-                                "Tool %s raised: %s",
-                                _p_decision.tool_name,
-                                _tool_exc,
-                            )
-                            result = f"Error: tool raised an exception: {_tool_exc}"
-                    # Already counted at launch. A capped call is not counted on either
-                    # path: it ran no search.
-                    yield from _settle_tool_call(
-                        _p_decision, result, _p_budget, _p_starved, _p_compact
-                    )
+                            except Exception as _tool_exc:
+                                if cancel_event is not None and cancel_event.is_set():
+                                    raise
+                                logger.exception(
+                                    "Tool %s raised: %s",
+                                    _p_decision.tool_name,
+                                    _tool_exc,
+                                )
+                                result = f"Error: tool raised an exception: {_tool_exc}"
+                        # Already counted at launch. A capped call is not counted on either
+                        # path: it ran no search.
+                        yield from _settle_tool_call(
+                            _p_decision, result, _p_budget, _p_starved, _p_compact
+                        )
+                except BaseException as _round_exit:
+                    # Closed or cancelled mid-round: the siblings still being driven run on
+                    # threads of their own, so nothing else would tell their tools to stop.
+                    # Signalled as the sequential path's stream signals, and not waited on, for
+                    # the same reason. Not on an ordinary error, which the handler below
+                    # reports, and would end silently with the event set.
+                    if (
+                        not isinstance(_round_exit, Exception)
+                        and _pending_calls
+                        and cancel_event is not None
+                    ):
+                        try:
+                            cancel_event.set()
+                        except Exception:
+                            pass
+                    raise
                 _pending_calls = []
 
                 # On the turn that ends the loop no tools are offered again, so the notice
