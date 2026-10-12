@@ -39,6 +39,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -262,6 +263,7 @@ import {
   shouldReportGenerateError,
   stopButtonLabel,
 } from "./lib/generation-stop";
+import { copyPngTextChunks, drawInfoStamp, infoStampText } from "./lib/info-stamp";
 import {
   ALLOW_OVERSIZED_HINT,
   ALLOW_OVERSIZED_LABEL,
@@ -496,7 +498,11 @@ const RESYNC_MAX_ATTEMPTS = 3;
 // For example Unsloth_20260624-143005_123.png.
 type ImageExportFormat = "png" | "jpeg" | "webp";
 
-function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"): string {
+function exportFilename(
+  image: GalleryImage,
+  format: ImageExportFormat = "png",
+  infoStamp = false,
+): string {
   const d = new Date(image.created_at * 1000);
   const p = (n: number) => String(n).padStart(2, "0");
   const stamp =
@@ -504,7 +510,51 @@ function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"):
     `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   const suffix = image.batch_index > 0 ? `_${image.batch_index}` : "";
   const ext = format === "jpeg" ? "jpg" : format;
-  return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
+  return `Unsloth_${stamp}_${image.seed}${suffix}${infoStamp ? "_info" : ""}.${ext}`;
+}
+
+// The stamp is drawn on the exported copy only; the stored original keeps no overlay.
+async function stampedPng(src: string, image: GalleryImage): Promise<Blob> {
+  const el = new Image();
+  el.decoding = "async";
+  el.src = src;
+  await el.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = el.naturalWidth;
+  canvas.height = el.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("canvas 2d context unavailable");
+  }
+  ctx.drawImage(el, 0, 0);
+  drawInfoStamp(ctx, canvas.width, canvas.height, infoStampText(image));
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png"),
+  );
+  if (!blob) {
+    throw new Error("could not encode png");
+  }
+  // The canvas drops PNG text chunks, so carry the original's embedded recipe over.
+  const original = new Uint8Array(await (await fetchGalleryBlob(image.url)).arrayBuffer());
+  const merged = copyPngTextChunks(original, new Uint8Array(await blob.arrayBuffer()));
+  return new Blob([merged], { type: "image/png" });
+}
+
+async function downloadStampedImage(src: string, image: GalleryImage) {
+  const filename = exportFilename(image, "png", true);
+  try {
+    await downloadFile(await stampedPng(src, image), filename, "image/png");
+    if (isTauri) {
+      toast.success("Image saved", { description: filename });
+    }
+  } catch (error) {
+    if (isDownloadCancelled(error)) {
+      return;
+    }
+    toast.error("Could not save image", {
+      description: error instanceof Error ? error.message : undefined,
+    });
+  }
 }
 
 // PNG saves the stored bytes verbatim, keeping the embedded recipe; JPEG / WebP re-encode
@@ -5830,6 +5880,12 @@ export function ImagesPage({
                         onClick={() => void downloadImage(selectedSrc, selected, "webp")}
                       >
                         WebP
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => void downloadStampedImage(selectedSrc, selected)}
+                      >
+                        PNG with info stamp
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
