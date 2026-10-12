@@ -2057,7 +2057,11 @@ export async function readAttachmentText(
   contentType: string | undefined,
 ): Promise<AttachmentText> {
   // First, as in the adapters: text would claim a .mht sent as message/rfc822.
-  if (isServerDocumentAttachmentName(name)) {
+  // An .odt/.ods past the browser reader's ceiling was attached through the server; reuse that read.
+  if (
+    isServerDocumentAttachmentName(name) ||
+    (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES && isOpenDocumentAttachment(name, contentType))
+  ) {
     const { extractServerDocumentText } = await import("./server-document");
     return { label: null, text: await extractServerDocumentText(file), truncated: false };
   }

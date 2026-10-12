@@ -1433,10 +1433,10 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
-# RAG document uploads (knowledge base, thread, project): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# RAG document uploads (knowledge base, thread, project, extract-text): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
 # spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
 _RAG_DOCUMENT_UPLOAD_RE = _re.compile(
-    r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
+    r"^/api/rag/(?:(?:knowledge-bases|threads|projects)/[^/]+/documents|extract-text)/?$"
 )
 # One file into a chat's sandbox folder (multipart, capped by the route), on both mounts of the router.
 _SANDBOX_UPLOAD_RE = _re.compile(r"^/(?:api/inference|v1)/sandbox/[^/]+/upload/?$")
