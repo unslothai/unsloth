@@ -633,6 +633,13 @@ def test_fp8_module_filter():
     assert dit._fp8_module_filter(nn.LayerNorm(64), "transformer_blocks.0.norm") is False
 
 
+def _real_cuda():
+    import torch
+
+    # Other suites in a worker can leave torch.cuda.is_available() spoofed True; the C call asks the driver.
+    return torch.cuda.is_available() and getattr(torch._C, "_cuda_getDeviceCount", lambda: 0)() > 0
+
+
 def _block_model(bias = False):
     import torch
 
@@ -716,7 +723,7 @@ def test_mx_input_hook_mirrors_autocast():
 
     x = torch.ones(2, 4)
     assert dit._autocast_mx_input(None, (x,)) is None  # CPU / no autocast: untouched
-    if not torch.cuda.is_available():
+    if not _real_cuda():
         pytest.skip("needs CUDA autocast")
     xc = x.cuda()
     assert dit._autocast_mx_input(None, (xc,)) is None
@@ -883,7 +890,7 @@ def test_fp8_conversion_needs_no_torchao(monkeypatch):
 def _lowp_gpu_ready(mode):
     import torch
 
-    if not torch.cuda.is_available():
+    if not _real_cuda():
         return False
     need = (8, 9) if mode == "fp8" else (10, 0)
     return torch.cuda.get_device_capability() >= need
@@ -1152,7 +1159,7 @@ def test_lowp_probe_skips_off_cuda_and_raises_on_a_failing_gemm():
     calls = []
     dit._probe_lowp(lambda probe: calls.append(probe), _block_model())  # CPU model: no probe
     assert calls == []
-    if not torch.cuda.is_available():
+    if not _real_cuda():
         pytest.skip("needs CUDA")
 
     def failing_convert(probe):
