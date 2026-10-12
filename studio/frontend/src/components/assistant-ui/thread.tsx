@@ -7459,7 +7459,18 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  // Same sweep as the reasoning block's "Thinking" label.
+  return (
+    <span className="relative inline-block whitespace-nowrap text-sm text-muted-foreground">
+      <span>Generating...</span>
+      <span
+        aria-hidden={true}
+        className="shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
+      >
+        Generating...
+      </span>
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
