@@ -36,7 +36,11 @@ export function loadWithStubs<T>(
   options: { relativePassthrough?: boolean } = {},
 ): T {
   const path = fileURLToPath(moduleUrl);
-  const { outputText } = ts.transpileModule(readFileSync(path, "utf8"), {
+  const source = readFileSync(path, "utf8").replaceAll(
+    "import.meta.url",
+    JSON.stringify(pathToFileURL(path).href),
+  );
+  const { outputText } = ts.transpileModule(source, {
     fileName: path,
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,

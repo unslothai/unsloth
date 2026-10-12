@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   compactionNoticeMessageIds,
   memoOnArray,
+  memoOnArrayByKey,
   partsHaveNonEmptyText,
   partsHaveRenderableRenderHtmlTool,
   partsPrecedingText,
@@ -20,6 +21,7 @@ import {
   precedingTextForMessagePart,
   searchImagesSignature,
 } from "../src/features/chat/search-images/search-images.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 test("memoOnArray computes once per array and again for a new array", () => {
   let calls = 0;
@@ -187,7 +189,39 @@ test("compaction notice ids match the per-message walk", () => {
     assert.equal(ids.has(message.id), walk(messages, message.id), message.id);
   }
   assert.deepEqual([...ids], ["a1", "a3", "a4"]);
+  // The context meter's compaction count is this set's size.
+  assert.equal(ids.size, 3);
   assert.equal(ids.has("missing"), false);
   assert.equal(compactionNoticeMessageIds(messages), ids);
   assert.notEqual(compactionNoticeMessageIds([...messages]), ids);
+});
+
+test("memoOnArrayByKey caches per array and per key", () => {
+  const messages = [{ id: "a" }, { id: "b" }];
+  let computed = 0;
+  const first = memoOnArrayByKey(messages, "k", () => {
+    computed += 1;
+    return new Set(["a"]);
+  });
+  const again = memoOnArrayByKey(messages, "k", () => {
+    computed += 1;
+    return new Set(["b"]);
+  });
+  assert.equal(first, again);
+  assert.equal(computed, 1);
+  const other = memoOnArrayByKey(messages, "other", () => {
+    computed += 1;
+    return 1;
+  });
+  assert.equal(other, 1);
+  assert.equal(computed, 2);
+  assert.notEqual(memoOnArrayByKey([...messages], "k", () => new Set()), first, "a new array computes anew");
+});
+
+test("a message with search images lists its texts while it runs, so a card placed later stops an earlier part repeating it", () => {
+  assert.match(
+    readSrc("components/assistant-ui/markdown-text.tsx"),
+    /const messageTextKey = useAuiState\(\(\{ message \}\) =>\s*allowSearchImages && partsSearchImagesSignature\(message\.parts\) !== ""\s*\? partsTextKey\(message\.parts\)\s*: "\[\]",\s*\);/,
+    "without images the texts change nothing, so only then may a running reply skip serialising them",
+  );
 });

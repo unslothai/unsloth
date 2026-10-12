@@ -16,18 +16,22 @@ import {
   type DiffusionLoraInfo,
   listDiffusionLoras,
 } from "@/features/images/api";
+import { matchCatalogId } from "@/features/images/train/diffusion-train-deploy";
 import { ImageAdd02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { exportDiffusionLora } from "../api/export-api";
+import { savedLabel } from "../constants";
 
 function imageLoraLabel(lora: DiffusionLoraInfo, clashes: boolean): string {
   const tags = [...lora.families, ...(lora.fine_tuned ? ["fine-tuned"] : [])];
-  const name = clashes ? `${lora.display_name} [${lora.id}]` : lora.display_name;
+  const name = clashes
+    ? `${lora.display_name} [${lora.id}]`
+    : lora.display_name;
   return tags.length > 0 ? `${name} (${tags.join(", ")})` : name;
 }
 
-export function ImageLoraExportCard() {
+export function ImageLoraExportCard({ preselect }: { preselect?: string }) {
   const [loras, setLoras] = useState<DiffusionLoraInfo[] | null>(null);
   const [loraId, setLoraId] = useState("");
   const [saveDirectory, setSaveDirectory] = useState("image-loras");
@@ -55,6 +59,18 @@ export function ImageLoraExportCard() {
     };
   }, []);
 
+  // From a finished image run: pick it and scroll here, since the text-model card above shows no runs.
+  useEffect(() => {
+    const id = preselect ? matchCatalogId(loras ?? [], preselect) : undefined;
+    if (!id) {
+      return;
+    }
+    setLoraId(id);
+    document
+      .getElementById("image-lora-id")
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [preselect, loras]);
+
   const canExport = !running && loraId !== "" && saveDirectory.trim() !== "";
 
   async function handleExport() {
@@ -67,7 +83,7 @@ export function ImageLoraExportCard() {
       });
       setResult({
         ok: true,
-        text: `Saved to ${response.details?.output_path ?? saveDirectory}`,
+        text: `Saved to ${savedLabel(String(response.details?.output_path ?? saveDirectory))}. To use it on another install, copy that folder over and add it from Images > LoRAs > Folders.`,
       });
     } catch (error) {
       setResult({

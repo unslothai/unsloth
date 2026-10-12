@@ -278,7 +278,7 @@ EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")
 
 
-def embed_device_preference() -> str:
+def _env_embed_device() -> str:
     """``EMBED_DEVICE`` normalized to exactly ``gpu``, ``cpu`` or ``auto``.
 
     One reader for both backends, because they used to disagree about the same
@@ -294,6 +294,23 @@ def embed_device_preference() -> str:
     if value == "cpu":
         return "cpu"
     return "auto"
+
+
+def embed_device_locked() -> bool:
+    """Whether ``RAG_EMBED_DEVICE`` names a device, which Settings then cannot override."""
+    return _env_embed_device() != "auto"
+
+
+def embed_device_preference() -> str:
+    """``gpu``, ``cpu`` or ``auto``: ``RAG_EMBED_DEVICE`` when it names a device, else the Settings choice."""
+    env = _env_embed_device()
+    if env != "auto":
+        return env
+    try:
+        from utils.embedding_model_settings import get_stored_embedding_device
+        return get_stored_embedding_device()
+    except Exception:  # noqa: BLE001 - store unavailable: each backend's default
+        return "auto"
 
 
 def embed_device_requires_gpu() -> bool:
