@@ -1310,7 +1310,7 @@ _TWO_3090 = [(0, 23_500, 24_576), (1, 23_500, 24_576)]
         (26.9, None, "0", [0, 1]),  # Q8_0: auto spreads over the visible pair
         (26.9, [0, 1], "0", [0, 1]),  # Q8_0: explicit pair is honoured
         (26.9, [0], "0", None),  # a single explicit GPU is never widened
-        (50.5, None, "0", [0, 1]),  # BF16 fits nowhere: still every GPU, not one
+        (50.5, None, "0", None),  # BF16 fits no subset: left to the GPU / CPU layer fit
     ],
 )
 def test_diffusion_fit_gpus_splits_only_what_one_gpu_cannot_hold(
@@ -1503,6 +1503,28 @@ def test_diffusion_launch_manual_split_never_spreads(monkeypatch, tmp_path):
     assert _gpu_token(cmd) == "0"
     assert cmd[cmd.index("--ngl") + 1] == "20"
     assert backend.gpu_ids == [0]
+
+
+@pytest.mark.parametrize(
+    ("gguf_gib", "fit_ngl", "token", "ngl"),
+    [
+        (26.9, 18, "0,1", None),  # the pair holds Q8_0: split, no CPU layers
+        (16.8, 25, "0,1", None),  # the layer fit's stricter budget says one card is short
+        (50.5, 12, "0", "12"),  # BF16 fits no subset: one card plus CPU layers (#6456)
+    ],
+)
+def test_diffusion_launch_prefers_a_gpu_split_over_cpu_layers(
+    monkeypatch, tmp_path, gguf_gib, fit_ngl, token, ngl
+):
+    monkeypatch.setattr(llama_cpp_module, "_shim_supports_ngl", lambda _cmd: True)
+    monkeypatch.setattr(LlamaCppBackend, "_diffusion_fit_ngl", lambda self, *_a, **_k: fit_ngl)
+    cmd, _env, _backend = _launch_diffusion(
+        monkeypatch, tmp_path, gguf_gib = gguf_gib, gpus = _TWO_3090, gpu_ids = [0, 1]
+    )
+    assert _gpu_token(cmd) == token
+    assert (cmd[cmd.index("--ngl") + 1] if "--ngl" in cmd else None) == ngl
+    # Only a CPU split pins the context; an all-GPU split keeps the runner's auto-size.
+    assert cmd[cmd.index("--maxtok") + 1] == ("4096" if ngl else "0")
 
 
 # ── Deliberate zero-offload (manual gpu_layers=0): training-skip flag ─────────

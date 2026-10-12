@@ -128,6 +128,7 @@ from ._utils import (
     arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
+    switch_training_mode,
     _is_seq2seq_lm_config,
 )
 from ._utils import *
@@ -846,6 +847,53 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     return True
 
 
+def _host_offloaded_embeddings(model):
+    return [
+        module
+        for module in model.modules()
+        if getattr(module, "_unsloth_offload_hooks_installed", False)
+        and getattr(getattr(module, "weight", None), "device", None) is not None
+        and module.weight.device.type == "cpu"
+    ]
+
+
+def _wrap_move_keeps_host_embeddings(owner, name):
+    original = getattr(owner, name, None)
+    if original is None or getattr(original, "_unsloth_keeps_host_embeddings", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(self, model, *args, **kwargs):
+        pinned = _host_offloaded_embeddings(model) if isinstance(model, torch.nn.Module) else []
+        for module in pinned:
+            # nn.Module._apply recurses through module._apply, so an instance attribute skips just this subtree.
+            module._apply = lambda fn, recurse = True, _module = module: _module
+        try:
+            return original(self, model, *args, **kwargs)
+        finally:
+            for module in pinned:
+                module.__dict__.pop("_apply", None)
+
+    wrapped._unsloth_keeps_host_embeddings = True
+    setattr(owner, name, wrapped)
+
+
+def _patch_trainer_move_keeps_host_embeddings():
+    # Trainer.train() (under bf16/fp16 full eval, Unsloth's default) and Accelerator.prepare_model both call
+    # model.to(device) when no hf_device_map is set, as on a block swap load; that pulled offloaded tables back onto
+    # the card at the first step (the 4.4 GB Gemma 4 E2B per-layer table, unslothai/unsloth#7055).
+    try:
+        from transformers.trainer import Trainer
+        _wrap_move_keeps_host_embeddings(Trainer, "_move_model_to_device")
+    except Exception:
+        pass
+    try:
+        from accelerate import Accelerator
+        _wrap_move_keeps_host_embeddings(Accelerator, "prepare_model")
+    except Exception:
+        pass
+
+
 def _pin_device_to_decoder(model):
     # `model.device` is the device of the first parameter, and the embedding we offload is it, so
     # the documented `inputs.to(model.device)` hands a CUDA model CPU ids. The lookup itself still
@@ -891,6 +939,12 @@ def _offload_embedding_unsupported_platform():
         return "WSL"
     if os.name == "nt":
         return "Windows"
+    # Docker on WSL2 has no WSL_* variables but shares the *-microsoft-standard-WSL2 kernel (unslothai/unsloth#3511).
+    try:
+        if "microsoft" in os.uname().release.lower():
+            return "WSL"
+    except Exception:
+        pass
     return None
 
 
@@ -1021,6 +1075,7 @@ def offload_input_embedding(model, embeddings = None):
             embedding.to("cpu")
         nbytes += weight.numel() * weight.element_size()
         _install_offload_embedding_hooks(embedding, out_embed, _embed_device)
+    _patch_trainer_move_keeps_host_embeddings()
     print(f"Unsloth: Offloading embeddings to RAM to save {round(nbytes / 1024**3, 2)} GB.")
     # The transformers model, not a PEFT wrapper: its `device` property is the one callers read.
     _pin_device_to_decoder(model.get_base_model() if hasattr(model, "get_base_model") else model)
@@ -1797,7 +1852,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if kwargs.get("past_key_values") is None:
             kwargs["cache_implementation"] = "dynamic"
         try:
-            with torch.inference_mode(), autocaster:
+            with _get_inference_mode_context_manager(self), autocaster:
                 return self._old_generate(*args, **kwargs)
         finally:
             _clear_generation_caches(self)
@@ -1883,7 +1938,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with decode_scope, eager_scope, torch.inference_mode(), autocaster:
+        with decode_scope, eager_scope, _get_inference_mode_context_manager(self), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
@@ -4428,6 +4483,30 @@ class FastBaseModel:
             skip = _vllm_unmovable_embedding_modules(model, target_modules),
         )
         _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        # add_new_tokens rows stay frozen at their mean init otherwise, and on a padded vocab PEFT saves neither matrix, so reload drops them (#1343). Matches FastLanguageModel; skipped under vLLM, which cannot train them, and when trainable_token_indices already trains the rows.
+        if (
+            getattr(model, "_need_to_train_embeddings", False)
+            and finetune_language_layers
+            and getattr(model, "vllm_engine", None) is None
+            and not kwargs.get("trainable_token_indices")
+        ):
+            if modules_to_save is None:
+                modules_to_save = []
+            elif isinstance(modules_to_save, str):
+                modules_to_save = [modules_to_save]
+            else:
+                modules_to_save = list(modules_to_save)
+            _missing = [
+                m
+                for m in ("embed_tokens", "lm_head")
+                if m not in _embedding_leaves(modules_to_save)
+            ]
+            if _missing:
+                print(
+                    "Unsloth: You added new tokens but did not specify if you wanted to "
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
+                )
+                modules_to_save.extend(_missing)
         ensure_weight_tying = _effective_weight_tying(
             model,
             modules_to_save,
@@ -4955,12 +5034,9 @@ class FastBaseModel:
             _for_inference(m)
             m = m.model
         _for_inference(m)
-        model.eval()  # to turn off training on modules deeper in
-
-        # Since transformers 4.53, this must be turned off explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = False
+        # Since transformers 4.53, checkpointing must be turned off explicitly.
+        for module in switch_training_mode(model, False):
+            module.gradient_checkpointing = False
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
@@ -4975,6 +5051,10 @@ class FastBaseModel:
 
         # Returning hidden states must be disabled for GRPO, and returning logits enabled.
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        # Remember what the forced "1" replaced, for for_training() to put back (#3071).
+        _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        if _return_logits != "1":
+            os.environ["_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"] = _return_logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
@@ -4986,15 +5066,14 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
+        checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
-            model, use_gradient_checkpointing
+            model, use_gradient_checkpointing, checkpointing
         )
-        if use_gradient_checkpointing:
-            arm_gradient_checkpointing(model)
-
-        for param in model.parameters():
-            if hasattr(param, "_fast_lora"):
-                del param._fast_lora
+        if use_gradient_checkpointing and arm_gradient_checkpointing(model, checkpointing):
+            # Arming runs the model's enabler once (remote code can flag layers the walk did not see).
+            checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5015,30 +5094,27 @@ class FastBaseModel:
             _for_training(m)
             m = m.model
         _for_training(m)
-        model.train()  # to turn on training on modules deeper in
-
+        apply_training_mode()
         # Since transformers 4.53, this must be turned on explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
+        for module in checkpointing:
+            set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
             if hasattr(embeddings, "training"):
                 embeddings.training = True
-        # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored it; the record only exists after a disable.
-        if (
-            use_gradient_checkpointing
-            and getattr(model, "_unsloth_use_cache_originals", None) is not None
-        ):
-            # Auto-enable grouped-GEMM MoE (transformers<5 ModuleList experts); see llama.py.
-            try:
-                from unsloth_zoo.training_utils import disable_use_cache
-                disable_use_cache(model)
-            except ImportError:
-                pass
+        # Not only under GC: with a KV cache transformers drops the packed-sequence mask (padding-free rows leak).
+        try:
+            from unsloth_zoo.training_utils import disable_use_cache
+            disable_use_cache(model)
+        except ImportError:
+            pass
 
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        # Undo only for_inference()'s "1": forcing "0" here wiped a user's UNSLOTH_RETURN_LOGITS=1 (#3071).
+        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
+        if _return_logits is None:
+            _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model

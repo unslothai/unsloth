@@ -563,17 +563,34 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.12.0",
 )
 
-# The install.sh _cu130_torch213_route: a repair keeps a resident 2.9-2.14 release.
+# Mirrors install.sh / install.ps1's cu130 route: a repair keeps a resident 2.9-2.14 release.
 _CU130_PRESERVE_TORCH_CEILING_MINOR = 15
 _CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2.9.0
+
+
+def _cu130_first_torch_minor() -> int:
+    """cu130 has no aarch64 torchvision 0.24 / torchaudio 2.9, so aarch64 starts at 2.10."""
+    if sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64"):
+        return 10
+    return _CU130_FIRST_TORCH_MINOR
+
+
+def _is_cu130_route_machine() -> bool:
+    """Linux x86_64 or aarch64, or Windows x64 on an x64 machine. An emulated x64 Python on Windows
+    on ARM is excluded: install.ps1 keys its torch 2.13 route on the machine as well as the interpreter."""
+    machine = platform.machine().lower()
+    if sys.platform.startswith("linux"):
+        return machine in ("x86_64", "amd64", "aarch64", "arm64")
+    if machine not in ("x86_64", "amd64"):
+        return False
+    return sys.platform == "win32" and not _is_windows_arm64()
 
 
 def _is_cu130_torch213_route(index_url: str | None) -> bool:
     return (
         bool(index_url)
         and _torch_index_leaf(index_url) == "cu130"
-        and sys.platform.startswith("linux")
-        and platform.machine().lower() in ("x86_64", "amd64")
+        and _is_cu130_route_machine()
         and sys.version_info[:2] == (3, 13)
     )
 
@@ -599,7 +616,7 @@ def _cuda_repair_torch_specs(
     release = _resident_torch_release()
     if release is not None:
         minor = int(release.split(".")[1])
-        if _CU130_FIRST_TORCH_MINOR <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
+        if _cu130_first_torch_minor() <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
             # torchaudio 2.11 is the last release (stable ABI), so newer minors pair with it.
             audio_minor = min(minor, 11)
             return (
@@ -629,14 +646,74 @@ _TORCH_TRIO_LINE = re.compile(r"^\s*torch(vision|audio)?([\s<>=!~;@\[]|$)", re.I
 _TORCH_FREEZE_ACTIVE = False
 
 
+def _restrict_to_current_user(path: str) -> bool:
+    """On Windows, replace PATH's inherited ACL with one granting only the current user."""
+    if sys.platform != "win32":
+        return True
+    try:
+        who = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"], capture_output = True, text = True, timeout = 30
+        )
+        sid = who.stdout.strip().rsplit(",", 1)[-1].strip().strip('"')
+        if who.returncode != 0 or not sid.startswith("S-"):
+            return False
+        granted = subprocess.run(
+            ["icacls", path, "/inheritance:r", "/grant:r", f"*{sid}:F"],
+            capture_output = True,
+            timeout = 30,
+        )
+        return granted.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _write_space_free_override(text: str) -> tuple[str, str | None]:
+    """Write TEXT to an overrides file uv can name: (path, space-free path to hand uv, or None).
+
+    Only user-private files: inherited override lines can carry authenticated index URLs.
+    mkstemp's 0600 covers POSIX; a Windows file takes its directory's ACL, so it gets an explicit
+    current-user-only one, and a directory where that fails is skipped.
+    """
+    if sys.platform == "win32":
+        candidates = [None, sys.prefix]
+    else:
+        candidates = [None, "/tmp", "/var/tmp", sys.prefix]
+    for directory in candidates:
+        if directory is not None and (
+            any(ch.isspace() for ch in directory) or not os.path.isdir(directory)
+        ):
+            continue
+        try:
+            fd, name = tempfile.mkstemp(
+                prefix = "unsloth-torch-overrides-", suffix = ".txt", dir = directory
+            )
+        except OSError:
+            continue
+        # Still empty: restrict it before the contents land, as install.ps1 does for its copy.
+        if not _restrict_to_current_user(name):
+            os.close(fd)
+            Path(name).unlink(missing_ok = True)
+            continue
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+            handle.write(text)
+        # %TEMP% under a spaced profile is fine when it has an 8.3 short name.
+        safe = _uv_safe_path(name)
+        if not any(ch.isspace() for ch in safe):
+            return name, safe
+        Path(name).unlink(missing_ok = True)
+    return "", None
+
+
 class _FreezeNewTorchForCoreUpdate:
     """Pin the resident torch trio via UV_OVERRIDE while unsloth / unsloth-zoo re-resolve.
 
     A released unsloth declares a torch ceiling (2026.9.11: <2.13.0), and a with-deps upgrade
     honours it: on a torch 2.13 install `studio update` swapped torch for PyPI's 2.12.1 and lost
-    the matching prebuilt kernels. install.sh freezes the trio the same way for every with-deps
-    unsloth install (_build_unsloth_torch_overrides). Scoped to Linux with torch >= 2.13, the
-    releases past that ceiling, so every other install resolves exactly as before.
+    the matching prebuilt kernels. install.sh and install.ps1 freeze the trio the same way for
+    every with-deps unsloth install. Scoped to Linux and native Windows x64 with torch >= 2.13,
+    the releases past that ceiling, so every other install resolves exactly as before; a native
+    Windows on ARM interpreter keeps its own UV_OVERRIDE (_woa_overrides_are_load_bearing), an
+    emulated x64 one there is frozen like any x64 install.
     """
 
     def __enter__(self):
@@ -644,7 +721,10 @@ class _FreezeNewTorchForCoreUpdate:
         self._previous = os.environ.get("UV_OVERRIDE")
         release = _resident_torch_release()
         if not (
-            sys.platform.startswith("linux")
+            (
+                sys.platform.startswith("linux")
+                or (sys.platform == "win32" and not _is_win_arm64_interpreter())
+            )
             and release is not None
             and int(release.split(".")[1]) >= 13
         ):
@@ -669,11 +749,20 @@ class _FreezeNewTorchForCoreUpdate:
                 if include and "://" not in include[2] and not os.path.isabs(include[2]):
                     line = f"{include[1]}{(base / include[2]).resolve()}{include[3]}"
                 lines.append(line)
-        fd, name = tempfile.mkstemp(prefix = "unsloth-torch-overrides-", suffix = ".txt")
-        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
+        name, safe = _write_space_free_override("\n".join(lines) + "\n")
+        if safe is None:
+            # uv splits UV_OVERRIDE on whitespace. Windows ran unfrozen before this freeze existed;
+            # on Linux a spaced path always stopped the update, which keeps the resident torch.
+            if sys.platform == "win32":
+                return self
+            _step(
+                "error",
+                "no writable directory without spaces for the torch freeze; set TMPDIR to one",
+                _red,
+            )
+            raise SystemExit(1)
         self._path = Path(name)
-        os.environ["UV_OVERRIDE"] = _uv_safe_path(self._path)
+        os.environ["UV_OVERRIDE"] = safe
         global _TORCH_FREEZE_ACTIVE
         _TORCH_FREEZE_ACTIVE = True
         return self
@@ -691,9 +780,12 @@ class _FreezeNewTorchForCoreUpdate:
 
 
 # torchao cpp extensions match one torch and CUDA release; mismatches disable kernels or crash.
-# torch 2.9 needs 0.15 because 0.14 breaks supported Diffusers and Transformers (#13244).
+# torch 2.6-2.9 gets 0.15: transformers 5 and diffusers 0.41 refuse TorchAoConfig below 0.15 (#13244),
+# and 0.14 never loads its cpp extensions on torch 2.6-2.8 anyway, so the older pin bought nothing.
+# torchao 0.15 dropped torch <= 2.5, so those keep 0.14.
 # use the resident accelerator index because PyPI follows the latest PyTorch CUDA major.
-_TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
+_TORCHAO_DEFAULT_SPEC = "torchao==0.15.0"
+_TORCHAO_TORCH_25_SPEC = "torchao==0.14.0"
 _TORCHAO_TORCH_29_SPEC = "torchao==0.15.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
 _TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
@@ -740,6 +832,8 @@ def _select_torchao_spec(torch_version: str | None) -> str:
         return _TORCHAO_TORCH_210_SPEC
     if minor == 9:
         return _TORCHAO_TORCH_29_SPEC
+    if minor <= 5:
+        return _TORCHAO_TORCH_25_SPEC
     return _TORCHAO_DEFAULT_SPEC
 
 
@@ -8386,12 +8480,16 @@ def _ensure_flash_attn() -> None:
         return
     if NO_TORCH:
         return
-    if IS_WINDOWS or IS_MACOS:
+    if IS_MACOS:
         return
     if _flash_attn_importable():
         return
 
-    env = probe_torch_wheel_env()
+    # Bounded like the import probe: a wedged Windows driver must not hang setup.
+    env = probe_torch_wheel_env(
+        timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT if IS_WINDOWS else None,
+        include_windows = True,
+    )
     # a failed flash-attn probe proves staleness only when torch still imports.
     stale = env is not None and _installed_distribution_version("flash-attn") is not None
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
@@ -8435,7 +8533,10 @@ def _ensure_flash_attn() -> None:
         return
 
     if wheel_url is None:
-        _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
+        if IS_WINDOWS:
+            _note("no flash-attn prebuilt wheel for this torch build; skipped")
+        else:
+            _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
     elif wheel_available is None:
         _step(
             "warning",
@@ -12141,8 +12242,9 @@ def install_python_stack() -> int:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
+        base_total += 1  # flash-attn, Linux and Windows
         if not IS_WINDOWS:
-            base_total += 2  # flash-attn + torch final repair (step 13), Linux
+            base_total += 1  # torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
     if IS_MAC_ARM and not NO_TORCH:
@@ -12545,7 +12647,7 @@ def install_python_stack() -> int:
     if not IS_WINDOWS and not IS_MACOS:
         _triton_kernels_step()
 
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+    if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
 
@@ -12742,8 +12844,13 @@ def install_python_stack() -> int:
     if IS_WINDOWS and not NO_TORCH:
         _progress(_torch_step_label("flavor"))
         torch_flavor_tag = _expected_torch_flavor_tag()
+        _torch_before_flavor = str(_probe_installed_torch_version() or "")
         if not _ensure_expected_torch_flavor(torch_flavor_tag):
             return 1
+        _torch_after_flavor = str(_probe_installed_torch_version() or "")
+        if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
+            # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
+            _ensure_flash_attn()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()

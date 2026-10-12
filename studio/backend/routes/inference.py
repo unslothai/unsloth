@@ -3969,6 +3969,7 @@ from core.inference.providers import (
 )
 from core.inference.external_provider import (
     ExternalProviderClient,
+    _is_kimi_k3,
     _is_openai_family_cloud,
     compacts_server_side,
 )
@@ -4400,6 +4401,24 @@ async def artifact_preview_page(token: str):
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+from core.inference import react_preview
+
+
+class ArtifactReactCompileRequest(BaseModel):
+    source: str
+    lang: Literal["jsx", "tsx"] = "tsx"
+
+
+@studio_router.post("/artifact-react-compile", include_in_schema = False)
+async def compile_artifact_react_preview(
+    request: ArtifactReactCompileRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Compile a chat React component for the preview frame; Node only transpiles, never runs it."""
+    if len(request.source.encode("utf-8", "surrogatepass")) > react_preview.MAX_SOURCE_BYTES:
+        raise HTTPException(status_code = 413, detail = "This component is too large to preview")
+    return await react_preview.compile_react_preview_async(request.source, request.lang)
 
 
 # A bare "*" is refused: such a template gets the default-deny.
@@ -9834,7 +9853,7 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # Mixed catalogs require model-level vision capability; family flags do not
 # identify which models accept images. Qwen has unrestricted text defaults;
 # its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Kimi is excluded
-# because its allowlist permits only multimodal kimi-k2.5/k2.6.
+# because its allowlist permits only multimodal kimi-k3/k2.5/k2.6.
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
 _MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen"})
@@ -16939,11 +16958,26 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
                 else hf_hub_download(config.identifier, "config.json", token = hf_token)
             )
         metadata = json.loads(path.read_text(encoding = "utf-8"))
-        from core.inference.engine_install import _driver_rows, support_reason
+        from core.inference.engine_install import (
+            _driver_rows,
+            gpu_platform,
+            rocm_loads_quantization,
+            support_reason,
+        )
 
         def supported(name, method):
             if support_reason(name) is not None:
                 return False
+            if gpu_platform() == "rocm":
+                text_config = metadata.get("text_config")
+                return rocm_loads_quantization(
+                    metadata.get("quantization_config")
+                    or (
+                        text_config.get("quantization_config")
+                        if isinstance(text_config, dict)
+                        else None
+                    )
+                )
             if name != "sglang" or method != "compressed-tensors":
                 return True
             # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0; vLLM falls back to Marlin from 7.5.
@@ -27620,6 +27654,7 @@ def _build_external_messages(
     api_type: Optional[str] = None,
     promoted_out: "Optional[list]" = None,
     promote_mcp_images: "Optional[bool]" = None,
+    model: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -27764,11 +27799,12 @@ def _build_external_messages(
             return {"type": "compaction", "encrypted_content": item.encrypted_content}
         return None
 
+    replays_reasoning = provider_type == "llama_cpp" or _is_kimi_k3(provider_type, model)
     result = []
     for msg in messages:
         replay = (
             {"reasoning_content": msg.reasoning_content}
-            if provider_type == "llama_cpp" and msg.role == "assistant" and msg.reasoning_content
+            if replays_reasoning and msg.role == "assistant" and msg.reasoning_content
             else {}
         )
         has_message_extra_content = bool(
@@ -28866,8 +28902,7 @@ async def _proxy_to_external_provider(
                 yield "data: [DONE]\n\n"
             finally:
                 await client.close()
-                disconnect_task.cancel()
-                await asyncio.gather(disconnect_task, return_exceptions = True)
+                await _stop_local_disconnect_cancel_watcher(disconnect_task)
 
                 with _CANCEL_LOCK:
                     for key in cancel_keys:
@@ -28958,6 +28993,7 @@ async def _proxy_to_external_provider(
         promote_mcp_images = _external_takes_mcp_images(
             provider_type, _supports_vision, model, _pinfo
         ),
+        model = model,
     )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
@@ -29369,12 +29405,8 @@ async def _proxy_to_external_provider(
         finally:
             cancel_event.set()
             if disconnect_task is not None:
-                # Joined, not just cancelled. A bare cancel() leaves the task's
-                # result unretrieved, so asyncio logs "Task exception was never
-                # retrieved" when it is collected, and the poll can still be
-                # mid-await on request.is_disconnected() while the response is
-                # torn down. Same pairing as the Codex branch and the local
-                # watchers.
+                # Joined so its outcome is retrieved. No bounded stop needed: cancel_event is
+                # set above, so the loop exits even if is_disconnected() eats the cancel (#7617).
                 disconnect_task.cancel()
                 await asyncio.gather(disconnect_task, return_exceptions = True)
             try:
@@ -29765,8 +29797,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             if relay.stopped or relay.error is not None:
                 break
     finally:
-        watcher.cancel()
-        await asyncio.gather(watcher, return_exceptions = True)
+        await _stop_local_disconnect_cancel_watcher(watcher)
         await lines.aclose()
     if disconnected.is_set():
         return Response(status_code = 499)
@@ -32147,7 +32178,7 @@ async def produce_openai_chat_completions(
                 except Exception as e:
                     logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
                     api_monitor.fail(monitor_id, _friendly_error(e))
-                    # Recover if an MTP+tensor crash killed the server mid-stream.
+                    # Recover if an MTP crash killed the server mid-stream.
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse(error_chunk)
@@ -32527,7 +32558,7 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                # Recover if an MTP+tensor crash killed the server.
+                # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
@@ -33215,7 +33246,7 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                # Recover if an MTP+tensor crash killed the server.
+                # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
@@ -35539,6 +35570,44 @@ async def reveal_sandbox_dir(
         logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to open file manager")
     return {"status": "ok", "path": sandbox_dir}
+
+
+@router.post("/sandbox/{session_id}/upload")
+async def upload_sandbox_file(
+    session_id: str,
+    file: UploadFile = File(...),
+    overwrite: bool = Form(False),
+    session: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Put one file into this chat's sandbox folder, where its tools read and write.
+
+    Saved at the folder's root under the file's own name. A taken name is a 409 unless
+    ``overwrite``, so a second upload never silently replaces what a tool wrote.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from core.inference.tools import SandboxUploadExists, save_sandbox_upload
+    from utils.upload_limits import SANDBOX_UPLOAD_MAX_BYTES
+
+    def _chunks():
+        total = 0
+        while chunk := file.file.read(1 << 20):
+            total += len(chunk)
+            if total > SANDBOX_UPLOAD_MAX_BYTES:
+                raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
+            yield chunk
+
+    try:
+        saved = await run_in_threadpool(
+            save_sandbox_upload, session or session_id, file.filename, _chunks(), overwrite
+        )
+    except SandboxUploadExists as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} already exists") from None
+    except OSError:
+        logger.error("Failed to save a sandbox upload", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Could not save the file") from None
+    return saved
 
 
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
@@ -40606,7 +40675,11 @@ async def _resident_model_reads_images() -> bool:
     return bool(entry.get("is_vision"))
 
 
-async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONResponse]:
+async def _mlx_count_chat_tokens(
+    payload,
+    request = None,
+    via_api_key = None,
+) -> Optional[JSONResponse]:
     """Count with a resident MLX or managed engine tokenizer, otherwise return None.
 
     This has to answer the question the safetensors completion answers -- which of its two
@@ -40898,7 +40971,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             detail = "Cannot count tokens while a generation is in progress.",
         )
     try:
-        count, model = await asyncio.to_thread(
+        count, _counted = await asyncio.to_thread(
             backend.count_chat_tokens,
             messages,
             system_prompt or "",
@@ -40921,15 +40994,20 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    # The advertised id, not the resident path: an auto-switch loads from a resolved
-    # snapshot while publishing the repo id, and the caller drops a count whose model
-    # does not match the checkpoint it captured.
+    # The id /status publishes as model_identifier (the raw active name, a local folder or
+    # snapshot path included): the client drops a count naming any other checkpoint.
     return JSONResponse(
-        content = {
-            "input_tokens": int(count),
-            "model": _orchestrator_public_model_id(backend) or model or active,
-        }
+        content = {"input_tokens": int(count), "model": _count_model_id(active, via_api_key)}
     )
+
+
+def _count_model_id(model_id, via_api_key):
+    """A count's ``model``, redacted for an API-key caller exactly as /status redacts its
+    ``model_identifier`` (the redactor keys on that field name)."""
+    from hub.utils.host_paths import redact_host_paths
+    return redact_host_paths({"model_identifier": model_id}, via_api_key = via_api_key)[
+        "model_identifier"
+    ]
 
 
 @router.post("/chat/count_tokens")
@@ -40937,6 +41015,7 @@ async def chat_count_tokens(
     payload: ChatCountTokensRequest,
     current_subject: str = Depends(get_current_subject),
     request: Request = None,
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
@@ -41030,7 +41109,7 @@ async def chat_count_tokens(
     if not llama_backend.is_loaded:
         # The refusals above are about the request and so are shared; the ones below are
         # llama.cpp's own render concerns, so this returns rather than falling through.
-        _mlx_count = await _mlx_count_chat_tokens(payload, request)
+        _mlx_count = await _mlx_count_chat_tokens(payload, request, via_api_key = via_api_key)
         if _mlx_count is not None:
             return _mlx_count
         raise HTTPException(
@@ -41231,7 +41310,12 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    return JSONResponse(content = {"input_tokens": int(count), "model": _tokenizer_model})
+    return JSONResponse(
+        content = {
+            "input_tokens": int(count),
+            "model": _count_model_id(_tokenizer_model, via_api_key),
+        }
+    )
 
 
 @router.post("/messages/count_tokens")
@@ -43345,7 +43429,7 @@ async def _passthrough_retry_url(llama_backend, exc):
 
     A crashed server relaunches on a NEW ephemeral port, so a passthrough still
     holding the old base_url keeps failing until the next load. Mirrors the
-    respawn-and-retry in generate_chat_completion. None when an MTP+tensor crash
+    respawn-and-retry in generate_chat_completion. None when an MTP crash
     already scheduled its own recovery, or when nothing needed respawning.
 
     Shared by both passthrough surfaces: /v1/messages and /v1/chat/completions post
@@ -46453,6 +46537,7 @@ async def load_diffusion_model_gated(
     )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
+    from core.inference.sd_cpp_args import forces_cpu_backend
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -46636,6 +46721,13 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
+        if (
+            activated == ENGINE_SD_CPP
+            and device == "mps"
+            and await asyncio.to_thread(forces_cpu_backend, device)
+        ):
+            needs_gpu = False
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,

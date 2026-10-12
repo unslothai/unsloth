@@ -149,6 +149,7 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
+  confirmManagedEngineIfNeeded,
   isServedByMlx,
   savedContextPin,
   resolveResidentInitialConfig,
@@ -221,6 +222,7 @@ import {
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  kimiSearchExcludesThinking,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -890,7 +892,10 @@ export function SharedComposer({
   // Kimi's $web_search builtin mandates thinking=disabled
   // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay clickable, but turning
   // one on flips the other off, so the visible state matches what the backend sends.
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
   // drops the stored level is shown truthfully without overwriting the choice.
@@ -1745,7 +1750,7 @@ export function SharedComposer({
         // with no explicit context loads at native (0 -> n_ctx_train), not the session maxSeqLength.
         const effectiveCustomContextLength = ownConfig.customContextLength;
         const paneEngine = targetIsGguf ? "auto" : (ownConfig.engine ?? "auto");
-        const paneEngineFields = {
+        let paneEngineFields = {
           engine: paneEngine,
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
@@ -1774,7 +1779,8 @@ export function SharedComposer({
           effectiveCustomContextLength,
           effectiveMaxSeqLength,
         );
-        const validation = await validateModel({
+        // Re-run as the engine the offer dialog picks, so its settings are checked before /load.
+        const panePayload = () => ({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
           max_seq_length: compareMaxSeqLength,
@@ -1819,8 +1825,48 @@ export function SharedComposer({
                 ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
-        }, { signal: compareSignal });
+        });
+        const validation = await validateModel(panePayload(), {
+          signal: compareSignal,
+        });
         throwIfCompareCancelled(compareSignal);
+        // Same offer as the primary picker: the default engine cannot run it (#8861).
+        const engineOffer =
+          paneEngine === "auto" ? validation.managed_engine_offer : null;
+        if (engineOffer) {
+          const engine = await confirmManagedEngineIfNeeded(
+            sel.id,
+            engineOffer,
+            compareSignal,
+          );
+          throwIfCompareCancelled(compareSignal);
+          if (!engine) {
+            throw new Error(
+              `${compareModelDisplayName(sel.id)} is quantized with ${engineOffer.quantization}, which the default engine cannot run. Set Inference engine to ${engineOffer.engines[0] === "sglang" ? "SGLang" : "vLLM"} in its run settings to load it.`,
+            );
+          }
+          paneEngineFields = {
+            engine,
+            engine_precision: "auto",
+            engine_parallelism: "tensor",
+            load_in_4bit: false,
+            ...(ownConfig.selectedGpuIds !== undefined
+              ? {
+                  gpu_ids:
+                    reconcilePersistedGpuIds(
+                      ownConfig.selectedGpuIds,
+                      ownConfig.selectedGpuIndexKind,
+                      false,
+                    ) ?? undefined,
+                }
+              : {}),
+          };
+          Object.assign(
+            validation,
+            await validateModel(panePayload(), { signal: compareSignal }),
+          );
+          throwIfCompareCancelled(compareSignal);
+        }
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
           const upgraded = await confirmTransformersUpgradeIfNeeded({

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { browserPanelAvailable } from "./panel-availability";
+import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store";
 
@@ -19,7 +20,7 @@ export {
 export { BookmarksFileError, exportBookmarksFile, importBookmarksFile } from "./bookmarks-io";
 export { MAX_BOOKMARKS } from "./bookmarks-store";
 export { canScreenshot } from "./screenshot-support";
-export { browserTabType, textFileKind } from "./file-kind";
+export { browserTabType, fileBarKind, textFileKind } from "./file-kind";
 export { SEARCH_ENGINES, type SearchEngineId } from "./address";
 export { useBrowserHistoryStore } from "./history-store";
 export { useNativeBrowser } from "./native-support";
@@ -74,6 +75,29 @@ export function openHtmlInBrowser({
 }): void {
   const store = useBrowserStore.getState();
   store.openFile({ blob: new Blob([code], { type: "text/html" }), name, contentType: "text/html", key: `html:${key}` });
+  const tabId = useBrowserStore.getState().activeTabId;
+  if (tabId) store.setFileView(tabId, { mode: view });
+}
+
+/** Opens a React component from chat as a preview tab; `key` is the artifact's id. */
+export function openReactInBrowser({
+  key,
+  name,
+  code,
+  view = "preview",
+}: {
+  key: string;
+  name: string;
+  code: string;
+  view?: FileViewMode;
+}): void {
+  const store = useBrowserStore.getState();
+  store.openFile({
+    blob: new Blob([code], { type: REACT_PREVIEW_TYPE }),
+    name,
+    contentType: REACT_PREVIEW_TYPE,
+    key: `${REACT_PREVIEW_KEY_PREFIX}${key}`,
+  });
   const tabId = useBrowserStore.getState().activeTabId;
   if (tabId) store.setFileView(tabId, { mode: view });
 }

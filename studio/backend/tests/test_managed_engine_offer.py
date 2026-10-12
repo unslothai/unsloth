@@ -31,6 +31,15 @@ def _route():
 
 
 route = _route()
+
+
+@pytest.fixture(autouse = True)
+def nvidia_host():
+    # The real gpu_platform() answers "rocm" on an AMD runner; the ROCm cases patch it themselves.
+    with patch("core.inference.engine_install.gpu_platform", return_value = "cuda"):
+        yield
+
+
 NVFP4 = {
     "quantization_config": {"quant_method": "compressed-tensors", "format": "nvfp4-pack-quantized"}
 }
@@ -234,3 +243,47 @@ def test_a_cached_hub_config_is_read_without_a_hub_round_trip(tmp_path):
         patch("huggingface_hub.hf_hub_download", side_effect = AssertionError("network")),
     ):
         assert route._managed_engine_offer_for(remote, None)["engines"] == ["vllm", "sglang"]
+
+
+def _scheme(weights, activations = None):
+    group = {"targets": ["Linear"], "weights": weights, "input_activations": activations}
+    return {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {"group_0": group},
+        }
+    }
+
+
+def test_amd_offers_only_the_checkpoints_vllms_rocm_build_loads(tmp_path):
+    # Measured on gfx1151 with vLLM 0.30.0+rocm723.
+    w8a8 = _scheme({"type": "int", "num_bits": 8}, {"type": "int", "num_bits": 8})
+    w4a16 = _scheme({"type": "int", "num_bits": 4})
+    fp8 = _scheme({"type": "float", "num_bits": 8}, {"type": "float", "num_bits": 8})
+    nvfp4 = _scheme({"type": "float", "num_bits": 4}, {"type": "float", "num_bits": 4})
+    awq = {"quantization_config": {"quant_method": "awq"}}
+    gptq = {"quantization_config": {"quant_method": "gptq"}}
+
+    def engines(metadata):
+        offer = route._managed_engine_offer_for(_config(tmp_path, metadata), None)
+        return offer and offer["engines"]
+
+    with (
+        patch("core.inference.engine_install.support_reason", return_value = None),
+        patch.object(
+            route,
+            "_MANAGED_ENGINE_QUANTIZATIONS",
+            {"compressed-tensors": (), "awq": (), "gptq": ()},
+        ),
+    ):
+        # NVIDIA keeps every offer.
+        for metadata in (w8a8, fp8, nvfp4, gptq):
+            assert engines(metadata), metadata
+        amd = {"vllm": None, "sglang": "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."}
+        with (
+            patch("core.inference.engine_install.gpu_platform", return_value = "rocm"),
+            patch("core.inference.engine_install.support_reason", side_effect = amd.get),
+        ):
+            assert engines(w8a8) == engines(w4a16) == engines(awq) == ["vllm"]
+            for metadata in (fp8, nvfp4, NVFP4, gptq):
+                assert engines(metadata) is None, metadata
