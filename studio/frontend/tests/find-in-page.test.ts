@@ -2738,7 +2738,7 @@ test("closing the bar hands focus back to where it came from", async () => {
   const capture = FIND_BAR.indexOf("const active = document.activeElement");
   const takeFocus = FIND_BAR.indexOf("input.select();");
   assert.ok(capture > 0 && capture < takeFocus);
-  assert.match(FIND_BAR, /origin\.focus\(\);/);
+  assert.match(FIND_BAR, /origin\.focus\(\{ preventScroll: true \}\);/);
   // First answer only: StrictMode replays the effect, and by the second run the field has focus.
   assert.match(FIND_BAR, /originRef\.current === null &&/);
   // Against the bar's element, not `data-find-skip`, which the composer carries.
