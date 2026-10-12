@@ -3145,6 +3145,21 @@ def _openai_llama_note_self_erased(llama_backend, parked: Optional[dict]) -> Non
         logger.debug("could not record the approval erase", exc_info = True)
 
 
+def _openai_llama_self_erased(llama_backend, gen_id: str) -> bool:
+    """Whether a reclaim took this holder's cells since it last decoded. The route's own
+    approval erase sets its flag; the generic idle-slot reclaim tells only the ledger, and a
+    round recosting after it must be allowed to wait for room as it would after its own."""
+    if not preemption_enabled():
+        return False
+    try:
+        participant = get_preemption_controller(_preempt_key(llama_backend)).participant(gen_id)
+    except Exception:
+        return False
+    return participant is not None and bool(
+        participant.cells_reclaimed or participant.replay_pending
+    )
+
+
 def _openai_llama_publish_round_charge(
     *,
     llama_backend,
@@ -33027,8 +33042,10 @@ async def produce_openai_chat_completions(
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
-                    # Erased cells make yielding honest, so a grown round may wait.
-                    cache_is_empty = erased,
+                    # Erased cells make yielding honest, so a grown round may wait, whichever
+                    # erase took them.
+                    cache_is_empty = erased
+                    or _openai_llama_self_erased(llama_backend, completion_id),
                     counted_out = _round_counted,
                 )
                 _openai_llama_publish_round_charge(
@@ -43783,6 +43800,8 @@ async def anthropic_messages(
             injected_tools = openai_tools,
             wire_tools = round_tools,
             cancel_event = cancel_event,
+            # Erased by an idle-slot reclaim while parked: yielding is honest, so it may wait.
+            cache_is_empty = _openai_llama_self_erased(llama_backend, message_id),
         )
         _openai_llama_publish_round_charge(
             llama_backend = llama_backend,
