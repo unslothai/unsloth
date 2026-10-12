@@ -155,7 +155,7 @@ class VideoFamily:
     i2v_pipeline_config: tuple[tuple[str, object], ...] = field(default_factory = tuple)
     # Call kwargs a first-frame render adds, as (identifier regex, ((kwarg, value), ...)). The first row whose regex
     # matches any of the load's identifiers (variant id, GGUF filename, repo ids) applies; a kwarg the pipeline signature
-    # does not take is dropped. ComfyUI's official i2v templates are the reference for the values.
+    # does not take is dropped. The official reference i2v templates are the reference for the values.
     i2v_call_kwargs: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = field(default_factory = tuple)
     # Checkpoints this family's name tokens claim but that it cannot serve, as (identifier regex, refusal). The load is
     # refused with that message instead of building the wrong pipeline over incompatible weights.
@@ -323,7 +323,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         filter_reduction_configs = True,
         # Same components as LTX2Pipeline; the first frame is encoded through the loaded VAE and held clean.
         i2v_pipeline_class = "LTX2ImageToVideoPipeline",
-        # The conditioning frame is re-compressed as H.264 to look like a video frame. ComfyUI's LTX-2.3 i2v template
+        # The conditioning frame is re-compressed as H.264 to look like a video frame. The reference LTX-2.3 i2v template
         # runs LTXVPreprocess at 18; LTX-2.0's template uses 33, which is also diffusers' default for Gemma3 encoders.
         i2v_call_kwargs = ((r"ltx[-_ ]?2[-_.]?3(?![0-9])", (("image_crf", 18),)),),
         unsupported_checkpoints = ((_LTX_VIDEO_09_RE, _LTX_VIDEO_09_REFUSAL),),
@@ -368,7 +368,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
         # TI2V: the same checkpoint takes a first frame. expand_timesteps (on the loaded config) keeps its latent clean
-        # with a zero timestep, as ComfyUI's Wan22ImageToVideoLatent does with its noise mask.
+        # with a zero timestep, as the reference Wan22ImageToVideoLatent node does with its noise mask.
         i2v_pipeline_class = "WanImageToVideoPipeline",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are
@@ -863,7 +863,7 @@ def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict
 def first_frame_canvas(fam: VideoFamily, aspect_width: float, aspect_height: float) -> tuple[int, int]:
     """The resolution preset whose aspect ratio is closest to a first frame's (in log space, so
     2:1 and 1:2 are equally far from square). The frame is then centre-cropped onto it, as
-    ComfyUI's Wan22ImageToVideoLatent / LTX image resize do. Ties keep the table's order, so the
+    the reference Wan22ImageToVideoLatent / LTX image resize do. Ties keep the table's order, so the
     family default wins. A family without presets falls back to snapping the source size."""
     import math
 

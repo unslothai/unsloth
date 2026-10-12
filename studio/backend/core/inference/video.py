@@ -9802,7 +9802,7 @@ class VideoBackend:
             first = decode_b64_image(first_frame, mode = "RGB") if first_frame else None
             last = decode_b64_image(last_frame, mode = "RGB") if last_frame else None
         # A declared image-to-video pipeline (Wan2.2-TI2V-5B, LTX-2): the canvas is the resolution preset nearest the
-        # picture's aspect, and the picture is centre-cropped onto it, as ComfyUI's i2v templates resize it (Wan22Image-
+        # picture's aspect, and the picture is centre-cropped onto it, as the reference i2v templates resize it (Wan22Image-
         # ToVideoLatent / LTX ResizeImageMaskNode, "center"). MiniMax-H3 keeps its own canvas and fit rules below.
         i2v_pipeline = video_family_uses_i2v_pipeline(fam)
         if first is not None and i2v_pipeline and not _i2v_pipeline_available(fam.i2v_pipeline_class):
