@@ -321,11 +321,8 @@ def enable_padding_free_metadata(model, trainer):
     collator._unsloth_padding_free_lengths_wrapped = True
 
 
-# Packing for hybrid linear-attention (Qwen3.5 / Qwen3-Next gated-delta, Nemotron-H Mamba2): a flattened
-# batch leaks recurrent + conv state across sequences unless seq_idx / cu_seqlens reach the accelerated
-# kernels, so it fails closed on the pure-torch fallbacks. Gated-delta (conv1d) models pack by default once
-# the kernel checks and an exactness probe pass; UNSLOTH_EXPERIMENTAL_HYBRID_PACKING=0 turns that off and
-# =1 also opts in the other mixers (Mamba2, q/k/v short-conv gated-delta).
+# Hybrid linear-attention packing leaks conv/recurrent state across documents unless seq_idx / cu_seqlens
+# reach the accelerated kernels, so it fails closed on torch fallbacks. =0 disables, =1 opts in all mixers.
 _MAMBA2_FUSED_NAMES = (
     "mamba2_split_conv1d_scan_combined",
     "mamba_split_conv1d_scan_combined",
@@ -336,8 +333,7 @@ _HYBRID_WARNED: set = set()
 
 
 def _hybrid_packing_mode() -> str:
-    """"on" / "off" when UNSLOTH_EXPERIMENTAL_HYBRID_PACKING is set to a truthy / falsy value, else "auto".
-    Read at call time so setting the flag after `import unsloth` still takes effect."""
+    """"on" / "off" / "auto"; read at call time so setting the flag after import still works."""
     value = os.environ.get(_HYBRID_PACKING_ENV_VAR, "").strip().lower()
     if value in {"1", "true", "yes", "on"}:
         return "on"
@@ -350,13 +346,9 @@ def _hybrid_packing_enabled() -> bool:
     return _hybrid_packing_mode() == "on"
 
 
-# Mixers that pack by default (auto): the conv1d gated-delta of Qwen3.5 / Qwen3.5-MoE / Qwen3-Next, whose
-# conv (causal_conv1d or unsloth-zoo's Triton conv) and fla scan reset at seq_idx / cu_seqlens. Only on
-# CUDA: ROCm and other devices need the explicit opt-in. As for every packed MoE, a router auxiliary
-# loss (Qwen3.5-MoE, Qwen3-Next) is computed over the whole packed row, not per document.
+# Auto-packed mixers (CUDA only). MoE router aux loss is computed over the whole packed row, not per document.
 _HYBRID_AUTO_KINDS = ("gated_delta",)
 
-# Engagement counters: probe runs / passes / failures, models patched, and the last probe error.
 HYBRID_PACKING_STATS = {
     "probe_runs": 0,
     "probe_passed": 0,
@@ -748,8 +740,7 @@ def _varlen_input(args, kwargs):
 
 
 def _varlen_on(varlen, args, kwargs):
-    """The (cu_seqlens, seq_idx) pair on the device of this call's input (a model split over GPUs
-    runs later mixers away from the input ids)."""
+    """Move varlen to this call's input device (multi-GPU splits run mixers away from input ids)."""
     tensor = _varlen_input(args, kwargs)
     if tensor is None or varlen[1].device == tensor.device:
         return varlen
@@ -861,9 +852,7 @@ _KWARGS_TRACE: list = [None]
 
 
 def _hub_closure(fn) -> dict:
-    """The kernel-hub wrapper's closure (implementation, torch_function, applicable_params), looking
-    through Unsloth's probes and pass-through wrappers such as the compiled modules'
-    torch_compiler_disable_unless_decode; {} when there is none."""
+    """Kernel-hub wrapper closure nonlocals, unwrapping Unsloth's probes and pass-through wrappers; {} if none."""
     for _ in range(8):
         if fn is None:
             break
@@ -894,9 +883,7 @@ def _is_kwargs_mixer(module) -> bool:
     return "implementation" in _hub_closure(globs.get("causal_conv1d_fn"))
 
 
-# unsloth-zoo's Triton GatedDeltaNet conv (gdn_causal_conv1d.py) marks its dispatch with this attribute.
-# The hub wrapper sees it as the "torch function" (the causal_conv1d package is absent), but it runs
-# Triton and, when it names seq_idx, honours it on both its Triton and torch paths.
+# unsloth-zoo's Triton GDN conv looks like the hub "torch function" but honours seq_idx on all paths.
 _ZOO_TRITON_CONV_MARK = "_unsloth_triton_causal_conv1d"
 
 
@@ -1191,13 +1178,11 @@ def _restore_mixers(saved) -> None:
 
 
 def _auto_hybrid_device_ok(module) -> bool:
-    # Default-on is proven on CUDA only; ROCm (fla Triton unproven there) and others need the opt-in.
     weight = next(module.parameters(), None)
     return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
 
 
 def _probe_target(modules):
-    """The first conv1d gated-delta mixer the exactness probe can drive, else None."""
     for module in modules:
         if _stateful_mixer_kind(module) != "gated_delta":
             continue
@@ -1210,10 +1195,8 @@ def _probe_target(modules):
 
 
 def _hybrid_exactness_probe(module) -> Optional[str]:
-    """Run one (already wrapped) gated-delta mixer on a packed row of short documents and on each
-    document alone. None when the boundary kernels were dispatched and the packed output matches, else
-    the reason. Runs in eval mode (LoRA dropout would draw different masks for the packed and the
-    per-document passes) under a forked RNG, and leaves the mixer as it found it."""
+    """Compare packed vs per-document mixer output; None if exact and dispatched, else the reason.
+    Eval mode (LoRA dropout masks would differ) under a forked RNG; restores the mixer."""
     weight = module.conv1d.weight
     dtype, device = weight.dtype, weight.device
     lengths = torch.tensor(_HYBRID_PROBE_LENGTHS, dtype = torch.int32)
@@ -1270,10 +1253,7 @@ def _hybrid_exactness_probe(module) -> Optional[str]:
 
 
 def patch_hybrid_linear_attention_varlen(model) -> bool:
-    """Feed seq_idx / cu_seqlens to hybrid mixers so packing resets state at sequence boundaries.
-    Gated-delta (conv1d) and short-conv-only models pack by default; UNSLOTH_EXPERIMENTAL_HYBRID_PACKING=0
-    disables the gated-delta default and =1 opts in every supported mixer. Fail-closed, idempotent.
-    True when active."""
+    """Feed seq_idx / cu_seqlens to hybrid mixers; True when packing is active. Fail-closed, idempotent."""
     mixers = _iter_stateful_mixers(model)
     # Short-conv-only models (LFM2) reset at seq_idx on both kernel and torch paths, so they pack by default.
     short_conv_only = bool(mixers) and all(kind == "short_conv" for _, kind in mixers)
@@ -1307,7 +1287,6 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         return True
 
     hub_short_convs = [m for m in short_conv_modules if _uses_hub_conv(m)]
-    # Gated-delta mixers get an exactness probe once wrapped; auto mode needs one to probe.
     probe_target = _probe_target(gated_delta_modules + kwargs_modules)
     if mode == "auto" and not short_conv_only:
         if probe_target is None:
@@ -1354,7 +1333,6 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             **kwargs,
         ):
             varlen = getattr(_module, "_unsloth_varlen", None)
-            # Only a call over the packed row: a stale stash never reaches a call of another length.
             if varlen is not None and _varlen_seq_idx_applies(varlen[1], args, kwargs):
                 _module._unsloth_varlen_conv_hit = True  # runtime dispatch handshake
                 if kwargs.get("seq_idx") is None:
@@ -1383,7 +1361,6 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
 
     mask_namespaces = list(_iter_mamba2_install_namespaces(hybrid_modules))
     kwargs_namespaces = list(_iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs))
-    # What the modeling modules held before, so a failed probe can put them back.
     namespace_rollback = {}
     for ns in mask_namespaces + kwargs_namespaces:
         if isinstance(ns, dict) and id(ns) not in namespace_rollback:
@@ -1543,10 +1520,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
 
 
 def _mask_hybrid_boundary_labels(kwargs, varlen):
-    """Never train a packed document's first token from the previous document. TRL >= 0.24 already
-    sets labels[position_ids == 0] = -100 and Unsloth's own Llama-family forwards mask it, but the
-    hybrid models run transformers' forward, so older TRL would train every boundary target (while
-    num_items_in_batch already excludes them). Out of place, idempotent."""
+    """Mask each packed document's first label; older TRL (< 0.24) does not. Out of place, idempotent."""
     labels = kwargs.get("labels")
     seq_idx = varlen[1]
     if (

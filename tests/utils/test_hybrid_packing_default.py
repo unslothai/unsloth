@@ -30,7 +30,6 @@ def _segments(T, seq_idx):
 
 
 def conv_exact(x, weight, bias = None, activation = None, seq_idx = None, **kwargs):
-    # x (B, D, T); each segment is convolved alone (left zero padding per segment).
     import torch.nn.functional as F
 
     outs = []
@@ -98,7 +97,6 @@ class FakeHybrid(torch.nn.Module):
 @pytest.fixture(autouse = True)
 def _fresh_warnings(monkeypatch):
     packing_module._HYBRID_WARNED.clear()
-    # The stand-ins live on CPU; default-on is CUDA-only (tested on its own below).
     monkeypatch.setattr(packing_module, "_auto_hybrid_device_ok", lambda module: True)
     yield
     packing_module._HYBRID_WARNED.clear()
@@ -142,7 +140,6 @@ def test_default_packs_exact_gated_delta(monkeypatch):
     assert model._unsloth_varlen_handshake_done
     alone = torch.cat([model(input_ids = ids[:, s:s + n]) for s, n in zip((0, 4, 5), lengths)], dim = 1)
     torch.testing.assert_close(packed, alone)
-    # A cached / plain forward is not packed.
     plain = model(input_ids = ids, use_cache = True)
     assert not torch.allclose(plain, packed)
 
@@ -176,7 +173,6 @@ def test_a_failed_probe_restores_the_modeling_namespace(monkeypatch):
     def create_causal_mask(*args, **kwargs):
         return None
 
-    # The stand-in mixer's modeling module is this file: the mask builder wrap lands here.
     monkeypatch.setattr(sys.modules[__name__], "create_causal_mask", create_causal_mask, raising = False)
     model = FakeHybrid(FakeGatedDeltaNet(conv = conv_leaky))
     assert patch_hybrid_linear_attention_varlen(model) is False
@@ -239,7 +235,6 @@ def test_default_needs_a_probeable_mixer(monkeypatch, caplog):
         assert patch_hybrid_linear_attention_varlen(model) is False
     assert "probe" in caplog.text
     assert _untouched(model, conv_exact, scan_exact)
-    # The explicit opt-in keeps its runtime handshake for mixers the probe cannot drive.
     monkeypatch.setenv(ENV, "1")
     assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet(hidden = None))) is True
 
@@ -258,7 +253,6 @@ def test_default_rejects_torch_fallback(monkeypatch):
 
 
 def _hub_wrapped(torch_function, implementation):
-    # Same closure shape as transformers' use_kernel_func_from_hub_with_fallback.
     applicable_params = tuple(inspect.signature(implementation).parameters)
 
     @functools.wraps(torch_function)
@@ -298,7 +292,6 @@ def _kwargs_model(name, conv_impl):
 
     modeling = types.ModuleType(name)
     impl = conv_impl(conv_ref)
-    # Without the causal_conv1d package the hub binds the (zoo-wrapped) torch function itself.
     modeling.causal_conv1d_fn = _hub_wrapped(impl, impl)
     modeling.torch_chunk_gated_delta_rule = _hub_wrapped(scan_ref, scan_fast)
     exec(
@@ -390,7 +383,6 @@ def test_default_on_is_cuda_only(monkeypatch, caplog):
         assert patch_hybrid_linear_attention_varlen(model) is False
     assert "only on CUDA" in caplog.text
     assert _untouched(model, conv_exact, scan_exact)
-    # The explicit opt-in still runs the exactness probe off CUDA.
     monkeypatch.setenv(ENV, "1")
     assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet())) is True
 
@@ -408,8 +400,7 @@ def test_engagement_counters(monkeypatch):
 
 
 def test_hub_kernel_behind_compile_disable_wrapper(monkeypatch):
-    # unsloth_compiled_module_* wrap the hub kernels in torch_compiler_disable_unless_decode
-    # (Qwen3-Next on transformers 5.x); the gate must look through it to the hub closure.
+    # The gate must look through torch_compiler_disable_unless_decode to the hub closure.
     monkeypatch.delenv(ENV, raising = False)
     name = "fake_unsloth_compiled_module_gdn"
 
@@ -450,7 +441,6 @@ def test_packed_boundary_labels_are_masked(monkeypatch):
     # Trailing pad segment (pad_to_multiple_of): its start is masked too, the rest is left alone.
     model(input_ids = ids, labels = labels, packed_seq_lengths = torch.tensor([4, 3], dtype = torch.int32), use_cache = False)
     assert model.seen_labels.tolist() == [[0, 1, 2, 3, -100, 5, 6, -100, 8]]
-    # Unpacked forwards keep their labels.
     model(input_ids = ids, labels = labels, use_cache = False)
     assert model.seen_labels is labels
 
