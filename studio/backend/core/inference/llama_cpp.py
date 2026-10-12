@@ -43816,7 +43816,9 @@ class LlamaCppBackend:
                 # accumulator. Floored at 1: zero tokens returns nothing at all.
                 _cap_left_p = _remaining_output_budget(0)
                 if _cap_left_p is not None:
-                    stream_payload["max_tokens"] = max(1, _cap_left_p)
+                    # The attempt cap too: the next attempt re-derives max_tokens from it.
+                    _final_attempt_cap = max(1, _cap_left_p)
+                    stream_payload["max_tokens"] = _final_attempt_cap
                 _stream_done = False
                 _metadata_finish_reason = None
                 # Per attempt: this attempt's charge is already in the accumulator, so

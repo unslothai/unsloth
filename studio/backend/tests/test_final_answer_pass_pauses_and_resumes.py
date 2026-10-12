@@ -232,6 +232,36 @@ class TestTheFinalPassPauses:
 
 
 class TestTheFinalPassResumes:
+    def test_an_admission_allowance_does_not_hand_the_cap_back(self, monkeypatch):
+        # Each attempt re-derives max_tokens from its attempt cap and the allowance, so
+        # the pause has to lower the cap itself, or the resume gets the whole 60 again.
+        signal = preemption.PreemptSignal()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                _tool_call(),
+                [_delta("The current kernel"), _finish(), _done()],
+                [_delta(" is 6.10."), _finish(), _done()],
+            ],
+            signal = signal,
+            pause_attempts = (1,),
+        )
+        list(
+            recorder.backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "what kernel is current?"}],
+                tools = [_TOOL],
+                cancel_event = threading.Event(),
+                preempt_event = signal,
+                preempt_policy = _RecordingPolicy(),
+                max_tool_iterations = 1,
+                permission_mode = "off",
+                max_tokens = 60,
+                admission_output_allowance = 2048,
+            )
+        )
+        assert recorder.payloads[1]["max_tokens"] == 60
+        assert 1 <= recorder.payloads[2]["max_tokens"] < 60, recorder.payloads[2]["max_tokens"]
+
     def test_the_request_is_reopened_with_the_partial_to_extend(self, monkeypatch):
         recorder, _policy, _signal, _events = _paused_final_run(monkeypatch)
         assert len(recorder.payloads) == 3, (
