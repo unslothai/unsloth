@@ -59,6 +59,18 @@ class MlxCancelled(Exception):
     """Raised in the mflux step callback to stop at the next step."""
 
 
+def clear_exception_locals(exc: Optional[BaseException]) -> None:
+    """Drop the locals of every finished frame in an exception chain, keeping the traceback text."""
+    import traceback
+
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if exc.__traceback__ is not None:
+            traceback.clear_frames(exc.__traceback__)
+        exc = exc.__cause__ or exc.__context__
+
+
 def drop_exception_frames(exc: Optional[BaseException]) -> None:
     """Clear frame locals along an exception chain: a retained traceback otherwise keeps the model alive."""
     import traceback
@@ -222,6 +234,10 @@ class MfluxRuntime:
             # The unwound mflux frames hold the model; uncleared, it survives unload().
             drop_exception_frames(exc)
             cancelled = True
+        except BaseException as exc:
+            # Same for a real failure, but keep the traceback for the caller's log.
+            clear_exception_locals(exc)
+            raise
         finally:
             try:
                 model.callbacks.in_loop.remove(callback)
@@ -332,18 +348,77 @@ def fetch_gguf(
     )
 
 
-def fetch_base_snapshot(base_repo: str, hf_token: Optional[str], *, local_files_only: bool) -> str:
+def fetch_base_snapshot(
+    base_repo: str,
+    hf_token: Optional[str],
+    *,
+    local_files_only: bool,
+    cancel_event: Optional[threading.Event] = None,
+) -> str:
+    """The base repo's text encoder / tokenizer / VAE snapshot dir. Online, each file goes through the
+    same cancellable downloader as the GGUF, so an unload stops the transfer between and within files."""
     local_root = Path(base_repo).expanduser()
     if local_root.is_dir():
         return str(local_root)
     from huggingface_hub import snapshot_download
 
-    return snapshot_download(
-        base_repo,
-        allow_patterns = list(BASE_ALLOW_PATTERNS),
-        token = hf_token,
-        local_files_only = local_files_only,
-    )
+    if local_files_only:
+        return snapshot_download(
+            base_repo,
+            allow_patterns = list(BASE_ALLOW_PATTERNS),
+            token = hf_token,
+            local_files_only = True,
+        )
+    import fnmatch
+
+    from huggingface_hub import HfApi
+    from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+    info = HfApi().model_info(base_repo, token = hf_token, files_metadata = False)
+    wanted = [
+        s.rfilename
+        for s in info.siblings or ()
+        if any(fnmatch.fnmatch(s.rfilename, pattern) for pattern in BASE_ALLOW_PATTERNS)
+    ]
+    if not wanted:
+        raise FileNotFoundError(f"'{base_repo}' has no text_encoder / tokenizer / vae files")
+    snapshot_dir: Optional[str] = None
+    for filename in wanted:
+        if cancel_event is not None and cancel_event.is_set():
+            raise MlxCancelled("load cancelled")
+        path = hf_hub_download_with_xet_fallback(
+            base_repo,
+            filename,
+            hf_token,
+            cancel_event = cancel_event,
+            revision = info.sha,
+            reuse_other_cache_root = True,
+        )
+        if snapshot_dir is None:
+            snapshot_dir = str(Path(path).parents[len(Path(filename).parts) - 1])
+    return snapshot_dir
+
+
+def resolve_variant_base(
+    repo_id: str,
+    fam: DiffusionFamily,
+    hf_token: Optional[str],
+    gguf_filename: Optional[str],
+    *,
+    fallback: str,
+) -> str:
+    """The diffusers loader's base resolution (trusted ``base_model`` card tag, then a named variant,
+    then the family default), so both engines read the same base for one pick."""
+    try:
+        from core.inference.diffusion import _resolve_base_repo
+    except Exception as exc:  # noqa: BLE001 -- no diffusers stack: the family default stands
+        logger.debug("mlx_diffusion.base_resolver_unavailable: %s", exc)
+        return fallback
+    try:
+        return _resolve_base_repo(repo_id, None, fam, hf_token, gguf_filename)
+    except Exception as exc:  # noqa: BLE001 -- a metadata failure keeps the family default
+        logger.debug("mlx_diffusion.base_resolve_failed: %s", exc)
+        return fallback
 
 
 def _link_base_components(model_dir: Path, base_dir: str) -> None:
@@ -388,6 +463,7 @@ class MlxDiffusionBackend:
         self._active_generate_cancel: Optional[threading.Event] = None
         self._active_generate_account: Optional[str] = None
         self._gen: Optional[_MlxGen] = None
+        self._load_thread: Optional[threading.Thread] = None
         self.last_timings: dict[str, Any] = {}
 
     def _rt(self) -> Any:
@@ -460,7 +536,7 @@ class MlxDiffusionBackend:
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
             self._loading = _MlxLoading(repo_id = repo_id, base_repo = base)
-        account_thread(
+        worker = account_thread(
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
@@ -473,9 +549,13 @@ class MlxDiffusionBackend:
                 local_files_only = local_files_only,
                 _load_token = token,
                 _cancel_event = cancel_event,
+                explicit_base = bool((base_repo or "").strip()),
             ),
             daemon = True,
-        ).start()
+        )
+        with self._lock:
+            self._load_thread = worker
+        worker.start()
         return self.status()
 
     def _set_phase(
@@ -503,10 +583,19 @@ class MlxDiffusionBackend:
         local_files_only: bool,
         _load_token: int,
         _cancel_event: threading.Event,
+        explicit_base: bool = True,
     ) -> None:
         timings: dict[str, Any] = {}
         model = state = displaced = None
         try:
+            if not explicit_base:
+                # The repo's base_model card tag can name the undistilled base: resolve it the way the
+                # diffusers loader and the delegated download plan do, before picking the mflux config.
+                base = resolve_variant_base(repo_id, fam, hf_token, gguf_filename, fallback = base)
+                model_config = mlx_model_config_for(fam, base)
+                with self._lock:
+                    if self._load_token == _load_token and self._loading is not None:
+                        self._loading.base_repo = base
             t0 = time.perf_counter()
             gguf_path = fetch_gguf(
                 repo_id,
@@ -515,7 +604,12 @@ class MlxDiffusionBackend:
                 cancel_event = _cancel_event,
                 local_files_only = local_files_only,
             )
-            base_dir = fetch_base_snapshot(base, hf_token, local_files_only = local_files_only)
+            base_dir = fetch_base_snapshot(
+                base,
+                hf_token,
+                local_files_only = local_files_only,
+                cancel_event = _cancel_event,
+            )
             timings["fetch_s"] = round(time.perf_counter() - t0, 3)
             if _cancel_event.is_set():
                 return
@@ -720,6 +814,10 @@ class MlxDiffusionBackend:
         base_seed = int(seed) if seed is not None else random.randint(0, 2**31 - 1)
         w = _round16(width, 1024)
         h = _round16(height, 1024)
+        family = getattr(self._state, "family", None)
+        if family is not None:
+            from core.inference.diffusion_conditioning import check_output_size
+            check_output_size(family, w, h)
 
         cancel = threading.Event()
         from hub.services.models.account_access import media_generation_slot
@@ -811,8 +909,11 @@ class MlxDiffusionBackend:
                     "repo_id": state.display_repo_id or state.repo_id,
                     "model_kind": "gguf",
                     "gguf_filename": state.gguf_filename,
-                    "transformer_quant": None,
-                    "text_encoder_quant": None,
+                    # The MLX build on top of the GGUF: on-load quantization varies with RAM and env.
+                    "transformer_quant": (
+                        f"mlx_int{state.dense_bits}_dense" if state.dense_bits else None
+                    ),
+                    "text_encoder_quant": f"mlx_int{state.te_bits}" if state.te_bits else None,
                     "memory_mode": None,
                     "offload_policy": "none",
                     "speed_mode": None,
@@ -824,6 +925,9 @@ class MlxDiffusionBackend:
             except MlxCancelled as exc:
                 drop_exception_frames(exc)
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from None
+            except BaseException as exc:
+                clear_exception_locals(exc)
+                raise
             finally:
                 state = runtime = None
                 self._gen = None
@@ -887,9 +991,15 @@ class MlxDiffusionBackend:
             self._state = None
             self._load_token += 1
             self._loading = None
+            worker = self._load_thread
+            self._load_thread = None
         # Barrier: on return the cancelled generation has released the model.
         with self._generate_lock:
             pass
+        # And a superseded load has stopped: a build in progress cannot be interrupted, and the
+        # caller treats this return as "memory is free" before activating another engine or load.
+        if worker is not None and worker is not threading.current_thread():
+            worker.join()
         if had_model and self._runtime is not None:
             self._runtime.free()
         return self.status()

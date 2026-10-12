@@ -22,6 +22,7 @@ from core.inference.diffusion_families import (
 
 REPO = "unsloth/Z-Image-Turbo-GGUF"
 GGUF = "z-image-turbo-Q4_0.gguf"
+_REAL_RESOLVE_VARIANT_BASE = getattr(mb, "resolve_variant_base", None)
 BASE = "Tongyi-MAI/Z-Image-Turbo"
 
 
@@ -86,7 +87,13 @@ def env(monkeypatch, tmp_path):
         calls["fetch_gguf"].append((repo_id, gguf_filename, local_files_only))
         return str(gguf_path)
 
-    def _fetch_base(base_repo, hf_token, *, local_files_only):
+    def _fetch_base(
+        base_repo,
+        hf_token,
+        *,
+        local_files_only,
+        cancel_event = None,
+    ):
         calls["fetch_base"].append((base_repo, local_files_only))
         return str(base_dir)
 
@@ -113,6 +120,10 @@ def env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mb, "fetch_gguf", _fetch_gguf)
     monkeypatch.setattr(mb, "fetch_base_snapshot", _fetch_base)
+    # No card lookup in unit tests: the family default stands unless a test says otherwise.
+    monkeypatch.setattr(
+        mb, "resolve_variant_base", lambda *a, fallback, **k: fallback, raising = False
+    )
     monkeypatch.setattr(mb.convert, "convert_gguf_to_mflux", _convert)
     monkeypatch.setattr(
         mb.convert,
@@ -264,10 +275,10 @@ def test_generate_batch_seeds_and_progress(env):
         return runtime_generate(*a, **k)
 
     runtime.generate = _spy
-    result = backend.generate(prompt = "a fox", width = 260, height = 250, steps = 3, seed = 7, batch_size = 2)
+    result = backend.generate(prompt = "a fox", width = 280, height = 270, steps = 3, seed = 7, batch_size = 2)
     assert result["seeds"] == [7, 8] and result["seed"] == 7
     assert len(result["images"]) == 2
-    assert result["images"][0].size == (256, 240)  # rounded down to multiples of 16
+    assert result["images"][0].size == (272, 256)  # rounded down to multiples of 16
     assert (
         result["model_kind"] == "gguf"
         and result["gguf_filename"] == GGUF
@@ -312,7 +323,7 @@ def test_generate_without_a_model_and_with_a_replaced_model(env):
     with pytest.raises(DiffusionModelReplacedError):
         backend.generate(prompt = "x", steps = 1, expected_load = stale)
     ok = load_identity(REPO, BASE, "z-image")
-    assert backend.generate(prompt = "x", steps = 1, seed = 1, width = 64, height = 64, expected_load = ok)[
+    assert backend.generate(prompt = "x", steps = 1, seed = 1, width = 256, height = 256, expected_load = ok)[
         "images"
     ]
 
@@ -326,7 +337,7 @@ def test_cancel_stops_at_the_next_step(env):
 
     def _run():
         try:
-            backend.generate(prompt = "x", steps = 4, seed = 1, width = 64, height = 64)
+            backend.generate(prompt = "x", steps = 4, seed = 1, width = 256, height = 256)
         except RuntimeError as exc:
             errors.append(str(exc))
 
@@ -354,7 +365,9 @@ def test_unload_frees_and_cancels(env):
         backend.generate(prompt = "x", steps = 1)
 
 
-def test_unload_during_load_discards_the_result(env, monkeypatch):
+def test_unload_during_load_waits_for_the_build_and_discards_it(env, monkeypatch):
+    # A build cannot be interrupted, and the router treats unload()'s return as "memory is free"
+    # before it activates another engine, so unload must wait for the superseded worker.
     backend, runtime, _calls = env
     gate = threading.Event()
     started = threading.Event()
@@ -362,7 +375,7 @@ def test_unload_during_load_discards_the_result(env, monkeypatch):
 
     def _slow_build(*a, **k):
         started.set()
-        gate.wait(5)
+        gate.wait(10)
         return real_build(*a, **k)
 
     runtime.build = _slow_build
@@ -371,9 +384,15 @@ def test_unload_during_load_discards_the_result(env, monkeypatch):
     assert backend.loading_repo_ids() == (REPO, BASE)
     with pytest.raises(RuntimeError, match = "already in progress"):
         backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
-    backend.unload()
+    done = threading.Event()
+    unloader = threading.Thread(target = lambda: (backend.unload(), done.set()))
+    unloader.start()
+    assert not done.wait(0.5), "unload() returned while the superseded build was still running"
+    freed_before = runtime.freed
     gate.set()
-    time.sleep(0.2)
+    assert done.wait(5)
+    unloader.join(5)
+    assert runtime.freed == freed_before + 1  # the superseded worker freed what it built
     assert backend.status()["loaded"] is False
     assert backend.load_progress()["phase"] is None
 
@@ -487,3 +506,168 @@ def test_a_cached_exception_below_the_load_does_not_pin_the_model(env, monkeypat
     gc.collect()
     assert "error" in cache
     assert ref() is None
+
+
+def test_generate_rejects_sizes_beyond_the_family_limits(env):
+    backend, runtime, _calls = env
+    _load(backend)
+    with pytest.raises(ValueError):
+        backend.generate(prompt = "x", steps = 1, width = 4096, height = 4096)
+    assert runtime.generates == []
+
+
+def test_a_failed_generation_does_not_pin_the_model(env):
+    # Any error raised inside the render holds the model in its frames; a caller or logger that
+    # keeps the exception must not keep the model alive past unload().
+    import gc
+    import weakref
+
+    backend, runtime, _calls = env
+
+    class Model(dict):
+        pass
+
+    real_build = runtime.build
+    runtime.build = lambda *a, **k: Model(real_build(*a, **k))
+
+    def _boom(model, **_k):
+        raise RuntimeError("metal failure")
+
+    runtime.generate = _boom
+    _load(backend)
+    ref = weakref.ref(backend._state.model)
+    with pytest.raises(RuntimeError, match = "metal failure") as info:
+        backend.generate(prompt = "x", steps = 1, width = 256, height = 256)
+    kept = info.value  # what an error handler or log record would hold
+    backend.unload()
+    gc.collect()
+    assert ref() is None
+    assert kept.__traceback__ is not None  # the traceback text survives for the log
+
+
+def test_generated_images_record_the_mlx_build(env):
+    backend, _rt, _calls = env
+    _load(backend)
+    result = backend.generate(prompt = "x", steps = 1, width = 256, height = 256, seed = 1)
+    assert result["text_encoder_quant"] == "mlx_int4"
+    assert result["transformer_quant"] == "mlx_int4_dense"
+
+
+def test_an_undistilled_base_tag_selects_the_base_config_and_companions(env, monkeypatch):
+    # No explicit base_repo, as for a normal Hub pick: the repo's base_model card tag decides.
+    import core.inference.diffusion as diffusion
+
+    backend, runtime, calls = env
+    monkeypatch.setattr(mb, "resolve_variant_base", _REAL_RESOLVE_VARIANT_BASE, raising = False)
+    monkeypatch.setattr(diffusion, "_hf_base_model", lambda repo_id, token: "Tongyi-MAI/Z-Image")
+    _load(backend)
+    assert calls["fetch_base"][-1][0] == "Tongyi-MAI/Z-Image"
+    assert runtime.builds[-1]["model_config"] == "z-image"
+    assert backend.status()["base_repo"] == "Tongyi-MAI/Z-Image"
+
+
+def test_base_fetch_is_cancellable_between_files(monkeypatch):
+    import huggingface_hub
+    import utils.hf_xet_fallback as xet
+
+    files = [
+        "text_encoder/a.safetensors",
+        "text_encoder/b.safetensors",
+        "vae/c.safetensors",
+        "README.md",
+    ]
+    info = type(
+        "Info", (), {"sha": "abc", "siblings": [type("S", (), {"rfilename": f}) for f in files]}
+    )
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", lambda self, *a, **k: info)
+    cancel = threading.Event()
+    fetched = []
+
+    def _download(
+        repo,
+        filename,
+        token,
+        *,
+        cancel_event = None,
+        **_k,
+    ):
+        assert cancel_event is cancel
+        fetched.append(filename)
+        cancel.set()  # an unload lands during the first file
+        return f"/hub/models--x/snapshots/abc/{filename}"
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+    with pytest.raises(mb.MlxCancelled):
+        mb.fetch_base_snapshot(
+            "Tongyi-MAI/Z-Image-Turbo", None, local_files_only = False, cancel_event = cancel
+        )
+    assert fetched == ["text_encoder/a.safetensors"]
+    cancel.clear()
+    fetched.clear()
+    monkeypatch.setattr(
+        xet,
+        "hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **k: fetched.append(fn) or f"/hub/snapshots/abc/{fn}",
+    )
+    out = mb.fetch_base_snapshot(
+        "Tongyi-MAI/Z-Image-Turbo", None, local_files_only = False, cancel_event = cancel
+    )
+    assert out == "/hub/snapshots/abc"
+    assert fetched == files[:3]  # README is outside the allow patterns
+
+
+@pytest.mark.parametrize("predicted", ["mlx", None])
+def test_the_load_route_takes_the_gpu_arbiter_for_mlx_on_a_cpu_torch_host(monkeypatch, predicted):
+    # torch can resolve "cpu" on an Apple-Silicon Mac, but MLX still drives the Apple GPU: the route
+    # must evict / own the GPU through the arbiter instead of releasing it. Also when the prediction
+    # failed and only the activation says MLX.
+    import asyncio
+    import types
+    from unittest.mock import create_autospec
+
+    import core.inference.diffusion_device as device_module
+    import core.inference.diffusion_engine_router as router_module
+    import core.inference.gpu_arbiter as arbiter
+    from models.inference import DiffusionLoadRequest
+    from routes.inference import load_diffusion_model_gated
+
+    engine = create_autospec(mb.MlxDiffusionBackend, instance = True)
+    engine.begin_load.return_value = {"loaded": False, "repo_id": None}
+    engine.preflight_base_access.return_value = None
+
+    def _predict(*a, **k):
+        if predicted is None:
+            raise RuntimeError("probe failed")
+        return predicted
+
+    monkeypatch.setattr(router_module, "predict_engine", _predict)
+    monkeypatch.setattr(router_module, "active_engine_name", lambda: "mlx")
+    monkeypatch.setattr(router_module, "engine_for", lambda name: engine)
+    monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: engine)
+    monkeypatch.setattr(router_module, "begin_load_on", lambda _engine, start: start())
+    monkeypatch.setattr(router_module, "annotate_status", lambda status: status)
+    monkeypatch.setattr(
+        device_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cpu"),
+    )
+    monkeypatch.setattr("routes.inference._guard_diffusion_load_against_training", lambda: None)
+
+    async def _no_ordinal(_gpu_ids):
+        return None
+
+    monkeypatch.setattr("routes.inference._selected_gpu_ordinal", _no_ordinal)
+    calls = []
+    monkeypatch.setattr(
+        arbiter, "acquire_for_request", lambda owner, fn: calls.append("acquire") or fn()
+    )
+    monkeypatch.setattr(arbiter, "release", lambda owner: calls.append("release"))
+    asyncio.run(
+        load_diffusion_model_gated(
+            DiffusionLoadRequest(model_path = REPO, gguf_filename = GGUF),
+            "test-user",
+            user_initiated = False,
+        )
+    )
+    engine.begin_load.assert_called_once()
+    assert calls == ["acquire"]

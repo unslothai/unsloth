@@ -46568,6 +46568,9 @@ async def load_diffusion_model_gated(
             )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
+        # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
+        if pending_name == ENGINE_MLX:
+            needs_gpu = True
         # Before selection: switching to diffusers would unload the resident off-torch model, then refuse.
         if off_torch is not None and pending_name != ENGINE_SD_CPP:
             _guard_diffusion_load_against_training()
@@ -46682,6 +46685,8 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        if activated == ENGINE_MLX:
+            needs_gpu = True
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,
