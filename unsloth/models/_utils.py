@@ -8762,7 +8762,10 @@ def _mode_switch_class_info(cls):
     else:
         train = "kernels" if cls.train is pretrained[0] else False
     plain_eval = cls.eval is module.eval or cls.eval is pretrained[1]
-    gc = hasattr(cls, "gradient_checkpointing") if cls.__getattr__ is module.__getattr__ else None
+    plain_lookup = (
+        cls.__getattr__ is module.__getattr__ and cls.__getattribute__ is module.__getattribute__
+    )
+    gc = hasattr(cls, "gradient_checkpointing") if plain_lookup else None
     descriptor = inspect.getattr_static(cls, "training", None)
     plain_setattr = cls.__setattr__ is module.__setattr__ and not hasattr(
         type(descriptor), "__set__"
@@ -8812,14 +8815,15 @@ def switch_training_mode(
             return checkpointing, apply
         apply()
         return checkpointing
-    flat, delegates, checkpointing = [], [], []
+    # Mode writes in nn.Module.train's preorder, shared modules once per path, so custom train() calls run
+    # where the recursion would run them. The gc / _fast_lora scan sees each module once, as modules() does.
+    ops, checkpointing = [], []
     seen = set()
     stack = [(model, False)]
     while stack:
         module, covered = stack.pop()
-        if module is None or id(module) in seen:
+        if module is None:
             continue
-        seen.add(id(module))
         train, plain_eval, gc, plain_setattr = _mode_switch_class_info(type(module))
         if not covered:
             if (
@@ -8832,30 +8836,37 @@ def switch_training_mode(
                     and (not plain_eval or "eval" in module.__dict__)
                 )
             ):
-                delegates.append(module)
+                ops.append((module, None))
                 covered = True
             else:
-                flat.append((module, plain_setattr))
-        if _has_gradient_checkpointing(module, gc):
-            checkpointing.append(module)
-        if training:
-            for param in module._parameters.values():
-                if param is not None and "_fast_lora" in param.__dict__:
-                    del param._fast_lora
-        stack.extend((child, covered) for child in module._modules.values())
+                ops.append((module, plain_setattr))
+        if id(module) in seen:
+            if covered or len(ops) > 64 * len(seen):  # nothing left to record, or a cycle
+                continue
+        else:
+            seen.add(id(module))
+            if _has_gradient_checkpointing(module, gc):
+                checkpointing.append(module)
+            if training:
+                for param in module._parameters.values():
+                    if param is not None and "_fast_lora" in param.__dict__:
+                        del param._fast_lora
+        children = list(module._modules.values())
+        children.reverse()
+        stack.extend((child, covered) for child in children)
 
     def apply():
-        if delegates and delegates[0] is model:
+        if (ops and ops[0][0] is model and ops[0][1] is None) or len(ops) > 64 * len(seen):
             model.train() if training else model.eval()
             return
-        for module, plain_setattr in flat:
+        for module, plain_setattr in ops:
+            if plain_setattr is None:
+                module.train(training)
             # nn.Module.__setattr__ only routes Parameters / Modules / buffers; a bool lands in __dict__.
-            if plain_setattr:
+            elif plain_setattr:
                 module.__dict__["training"] = training
             else:
                 module.training = training
-        for module in delegates:
-            module.train(training)
 
     if defer:
         return checkpointing, apply

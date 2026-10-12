@@ -259,3 +259,62 @@ def test_pretrained_train_override_only_recasts_kernels():
     assert transformers.PreTrainedModel.eval is nn.Module.eval or "train" in inspect.getsource(
         transformers.PreTrainedModel.eval
     )
+
+
+def test_a_shared_module_under_a_non_recursing_parent_still_switches(switch):
+    class _NoRecurse(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def train(self, mode = True):
+            self.training = mode
+            return self
+
+    for training in (True, False):
+        for shared_first in (True, False):
+
+            def build():
+                shared = nn.Dropout()
+                parts = (
+                    [shared, _NoRecurse(shared)] if shared_first else [_NoRecurse(shared), shared]
+                )
+                model = nn.Sequential(*parts)
+                for module in model.modules():
+                    module.training = not training
+                return model
+
+            ref, ours = _reference_and_ours(build, switch, training)
+            assert _flags(ours) == _flags(ref)
+
+
+def test_custom_train_calls_run_in_recursion_order(switch):
+    class _Sibling(nn.Module):
+        def __init__(self, other):
+            super().__init__()
+            self.__dict__["other"] = other  # not a registered child
+
+        def train(self, mode = True):
+            super().train(mode)
+            self.other.training = not mode
+            return self
+
+    def build():
+        later = nn.Dropout()
+        return nn.Sequential(_Sibling(later), later)
+
+    for training in (True, False):
+        ref, ours = _reference_and_ours(build, switch, training)
+        assert _flags(ours) == _flags(ref)
+
+
+def test_gradient_checkpointing_exposed_by_getattribute_is_found(switch):
+    class _Dynamic(nn.Linear):
+        def __getattribute__(self, name):
+            if name == "gradient_checkpointing":
+                return False
+            return super().__getattribute__(name)
+
+    model = nn.Sequential(_Dynamic(2, 2))
+    got = switch(model, False)
+    assert model[0] in got
