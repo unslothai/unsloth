@@ -631,8 +631,10 @@ def test_tiny_mistral_packed_row_matches_the_masked_path(monkeypatch, window):
         pytest.skip("no varlen kernel on this build")
     hpa._ORIG_SDPA[0] = None
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
-    original = ALL_ATTENTION_FUNCTIONS["sdpa"]
-    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", original)
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    # transformers' own entry: an earlier test can leave the installed wrapper in the mapping.
+    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", sdpa_attention_forward)
     assert hpa.enable_hf_packed_attention()
     torch.manual_seed(0)
     config = transformers.MistralConfig(
