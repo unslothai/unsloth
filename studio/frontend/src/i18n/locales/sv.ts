@@ -1634,6 +1634,8 @@ export const sv = {
         sectionTitle: "Läs upp",
         buttonLabel: "Knapp för uppläsning",
         buttonDescription: "Visa på assistentsvar",
+        autoLabel: "Läs upp svar automatiskt",
+        autoDescription: "Läs upp varje svar så snart det är klart",
         engineLabel: "TTS-motor",
         engineSystemDescription: "Inbyggda enhetsröster",
         engineStudioDescription:

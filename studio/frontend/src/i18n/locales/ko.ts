@@ -1498,6 +1498,8 @@ export const ko = {
         sectionTitle: "답변 읽어주기",
         buttonLabel: "답변 읽어주기 버튼",
         buttonDescription: "어시스턴트 응답에 표시",
+        autoLabel: "답변 자동 읽어주기",
+        autoDescription: "답변이 끝나면 바로 소리 내어 읽습니다",
         engineLabel: "TTS 엔진",
         engineSystemDescription: "기기 내장 음성",
         engineStudioDescription: "오디오에서 로드된 음성 모델을 사용합니다",

@@ -1464,6 +1464,8 @@ export const it = {
         sectionTitle: "Lettura ad alta voce",
         buttonLabel: "Pulsante di lettura ad alta voce",
         buttonDescription: "Mostralo nelle risposte dell'assistente",
+        autoLabel: "Leggi le risposte automaticamente",
+        autoDescription: "Legge ad alta voce ogni risposta appena è completa",
         engineLabel: "Motore TTS",
         engineSystemDescription: "Voci integrate nel dispositivo",
         engineStudioDescription: "Usa il modello vocale caricato in Audio",

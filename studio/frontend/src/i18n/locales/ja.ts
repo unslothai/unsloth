@@ -1501,6 +1501,8 @@ export const ja = {
         sectionTitle: "読み上げ",
         buttonLabel: "読み上げボタン",
         buttonDescription: "アシスタントの応答に表示します",
+        autoLabel: "応答を自動で読み上げ",
+        autoDescription: "応答が完了するとすぐに読み上げます",
         engineLabel: "TTS エンジン",
         engineSystemDescription: "デバイス内蔵の音声",
         engineStudioDescription: "音声で読み込んだ音声合成モデルを使用します",
