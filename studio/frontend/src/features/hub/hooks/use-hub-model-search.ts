@@ -875,7 +875,8 @@ export function useHubModelSearch(
             `Model filter metadata request failed (HTTP ${response.status})`,
           );
         }
-        return response.json();
+        // One repo's malformed config.json must not abort the whole search.
+        return response.json().catch(() => null);
       };
       const fetchJson = (path: string) => {
         let request = metadata.get(path);
