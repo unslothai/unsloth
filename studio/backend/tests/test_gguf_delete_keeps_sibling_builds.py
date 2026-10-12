@@ -1,0 +1,154 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Deleting a GGUF row removes the build it lists, not other builds at the same quant.
+
+``huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`` ships ``...-GSQ-RCO-IQ3_S-mtp.gguf`` beside
+``...-Swift-1.5-GSQ-RCO-IQ3_S-mtp.gguf`` and ``...-UD-DW-IQ3_S.gguf`` at the repo root. Every one
+keys to the bare ``IQ3_S``. Such repos are not supported (#13327), so only the first is listed, but
+the others can still be in the cache, fetched with ``hf download``. Deleting the ``IQ3_S`` row
+deleted all of them, and a stale reclaim after updating it deleted their blobs.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from hub.utils.gguf import gguf_variant_keys_by_checkpoint, list_local_gguf_variants
+
+PREFIX = "Huihui-Qwen3.8-27B-abliterated-"
+LISTED = f"{PREFIX}GSQ-RCO-IQ3_S-mtp.gguf"
+SWIFT = f"{PREFIX}Swift-1.5-GSQ-RCO-IQ3_S-mtp.gguf"
+UD_DW = f"{PREFIX}UD-DW-IQ3_S.gguf"
+BUILDS = [LISTED, SWIFT, UD_DW]
+
+
+def _cache_repo(tmp_path: Path, names: list[str]):
+    """An HF cache repo: snapshot symlinks pointing at blobs, as the deletion scan reads it."""
+    repo_dir = tmp_path / "models--huihui-ai--Model-GGUF"
+    snap = repo_dir / "snapshots" / "rev1"
+    blobs = repo_dir / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    files = []
+    for index, name in enumerate(names):
+        blob = blobs / f"sha{index}"
+        blob.write_bytes(b"x" * 64)
+        link = snap / name
+        link.symlink_to(blob)
+        files.append(
+            SimpleNamespace(
+                file_name = name,
+                file_path = str(link),
+                blob_path = str(blob),
+                size_on_disk = 64,
+            )
+        )
+    return SimpleNamespace(
+        repo_id = "huihui-ai/Model-GGUF",
+        repo_type = "model",
+        repo_path = repo_dir,
+        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
+    ), snap
+
+
+def test_only_a_different_build_leaves_the_key():
+    keys = gguf_variant_keys_by_checkpoint(
+        [*BUILDS, "QwQ-32B-BF16.gguf", "QwQ-32B.BF16.gguf", "model-Q6_K-00001-of-00002.gguf"]
+    )
+    assert keys[LISTED] == "IQ3_S"
+    assert keys[SWIFT] == SWIFT[: -len(".gguf")]
+    assert keys[UD_DW] == UD_DW[: -len(".gguf")]
+    # Two spellings of one checkpoint, and a split, are not other builds.
+    assert keys["QwQ-32B-BF16.gguf"] == keys["QwQ-32B.BF16.gguf"] == "BF16"
+    assert keys["model-Q6_K-00001-of-00002.gguf"] == "Q6_K"
+
+
+def test_the_listing_still_offers_one_build_per_quant(tmp_path):
+    """Unchanged: the row is the first build, and that is the one its delete removes."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    for name in BUILDS:
+        (snapshot / name).write_bytes(b"x" * 64)
+    (snapshot / "config.json").write_text("{}")
+    variants, _ = list_local_gguf_variants(str(snapshot))
+    assert [(v.quant, v.filename) for v in variants] == [("IQ3_S", LISTED)]
+
+
+def test_deleting_the_row_keeps_the_other_builds(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(tmp_path, BUILDS)
+    _delete_gguf_variant_from_repos(repo.repo_id, "IQ3_S", [repo], None, root = tmp_path)
+    assert not (snap / LISTED).is_symlink()
+    assert (snap / SWIFT).is_symlink()
+    assert (snap / UD_DW).is_symlink()
+    assert (repo.repo_path / "blobs" / "sha1").exists()
+
+
+def test_copies_of_the_listed_build_still_go_with_it(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(tmp_path, ["Model-Q4_K_M.gguf", "Model.Q4_K_M.gguf"])
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snap / "Model-Q4_K_M.gguf").is_symlink()
+    assert not (snap / "Model.Q4_K_M.gguf").is_symlink()
+
+
+def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
+    from hub.services.models.companion_cleanup import (
+        _remaining_main_gguf_variants,
+        _variant_bytes,
+    )
+
+    repo, _snap = _cache_repo(tmp_path, BUILDS)
+    assert _variant_bytes(repo, "IQ3_S") == 64
+    # The other builds survive, so the companions they load with are retained, not freed.
+    assert _remaining_main_gguf_variants(repo, excluding = "IQ3_S") == {
+        SWIFT[: -len(".gguf")].lower(),
+        UD_DW[: -len(".gguf")].lower(),
+    }
+
+
+def test_deleting_from_a_local_folder_keeps_the_other_builds(tmp_path):
+    from routes.models import _delete_gguf_variant_files
+
+    for name in BUILDS:
+        (tmp_path / name).write_bytes(b"x" * 64)
+    assert _delete_gguf_variant_files(tmp_path, "IQ3_S")[0] == 1
+    assert not (tmp_path / LISTED).exists()
+    assert (tmp_path / SWIFT).exists()
+    assert (tmp_path / UD_DW).exists()
+
+
+def test_reclaiming_an_update_leaves_the_other_builds(monkeypatch, tmp_path):
+    """After the listed build is updated its stale blobs go. Another build at the same quant has
+    other hashes, which read as stale under the bare quant and were deleted with them."""
+    from hub.services.models import cache_inventory as CI
+    from hub.services.models import deletion as D
+
+    repo_path = tmp_path / "models--huihui-ai--Model-GGUF"
+    snap = repo_path / "snapshots" / ("b" * 40)
+    entries = []
+    for name, sha in ((LISTED, "NEWsha"), (SWIFT, "SWIFTsha")):
+        link = snap / name
+        blob = repo_path / "blobs" / sha
+        for path in (link, blob):
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_bytes(sha.encode())
+        entries.append(SimpleNamespace(file_name = name, file_path = str(link), blob_path = str(blob)))
+    repo_info = SimpleNamespace(
+        repo_id = "huihui-ai/Model-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [SimpleNamespace(files = entries)],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    D.reclaim_replaced_gguf_variant(
+        repo_info.repo_id, "IQ3_S", frozenset({"NEWsha"}), hub_cache = tmp_path
+    )
+    assert (snap / SWIFT).exists()
+    assert (repo_path / "blobs" / "SWIFTsha").exists()

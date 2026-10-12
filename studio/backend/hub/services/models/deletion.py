@@ -33,6 +33,7 @@ from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
     gguf_variant_key,
+    gguf_variant_keys_by_checkpoint,
     is_qualified_gguf_variant_key,
     quant_token_with_bpw,
     remove_appledouble_sidecar,
@@ -244,15 +245,24 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
     return removed, failures
 
 
+def _main_gguf_variant_keys(target_repo) -> dict[str, str]:
+    """``name -> key`` for *target_repo*'s main GGUFs, from ``gguf_variant_keys_by_checkpoint``: a build published beside the listed one at the same quant is not that row's to delete."""
+    return gguf_variant_keys_by_checkpoint(
+        {name for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)}
+    )
+
+
+def _main_key(name: str, main_keys: dict[str, str]) -> str:
+    """*name*'s lowercased key from ``_main_gguf_variant_keys``. The predicates see a name before ``_repo_file_matches`` drops a sidecar or a pathless entry, which the map leaves out."""
+    return (main_keys.get(name) or gguf_variant_key(name)).lower()
+
+
 def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     """The variant keys in *target_repo* that *variant* names, lowercased. Its own key, always, plus the unambiguous bare-quant alias the download side already admits (``gguf_plan.plan_for_variant``): a repo filing its sole Q4_K_M under a shared container (``weights/model-Q4_K_M.gguf``) qualifies that key, because the key is a pure function of the path and cannot know the directory disambiguates nothing, so every stored pin and every explicit ``repo:Q4_K_M`` names it by quant alone, and admitting the alias for the download and not for the delete answered "not found" and left the weights on disk. Only when it is unambiguous, exactly as the download side decides it: a repo that really does hold several checkpoints at one quant gets no fallback, because there the bare name genuinely does not name one of them and deleting the wrong one is unrecoverable."""
     wanted = (variant or "").strip().lower()
     if not wanted or "/" in wanted:
         return {wanted}
-    keys = {
-        gguf_variant_key(name).lower()
-        for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)
-    }
+    keys = {key.lower() for key in _main_gguf_variant_keys(target_repo).values()}
     if wanted in keys:
         return {wanted}
     # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions, so it must not delete either.
@@ -300,13 +310,14 @@ def _delete_gguf_variant_from_repos(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         wanted_keys = _variant_keys_to_delete(target_repo, variant)
+        main_keys = _main_gguf_variant_keys(target_repo)
         package_files, protected = _audio_cpp_package_scope(target_repo, variant)
         matched = [
             match
             for match in _repo_file_matches(
                 target_repo,
                 lambda name, keys = wanted_keys: name in package_files
-                or (_is_main_gguf_filename(name) and gguf_variant_key(name).lower() in keys),
+                or (_is_main_gguf_filename(name) and _main_key(name, main_keys) in keys),
             )
             # A component another downloaded mix still loads (MiniMax's Q4_0 and Q8_0 share one
             # depth decoder) stays.
@@ -523,10 +534,11 @@ def reclaim_replaced_gguf_variant(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         stale_matches: list[tuple[Path, Optional[Path], str]] = []
+        # Another build at the same quant has its own hashes, which would read as stale copies of this one.
+        main_keys = _main_gguf_variant_keys(target_repo)
         matches = _repo_file_matches(
             target_repo,
-            lambda name: _is_main_gguf_filename(name)
-            and gguf_variant_key(name).lower() == variant_key,
+            lambda name: _is_main_gguf_filename(name) and _main_key(name, main_keys) == variant_key,
         )
         for snap, blob, name in matches:
             # Prune only a file we can identify as a real, stale cache blob: a no-symlink snapshot file has no identifiable blob hash, so keep it.

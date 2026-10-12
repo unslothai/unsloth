@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.utils import companion_assets
-from hub.utils.gguf import gguf_variant_key
+from hub.utils.gguf import gguf_variant_keys_by_checkpoint
 from hub.services.models import cache_inventory
 from hub.services.models.common import _is_main_gguf_filename
 from hub.utils.paths import is_valid_gguf_variant as _is_valid_gguf_variant
@@ -89,17 +89,20 @@ def _variant_keys(repo_info, variant: str) -> set[str]:
 
 
 def _variant_bytes(repo_info, variant: str) -> int:
+    from hub.services.models.deletion import _main_gguf_variant_keys, _main_key
+
     wanted = _variant_keys(repo_info, variant)
+    main_keys = _main_gguf_variant_keys(repo_info)
 
     def _matches(name: str) -> bool:
-        return _is_main_gguf_filename(name) and gguf_variant_key(name).lower() in wanted
+        return _is_main_gguf_filename(name) and _main_key(name, main_keys) in wanted
 
     return _repo_blob_bytes(repo_info, only = _matches)
 
 
 def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None) -> set[str]:
     skip = _variant_keys(repo_info, excluding) if excluding else set()
-    found: set[str] = set()
+    names: set[str] = set()
     for revision in getattr(repo_info, "revisions", ()) or ():
         snapshot = getattr(revision, "snapshot_path", None)
         for f in getattr(revision, "files", ()) or ():
@@ -115,10 +118,13 @@ def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None)
             # The delete this previews ignores proven metadata, so counting it here would report a checkpoint as surviving that the deletion itself does not see.
             if path and is_appledouble_metadata(Path(path)):
                 continue
-            key = gguf_variant_key(name).lower()
-            if key and key not in skip:
-                found.add(key)
-    return found
+            names.add(name)
+    # Keyed like the delete: a build beside the deleted one at the same quant survives it.
+    return {
+        key.lower()
+        for key in gguf_variant_keys_by_checkpoint(names).values()
+        if key and key.lower() not in skip
+    }
 
 
 def companion_dependents(

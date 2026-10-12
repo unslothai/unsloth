@@ -426,6 +426,36 @@ def gguf_checkpoint_family(filename: str) -> Optional[str]:
     return family.strip("-_. /\t\r\n") or None
 
 
+def _checkpoint_identity(filename: str) -> Optional[str]:
+    """:func:`gguf_checkpoint_family` with case and separators folded, so two spellings of one checkpoint (``QwQ-32B-BF16`` and ``QwQ-32B.BF16``) compare equal. ``None`` when the name carries nothing beyond its quant."""
+    family = gguf_checkpoint_family(filename)
+    if family is None:
+        return None
+    return re.sub(r"[-_.\s]+", "-", family).strip("-").casefold() or None
+
+
+def gguf_variant_keys_by_checkpoint(paths: Iterable[str]) -> dict[str, str]:
+    """``path -> key`` for the files a destructive path may act on, with a file of a different checkpoint than the one its key lists keyed by its own :func:`gguf_variant_family` instead.
+
+    A row is one checkpoint: the listers keep the shard set holding the first file under each key. A repo publishing several different builds at one bare quant (``...-GSQ-RCO-IQ3_S-mtp`` beside ``...-Swift-1.5-GSQ-RCO-IQ3_S-mtp``, #13327) is not supported, so only the first is listed, but the others can still be in the cache, fetched with ``hf download``. Matching on :func:`gguf_variant_key` alone deleted them with the listed row, and a stale reclaim after an update read their blobs as old copies of it. A second COPY of the listed checkpoint (``QwQ-32B-BF16`` beside ``QwQ-32B.BF16``, the same quant both whole and split) is the same checkpoint and keeps the key.
+    """
+    by_key: dict[str, list[str]] = {}
+    for path in paths:
+        by_key.setdefault(gguf_variant_key(path).lower(), []).append(path)
+    keys: dict[str, str] = {}
+    for members in by_key.values():
+        members.sort(key = lambda path: path.replace("\\", "/"))
+        listed = _checkpoint_identity(members[0])
+        for path in members:
+            identity = _checkpoint_identity(path)
+            normalized = path.replace("\\", "/")
+            if listed is None or identity is None or identity == listed:
+                keys[path] = gguf_variant_key(normalized)
+            else:
+                keys[path] = gguf_variant_family(normalized)
+    return keys
+
+
 def local_path_physical_identity(raw_path: str) -> str:
     """Identity for an existing local path without folding valid filename characters."""
     try:

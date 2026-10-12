@@ -3381,6 +3381,9 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_bytes = 0
     from hub.utils.gguf import remove_appledouble_sidecar
 
+    from hub.utils.gguf import gguf_variant_keys_by_checkpoint
+
+    weights: list[tuple[Path, str]] = []
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
@@ -3388,15 +3391,16 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
         # below, as metadata of the file it belongs to. Proven metadata only.
         if is_appledouble_metadata(path):
             continue
-        # Keyed on the path, not the basename: a repo holding several checkpoints at
-        # one quant would otherwise delete every one of them for a single row.
-        from utils.models.model_config import _gguf_variant_key
-
         try:
             relative = path.relative_to(root).as_posix()
         except ValueError:
             relative = path.name
-        if _gguf_variant_key(relative).lower() != variant.lower():
+        weights.append((path, relative))
+    # Keyed on the path, not the basename: a repo holding several checkpoints at one quant would otherwise
+    # delete every one of them for a single row. By checkpoint too, for builds side by side at one quant.
+    keys = gguf_variant_keys_by_checkpoint(relative for _path, relative in weights)
+    for path, relative in weights:
+        if keys[relative].lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size
