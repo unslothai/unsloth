@@ -3248,11 +3248,7 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         tied,
         model_bytes = 18 * GIB,
     ):
-        """A file on a 16 GiB carve-out, with 1 GiB token_embd and 2.5 GiB PLE.
-
-        The layout counts every ``*token_embd*`` tensor in token_embd_bytes, as
-        offload_layout does, so a second PLE subtraction is visible here.
-        """
+        """A file on a 16 GiB carve-out, with 1 GiB token_embd and 2.5 GiB PLE."""
         embd, ple = 1 * GIB, GIB * 5 // 2
         monkeypatch.setattr(
             LlamaCppBackend,

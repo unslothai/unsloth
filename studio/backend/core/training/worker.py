@@ -1567,11 +1567,7 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
     _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(MAMBA_SSM))
 
 
-# Defined in utils.rocm_topology, which the chat backend can import without the
-# training stack: a GGUF-only (--no-torch) install has none of this module's
-# imports, and the inference side silently read every ROCm device as
-# unclassifiable when it had to come through here. Re-exported so callers and
-# tests that import it from worker keep working.
+# Re-exported from the torch-free utils.rocm_topology for existing importers.
 from utils.rocm_topology import (  # noqa: E402,F401
     rocm_classify_unified_memory as _rocm_classify_unified_memory,
 )

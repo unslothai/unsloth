@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ROCm unified-memory classifier as a leaf module.
-
-Kept out of ``core.training.worker`` because a ``--no-torch`` GGUF install cannot
-import worker, which silently made every ROCm device unclassifiable.
-"""
+"""ROCm unified-memory classifier; a leaf so ``--no-torch`` installs can import it."""
 
 from __future__ import annotations
 

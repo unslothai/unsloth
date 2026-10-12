@@ -6671,13 +6671,7 @@ def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optiona
 
 
 def _extra_args_effective_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the GPU device selection the separate drafter will inherit.
-
-    An explicit draft-device value owns the drafter, including cpu/none. When
-    Studio owns the speculative block, load_model copies the main device selection
-    into the generated draft flags, so budgeting must honor that placement. A
-    user-owned --spec-type emits no generated flag and therefore inherits nothing.
-    """
+    """GPU device selection the separate drafter inherits (none for a user-owned --spec-type)."""
     if _extra_args_draft_device(extra_args) is not None:
         return _extra_args_draft_device_pin(extra_args)
     if _extra_args_set_spec_type(extra_args):
@@ -10581,11 +10575,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _host_pinned_weight_bytes(model_path: str) -> int:
-        """Bytes for embeddings llama.cpp keeps on the host.
-
-        ``token_embd.weight`` and ``per_layer_token_embd`` stay host buffers even on a
-        fully offloaded model. Unreadable or incomplete returns 0, the old budget.
-        """
+        """Bytes of embeddings llama.cpp keeps on the host even fully offloaded; 0 if unreadable."""
         identity = LlamaCppBackend._gguf_load_source_identity(model_path)
         if identity is None:
             return 0
@@ -10669,12 +10659,9 @@ class LlamaCppBackend:
         *,
         draft_model: bool = False,
     ) -> bool:
-        """Whether a tensor override moves normally host-pinned embeddings off CPU.
+        """Whether a tensor override may move host-pinned embeddings off CPU.
 
-        The per-layer embedding family is open-ended and llama.cpp applies arbitrary
-        regexes before its CPU fallback, so any non-CPU mapping drops the discount
-        rather than proving a regex cannot match. ``-ot`` and ``-otd`` are separate
-        tables upstream.
+        Any non-CPU mapping counts: regexes are not proved non-matching.
         """
         argv = [str(a) for a in extra_args or ()]
         values: list[str] = []
@@ -10712,12 +10699,7 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]] = None,
         draft_model: bool = False,
     ) -> int:
-        """Host bytes left after only provable exact-name GPU overrides.
-
-        Regexes are not interpreted: Python and llama.cpp semantics need not agree,
-        and a later CPU rule could restore a tensor, so either uncertainty charges the
-        raw floor.
-        """
+        """Host bytes left after only provable exact-name GPU overrides (regexes not interpreted)."""
         items = self._host_pinned_weight_items(model_path)
         raw = (
             sum(size for _name, size in items)
@@ -10748,9 +10730,7 @@ class LlamaCppBackend:
         extra_args: Optional[Iterable[str]],
         env: Optional[Mapping[str, str]] = None,
     ) -> int:
-        """Share of ``lazy_bytes`` the host-pinned floor still counts, matched by tensor
-        name: a lazy table an exact override already took out of the floor discounts
-        nothing, and never another embedding's bytes."""
+        """Share of ``lazy_bytes`` the host-pinned floor still counts, matched by tensor name."""
         lazy_bytes = max(0, int(lazy_bytes or 0))
         if not lazy_bytes:
             return 0
@@ -10794,14 +10774,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _tied_output_bytes(model_path: str) -> int:
-        """Bytes llama.cpp allocates ON TOP of the file for a tied-embedding model.
+        """Bytes llama.cpp allocates ON TOP of the file for a tied-embedding model; 0 if unreadable.
 
-        A tied model ships no ``output.weight``, and llama.cpp does not reuse
-        ``token_embd.weight`` in place: it re-creates the output tensor from it as
-        ``TENSOR_DUPLICATED`` (models/llama.cpp:41-45, models/qwen3.cpp:22-25 and
-        every other tied arch), so a second vocabulary matrix is really allocated
-        and the file size alone under-counts. 0 rather than raising for anything
-        unreadable, so a surprising GGUF costs the old budget, not a failed launch.
+        The output tensor is re-created as TENSOR_DUPLICATED, not reused (models/llama.cpp:41-45).
         """
         identity = LlamaCppBackend._gguf_load_source_identity(model_path)
         if identity is None:
@@ -10851,10 +10826,7 @@ class LlamaCppBackend:
     def _gguf_scan_output_tensors(path: str) -> tuple[Optional[str], bool, int]:
         """(architecture, ships output.weight, token_embd bytes) from one GGUF header.
 
-        Streamed rather than through ``gguf.GGUFReader``, whose ``__init__``
-        materialises the tokenizer vocabulary: 12.1 s on gemma-4-E2B-it UD-Q4_K_XL
-        against 30-90 ms here, and this runs under ``self._lock`` before the spawn,
-        so it stalls every load.
+        Not GGUFReader: it materialises the vocab (12.1 s vs 30-90 ms) under ``self._lock``.
         """
         from gguf.constants import GGML_QUANT_SIZES
 
@@ -11833,9 +11805,7 @@ class LlamaCppBackend:
     ) -> bool:
         """Classify the selected devices from one Vulkan inventory snapshot.
 
-        ``conservative_on_unknown`` also covers a row whose TYPE could not be read:
-        the probe degrades a failed registry lookup to ``is_igpu = 0``, which reads
-        the same as a proved dGPU. ``type_known`` is the difference.
+        An unreadable TYPE reports ``is_igpu = 0`` like a dGPU; ``type_known`` tells them apart.
         """
         rows = list(rows or ())
         if not rows:
@@ -12577,11 +12547,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _torch_unified_memory_classification_known(gpu_indices = None) -> bool:
-        """Whether every selected CUDA/ROCm device was classifiable.
-
-        The older boolean helpers collapse "proved discrete" and "probe failed" into
-        False for callers that should fail open; this discount cannot afford that.
-        """
+        """Whether every selected CUDA/ROCm device was classifiable (unlike the fail-open helpers)."""
         try:
             import torch
 
@@ -27156,13 +27122,7 @@ class LlamaCppBackend:
                         _mtp_kv_unsized = False
 
                     def _ranked_candidate_subsets(ranked, min_count: int = 1):
-                        """Mixed-ranking prefixes plus discount-eligible alternatives.
-
-                        A shared GPU can rank first, leaving the ordinary prefixes as
-                        the shared singleton then the mixed pair, while the discrete
-                        sibling fits alone only once discounted. An unclassified device
-                        keeps its VRAM in the prefixes but stays out of this arm.
-                        """
+                        """Mixed-ranking prefixes plus discount-eligible alternatives."""
                         discountable = [
                             gpu
                             for gpu in ranked
@@ -27721,8 +27681,7 @@ class LlamaCppBackend:
                     )
 
                     def _candidate_shared_pool_mmproj_delta(candidate_ids) -> int:
-                        """CPU-projector bytes removed only when the effective target
-                        placement is the same proved-discrete candidate."""
+                        """CPU-projector bytes removed only on the same proved-discrete target placement."""
                         _available = _shared_pool_mmproj + _candidate_mmproj_discount_applied
                         return (
                             _available
@@ -27731,12 +27690,7 @@ class LlamaCppBackend:
                         )
 
                     def _apply_candidate_discounts(candidate_ids) -> tuple[int, int, int]:
-                        """Make candidate-specific accounting exactly match this set.
-
-                        Returns signed target, drafter, and projector changes. Negative
-                        values restore bytes when placement moves back to shared or
-                        unclassified memory.
-                        """
+                        """Signed target, drafter, projector deltas making accounting match this set."""
                         nonlocal _candidate_target_discount_applied
                         nonlocal _candidate_draft_discount_applied
                         nonlocal _candidate_mmproj_discount_applied

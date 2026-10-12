@@ -230,13 +230,7 @@ def _tied(backend, mib: int):
 
 
 def test_the_projector_probe_prices_the_tied_output_duplicate(tmp_path):
-    """264 MiB of duplicated token_embd is the difference between the two placements.
-
-    The probe must price what the placement it gates prices, term for term.
-    Built from the bare file size it is exactly the duplicate more optimistic:
-    on this card it keeps the projector in VRAM and pays with --fit on, spilling
-    model layers at 8192 context -- the trade this policy exists to refuse.
-    """
+    """The probe must price the 264 MiB tied duplicate exactly as the placement it gates."""
     backend, gguf = _backend(tmp_path, memory = [(0, 9_300, 16_384)])
     _tied(backend, 264)
 
@@ -247,12 +241,7 @@ def test_the_projector_probe_prices_the_tied_output_duplicate(tmp_path):
 
 
 def test_the_cpu_pin_takes_out_the_projector_not_the_tied_duplicate(tmp_path):
-    """The pin moves the projector to the host; llama.cpp still duplicates token_embd.
-
-    Re-deriving model_size from the file size to drop the projector drops the
-    duplicate with it, so the context search after a pin goes back to believing
-    in VRAM the load will consume.
-    """
+    """After the projector pin, model_size still carries the tied duplicate."""
     (tmp_path / "plain").mkdir()
     (tmp_path / "charged").mkdir()
     plain, plain_gguf = _backend(tmp_path / "plain", memory = [(0, 8_692, 16_384)])
