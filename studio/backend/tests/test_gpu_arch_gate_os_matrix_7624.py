@@ -3298,15 +3298,13 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
     def test_an_untied_file_that_outgrows_the_carve_out_once_both_are_removed_gets_it(
         self, tmp_path, monkeypatch, probe_env
     ):
-        # 20.5 - 1 - 2.5 = 17 GiB outgrows the carve-out. Subtracting the PLE a second
-        # time reads 14.5 GiB and launches without the variable.
+        # 20.5 - 1 - 2.5 = 17 GiB outgrows the carve-out.
         _cmd, env = self._load_with_embeddings(
             tmp_path, monkeypatch, tied = False, model_bytes = GIB * 41 // 2
         )
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
     def test_a_tied_file_charges_its_duplicate_once(self, tmp_path, monkeypatch, probe_env):
-        # Both embeddings stay on the host and the duplicate reaches the device:
         # 18 - 1 - 2.5 + 1 = 15.5 GiB, under the carve-out.
         _cmd, env = self._load_with_embeddings(tmp_path, monkeypatch, tied = True)
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
@@ -3514,7 +3512,6 @@ class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
         self._load(tmp_path, monkeypatch, capture = capture, tied_bytes = 1 * GIB)
         backend = capture["backend"]
         planned = backend._planned_vram_mib or backend._pending_plan_mib
-        # 12 GiB file + 1 GiB tied copy - 6 GiB host-pinned embeddings
         assert planned[0] >= 7 * 1024, planned
 
     @pytest.mark.parametrize("value", ["none", "cpu"])

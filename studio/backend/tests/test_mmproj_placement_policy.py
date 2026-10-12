@@ -262,8 +262,7 @@ def test_the_cpu_pin_takes_out_the_projector_not_the_tied_duplicate(tmp_path):
     _tied(charged, 264)
     charged_cmd = _launch(charged, charged_gguf)["cmd"]
 
-    # Both arms pin, so the only thing left that can differ is the budget the
-    # context was chosen against.
+    # Both arms pin, so only the budget can differ.
     assert "--no-mmproj-offload" in plain_cmd
     assert "--no-mmproj-offload" in charged_cmd
     assert int(charged_cmd[charged_cmd.index("-c") + 1]) < int(plain_cmd[plain_cmd.index("-c") + 1])

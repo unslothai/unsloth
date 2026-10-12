@@ -324,11 +324,7 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     assert compact.index("_cpu_draft_path=_mtp_draft_for_budget") < compact.index(
         "if_draft_on_cpu:_mtp_draft_for_budget=None"
     )
-    # ... and charged to the footprint as a HOST-ONLY term (free VRAM cannot pay for
-    # an allocation the child only ever makes in RAM), abstaining when unpriceable.
-    # Both the discount ledger and the pinned floor it does not cover on a shared or
-    # unclassified device, since the CPU pin on the input layer is unconditional.
-    # A lazily read table leaves it, and checkpoint bytes join it.
+    # ... and charged as a HOST-ONLY term, abstaining when unpriceable.
     assert (
         "+_host_pinned+_fit_extra_host_pinned+_draft_host_pinned+_fit_extra_draft_pinned"
         "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes,"

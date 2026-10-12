@@ -310,8 +310,7 @@ def test_versioned_only_vulkan_soname_is_probed(tmp_path):
         # Proved discrete: no shared pool, whatever the caller asked for.
         (True, True, False),
         (True, False, False),
-        # Type unreadable: shared only for the caller that says so, so the
-        # existing page-locking question keeps its own answer.
+        # Type unreadable: shared only for the caller that says so.
         (False, True, True),
         (False, False, False),
     ],
