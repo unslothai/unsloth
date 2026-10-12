@@ -1301,7 +1301,8 @@ def run_safetensors_tool_loop(
                         if already_acted
                         else reprompt_count < MAX_ACT_REPROMPTS
                     )
-                    and not rag_autoinjected
+                    # Retrieval injected up front is no reason to stop a browser task mid-way.
+                    and (not rag_autoinjected or (browser_turns and already_acted))
                     and not tool_denied
                     and (browser_turns or not already_acted)
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
