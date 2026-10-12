@@ -837,7 +837,7 @@ class LlamaAdmissionLease:
 
 
 class LlamaAdmissionReservation:
-    __slots__ = ("_queue", "_lease", "_waiter", "snapshot")
+    __slots__ = ("_queue", "_lease", "_waiter", "snapshot", "counted_prompt_tokens")
 
     def __init__(
         self,
@@ -851,6 +851,8 @@ class LlamaAdmissionReservation:
         self._lease = lease
         self._waiter = waiter
         self.snapshot = snapshot
+        # The tokenizer's count of the prompt this was priced from, when admission had one.
+        self.counted_prompt_tokens: Optional[int] = None
 
     @property
     def is_cancelled(self) -> bool:

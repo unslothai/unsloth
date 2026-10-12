@@ -2924,10 +2924,12 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     its own: all four chats armed and grew to 16354 of a 16384 cache with zero preemptions. Returns
     ``(refresh_residency, observe_tokens)``; both swallow every exception.
     """
-    # Opt-in, asked once per generation rather than per chunk. Off, nothing below is built: no
-    # closure holds the backend, no controller is looked up on the token path, and the `/slots`
-    # round trip further down is unreachable.
-    if not preemption_enabled():
+    # Opt-in, asked once per generation rather than per chunk. Off, or with the accounting off
+    # (nothing is armed then), nothing below is built: no closure holds the backend, no controller
+    # is looked up on the token path, and the `/slots` round trip further down is unreachable.
+    if not preemption_enabled() or not _openai_llama_preemption_will_apply(
+        llama_backend, _openai_llama_admission_budget(llama_backend)
+    ):
         return _openai_llama_inert_residency_observer()
     # GET /slots is an HTTP round trip and the token callback fires every 32 tokens, so it is
     # read on a TTL rather than per report.
@@ -2983,7 +2985,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # llama-server has usually entered its shrinking-batch retry.
         snapshot = controller.snapshot()
         ceiling = max(0, snapshot.budget - snapshot.buffer)
-        over = int(occupancy.get("resident") or 0) - ceiling
+        # Against the committed figure too: a prompt registered or replaying is not in the cache
+        # yet, and the plan that follows counts it, so a live chat was paused for room this frees.
+        over = max(int(occupancy.get("resident") or 0), int(snapshot.committed or 0)) - ceiling
         # A pause that frees nothing is a stall: vLLM's RECOMPUTE releases the victim's blocks while
         # it waits, but aborting leaves llama-server holding the prompt cache. So idle slots go.
         waiting = int(getattr(snapshot, "paused", 0) or 0)
@@ -3405,6 +3409,12 @@ def _openai_llama_preemption_arm(
     # and nothing more: no controller looked up or created, nothing configured, no participant.
     if not preemption_enabled():
         return None
+    # The gate raw holders and direct holders take too: with admission or its KV accounting
+    # off every lease is free, so a chat armed here would be ledgered at nothing and chosen.
+    if not _openai_llama_preemption_will_apply(
+        llama_backend, _openai_llama_admission_budget(llama_backend)
+    ):
+        return None
     if reservation is None or signal is None:
         return None
     if not _openai_llama_preemption_will_apply(
@@ -3464,6 +3474,9 @@ def _openai_llama_preemption_arm(
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
             markup = _openai_llama_admission_markup(llama_backend),
+            # The tokenizer's count where admission had one: a character estimate
+            # undercounts dense text, and every report after this builds on it.
+            counted_prompt_tokens = getattr(reservation, "counted_prompt_tokens", None),
         )
     except Exception:
         prompt_tokens = None
@@ -3829,6 +3842,9 @@ def _openai_llama_admission_reserve(
         budget = budget,
         tokens = tokens,
     )
+    # Kept for arming: the preemptor's prompt term should be the count admission priced.
+    if counted_prompt_tokens is not None:
+        reservation.counted_prompt_tokens = counted_prompt_tokens
     return reservation, config
 
 

@@ -581,13 +581,10 @@ class TestTheResidencySweepAnswersToTheSameSwitches:
         _refresh, observe, _note = inf._openai_llama_residency_observer(
             llama_backend = backend, completion_id = "active"
         )
-        if observe is None:
-            # The preemption opt-out does not build a sweep at all: llama.cpp skips the token
-            # callback outright when `on_tokens` is None, which is stronger than a sweep that
-            # declines. The other three switches leave the sweep built and it declines.
-            assert env.get(PREEMPT_ENV) == "0"
-        else:
-            observe(32)
+        # None of the four builds a sweep: llama.cpp skips the token callback outright when
+        # `on_tokens` is None, which is stronger than a sweep that declines. The accounting
+        # switches take the same gate arming does, so with any of them off nothing is armed.
+        assert observe is None
         assert erases.erased == []
 
     def test_an_eligible_generation_still_sweeps(self, monkeypatch):
