@@ -526,6 +526,7 @@ export function installPageAgent(): void {
     }
     const over = covering(el);
     if (over) {
+      // No page words here: errors reach the model outside the untrusted-content fence.
       return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
     }
     mouse(el, "pointerover");

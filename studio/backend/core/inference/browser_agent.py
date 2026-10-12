@@ -391,13 +391,6 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
     from .web_access_policy import check_url_access
 
     if result.get("ok") is not True:
-        # A page script's answer can be anything the page wants, so it stays in the fence.
-        page_error = _one_line(_clip(result.get("pageError"), 1000))
-        if page_error:
-            return (
-                f"Error: the page answered:\n<{_FENCE}>\n{_fenced(page_error)}\n</{_FENCE}>\n"
-                + _UNTRUSTED_NOTE
-            )
         error = _one_line(_clip(result.get("error"), 1000)) or "the browser could not do that."
         return f"Error: {error}"
     url = _one_line(_clip(result.get("url"), _MAX_URL_CHARS))

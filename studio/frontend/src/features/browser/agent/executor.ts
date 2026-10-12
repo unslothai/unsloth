@@ -39,8 +39,7 @@ export type BrowserAction = {
 /** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another. */
 export type ActionContext = { runKey: string; scope?: string; userText: string; signal?: AbortSignal };
 
-// pageError: words the page script answered with; the server fences them, unlike `error`.
-type Result = { ok: boolean; error?: string; pageError?: string; url?: string; title?: string; text?: string; note?: string; image?: string };
+type Result = { ok: boolean; error?: string; url?: string; title?: string; text?: string; note?: string; image?: string };
 
 const LOAD_TIMEOUT_MS = 30_000;
 const SETTLE_QUIET_MS = 350;
@@ -330,7 +329,7 @@ async function observe(tab: BrowserTab, note?: string, op: Record<string, unknow
     };
   }
   const answer = await pageCall(tab, op);
-  if (!answer.ok) return { ok: false, pageError: answer.error ?? "the page could not be read." };
+  if (!answer.ok) return { ok: false, error: answer.error ?? "the page could not be read." };
   if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(answer.links ?? []);
   const fresh = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id) ?? tab;
   return {
@@ -423,7 +422,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       return observe(ready, undefined, { op: "find", query: action.query ?? "" });
     case "scroll": {
       const moved = await pageCall(ready, { op: "scroll", direction: action.direction, ...(action.ref ? { ref: action.ref } : {}) });
-      if (!moved.ok) return { ok: false, pageError: moved.error };
+      if (!moved.ok) return { ok: false, error: moved.error };
       const after = await settle(ready.id, before, signal);
       return after ? observe(after, moved.note) : { ok: false, error: "the browser tab closed." };
     }
@@ -434,7 +433,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   // Acting on an element: what it is decides whether the user is asked first.
   const ref = action.ref ?? "";
   const described = await pageCall(ready, { op: "describe", ref });
-  if (!described.ok || !described.info) return { ok: false, pageError: described.error ?? `${ref} could not be found.` };
+  if (!described.ok || !described.info) return { ok: false, error: described.error ?? `${ref} could not be found.` };
   const info: ElementInfo = described.info;
   const gates: Gate[] = [];
   if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, before, action.policy, permissions()));
@@ -477,7 +476,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   let note: string | undefined;
   if (action.op === "click") {
     const clicked = await pageCall(ready, { op: "click", ref, directLinks: !useNativeBrowser.getState().enabled });
-    if (!clicked.ok) return { ok: false, pageError: clicked.error };
+    if (!clicked.ok) return { ok: false, error: clicked.error };
     if (clicked.navigate) {
       // A link: opened in this tab, under the same rules as any other address. Its href is read
       // now, so it may not be one the last snapshot listed.
@@ -492,15 +491,15 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     note = clicked.note;
   } else if (action.op === "type") {
     const typed = await pageCall(ready, { op: "type", ref, text: action.text ?? "", submit: action.submit === true });
-    if (!typed.ok) return { ok: false, pageError: typed.error };
+    if (!typed.ok) return { ok: false, error: typed.error };
     note = typed.note;
   } else if (action.op === "select") {
     const chosen = await pageCall(ready, { op: "select", ref, value: action.value ?? "" });
-    if (!chosen.ok) return { ok: false, pageError: chosen.error };
+    if (!chosen.ok) return { ok: false, error: chosen.error };
     note = chosen.note;
   } else if (action.op === "press") {
     const pressed = await pageCall(ready, { op: "press", key: action.key ?? "" });
-    if (!pressed.ok) return { ok: false, pageError: pressed.error };
+    if (!pressed.ok) return { ok: false, error: pressed.error };
     note = pressed.note;
   } else {
     return { ok: false, error: `unknown browser action ${action.op}.` };
