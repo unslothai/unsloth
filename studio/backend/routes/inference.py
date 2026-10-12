@@ -35552,6 +35552,44 @@ async def reveal_sandbox_dir(
     return {"status": "ok", "path": sandbox_dir}
 
 
+@router.post("/sandbox/{session_id}/upload")
+async def upload_sandbox_file(
+    session_id: str,
+    file: UploadFile = File(...),
+    overwrite: bool = Form(False),
+    session: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Put one file into this chat's sandbox folder, where its tools read and write.
+
+    Saved at the folder's root under the file's own name. A taken name is a 409 unless
+    ``overwrite``, so a second upload never silently replaces what a tool wrote.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from core.inference.tools import SandboxUploadExists, save_sandbox_upload
+    from utils.upload_limits import SANDBOX_UPLOAD_MAX_BYTES
+
+    def _chunks():
+        total = 0
+        while chunk := file.file.read(1 << 20):
+            total += len(chunk)
+            if total > SANDBOX_UPLOAD_MAX_BYTES:
+                raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
+            yield chunk
+
+    try:
+        saved = await run_in_threadpool(
+            save_sandbox_upload, session or session_id, file.filename, _chunks(), overwrite
+        )
+    except SandboxUploadExists as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} already exists") from None
+    except OSError:
+        logger.error("Failed to save a sandbox upload", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Could not save the file") from None
+    return saved
+
+
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
 async def serve_sandbox_file(
     session_id: str,
@@ -46479,6 +46517,7 @@ async def load_diffusion_model_gated(
     )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
+    from core.inference.sd_cpp_args import forces_cpu_backend
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -46662,6 +46701,13 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
+        if (
+            activated == ENGINE_SD_CPP
+            and device == "mps"
+            and await asyncio.to_thread(forces_cpu_backend, device)
+        ):
+            needs_gpu = False
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,

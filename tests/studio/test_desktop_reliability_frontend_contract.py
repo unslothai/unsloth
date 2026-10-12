@@ -698,15 +698,18 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "dark:border-white" not in decoration
     assert "dark:border-t-white" not in decoration
     # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
+    assert re.search(r'pinned &&\s*"rounded-tl-\[12px\] border-l"', decoration)
     assert re.search(
-        r'pinned &&\s*"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)\)\] '
-        r'rounded-tl-\[12px\] border-l"',
+        r'className="absolute top-\[12px\] '
+        r"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)-12px\)\] "
+        r'w-0 border-l border-sidebar-edge dark:border-transparent"\s*'
+        r"style=\{\{ left: cornerLeft \}\}",
         decoration,
     )
     assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
     assert "style={{ left: cornerLeft }}" in decoration
     # The sidebar-coloured mask outside the corner only appears when pinned.
-    assert decoration.count("{pinned && (") == 1
+    assert decoration.count("{pinned && (") == 2
     assert "transparent_11px,var(--color-sidebar)_12px" in decoration
 
 
