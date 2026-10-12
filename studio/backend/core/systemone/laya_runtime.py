@@ -1336,10 +1336,11 @@ def loading_repo_ids() -> tuple[str, ...]:
     return ()
 
 
-def _load(checkpoint: Checkpoint) -> None:
+def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
     global _agent, _loaded, _device_name, _loading, _failure, _generation, _last_used, _gpu_load
     started = time.monotonic()
-    unloads = _unloads
+    if unloads is None:
+        unloads = _unloads
     try:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
@@ -1465,7 +1466,9 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     )
 
 
-def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
+def _ensure_loading(
+    checkpoint: Checkpoint, unloads: int | None = None
+) -> threading.Thread | None:
     global _loader, _loading
     # Asked before _state_lock: the training backend takes its own lock.
     _clef_blocked_by_training(checkpoint)
@@ -1504,17 +1507,19 @@ def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
         raise Unavailable(503, "model_loading", f"{checkpoint.name} is downloading", retry_after = 5)
     with _state_lock:
         _loader = threading.Thread(
-            target = _load, args = (checkpoint,), name = "systemone-load", daemon = True
+            target = _load, args = (checkpoint, unloads), name = "systemone-load", daemon = True
         )
         _loader.start()
         return _loader
 
 
 def _agent_for(checkpoint: Checkpoint, wait: float):
+    unloads = _unloads
     loader = _ensure_loading(checkpoint)
     if loader is not None:
         loader.join(wait)
-        if loader.is_alive() or _ensure_loading(checkpoint) is not None:
+        # An unload while this waited (a settings change) wins over a load of the old checkpoint.
+        if loader.is_alive() or _unloads != unloads or _ensure_loading(checkpoint) is not None:
             raise Unavailable(
                 503, "model_loading", f"{checkpoint.name} is still loading", retry_after = 5
             )
@@ -2316,33 +2321,40 @@ def unload(reload_after_training: bool = False) -> bool:
 
 
 def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
-    global _reloading
+    global _reloading, _failure
     from core.inference.gpu_arbiter import current_owner
 
-    while _training_active():
-        time.sleep(TRAINING_POLL_S)
-    with _state_lock:
-        # Anything since the run took the GPU (an unload, a settings change, another load or GPU owner) wins.
-        if (
-            _unloads != unloads
-            or _agent is not None
-            or _loading is not None
-            or current_owner() is not None
-        ):
-            return
-        _reloading = checkpoint
-    try:
-        loader = _ensure_loading(checkpoint)
-        if loader is not None:
-            loader.join()
-    except Unavailable:
-        pass
-    finally:
+    while True:
+        while _training_active():
+            time.sleep(TRAINING_POLL_S)
         with _state_lock:
-            _reloading = None
+            # Anything since the run took the GPU (an unload, a settings change, another load or GPU owner) wins.
+            if (
+                _unloads != unloads
+                or _agent is not None
+                or _loading is not None
+                or current_owner() is not None
+            ):
+                return
+            _reloading = checkpoint
+        try:
+            loader = _ensure_loading(checkpoint, unloads)
+            if loader is not None:
+                loader.join()
+        except Unavailable:
+            pass
+        finally:
+            with _state_lock:
+                _reloading = None
+        if not _training_active():
+            break
+        # Another run took the GPU while this loaded: wait for that one too instead of reporting a failure.
+        with _state_lock:
+            if _failure is not None and _failure[0] == checkpoint:
+                _failure = None
     agent = _agent
     if agent is not None and _loaded == checkpoint:
-        # The first decision traces the compiled graphs; done now, a request does not wait for it.
+        # The first decision builds the GPU kernels; done now, a request does not wait for it.
         try:
             agent.decide("ready", {"ready": {"type": "noul"}})
         except Exception:
