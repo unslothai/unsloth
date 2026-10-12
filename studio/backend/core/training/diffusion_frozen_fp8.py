@@ -3,14 +3,10 @@
 
 """fp8 compute for the frozen base linears of a LoRA run.
 
-The weight is quantized once to e4m3 with a float scale per output row and the bf16 copy is freed (half the base
-weight memory). Forward quantizes x per row; backward returns only grad_x = rowwise_quant(grad_y * s) @ Q, so no
-weight gradient is computed and nothing from x is saved. torchao's Float8Linear instead re-quantizes the bf16 weight
-about four times per layer per step and keeps it in bf16.
-
-The GEMMs run with unit (tensorwise) scales and the row / column scales are applied after: torch routes rowwise
-``_scaled_mm`` on sm100 to an untuned two-tile CUTLASS kernel, tensorwise to cuBLAS (aten ScaledBlas.cpp).
-Only K and N must be multiples of 16; any token count works.
+Each weight is quantized once to e4m3 (float scale per output row) and its bf16 copy freed; backward returns only
+grad_x, so nothing from x is saved (torchao's Float8Linear re-quantizes the bf16 weight ~4x per layer per step).
+GEMMs use unit scales with row scales applied after: rowwise ``_scaled_mm`` on sm100 routes to an untuned CUTLASS
+kernel, tensorwise to cuBLAS (aten ScaledBlas.cpp).
 """
 
 import torch
@@ -30,7 +26,7 @@ def _rowwise_quant(x2d):
 
 @torch.no_grad()
 def _quantize_weight(w, rows = 2048):
-    # Row chunks bound the fp32 transient (a full copy of FLUX.2-dev's largest weight is ~1.5 GB).
+    # Row chunks bound the fp32 transient.
     q = torch.empty(w.shape, dtype = _E4M3, device = w.device)
     s = torch.empty((w.shape[0], 1), dtype = torch.float32, device = w.device)
     for i in range(0, w.shape[0], rows):
@@ -77,7 +73,6 @@ class FrozenFp8Linear(nn.Module):
             raise ValueError(f"fp8 needs 16-aligned dims, got {out_f}x{in_f}")
         self.in_features, self.out_features = in_f, out_f
         q, s = _quantize_weight(linear.weight.detach())
-        # Buffers: never trainable, never in an optimizer or PEFT's trainable scans.
         self.register_buffer("weight", q)
         self.register_buffer("weight_scale", s.reshape(1, out_f).contiguous())
         self.bias = (
@@ -97,9 +92,8 @@ class FrozenFp8Linear(nn.Module):
 
 
 def convert_frozen_fp8(model: nn.Module, names) -> tuple[int, int]:
-    """Swap the frozen nn.Linear modules at ``names`` (fully qualified) for FrozenFp8Linear, one at a time so each
-    frees its bf16 weight before the next quantizes. A layer that fails (out of memory) stays bf16 and the rest still
-    convert, so the model is never left half-converted behind a raise. Returns (converted, failed)."""
+    """Swap each frozen nn.Linear in ``names`` for FrozenFp8Linear one at a time (bounds peak memory); a layer that
+    fails stays bf16 rather than raising mid-conversion. Returns (converted, failed)."""
     done = failed = 0
     for fqn in sorted(names):
         parent_name, _, child = fqn.rpartition(".")
