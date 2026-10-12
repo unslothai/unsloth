@@ -1185,6 +1185,73 @@ def test_a_chosen_slot_count_is_kept_and_the_drafter_dropped(tmp_path):
     assert backend.spec_fallback_reason == "drafter_no_vram"
 
 
+@pytest.mark.parametrize("extras", [["--parallel", "4"], ["-np=4"]])
+def test_a_slot_count_in_the_extras_is_kept(tmp_path, extras):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_default_slots(backend, gguf, extra_args = extras)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def _launch_with_failing_drafter(
+    backend,
+    gguf,
+    *,
+    refuses_unified_kv = False,
+):
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        backend._stdout_lines = []
+        if "draft-mtp" in cmds[-1]:
+            return False
+        return not (refuses_unified_kv and "--kv-unified" in cmds[-1])
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                n_ctx = 0,
+                n_parallel = 4,
+                n_parallel_from_default = True,
+                speculative_type = "auto",
+            )
+        )
+    return cmds
+
+
+def test_a_drafterless_retry_that_fails_at_the_restored_slots_runs_as_cut(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 5.0)
+
+    cmds = _launch_with_failing_drafter(backend, gguf, refuses_unified_kv = True)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["1", "4", "1"]
+    assert "--kv-unified" not in cmds[-1] and "draft-mtp" not in cmds[-1]
+    assert backend.effective_parallel_slots == 1
+
+
 def test_a_drafter_that_fails_to_start_gives_its_slots_back(tmp_path):
     backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
     cmds = []
