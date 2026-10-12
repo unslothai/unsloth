@@ -108,6 +108,7 @@ __all__ = [
     "planned_prefetch_depth",
     "trim_config_for_block_swap",
     "attach_offload_layers",
+    "mark_auto_offload_for_ddp",
     "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
@@ -4794,6 +4795,19 @@ def test_mask_creation():
         assert torch.all(correct_mask == our_mask)
 
 
+def _forward_takes_use_cache(model) -> bool:
+    """False for a forward naming packed_seq_lengths without use_cache / **kwargs (the key would raise)."""
+    takes = getattr(model, "_unsloth_forward_takes_use_cache", None)
+    if takes is None:
+        from unsloth.trainer import _forward_accepts_packing_kwargs
+        takes = _forward_accepts_packing_kwargs(model, "use_cache")
+        try:
+            model._unsloth_forward_takes_use_cache = takes
+        except Exception:
+            pass
+    return takes
+
+
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     num_items_in_batch = None
 
@@ -4803,6 +4817,14 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             kwargs.pop("num_items_in_batch")
         elif "num_items_in_batch" not in inputs:
             inputs["num_items_in_batch"] = num_items_in_batch
+
+    # Training twin of the #3470 prediction_step guard: a KV cache drops the packed-sequence mask.
+    if (
+        "packed_seq_lengths" in inputs
+        and "use_cache" not in inputs
+        and _forward_takes_use_cache(model)
+    ):
+        inputs = {**inputs, "use_cache": False}
 
     if (
         num_items_in_batch is None
@@ -5244,6 +5266,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 from .llama import _decline_fused_lora_for_fsdp
                 _decline_fused_lora_for_fsdp(getattr(self, "model", None))
             _replan_auto_offload_safely(self)
+            _block_swap_for_trainer_backend(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -6752,6 +6775,190 @@ def snapshot_residual_lora_init(model, init_lora_weights):
         }
         if initial:
             module._unsloth_initial_lora = initial
+    if init_lora_weights in CONVERT_ON_SAVE_LORA_WEIGHTS:
+        save_lora_relative_to_original_base(model)
+
+
+# PEFT cannot rebuild these residual bases when it loads an adapter (LoRA-GA needs the training gradients and
+# silently falls back to a random init), so a native adapter reloads onto the wrong base.
+CONVERT_ON_SAVE_LORA_WEIGHTS = ("lora_ga",)
+
+
+def _residual_lora_rows(model, adapters):
+    from transformers.pytorch_utils import Conv1D
+    for name, module in model.named_modules():
+        initial = getattr(module, "_unsloth_initial_lora", None)
+        if not initial or not isinstance(getattr(module, "lora_A", None), torch.nn.ModuleDict):
+            continue
+        # LoRA-GA only rewrites Linear / Conv1D bases; embeddings and convolutions keep PEFT's default init.
+        if not isinstance(module.get_base_layer(), (torch.nn.Linear, Conv1D)):
+            continue
+        for k in initial:
+            if k in adapters and k in module.lora_A:
+                yield module, k, name
+
+
+def _unconverted_patterns(model, converted, adapter):
+    import re
+    from peft.tuners.lora import LoraLayer
+
+    ranks, alphas = {}, {}
+    for name, module in model.named_modules():
+        if id(module) in converted or not isinstance(module, LoraLayer):
+            continue
+        if adapter not in getattr(module, "r", {}):
+            continue
+        key = re.escape(name.removeprefix("base_model.model."))
+        ranks[key] = module.r[adapter]
+        alphas[key] = module.lora_alpha[adapter]
+    return ranks, alphas
+
+
+def _convertible_adapters(model, selected):
+    names = set()
+    for k in selected:
+        config = model.peft_config.get(k)
+        if config is None or getattr(config, "use_dora", False):
+            continue
+        if config.use_rslora and (config.rank_pattern or config.alpha_pattern):
+            continue  # PEFT refuses this conversion too
+        names.add(k)
+    return names
+
+
+def save_lora_relative_to_original_base(model):
+    """Saves (and pushes) write PEFT's `path_initial_model_for_weight_conversion` form: a plain rank-2r LoRA on the
+    original base, `s0 * [B * s / s0, -B0] @ [A; A0]`, loadable anywhere. `load_adapter` into this live model, as
+    Trainer resume and load_best_model_at_end do, slices it back to rank r."""
+    import inspect
+    import json
+    import os
+
+    # On the model: patch_saving_functions later rebinds save_pretrained around this wrapper.
+    if getattr(model, "_unsloth_residual_save", False):
+        return
+    original_save = model.save_pretrained
+    original_load = model.load_adapter
+    save_signature = inspect.signature(original_save)
+
+    def _converted_state_dict(rows, state_dict):
+        state_dict = dict(model.state_dict() if state_dict is None else state_dict)
+        for module, k, name in rows:
+            key_A, key_B = f"{name}.lora_A.{k}.weight", f"{name}.lora_B.{k}.weight"
+            A0, B0, scaling0 = module._unsloth_initial_lora[k]
+            if key_A not in state_dict or key_B not in state_dict or not scaling0:
+                return None
+            A, B = state_dict[key_A].detach(), state_dict[key_B].detach()
+            state_dict[key_A] = torch.cat([A, A0.to(A)], 0)
+            state_dict[key_B] = torch.cat([B * (module.scaling[k] / scaling0), -B0.to(B)], 1)
+        return state_dict
+
+    @functools.wraps(original_save)
+    def save_pretrained(save_directory, *args, **kwargs):
+        bound = save_signature.bind_partial(save_directory, *args, **kwargs).arguments
+        if bound.get("path_initial_model_for_weight_conversion") is not None:
+            return original_save(save_directory, *args, **kwargs)
+        extra = bound.get("kwargs", {})
+        selected = bound.get("selected_adapters")
+        adapters = _convertible_adapters(
+            model, list(model.peft_config) if selected is None else selected
+        )
+        rows = list(_residual_lora_rows(model, adapters))
+        state_dict = _converted_state_dict(rows, extra.get("state_dict")) if rows else None
+        if state_dict is None:
+            return original_save(save_directory, *args, **kwargs)
+        out = original_save(save_directory, *args, **{**kwargs, "state_dict": state_dict})
+        if bound.get("is_main_process", True):
+            for k in {k for _, k, _ in rows}:
+                folder = save_directory if k == "default" else os.path.join(save_directory, k)
+                path = os.path.join(folder, "adapter_config.json")
+                with open(path, encoding = "utf-8") as f:
+                    config = json.load(f)
+                # Same rewrite as PEFT's save_pretrained(path_initial_model_for_weight_conversion = ...).
+                config["init_lora_weights"] = True
+                config["r"] *= 2
+                config["lora_alpha"] *= 2**0.5 if config.get("use_rslora") else 2
+                kept = _unconverted_patterns(model, {id(m) for m, j, _ in rows if j == k}, k)
+                for pattern, pinned in zip(("rank_pattern", "alpha_pattern"), kept):
+                    doubled = {key: 2 * v for key, v in (config.get(pattern) or {}).items()}
+                    if pinned or doubled:
+                        config[pattern] = {**pinned, **doubled}
+                config.pop("lora_ga_config", None)
+                with open(path, "w", encoding = "utf-8") as f:
+                    # No sort_keys: PEFT matches patterns first-come, and the exact pins go first.
+                    json.dump(config, f, indent = 2)
+        return out
+
+    @functools.wraps(original_load)
+    def load_adapter(
+        model_id,
+        adapter_name = None,
+        *args,
+        **kwargs,
+    ):
+        native = None
+        if adapter_name in model.peft_config and isinstance(model_id, (str, os.PathLike)):
+            folder = os.path.join(os.fspath(model_id), kwargs.get("subfolder") or "")
+            if os.path.isdir(folder):
+                native = _native_from_converted(model, adapter_name, folder)
+        if native is None:
+            return original_load(model_id, adapter_name, *args, **kwargs)
+        import shutil
+        import tempfile
+        from safetensors.torch import save_file
+
+        with tempfile.TemporaryDirectory() as tmp:
+            save_file(
+                native, os.path.join(tmp, "adapter_model.safetensors"), metadata = {"format": "pt"}
+            )
+            shutil.copy(os.path.join(folder, "adapter_config.json"), tmp)
+            kwargs.pop("subfolder", None)
+            return original_load(tmp, adapter_name, *args, **kwargs)
+
+    model._unsloth_residual_save = True
+    model.save_pretrained = save_pretrained
+    model.load_adapter = load_adapter
+
+
+@torch.no_grad()
+def _native_from_converted(model, adapter_name, folder):
+    """Rank-r weights of a converted adapter for the live residual model, or None if `folder` is not one.
+    A differing snapshot (a fresh run re-initialized) has its base re-based onto the saved A0 / B0."""
+    import os
+
+    if not any(
+        os.path.isfile(os.path.join(folder, n))
+        for n in ("adapter_model.safetensors", "adapter_model.bin")
+    ):
+        return None
+    rows = list(_residual_lora_rows(model, {adapter_name}))
+    if not rows:
+        return None
+    from peft.utils import load_peft_weights
+
+    weights = load_peft_weights(folder, device = "cpu")
+    plan = []
+    for module, k, name in rows:
+        key_A, key_B = f"{name}.lora_A.weight", f"{name}.lora_B.weight"
+        A, B = weights.get(key_A), weights.get(key_B)
+        r = module.lora_A[k].weight.shape[0]
+        if A is None or B is None or A.shape[0] != 2 * r or B.shape[1] != 2 * r:
+            return None
+        plan.append((module, k, key_A, key_B, r))
+    for module, k, key_A, key_B, r in plan:
+        A, B = weights[key_A], weights[key_B]
+        A0_live, B0_live, scaling0 = module._unsloth_initial_lora[k]
+        A0, B0 = A[r:].to(A0_live), -B[:, r:].to(B0_live)
+        weights[key_A] = A[:r].contiguous()
+        weights[key_B] = (B[:, :r] * (scaling0 / module.scaling[k])).contiguous()
+        if not (torch.equal(A0, A0_live) and torch.equal(B0, B0_live)):
+            base = module.get_base_layer().weight
+            delta = scaling0 * (B0_live.float() @ A0_live.float() - B0.float() @ A0.float())
+            if getattr(module, "fan_in_fan_out", False):
+                delta = delta.T
+            base.data.add_(delta.to(base))
+            module._unsloth_initial_lora[k] = (A0.clone(), B0.clone(), scaling0)
+    return weights
 
 
 @contextlib.contextmanager
@@ -7663,6 +7870,90 @@ def _replan_auto_offload_safely(trainer):
                 "keeping the current plan."
             )
         return None
+
+
+def mark_auto_offload_for_ddp(model, ddp_auto):
+    """Mark an "auto" DDP plan on every rank, even zero-swap ones, so all build the same ignore list."""
+    if ddp_auto and model is not None:
+        model._unsloth_offload_layers_auto_ddp = True
+    return model
+
+
+def _ignore_block_swap_params_for_ddp(model):
+    """Keep frozen decoder weights out of DDP's init broadcast: ranks may swap different layers to
+    0-element placeholders. The list must match on every rank, so it follows the request and
+    architecture, never this rank's plan. Returns the names added."""
+    from .loader_utils import is_distributed
+
+    if model is None or find_decoder_layers is None or not is_distributed():
+        return []
+    if not getattr(model, "_unsloth_offload_layers_auto_ddp", False) and (
+        getattr(model, "_unsloth_offload_layers_auto", None) is None
+    ):
+        return []
+    # Before PEFT froze the base only swapped layers are frozen, so the list would differ per rank.
+    if getattr(model, "peft_config", None) is None:
+        return []
+    try:
+        layer_params = {id(p) for p in find_decoder_layers(model).parameters()}
+    except Exception:
+        return []
+    # Trainable decoder weights (bias, modules_to_save) need DDP sync; refuse on every rank alike.
+    trainable = [
+        name
+        for name, p in model.named_parameters()
+        if id(p) in layer_params and p.requires_grad and "lora_" not in name
+    ]
+    if trainable:
+        raise ValueError(
+            "Unsloth: offload_layers = 'auto' under DDP keeps the frozen decoder weights out of DDP, "
+            f"but {len(trainable)} decoder weights are trainable (e.g. {trainable[0]}). Use "
+            "bias = 'none' and no modules_to_save inside the decoder layers, or offload_layers = 0."
+        )
+    names = [
+        name
+        for name, p in model.named_parameters()
+        if id(p) in layer_params and not p.requires_grad
+    ]
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    seen = set(ignored)
+    added = [name for name in names if name not in seen]
+    if not added:
+        return []
+    from torch.nn.parallel import DistributedDataParallel
+
+    DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored + added)
+    return added
+
+
+def _block_swap_for_trainer_backend(trainer):
+    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load, so "auto" planned for DDP):
+    refuse, since sharding would flatten the 0-element placeholders."""
+    model = getattr(trainer, "model", None)
+    backend = (
+        "FSDP"
+        if getattr(trainer, "is_fsdp_enabled", False)
+        else "DeepSpeed"
+        if getattr(trainer, "is_deepspeed_enabled", False)
+        else None
+    )
+    if backend is None:
+        return _ignore_block_swap_params_for_ddp(model)
+    swapper = getattr(model, "_unsloth_block_swap", None) if model is not None else None
+    swapped = len(getattr(swapper, "indices", None) or ())
+    # Every auto rank refuses, even zero-swap ones: a one-sided refusal would hang the peers.
+    auto = model is not None and (
+        getattr(model, "_unsloth_offload_layers_auto_ddp", False)
+        or getattr(model, "_unsloth_offload_layers_auto", None) is not None
+    )
+    if auto:
+        raise ValueError(
+            f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
+            f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "
+            "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
+            f"or launch without {backend}."
+        )
+    return []
 
 
 def _trainer_offload_replan_skip(trainer):
@@ -8691,22 +8982,27 @@ def _is_unarmed(module):
     )
 
 
-def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
+def resolve_training_gradient_checkpointing(
+    model,
+    use_gradient_checkpointing,
+    modules = None,
+):
     """`None` keeps the mode chosen at load / get_peft_model instead of forcing it on."""
     if use_gradient_checkpointing is not None:
         return use_gradient_checkpointing
     if hasattr(model, "_unsloth_gradient_checkpointing"):
         return model._unsloth_gradient_checkpointing
     # Nothing recorded (no adapter, full finetuning): loading's choice is whether it armed the layers.
-    checkpointing = [m for m in model.modules() if _calls_checkpoint_function(m)]
+    modules = model.modules() if modules is None else modules
+    checkpointing = [m for m in modules if _calls_checkpoint_function(m)]
     if checkpointing:
         return any(not _is_unarmed(m) for m in checkpointing)
     return True
 
 
-def arm_gradient_checkpointing(model):
+def arm_gradient_checkpointing(model, modules = None):
     """Install the checkpoint function a load with checkpointing off never gave the layers."""
-    if not any(_is_unarmed(m) for m in model.modules()):
+    if not any(_is_unarmed(m) for m in (model.modules() if modules is None else modules)):
         return False
     # Outer model, not get_base_model(): Gemma 3N / 4 and DeepSeek-V4.1 install their override there.
     try:
@@ -8732,3 +9028,151 @@ def set_module_gradient_checkpointing(module, value):
         return False
     module.gradient_checkpointing = value
     return True
+
+
+@functools.lru_cache(maxsize = None)
+def _mode_switch_class_info(cls):
+    """(train, eval, gc, setattr, walk) for switch_training_mode, per class.
+
+    train: True when train() and the child traversal are nn.Module's, "kernels" for PreTrainedModel.train
+    (adds a kernel re-cast only under `use_kernels`), False otherwise. eval: eval() is nn.Module's or
+    PreTrainedModel's. gc: the class has gradient_checkpointing, None for classes with their own
+    __getattr__ / __getattribute__ (PEFT wrappers delegate it). setattr: `training` is a plain instance
+    attribute. walk: modules() / parameters() enumerate the registered tree, as the raw _modules walk does.
+    """
+    try:
+        from transformers import PreTrainedModel
+        pretrained = (PreTrainedModel.train, PreTrainedModel.eval)
+    except Exception:
+        pretrained = (None, None)
+    module = torch.nn.Module
+    children = cls.children is module.children and cls.named_children is module.named_children
+    if not children:
+        train = False
+    elif cls.train is module.train:
+        train = True
+    else:
+        train = "kernels" if cls.train is pretrained[0] else False
+    plain_eval = cls.eval is module.eval or cls.eval is pretrained[1]
+    plain_lookup = (
+        cls.__getattr__ is module.__getattr__ and cls.__getattribute__ is module.__getattribute__
+    )
+    gc = hasattr(cls, "gradient_checkpointing") if plain_lookup else None
+    descriptor = inspect.getattr_static(cls, "training", None)
+    plain_setattr = cls.__setattr__ is module.__setattr__ and not hasattr(
+        type(descriptor), "__set__"
+    )
+    plain_walk = all(
+        getattr(cls, name) is getattr(module, name)
+        for name in ("modules", "named_modules", "parameters", "named_parameters", "_named_members")
+    )
+    return train, plain_eval, gc, plain_setattr, plain_walk
+
+
+def _has_gradient_checkpointing(module, on_class):
+    # hasattr() for a plain nn.Module, without its slow AttributeError path.
+    if on_class is None:
+        return hasattr(module, "gradient_checkpointing")
+    return (
+        on_class
+        or "gradient_checkpointing" in module.__dict__
+        or "gradient_checkpointing" in module._parameters
+        or "gradient_checkpointing" in module._buffers
+        or "gradient_checkpointing" in module._modules
+    )
+
+
+def switch_training_mode(
+    model,
+    training,
+    defer = False,
+):
+    """for_inference / for_training's model.train() / eval() plus their gradient_checkpointing and
+    `_fast_lora` scans (every GRPO step) in one walk; returns the modules with a gradient_checkpointing flag.
+
+    `training` is written directly only where nn.Module.train would do nothing else; any other train()
+    (class or instance override such as the frozen-norm partial, kernels on, own child traversal) runs for
+    its subtree, and a differing root or eval() gets model.train() / model.eval(). defer=True returns
+    (modules, apply) so for_training can still set the mode last.
+    """
+    if not isinstance(model, torch.nn.Module):
+        if training:
+            for param in model.parameters():
+                if hasattr(param, "_fast_lora"):
+                    del param._fast_lora
+        checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        apply = model.train if training else model.eval
+        if defer:
+            return checkpointing, apply
+        apply()
+        return checkpointing
+    # Mode writes in nn.Module.train's preorder, shared modules once per path, so custom train() calls run
+    # where the recursion would run them. The gc / _fast_lora scan sees each module once, as modules() does.
+    ops, checkpointing = [], []
+    seen = set()
+    plain_walk = True
+    stack = [(model, False)]
+    while stack:
+        module, covered = stack.pop()
+        if module is None:
+            continue
+        train, plain_eval, gc, plain_setattr, walk = _mode_switch_class_info(type(module))
+        plain_walk = plain_walk and walk
+        if not covered:
+            if (
+                train is False
+                or "train" in module.__dict__
+                or (train == "kernels" and getattr(module, "use_kernels", False))
+                or (
+                    module is model
+                    and not training
+                    and (not plain_eval or "eval" in module.__dict__)
+                )
+            ):
+                ops.append((module, None))
+                covered = True
+            else:
+                ops.append((module, plain_setattr))
+        if id(module) in seen:
+            if covered or len(ops) > 64 * len(seen):  # nothing left to record, or a cycle
+                continue
+        else:
+            seen.add(id(module))
+            if _has_gradient_checkpointing(module, gc):
+                checkpointing.append(module)
+            if training:
+                for param in module._parameters.values():
+                    if param is not None and "_fast_lora" in param.__dict__:
+                        del param._fast_lora
+        if module._modules:
+            children = [child for child in module._modules.values() if child is not None]
+            if len(children) > 1:
+                # named_children() yields a module registered under two names once per parent.
+                children = list({id(child): child for child in children}.values())
+                children.reverse()
+            stack.extend([(child, covered) for child in children])
+    if not plain_walk:
+        # Some class enumerates modules / parameters its own way: scan as the old code did.
+        checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        if training:
+            for param in model.parameters():
+                if hasattr(param, "_fast_lora"):
+                    del param._fast_lora
+
+    def apply():
+        if (ops and ops[0][0] is model and ops[0][1] is None) or len(ops) > 64 * len(seen):
+            model.train() if training else model.eval()
+            return
+        for module, plain_setattr in ops:
+            if plain_setattr is None:
+                module.train(training)
+            # nn.Module.__setattr__ only routes Parameters / Modules / buffers; a bool lands in __dict__.
+            elif plain_setattr:
+                module.__dict__["training"] = training
+            else:
+                module.training = training
+
+    if defer:
+        return checkpointing, apply
+    apply()
+    return checkpointing
