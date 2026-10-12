@@ -19193,6 +19193,11 @@ def _check_signal_escape_patterns(code: str):
             ]
         return []
 
+    def _is_local_database_target(target: str) -> bool:
+        if target.startswith(("md:", "motherduck:", "\\\\", "//", "file://")):
+            return target.startswith(("file:///", "file://localhost/"))
+        return "://" not in target or target.startswith("file:")
+
     def _local_database_names(nodes) -> frozenset:
         imported: set[str] = set()
         other: set[str] = set()
@@ -20583,11 +20588,9 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                         host_lit = e0.value
                 elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    target = a0.value.lower()
                     if not (
                         self._names_local_database(node.func.value)
-                        and not target.startswith(("md:", "motherduck:"))
-                        and ("://" not in target or target.startswith("file:"))
+                        and _is_local_database_target(a0.value.lower())
                     ):
                         host_lit = a0.value
                 if host_lit:
