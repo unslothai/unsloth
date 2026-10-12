@@ -47,6 +47,9 @@ _unloads = 0
 _last_used = 0.0
 _idle_timer: threading.Timer | None = None
 _fallback_reason: str | None = None
+# A Clef a training run unloaded, reloading once the run ends; an unload cancels it instead of waiting.
+_reloading: Checkpoint | None = None
+TRAINING_POLL_S = 2.0
 # A llama.cpp decision server unloads after this long without a request.
 IDLE_UNLOAD_S = 300.0
 # Binaries (path, mtime) whose server answered without a "decisions" output.
@@ -1023,7 +1026,8 @@ def _load_checkpoint(checkpoint: Checkpoint):
         from .clef_runtime import ClefAgent, ClefWorkerError
 
         _evict()
-        agent = ClefAgent(root, cancelled = _training_active)
+        unloads = _unloads
+        agent = ClefAgent(root, cancelled = lambda: _training_active() or _unloads != unloads)
         # Training may have started while this loaded, and Clef has no CPU fallback.
         if _training_active():
             agent.close()
@@ -1340,11 +1344,16 @@ def _load(checkpoint: Checkpoint) -> None:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        logger.warning("System One load failed: %s", message, exc_info = True)
         with _state_lock:
-            _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
+            stale = _unloads != unloads
+            if not stale:
+                _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
             _loading = None
             _gpu_load = False
+        if stale:
+            logger.info("System One dropped %s: it was unloaded while it loaded", checkpoint.name)
+        else:
+            logger.warning("System One load failed: %s", message, exc_info = True)
         return
     with _state_lock:
         stale = _unloads != unloads
@@ -2273,23 +2282,71 @@ def status() -> dict[str, Any]:
 
 def ensure_can_unload() -> None:
     with _state_lock:
+        if _reloading is not None and _reloading == _loading:
+            return
         # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
 
 
-def unload() -> bool:
+def unload(reload_after_training: bool = False) -> bool:
     global _agent, _loaded, _device_name, _failure, _generation, _unloads
     ensure_can_unload()
     with _run_lock:
-        agent, was_loaded = _agent, _agent is not None
+        agent, was_loaded, checkpoint = _agent, _agent is not None, _loaded
         _agent = _loaded = _device_name = None
         _failure = None
         _generation += 1
         _unloads += 1
+        unloads = _unloads
     _close(agent)
     _release_memory()
+    if (
+        reload_after_training
+        and getattr(checkpoint, "layout", None) == "clef"
+        and not _arbitrated(checkpoint)
+    ):
+        threading.Thread(
+            target = _reload_after_training,
+            args = (checkpoint, unloads),
+            name = "systemone-reload",
+            daemon = True,
+        ).start()
     return was_loaded
+
+
+def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
+    global _reloading
+    from core.inference.gpu_arbiter import current_owner
+
+    while _training_active():
+        time.sleep(TRAINING_POLL_S)
+    with _state_lock:
+        # Anything since the run took the GPU (an unload, a settings change, another load or GPU owner) wins.
+        if (
+            _unloads != unloads
+            or _agent is not None
+            or _loading is not None
+            or current_owner() is not None
+        ):
+            return
+        _reloading = checkpoint
+    try:
+        loader = _ensure_loading(checkpoint)
+        if loader is not None:
+            loader.join()
+    except Unavailable:
+        pass
+    finally:
+        with _state_lock:
+            _reloading = None
+    agent = _agent
+    if agent is not None and _loaded == checkpoint:
+        # The first decision traces the compiled graphs; done now, a request does not wait for it.
+        try:
+            agent.decide("ready", {"ready": {"type": "noul"}})
+        except Exception:
+            logger.debug("Could not warm up %s", checkpoint.name, exc_info = True)
 
 
 def shutdown() -> None:
