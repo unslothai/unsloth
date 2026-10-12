@@ -62,7 +62,9 @@ def pack_multimodal_documents(docs: Sequence[dict], ignore_index: int = -100) ->
     for d in docs:
         if d["input_ids"].shape[0] != 1:
             raise ValueError("Unsloth: pack_multimodal_documents expects batch-of-one documents")
-    unknown = set().union(*(d.keys() for d in docs)) - set(_TOKEN_KEYS) - set(_MEDIA_PAD) - set(_DROPPED)
+    unknown = (
+        set().union(*(d.keys() for d in docs)) - set(_TOKEN_KEYS) - set(_MEDIA_PAD) - set(_DROPPED)
+    )
     if unknown:
         # Unproven keys: refuse rather than drop silently.
         raise ValueError(f"Unsloth: cannot pack multimodal key(s) {sorted(unknown)}")

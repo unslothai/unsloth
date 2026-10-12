@@ -267,8 +267,16 @@ def _efficient_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
     if n_kv_heads != n_heads:
         # The kernel has no GQA: repeat K / V heads as transformers' sdpa path does (autograd sums back).
         groups = n_heads // n_kv_heads
-        k = k.unsqueeze(3).expand(1, total, n_kv_heads, groups, head_dim).reshape(1, total, n_heads, head_dim)
-        v = v.unsqueeze(3).expand(1, total, n_kv_heads, groups, head_dim).reshape(1, total, n_heads, head_dim)
+        k = (
+            k.unsqueeze(3)
+            .expand(1, total, n_kv_heads, groups, head_dim)
+            .reshape(1, total, n_heads, head_dim)
+        )
+        v = (
+            v.unsqueeze(3)
+            .expand(1, total, n_kv_heads, groups, head_dim)
+            .reshape(1, total, n_heads, head_dim)
+        )
     return _EfficientVarlenAttention.apply(
         q, k, v, cu_seqlens.to(torch.int32), int(max_seqlen), float(scale), window
     )
@@ -378,7 +386,9 @@ def _sdpa_packed_varlen(
         elif not _sdpa_requested(query, key):
             torch_varlen = _torch_varlen(query.device)
             # An FA4 / FA3 impl behind torch's flash op lacks some shapes (sm100: hd 136-248, hd256 + window).
-            refused = torch_varlen is not None and not flash_impl_allows(head_dim, window, query.device)
+            refused = torch_varlen is not None and not flash_impl_allows(
+                head_dim, window, query.device
+            )
             if refused:
                 torch_varlen = None
             backend = select_attention_backend(use_varlen = True)

@@ -68,13 +68,17 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
 
     __slots__ = ("_checked_video_paths", "_padding_free")
 
-    def __init__(self, *args, padding_free = False, **kwargs):
+    def __init__(
+        self,
+        *args,
+        padding_free = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
         self._padding_free = bool(padding_free)
         if self._padding_free:
             from unsloth.utils.mm_packing import prepare_packed_multimodal_model
-
             prepare_packed_multimodal_model(args[0] if args else kwargs.get("model"))
 
     @property
@@ -84,7 +88,6 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     def __call__(self, examples):
         if getattr(self, "_padding_free", False):
             from unsloth.utils.mm_packing import pack_multimodal_documents
-
             return pack_multimodal_documents(
                 [self._collate_unpacked([example]) for example in examples],
                 ignore_index = self.ignore_index,
@@ -1851,9 +1854,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                         "Unsloth: packing=True ignored (this TRL version refuses it for processors)."
                     )
                 else:
-                    logger.info(
-                        "Unsloth: padding-free disabled for the processor (%s).", exc
-                    )
+                    logger.info("Unsloth: padding-free disabled for the processor (%s).", exc)
                 for _attr in ("packing", "padding_free"):
                     if hasattr(config_arg, _attr):
                         setattr(config_arg, _attr, False)

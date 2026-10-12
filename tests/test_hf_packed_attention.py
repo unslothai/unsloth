@@ -687,7 +687,13 @@ def _efficient_fresh(monkeypatch):
     monkeypatch.delenv(hpa._EFFICIENT_ENV, raising = False)
 
 
-def _wide_inputs(lengths, H, n_kv, D, scale = 0.1):
+def _wide_inputs(
+    lengths,
+    H,
+    n_kv,
+    D,
+    scale = 0.1,
+):
     T = sum(lengths)
 
     def make(heads):
@@ -727,7 +733,9 @@ def test_wide_heads_match_sdpa_over_the_dense_mask(_efficient_fresh, n_kv, windo
     assert fast.shape == ref.shape == (1, sum(lengths), H, D)
     torch.testing.assert_close(fast.float(), ref.float(), atol = 1e-2, rtol = 1e-2)
     g = torch.randn_like(ref)
-    for a, b in zip(torch.autograd.grad(fast, (q, k, v), g), torch.autograd.grad(ref, (q, k, v), g)):
+    for a, b in zip(
+        torch.autograd.grad(fast, (q, k, v), g), torch.autograd.grad(ref, (q, k, v), g)
+    ):
         torch.testing.assert_close(a.float(), b.float(), atol = 2e-2, rtol = 2e-2)
 
 
@@ -889,7 +897,9 @@ def test_a_non_contiguous_head_dim_is_copied_not_refused(_efficient_fresh):
     q = base[..., ::2]  # head dim 512 with stride 2
     assert q.stride(-1) == 2
     out = hpa._efficient_varlen(q, q, q, cu, 7, 512**-0.5, None)
-    ref = hpa._efficient_varlen(q.contiguous(), q.contiguous(), q.contiguous(), cu, 7, 512**-0.5, None)
+    ref = hpa._efficient_varlen(
+        q.contiguous(), q.contiguous(), q.contiguous(), cu, 7, 512**-0.5, None
+    )
     torch.testing.assert_close(out, ref)
 
 
@@ -922,7 +932,9 @@ def test_a_cuda_fault_in_the_efficient_kernel_is_not_a_refusal(_efficient_fresh,
 @_CUDA
 @_EFFICIENT_HOST
 @pytest.mark.parametrize("backend", ["sdpa", "flash_varlen"])
-def test_a_shape_the_flash_impl_refuses_takes_the_efficient_kernel(_efficient_fresh, monkeypatch, backend):
+def test_a_shape_the_flash_impl_refuses_takes_the_efficient_kernel(
+    _efficient_fresh, monkeypatch, backend
+):
     """FA4 on sm100 lacks hd256 + window: without flash-attn / xformers it takes the efficient kernel."""
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
     from unsloth.utils import attention_dispatch as ad
@@ -933,7 +945,9 @@ def test_a_shape_the_flash_impl_refuses_takes_the_efficient_kernel(_efficient_fr
     monkeypatch.setattr(flash_impl, "flash_impl_allows", lambda head_dim, window, device: False)
     monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: backend)
     dispatched = []
-    monkeypatch.setattr(ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"].transpose(1, 2))
+    monkeypatch.setattr(
+        ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"].transpose(1, 2)
+    )
     hpa._ORIG_SDPA[0] = sdpa_attention_forward
     torch.manual_seed(2)
     lengths, window = [9, 20, 4], 6
@@ -944,7 +958,13 @@ def test_a_shape_the_flash_impl_refuses_takes_the_efficient_kernel(_efficient_fr
     mask = _hf_window_mask(lengths, window, "cuda")
     before = dict(hpa.HF_PACKED_ATTENTION_STATS)
     fast, _ = hpa._sdpa_packed_varlen(
-        module, q, k, v, mask, scaling = 1.0, packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32)
+        module,
+        q,
+        k,
+        v,
+        mask,
+        scaling = 1.0,
+        packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
     )
     if backend == "flash_varlen":
         assert dispatched == [1]
@@ -955,7 +975,9 @@ def test_a_shape_the_flash_impl_refuses_takes_the_efficient_kernel(_efficient_fr
     ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 1.0)
     torch.testing.assert_close(fast.float(), ref.float(), atol = 1e-2, rtol = 1e-2)
     g = torch.randn_like(ref)
-    for a, b in zip(torch.autograd.grad(fast, (q, k, v), g), torch.autograd.grad(ref, (q, k, v), g)):
+    for a, b in zip(
+        torch.autograd.grad(fast, (q, k, v), g), torch.autograd.grad(ref, (q, k, v), g)
+    ):
         torch.testing.assert_close(a.float(), b.float(), atol = 2e-2, rtol = 2e-2)
 
 
@@ -970,7 +992,9 @@ def test_wide_heads_under_reentrant_checkpoint(_efficient_fresh):
     module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 4, training = True)
     q, k, v = _wide_inputs(lengths, 8, 2, 512)
     mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
-    fn = lambda q, k, v: hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 1.0, packed_seq_lengths = psl)[0]
+    fn = lambda q, k, v: hpa._sdpa_packed_varlen(
+        module, q, k, v, mask, scaling = 1.0, packed_seq_lengths = psl
+    )[0]
     out = checkpoint(fn, q, k, v, use_reentrant = True)
     g = torch.randn_like(out)
     out.backward(g)
@@ -992,7 +1016,9 @@ def test_wide_heads_leave_a_compiled_caller_alone(_efficient_fresh):
     mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
     before = dict(hpa.HF_PACKED_ATTENTION_STATS)
     fn = torch.compile(
-        lambda q: hpa._sdpa_packed_varlen(module, q, q, q, mask, scaling = 1.0, packed_seq_lengths = psl)[0],
+        lambda q: hpa._sdpa_packed_varlen(
+            module, q, q, q, mask, scaling = 1.0, packed_seq_lengths = psl
+        )[0],
         backend = "eager",
         fullgraph = True,
     )
@@ -1044,9 +1070,13 @@ def test_tiny_gemma4_packed_row_matches_each_document(_efficient_fresh, monkeypa
 
     def run():
         model.zero_grad()
-        out = model(input_ids = ids, position_ids = position_ids, packed_seq_lengths = psl, use_cache = False)
+        out = model(
+            input_ids = ids, position_ids = position_ids, packed_seq_lengths = psl, use_cache = False
+        )
         out.logits.float().square().mean().backward()
-        return out.logits.detach().float(), [p.grad.float() for p in model.parameters() if p.grad is not None]
+        return out.logits.detach().float(), [
+            p.grad.float() for p in model.parameters() if p.grad is not None
+        ]
 
     before = dict(hpa.HF_PACKED_ATTENTION_STATS)
     fast_logits, fast_grads = run()
@@ -1065,5 +1095,7 @@ def test_tiny_gemma4_packed_row_matches_each_document(_efficient_fresh, monkeypa
         start = 0
         for n in lengths:
             alone = model(input_ids = ids[:, start : start + n], use_cache = False).logits.float()
-            torch.testing.assert_close(fast_logits[:, start : start + n], alone, atol = 3e-2, rtol = 3e-2)
+            torch.testing.assert_close(
+                fast_logits[:, start : start + n], alone, atol = 3e-2, rtol = 3e-2
+            )
             start += n
