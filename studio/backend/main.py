@@ -64,6 +64,7 @@ if sys.platform == "win32":
     del _win_stream
 
 _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
+_LIVE_GPU_TELEMETRY_KEYS = ("gpu_utilization_pct", "temperature_c", "power_draw_w", "power_limit_w")
 _system_gpu_cache_lock = threading.Lock()
 _system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]] = None
 
@@ -2374,6 +2375,10 @@ def _get_cached_system_gpu_info(
             enriched_dev["vram_utilization_pct"] = util.get(
                 "vram_utilization_pct", dev.get("vram_utilization_pct")
             )
+            # Same probe, already paid for: the Live monitor's detailed view reads these.
+            for key in _LIVE_GPU_TELEMETRY_KEYS:
+                if key in util:
+                    enriched_dev[key] = util[key]
             enriched_devices.append(enriched_dev)
 
         # The tile divides the aggregate by the SUMMED per-device totals, so both must describe the same cards. The

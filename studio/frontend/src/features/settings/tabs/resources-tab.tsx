@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  MONITOR_DETAIL_METRICS,
+  formatPower,
+  formatTemperature,
+  gpuTelemetryRows,
+  selectedDetailMetrics,
+} from "@/components/monitor-details";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
@@ -264,7 +272,15 @@ export function ResourcesTab() {
   const dismissDriverWarning = useSettingsPanelPrefsStore(
     (s) => s.dismissDriverWarning,
   );
-  const { isOpen, setIsOpen } = useMonitorOverlayStore();
+  const {
+    isOpen,
+    setIsOpen,
+    showDetails,
+    setShowDetails,
+    detailMetrics: storedDetailMetrics,
+    setDetailMetric,
+  } = useMonitorOverlayStore();
+  const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   // always fetch once: the switch is persisted now, so gating the hook on it
   // would leave a session that opens with it off reading zeros forever.
   const systemInfo = useSystemInfo({
@@ -294,6 +310,10 @@ export function ResourcesTab() {
   const inferenceVramTotal = separateInferenceGpu
     ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
+  const telemetryRows =
+    showDetails && displayedGpu?.available
+      ? gpuTelemetryRows(displayedGpu.devices, detailMetrics)
+      : [];
 
   useEffect(() => {
     let cancelled = false;
@@ -668,7 +688,63 @@ export function ResourcesTab() {
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
+          {telemetryRows.map((row) => (
+            <MetricTile
+              key={row.key}
+              label={row.name}
+              value={
+                [
+                  row.temperatureC !== null
+                    ? formatTemperature(row.temperatureC)
+                    : null,
+                  row.powerDrawW !== null
+                    ? formatPower(row.powerDrawW, row.powerLimitW)
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "--"
+              }
+              detail={t("settings.resources.liveMonitor.gpuLoad")}
+              showUsage={detailMetrics.has("gpuLoad")}
+              percent={row.loadPct}
+            />
+          ))}
         </div>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.detailedView")}
+          description={t(
+            "settings.resources.liveMonitor.detailedViewDescription",
+          )}
+          className="border-t border-border/60"
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.detailedView")}
+            checked={showDetails}
+            onCheckedChange={setShowDetails}
+          />
+        </SettingsRow>
+        {showDetails && (
+          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
+            {MONITOR_DETAIL_METRICS.map((metric) => {
+              const label = t(`settings.resources.liveMonitor.${metric}`);
+              return (
+                <label
+                  key={metric}
+                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
+                >
+                  <Checkbox
+                    checked={detailMetrics.has(metric)}
+                    onCheckedChange={(checked) =>
+                      setDetailMetric(metric, checked === true)
+                    }
+                    aria-label={label}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+        )}
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>

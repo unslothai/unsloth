@@ -2109,6 +2109,13 @@ export const ptBR = {
         noGpu: "Nenhuma GPU visível",
         gpuUnusable: "GPU inutilizável",
         gpuUnusableDetail: "Detectada, mas o PyTorch não consegue usá-la",
+        detailedView: "Visualização detalhada",
+        detailedViewDescription:
+          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante e aqui.",
+        cpuLoad: "Carga da CPU",
+        gpuLoad: "Carga da GPU",
+        temperature: "Temperatura",
+        power: "Consumo",
       },
       gpu: {
         title: "Dispositivos de GPU",

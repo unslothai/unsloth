@@ -2100,6 +2100,13 @@ export const hi = {
         noGpu: "कोई दृश्यमान GPU नहीं",
         gpuUnusable: "GPU अनुपयोगी",
         gpuUnusableDetail: "पहचाना गया, लेकिन PyTorch इसका उपयोग नहीं कर सकता",
+        detailedView: "विस्तृत दृश्य",
+        detailedViewDescription:
+          "फ़्लोटिंग विंडो में और यहाँ CPU लोड तथा हर GPU का लोड, तापमान और पावर दिखाएँ।",
+        cpuLoad: "CPU लोड",
+        gpuLoad: "GPU लोड",
+        temperature: "तापमान",
+        power: "पावर",
       },
       gpu: {
         title: "GPU डिवाइस",

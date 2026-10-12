@@ -2070,6 +2070,13 @@ export const zhCN = {
         noGpu: "无可见 GPU",
         gpuUnusable: "GPU 不可用",
         gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
+        detailedView: "详细视图",
+        detailedViewDescription:
+          "在浮动窗口和此处显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
+        cpuLoad: "CPU 负载",
+        gpuLoad: "GPU 负载",
+        temperature: "温度",
+        power: "功耗",
       },
       gpu: {
         title: "GPU 设备",

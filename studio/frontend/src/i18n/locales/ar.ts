@@ -2097,6 +2097,13 @@ export const ar = {
         noGpu: "لا يوجد GPU مرئي",
         gpuUnusable: "GPU غير قابل للاستخدام",
         gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
+        detailedView: "عرض مفصل",
+        detailedViewDescription:
+          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة وهنا.",
+        cpuLoad: "حمل المعالج",
+        gpuLoad: "حمل GPU",
+        temperature: "الحرارة",
+        power: "الطاقة",
       },
       gpu: {
         title: "أجهزة GPU",
