@@ -238,6 +238,15 @@ class VideoFamily:
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
+    # Diffusers class serving a first-frame request over the loaded pipeline's components (video_i2v).
+    i2v_pipeline_class: Optional[str] = None
+    i2v_pipeline_config: tuple[tuple[str, object], ...] = field(default_factory = tuple)
+    # (identifier regex, ((kwarg, value), ...)); first matching row applies.
+    i2v_call_kwargs: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = field(
+        default_factory = tuple
+    )
+    # (identifier regex, refusal) for checkpoints the name tokens claim but this family cannot run.
+    unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
     # Guidance-distilled families expose neither CFG nor a negative prompt.
@@ -253,6 +262,25 @@ def _h3_480p_presets() -> tuple[tuple[int, int], ...]:
     if flag in ("0", "false", "no", "off"):
         return ()
     return ((864, 480), (480, 864))  # fastest
+
+
+# LTX-Video 0.9.x matches ltx-2's "ltx-video"/"ltxv" tokens but is another architecture; names of LTX-2 itself pass.
+_LTX_VIDEO_09_RE = (
+    r"^(?!.*(?<![a-z0-9])ltx[-_ ]?2(?:$|[-_ /.]))"
+    r"(?=.*(?<![a-z0-9])ltx(?:[-_ ]?video|v)(?:$|[-_ /.](?!2(?:$|[-_ /.]|\.\d))))"
+)
+_LTX_VIDEO_09_REFUSAL = (
+    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Studio does not "
+    "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
+)
+# Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+_HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
+_HV15_I2V_REFUSAL = (
+    "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
+    "transformer and SigLIP image encoder, which Studio does not load yet. Load a HunyuanVideo-1.5 "
+    "text-to-video checkpoint (hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v or "
+    "720p_t2v) instead."
+)
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
@@ -376,6 +404,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         # Block RMSNorm (hidden 4096) R0_BLOCK 4096 vs 2048 tie on B200: 3 of 6 cold servers rendered another clip.
         filter_reduction_configs = True,
+        i2v_pipeline_class = "LTX2ImageToVideoPipeline",
+        # LTX-2.3's reference workflow re-compresses the frame at CRF 18; LTX-2.0 keeps diffusers' 33.
+        i2v_call_kwargs = ((r"ltx[-_ ]?2[-_.]?3(?![0-9])", (("image_crf", 18),)),),
+        unsupported_checkpoints = ((_LTX_VIDEO_09_RE, _LTX_VIDEO_09_REFUSAL),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
@@ -416,6 +448,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
+        # expand_timesteps on the loaded config keeps the first-frame latent clean.
+        i2v_pipeline_class = "WanImageToVideoPipeline",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are
     # WanTransformer3DModel with boundary_ratio 0.875; high-noise steps route through transformer, low-noise through
@@ -466,6 +500,46 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
         # (video_moe_pair)
     ),
+    # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
+    VideoFamily(
+        name = "wan2.1-t2v-1.3b",
+        comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
+        pipeline_class = "WanPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b"),
+        has_audio = False,
+        default_steps = 30,
+        default_guidance = 6.0,
+        default_num_frames = 33,
+        default_fps = 16,
+        frame_step = 4,
+        resolution_multiple = 16,
+        resolution_presets = ((832, 480), (480, 832)),
+        bf16_components_gb = (2.8, 11.4, 0.5),
+        vae_force_fp32 = True,
+        cudnn_benchmark = False,
+    ),
+    # Wan2.1-T2V-14B: same keys as one Wan2.2 A14B expert, run as a single denoiser.
+    VideoFamily(
+        name = "wan2.1-t2v-14b",
+        comfy_flow_shift = 5.0,  # reference 14B workflow shift (the 1.3B uses 8); replaces the repo's flow_shift 3.0
+        pipeline_class = "WanPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+        aliases = ("wan2.1-14b", "wan21-t2v-14b", "wan21-14b"),
+        has_audio = False,
+        default_steps = 20,
+        default_guidance = 6.0,
+        default_num_frames = 33,
+        default_fps = 16,
+        frame_step = 4,
+        resolution_multiple = 16,
+        resolution_presets = ((832, 480), (1280, 720), (480, 832), (720, 1280)),
+        bf16_components_gb = (28.6, 11.4, 0.5),
+        vae_force_fp32 = True,
+        cudnn_benchmark = False,
+    ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG
     # on the ``guider``), no callback_on_step_end (generate() wraps scheduler.step), and no upstream model_index.json,
     # so only the community repacks load.
@@ -475,6 +549,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
@@ -508,6 +583,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
@@ -528,6 +604,75 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
     ),
 )
+
+
+# Wan2.1 / FastWan / AnyFlow names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan / AnyFlow
+# spellings so no other family's name can match. FastWan, AnyFlow, I2V and conditioning markers count only in the last path segment (an owner or folder
+# named "fastwan", "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun
+# release puts it.
+_WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
+_UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
+    (
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
+        "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
+        "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
+        "ship), so Studio cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
+        "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
+    ),
+    (
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
+        "This is an NVIDIA AnyFlow checkpoint. AnyFlow is a flow-map distillation of Wan2.1 whose "
+        "transformer takes a second (delta) timestep and samples through AnyFlowPipeline with "
+        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Studio loads cannot run it "
+        "faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
+    ),
+    (
+        r"(?:^|[/\\])(?=[^/\\]*"
+        + _WAN21_TOKEN
+        + r")(?=[^/\\]*(?<![a-z0-9])(?:i2v|flf2v)(?![a-z0-9]))"
+        r"[^/\\]*[/\\]*$",
+        "This is a Wan2.1 image-to-video checkpoint (I2V-14B 480P / 720P or FLF2V). It generates "
+        "from a start frame through its own image-conditioned transformer and a CLIP vision "
+        "encoder, which Studio does not load yet; image-to-video support is coming. Load a Wan2.1 "
+        "text-to-video checkpoint (Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
+        "Wan-AI/Wan2.1-T2V-14B-Diffusers) instead.",
+    ),
+    (
+        r"(?:^|[/\\])(?=[^/\\]*" + _WAN21_TOKEN + r")(?=[^/\\]*(?:(?<![a-z0-9])"
+        r"(?:vace|magref|phantom|multitalk|infinitetalk|controlnet|recammaster)|"
+        + _WAN21_TOKEN
+        + r"-fun)"
+        r"(?![a-z0-9]))[^/\\]*[/\\]*$",
+        "This is a Wan2.1 conditioning variant (VACE, Fun, MAGREF, Phantom, talking-head, "
+        "ControlNet or ReCamMaster). Its transformer takes extra control inputs the text-to-video "
+        "pipeline does not provide, so Studio cannot run it. Load a plain Wan2.1 text-to-video "
+        "checkpoint instead.",
+    ),
+)
+
+
+def unsupported_video_checkpoint_reason(
+    *identifiers: Optional[str], wan21_checkpoint: Optional[str] = None
+) -> Optional[str]:
+    """Why a Wan 2.1 / FastWan / AnyFlow pick cannot load, or None. ``wan21_checkpoint``: the selected checkpoint of a
+    pick that already resolved to a Wan2.1 family, whose last segment may omit the Wan2.1 token
+    (``i2v-14b-480p-Q4_K_M.gguf``) and is judged as if it carried it; containers never are."""
+    needles = [normalize_family_name(str(identifier)) for identifier in identifiers if identifier]
+    if wan21_checkpoint:
+        needle = normalize_family_name(str(wan21_checkpoint))
+        needles.append(needle)
+        name = re.split(r"[/\\]", needle.rstrip("/\\"))[-1]
+        # A leading "fun" is too generic to mark a Fun release unless it names one (version, size, InP, Control); the
+        # other markers are still judged.
+        generic_fun = re.match(r"fun(?![a-z0-9])", name) and not re.match(
+            r"fun-(?:v\d|1-3b|14b|inp|control)", name
+        )
+        needles.append(("wan2-1-t2v-" if generic_fun else "wan2-1-") + name)
+    for needle in needles:
+        for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
+            if re.search(pattern, needle):
+                return message
+    return None
 
 
 def _token_in_needle(token: str, needle: str) -> bool:
@@ -552,6 +697,9 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
         for fam in _FAMILIES:
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
+        return None
+    # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
+    if unsupported_video_checkpoint_reason(repo_id):
         return None
     needle = repo_id.lower()
     best: Optional[tuple[VideoFamily, int]] = None
@@ -846,8 +994,81 @@ def validate_video_request_shape(
             )
 
 
+def video_family_accepts_first_frame(fam: VideoFamily) -> bool:
+    return bool(
+        getattr(fam, "supports_keyframes", False) or getattr(fam, "i2v_pipeline_class", None)
+    )
+
+
+def video_family_accepts_last_frame(fam: VideoFamily) -> bool:
+    return bool(getattr(fam, "supports_keyframes", False))
+
+
+def video_family_uses_i2v_pipeline(fam: VideoFamily) -> bool:
+    return bool(getattr(fam, "i2v_pipeline_class", None)) and not getattr(
+        fam, "supports_keyframes", False
+    )
+
+
+def _identifier_blob(identifiers: tuple[Optional[str], ...]) -> list[str]:
+    return [str(i).strip().lower() for i in identifiers if i and str(i).strip()]
+
+
+def video_checkpoint_refusal(fam: VideoFamily, *identifiers: Optional[str]) -> Optional[str]:
+    """Identifiers are joined into one line so an LTX-2.3 filename excuses an ``ltx-video`` folder; the last segment
+    of the most specific identifier is also judged alone, so an LTX-2 folder cannot excuse an LTX-Video 0.9 file."""
+    names = _identifier_blob(identifiers)
+    joined = " | ".join(names)
+    pick = os.path.basename(names[-1].replace("\\", "/").rstrip("/")) if names else ""
+    for entry in getattr(fam, "unsupported_checkpoints", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        pattern, message = entry
+        try:
+            if any(text and re.search(pattern, text) for text in (pick, joined)):
+                return str(message)
+        except re.error:
+            continue
+    return None
+
+
+def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict[str, object]:
+    names = _identifier_blob(identifiers)
+    for entry in getattr(fam, "i2v_call_kwargs", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        pattern, pairs = entry
+        try:
+            if any(re.search(pattern, name) for name in names):
+                return {str(k): v for k, v in pairs}
+        except (re.error, TypeError, ValueError):
+            continue
+    return {}
+
+
+def first_frame_canvas(
+    fam: VideoFamily, aspect_width: float, aspect_height: float
+) -> tuple[int, int]:
+    """Nearest-aspect preset in log space; ties keep table order so the family default wins."""
+    import math
+
+    if aspect_width <= 0 or aspect_height <= 0:
+        raise ValueError(
+            f"The first frame has no usable aspect ratio ({aspect_width}x{aspect_height})."
+        )
+    presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
+    if not presets:
+        return snap_video_size(fam, int(aspect_width), int(aspect_height))
+    target = math.log(aspect_width / aspect_height)
+    return min(presets, key = lambda wh: abs(math.log(wh[0] / wh[1]) - target))
+
+
 def validate_video_keyframe_conditioning(
-    fam: VideoFamily, h3_task: Optional[str], *, has_keyframes: bool
+    fam: VideoFamily,
+    h3_task: Optional[str],
+    *,
+    has_keyframes: bool,
+    has_last_frame: bool = False,
 ) -> None:
     """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
 
@@ -856,14 +1077,16 @@ def validate_video_keyframe_conditioning(
     one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
     target for a request that was already known to be unservable.
     """
-    if not has_keyframes:
+    if not (has_keyframes or has_last_frame):
         return
     from .video_minimax_h3 import H3_TASK_REFERENCES
 
-    if not fam.supports_keyframes:
+    if not video_family_accepts_first_frame(fam):
         raise ValueError(
             f"{fam.name} generates from the prompt alone; it takes no first or last frame."
         )
+    if has_last_frame and not video_family_accepts_last_frame(fam):
+        raise ValueError(f"{fam.name} animates from a first frame only; it takes no last frame.")
     if h3_task == H3_TASK_REFERENCES:
         raise ValueError(
             "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "
@@ -954,12 +1177,26 @@ def validate_video_reference_conditioning(
 # first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
+    # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
+    ("fusionx", 8, 1.0),
     ("ltx", 40, 4.0),
     # T2V-A14B before the generic Wan key.
     ("a14b", 20, 3.5),
     ("wan2.2-14b", 20, 3.5),
+    # Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
+    ("wan2.1-t2v-14b", 20, 6.0),
+    ("wan2.1-14b", 20, 6.0),
+    ("wan21-t2v-14b", 20, 6.0),
+    ("wan21-14b", 20, 6.0),
+    ("wan2.1", 30, 6.0),
+    ("wan21", 30, 6.0),
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
+)
+# The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
+# checkpoint itself names.
+_NAME_SEGMENT_DEFAULT_KEYS = frozenset(
+    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx"))
 )
 
 
@@ -982,8 +1219,10 @@ def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
     """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
     ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
     for identifier in identifiers:
-        needle = (identifier or "").lower()
+        whole = (identifier or "").lower()
+        name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
+            needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
             if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(
