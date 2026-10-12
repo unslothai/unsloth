@@ -1435,12 +1435,7 @@ def test_yue2_takes_the_description_as_its_required_style():
     b.generate_audio_response("[chorus] oh", instructions = "rock, male vocal")
     request = srv.calls[0][1]["request"]
     assert request["text"] == "[chorus] oh"
-    assert request["options"] == {
-        "style": "rock, male vocal",
-        "lyrics": "[chorus] oh",
-        "semantic_max_tokens": 3072,
-        "semantic_min_tokens": 200,
-    }
+    assert request["options"] == {"style": "rock, male vocal", "lyrics": "[chorus] oh"}
     with pytest.raises(RuntimeError, match = "style"):
         b.generate_audio_response("[chorus] oh")
 
@@ -2104,17 +2099,13 @@ def test_stt_takes_the_variant_keys_gguf_variants_lists_even_from_a_partial_cach
     assert stem.variant.key == "Q8_0" and stem.unsupported is None
 
 
-def test_yue2_length_follows_the_requested_duration():
+def test_yue2_runs_to_its_own_ending_whatever_the_token_budget():
     b, srv = _backend_with(_speech_model("yue2"), MUSIC_REPLY)
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 125)
-    options = srv.calls[0][1]["request"]["options"]
-    # 5 s at 25 frames per second, with the 200-frame default lowered to fit; the cap is 1.5x.
-    assert options["semantic_max_tokens"] == 188 and options["semantic_min_tokens"] == 125
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 1500)
-    options = srv.calls[1][1]["request"]["options"]
-    assert options["semantic_max_tokens"] == 2250 and options["semantic_min_tokens"] == 200
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 6000)
-    assert srv.calls[2][1]["request"]["options"]["semantic_max_tokens"] == 9000
+    for budget in (125, 1500, 6000):
+        b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = budget)
+    for call in srv.calls:
+        options = call[1]["request"]["options"]
+        assert "semantic_max_tokens" not in options and "semantic_min_tokens" not in options
 
 
 def test_music_requests_missing_a_required_field_are_a_400_message():
