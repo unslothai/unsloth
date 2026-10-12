@@ -28,6 +28,7 @@ _HEADERS = json.loads(
 _I2V = "image-to-video"
 _VARIANT = "conditioning variant"
 _FASTWAN = "FastWan"
+_ANYFLOW = "NVIDIA AnyFlow checkpoint"
 
 # (identifier, family on this branch). Rows above the marker are what main already detected and must not move; the
 # Wan2.1 rows below it all detected None on main.
@@ -437,3 +438,54 @@ def test_vae_untiled_tables_cover_wan21():
     for fam in ("wan2.1-t2v-1.3b", "wan2.1-t2v-14b"):
         assert vu._BYTES_PER_LATENT_PIXEL[fam] == vu._BYTES_PER_LATENT_PIXEL["wan2.2-t2v-a14b"]
         assert vu._OUTPUT_SCALE[fam] == (8, 4)
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        "nvidia/AnyFlow-Wan2.1-T2V-14B-Diffusers",
+        "nvidia/AnyFlow-Wan2.1-T2V-1.3B-Diffusers",
+        "nvidia/AnyFlow-FAR-Wan2.1-14B-Diffusers",
+        "/models/AnyFlow-Wan2.1-T2V-1.3B-Diffusers/",
+    ],
+)
+def test_anyflow_is_refused(identifier):
+    from core.inference.video import VideoBackend
+    assert _ANYFLOW in vf.unsupported_video_checkpoint_reason(identifier)
+    assert vf.detect_video_family(identifier) is None
+    with pytest.raises(ValueError, match = _ANYFLOW):
+        VideoBackend().validate_load_request(identifier)
+
+
+def test_anyflow_owner_or_folder_does_not_refuse():
+    assert vf.unsupported_video_checkpoint_reason("/home/anyflow/Wan2.1-T2V-14B-Diffusers") is None
+
+
+@pytest.mark.parametrize(
+    "repo, kwargs, reason",
+    [
+        (
+            "city96/Wan2.1-I2V-14B-480P-gguf",
+            {"gguf_filename": "wan2.1-i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"},
+            _I2V,
+        ),
+        ("someorg/opaque-gguf", {"gguf_filename": "i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"}, _I2V),
+        ("FastVideo/FastWan2.1-T2V-1.3B-Diffusers", {}, "FastVideo FastWan checkpoint"),
+        ("nvidia/AnyFlow-Wan2.1-T2V-14B-Diffusers", {}, _ANYFLOW),
+    ],
+)
+def test_family_override_does_not_bypass_the_refusal(repo, kwargs, reason):
+    from core.inference.video import VideoBackend
+    with pytest.raises(ValueError, match = reason):
+        VideoBackend().validate_load_request(repo, family_override = "wan2.1-t2v-14b", **kwargs)
+
+
+@pytest.mark.parametrize("folder", ["i2v", "vace", "fun"])
+def test_wan21_context_is_added_only_to_the_picked_file(tmp_path, folder):
+    from core.inference.video import VideoBackend
+    (tmp_path / folder).mkdir()
+    _write_gguf(tmp_path / folder / "Wan2.1-T2V-1.3B-Q8_0.gguf", _row("Wan2.1-T2V-1.3B-Q8_0.gguf")["shapes"], "wan")
+    fam = VideoBackend().validate_load_request(
+        str(tmp_path / folder), gguf_filename = "Wan2.1-T2V-1.3B-Q8_0.gguf", model_kind = "gguf"
+    )
+    assert fam.name == "wan2.1-t2v-1.3b"

@@ -477,8 +477,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 )
 
 
-# Wan2.1 / FastWan names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan spellings so no other
-# family's name can match. FastWan, I2V and conditioning markers count only in the last path segment (an owner or folder
+# Wan2.1 / FastWan / AnyFlow names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan / AnyFlow
+# spellings so no other family's name can match. FastWan, AnyFlow, I2V and conditioning markers count only in the last path segment (an owner or folder
 # named "fastwan", "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun
 # release puts it.
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
@@ -489,6 +489,13 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
         "ship), so Studio cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
         "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
+    ),
+    (
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
+        "This is an NVIDIA AnyFlow checkpoint. AnyFlow is a flow-map distillation of Wan2.1 whose "
+        "transformer takes a second (delta) timestep and samples through AnyFlowPipeline with "
+        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Studio loads cannot run it "
+        "faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*" + _WAN21_TOKEN + r")(?=[^/\\]*(?<![a-z0-9])(?:i2v|flf2v)(?![a-z0-9]))"
@@ -511,16 +518,19 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
 )
 
 
-def unsupported_video_checkpoint_reason(*identifiers: Optional[str], wan21: bool = False) -> Optional[str]:
-    """Why a Wan 2.1 / FastWan pick cannot load, or None. ``wan21``: the pick already resolved to a Wan2.1 family, so
-    a last segment that omits the Wan2.1 token (``i2v-14b-480p-Q4_K_M.gguf``) is judged as if it carried it."""
-    for identifier in identifiers:
-        if not identifier:
-            continue
-        needle = normalize_family_name(str(identifier))
-        needles = (needle, "wan2-1-" + re.split(r"[/\\]", needle.rstrip("/\\"))[-1]) if wan21 else (needle,)
+def unsupported_video_checkpoint_reason(
+    *identifiers: Optional[str], wan21_checkpoint: Optional[str] = None
+) -> Optional[str]:
+    """Why a Wan 2.1 / FastWan / AnyFlow pick cannot load, or None. ``wan21_checkpoint``: the selected checkpoint of a
+    pick that already resolved to a Wan2.1 family, whose last segment may omit the Wan2.1 token
+    (``i2v-14b-480p-Q4_K_M.gguf``) and is judged as if it carried it; containers never are."""
+    needles = [normalize_family_name(str(identifier)) for identifier in identifiers if identifier]
+    if wan21_checkpoint:
+        needle = normalize_family_name(str(wan21_checkpoint))
+        needles += [needle, "wan2-1-" + re.split(r"[/\\]", needle.rstrip("/\\"))[-1]]
+    for needle in needles:
         for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
-            if any(re.search(pattern, n) for n in needles):
+            if re.search(pattern, needle):
                 return message
     return None
 
