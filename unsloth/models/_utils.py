@@ -5267,6 +5267,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 _decline_fused_lora_for_fsdp(getattr(self, "model", None))
             _replan_auto_offload_safely(self)
             _block_swap_for_trainer_backend(self)
+            _enable_ddp_batched_grad_copy(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -7852,6 +7853,114 @@ def _attach_block_swap(model, offload_layers, prefetch_depth):
     layers._unsloth_block_swap = swapper
     model._unsloth_block_swap = swapper
     return swapper
+
+
+_DDP_BGC_KWARG = "batched_grad_copy"
+_DDP_BGC_HANDLER_CLASSES = {}
+_DDP_BGC_PRINTED = False
+
+
+def _ddp_batched_grad_copy_reason(accelerator):
+    """Why DDP must not get batched_grad_copy = True, or None. Opt-in: UNSLOTH_DDP_BATCHED_GRAD_COPY=1."""
+    if os.environ.get("UNSLOTH_DDP_BATCHED_GRAD_COPY", "0") != "1":
+        return "off"
+    if accelerator is None:
+        return "no accelerator"
+    # Plain DDP only: FSDP / DeepSpeed / Megatron / XLA never build torch DDP from ddp_handler.
+    distributed_type = str(getattr(getattr(accelerator, "distributed_type", None), "value", ""))
+    if not distributed_type.startswith("MULTI_"):
+        return f"distributed type {distributed_type or None}"
+    state = getattr(accelerator, "state", None)
+    for plugin in ("fsdp_plugin", "deepspeed_plugin", "megatron_lm_plugin"):
+        if (
+            getattr(state, plugin, None) is not None
+            or getattr(accelerator, plugin, None) is not None
+        ):
+            return plugin
+    try:
+        parameters = inspect.signature(
+            torch.nn.parallel.DistributedDataParallel.__init__
+        ).parameters
+    except (TypeError, ValueError):
+        return "torch DDP signature unavailable"
+    if _DDP_BGC_KWARG not in parameters:
+        return f"torch {torch.__version__} DDP has no {_DDP_BGC_KWARG}"
+    return None
+
+
+def _ddp_batched_grad_copy_handler(handler):
+    """The DDP kwargs handler with batched_grad_copy = True, never an instance attribute (to_kwargs diffs __dict__ against a fresh default)."""
+    from accelerate.utils import DistributedDataParallelKwargs
+
+    if handler is None:
+        handler = DistributedDataParallelKwargs()
+    if not isinstance(handler, DistributedDataParallelKwargs):
+        return handler
+    if _DDP_BGC_KWARG in getattr(type(handler), "__dataclass_fields__", {}):
+        setattr(handler, _DDP_BGC_KWARG, True)
+        return handler
+    cls = type(handler)
+    if getattr(cls, "_unsloth_batched_grad_copy", False):
+        return handler
+    subclass = _DDP_BGC_HANDLER_CLASSES.get(cls)
+    if subclass is None:
+
+        def to_kwargs(self):
+            kwargs = super(subclass, self).to_kwargs()
+            kwargs[_DDP_BGC_KWARG] = True
+            return kwargs
+
+        subclass = type(
+            cls.__name__,
+            (cls,),
+            {
+                "to_kwargs": to_kwargs,
+                "_unsloth_batched_grad_copy": True,
+                "__module__": cls.__module__,
+            },
+        )
+        _DDP_BGC_HANDLER_CLASSES[cls] = subclass
+    handler.__class__ = subclass
+    return handler
+
+
+def _enable_ddp_batched_grad_copy(trainer):
+    """Pass batched_grad_copy = True (torch >= 2.13) to the DDP accelerate builds in prepare, when opted in."""
+    global _DDP_BGC_PRINTED
+    accelerator = getattr(trainer, "accelerator", None)
+    try:
+        reason = _ddp_batched_grad_copy_reason(accelerator)
+        if reason is not None:
+            if reason != "off" and not _DDP_BGC_PRINTED:
+                _DDP_BGC_PRINTED = True
+                print(f"Unsloth: DDP batched_grad_copy = False ({reason}).")
+            return False
+        accelerator.ddp_handler = _ddp_batched_grad_copy_handler(accelerator.ddp_handler)
+        # transformers 4.x replaces ddp_handler in _wrap_model, after __init__ and before prepare: re-apply there.
+        prepare_model = accelerator.prepare_model
+        if not getattr(prepare_model, "_unsloth_batched_grad_copy", False):
+
+            @functools.wraps(prepare_model)
+            def _prepare_model_batched_grad_copy(*args, **kwargs):
+                try:
+                    accelerator.ddp_handler = _ddp_batched_grad_copy_handler(
+                        accelerator.ddp_handler
+                    )
+                except Exception:
+                    pass
+                return prepare_model(*args, **kwargs)
+
+            _prepare_model_batched_grad_copy._unsloth_batched_grad_copy = True
+            accelerator.prepare_model = _prepare_model_batched_grad_copy
+        if not _DDP_BGC_PRINTED:
+            _DDP_BGC_PRINTED = True
+            print("Unsloth: DDP batched_grad_copy = True (UNSLOTH_DDP_BATCHED_GRAD_COPY=1).")
+        return True
+    except Exception as e:
+        if not _DDP_BGC_PRINTED:
+            _DDP_BGC_PRINTED = True
+            print(f"Unsloth: DDP batched_grad_copy = False ({e}).")
+        return False
 
 
 _REPLAN_FAILED_PRINTED = False
