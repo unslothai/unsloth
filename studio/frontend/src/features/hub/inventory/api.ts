@@ -363,11 +363,12 @@ export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
   cachePath?: string | null,
+  hfToken?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...hubTokenHeader(hfToken) },
       body: JSON.stringify(
         variant
           ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }

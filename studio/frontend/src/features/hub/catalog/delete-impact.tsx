@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { formatBytes } from "@/features/hub/lib/format";
 import { fetchDeleteImpact, type DeleteImpact } from "../inventory";
+import { useHfTokenStore } from "../stores/hf-token-store";
 
 /**
  * Load the delete preview for a confirm dialog while it is open.
@@ -21,19 +22,25 @@ export function useDeleteImpact(
   cachePath?: string | null,
 ): DeleteImpact | null {
   const [impact, setImpact] = useState<DeleteImpact | null>(null);
+  const hfToken = useHfTokenStore((state) => state.token);
   useEffect(() => {
     if (!open) {
       setImpact(null);
       return;
     }
     let cancelled = false;
-    void fetchDeleteImpact(repoId, variant ?? undefined, cachePath ?? undefined).then((result) => {
+    void fetchDeleteImpact(
+      repoId,
+      variant ?? undefined,
+      cachePath ?? undefined,
+      hfToken || undefined,
+    ).then((result) => {
       if (!cancelled) setImpact(result);
     });
     return () => {
       cancelled = true;
     };
-  }, [open, repoId, variant, cachePath]);
+  }, [open, repoId, variant, cachePath, hfToken]);
   return impact;
 }
 
