@@ -1477,7 +1477,8 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     # The branch handed to both the forced recall and a model-initiated search is the
     # accumulated one, never the request's own messages.
     assert "branch_messages = _extend_live_branch(" in text
-    assert 'kwargs["conversation_branch"] = _extend_live_branch(' in text
+    assert "list(_extend_live_branch(conversation))" in text
+    assert 'kwargs["conversation_branch"] = _branch' in text
     assert "branch_messages = _request_branch" not in text
     assert 'kwargs["conversation_branch"] = _request_branch' not in text
     # And the boundary is still measured against the client's messages, which is what it

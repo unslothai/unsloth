@@ -42640,10 +42640,18 @@ class LlamaCppBackend:
 
                         # Only a call the user answered: the executor lets it reach the host paths it names.
                         _host_access_approved = _decision not in (None, "deny")
+                        # Built here, on the generator thread, and copied: read from a worker,
+                        # an overlapped call saw whichever siblings had settled by then.
+                        _call_branch = (
+                            list(_extend_live_branch(conversation))
+                            if accepts_kwarg(execute_tool, "conversation_branch")
+                            else None
+                        )
 
                         def _invoke_tool(
                             _output_callback,
                             _decision = decision,
+                            _branch = _call_branch,
                             _approved = _host_access_approved,
                             _strict = strict_isolation,
                             _share = image_share,
@@ -42681,8 +42689,8 @@ class LlamaCppBackend:
                             # Same branch the forced recall is filtered against, so a
                             # model-initiated search cannot reach a sibling response the
                             # forced recall correctly refused.
-                            if accepts_kwarg(execute_tool, "conversation_branch"):
-                                kwargs["conversation_branch"] = _extend_live_branch(conversation)
+                            if _branch is not None:
+                                kwargs["conversation_branch"] = _branch
                             if _approved and accepts_kwarg(execute_tool, "host_access_approved"):
                                 kwargs["host_access_approved"] = True
                             # And the room actually left: the model picks its own top_k and
