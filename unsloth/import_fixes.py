@@ -6616,13 +6616,9 @@ def check_triton_py_ssize_t_clean():
 
 
 def fix_triton_module_cache_python_key():
-    """Key triton < 3.4's compiled driver modules by Python version (unsloth #2760).
-
-    triton 3.2 / 3.3 (torch 2.6 / 2.7) cache `cuda_utils.so` and every launcher under a hash
-    of the C source alone, so a module Python 3.13 built is reused by Python 3.12, where its
-    `PyArg_ParseTuple` is the pre-3.13 symbol and the first kernel launch dies with
-    `SystemError: PY_SSIZE_T_CLEAN macro must be defined for '#' formats`. triton 3.4 keys
-    the file on EXT_SUFFIX; this does the same by tagging the source, so the hash differs.
+    """#2760: triton 3.2 / 3.3 cache `cuda_utils.so` and launchers by C source hash alone, so
+    Python 3.12 reuses a 3.13 build and the first launch raises `SystemError: PY_SSIZE_T_CLEAN
+    macro must be defined for '#' formats`. Tag the source with EXT_SUFFIX, as triton 3.4 keys it.
     """
     try:
         if importlib.util.find_spec("triton") is None:

@@ -73,7 +73,6 @@ def test_triton_33_driver_modules_are_keyed_by_python(monkeypatch, tmp_path):
     assert name == "cuda_utils"
     assert src.startswith("driver.c source")
     assert sysconfig.get_config_var("EXT_SUFFIX") in src
-    # Idempotent: one tag, one wrapper.
     assert src.count("unsloth:") == 1
     assert not getattr(module.compile_module_from_src.__wrapped__, "__unsloth_patched__", False)
 
