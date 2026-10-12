@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""pack_multimodal_documents: per-document collated batches -> one padding-free row.
-
-The model-level oracle (each packed document's logits and LoRA grads, including the vision and
-audio towers and the projector, equal the document run alone) needs a GPU and a tiny Gemma 4;
-these tests pin the row layout it relies on. No GPU.
-"""
+"""pack_multimodal_documents row layout (CPU only)."""
 
 from types import SimpleNamespace
 
@@ -52,7 +47,6 @@ def test_layout_positions_lengths_and_boundary_labels():
     assert out["position_ids"].tolist() == [[0, 1, 2, 0, 1, 2, 3, 0, 1]]
     assert out["packed_seq_lengths"].tolist() == [3, 4, 2]
     assert out["packed_seq_lengths"].dtype == torch.int32
-    # No document predicts the next one's first token.
     assert out["labels"].tolist() == [[1, 2, 3, -100, 9, 9, 5, -100, 7]]
     assert out["mm_token_type_ids"].tolist() == [[0, 0, 0, 0, 1, 1, 0, 0, 0]]
     assert "attention_mask" not in out
@@ -64,7 +58,7 @@ def test_media_concatenate_in_document_order_and_pad_with_the_model_padding():
     out = pack_multimodal_documents(docs)
     pv, pos = out["pixel_values"], out["image_position_ids"]
     assert pv.shape == (3, 8, 4) and pos.shape == (3, 8, 2)
-    assert pv[:2, :6].eq(2.0).all() and pv[2].eq(3.0).all()  # document order kept
+    assert pv[:2, :6].eq(2.0).all() and pv[2].eq(3.0).all()
     assert pv[:2, 6:].eq(0).all()
     assert pos[:2, 6:].eq(-1).all() and pos[:2, :6].eq(1).all()  # (-1, -1) = padding patch
 

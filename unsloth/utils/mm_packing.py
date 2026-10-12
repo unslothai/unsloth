@@ -3,28 +3,9 @@
 
 """Padding-free (packed) rows for multimodal documents (images, audio).
 
-``UnslothVisionDataCollator(model, processor, padding_free = True)`` turns a batch of documents
-into one row:
-
-* every document is collated on its own (batch of one, so no padding), which keeps each
-  document's tokenization, image resizing and label masking exactly as the stock collator does;
-* token-aligned tensors (``input_ids``, ``labels``, ``mm_token_type_ids``, ``token_type_ids``)
-  are concatenated along the sequence; ``position_ids`` restart at 0 for every document and
-  ``packed_seq_lengths`` names the document boundaries; the first label of every document after
-  the first is masked so no document predicts the next one's first token;
-* media tensors are concatenated along their item axis in document order (images and audio
-  clips are consumed in order by ``masked_scatter``), padding the patch / frame axis with the
-  model's own padding values when documents disagree (``image_position_ids`` / pixel position
-  ids ``-1``, audio mask ``False``), which the towers already mask out.
-
-Attention stays exact without any new kernel: the model builds its mask from the restarted
-``position_ids`` (transformers ANDs a packed-sequence mask in last, after Gemma's bidirectional
-image blocks), so image blocks never cross a document boundary. Calls whose mask is block-causal
-(global layers, rows without image blocks) take the packed varlen route; calls with a
-bidirectional image block fail its block-causal check and run dense SDPA with that exact mask.
-
-Only models whose packed mask is built from 2D ``position_ids`` are accepted: the Qwen2-VL family
-(multimodal RoPE) needs 4-row position ids and is refused.
+Each document is collated alone, then concatenated; ``position_ids`` restart per document, from
+which transformers builds a mask so image blocks never cross a document boundary. Qwen2-VL style
+models (4-row multimodal RoPE position ids) are refused.
 """
 
 from __future__ import annotations
@@ -39,12 +20,10 @@ __all__ = [
     "SUPPORTED_PACKED_MULTIMODAL_MODEL_TYPES",
 ]
 
-# Proven by the per-document oracle (tests/test_mm_packing.py, scripts/g4mm_g3_oracle.py).
 SUPPORTED_PACKED_MULTIMODAL_MODEL_TYPES = frozenset({"gemma4"})
 
-# Concatenated along dim 1 (sequence).
 _TOKEN_KEYS = ("input_ids", "labels", "mm_token_type_ids", "token_type_ids")
-# Concatenated along dim 0 (item); value used to pad any mismatched trailing axis.
+# Media key -> value padding a mismatched trailing axis (the towers mask these out).
 _MEDIA_PAD = {
     "pixel_values": 0.0,
     "image_position_ids": -1,
@@ -64,7 +43,7 @@ def _pad_to(t: torch.Tensor, shape: Sequence[int], value) -> torch.Tensor:
 
 
 def _strip_padding(doc: dict) -> dict:
-    """A batch-of-one can still carry padding (pad_to_multiple_of); drop it by attention_mask."""
+    # Batch-of-one can still be padded (pad_to_multiple_of).
     am = doc.get("attention_mask")
     if am is None or bool(am.all()):
         return doc
@@ -77,7 +56,6 @@ def _strip_padding(doc: dict) -> dict:
 
 
 def pack_multimodal_documents(docs: Sequence[dict], ignore_index: int = -100) -> dict:
-    """Merge per-document collated batches (each batch size 1) into one packed row."""
     if not docs:
         raise ValueError("Unsloth: no documents to pack")
     docs = [_strip_padding(d) for d in docs]
@@ -86,7 +64,7 @@ def pack_multimodal_documents(docs: Sequence[dict], ignore_index: int = -100) ->
             raise ValueError("Unsloth: pack_multimodal_documents expects batch-of-one documents")
     unknown = set().union(*(d.keys() for d in docs)) - set(_TOKEN_KEYS) - set(_MEDIA_PAD) - set(_DROPPED)
     if unknown:
-        # e.g. pixel_values_videos, image_grid_thw: not proven, refuse rather than drop silently.
+        # Unproven keys: refuse rather than drop silently.
         raise ValueError(f"Unsloth: cannot pack multimodal key(s) {sorted(unknown)}")
 
     lengths = [int(d["input_ids"].shape[1]) for d in docs]
@@ -98,7 +76,6 @@ def pack_multimodal_documents(docs: Sequence[dict], ignore_index: int = -100) ->
         if not all(present):
             if key == "labels":
                 raise ValueError("Unsloth: some documents have labels and some do not")
-            # mm_token_type_ids / token_type_ids are 0 on text tokens.
             parts = [d[key] if key in d else torch.zeros_like(d["input_ids"]) for d in docs]
         else:
             parts = [d[key] for d in docs]
@@ -124,7 +101,6 @@ def pack_multimodal_documents(docs: Sequence[dict], ignore_index: int = -100) ->
         if any(p.dim() != parts[0].dim() for p in parts):
             raise ValueError(f"Unsloth: {key} rank differs between documents")
         out[key] = torch.cat([_pad_to(p, trailing, pad) for p in parts], dim = 0)
-    # Media whose padding mask is a separate key must pad consistently.
     if "input_features" in out and "input_features_mask" not in out:
         raise ValueError("Unsloth: input_features without input_features_mask cannot be packed")
     return out
@@ -148,8 +124,6 @@ def _model_types(config) -> set:
 
 
 def prepare_packed_multimodal_model(model) -> None:
-    """Refuse models the per-document oracle has not proven, then switch on the packed attention
-    route and the over-length allowance packed rows need."""
     types = _model_types(getattr(model, "config", None))
     if not types & SUPPORTED_PACKED_MULTIMODAL_MODEL_TYPES:
         raise ValueError(

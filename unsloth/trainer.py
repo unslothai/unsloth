@@ -71,8 +71,6 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     def __init__(self, *args, padding_free = False, **kwargs):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
-        # padding_free=True packs every batch into one row (documents keep their own positions,
-        # images, audio and attention); see unsloth/utils/mm_packing.py.
         self._padding_free = bool(padding_free)
         if self._padding_free:
             from unsloth.utils.mm_packing import prepare_packed_multimodal_model
