@@ -2585,6 +2585,16 @@ def _total_host_memory_mib() -> Optional[int]:
         return None
 
 
+def _process_alive(process) -> bool:
+    """Whether a server's `Popen` is still running: None, or one `poll()` reports exited, is not."""
+    if process is None:
+        return False
+    try:
+        return process.poll() is None
+    except Exception:
+        return True
+
+
 def _neighbour_parking_commitments(backend) -> tuple[list, bool]:
     """``([(neighbour, MiB)], unlimited)`` for every other server that may park into host RAM: an
     exact one up to the writes it certified, any other up to the budget it was launched with.
@@ -2594,9 +2604,10 @@ def _neighbour_parking_commitments(backend) -> tuple[list, bool]:
         if getattr(other, "_parking_reserving_mib", None):
             # Launching: the budget it named is not registered yet, but it may park up to it.
             commitment = other._parking_reserving_mib
-        elif getattr(other, "_process", None) is None:
-            # No server: a load that failed after launching, or one since stopped, parks
-            # nothing, whatever its launch flags still say.
+        elif not _process_alive(getattr(other, "_process", None)):
+            # No server: a load that failed after launching, one since stopped, or one that
+            # exited on its own (an OOM kill leaves `_process` set), parks nothing, whatever its
+            # launch flags still say.
             continue
         elif getattr(other, "_exact_concurrency", None) == _exact.EXACT_STATE_ON:
             commitment = getattr(other, "_exact_parking_writes", 0)

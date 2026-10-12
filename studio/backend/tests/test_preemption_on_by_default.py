@@ -486,6 +486,25 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._exact_host_free_mib(me) == 10_000
         assert llama_mod._neighbour_parking_commitments(me) == ([], False)
 
+    def test_a_server_that_exited_on_its_own_parks_nothing(self, monkeypatch):
+        # An OOM kill leaves `_process` set; only `poll()` says it is gone.
+        from core.inference import llama_exact as exact
+
+        class _Exited:
+            def poll(self):
+                return -9
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        dead = self._backend(exact.EXACT_STATE_ON, 8_000)
+        dead._server_launched_parking = True
+        dead._launched_parking_mib = 8_000
+        dead._process = _Exited()
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, dead])
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
+        assert llama_mod._neighbour_parking_commitments(me) == ([], False)
+        assert llama_mod._exact_host_free_mib(me) == 10_000
+
     def test_a_launch_in_flight_reserves_the_budget_it_named(self, monkeypatch):
         # Two backends launching together: the second sizes while the first has named its
         # budget but not registered, so the first's figure has to be visible already.
