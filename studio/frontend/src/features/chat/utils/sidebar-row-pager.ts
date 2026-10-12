@@ -87,8 +87,10 @@ export class RowPager<Q, T extends { id: string }> {
     return () => this.listeners.delete(listener);
   }
 
-  private patch(next: Partial<RowPagerState<T>>): void {
+  /** `quiet` stores without telling listeners: nothing on screen changed, so no render is owed. */
+  private patch(next: Partial<RowPagerState<T>>, quiet = false): void {
     this.state = { ...this.state, ...next };
+    if (quiet) return;
     for (const listener of this.listeners) listener();
   }
 
@@ -136,21 +138,33 @@ export class RowPager<Q, T extends { id: string }> {
   refresh(): Promise<void> {
     const generation = ++this.generation;
     const window = Math.max(this.options.initialLimit, this.state.rows.length);
-    this.patch({ loading: true });
+    // a loaded list keeps showing its rows while it re-reads them
+    this.patch({ loading: true }, this.state.loaded);
     const run = (async () => {
       try {
         const result = await this.read(null, window, generation);
         if (generation !== this.generation) return;
         this.cursor = result.cursor;
         this.stale = false;
-        this.patch({
-          rows: result.rows,
-          hasMore: result.hasMore,
-          total: result.total,
-          loaded: true,
-          loading: false,
-          error: null,
-        });
+        const prev = this.state;
+        // a history change elsewhere re-reads every list; one that reads the same rows renders nothing
+        const same =
+          prev.loaded &&
+          prev.error === null &&
+          prev.hasMore === result.hasMore &&
+          prev.total === result.total &&
+          JSON.stringify(prev.rows) === JSON.stringify(result.rows);
+        this.patch(
+          {
+            rows: same ? prev.rows : result.rows,
+            hasMore: result.hasMore,
+            total: result.total,
+            loaded: true,
+            loading: false,
+            error: null,
+          },
+          same,
+        );
       } catch (error) {
         if (generation !== this.generation) return;
         this.stale = true;

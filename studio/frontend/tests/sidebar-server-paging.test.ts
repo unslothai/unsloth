@@ -128,6 +128,26 @@ test("a refresh re-reads the loaded window from the top in one request", async (
   assert.equal(list.getState().rows[0].id, "c300");
 });
 
+test("a refresh that reads the same rows renders nothing; one that reads a change renders once", async () => {
+  let data = rows(100);
+  // every answer is fresh objects, as the network gives
+  const server = fakeServer(() => data.map((row) => ({ ...row })));
+  const list = pager(server.fetchPage);
+  await list.start();
+  const before = list.getState().rows;
+  let renders = 0;
+  list.subscribe(() => {
+    renders += 1;
+  });
+  await list.refresh();
+  assert.equal(renders, 0);
+  assert.equal(list.getState().rows, before, "an unchanged window keeps its identity");
+  data = [{ id: "new", updatedAt: 1_000 }, ...data];
+  await list.refresh();
+  assert.equal(renders, 1);
+  assert.equal(list.getState().rows[0].id, "new");
+});
+
 test("a window past one request's cap is read in steps", async () => {
   const server = fakeServer(() => rows(1000));
   const list = new RowPager<unknown, Row>(server.fetchPage, {}, "q", {
@@ -574,6 +594,8 @@ test("follow-ups that main got from the full list still happen with paged lists"
   // project activity follows chat activity, not only project edits
   const projects = readSrc("features/chat/hooks/use-chat-projects.ts");
   assert.match(projects, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, onChatActivity\);/);
+  // and that re-read publishes only a project list that changed
+  assert.match(projects, /if \(projectsLoaded && JSON\.stringify\(projects\) === JSON\.stringify\(cachedProjects\)\) return;/);
 });
 
 test("\"No chats yet\" asks for any chat, archived or in an unloaded folder, before it shows", () => {

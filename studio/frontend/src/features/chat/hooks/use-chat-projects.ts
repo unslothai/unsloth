@@ -47,6 +47,8 @@ function getProjectsSnapshot(): ProjectRecord[] {
 }
 
 function publishProjects(projects: ProjectRecord[]): void {
+  // a chat-activity re-read usually finds nothing new, and every sidebar memo keys on this array
+  if (projectsLoaded && JSON.stringify(projects) === JSON.stringify(cachedProjects)) return;
   cachedProjects = projects;
   projectsLoaded = true;
   for (const onStoreChange of projectSubscribers) onStoreChange();
