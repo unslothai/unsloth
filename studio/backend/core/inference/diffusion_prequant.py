@@ -1822,6 +1822,12 @@ def hosted_prequant_refusal(
 ) -> Optional[str]:
     """Why hosted ``source`` would be refused, from its header alone (no weight download).
 
+    Only a ``.safetensors`` checkpoint has a header this reads. The candidate names are walked in the
+    resolver's order (safetensors ahead of the pickle), and when the first one that exists is a
+    ``.pt`` the answer is None: a pickle is never opened here, so it is judged by the loader after its
+    download, as before. A parsed header whose typed fields cannot be validated IS a refusal, since
+    the loader would refuse it too.
+
     None when usable or unreadable: unknown is never a refusal. Never raises."""
     import os
     import time
@@ -1880,7 +1886,10 @@ def hosted_prequant_refusal(
         # next probe (with a token, or once the network is back) asks again.
         answered = True
         hub_names = names
-        if local is not None and not offline:
+        from .prequant_safetensors import is_safetensors_checkpoint
+
+        # Only a safetensors header is ever read, so a cached pickle is "unknown" and not worth a HEAD.
+        if local is not None and not offline and is_safetensors_checkpoint(local):
             if _cached_snapshot_current(source.location, local, hf_token) is False:
                 # Judge the revision the download would fetch, not the superseded one on disk.
                 hub_names, local = [os.path.basename(local)], None
@@ -1899,16 +1908,25 @@ def hosted_prequant_refusal(
         reason = None
         if header is not None:
             collect = _CollectWarnings()
-            ok = _validate_checkpoint(
-                {"format": header["format"], "metadata": header["metadata"]},
-                scheme,
-                base or "",
-                collect,
-                min_features = min_features,
-                fast_accum = fast_accum,
-                component = component,
-                metadata_only = True,
-            )
+            try:
+                ok = _validate_checkpoint(
+                    {"format": header["format"], "metadata": header["metadata"]},
+                    scheme,
+                    base or "",
+                    collect,
+                    min_features = min_features,
+                    fast_accum = fast_accum,
+                    component = component,
+                    metadata_only = True,
+                )
+            except Exception as exc:  # noqa: BLE001 - a PARSED header the loader cannot validate
+                # The header was read; a malformed typed field (min_features "bad") raises in the
+                # loader's validation the same way, which refuses the file after its download. So
+                # this is a refusal, not "unknown": only an unreadable header stays unknown.
+                ok = False
+                collect.lines.insert(
+                    0, f"malformed checkpoint metadata ({type(exc).__name__}: {exc})"[:300]
+                )
             if not ok:
                 reason = (collect.lines[0] if collect.lines else "incompatible metadata").replace(
                     "diffusion.prequant: ", ""
@@ -2018,7 +2036,10 @@ def usable_prequant_source(
         # the dense shards, then resolve neither file.
         if (
             not any(n in declared for n in readable)
-            and cached_checkpoint_path(src, names = readable, online = False) is None
+            and cached_checkpoint_path(
+                src, cache_dir = cache_dir, names = readable, online = False
+            )
+            is None
         ):
             return None
     if src.kind == "path":

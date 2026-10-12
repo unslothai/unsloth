@@ -233,12 +233,12 @@ class _Lines:
     debug = info = warning = error = _say
 
 
-@pytest.mark.parametrize("container", ["pt", "safetensors"])
-def test_a_stale_hosted_checkpoint_is_refused_before_any_weight_download(hub, container):
+def test_a_stale_hosted_checkpoint_is_refused_before_any_weight_download(hub):
+    container = "safetensors"
     repo = "unsloth/Qwen-Image-2512-FP8"
     name = f"Qwen-Image-2512-INT8.{container}"
     path = _repo_file(hub, repo, name)
-    writer = _write_pt if container == "pt" else _write_safetensors
+    writer = _write_safetensors
     writer(path, _qwen_int8_meta(_STALE_INT8_EXCLUDES), mb = 16)
     logger = _Lines()
     # A missing ComfyUI twin ahead of it (404) is walked past, exactly as the resolver does.
@@ -251,6 +251,29 @@ def test_a_stale_hosted_checkpoint_is_refused_before_any_weight_download(hub, co
     said = [line for line in logger.lines if "skipping hosted int8 checkpoint" in line]
     assert len(said) == 1 and "txt_in" in said[0] and name in said[0]
     assert "txt_in" in (pq.last_prequant_failure() or "")
+
+
+def test_a_pickle_checkpoint_is_never_read_and_never_refused_early(hub):
+    """The probe reads safetensors headers only. A ``.pt`` that comes first in the resolver's order is
+    "unknown": no range read of it at all, and the load goes on to download and validate it as before."""
+    repo = "unsloth/Qwen-Image-2512-FP8"
+    name = "Qwen-Image-2512-INT8.pt"
+    _write_pt(_repo_file(hub, repo, name), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    assert pq.hosted_prequant_refusal(_source(repo, name), "int8") is None
+    assert hub.server.sent == 0
+    _load(_source(repo, name))
+    assert hub.downloads == [name]
+
+
+def test_the_first_existing_name_decides_like_the_resolver(hub):
+    """Safetensors ahead of the pickle, as the resolver orders them: a stale .safetensors is refused even
+    with a .pt behind it, and a missing .safetensors leaves the .pt to the loader."""
+    repo = "unsloth/Qwen-Image-2512-FP8"
+    _write_pt(_repo_file(hub, repo, "q-INT8.pt"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    assert pq.hosted_prequant_refusal(_source(repo, "q-INT8.safetensors", "q-INT8.pt"), "int8") is None
+    _write_safetensors(_repo_file(hub, repo, "q-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    pq._HEADER_PROBE_MEMO.clear()
+    assert pq.hosted_prequant_refusal(_source(repo, "q-INT8.safetensors", "q-INT8.pt"), "int8")
 
 
 def test_a_current_hosted_checkpoint_still_goes_to_the_download(hub):
@@ -302,38 +325,19 @@ def test_offline_with_nothing_cached_asks_nothing(hub, monkeypatch):
 
 
 def test_a_cached_checkpoint_is_judged_locally_without_the_network(hub, monkeypatch, tmp_path):
-    cached = _write_pt(tmp_path / "cached-INT8.pt", _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    cached = _write_safetensors(tmp_path / "cached-INT8.safetensors", _qwen_int8_meta(_STALE_INT8_EXCLUDES))
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
     monkeypatch.setattr(pq, "hub_offline", lambda: True)
-    reason = pq.hosted_prequant_refusal(_source("unsloth/x", "cached-INT8.pt"), "int8")
+    reason = pq.hosted_prequant_refusal(_source("unsloth/x", "cached-INT8.safetensors"), "int8")
     assert reason is not None and "txt_in" in reason
     assert hub.server.sent == 0
 
 
-def test_the_probe_reads_pickle_metadata_without_constructing_anything(tmp_path):
-    from core.inference.prequant_header_probe import read_local_checkpoint_header
-
-    class Boom:
-        def __reduce__(self):
-            return (os.system, ("echo pwned > " + str(tmp_path / "pwned"),))
-
-    meta = _qwen_int8_meta(["norm"])
-    torch.save(
-        {"format": PREQUANT_FORMAT, "metadata": meta, "state_dict": {"a.weight": Boom()}},
-        tmp_path / "evil.pt",
-    )
-    header = read_local_checkpoint_header(str(tmp_path / "evil.pt"))
-    assert header["format"] == PREQUANT_FORMAT
-    assert header["metadata"]["exclude_name_tokens"] == ["norm"]
-    assert header["metadata"]["torch_version"] == str(torch.__version__)
-    assert not (tmp_path / "pwned").exists()
-
-
 def test_the_kill_switch_turns_the_probe_off(hub, monkeypatch):
     repo = "unsloth/Qwen-Image-2512-FP8"
-    _write_pt(_repo_file(hub, repo, "y-INT8.pt"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    _write_safetensors(_repo_file(hub, repo, "y-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
     monkeypatch.setenv(pq.HEADER_PROBE_ENV, "0")
-    assert pq.hosted_prequant_refusal(_source(repo, "y-INT8.pt"), "int8") is None
+    assert pq.hosted_prequant_refusal(_source(repo, "y-INT8.safetensors"), "int8") is None
     assert hub.server.sent == 0
 
 
@@ -619,97 +623,6 @@ def test_no_requested_base_skips_the_base_check(hub):
     assert pq.hosted_prequant_refusal(src, "int8", base = None) is None
 
 
-# -- the inert unpickle is bounded by opcodes, not only by bytes --
-
-
-def _pickle_zip(path, payload: bytes):
-    import zipfile
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
-        archive.writestr("archive/data.pkl", payload)
-    return path
-
-
-def _metadata_pickle(inner: bytes) -> bytes:
-    """A protocol-2 ``{"format": PREQUANT_FORMAT, "metadata": {"x": <inner>}}`` around raw opcodes."""
-    import pickle
-
-    def s(text):
-        raw = text.encode()
-        return b"X" + len(raw).to_bytes(4, "little") + raw
-
-    return (
-        b"\x80\x02}("
-        + s("format")
-        + s(PREQUANT_FORMAT)
-        + s("metadata")
-        + b"}("
-        + s("x")
-        + inner
-        + b"u"  # SETITEMS (metadata)
-        + b"u"  # SETITEMS (outer)
-        + pickle.STOP
-    )
-
-
-def test_every_unknown_global_shares_one_inert_stand_in():
-    import io
-
-    from core.inference.prequant_header_probe import _InertUnpickler
-
-    unpickler = _InertUnpickler(io.BytesIO(b""))
-    first = unpickler.find_class("os", "system")
-    assert first is unpickler.find_class("subprocess", "Popen")
-    assert first is unpickler.find_class("torch._utils", "_rebuild_tensor_v2")
-
-
-def test_a_pickle_over_the_opcode_budget_is_unknown_fast_and_small(tmp_path):
-    """Millions of tiny objects fit easily under the 64 MiB byte cap; the probe must answer None
-    (unknown, never a refusal) without building them."""
-    import time
-    import tracemalloc
-
-    from core.inference import prequant_header_probe as probe
-
-    lists = (
-        getattr(probe, "MAX_PICKLE_OPS", 4_000_000) // 2 + 1000
-    )  # EMPTY_LIST + APPEND per element: over the budget
-    bomb = _pickle_zip(tmp_path / "bomb.pt", _metadata_pickle(b"]" + b"]a" * lists))
-    assert os.path.getsize(bomb) < probe.MAX_PROBE_BYTES
-    tracemalloc.start()
-    started = time.monotonic()
-    try:
-        header = probe.read_local_checkpoint_header(str(bomb))
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert header is None
-    # The raw pickle itself is ~8 MB; building the lists would cost hundreds of MB.
-    assert peak < 64 * 1024 * 1024, peak
-    assert time.monotonic() - started < 30
-
-
-def test_a_globals_flood_is_unknown_without_minting_classes(tmp_path):
-    from core.inference import prequant_header_probe as probe
-
-    count = getattr(probe, "MAX_PICKLE_OPS", 4_000_000) // 2 + 1000  # GLOBAL + POP each
-    flood = b"".join(b"cm\nn%d\n0" % i for i in range(count))
-    path = _pickle_zip(tmp_path / "flood.pt", _metadata_pickle(flood + b"N"))
-    assert os.path.getsize(path) < probe.MAX_PROBE_BYTES
-    assert probe.read_local_checkpoint_header(str(path)) is None
-
-
-def test_a_metadata_pickle_under_the_budget_still_reads(tmp_path):
-    from core.inference import prequant_header_probe as probe
-
-    small = _pickle_zip(tmp_path / "ok.pt", _metadata_pickle(b"]" + b"]a" * 1000))
-    header = probe.read_local_checkpoint_header(str(small))
-    assert header is not None and header["format"] == PREQUANT_FORMAT
-    assert len(header["metadata"]["x"]) == 1000
-    real = _write_pt(tmp_path / "real.pt", _qwen_int8_meta(["norm"]))
-    header = probe.read_local_checkpoint_header(str(real))
-    assert header["metadata"]["exclude_name_tokens"] == ["norm"]
-
-
 # -- a safetensors header is bounded by structure before it is parsed --
 
 
@@ -822,9 +735,9 @@ def replaced(hub, tmp_path, monkeypatch):
 
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
 
-    repo, name = "unsloth/Qwen-Image-2512-FP8", "Qwen-Image-2512-INT8.pt"
+    repo, name = "unsloth/Qwen-Image-2512-FP8", "Qwen-Image-2512-INT8.safetensors"
     cached = _hf_cache_file(
-        tmp_path, name, "c0ffee01", "etag-stale", _write_pt, _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+        tmp_path, name, "c0ffee01", "etag-stale", _write_safetensors, _qwen_int8_meta(_STALE_INT8_EXCLUDES)
     )
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
     served = {"etag": "etag-stale", "commit": "c0ffee01"}
@@ -844,7 +757,7 @@ def replaced(hub, tmp_path, monkeypatch):
         meta = _qwen_int8_meta(
             exclude_tokens_for_scheme("int8", "qwen-image") if fixed else _STALE_INT8_EXCLUDES
         )
-        _write_pt(_repo_file(hub, repo, name), meta)
+        _write_safetensors(_repo_file(hub, repo, name), meta)
         served.update(etag = etag, commit = commit)
 
     return types.SimpleNamespace(source = _source(repo, name), publish = publish, heads = heads)
@@ -917,61 +830,12 @@ def test_an_expired_memo_entry_is_dropped():
 
 
 def test_many_requested_bases_keep_the_memo_bounded(hub, monkeypatch, tmp_path):
-    cached = _write_pt(tmp_path / "c-INT8.pt", _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    cached = _write_safetensors(tmp_path / "c-INT8.safetensors", _qwen_int8_meta(_STALE_INT8_EXCLUDES))
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
     monkeypatch.setattr(pq, "hub_offline", lambda: True)
     for i in range(pq._HEADER_PROBE_MAX + 50):
-        pq.hosted_prequant_refusal(_source("unsloth/x", "c-INT8.pt"), "int8", base = f"org/b{i}")
+        pq.hosted_prequant_refusal(_source("unsloth/x", "c-INT8.safetensors"), "int8", base = f"org/b{i}")
     assert len(pq._HEADER_PROBE_MEMO) <= pq._HEADER_PROBE_MAX
-
-
-# -- a memo index the pickler never wrote is unknown before the unpickler sizes its table for it --
-
-
-def test_a_huge_memo_index_is_rejected_before_unpickling():
-    import struct
-
-    from core.inference.prequant_header_probe import _pickle_ops_within
-
-    # PROTO 2, NONE, LONG_BINPUT 2**31, STOP: four opcodes, one of which asks for a 2**31-slot memo.
-    bomb = b"\x80\x02Nr" + struct.pack("<I", 2**31) + b"."
-    assert _pickle_ops_within(bomb) is False
-    # LONG_BINGET of an index nothing wrote.
-    assert _pickle_ops_within(b"\x80\x02j" + struct.pack("<I", 2**20) + b".") is False
-    real = __import__("pickle").dumps({"a": [1, 2], "b": {"c": "d"}}, protocol = 2)
-    assert _pickle_ops_within(real) is True
-
-
-def test_a_huge_memo_index_checkpoint_is_unknown_with_bounded_memory(tmp_path):
-    """Run in a child capped at 1 GB of address space, so a regression fails here instead of taking the
-    test runner down with a multi-GB memo table."""
-    import struct
-    import subprocess
-    import sys
-    import textwrap
-
-    bomb = _pickle_zip(
-        tmp_path / "memo.pt", _metadata_pickle(b"Nr" + struct.pack("<I", 2**31 - 1) + b"0N")
-    )
-    code = textwrap.dedent(
-        f"""
-        import resource, sys, time, tracemalloc
-        resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
-        sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
-        from core.inference import prequant_header_probe as probe
-        tracemalloc.start()
-        started = time.monotonic()
-        header = probe.read_local_checkpoint_header({str(bomb)!r})
-        peak = tracemalloc.get_traced_memory()[1]
-        print(header is None, peak, round(time.monotonic() - started, 2))
-        """
-    )
-    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 120)
-    assert out.returncode == 0, out.stderr[-2000:]
-    is_none, peak, took = out.stdout.split()
-    assert is_none == "True"
-    assert int(peak) < 16 * 1024 * 1024, peak
-    assert float(took) < 10
 
 
 # -- an unauthenticated 401 is not memoised over the authenticated probe --
@@ -995,8 +859,8 @@ def test_an_anonymous_401_does_not_answer_for_a_token_probe(hub, monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", gated)
     repo = "unsloth/Qwen-Image-2512-FP8"
-    _write_pt(_repo_file(hub, repo, "g-INT8.pt"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
-    source = _source(repo, "g-INT8.pt")
+    _write_safetensors(_repo_file(hub, repo, "g-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    source = _source(repo, "g-INT8.safetensors")
     assert pq.hosted_prequant_refusal(source, "int8") is None  # unknown: never a refusal
     reason = pq.hosted_prequant_refusal(source, "int8", hf_token = "hf_secret")
     assert reason is not None and "txt_in" in reason
@@ -1054,11 +918,7 @@ def _gated_hub(monkeypatch):
 
     real = huggingface_hub.get_hf_file_metadata
 
-    def gated(
-        url,
-        token = None,
-        **kwargs,
-    ):
+    def gated(url, token = None, **kwargs):
         if not token:
             err = Exception("401")
             err.response = types.SimpleNamespace(status_code = 401)
@@ -1076,51 +936,14 @@ def test_a_gated_stale_video_denoiser_is_refused_with_the_plan_token(hub, monkey
     # Anonymous: the header is unreadable, so unknown keeps today's answer.
     assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V)
     # With the token the plan stages under, the stale header is read and refused.
-    assert (
-        VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V, hf_token = "hf_x") == []
-    )
+    assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V, hf_token = "hf_x") == []
     assert not VideoBackend._denoiser_prequant_covered(fam, "int8", _WAN_TI2V, hf_token = "hf_x")
     listed: list = []
     api = types.SimpleNamespace(
-        token = "hf_x",
-        model_info = lambda *a, **k: listed.append(a) or types.SimpleNamespace(siblings = []),
+        token = "hf_x", model_info = lambda *a, **k: listed.append(a) or types.SimpleNamespace(siblings = [])
     )
     assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", _WAN_TI2V, api) == (None, [])
     assert listed == [] and hub.downloads == []
-
-
-def test_an_extension_opcode_never_reaches_a_registered_callable(tmp_path):
-    import copyreg
-
-    from core.inference.prequant_header_probe import (
-        _pickle_ops_within,
-        read_local_checkpoint_header,
-    )
-
-    called: list = []
-
-    def sentinel(*args):
-        called.append(args)
-        return "ran"
-
-    code = 0x7FFF_FF01
-    key = ("tests.prequant_probe", "sentinel")
-    copyreg._extension_registry[key] = code
-    copyreg._inverted_registry[code] = key
-    copyreg._extension_cache[code] = sentinel
-    try:
-        import struct
-
-        # EXT4 <code>, EMPTY_TUPLE, REDUCE: a cached extension resolves WITHOUT find_class.
-        payload = b"\x84" + struct.pack("<i", code) + b")R"
-        assert _pickle_ops_within(b"\x80\x02" + payload + b".") is False
-        path = _pickle_zip(tmp_path / "ext.pt", _metadata_pickle(payload))
-        assert read_local_checkpoint_header(str(path)) is None
-        assert called == []
-    finally:
-        copyreg._extension_registry.pop(key, None)
-        copyreg._inverted_registry.pop(code, None)
-        copyreg._extension_cache.pop(code, None)
 
 
 def test_planning_refuses_a_header_baked_under_another_linear_filter(hub):
@@ -1134,32 +957,61 @@ def test_planning_keeps_a_header_with_the_runtime_linear_filter(hub):
     assert pq.usable_prequant_source(fam, "int8", base_repo = base) is not None
 
 
-def _many_entry_archive(path, entries):
-    import pickle
-    import zipfile
-
-    payload = pickle.dumps({"format": PREQUANT_FORMAT, "metadata": {"a": 1}}, protocol = 2)
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
-        archive.writestr("archive/data.pkl", payload)
-        for i in range(entries):
-            archive.writestr(f"archive/data/{i}", b"")
-    return path
 
 
-def test_a_zip_directory_with_too_many_entries_is_unknown_and_small(tmp_path):
-    from core.inference import prequant_header_probe as probe
-
-    count = getattr(probe, "MAX_ZIP_ENTRIES", 50_000) + 10_000
-    path = _many_entry_archive(tmp_path / "many.pt", count)
-    header, peak, took = _traced(lambda: probe.read_local_checkpoint_header(str(path)))
-    assert header is None
-    assert peak < 8 * 1024 * 1024, peak
-    assert took < 10
+# -- round 5: malformed typed fields, the requested cache root, and the authenticated reachability probe --
 
 
-def test_a_real_sized_zip_directory_still_reads(tmp_path):
-    from core.inference.prequant_header_probe import read_local_checkpoint_header
+@pytest.mark.parametrize(
+    "field, value", [("min_features", "bad"), ("require_divisible", "not-a-number")]
+)
+def test_a_parsed_header_with_a_malformed_field_is_refused_at_planning(hub, field, value):
+    fam, base = _hosted_qwen_int8(hub, _current_int8_meta(**{field: value}))
+    assert pq.usable_prequant_source(fam, "int8", base_repo = base) is None
+    src = pq.resolve_prequant_source(fam, "int8", base_repo = base)
+    pq._HEADER_PROBE_MEMO.clear()
+    reason = pq.hosted_prequant_refusal(src, "int8", base = base, min_features = 512)
+    assert reason is not None
+    assert hub.downloads == []
 
-    path = _many_entry_archive(tmp_path / "ok.pt", 5_000)
-    header = read_local_checkpoint_header(str(path))
-    assert header is not None and header["metadata"] == {"a": 1}
+
+def test_the_safetensors_evidence_check_looks_in_the_requested_cache(hub, monkeypatch):
+    """An install that reads only safetensors needs evidence a derived safetensors name is really there;
+    a checkpoint cached under a non-default root is that evidence."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2512")
+    monkeypatch.setattr(
+        pq,
+        "restricted_prequant_load_supported",
+        lambda scheme, name = None: name is None or str(name).endswith(".safetensors"),
+    )
+    asked: list = []
+
+    def cached(source, *, cache_dir = None, names = None, online = None):
+        asked.append(cache_dir)
+        return "/live/cache/hit.safetensors" if cache_dir == "/live/cache" else None
+
+    monkeypatch.setattr(pq, "cached_checkpoint_path", cached)
+    src = pq.usable_prequant_source(
+        fam,
+        "int8",
+        base_repo = "Qwen/Qwen-Image-2512",
+        cache_dir = "/live/cache",
+        local_files_only = True,
+    )
+    assert src is not None
+    assert "/live/cache" in asked
+
+
+def test_a_token_refusal_makes_the_hosted_prequant_unreachable(hub, monkeypatch):
+    """The dense-quant prefetch counts on a prequant its anonymous candidate probe could not read; asked with
+    the load's token the loader would refuse it, so it is NOT reachable and the dense shards get staged."""
+    from core.inference.diffusion import DiffusionBackend
+
+    _gated_hub(monkeypatch)
+    fam, base = _hosted_qwen_int8(hub, _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    assert pq.usable_prequant_source(fam, "int8", base_repo = base) is not None  # anonymous: unknown
+    kwargs = {"base_repo": base, "hf_token": "hf_x"}
+    assert DiffusionBackend._hosted_prequant_reachable(None, fam, "int8", kwargs) is False
+    assert hub.downloads == []

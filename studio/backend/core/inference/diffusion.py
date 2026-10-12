@@ -2925,7 +2925,21 @@ class DiffusionBackend:
                 hf_token = kwargs.get("hf_token"),
                 cache_dir = hub_cache_dir(),
             )
-            if source is None or getattr(source, "kind", None) != "repo":
+            if source is None:
+                # The candidate counted on a prequant, but asked with the load's own token (which can read a gated
+                # header the candidate's anonymous probe could not) the loader would refuse it: the dense shards are
+                # what the load opens, so they must be staged. Only when a source really resolves for this scheme:
+                # nothing resolving at all is no evidence either way, and keeps the candidate's verdict as before.
+                return (
+                    resolve_prequant_source(
+                        fam,
+                        scheme,
+                        path_override = kwargs.get("transformer_prequant_path"),
+                        base_repo = kwargs.get("base_repo"),
+                    )
+                    is None
+                )
+            if getattr(source, "kind", None) != "repo":
                 return True
             if prequant_checkpoint_cached(
                 source,

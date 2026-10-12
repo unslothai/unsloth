@@ -1,27 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read a pre-quant checkpoint's ``format`` + ``metadata`` without reading its weights.
+"""Read a SAFETENSORS pre-quant checkpoint's ``format`` + ``metadata`` without reading its weights.
 
-Safe: ``data.pkl`` is unpickled with EVERY global replaced by an inert stand-in and persistent ids
-answered with None, so nothing in the file is constructed or executed. Readers fail open (None).
+Only the safetensors container is read: its header is a length-prefixed JSON object, bounded here in
+bytes and structure before it is parsed. A ``.pt`` (pickle) checkpoint is never opened by this module;
+its header reads as None ("unknown"), like any other unreadable one, so the caller keeps today's
+behaviour for it (download, then the loader validates). Readers never raise and fail open (None).
 """
 
 from __future__ import annotations
 
-import io
 import json
-import pickle
-import pickletools
 import struct
 import threading
 import time
-import zipfile
 from typing import Any, Callable, Optional
 
 # Above this many bytes read, the probe gives up (answers None) rather than turn into a download.
 MAX_PROBE_BYTES = 64 * 1024 * 1024
-_BLOCK = 1024 * 1024
 TIMEOUT_SECONDS = 20.0
 
 ReadRange = Callable[[int, int], bytes]
@@ -29,264 +26,6 @@ ReadRange = Callable[[int, int], bytes]
 
 class _ProbeBudgetExceeded(Exception):
     pass
-
-
-class _RangeFile(io.RawIOBase):
-    """A seekable read-only file over ``read_range``, block-cached and byte-budgeted."""
-
-    def __init__(
-        self,
-        read_range: ReadRange,
-        size: int,
-        budget: int = MAX_PROBE_BYTES,
-    ):
-        super().__init__()
-        self._read_range = read_range
-        self._size = int(size)
-        self._pos = 0
-        self._blocks: dict = {}
-        self._budget = budget
-        self.fetched = 0
-
-    def readable(self) -> bool:
-        return True
-
-    def seekable(self) -> bool:
-        return True
-
-    def tell(self) -> int:
-        return self._pos
-
-    def seek(
-        self,
-        offset: int,
-        whence: int = 0,
-    ) -> int:
-        if whence == 0:
-            pos = offset
-        elif whence == 1:
-            pos = self._pos + offset
-        else:
-            pos = self._size + offset
-        self._pos = max(0, pos)
-        return self._pos
-
-    def _block(self, index: int) -> bytes:
-        if index not in self._blocks:
-            start = index * _BLOCK
-            end = min(self._size, start + _BLOCK) - 1
-            if self.fetched + (end - start + 1) > self._budget:
-                raise _ProbeBudgetExceeded(f"probe would read more than {self._budget} bytes")
-            data = self._read_range(start, end)
-            if len(data) != end - start + 1:
-                raise OSError(f"short range read {len(data)} != {end - start + 1}")
-            self.fetched += len(data)
-            self._blocks[index] = data
-        return self._blocks[index]
-
-    def readinto(self, buffer: Any) -> int:
-        want = min(len(buffer), max(0, self._size - self._pos))
-        out = 0
-        while out < want:
-            index, offset = divmod(self._pos, _BLOCK)
-            chunk = self._block(index)[offset : offset + (want - out)]
-            buffer[out : out + len(chunk)] = chunk
-            out += len(chunk)
-            self._pos += len(chunk)
-        return out
-
-
-class _Inert:
-    """Stand-in for every global ``data.pkl`` names: accepts any construction, holds nothing."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def __setstate__(self, state: Any) -> None:
-        pass
-
-    def __call__(self, *args: Any, **kwargs: Any) -> "_Inert":
-        return _Inert()
-
-
-class _AttrDict(dict):
-    """``OrderedDict`` stand-in: torch pickles ``state_dict._metadata`` onto it as an attribute."""
-
-
-_PLAIN_GLOBALS = {
-    ("collections", "OrderedDict"): _AttrDict,
-    ("builtins", "set"): set,
-    ("builtins", "frozenset"): frozenset,
-    ("builtins", "list"): list,
-    ("builtins", "dict"): dict,
-    ("builtins", "tuple"): tuple,
-    # ``torch.__version__`` is a str subclass, recorded as ``metadata["torch_version"]``.
-    ("torch.torch_version", "TorchVersion"): str,
-}
-
-
-# Opcodes ``data.pkl`` may hold before the probe answers "unknown". A real torch.save checkpoint spends
-# about 0.3 opcodes per byte on its state_dict skeleton: the hosted Z-Image-Turbo FP8 and INT8 files are
-# 40k and 60k opcodes. 4M is ~65x the larger, yet bounds what the unpickler can build (each opcode makes
-# at most one object) to a few hundred MB even for a hostile file, where the 64 MiB byte cap alone admits
-# tens of millions of objects before ``_plain``'s node cap ever runs.
-MAX_PICKLE_OPS = 4_000_000
-
-
-# Memo indices a pickle may use beyond the writes it has made. A pickler numbers its memo sequentially
-# (index = writes so far), so a real pickle never needs any slack; this is only tolerance.
-_MEMO_SLACK = 1024
-_MEMO_PUTS = frozenset(("PUT", "BINPUT", "LONG_BINPUT"))
-_MEMO_GETS = frozenset(("GET", "BINGET", "LONG_BINGET"))
-
-
-# The only opcodes the inert unpickle accepts: what torch.save writes for a metadata+state_dict checkpoint
-# (the cached hosted Z-Image-Turbo FP8/INT8 headers use 30 of these), plus the plain data opcodes any
-# protocol could use for the same values. Anything else is "unknown". This shuts out EXT1/EXT2/EXT4
-# above all: they fetch a callable from ``copyreg``'s extension cache WITHOUT ``find_class``, so a REDUCE
-# after one would call a real function. Also INST/OBJ and the out-of-band buffer opcodes.
-_ALLOWED_OPS = frozenset(
-    (
-        "PROTO", "FRAME", "STOP", "MARK", "POP", "POP_MARK", "DUP",
-        "NONE", "NEWTRUE", "NEWFALSE",
-        "INT", "BININT", "BININT1", "BININT2", "LONG", "LONG1", "LONG4", "FLOAT", "BINFLOAT",
-        "STRING", "BINSTRING", "SHORT_BINSTRING", "UNICODE", "BINUNICODE", "SHORT_BINUNICODE",
-        "BINUNICODE8", "BINBYTES", "SHORT_BINBYTES", "BINBYTES8",
-        "EMPTY_TUPLE", "TUPLE", "TUPLE1", "TUPLE2", "TUPLE3",
-        "EMPTY_LIST", "LIST", "APPEND", "APPENDS",
-        "EMPTY_DICT", "DICT", "SETITEM", "SETITEMS",
-        "EMPTY_SET", "ADDITEMS", "FROZENSET",
-        "PUT", "BINPUT", "LONG_BINPUT", "MEMOIZE", "GET", "BINGET", "LONG_BINGET",
-        "GLOBAL", "STACK_GLOBAL", "REDUCE", "BUILD", "NEWOBJ", "NEWOBJ_EX",
-        "PERSID", "BINPERSID",
-    )
-)  # fmt: skip
-
-
-def _pickle_ops_within(raw: bytes, limit: Optional[int] = None) -> bool:
-    """Whether ``raw`` holds at most ``limit`` (default ``MAX_PICKLE_OPS``) opcodes and only memo indices
-    a real pickler would write. Only walks the bytes (nothing is built), and stops at the first breach,
-    so a hostile pickle costs a bounded scan rather than an unbounded unpickle.
-
-    The memo check matters because ONE opcode can be enough: the C unpickler grows its memo table to
-    the index a ``LONG_BINPUT`` names (2**31 is tens of GB) before any opcode budget could apply. Any
-    opcode outside ``_ALLOWED_OPS`` fails the scan too."""
-    limit = MAX_PICKLE_OPS if limit is None else limit
-    count = 0
-    writes = 0
-    for opcode, arg, _ in pickletools.genops(raw):
-        count += 1
-        if count > limit:
-            return False
-        name = opcode.name
-        if name not in _ALLOWED_OPS:
-            return False
-        if name == "MEMOIZE":
-            writes += 1
-        elif name in _MEMO_PUTS or name in _MEMO_GETS:
-            try:
-                index = int(arg)
-            except (TypeError, ValueError):
-                return False
-            if index < 0 or index > writes + _MEMO_SLACK:
-                return False
-            if name in _MEMO_PUTS:
-                writes += 1
-    return True
-
-
-class _InertUnpickler(pickle.Unpickler):
-    def find_class(self, module: str, name: str) -> Any:
-        plain = _PLAIN_GLOBALS.get((module, name))
-        if plain is not None:
-            return plain
-        # ONE shared stand-in: a fresh class per GLOBAL opcode let a hostile pickle mint millions of types.
-        return _Inert
-
-    def persistent_load(self, pid: Any) -> Any:
-        return None
-
-
-_MAX_PLAIN_NODES = 1_000_000
-
-
-def _plain(value: Any, budget: Optional[list] = None) -> Any:
-    """``value`` as JSON-like data; a stand-in anywhere inside becomes None (read as "absent").
-
-    Pickle memo references can share one container many times over, so the walk is capped by node count."""
-    if budget is None:
-        budget = [_MAX_PLAIN_NODES]
-    budget[0] -= 1
-    if budget[0] < 0:
-        raise _ProbeBudgetExceeded("metadata too large")
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, (list, tuple)):
-        return [_plain(v, budget) for v in value]
-    if isinstance(value, dict):
-        return {str(k): _plain(v, budget) for k, v in value.items() if isinstance(k, str)}
-    return None
-
-
-# ``zipfile.ZipFile`` builds a ZipInfo per central-directory entry before anything can be filtered, so the
-# directory is bounded from its end record first. A torch archive holds one entry per storage plus a few:
-# the cached hosted Z-Image-Turbo FP8/INT8 files have 766 entries in a ~0.1 MB directory, and the largest
-# hosted denoisers a few thousand. 50k entries / 8 MiB is >= 10x that; over either is "unknown".
-MAX_ZIP_ENTRIES = 50_000
-MAX_ZIP_DIRECTORY_BYTES = 8 * 1024 * 1024
-_EOCD = b"PK\x05\x06"
-_ZIP64_LOCATOR = b"PK\x06\x07"
-_ZIP64_EOCD = b"PK\x06\x06"
-
-
-def _zip_directory_within(handle: Any) -> bool:
-    """Whether the archive's central directory (from its end record, ZIP64 included) is small enough to
-    hand to ``zipfile``. Reads only the tail and, for ZIP64, one 56-byte record. Unparseable is False."""
-    handle.seek(0, 2)
-    size = handle.tell()
-    tail_len = min(size, 22 + 65535)
-    handle.seek(size - tail_len)
-    tail = handle.read(tail_len)
-    at = tail.rfind(_EOCD)
-    if at < 0 or len(tail) - at < 22:
-        return False
-    entries, directory = struct.unpack("<HI", tail[at + 10 : at + 16])
-    locator = at - 20
-    if locator >= 0 and tail[locator : locator + 4] == _ZIP64_LOCATOR:
-        (offset,) = struct.unpack("<Q", tail[locator + 8 : locator + 16])
-        if offset >= size:
-            return False
-        handle.seek(offset)
-        record = handle.read(56)
-        if len(record) < 56 or record[:4] != _ZIP64_EOCD:
-            return False
-        entries64, directory64 = struct.unpack("<QQ", record[32:48])
-        entries, directory = max(entries, entries64), max(directory, directory64)
-    handle.seek(0)
-    return entries <= MAX_ZIP_ENTRIES and directory <= MAX_ZIP_DIRECTORY_BYTES
-
-
-def _from_pickle_zip(handle: Any) -> Optional[dict]:
-    if not _zip_directory_within(handle):
-        return None
-    with zipfile.ZipFile(handle) as archive:
-        names = [n for n in archive.namelist() if n == "data.pkl" or n.endswith("/data.pkl")]
-        if len(names) != 1:
-            return None
-        info = archive.getinfo(names[0])
-        if info.file_size > MAX_PROBE_BYTES:
-            return None
-        raw = archive.read(names[0])
-    # Over budget is "unknown", never a refusal: the caller falls back to today's behaviour.
-    if not _pickle_ops_within(raw):
-        return None
-    ckpt = _InertUnpickler(io.BytesIO(raw)).load()
-    if not isinstance(ckpt, dict):
-        return None
-    fmt, meta = ckpt.get("format"), ckpt.get("metadata")
-    if not isinstance(fmt, str) or not isinstance(meta, dict):
-        return None
-    return {"format": str(fmt), "metadata": _plain(meta), "container": "pt"}
 
 
 # A safetensors header is parsed whole, so it is bounded by bytes AND by structure before ``json.loads``
@@ -340,7 +79,8 @@ def _from_safetensors(read_range: ReadRange, size: int) -> Optional[dict]:
 def read_checkpoint_header(name: str, read_range: ReadRange, size: int) -> Optional[dict]:
     """``{"format", "metadata", "container", "bytes_read"}`` of a checkpoint named ``name``, or None.
 
-    Never raises; reads at most ``MAX_PROBE_BYTES``."""
+    Only a ``.safetensors`` name is read; any other is None with nothing read. Never raises; reads at
+    most ``MAX_PROBE_BYTES``."""
     counted = [0]
 
     def _counted(start: int, end: int) -> bytes:
@@ -350,12 +90,11 @@ def read_checkpoint_header(name: str, read_range: ReadRange, size: int) -> Optio
         counted[0] += len(data)
         return data
 
+    if not str(name).lower().endswith(".safetensors"):
+        # A pickle checkpoint is never read here: unknown, without a single byte fetched.
+        return None
     try:
-        if str(name).lower().endswith(".safetensors"):
-            out = _from_safetensors(_counted, size)
-        else:
-            raw = _RangeFile(_counted, size)
-            out = _from_pickle_zip(io.BufferedReader(raw, buffer_size = _BLOCK))
+        out = _from_safetensors(_counted, size)
     except Exception:  # noqa: BLE001 - unreadable is "unknown", never "incompatible"
         return None
     if out is not None:
