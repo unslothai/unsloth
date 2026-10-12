@@ -101,79 +101,55 @@ def test_training_with_nothing_running_stops_nothing(monkeypatch):
     assert [c[1] for c in studio.state.calls] == ["/api/train/status"]
 
 
-def test_an_export_cancel_marks_the_job_and_says_the_checkpoint_was_unloaded(monkeypatch):
-    job = register_export_job(job_id = "exp-1", phase = "exporting")
+def test_an_export_job_cancel_stops_only_its_own_op(monkeypatch):
+    job = register_export_job(job_id = "exp-1", phase = "exporting", op_id = "op-x")
     result, studio = _call(monkeypatch, {"kind": "export", "id": "exp-1"})
+    assert result["structuredContent"]["cancelled"] is True
     assert (
         result["structuredContent"]["message"]
         == "The export was stopped and its checkpoint unloaded."
     )
     assert job.status == "cancelled"
-    assert [c[1] for c in studio.state.calls] == ["/api/export/status", "/api/export/cancel"]
+    assert [c[1] for c in studio.state.calls] == ["/api/export/cancel"]
+    assert bodies(studio, "/api/export/cancel") == [{"expected_op_id": "op-x"}]
 
 
-@pytest.mark.parametrize(
-    "phase,op",
-    [
-        ("loading", "export_gguf"),
-        ("starting", "load_checkpoint"),
-        ("exporting", "export_merged"),
-        ("exporting", "cleanup"),
-    ],
-)
-def test_an_export_cancel_leaves_another_jobs_op_alone(monkeypatch, phase, op):
-    job = register_export_job(job_id = "exp-1", phase = phase)
-    result, studio = _call(
-        monkeypatch,
-        {"kind": "export", "id": "exp-1"},
-        {("GET", "/api/export/status"): {"is_export_active": True, "active_op_kind": op}},
-    )
-    assert result["structuredContent"]["cancelled"] is False
-    assert job.status == "running"
-    assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
-
-
-IDLE_WORKER = {"is_export_active": False, "current_checkpoint": "ref:abc", "last_op_seq": 5}
-
-
-# Between ops the worker is alive and holds a checkpoint; the cancel route would kill it. A job
-# "exporting" waits for its own answer first (see the direct tests below).
-@pytest.mark.parametrize(
-    "phase,cancelled,message",
-    [
-        (None, False, "No export is running."),
-        ("starting", True, "The export job was stopped before its next step."),
-        ("loading", True, "The export job was stopped before its next step."),
-    ],
-)
-def test_an_idle_export_worker_is_never_touched(monkeypatch, phase, cancelled, message):
-    job = register_export_job(job_id = "exp-1", phase = phase) if phase else None
-    args = {"kind": "export", **({"id": "exp-1"} if phase else {})}
-    result, studio = _call(monkeypatch, args, {("GET", "/api/export/status"): IDLE_WORKER})
+def test_a_job_before_its_first_step_never_touches_the_worker(monkeypatch):
+    job = register_export_job(job_id = "exp-1", phase = "starting")
+    result, studio = _call(monkeypatch, {"kind": "export", "id": "exp-1"})
     assert (result["structuredContent"]["cancelled"], result["structuredContent"]["message"]) == (
-        cancelled,
-        message,
+        True,
+        "The export job was stopped before its next step.",
     )
-    assert job is None or job.status == "cancelled"
+    assert job.status == "cancelled"
+    assert studio.state.calls == []
+
+
+def test_without_an_id_an_idle_worker_is_never_touched(monkeypatch):
+    idle = {"is_export_active": False, "current_checkpoint": "ref:abc", "last_op_seq": 5}
+    result, studio = _call(monkeypatch, {"kind": "export"}, {("GET", "/api/export/status"): idle})
+    assert result["structuredContent"]["message"] == "No export is running."
     assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
 
 
-def _cancel_directly(
-    monkeypatch,
-    job_run,
-    statuses = (IDLE_WORKER,),
-):
+NOT_RUNNING = {"success": True, "message": "No active export to cancel"}
+
+
+def _cancel_directly(monkeypatch, job_run, answers):
     """Run cancel on the loop the job's task lives on, which a served tool call cannot share."""
     from studio_mcp.tools import cancel as cancel_module
 
-    status = sequence(*statuses)
+    answer = sequence(*answers)
     calls = []
 
-    async def route_json(method, path, **_kwargs):
-        calls.append((method, path))
-        if path.endswith("/cancel"):
-            return {"success": True, "message": "Export cancelled"}
-        return status(None, None)
+    async def route_json(
+        method,
+        path,
+        json_body = None,
+        **_kwargs,
+    ):
+        calls.append((method, path, json_body))
+        return answer(None, None)
 
     monkeypatch.setattr(cancel_module, "route_json", route_json)
     monkeypatch.setattr(
@@ -197,51 +173,42 @@ def _cancel_directly(
 def test_an_export_whose_answer_is_on_its_way_is_reported_done(monkeypatch):
     # The worker already finished the export; the route is still writing its answer.
     async def answered_soon(job):
-        job.phase = "exporting"
+        job.phase, job.op_id = "exporting", "op-e"
         await asyncio.sleep(0.05)
 
-    job, result, _calls = _cancel_directly(monkeypatch, answered_soon)
+    job, result, _calls = _cancel_directly(monkeypatch, answered_soon, [NOT_RUNNING])
     assert (result.cancelled, result.message) == (False, "The export already completed.")
     assert job.status == "completed"
 
 
-async def _exports(job):
-    job.phase = "exporting"
-    await asyncio.Event().wait()
+def test_a_job_queued_behind_someone_elses_export_is_withdrawn_and_theirs_left_alone(monkeypatch):
+    # Its op has not started: the route remembers the id and refuses the op when it would start.
+    async def queued(job):
+        job.phase, job.op_id = "exporting", "op-e"
+        await asyncio.Event().wait()
 
-
-@pytest.mark.parametrize(
-    "op,cancelled,message",
-    [
-        ("export_gguf", True, None),
-        ("cleanup", False, "The export running now is not this job; it was left alone."),
-    ],
-)
-def test_an_export_starting_while_waiting_is_stopped_only_if_it_is_this_job(
-    monkeypatch, op, cancelled, message
-):
-    then = {"is_export_active": True, "active_op_kind": op}
-    job, result, calls = _cancel_directly(monkeypatch, _exports, statuses = (IDLE_WORKER, then))
-    assert result.cancelled is cancelled
-    assert message is None or result.message == message
-    assert (("POST", "/api/export/cancel") in calls) is cancelled
-    assert job.status == ("cancelled" if cancelled else "running")
-
-
-def test_a_job_between_steps_is_stopped_at_once(monkeypatch):
-    started = []
-
-    async def between(job):
-        job.phase = "loading"
-        await asyncio.sleep(0.05)
-        # The next step must never start once the job was cancelled.
-        started.append("export")
-
-    job, result, calls = _cancel_directly(monkeypatch, between)
-    assert result.cancelled is True
+    job, result, calls = _cancel_directly(monkeypatch, queued, [NOT_RUNNING])
+    assert (result.cancelled, result.message) == (
+        True,
+        "The export job was stopped before its next step.",
+    )
     assert job.status == "cancelled"
-    assert started == []
-    assert calls == [("GET", "/api/export/status")]
+    assert calls == [("POST", "/api/export/cancel", {"expected_op_id": "op-e"})]
+
+
+def test_a_job_that_moved_to_its_next_step_is_stopped_there(monkeypatch):
+    async def next_step(job):
+        job.phase, job.op_id = "loading", "op-l"
+        await asyncio.sleep(0.05)
+        job.phase, job.op_id = "exporting", "op-e"
+        await asyncio.Event().wait()
+
+    answers = [NOT_RUNNING, {"success": True, "message": "Export cancelled"}]
+    job, result, calls = _cancel_directly(monkeypatch, next_step, answers)
+    assert result.cancelled is True
+    assert result.message == "The export was stopped and its checkpoint unloaded."
+    assert [c[2] for c in calls] == [{"expected_op_id": "op-l"}, {"expected_op_id": "op-e"}]
+    assert job.status == "cancelled"
 
 
 IDLE_EXPORT = (
@@ -279,22 +246,6 @@ def test_a_cancel_that_stopped_nothing_says_so(monkeypatch, kind, route, answer)
     args = {"kind": kind, **({"id": IDS[kind]} if kind in IDS else {})}
     result, _studio = _call(monkeypatch, args, {("POST", route): answer})
     assert result["structuredContent"]["cancelled"] is False
-
-
-def test_an_export_the_route_found_gone_leaves_the_job_running(monkeypatch):
-    # The op ended between the status read and the cancel.
-    job = register_export_job(job_id = "exp-1", phase = "exporting")
-    _kind, route, answer = IDLE_EXPORT
-    result, _studio = _call(
-        monkeypatch, {"kind": "export", "id": "exp-1"}, {("POST", route): answer}
-    )
-    assert result["structuredContent"] == {
-        "kind": "export",
-        "id": "exp-1",
-        "cancelled": False,
-        "message": "No active export to cancel",
-    }
-    assert job.status == "running"
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])

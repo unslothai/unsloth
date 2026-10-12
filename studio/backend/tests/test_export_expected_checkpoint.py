@@ -55,3 +55,62 @@ def test_every_export_request_takes_expected_checkpoint(name):
     model = getattr(models, f"Export{name}Request")
     assert model(save_directory = "out", expected_checkpoint = "/x").expected_checkpoint == "/x"
     assert model(save_directory = "out").expected_checkpoint is None
+
+
+class _Worker:
+    pid = 0
+
+    def __init__(self):
+        self.terminated = False
+
+    def is_alive(self):
+        return not self.terminated
+
+    def terminate(self):
+        self.terminated = True
+
+    def join(self, timeout = None):
+        pass
+
+
+def test_cancel_with_an_op_id_stops_only_that_op(orchestrator):
+    orch, _sent, _loaded, _module = orchestrator
+    worker = orch._proc = _Worker()
+    assert orch._begin_op("theirs")
+    # Another caller's op is running: the worker is left alone.
+    assert orch.cancel_export(expected_op_id = "mine") is False
+    assert worker.terminated is False
+    assert orch.cancel_export(expected_op_id = "theirs") is True
+    assert worker.terminated is True
+
+
+def test_an_op_cancelled_before_it_started_is_refused_when_it_starts(orchestrator):
+    orch, sent, _loaded, module = orchestrator
+    orch._proc = _Worker()
+    assert orch.cancel_export(expected_op_id = "queued") is False
+    assert orch.export_gguf(save_directory = "out", op_id = "queued") == (
+        False,
+        module.OP_CANCELLED,
+        None,
+    )
+    assert sent == []
+    # Refused once: the id is spent, and an op without an id runs as before.
+    assert orch.export_gguf(save_directory = "out", op_id = "queued")[0] is True
+    assert orch.export_gguf(save_directory = "out")[0] is True
+    assert orch._active_op_id is None
+
+
+def test_cancel_without_an_op_id_stops_whatever_runs(orchestrator):
+    orch, _sent, _loaded, _module = orchestrator
+    worker = orch._proc = _Worker()
+    orch._begin_op("theirs")
+    assert orch.cancel_export() is True
+    assert worker.terminated is True
+
+
+@pytest.mark.parametrize("name", ["BaseModel", "GGUF", "LoRAAdapter", "MergedModel"])
+def test_every_load_and_export_request_takes_an_op_id(name):
+    model = getattr(models, f"Export{name}Request")
+    assert model(save_directory = "out", op_id = "op-1").op_id == "op-1"
+    assert models.LoadCheckpointRequest(checkpoint_path = "/x", op_id = "op-2").op_id == "op-2"
+    assert models.ExportCancelRequest().expected_op_id is None

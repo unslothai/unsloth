@@ -66,7 +66,7 @@ async def export_model(
     """Export a trained checkpoint and return a job id at once; follow it with get_job(kind="export"). ``checkpoint`` is a name from list_training_runs(include_checkpoints=true): "<run folder>" or "<run folder>/checkpoint-N". ``format``: "gguf" (``quantization_method`` one or a list, e.g. Q4_K_M, Q8_0; ``imatrix`` true uses Unsloth's importance matrix, which the IQ quants such as IQ2_XXS need), "merged" (LoRA merged into 16-bit weights), "lora" (the adapter only) or "base". ``save_directory`` is a folder name under Unsloth Studio's exports folder. ``push_to_hub`` uploads to ``repo_id`` and needs ``hf_token``. Leave ``load_in_4bit`` unset to let Unsloth Studio choose. Unsloth Studio exports one at a time, so this is refused while another export runs."""
     caller = current_caller()
     save_directory = checked_save_directory(save_directory)
-    # One export worker: a job queued behind another could not be told apart from it when cancelled.
+    # One export worker, one job at a time.
     running = await route_json("GET", EXPORT_STATUS, caller = caller)
     if (isinstance(running, dict) and running.get("is_export_active")) or export_jobs.any_running():
         raise ToolError(RUNNING)
@@ -88,18 +88,20 @@ async def export_model(
     }
 
     async def run(job: export_jobs.ExportJob) -> None:
-        job.phase = "loading"
-        await _op(caller, "/api/export/load-checkpoint", load)
+        job.phase, job.op_id = "loading", f"mcp-{job.job_id}-load"
+        await _op(caller, "/api/export/load-checkpoint", {**load, "op_id": job.op_id})
         before = await route_json("GET", EXPORT_STATUS, caller = caller)
         # Load and export are two calls; an Export page load between them would export under this job.
         if not _same_checkpoint(before, found.path):
             raise ToolError(
                 "Another checkpoint was loaded for export before this job's export began; nothing was exported."
             )
-        job.phase = "exporting"
+        job.phase, job.op_id = "exporting", f"mcp-{job.job_id}-export"
         # The route checks this under the export lock, which closes the gap the status check leaves.
         result = await _op(
-            caller, f"/api/export/export/{format}", {**body, "expected_checkpoint": found.path}
+            caller,
+            f"/api/export/export/{format}",
+            {**body, "expected_checkpoint": found.path, "op_id": job.op_id},
         )
         # This call's own answer, not the export status: another export may have finished since.
         details = result.get("details") if isinstance(result, dict) else None

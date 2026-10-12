@@ -41,6 +41,7 @@ _EXPORT_INACTIVITY_TIMEOUT = 3600.0
 CHECKPOINT_CHANGED = (
     "The loaded checkpoint changed since this export was requested; nothing was exported."
 )
+OP_CANCELLED = "Export cancelled"
 
 # Teardown is a bounded amount of work, so it is capped outright rather than by silence: the log
 # gate an export opens is never closed, and teardown chatter would otherwise renew this forever.
@@ -82,6 +83,10 @@ class ExportOrchestrator:
         self._op_lock = threading.Lock()
         self._op_seq: int = 0
         self._active_op_kind: Optional[str] = None
+        # A caller's id for the running op, so cancel(expected_op_id) stops only that op; ids cancelled
+        # before their op started are refused when it does.
+        self._active_op_id: Optional[str] = None
+        self._cancelled_op_ids: set = set()
         self._last_op: Optional[Dict[str, Any]] = None
 
         atexit.register(self._cleanup)
@@ -176,8 +181,20 @@ class ExportOrchestrator:
     def get_active_op_kind(self) -> Optional[str]:
         return self._active_op_kind
 
+    def _begin_op(self, op_id: Optional[str]) -> bool:
+        with self._op_lock:
+            if op_id is not None and op_id in self._cancelled_op_ids:
+                self._cancelled_op_ids.discard(op_id)
+                return False
+            self._active_op_id = op_id
+            return True
+
+    def _end_op(self) -> None:
+        with self._op_lock:
+            self._active_op_id = None
+
     @job_control
-    def cancel_export(self) -> bool:
+    def cancel_export(self, expected_op_id: Optional[str] = None) -> bool:
         """Terminate the in-flight export subprocess immediately.
 
         An export op holds ``self._lock`` for its whole duration (blocked in
@@ -188,8 +205,23 @@ class ExportOrchestrator:
         Only the export subprocess is touched; training and inference run in
         their own subprocesses and are left untouched.
 
+        With ``expected_op_id`` only that op is stopped; when another op (or none) is running, the id is
+        remembered so the op refuses to start, and False is returned.
+
         Returns True if a live subprocess was terminated, False if none ran.
         """
+        if expected_op_id is None:
+            return self._terminate_worker()
+        # Held across the terminate so the op cannot end and another start in between.
+        with self._op_lock:
+            if self._active_op_id != expected_op_id:
+                if len(self._cancelled_op_ids) >= 256:
+                    self._cancelled_op_ids.clear()
+                self._cancelled_op_ids.add(expected_op_id)
+                return False
+            return self._terminate_worker()
+
+    def _terminate_worker(self) -> bool:
         self._cancel_requested = True
         proc = self._proc
         if proc is None or not proc.is_alive():
@@ -489,6 +521,7 @@ class ExportOrchestrator:
         allow_ambient: bool = True,
         subject: Optional[str] = None,
         base_model: Optional[str] = None,
+        op_id: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -525,6 +558,8 @@ class ExportOrchestrator:
         sub_config["device_backend"] = get_device().value
 
         with self._lock:
+            if not self._begin_op(op_id):
+                return False, OP_CANCELLED
             # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
             self._cancel_requested = False
@@ -598,6 +633,7 @@ class ExportOrchestrator:
                     return False, error
             finally:
                 self._record_op_finished(op_success, op_message, None)
+                self._end_op()
                 self._active_op_kind = None
                 self._export_active = False
 
@@ -612,6 +648,7 @@ class ExportOrchestrator:
         compressed_method: Optional[str] = None,
         install_missing_dependencies: bool = False,
         expected_checkpoint: Optional[str] = None,
+        op_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -625,6 +662,7 @@ class ExportOrchestrator:
                 "compressed_method": compressed_method,
                 "install_missing_dependencies": install_missing_dependencies,
                 "expected_checkpoint": expected_checkpoint,
+                "op_id": op_id,
             },
         )
 
@@ -637,6 +675,7 @@ class ExportOrchestrator:
         private: bool = False,
         base_model_id: Optional[str] = None,
         expected_checkpoint: Optional[str] = None,
+        op_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "base",
@@ -648,6 +687,7 @@ class ExportOrchestrator:
                 "private": private,
                 "base_model_id": base_model_id,
                 "expected_checkpoint": expected_checkpoint,
+                "op_id": op_id,
             },
         )
 
@@ -662,6 +702,7 @@ class ExportOrchestrator:
         private: bool = False,
         npu_q4nx: bool = False,
         expected_checkpoint: Optional[str] = None,
+        op_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -676,6 +717,7 @@ class ExportOrchestrator:
                 "private": private,
                 "npu_q4nx": npu_q4nx,
                 "expected_checkpoint": expected_checkpoint,
+                "op_id": op_id,
             },
         )
 
@@ -690,6 +732,7 @@ class ExportOrchestrator:
         gguf_outtype: str = "q8_0",
         adapter_format: Optional[str] = None,
         expected_checkpoint: Optional[str] = None,
+        op_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
@@ -704,6 +747,7 @@ class ExportOrchestrator:
                 "gguf_outtype": gguf_outtype,
                 "adapter_format": adapter_format,
                 "expected_checkpoint": expected_checkpoint,
+                "op_id": op_id,
             },
         )
 
@@ -715,6 +759,7 @@ class ExportOrchestrator:
         dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
         expected = params.pop("expected_checkpoint", None)
+        op_id = params.pop("op_id", None)
         validate_job_paths(params)
         with self._lock:
             if not self._ensure_subprocess_alive():
@@ -729,6 +774,8 @@ class ExportOrchestrator:
                 not loaded or os.path.realpath(loaded) != os.path.realpath(expected)
             ):
                 return False, CHECKPOINT_CHANGED, None
+            if not self._begin_op(op_id):
+                return False, OP_CANCELLED, None
 
             self.clear_logs()
             self._cancel_requested = False
@@ -768,6 +815,7 @@ class ExportOrchestrator:
                     return False, str(exc), None
             finally:
                 self._record_op_finished(op_success, op_message, op_output_path)
+                self._end_op()
                 self._active_op_kind = None
                 self._export_active = False
 

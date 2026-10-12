@@ -29,6 +29,8 @@ class ExportJob:
     format: str
     status: str = "running"
     phase: str = "starting"
+    # The op id sent with the step in flight; cancel stops the worker only while that op runs.
+    op_id: Optional[str] = None
     output: Optional[str] = None
     error: Optional[str] = None
     finished_at: Optional[float] = None

@@ -706,7 +706,10 @@ def test_the_mcp_export_tool_never_goes_ambient(monkeypatch):
     without = export(push_to_hub = True, repo_id = "me/m")
     export_jobs._reset()
 
-    loads = bodies(studio, "/api/export/load-checkpoint")
+    loads = [
+        {k: v for k, v in body.items() if k != "op_id"}
+        for body in bodies(studio, "/api/export/load-checkpoint")
+    ]
     assert with_token["status"] == "completed"
     assert loads[0] == {"checkpoint_path": "/o/run", "max_seq_length": 2048, "hf_token": "hf_agent"}
     assert backend.export_gguf.call_args.kwargs["hf_token"] == "hf_agent"

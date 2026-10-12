@@ -148,14 +148,19 @@ def _export_studio(
     export_answer = EXPORTED,
     statuses = ({"last_op_seq": 5}, DONE),
     calls = None,
+    op_ids = None,
 ):
     # export_model first checks that no export is running.
     next_status = sequence({"is_export_active": False, "last_op_seq": 5}, *statuses)
     calls = [] if calls is None else calls
+    op_ids = [] if op_ids is None else op_ids
 
     def record(name, answer):
         def handler(request, body):
-            calls.append((name, json.loads(body) if body else None))
+            sent = json.loads(body) if body else None
+            if isinstance(sent, dict) and "op_id" in sent:
+                op_ids.append((name, sent.pop("op_id")))
+            calls.append((name, sent))
             return answer
 
         return handler
@@ -320,3 +325,11 @@ def test_an_unknown_checkpoint_lists_the_names(monkeypatch):
         started["content"][0]["text"]
         == "No checkpoint named nope. Available: qwen-lora, qwen-lora/checkpoint-30"
     )
+
+
+def test_each_step_carries_its_own_op_id(monkeypatch):
+    # cancel(kind="export", id=...) sends the step's op id, so only this job's own op is ever stopped.
+    op_ids = []
+    started, _job = run_export_job(monkeypatch, _export_studio(op_ids = op_ids), ARGS)
+    job_id = started["structuredContent"]["job_id"]
+    assert op_ids == [("load", f"mcp-{job_id}-load"), ("gguf", f"mcp-{job_id}-export")]
