@@ -61,8 +61,9 @@ async def export_model(
     private: bool = False,
     max_seq_length: int = 2048,
     load_in_4bit: Optional[bool] = None,
+    imatrix: bool = False,
 ) -> ExportJobRef:
-    """Export a trained checkpoint and return a job id at once; follow it with get_job(kind="export"). ``checkpoint`` is a name from list_training_runs(include_checkpoints=true): "<run folder>" or "<run folder>/checkpoint-N". ``format``: "gguf" (``quantization_method`` one or a list, e.g. Q4_K_M, Q8_0), "merged" (LoRA merged into 16-bit weights), "lora" (the adapter only) or "base". ``save_directory`` is a folder name under Unsloth Studio's exports folder. ``push_to_hub`` uploads to ``repo_id`` and needs ``hf_token``. Leave ``load_in_4bit`` unset to let Unsloth Studio choose. Unsloth Studio exports one at a time, so this is refused while another export runs."""
+    """Export a trained checkpoint and return a job id at once; follow it with get_job(kind="export"). ``checkpoint`` is a name from list_training_runs(include_checkpoints=true): "<run folder>" or "<run folder>/checkpoint-N". ``format``: "gguf" (``quantization_method`` one or a list, e.g. Q4_K_M, Q8_0; ``imatrix`` true uses Unsloth's importance matrix, which the IQ quants such as IQ2_XXS need), "merged" (LoRA merged into 16-bit weights), "lora" (the adapter only) or "base". ``save_directory`` is a folder name under Unsloth Studio's exports folder. ``push_to_hub`` uploads to ``repo_id`` and needs ``hf_token``. Leave ``load_in_4bit`` unset to let Unsloth Studio choose. Unsloth Studio exports one at a time, so this is refused while another export runs."""
     caller = current_caller()
     save_directory = checked_save_directory(save_directory)
     # One export worker: a job queued behind another could not be told apart from it when cancelled.
@@ -83,6 +84,7 @@ async def export_model(
         "private": private,
         **present(repo_id = repo_id or None, hf_token = token),
         **({"quantization_method": quantization_method} if format == "gguf" else {}),
+        **({"imatrix": True} if format == "gguf" and imatrix else {}),
     }
 
     async def run(job: export_jobs.ExportJob) -> None:

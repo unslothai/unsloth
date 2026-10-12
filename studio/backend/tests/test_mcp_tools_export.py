@@ -345,6 +345,13 @@ def test_each_format_reaches_its_route(monkeypatch):
         assert "quantization_method" not in calls[1][1]
 
 
+def test_imatrix_reaches_the_gguf_route(monkeypatch):
+    calls = []
+    run_export_job(monkeypatch, _export_studio(recorder = calls), {**ARGS, "imatrix": True})
+    assert [name for name, _ in calls] == ["load", "gguf"]
+    assert calls[1][1]["imatrix"] is True
+
+
 def test_hf_token_and_load_in_4bit_go_in_the_bodies(monkeypatch):
     calls = []
     args = {**ARGS, "format": "merged", "push_to_hub": True, "repo_id": "me/m", "hf_token": "hf_x"}
