@@ -1,17 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Compiled input projection for Qwen3.5's GatedDeltaNet layers.
 
 The generated `Qwen3_5GatedDeltaNet_forward` carries `@torch.compiler.disable` because it
@@ -48,7 +37,7 @@ _COMPILE_OPTIONS = {
 _PATCHED_CLASS_NAMES = ("Qwen3_5GatedDeltaNet",)
 
 
-@torch.compile(fullgraph = True, dynamic = True, options = _COMPILE_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = None, options = _COMPILE_OPTIONS)
 def _gdn_input_projection(
     hidden_states,
     attention_mask,
@@ -93,13 +82,31 @@ def _gdn_input_projection(
     return query, key, value, g, beta, z
 
 
-def _fast_path_applicable(self):
-    if getattr(self, "causal_conv1d_fn", None) is not None:
-        return False
+# Packed batches: the stock forward hands these to the conv and the fla kernel.
+_PACKED_KWARGS = ("cu_seq_lens_q", "cu_seqlens", "seq_idx")
+
+
+def _is_packed(kwargs):
+    return any(kwargs.get(k) is not None for k in _PACKED_KWARGS)
+
+
+def _projections_plain(self):
+    # Re-checked per call: get_peft_model wraps these after the load-time patch.
     for name in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"):
         m = getattr(self, name, None)
         if type(m) is not nn.Linear or m.bias is not None:
             return False
+    return True
+
+
+def _fast_path_applicable(self):
+    if getattr(self, "causal_conv1d_fn", None) is not None:
+        return False
+    # transformers >= 5.15 calls a module-level kernel instead of this attribute.
+    if not callable(getattr(self, "chunk_gated_delta_rule", None)):
+        return False
+    if not _projections_plain(self):
+        return False
     conv = getattr(self, "conv1d", None)
     if type(conv) is not nn.Conv1d or conv.bias is not None or conv.groups != conv.in_channels:
         return False
@@ -117,10 +124,16 @@ def _gated_delta_net_fast_forward(
     hidden_states,
     cache_params = None,
     attention_mask = None,
+    **kwargs,
 ):
-    if cache_params is not None or not getattr(self, "_unsloth_gdn_fast_ok", False):
+    if (
+        cache_params is not None
+        or not getattr(self, "_unsloth_gdn_fast_ok", False)
+        or _is_packed(kwargs)
+        or not _projections_plain(self)
+    ):
         return self._unsloth_original_forward(
-            hidden_states, cache_params = cache_params, attention_mask = attention_mask
+            hidden_states, cache_params = cache_params, attention_mask = attention_mask, **kwargs
         )
     batch_size, seq_len, _ = hidden_states.shape
     mask = attention_mask

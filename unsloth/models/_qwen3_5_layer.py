@@ -1,17 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Three compiled regions per Qwen3.5 decoder layer for training.
 
 Per layer the stock path runs ~6 separately compiled regions (input norm, mixer pieces,
@@ -35,7 +24,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ._gated_delta_net import _fast_path_applicable as _gdn_applicable
+from ._gated_delta_net import (
+    _fast_path_applicable as _gdn_applicable,
+    _is_packed,
+    _projections_plain,
+)
 
 __all__ = ["patch_qwen3_5_decoder_layers"]
 
@@ -115,7 +108,7 @@ def _apply_rotary_pos_emb(q, k, cos, sin):
 
 
 # ----------------------------------------------------------------------------- regions
-@torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = None, options = _EAGER_LIKE_OPTIONS)
 def _gdn_pre(
     hidden_states,
     norm_w,
@@ -165,7 +158,7 @@ def _gdn_pre(
     return query, key, value, g, beta, z
 
 
-@torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = None, options = _EAGER_LIKE_OPTIONS)
 def _gdn_mid(core_attn_out, residual, w_out, norm_w, eps: float):
     batch_size, seq_len, _ = residual.shape
     out = F.linear(core_attn_out.reshape(batch_size, seq_len, -1), w_out)
@@ -173,13 +166,13 @@ def _gdn_mid(core_attn_out, residual, w_out, norm_w, eps: float):
     return hidden, _rmsnorm(hidden, norm_w, eps)
 
 
-@torch.compile(fullgraph = True, dynamic = True, options = _MLP_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = None, options = _MLP_OPTIONS)
 def _mlp_block(x, hidden, Wg, Ag, Bg, sg: float, Wu, Au, Bu, su: float, Wd, Ad, Bd, sd: float):
     mlp = _linear(F.silu(_linear(x, Wg, Ag, Bg, sg)) * _linear(x, Wu, Au, Bu, su), Wd, Ad, Bd, sd)
     return hidden + mlp
 
 
-@torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = None, options = _EAGER_LIKE_OPTIONS)
 def _attn_pre(
     hidden_states,
     norm_w,
@@ -216,7 +209,7 @@ def _attn_pre(
 
 # The stock RoPE is its own compiled graph with inductor defaults (products kept in fp32 until
 # the final cast), so it is reproduced by the same: a separate region without emulated casts.
-@torch.compile(fullgraph = True, dynamic = True, options = _MLP_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = None, options = _MLP_OPTIONS)
 def _attn_rope(query_states, key_states, value_states, cos, sin):
     query_states, key_states = _apply_rotary_pos_emb(query_states, key_states, cos, sin)
     if value_states.dtype != query_states.dtype:
@@ -224,7 +217,7 @@ def _attn_rope(query_states, key_states, value_states, cos, sin):
     return query_states, key_states, value_states
 
 
-@torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = None, options = _EAGER_LIKE_OPTIONS)
 def _attn_mid(attn_output, gate, residual, Wo, Ao, Bo, so: float, norm_w, eps: float):
     input_shape = residual.shape[:-1]
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
@@ -356,7 +349,14 @@ def _fused_decoder_layer_forward(
 
     if self.layer_type == "linear_attention":
         gdn = self.linear_attn
-        if pg is None or pu is None or pd is None:
+        if (
+            pg is None
+            or pu is None
+            or pd is None
+            or _is_packed(kwargs)
+            or not _projections_plain(gdn)
+            or type(gdn.out_proj) is not nn.Linear
+        ):
             return self._unsloth_original_forward(
                 hidden_states,
                 position_embeddings = position_embeddings,
