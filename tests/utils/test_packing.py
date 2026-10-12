@@ -1846,7 +1846,7 @@ def test_enable_padding_free_metadata():
 # has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
 # and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
 @pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
-def test_packing_sdpa(tmp_path):
+def test_packing_sdpa(tmp_path, monkeypatch):
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.xpu.is_available():
@@ -1907,6 +1907,9 @@ def test_packing_sdpa(tmp_path):
                 side_effect = _capture_loss,
             )
         )
+        # The labels are read where fast_cross_entropy_loss receives them, so take that loss path:
+        # since #13311 the trainer no longer leaves UNSLOTH_RETURN_LOGITS=1 behind for this forward.
+        monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
         with torch.no_grad():
             outputs = model(**inputs)
 
