@@ -257,6 +257,9 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // T2V-A14B before the generic Wan key.
   { match: "a14b", steps: 20, guidance: 3.5 },
   { match: "wan2.2-14b", steps: 20, guidance: 3.5 },
+  // Wan2.1 T2V: ComfyUI's text_to_video_wan template (30 steps, CFG 6).
+  { match: "wan2.1", steps: 30, guidance: 6 },
+  { match: "wan2_1", steps: 30, guidance: 6 },
   // The backend supplies the fps per family.
   { match: "wan", steps: 20, guidance: 5 },
   { match: "hunyuanvideo", steps: 20, guidance: 6 },

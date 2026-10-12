@@ -268,6 +268,9 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         # Wan2.2 official diffusers base repos: safetensors-only, no remote code.
         "wan-ai/wan2.2-ti2v-5b-diffusers",
         "wan-ai/wan2.2-t2v-a14b-diffusers",
+        # Wan2.1 T2V official diffusers repos, same terms.
+        "wan-ai/wan2.1-t2v-1.3b-diffusers",
+        "wan-ai/wan2.1-t2v-14b-diffusers",
         # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo has no model_index.json)
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
@@ -2682,6 +2685,13 @@ class VideoBackend:
             )
         _refuse_non_dit_pick(repo_id, gguf_filename, "video")
         fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+        if fam is None and not family_override:
+            # Wan2.1 I2V / VACE / FastWan: name the reason rather than the generic list below.
+            from .video_families import unsupported_video_checkpoint_reason
+
+            reason = unsupported_video_checkpoint_reason(display_repo_id, repo_id, gguf_filename)
+            if reason:
+                raise ValueError(reason)
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "

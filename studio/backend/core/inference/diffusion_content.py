@@ -7,7 +7,8 @@ ControlNet), from the safetensors or GGUF header only: no torch, no weight bytes
 
 Same-architecture variants (FLUX.1 dev / Krea / Kontext, Qwen-Image / 2512 / Edit / Edit-2509,
 klein distilled / base, Z-Image base / Turbo, HiDream full / dev / fast, LTX-2 / 2.3,
-HunyuanVideo-1.5 480p / 720p, Wan A14B high / low noise) have identical keys: the file name decides.
+HunyuanVideo-1.5 480p / 720p, Wan A14B high / low noise, Wan2.1-T2V-14B vs an A14B expert) have identical keys: the
+file name decides.
 """
 
 from __future__ import annotations
@@ -38,6 +39,9 @@ SAME_ARCH_VARIANTS: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({"qwen-image", "qwen-image-edit"}),
     "qwen-image-edit": frozenset({"qwen-image-edit"}),
     "hunyuanvideo-1.5": frozenset({"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"}),
+    # Wan2.1-T2V-14B and one Wan2.2 A14B expert are the same 14B stack with identical keys: the name decides, and a
+    # name naming neither keeps the header's A14B answer.
+    "wan2.2-t2v-a14b": frozenset({"wan2.2-t2v-a14b", "wan2.1-t2v-14b"}),
 }
 
 _VIDEO_FAMILIES = frozenset(
@@ -45,6 +49,8 @@ _VIDEO_FAMILIES = frozenset(
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
+        "wan2.1-t2v-1.3b",
+        "wan2.1-t2v-14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
         "minimax-h3",
@@ -337,11 +343,17 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         if in_ch == 16 and width == 5120:
             return _dit(
                 "wan2.2-t2v-a14b",
-                "a Wan 14B text-to-video diffusion transformer (one A14B expert)",
+                "a Wan 14B text-to-video diffusion transformer (Wan2.1 T2V-14B or one Wan2.2 A14B expert)",
                 layout,
             )
+        if in_ch == 16 and width == 1536:
+            return _dit("wan2.1-t2v-1.3b", "a Wan2.1 T2V-1.3B diffusion transformer", layout)
         if in_ch == 36:
-            return _dit(None, "a Wan image-to-video diffusion transformer (not supported)", layout)
+            return _dit(
+                None,
+                "a Wan image-to-video diffusion transformer (not supported yet: image-to-video is coming)",
+                layout,
+            )
         return _dit(None, "a Wan diffusion transformer of an unsupported size", layout)
 
     if (
