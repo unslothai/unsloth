@@ -94,6 +94,6 @@ class TestAGgufSpeechCallIsCounted:
             pass
         assert seen.get("counted") is True
         assert seen["max_new_tokens"] > 0, "the speech call never ran"
-        assert seen["kv_tokens"] == inference._prompt_kv_tokens("hello there") + seen[
-            "max_new_tokens"
-        ]
+        assert (
+            seen["kv_tokens"] == inference._prompt_kv_tokens("hello there") + seen["max_new_tokens"]
+        )
