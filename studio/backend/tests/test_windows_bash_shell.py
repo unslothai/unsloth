@@ -477,3 +477,46 @@ def test_a_blocked_program_behind_a_drive_path_is_still_screened(
 @pytest.mark.parametrize("command", ["echo hi; . script.sh", "x=$(. script.sh)", ". ./env.sh"])
 def test_dot_as_a_command_is_still_screened(monkeypatch, command, _windows_backstop):
     assert "." in _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # A quoted program path with a space, handed on by cmd or START: re-lexing it as a command line
+        # split it at the space and screened `C:\Program` instead.
+        (r'cmd /c "C:\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
+        (r'cmd //c "C:\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
+        (r'start "" "C:\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
+        (r'cmd //c start "" "C:\x y\powershell.exe"', "powershell"),
+        ('cmd /c "C:/x y/rm.exe" -rf z', "rm"),
+    ],
+)
+def test_a_quoted_program_path_handed_to_cmd_or_start_is_screened(
+    monkeypatch, bash, command, expected, _windows_blocklist
+):
+    assert expected in _screen_on_windows(monkeypatch, bash, command)
+
+
+def test_cmd_strips_the_outer_quotes_of_a_doubled_quote_payload(monkeypatch, _windows_blocklist):
+    # cmd turns `""prog" args"` into `"prog" args`. Git Bash would strip the backslashes first, so only
+    # the cmd Terminal runs this as pwsh.
+    assert "pwsh" in _screen_on_windows(monkeypatch, None, r'cmd /c ""C:\x\pwsh.exe" -c ls"')
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'cmd /c "C:\Program Files\nodejs\node.exe" -v',
+        r'start "" "C:\Program Files\Microsoft VS Code\Code.exe" .',
+        # A blocked name that is only an argument, a folder or a document.
+        r'cmd /c "dir C:\src\curl"',
+        r'cmd /c "git -C C:\src\ssh status"',
+        r'cmd /c type "C:\Users\me\My Documents\rm.txt"',
+    ],
+)
+def test_a_quoted_program_path_that_is_not_blocked_stays_runnable(
+    monkeypatch, bash, command, _windows_blocklist
+):
+    assert not _screen_on_windows(monkeypatch, bash, command)
