@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Router matrix for the opt-in Apple Silicon MLX image engine (UNSLOTH_DIFFUSION_MLX).
-
-The default must not move anywhere: unset / 0 / auto keep today's choice, Linux / CUDA never get
-MLX, and every refusal under the opt-in falls through to today's engine with a recorded reason.
-``select_and_activate_engine`` and ``predict_engine`` must agree on every cell."""
+"""Router matrix for the opt-in MLX image engine: defaults unchanged, refusals fall back, predict == select."""
 
 from __future__ import annotations
 

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Engine-surface tests for the opt-in MLX image engine with mlx / mflux stubbed out.
-
-The routes call every image engine through one duck-typed surface (begin_load, generate,
-cancel_generate, unload, status, load/generate progress, repo-id guards); these pin that the MLX
-engine honours it without importing mlx or mflux (``MfluxRuntime`` is the only code that does)."""
+"""Engine-surface tests for the MLX image engine with mlx / mflux stubbed out."""
 
 from __future__ import annotations
 

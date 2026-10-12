@@ -188,9 +188,7 @@ class DiffusionFamily:
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # mflux ModelConfig name for the opt-in Apple Silicon MLX engine (UNSLOTH_DIFFUSION_MLX=1), e.g. "z-image-turbo".
-    # None keeps the family off MLX. ``mlx_model_config_by_base`` maps a resolved base repo (lowercase) to another
-    # config of the same architecture (the undistilled base of a Turbo family).
+    # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
     mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves
@@ -665,7 +663,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_incompatible = True,
         # The attention / FFN branches overflow float16 before their post-norm.
         fp16_guard = "rescale_post_norm",
-        # Opt-in MLX engine on Apple Silicon (mflux Z-Image). The undistilled base uses mflux's guidance config.
         mlx_model_config = "z-image-turbo",
         mlx_model_config_by_base = (("tongyi-mai/z-image", "z-image"),),
         # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
@@ -2162,13 +2159,10 @@ def family_gguf_loadable(fam: DiffusionFamily) -> bool:
 
 
 def family_mlx_supported(fam: Optional[DiffusionFamily]) -> bool:
-    """True when the opt-in Apple Silicon MLX engine has a model implementation for the family. Says nothing about
-    whether mlx / mflux are installed or the picked GGUF quant converts; the router checks those."""
     return fam is not None and bool(getattr(fam, "mlx_model_config", None))
 
 
 def mlx_model_config_for(fam: DiffusionFamily, base_repo: Optional[str]) -> Optional[str]:
-    """The mflux ModelConfig name for ``fam`` loaded against ``base_repo`` (the family default when unmapped)."""
     if not family_mlx_supported(fam):
         return None
     key = (base_repo or "").strip().lower()

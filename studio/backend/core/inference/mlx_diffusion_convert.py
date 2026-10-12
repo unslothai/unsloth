@@ -1,23 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Convert a diffusion GGUF (single-file tensor names) into mflux's pre-quantized transformer layout.
+"""Diffusion GGUF -> mflux pre-quantized transformer layout (numpy + gguf only, streamed per tensor).
 
-Q4_0 / Q4_1 / Q8_0 blocks map exactly onto MLX affine group-32 weights (dequant = q * scale + bias):
-
-  Q4_0: (q - 8) * d      -> scale d, bias -8d
-  Q4_1: q * d + m        -> scale d, bias m
-  Q8_0: qs * d (int8)    -> q = qs + 128, scale d, bias -128d
-
-The only rounding is storing the fp16 scale / bias in bf16 (``scale_dtype="bf16"``, the measured
-default); ``scale_dtype="f16"`` keeps them bit-exact. BF16 / F16 / F32 tensors stay dense (bf16)
-unless ``dense_bits`` asks for an affine 4/8-bit group-32 copy of the 2-D linear weights, which is
-what lets the Z-Image DiT fit a 16 GB Mac. K-quants and the other ggml codecs are refused with
-``UnsupportedGGUFError`` before anything is written, so the caller can fall back to another engine.
-
-numpy + ``gguf`` only, and no MLX: the output is written by a small streaming safetensors writer,
-one tensor at a time, so peak memory is about one tensor rather than the whole model. Ported from
-the prototype measured on a GitHub macos-15 runner (plans/mac_speed/NOTES_mlx.md).
+Q4_0 / Q4_1 / Q8_0 map exactly onto MLX affine group-32 (dequant = q * scale + bias):
+  Q4_0: scale d, bias -8d;  Q4_1: scale d, bias m;  Q8_0: q = qs + 128, scale d, bias -128d.
+K-quants are refused (not converted yet): their per-sub-block scale products do not round-trip exactly through MLX's 16-bit group scales, and Q6_K uses 16-element groups.
 """
 
 from __future__ import annotations
@@ -70,10 +58,7 @@ def _quant_token(gguf_filename: str) -> Optional[str]:
 
 
 def quant_convertible(gguf_filename: Optional[str]) -> tuple[bool, Optional[str]]:
-    """Whether a GGUF of this NAME can go to MLX, and the reason when it cannot.
-
-    A filename verdict only: the file itself is checked tensor by tensor at conversion, which
-    raises ``UnsupportedGGUFError`` for anything a mislabelled file carries."""
+    """Filename verdict only; conversion re-checks every tensor."""
     if not gguf_filename:
         return (
             False,
@@ -330,7 +315,6 @@ def _plan(reader: Any, *, dense_bits: int, scale_dtype: str) -> tuple[list[_Job]
 
             jobs.append(_Job(tensor, outputs, produce))
             continue
-        # Dense.
         if name in _PAD_TOKENS:
             dims = [1, int(np.prod(dims))]
         quantize = (
@@ -428,10 +412,7 @@ def convert_gguf_to_mflux(
     cancel_event: Any = None,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> dict[str, Any]:
-    """Write ``out_dir/transformer/0.safetensors`` (mflux saved-model layout) from a diffusion GGUF.
-
-    Refuses an unsupported tensor type before writing anything; streams one tensor at a time;
-    lands the file atomically and writes the completion marker last."""
+    """Refuses unsupported types before writing; lands the file atomically, marker last."""
     from gguf import GGUFReader
 
     if dense_bits not in (0, 4, 8):
@@ -557,8 +538,6 @@ def cache_dir_for(
 def conversion_complete(
     out_dir: os.PathLike | str, *, source_path: Optional[os.PathLike | str] = None
 ) -> bool:
-    """True when the converted file and its marker are both present and agree on the size, and,
-    given ``source_path``, the GGUF it came from has not changed size or mtime since."""
     target_dir = Path(out_dir) / "transformer"
     try:
         marker = json.loads((target_dir / MARKER_FILENAME).read_text(encoding = "utf-8"))

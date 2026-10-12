@@ -174,21 +174,17 @@ _lock = threading.Lock()
 _transition_lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
-# Why an MLX opt-in (UNSLOTH_DIFFUSION_MLX=1) did not get the MLX engine on the last selection; None otherwise.
 _mlx_fallback_reason: Optional[str] = None
 
-# MLX wheels are macOS 14+ only.
 _MLX_MIN_MACOS = (14, 0)
 
 
 def _mlx_requested() -> bool:
-    """UNSLOTH_DIFFUSION_MLX=1 opts in. ``auto`` is accepted and, for now, means off: the default flips only
-    after a real-Mac A/B against diffusers on MPS and sd.cpp Metal."""
+    """``auto`` means off for now."""
     return os.environ.get("UNSLOTH_DIFFUSION_MLX", "0").strip().lower() in _ENABLE_TOKENS
 
 
 def _mlx_host_refusal() -> Optional[str]:
-    """Why this host cannot run the MLX engine, or None. Pure platform facts: no import, no GPU probe."""
     if sys.platform != "darwin":
         return "the MLX engine runs on macOS only"
     if platform.machine().lower() not in ("arm64", "aarch64"):
@@ -204,7 +200,7 @@ def _mlx_host_refusal() -> Optional[str]:
 
 
 def _mlx_runtime_refusal() -> Optional[str]:
-    """Why mlx / mflux cannot be imported, located WITHOUT importing them (find_spec only)."""
+    """find_spec only: never import mlx / mflux here."""
     missing = [name for name in ("mlx", "mflux") if importlib.util.find_spec(name) is None]
     if missing:
         return f"{' and '.join(missing)} not installed"
@@ -218,11 +214,8 @@ def mlx_selection(
     gguf_filename: Optional[str],
     backend: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
-    """``(use_mlx, refusal)`` for a load of ``fam``. ``refusal`` is None when MLX was not asked for (the
-    default) or when it is used; otherwise it says why the load stays on today's engine.
-
-    Shared verbatim by ``select_and_activate_engine`` and ``predict_engine`` so the download plan and the
-    load can never disagree about MLX. Cheap checks first; the device resolve runs only once MLX is asked for."""
+    """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
+    cannot disagree about MLX."""
     if not _mlx_requested():
         return False, None
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
@@ -624,8 +617,6 @@ def predict_engine(
     available, because that is what the load will do. Getting that wrong the other way (planning
     diffusers for the very first native load, when no binary is on disk yet) would mispredict the
     common case: a fresh CPU host.
-
-    The MLX opt-in is decided by the same ``mlx_selection`` call selection makes, with the same inputs.
     """
     if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename)[0]:
         return ENGINE_MLX
@@ -686,7 +677,6 @@ def family_buildable_here(
         return False
     if family_pipeline_available(fam):
         return True
-    # The opt-in MLX engine imports no diffusers pipeline either (needs the quant, so the filename).
     if model_kind == "gguf" and gguf_filename and family_mlx_supported(fam):
         try:
             if predict_engine(fam, model_kind = "gguf", gguf_filename = gguf_filename) == ENGINE_MLX:

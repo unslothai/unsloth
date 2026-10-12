@@ -1,24 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in MLX image engine for Apple Silicon (``UNSLOTH_DIFFUSION_MLX=1``), Z-Image first.
+"""Opt-in MLX (mflux) image engine for Apple Silicon (``UNSLOTH_DIFFUSION_MLX=1``) on Studio's GGUF.
 
-Runs the mflux (MIT) model implementation in-process on Studio's own GGUF: the picked GGUF's
-Q4_0 / Q4_1 / Q8_0 blocks are repacked exactly into MLX affine group-32 weights
-(``mlx_diffusion_convert``) and cached under ``$UNSLOTH_STUDIO_HOME/cache/mlx_diffusion/``; the
-text encoder, tokenizer and VAE come from the family's diffusers base repo (the files the diffusers
-GGUF route already stages), with the text encoder quantized on load.
-
-Exposes the duck-typed surface the router and the image routes use for every engine
-(``begin_load`` / ``generate`` / ``cancel_generate`` / ``unload`` / ``status`` / progress /
-repo-id guards), so routes work unchanged. Selected only by ``diffusion_engine_router`` and only
-when the opt-in, the host, the family and the GGUF quant all allow it; anything else keeps
-today's engine.
-
-Env knobs (all optional):
-  UNSLOTH_DIFFUSION_MLX_TE_BITS=4|8|16       text-encoder quantization (default 4 on <=16 GB RAM, else 8)
-  UNSLOTH_DIFFUSION_MLX_DENSE_BITS=0|4|8     quantize the GGUF's BF16 DiT layers too (default 4 on <=16 GB, else 0)
-  UNSLOTH_DIFFUSION_MLX_PRECISION=auto|fp16|bf16   compute precision (auto: fp16 on M1/M2, which lack bf16)
+Same duck-typed surface as the other image engines; selected only by ``diffusion_engine_router``.
 """
 
 from __future__ import annotations
@@ -57,7 +42,6 @@ logger = get_logger(__name__)
 
 ENGINE_NAME = "mlx"
 
-# The base-repo files the mflux Z-Image loader opens (diffusers layout); the transformer comes from the GGUF.
 BASE_ALLOW_PATTERNS = (
     "text_encoder/*.safetensors",
     "text_encoder/*.json",
@@ -72,12 +56,11 @@ _LOW_RAM_BYTES = 16 * 1024**3
 
 
 class MlxCancelled(Exception):
-    """Raised inside the mflux step callback to stop a generation at the next step boundary."""
+    """Raised in the mflux step callback to stop at the next step."""
 
 
 def drop_exception_frames(exc: Optional[BaseException]) -> None:
-    """Clear the locals of every finished frame an exception chain still references, so a cancelled
-    generation does not keep the model (and its arrays) alive through a retained traceback."""
+    """Clear frame locals along an exception chain: a retained traceback otherwise keeps the model alive."""
     import traceback
 
     seen: set[int] = set()
@@ -115,7 +98,6 @@ def _env_int(name: str, allowed: tuple[int, ...]) -> Optional[int]:
 
 
 def text_encoder_bits(ram_bytes: Optional[int] = None) -> Optional[int]:
-    """Bits for the on-load text-encoder quantization; None keeps it bf16 (``..._TE_BITS=16``)."""
     forced = _env_int("UNSLOTH_DIFFUSION_MLX_TE_BITS", (4, 8, 16))
     if forced is not None:
         return None if forced == 16 else forced
@@ -124,8 +106,6 @@ def text_encoder_bits(ram_bytes: Optional[int] = None) -> Optional[int]:
 
 
 def dense_bits(ram_bytes: Optional[int] = None) -> int:
-    """Bits for the GGUF's dense BF16 DiT layers (0 keeps them exact). Low-RAM Macs quantize them so the
-    DiT fits the GPU working set (measured on a 7 GB runner: 4.5 -> 3.6 GB, 2x faster per step)."""
     forced = _env_int("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", (0, 4, 8))
     if forced is not None:
         return forced
@@ -147,8 +127,7 @@ def _chip_name() -> str:
 
 
 def compute_precision_name(chip: Optional[str] = None) -> str:
-    """``float16`` on M1 / M2 (no native bf16; mflux scales the Z-Image FFN / attention so fp16 does not
-    overflow), ``bfloat16`` elsewhere. ``UNSLOTH_DIFFUSION_MLX_PRECISION`` overrides."""
+    """M1 / M2 lack native bf16, so fp16 there."""
     raw = os.environ.get("UNSLOTH_DIFFUSION_MLX_PRECISION", "auto").strip().lower()
     if raw in ("fp16", "float16", "half"):
         return "float16"
@@ -197,8 +176,7 @@ class MfluxRuntime:
                 bits = te_bits,
                 class_predicate = _quantizable,
             )
-        # Materialize in slices: the bf16 text encoder is read lazily and each slice is quantized as it
-        # lands, so peak memory stays near the quantized size instead of the full bf16 checkpoint.
+        # Materialize in slices so peak memory stays near the quantized size, not the bf16 checkpoint.
         from mlx.utils import tree_flatten
 
         for component in (model.transformer, model.vae, model.text_encoder):
@@ -226,7 +204,6 @@ class MfluxRuntime:
 
         class _StepCallback:
             def call_in_loop(self, t, seed, prompt, latents, config, time_steps):  # noqa: ARG002
-                # Finish this step's graph first so progress counts completed steps.
                 mx.eval(latents)
                 try:
                     on_step(int(t) + 1)
@@ -247,8 +224,7 @@ class MfluxRuntime:
                 guidance = guidance,
             )
         except StopImageGenerationException as exc:
-            # The unwound mflux frames hold the model and its in-flight graph; measured on a Mac, a
-            # cancelled run kept all 6.3 GB resident through unload() until they were cleared.
+            # The unwound mflux frames hold the model; uncleared, it survives unload().
             drop_exception_frames(exc)
             cancelled = True
         finally:
@@ -261,7 +237,6 @@ class MfluxRuntime:
         return result.image
 
     def cache_text_encodings(self, model: Any, size: int = _ENCODING_CACHE_SIZE) -> None:
-        """Memoize prompt encodings per (prompt, negative, cfg): a batch or a re-roll skips the text encoder."""
         original = model._encode_prompts
         cache: OrderedDict = OrderedDict()
 
@@ -328,7 +303,6 @@ class _MlxGen:
 
 
 def _snapshot_revision(path: str) -> Optional[str]:
-    """The commit a hub-cache file path was resolved at (``.../snapshots/<sha>/...``), else None."""
     parts = Path(path).parts
     if "snapshots" in parts:
         index = parts.index("snapshots")
@@ -375,8 +349,7 @@ def fetch_base_snapshot(base_repo: str, hf_token: Optional[str], *, local_files_
 
 
 def _link_base_components(model_dir: Path, base_dir: str) -> None:
-    """Point model_dir/{text_encoder,tokenizer,vae} at the base snapshot (refreshed each load: a new
-    revision moves the snapshot)."""
+    """Relinked every load: a new revision moves the snapshot."""
     for sub in _LINKED_SUBDIRS:
         source = Path(base_dir) / sub
         if not source.is_dir():
@@ -404,7 +377,6 @@ def _round16(value: Optional[int], default: int) -> int:
 
 
 class MlxDiffusionBackend:
-    """In-process MLX (mflux) engine with the diffusers / sd.cpp backend method surface."""
 
     runs_off_torch_device = False
 
@@ -443,7 +415,7 @@ class MlxDiffusionBackend:
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
-        # Accepted for a uniform route call; the MLX engine has no offload / torchao / attention knobs.
+        # Accepted and ignored: uniform route call.
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
@@ -460,7 +432,6 @@ class MlxDiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         **_ignored: Any,
     ) -> dict[str, Any]:
-        """Validate, then fetch + convert + build on a daemon thread. Returns at once."""
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
         if not gguf_filename:
             raise ValueError("gguf_filename is required: the MLX engine loads GGUF checkpoints only.")
@@ -580,7 +551,7 @@ class MlxDiffusionBackend:
             te_bits = text_encoder_bits()
             t2 = time.perf_counter()
             runtime = self._rt()
-            # A replaced model goes before the new one is built: two resident DiTs do not fit a small Mac.
+            # Free the replaced model first: two resident DiTs do not fit a small Mac.
             with self._lock:
                 displaced = self._state if self._load_token == _load_token else None
                 if displaced is not None:
@@ -644,22 +615,18 @@ class MlxDiffusionBackend:
                 if self._load_token == _load_token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))
         finally:
-            # This frame can outlive the call: anything below that caches an exception (the Hub
-            # download helpers memoize import failures) keeps the whole frame chain, locals included,
-            # and a model held here then survives unload(). Measured on a Mac: 6.3 GB stayed resident.
+            # A cached exception below (Hub helpers memoize import failures) can retain this frame;
+            # a model left in its locals would then survive unload().
             model = state = displaced = None
 
     def download_plan(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
-        """The diffusers GGUF plan stages exactly the files this engine opens (the GGUF plus the base
-        repo's text encoder, tokenizer and VAE), so it is reused rather than duplicated. The memory
-        verdict is the diffusers pipeline's and does not apply here."""
+        """The diffusers GGUF plan stages exactly the files this engine opens; its memory verdict does not apply."""
         from core.inference.diffusion import get_diffusion_backend
 
         kwargs.setdefault("memory_verdict", False)
         return get_diffusion_backend().download_plan(repo_id, **kwargs)
 
     def preflight_base_access(self, repo_id: str, fam: Optional[DiffusionFamily], **kwargs: Any) -> None:
-        """Same gated / unreadable base refusal the diffusers GGUF route makes: both read that base."""
         from core.inference.diffusion import get_diffusion_backend
 
         get_diffusion_backend().preflight_base_access(repo_id, fam, **kwargs)
@@ -802,7 +769,7 @@ class MlxDiffusionBackend:
                     total = time.perf_counter() - started
                     timing = {"total_s": round(total, 3)}
                     if len(marks) >= 2:
-                        # Steps after the first exclude prompt encoding: the honest per-step figure.
+                        # Exclude the first step: it includes prompt encoding.
                         timing["s_per_step"] = round((marks[-1] - marks[0]) / (len(marks) - 1), 4)
                         timing["first_step_s"] = round(marks[0] - started, 3)
                         timing["decode_s"] = round(time.perf_counter() - marks[-1], 3)
@@ -846,7 +813,6 @@ class MlxDiffusionBackend:
                 drop_exception_frames(exc)
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from None
             finally:
-                # Same reason as _run_load: never let a retained frame pin the model.
                 state = runtime = None
                 self._gen = None
                 with self._lock:
@@ -867,7 +833,6 @@ class MlxDiffusionBackend:
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
-        """Signal the in-flight generation; it stops at the next denoise step. False when idle."""
         with self._lock:
             cancel = self._active_generate_cancel
             if cancel is None:
@@ -904,8 +869,7 @@ class MlxDiffusionBackend:
             self._state = None
             self._load_token += 1
             self._loading = None
-        # Barrier: a signalled generation stops at its next step; wait so callers can treat the
-        # return as "memory is free".
+        # Barrier: on return the cancelled generation has released the model.
         with self._generate_lock:
             pass
         if had_model and self._runtime is not None:
@@ -976,7 +940,6 @@ class MlxDiffusionBackend:
             "resolved": None,
             "engine": ENGINE_NAME,
             "native_mode": None,
-            # Engine detail for logs / diagnostics (not part of the response model).
             "mlx": {
                 "model_config": state.model_config,
                 "precision": state.precision,
@@ -1020,6 +983,5 @@ def get_mlx_diffusion_backend() -> MlxDiffusionBackend:
 
 
 def generation_in_flight() -> bool:
-    """Read the active-generation marker without constructing or locking the backend."""
     backend = _mlx_diffusion_backend
     return backend is not None and backend._gen is not None

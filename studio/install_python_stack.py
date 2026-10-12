@@ -10506,12 +10506,8 @@ _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.4"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
-# The opt-in MLX image engine (UNSLOTH_DIFFUSION_MLX=1). Installed --no-deps: mflux declares
-# opencv-python, matplotlib, torch>=2.13 and transformers>=5.5 for model families and tools the
-# Z-Image engine never imports, and resolving them would move the stack under the MLX pins. Its
-# Z-Image import and render need only the three small packages below on top of what Studio
-# already installs. Best-effort and outside the MLX gate: without mflux, image generation stays
-# on its current engine, so a failure here must never mark the MLX stack broken.
+# mflux goes in --no-deps: its declared torch / transformers floors would move the MLX pins, and Z-Image
+# needs only the deps below. Best-effort: a failure must never mark the MLX stack broken.
 _MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
 _MLX_DIFFUSION_DEPS: tuple[str, ...] = (
     "piexif>=1.1.3,<2",
