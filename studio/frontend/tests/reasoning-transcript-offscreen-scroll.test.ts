@@ -108,7 +108,7 @@ test("a far transcript corrects a resize above the reader by its size change, no
   );
   assert.match(
     adjust,
-    /if \(nearby\.current\) return true;(?:\s*\/\/[^\n]*)*\s*adjustAbove\(delta\);\s*return false;/,
+    /if \(nearby\.current\) return true;\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*adjustAbove\(delta\);\s*return false;/,
     "a far transcript hands TanStack a correction from its frozen offset",
   );
 });
