@@ -294,6 +294,10 @@ def test_file_name_outranks_the_folder_for_a_14b_header(tmp_path):
         ("someorg/Wan2.1-T2V-14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", "wan2.2-t2v-a14b"),
         ("someorg/Wan2.1-T2V-14B-GGUF", "model-Q4_K_M.gguf", "wan2.1-t2v-14b"),
         ("city96/Wan2.1-T2V-14B-gguf", "wan2.1-t2v-14b-Q4_K_M.gguf", "wan2.1-t2v-14b"),
+        ("org/Wan2.2-TI2V-5B-GGUF", "Wan2.1-T2V-1.3B-Q8_0.gguf", "wan2.1-t2v-1.3b"),
+        ("org/Wan2.1-T2V-1.3B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", "wan2.2-ti2v-5b"),
+        ("org/Wan2.2-TI2V-5B-GGUF", "model-Q4_K_M.gguf", "wan2.2-ti2v-5b"),
+        ("org/LTX-2-GGUF", "Wan2.1-T2V-1.3B-Q8_0.gguf", "ltx-2"),
     ],
 )
 def test_remote_file_name_outranks_the_repo_for_same_layout_wan(repo, filename, expected, monkeypatch):

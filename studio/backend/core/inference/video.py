@@ -1070,9 +1070,6 @@ def _detect_load_family(
     return fam
 
 
-_WAN21_T2V_SIZES = frozenset({"wan2.1-t2v-1.3b", "wan2.1-t2v-14b"})
-
-
 def _resolve_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -1106,8 +1103,8 @@ def _resolve_load_family(
         if named is not None and named.name != fam.name and (
             named.name in SAME_ARCH_VARIANTS.get(fam.name, ())
             or fam.name in SAME_ARCH_VARIANTS.get(named.name, ())
-            # A remote pick has no header pass, so a file naming the other Wan2.1 size picks the base config.
-            or {named.name, fam.name} <= _WAN21_T2V_SIZES
+            # A remote pick has no header pass, so a file naming another Wan model picks the base config.
+            or (named.name.startswith("wan") and fam.name.startswith("wan"))
         ):
             fam = named
     # A local file's header outranks its name (the name still picks 480p vs 720p).
