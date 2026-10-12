@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import struct
 import subprocess
@@ -1182,6 +1183,69 @@ def test_a_chosen_slot_count_is_kept_and_the_drafter_dropped(tmp_path):
     assert _launched(result, "--spec-type") != "draft-mtp"
     assert _launched(result, "--parallel") == "4"
     assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_drafter_that_fails_to_start_gives_its_slots_back(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        backend._stdout_lines = []
+        return "draft-mtp" not in cmds[-1]
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                n_ctx = 0,
+                n_parallel = 4,
+                n_parallel_from_default = True,
+                speculative_type = "auto",
+            )
+        )
+
+    first, retry = cmds[0], cmds[-1]
+    assert first[first.index("--parallel") + 1] == "2"
+    assert "draft-mtp" not in retry and "--spec-default" in retry
+    assert retry[retry.index("--parallel") + 1] == "4"
+    assert "--kv-unified" in retry
+    assert backend.effective_parallel_slots == 4
+
+
+def test_a_chosen_count_does_not_dedupe_against_slots_cut_for_the_drafter(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    result = _launch_default_slots(backend, gguf)
+    assert _launched(result, "--parallel") == "2"
+
+    chosen = GgufLoadIntent(
+        gguf_path = str(gguf),
+        model_identifier = "test",
+        n_ctx = 0,
+        n_parallel = 4,
+        speculative_type = "auto",
+    )
+    default = dataclasses.replace(chosen, n_parallel_from_default = True)
+    assert backend._runtime_matches_intent(default, None)
+    assert not backend._runtime_matches_intent(chosen, None)
 
 
 @pytest.mark.parametrize("ctx_with_drafter, keeps", [(7424, True), (6144, False)])

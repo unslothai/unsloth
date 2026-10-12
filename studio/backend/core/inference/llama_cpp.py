@@ -6755,6 +6755,23 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
     return max(int(n_batch), max(2, int(n_parallel or 1)))
 
 
+def _with_parallel_slots(
+    cmd: Sequence[str], slots: int, *, n_batch: Optional[int], supports_kv_unified: bool
+) -> list[str]:
+    """``cmd`` relaunched at ``slots``: Unsloth's own --parallel, its batch floor, and the
+    --kv-unified a multi-slot launch adds. Each is emitted before the extras, so the
+    first occurrence is the one to rewrite and a hand-typed flag still last-wins."""
+    out = [str(a) for a in cmd]
+    at = out.index("--parallel")
+    out[at + 1] = str(slots)
+    if n_batch is not None and "--batch-size" in out:
+        b = out.index("--batch-size")
+        out[b + 1] = str(_emitted_n_batch(n_batch, slots))
+    if slots > 1 and supports_kv_unified and "--kv-unified" not in out and "-kvu" not in out:
+        out[at + 2 : at + 2] = ["--kv-unified"]
+    return out
+
+
 def _extra_args_split_mode(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
@@ -8162,6 +8179,8 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
+        # Auto lowered that default count to keep the drafter (#8872).
+        self._slots_cut_for_drafter: bool = False
         # Budget the running child was sized against; None before any load, so the
         # settings route reports a stale budget instead of nagging on every save.
         self._vram_fraction_launched: Optional[float] = None
@@ -8749,6 +8768,7 @@ class LlamaCppBackend:
         self._effective_parallel_slots = 1
         # Cleared with the effective count so a stale value can't skew the dedupe.
         self._requested_n_parallel = 1
+        self._slots_cut_for_drafter = False
         self._requested_n_batch = None
         self._requested_n_ubatch = None
         self._requested_load_mode = None
@@ -9182,6 +9202,9 @@ class LlamaCppBackend:
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
+            return False
+        # The same count chosen rather than defaulted is one Auto may not cut.
+        if self._slots_cut_for_drafter and not intent.n_parallel_from_default:
             return False
         if not self._is_diffusion and (
             self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
@@ -25818,6 +25841,8 @@ class LlamaCppBackend:
                 # Auto dropped the drafter because only the target fit. Bound before the
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
+                # The slot count Auto gave up to keep the drafter, for the drafterless retry.
+                _mtp_slots_asked: Optional[int] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
                 # GPU backend on that, leaving no partial offload. Only the paravirtual
@@ -27199,6 +27224,7 @@ class LlamaCppBackend:
                                     _probe_ctx,
                                     n_parallel,
                                 )
+                                _mtp_slots_asked = n_parallel
                                 n_parallel = _mtp_slots  # allow-slot-clamp: the drafter fits in VRAM only at fewer slots
                                 _effective_ubatch = _ubatch_for_slots(n_parallel)
                                 _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
@@ -32984,6 +33010,16 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
+                    if _mtp_slots_asked is not None:
+                        # Those slots bought a drafter this retry no longer runs. The
+                        # target alone fit them at a context at least this large.
+                        n_parallel = _mtp_slots_asked
+                        fallback_cmd = _with_parallel_slots(
+                            fallback_cmd,
+                            n_parallel,
+                            n_batch = n_batch,
+                            supports_kv_unified = bool(server_caps.get("supports_kv_unified")),
+                        )
                     _unified_withdraw_if_unneeded(
                         fallback_cmd,
                         mtp_engages = False,
@@ -33394,6 +33430,9 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                self._slots_cut_for_drafter = (
+                    _mtp_slots_asked is not None and n_parallel < _mtp_slots_asked
+                )
                 # Commit with the rest of the known-good state: only a launch that got
                 # this far replaced the runtime, so a rejected preflight leaves the old
                 # marker intact, and the diffusion runner returns well before it without
