@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Publish an element's box to the overlay-frame store, so the API monitor
-// panel opens somewhere it is not. The Live monitor does this by hand inside
-// its own layout effect; anything else uses this.
+// Publish an element's box to the overlay-frame store, so the API monitor panel opens somewhere it
+// is not. The Live monitor does this by hand inside its own layout effect; anything else uses this.
 
 import { useEffect, useMemo } from "react";
 

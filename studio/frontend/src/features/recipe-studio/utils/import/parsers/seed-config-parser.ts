@@ -28,7 +28,7 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
     hf_split: "",
     hf_path: "",
     hf_token: "",
-    hf_endpoint: "https://huggingface.co",
+    hf_endpoint: "",
     local_file_name: "",
     unstructured_file_ids: [],
     unstructured_file_names: [],
@@ -71,7 +71,9 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let seed_source_type: SeedSourceType = "hf";
   let hf_path = "";
   let hf_token = "";
-  let hf_endpoint = "https://huggingface.co";
+  // Blank unless the imported recipe names one, so an endpoint that arrives
+  // later is still picked up when the payload is built.
+  let hf_endpoint = "";
   let hf_repo_id = "";
   let local_file_name = "";
   let unstructuredFileIds: string[] = [];

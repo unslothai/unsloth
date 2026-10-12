@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { CHAT_IMAGE_EXTENSIONS } from "../chat/image-normalize.ts";
 import {
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
   isOpenDocumentAttachmentName,
+  RTF_ATTACHMENT_EXTENSIONS,
+  isRtfAttachmentName,
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+  isToolOnlyAttachmentName,
 } from "../chat/open-document-accept.ts";
 import {
   TEXT_ATTACHMENT_EXTENSIONS,
   isTextAttachmentName,
 } from "../chat/text-attachment-accept.ts";
-import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
+import {
+  RAG_DOCUMENT_UPLOAD_ACCEPT,
+  RAG_UPLOAD_ACCEPT,
+} from "../rag/types/rag.ts";
+import { MAX_AUDIO_FILES } from "../../lib/audio-utils.ts";
 
 const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
@@ -22,8 +31,20 @@ const TEXT_EXTS = TEXT_ATTACHMENT_EXTENSIONS.map((ext) =>
 
 /** Dropped paths with an inline adapter but no RAG parser. */
 export function isComposerAttachmentName(path: string): boolean {
-  return isOpenDocumentAttachmentName(path) || isTextDropName(path);
+  return (
+    isOpenDocumentAttachmentName(path) ||
+    isRtfAttachmentName(path) ||
+    isToolOnlyAttachmentName(path) ||
+    isTextDropName(path)
+  );
 }
+
+/** Documents only chat with files reads; composer-handled types stay there. */
+const OFFICE_DOC_EXTS = RAG_DOCUMENT_UPLOAD_ACCEPT.split(",").filter(
+  (ext) => !isComposerAttachmentName(`file${ext}`),
+);
+
+const DROP_DOC_EXTS = [...DOC_EXTS, ...OFFICE_DOC_EXTS];
 
 function isTextDropName(path: string): boolean {
   const name = nativeFileName(path).toLowerCase();
@@ -35,8 +56,7 @@ function isTextDropName(path: string): boolean {
   return dot > 0 && TEXT_EXTS.includes(name.slice(dot));
 }
 
-/** Vision chat attachments; keep in sync with `shared-composer` `IMAGE_ACCEPT`. */
-export const CHAT_IMAGE_DROP_ACCEPT = ".jpg,.jpeg,.png,.webp,.gif";
+export const CHAT_IMAGE_DROP_ACCEPT = CHAT_IMAGE_EXTENSIONS;
 
 const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
@@ -54,14 +74,14 @@ const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
  * `VIDEO_ATTACHMENT_EXTS`. llama-server decodes with ffmpeg, so this is what
  * ffmpeg reads, not what the webview can play. */
 export const CHAT_VIDEO_DROP_ACCEPT =
-  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv";
+  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
 
 const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
 );
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, source and text files, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${DROP_DOC_EXTS.join(",")}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Code on, ${CHAT_IMAGE_DROP_ACCEPT}, up to ${MAX_AUDIO_FILES} of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
@@ -101,9 +121,8 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   }
   const docs = paths.filter(
     (path) =>
-      DOC_EXTS.some((ext) => hasExt(path, ext)) ||
-      isOpenDocumentAttachmentName(path) ||
-      isTextDropName(path),
+      DROP_DOC_EXTS.some((ext) => hasExt(path, ext)) ||
+      isComposerAttachmentName(path),
   );
   const images = paths.filter((path) =>
     IMAGE_EXTS.some((ext) => hasExt(path, ext)),
@@ -120,8 +139,8 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   ) {
     return { kind: "unsupported" };
   }
-  // The audio adapter takes one clip per message; a larger batch never attaches.
-  if (audio.length > 1) {
+  // Over the per-message cap a batch would only partly attach. The adapter applies per-model limits.
+  if (audio.length > MAX_AUDIO_FILES) {
     return { kind: "unsupported" };
   }
   // Same for video: one clip expands into a run of frames, so a batch would

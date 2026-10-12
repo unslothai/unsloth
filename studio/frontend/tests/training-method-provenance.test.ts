@@ -27,6 +27,7 @@ test("rehydrated CPT provenance survives the next method switch", () => {
       modelAdapterLearningRate: 0.00001,
       datasetFormatBeforeCpt: "sharegpt",
       targetModulesBeforeCpt: null,
+      trainOnCompletionsBeforeCpt: true,
     },
   });
   const rehydrated = mergeTrainingConfig(
@@ -41,6 +42,7 @@ test("rehydrated CPT provenance survives the next method switch", () => {
   assert.equal(state.trainingMethod, "qlora");
   assert.equal(state.learningRate, 0.000031);
   assert.equal(state.datasetFormat, "sharegpt");
+  assert.equal(state.trainOnCompletions, true);
   assert.equal(state.trainingMethodProvenance.datasetFormatBeforeCpt, null);
 });
 
@@ -96,6 +98,10 @@ test("switching away from CPT restores pre-CPT target modules", () => {
       modelAdapterLearningRate: null,
       datasetFormatBeforeCpt: "chatml" as const,
       targetModulesBeforeCpt: ["all-linear"],
+      loraRankBeforeCpt: null,
+      loraAlphaBeforeCpt: null,
+      loraVariantBeforeCpt: null,
+      trainOnCompletionsBeforeCpt: null,
     },
   };
   const patch = buildTrainingMethodPatch(state, "qlora");
@@ -103,4 +109,51 @@ test("switching away from CPT restores pre-CPT target modules", () => {
   assert.deepEqual(patch.targetModules, ["all-linear"]);
   assert.equal(patch.datasetFormat, "chatml");
   assert.equal(patch.trainingMethodProvenance?.targetModulesBeforeCpt, null);
+});
+
+test("switching away from CPT restores the pre-CPT LoRA rank, alpha and variant", () => {
+  const state = {
+    ...initialTrainingConfigState,
+    trainingMethod: "qlora" as const,
+    loraRank: 8,
+    loraAlpha: 8,
+    loraVariant: "lora" as const,
+  };
+  const cptState = { ...state, ...buildTrainingMethodPatch(state, "cpt") };
+
+  assert.equal(cptState.loraRank, 128);
+  assert.equal(cptState.trainingMethodProvenance.loraRankBeforeCpt, 8);
+
+  const restored = {
+    ...cptState,
+    ...buildTrainingMethodPatch(cptState, "qlora"),
+  };
+
+  assert.equal(restored.loraRank, 8);
+  assert.equal(restored.loraAlpha, 8);
+  assert.equal(restored.loraVariant, "lora");
+  assert.equal(restored.trainingMethodProvenance.loraRankBeforeCpt, null);
+});
+
+test("switching away from CPT turns train on completions back on", () => {
+  const state = {
+    ...initialTrainingConfigState,
+    trainingMethod: "qlora" as const,
+    datasetFormat: "auto" as const,
+    trainOnCompletions: true,
+  };
+  const cptState = { ...state, ...buildTrainingMethodPatch(state, "cpt") };
+
+  assert.equal(cptState.trainOnCompletions, false);
+
+  const restored = {
+    ...cptState,
+    ...buildTrainingMethodPatch(cptState, "qlora"),
+  };
+
+  assert.equal(restored.trainOnCompletions, true);
+  assert.equal(
+    restored.trainingMethodProvenance.trainOnCompletionsBeforeCpt,
+    null,
+  );
 });

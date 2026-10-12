@@ -166,9 +166,8 @@ async def list_subscription_models(
     ]
     status = codex_auth.auth_status(provider_id)
     if status == "reauthorization_required":
-        # Something already marked this bundle, possibly another worker, after the last
-        # provider sync the browser saw. Saying only "curated" here would leave the
-        # editor presenting a dead connection as healthy.
+        # Something already marked this bundle, possibly another worker, after the last provider sync the browser
+        # saw. Saying only "curated" here would leave the editor presenting a dead connection as healthy.
         return {"models": curated, "source": "reauthorization_required"}
     if status != "connected":
         return {"models": curated, "source": "curated"}
@@ -178,10 +177,9 @@ async def list_subscription_models(
             provider_id, token, account_id, force = refresh
         )
     except (codex_auth.CodexAuthError, codex_client.CodexReauthorizationError) as exc:
-        # Say it in the answer rather than through a 401: the client's authFetch reads every 401 as an expired Unsloth
-        # session and retries, and the retry looks healthy.
-        # resolve_access has already marked the connection as needing reauthorization, so a source the picker does not
-        # treat as authoritative carries the signal instead.
+        # Say it in the answer rather than through a 401: the client's authFetch reads every 401 as an expired
+        # Unsloth session and retries, and the retry looks healthy. resolve_access has already marked the connection
+        # as needing reauthorization, so a source the picker does not treat as authoritative carries the signal.
         logger.info(
             "openai_codex.model_list_reauthorization_required",
             provider_id = provider_id,

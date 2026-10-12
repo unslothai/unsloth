@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
+import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { AnimatePresence, motion } from "motion/react";
@@ -21,6 +22,7 @@ interface StartupScreenProps {
   status: BackendStatus;
   logs: string[];
   error: string | null;
+  diskFull: boolean;
   currentStepIndex: number;
   progressDetail: string | null;
   startupMessage: StartupMessage;
@@ -46,7 +48,7 @@ function Logo() {
         src="/sticker.png"
         alt=""
         aria-hidden="true"
-        className="h-[60px] w-[60px] object-contain"
+        className="h-[calc(60px*var(--ui-space-scale,1))] w-[calc(60px*var(--ui-space-scale,1))] object-contain"
       />
       <span
         className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
@@ -188,10 +190,12 @@ function ClosingContent() {
 
 function InstallErrorContent({
   error,
+  diskFull,
   onRetryInstall,
   onCopyDiagnostics,
 }: {
   error: string | null;
+  diskFull: boolean;
   onRetryInstall: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
@@ -199,7 +203,9 @@ function InstallErrorContent({
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Setup ran into a problem</p>
+        <p className="text-sm font-medium text-destructive">
+          {diskFull ? "Not enough disk space" : "Setup ran into a problem"}
+        </p>
         {error && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
@@ -331,6 +337,7 @@ export function StartupScreen({
   status,
   logs,
   error,
+  diskFull,
   currentStepIndex,
   progressDetail,
   startupMessage,
@@ -360,6 +367,7 @@ export function StartupScreen({
         return (
           <InstallErrorContent
             error={error}
+            diskFull={diskFull}
             onRetryInstall={onRetryInstall}
             onCopyDiagnostics={onCopyDiagnostics}
           />
@@ -439,13 +447,17 @@ function StartupSurface({ children }: { children: ReactNode }) {
  * it is Z_LAYER.STARTUP_SCREEN, which lib/z-layers puts over both.
  */
 export function ClosingScreen() {
+  useDocumentFlag("data-blocking-screen-open", true);
   return (
     // pointer-events-auto, not the inherited default: Radix parks pointer-events:none on
     // <body> while any modal layer is open, and a quit raised from the window controls,
     // the tray or Alt+F4 never closes that layer. Inheriting it would make the overlay
     // click-through onto the dialog it is hiding, so clicks meant for a screen that says
     // the app is closing would land on buttons the user can no longer see.
-    <div className="pointer-events-auto fixed inset-0 z-[9999]">
+    <div
+      data-blocking-screen=""
+      className="pointer-events-auto fixed inset-0 z-[9999]"
+    >
       <StartupSurface>
         <div className="flex h-full w-full flex-col items-center justify-center text-center">
           <ClosingContent />

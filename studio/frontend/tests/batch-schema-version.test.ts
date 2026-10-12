@@ -28,6 +28,8 @@ function config(nBatch: number | null, nUbatch: number | null = null) {
     nParallel: 4,
     nBatch,
     nUbatch,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
     chatTemplateOverride: null,

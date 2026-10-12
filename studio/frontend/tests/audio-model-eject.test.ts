@@ -5,19 +5,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
 
 test("Audio exposes the shared picker eject action only while idle", () => {
   assert.match(
     source,
-    /onEject=\{busy === null && selectorValue \? handleEject : undefined\}/,
+    /onEject=\{\s*busy === null && selectorValue && !showLastPageModel\s*\? handleEject\s*: undefined\s*\}/,
   );
-  assert.match(source, /if \(busy !== null \|\| isRecording\)/);
+  assert.match(source, /const handleEject = useCallback\(\(\) => \{\s*if \(busy !== null\) \{/);
   assert.match(
     source,
-    /loaded=\{mode === "transcribe" \? sttReady : undefined\}/,
+    /loaded=\{\s*mode === "transcribe"\s*\? sttReady\s*: showLastPageModel\s*\? false\s*: undefined\s*\}/,
   );
 });
 
@@ -128,7 +129,7 @@ test("a load confirmed after Audio is hidden is deferred, not sent", () => {
 test("Transcribe eject only unloads a sidecar owned by the current selection", () => {
   assert.match(
     source,
-    /const handleEject[\s\S]*stopAndDiscardRecording\(\);[\s\S]*if \(mode === "transcribe"\)/,
+    /const handleEject[\s\S]*?if \(mode === "transcribe"\)/,
   );
   // One release path, shared with the Generate-mode transition, so both stay owned.
   // The selection is forgotten only after the unload lands, so a 500 leaves Eject usable.
@@ -175,35 +176,29 @@ test("leaving Transcribe releases the sidecar it loaded", () => {
 
 test("selected and fallback clip actions remain named and downloadable", () => {
   assert.match(source, /aria-label="Download audio clip"/);
-  assert.match(source, /aria-label="Delete audio clip"/);
   assert.match(
     source,
-    /const handleDownloadFallbackClip[\s\S]*anchor\.download = "generated-audio\.wav"/,
+    /onDelete=\{\(\) => void handleDeleteClip\(clip\.id\)\}/,
   );
+  assert.match(source, /menu=\{clipMenu\(selectedClip, "row"\)\}/);
   assert.match(
     source,
-    /onClick=\{handleDownloadFallbackClip\}[\s\S]*Download WAV/,
+    /const handleDownloadFallbackClip[\s\S]*saveAudio\(\s*clipFileName\(fallbackClip\),\s*fallbackClip\.url,/,
   );
+  assert.match(source, /onDownload=\{handleDownloadFallbackClip\}/);
 });
 
 test("a dictation model this page did not load survives a mode switch", () => {
-  // The activation resync adopts whatever a sidecar holds, including chat dictation's model.
-  // The identity, not a boolean. Another surface can swap the sidecar's model while Audio
-  // is inactive; the activation resync then adopts it, and a bare flag claimed it too, so
-  // Eject unloaded a model this page never loaded. Model only, not model plus engine: a
-  // "gguf" pick without whisper-server is served by the Transformers fallback and reports
-  // residency under that engine, so requiring the requested engine leaked the sidecar.
+  // match model identity because gguf can report the Transformers fallback engine
   assert.match(source, /claim !== null &&\s*claim === sttLoadedModel;/);
-  // Ownership is claimed after a successful load, not before it: claiming up front left the
-  // flag set when a download was cancelled while the backend kept the previous resident
-  // model, so leaving Transcribe unloaded another surface's model.
+  // claim only after load succeeds because cancellation can leave the previous model resident
   assert.doesNotMatch(
     source,
     /setBusy\("loading"\);\s*sttLoadedByThisPage\.current = sidecarKey;/,
   );
   assert.match(
     source,
-    /await loadSttModel\(sidecarKey, engine, controller\.signal\);\s*sttLoadedByThisPage\.current = sidecarKey;/,
+    /await loadSttModel\(\s*sidecarKey,\s*engine,\s*controller\.signal,\s*undefined,\s*ggufVariant,\s*\);\s*sttLoadedByThisPage\.current = sidecarKey;/,
   );
 });
 

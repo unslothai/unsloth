@@ -69,4 +69,30 @@ if [[ -s "$INITIAL" ]] && ! password_stored; then
     IFS= read -r -d '' UNSLOTH_STUDIO_PASSWORD < "$INITIAL" || true
     export UNSLOTH_STUDIO_PASSWORD
 fi
-exec "${STUDIO_HOME}/bin/unsloth" studio -H 0.0.0.0 -p 8000
+# Exposure. The default stays -H 0.0.0.0 because that is what makes a published
+# -p 8000:8000 reachable at all; the container is the boundary, the host's -p
+# decides who sees it.
+#
+#   UNSLOTH_STUDIO_SECURE=1      --secure: a Cloudflare HTTPS link and nothing
+#                                else. Studio forces a loopback bind itself, so
+#                                -p 8000:8000 would publish a port nothing is
+#                                listening on. Fails closed if the tunnel does
+#                                not come up.
+#   UNSLOTH_STUDIO_CLOUDFLARE=1  --cloudflare: the same public HTTPS link, with
+#                                the local port still served, for a laptop that
+#                                wants both.
+#
+# Mirrors UNSLOTH_JUPYTER_CLOUDFLARE, which JupyterLab has had all along. The two
+# are mutually exclusive in the CLI, so refuse the pair here rather than let
+# supervisord restart Studio forever on an argument error.
+STUDIO_ARGS=(-H 0.0.0.0 -p "${UNSLOTH_STUDIO_PORT:-8000}")
+if [[ "${UNSLOTH_STUDIO_SECURE:-0}" == "1" && "${UNSLOTH_STUDIO_CLOUDFLARE:-0}" == "1" ]]; then
+    echo "ERROR: set UNSLOTH_STUDIO_SECURE=1 or UNSLOTH_STUDIO_CLOUDFLARE=1, not both:" >&2
+    echo "       --secure serves only the tunnel, --cloudflare serves the tunnel and the local port." >&2
+    exit 2
+elif [[ "${UNSLOTH_STUDIO_SECURE:-0}" == "1" ]]; then
+    STUDIO_ARGS=(--secure -p "${UNSLOTH_STUDIO_PORT:-8000}")
+elif [[ "${UNSLOTH_STUDIO_CLOUDFLARE:-0}" == "1" ]]; then
+    STUDIO_ARGS+=(--cloudflare)
+fi
+exec "${STUDIO_HOME}/bin/unsloth" studio "${STUDIO_ARGS[@]}"

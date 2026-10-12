@@ -21,9 +21,9 @@ import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   preferSanitizedFullToolOutput,
+  toolResultText,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
@@ -40,10 +40,9 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";
-  // A command that wrote files arrives as the python tool's structured shape;
-  // a plain string means it wrote none.
-  // The same test the adapter applies: a foreign result that merely has text
-  // would otherwise be rendered as that field alone.
+  // A command that wrote files arrives as the python tool's structured shape; a plain string means
+  // it wrote none. The same test the adapter applies: a foreign result that merely has text would
+  // otherwise be rendered as that field alone.
   const structured = isSandboxToolResult(result)
     ? (result as unknown as { text: string; sessionId?: string; files?: SandboxFile[] })
     : null;
@@ -51,10 +50,10 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   const sessionId = structured?.sessionId ?? "";
   const output =
     structured !== null
-      ? stringifyToolResult(structured.text)
+      ? toolResultText(structured.text)
       : result == null
         ? ""
-        : stringifyToolResult(result);
+        : toolResultText(result);
 
   // Show the fuller live stream over a truncated result, keeping its exit
   // status. Session-transient: after a reload only the result remains.
@@ -121,10 +120,10 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
               <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
-          {/* Files the command wrote; this card used to show nothing for them */}
-          <SandboxFiles sessionId={sessionId} files={files} />
         </div>
       </ToolFallbackContent>
+      {/* Files stay outside even when the card is collapsed (#10425) */}
+      <SandboxFiles className="ml-5" sessionId={sessionId} files={files} />
     </ToolFallbackRoot>
   );
 };

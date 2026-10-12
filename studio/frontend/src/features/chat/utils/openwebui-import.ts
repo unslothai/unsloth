@@ -89,8 +89,6 @@ export function isOpenWebUIRecord(value: unknown): boolean {
   return blob.messages.some(looksLikeOpenWebUIMessage);
 }
 
-// Content
-
 // A closed fence first, then an opener that never closed: an answer cut off inside a code
 // block still quotes code. The unclosed form is anchored to line start, where markdown
 // requires a fence; unanchored, a stray ``` swallowed the rest of the message.
@@ -454,8 +452,6 @@ function messageParts(
   return { content: parts, attachments };
 }
 
-// Message graph
-
 /** Message ids from `currentId` back to the root: the branch the user had open. */
 function activePath(byId: Map<string, Node>, currentId: unknown): Set<string> {
   const path = new Set<string>();
@@ -630,7 +626,8 @@ export function openWebUIRecordToConversation(
 
     const id = crypto.randomUUID();
     keptIdByOriginal.set(node.id, id);
-    const ts = Math.max(previousTs + 1, epochMs(node.raw.timestamp) ?? 0);
+    const sourceTimestamp = epochMs(node.raw.timestamp);
+    const ts = Math.max(previousTs + 1, sourceTimestamp ?? 0);
     previousTs = ts;
 
     messages.push({
@@ -643,6 +640,9 @@ export function openWebUIRecordToConversation(
         ? { attachments: attachments as MessageRecord["attachments"] }
         : {}),
       createdAt: ts,
+      ...((sourceTimestamp === null || ts !== sourceTimestamp) && {
+        metadata: { createdAtEstimated: true },
+      }),
     });
   }
 

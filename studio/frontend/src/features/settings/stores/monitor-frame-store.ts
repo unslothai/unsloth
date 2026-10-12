@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Where the floating panels are, in viewport coordinates. The Live monitor,
-// the chat composer and the API monitor panel each publish their box here
-// while mounted.
-//
-// Read only by api-monitor/panel-placement, which opens the API panel clear of
-// the others. The notification rail is not a reader: it is anchored in CSS.
-// Placing it from these boxes is what moved it out of its corner, since every
-// input to that placement (composer height, download rows, release notes)
+// Where the floating panels are, in viewport coordinates. The Live monitor, the chat composer and
+// the API monitor panel each publish their box here while mounted. Read only by
+// api-monitor/panel-placement, which opens the API panel clear of the others. The notification rail
+// is not a reader: it is anchored in CSS. Placing it from these boxes is what moved it out of its
+// corner, since every input to that placement (composer height, download rows, release notes)
 // changes on its own.
 
 import { create } from "zustand";

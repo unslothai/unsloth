@@ -17,6 +17,8 @@ export function useDeleteImpact(
   open: boolean,
   repoId: string,
   variant?: string | null,
+  /** The copy the delete targets, so the preview measures that one and not another duplicate. */
+  cachePath?: string | null,
 ): DeleteImpact | null {
   const [impact, setImpact] = useState<DeleteImpact | null>(null);
   useEffect(() => {
@@ -25,13 +27,13 @@ export function useDeleteImpact(
       return;
     }
     let cancelled = false;
-    void fetchDeleteImpact(repoId, variant ?? undefined).then((result) => {
+    void fetchDeleteImpact(repoId, variant ?? undefined, cachePath ?? undefined).then((result) => {
       if (!cancelled) setImpact(result);
     });
     return () => {
       cancelled = true;
     };
-  }, [open, repoId, variant]);
+  }, [open, repoId, variant, cachePath]);
   return impact;
 }
 
@@ -60,6 +62,11 @@ export function DeleteImpactSummary({ impact }: { impact: DeleteImpact | null })
   const freeable = impact.freeable_companions.reduce((sum, c) => sum + c.size_bytes, 0);
   return (
     <span className="mt-2 block space-y-1 text-ui-12p5">
+      {impact.cache_path && (
+        <span className="block break-all text-muted-foreground" data-testid="delete-impact-folder">
+          Folder: {impact.cache_path}
+        </span>
+      )}
       <span className="block text-foreground" data-testid="delete-impact-reclaimed">
         Frees {formatBytes(impact.reclaimed_bytes)} of disk space.
       </span>

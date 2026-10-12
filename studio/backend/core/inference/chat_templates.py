@@ -23,17 +23,18 @@ from typing import Optional
 # up three parents to <backend> (mirrors utils/inference/inference_config.py).
 _ASSETS_DIR = Path(__file__).parent.parent.parent / "assets" / "chat_templates"
 
-# the -GGUF suffix is retained on ModelConfig.identifier, so this excludes the bf16 repos
 # unsloth/gemma-4-<variant>-GGUF (case-insensitive). The "-GGUF" suffix is retained on ModelConfig.identifier for HF
-# GGUF repos, so this matches E2B / E4B / 31B / 26B-A4B and any future unsloth/gemma-4-*-GGUF, while excluding gemma-3,
-# non-Unsloth, and non-GGUF identifiers (e.g. the bf16 "unsloth/gemma-4-E2B-it").
+# GGUF repos, so this matches E2B / E4B / 31B / 26B-A4B and any future unsloth/gemma-4-*-GGUF, while excluding
+# gemma-3, non-Unsloth, and non-GGUF identifiers (e.g. the bf16 "unsloth/gemma-4-E2B-it").
 _GEMMA4_GGUF_RE = re.compile(r"^unsloth/gemma-4-.+-gguf$", re.IGNORECASE)
 
-# E2B/E4B omit the empty thought block on enable_thinking=false
 # Google ships two distinct gemma-4 chat templates: E2B/E4B omit the empty "<|channel>thought<channel|>" block on
-# enable_thinking=false, while the 12b/26B-A4B/31B family emits it. Route the two GGUF families to the matching bundled
-# template so each keeps its model's intended behavior.
-_GEMMA4_EDGE_GGUF_RE = re.compile(r"^unsloth/gemma-4-e[24]b-it-gguf$", re.IGNORECASE)
+# enable_thinking=false, while the 12b/26B-A4B/31B family emits it. Route the two GGUF families to the matching
+# bundled template so each keeps its model's intended behavior.
+# The QAT repos (gemma-4-E4B-it-qat-GGUF, plus the -qat-mobile builds) are the same edge models under a longer name.
+# Without the optional suffix they fell through to the standard template and got the empty thought block on
+# thinking-off, so the Think toggle did nothing (#12708).
+_GEMMA4_EDGE_GGUF_RE = re.compile(r"^unsloth/gemma-4-e[24]b-it(?:-qat(?:-mobile)?)?-gguf$", re.IGNORECASE)
 
 _GEMMA4_TEMPLATE_FILE = "gemma-4.jinja"
 _GEMMA4_EDGE_TEMPLATE_FILE = "gemma-4-edge.jinja"
@@ -45,7 +46,11 @@ def _canonical_repo_id(model_identifier: str) -> str:
     runs on the raw ``request.model_path`` (before that canonicalization), so apply
     the same rule here, otherwise shorthand loads would skip the override.
     """
+    from core.inference.model_ids import hf_cache_repo_id
+
     mid = model_identifier.strip()
+    # A snapshot of the repo (scan-folder copy, pinned cache row) is that repo; other paths are not.
+    mid = hf_cache_repo_id(mid) or mid
     if mid and "/" not in mid:
         mid = f"unsloth/{mid}"
     return mid

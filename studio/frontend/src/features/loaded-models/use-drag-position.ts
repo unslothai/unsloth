@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pointer drag for the indicator, in the Live monitor's idiom: anchored to its
-// corner until the user moves it, then kept where they left it. Absolute
-// viewport coordinates rather than a transform, so the position survives a
-// reload and can be clamped when the window changes size.
+// Pointer drag for the indicator, in the Live monitor's idiom: anchored to its corner until the
+// user moves it, then kept where they left it. Absolute viewport coordinates rather than a
+// transform, so the position survives a reload and can be clamped when the window changes size.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -97,10 +96,9 @@ export function useDragPosition(storageKey: string): UseDragPosition {
   const [position, setPosition] = useState<DragPosition | null>(() => {
     if (typeof window === "undefined") return null;
     const stored = readStored(storageKey);
-    // Clamp on read as well as on resize. The observer below cannot fire until
-    // after the first paint, so a position saved on a wider screen would flash
-    // off screen once; zero width/height keeps at least the top-left corner in
-    // view, and the first measurement refines it.
+    // Clamp on read as well as on resize. The observer below cannot fire until after the first
+    // paint, so a position saved on a wider screen would flash off screen once; zero width/height
+    // keeps at least the top-left corner in view, and the first measurement refines it.
     return stored ? clampToViewport(stored, 0, 0, viewport()) : null;
   });
   // Held from pointerdown to pointerup; dragging only once past the threshold.
@@ -108,9 +106,8 @@ export function useDragPosition(storageKey: string): UseDragPosition {
   const [dragging, setDragging] = useState(false);
   const movedRef = useRef(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  // Mirrored into state because the reclamp effect must re-subscribe when the
-  // node mounts: the card renders nothing until the first poll returns a row,
-  // so the effect's first run sees a null ref.
+  // Mirrored into state because the reclamp effect must re-subscribe when the node mounts: the card
+  // renders nothing until the first poll returns a row, so the effect's first run sees a null ref.
   const [panelEl, setPanelEl] = useState<HTMLDivElement | null>(null);
   const attachPanel = useCallback((node: HTMLDivElement | null) => {
     panelRef.current = node;
@@ -128,9 +125,8 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     lastLeft: number;
     lastTop: number;
   } | null>(null);
-  // The drag paints through the DOM rather than through state, so a frame costs
-  // no render at all. Held here so pointermove only ever records the latest
-  // offset and the frame reads it.
+  // The drag paints through the DOM rather than through state, so a frame costs no render at all.
+  // Held here so pointermove only ever records the latest offset and the frame reads it.
   const frameRef = useRef(0);
   const pendingRef = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -146,13 +142,11 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     });
   }, []);
 
-  // A window that shrank, or a panel that grew when expanded, would otherwise
-  // strand it off screen with nothing able to bring it back.
-  //
-  // Deliberately not keyed on `position`: it used to be, so every frame of a
-  // drag tore the observer down and built a new one, and observing re-measures,
-  // which forced a synchronous layout each time. reclamp is a no-op until the
-  // panel has a position, so attaching on mount costs nothing.
+  // A window that shrank, or a panel that grew when expanded, would otherwise strand it off screen
+  // with nothing able to bring it back. Deliberately not keyed on `position`: it used to be, so
+  // every frame of a drag tore the observer down and built a new one, and observing re-measures,
+  // which forced a synchronous layout each time. reclamp is a no-op until the panel has a position,
+  // so attaching on mount costs nothing.
   useEffect(() => {
     if (!panelEl) return;
     const measure = () => {
@@ -257,10 +251,9 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     if (moved && session) {
       const landed = { left: session.lastLeft, top: session.lastTop };
       setPosition(landed);
-      // Stored here rather than from an effect on `position`, so only a place
-      // the user chose is kept. A reclamp is the window adapting at display
-      // time, and persisting one let a small window permanently overwrite a
-      // position saved on a large one; the read path clamps anyway.
+      // Stored here rather than from an effect on `position`, so only a place the user chose is
+      // kept. A reclamp is the window adapting at display time, and persisting one let a small
+      // window permanently overwrite a position saved on a large one; the read path clamps anyway.
       store(storageKey, landed);
     }
     sessionRef.current = null;
@@ -268,9 +261,8 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     setDragging(false);
   }, [applyPending, storageKey]);
 
-  // The press turned into a drag. Pin the panel where it already sits, so the
-  // transform offsets from the spot the anchor had it in and the first move
-  // does not jump.
+  // The press turned into a drag. Pin the panel where it already sits, so the transform offsets
+  // from the spot the anchor had it in and the first move does not jump.
   const beginDrag = useCallback((left: number, top: number) => {
     movedRef.current = true;
     setDragging(true);
