@@ -13,8 +13,8 @@ export interface DownloadPart {
 
 // Same patterns assetLabel reads an entry's file list with.
 const ENCODER = /text_encoder|clip|t5|qwen.*vl/i;
-// `ae.safetensors` is FLUX.1's VAE, picked as a root-level VAE override.
-const VAE = /vae|decoder|codec|(^|\/)ae\.safetensors$/i;
+// `ae.safetensors` is FLUX.1's VAE, picked as a root-level VAE override; LTX-2's audio decoder is `vocoder/`.
+const VAE = /vae|decoder|codec|vocoder|(^|\/)ae\.safetensors$/i;
 // A weights file at the repo root is a single-file pick, the model itself: a hosted prequant such as
 // `Qwen-Image-2.1-FP8.safetensors` names no transformer/ folder. Encoder prequants there say text_encoder.
 const MODEL = /transformer|unet|\.gguf$|^[^/]+\.(safetensors|pt|pth|bin)$/i;

@@ -183,6 +183,26 @@ test("a hosted prequant transformer at the repo root is the model, its encoder t
   );
 });
 
+test("LTX-2's vocoder is part of the VAE, and files fill in name order, not plan order", () => {
+  const parts = downloadParts(
+    {
+      fileBytes: {
+        "text_encoder/model-00001-of-00011.safetensors": 9 * GB,
+        "vocoder/diffusion_pytorch_model.safetensors": 0.1 * GB,
+        "audio_vae/diffusion_pytorch_model.safetensors": 0.1 * GB,
+      },
+    },
+    0.1 * GB,
+  );
+  assert.deepEqual(
+    parts?.map((p) => [p.kind, p.bytes, p.doneBytes]),
+    [
+      ["encoder", 9 * GB, 0],
+      ["vae", 0.2 * GB, 0.1 * GB],
+    ],
+  );
+});
+
 test("the Hub queue sizes earlier and later parts in the order it runs the jobs", () => {
   // The plan lists the encoder repo before the GGUF; the queue fetches the checkpoint first.
   const plan: { repoId: string; bytes: number; checkpoint: boolean; fileBytes: Record<string, number> }[] = [
