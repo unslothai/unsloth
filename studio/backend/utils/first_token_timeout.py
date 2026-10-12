@@ -57,7 +57,9 @@ class FirstTokenWait:
     deadline: float | None = None
 
     def active(self) -> bool:
-        return self.deadline is not None and time.monotonic() < self.deadline
+        # The worker thread can finish prefill while the supervisor checks it.
+        deadline = self.deadline
+        return deadline is not None and time.monotonic() < deadline
 
 
 _current_wait: ContextVar[FirstTokenWait | None] = ContextVar("first_token_wait", default = None)
