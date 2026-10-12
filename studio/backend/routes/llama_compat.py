@@ -306,14 +306,16 @@ class _ModelManageBody(BaseModel):
     model: str = Field(..., min_length = 1)
 
 
-def _catalog_id_match(catalog: list[dict], model_id: str) -> Optional[str]:
-    """The catalog's id for ``model_id``, or ``model_id`` itself when it is ``<listed id>:<quant>``."""
+def _catalog_match(catalog: list[dict], model_id: str) -> Optional[tuple[str, dict]]:
+    """``(id, row)`` for ``model_id``: the catalog's id, or ``model_id`` itself as ``<listed id>:<quant>``."""
     wanted = model_id.strip()
-    ids = {e["id"].lower(): e["id"] for e in catalog if isinstance(e.get("id"), str)}
-    if wanted.lower() in ids:
-        return ids[wanted.lower()]
+    rows = {e["id"].lower(): e for e in catalog if isinstance(e.get("id"), str)}
+    if wanted.lower() in rows:
+        row = rows[wanted.lower()]
+        return row["id"], row
     base, sep, _ = wanted.rpartition(":")
-    return wanted if sep and base.strip().lower() in ids else None
+    row = rows.get(base.strip().lower()) if sep else None
+    return (wanted, row) if row is not None else None
 
 
 async def _chat_catalog() -> list[dict]:
@@ -321,12 +323,33 @@ async def _chat_catalog() -> list[dict]:
     return [e for e in await _inference()._openai_catalog_objects() if e.get("task") is None]
 
 
-async def _catalog_model_id(model_id: str) -> str:
+async def _catalog_row(model_id: str) -> tuple[str, dict]:
     # The caller's own catalog, so a managed account only reaches models listed to it.
-    matched = _catalog_id_match(await _chat_catalog(), model_id)
+    matched = _catalog_match(await _chat_catalog(), model_id)
     if matched is None:
         raise HTTPException(status_code = 404, detail = "Model not found")
     return matched
+
+
+async def _resolve_local(public_id: str) -> Optional[tuple]:
+    from core.inference.local_model_resolver import (
+        resolve_local_gguf,
+        resolve_trusted_cached_local_gguf,
+    )
+    return resolve_trusted_cached_local_gguf(public_id) or await asyncio.to_thread(
+        resolve_local_gguf, public_id
+    )
+
+
+def _load_in_flight() -> bool:
+    inf = _inference()
+    if inf.model_slots.visible_loading():
+        return True
+    llama = inf.get_llama_cpp_backend()
+    if getattr(llama, "is_active", False) and not getattr(llama, "is_loaded", False):
+        return True
+    backend = inf._peek_inference_backend()
+    return getattr(backend, "get_loading_model", lambda: None)() is not None
 
 
 def _resident_identifier(model_id: str) -> str:
@@ -356,11 +379,7 @@ def _resident_identifier(model_id: str) -> str:
 
 async def _resolve_load_target(model_id: str):
     """``(LoadRequest, listed id)``, from the on-disk copy and saved launch settings auto-switch would use."""
-    from core.inference.local_model_resolver import (
-        local_target_is_gguf,
-        resolve_local_gguf,
-        resolve_trusted_cached_local_gguf,
-    )
+    from core.inference.local_model_resolver import local_target_is_gguf
     from core.inference.openai_auto_download import split_model_ref
     from models.inference import LoadRequest
     from utils.openai_auto_switch_settings import (
@@ -369,10 +388,8 @@ async def _resolve_load_target(model_id: str):
         stored_gpu_index_kind,
     )
 
-    public_id = await _catalog_model_id(model_id)
-    resolved = resolve_trusted_cached_local_gguf(public_id) or await asyncio.to_thread(
-        resolve_local_gguf, public_id
-    )
+    public_id, _ = await _catalog_row(model_id)
+    resolved = await _resolve_local(public_id)
     if resolved is None:
         model_path, variant = split_model_ref(public_id)
         return LoadRequest(model_path = model_path, gguf_variant = variant), public_id
@@ -438,8 +455,16 @@ async def manage_unload_model(
 ):
     from models.inference import UnloadRequest
 
-    model_id = await _catalog_model_id(body.model)
-    request = UnloadRequest(model_path = _resident_identifier(model_id))
+    model_id, row = await _catalog_row(body.model)
+    if row.get("loaded"):
+        target = _resident_identifier(model_id)
+    elif _load_in_flight():
+        # Its alias is published only once the load completes; cancel names the path it runs as.
+        target = ((await _resolve_local(model_id)) or (model_id,))[0]
+    else:
+        # Nothing to stop. /unload itself would still release a managed account's shared resident.
+        return {"success": True, "model": model_id}
+    request = UnloadRequest(model_path = target)
     work = _inference()._unload_model_impl(request, current_subject)
     return await _lifecycle_answer(work, model_id, label = "Model unload")
 

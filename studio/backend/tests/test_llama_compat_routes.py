@@ -95,6 +95,7 @@ def _inference_double(
         return catalog
 
     inference._openai_catalog_objects = _objects
+    inference.model_slots = types.SimpleNamespace(visible_loading = lambda: None)
     return inference
 
 
@@ -1087,9 +1088,13 @@ def test_props_hides_a_resident_that_belongs_to_another_account(monkeypatch):
 QWEN = "unsloth/Qwen3.8-27B-GGUF"
 
 
-def _management(load_status = 200, catalog = None):
+def _management(
+    load_status = 200,
+    catalog = None,
+    backend = None,
+):
     """The routes double plus Studio's load and unload lifecycle, recording what they were asked."""
-    mod = _load(catalog = catalog)
+    mod = _load(backend = backend, catalog = catalog)
     double = mod._inference()
     calls = []
 
@@ -1210,11 +1215,33 @@ def test_management_unload_maps_the_advertised_alias_to_the_resident():
     mod, calls = _management()
     with _client(mod) as c:
         r = c.post("/models/unload", json = {"model": QWEN.lower()})
-        assert r.status_code == 200
-        # The answer names the listed id, never the resident's path.
-        assert r.json() == {"success": True, "model": QWEN}
+    assert r.status_code == 200
+    # The answer names the listed id, never the resident's path.
+    assert r.json() == {"success": True, "model": QWEN}
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_of_an_idle_row_never_reaches_the_lifecycle():
+    """/unload releases a managed account's shared resident before it compares names."""
+    mod, calls = _management()
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": CATALOG[1]["id"]})
+    assert r.json() == {"success": True, "model": CATALOG[1]["id"]}
+    assert calls == []
+
+
+def test_management_unload_cancels_a_load_under_the_path_it_runs_as(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", "Q4_K_M", requested),
+    )
+    backend = _Backend(loaded = False)
+    backend.is_active = True
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
         assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
-    assert calls == [("unload", "/media/models/qwen/model.gguf"), ("unload", CATALOG[1]["id"])]
+    assert calls == [("unload", "/models/laguna")]
 
 
 @pytest.mark.parametrize("path", ["/models/load", "/models/unload"])
