@@ -7492,7 +7492,9 @@ def patch_torchcodec_audio_decoder():
     try:
         from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
         _patch()
-    except (ImportError, AttributeError, RuntimeError):
+    except Exception:
+        # torchcodec 0.12+ built for another torch raises OSError loading its native library;
+        # disable_torchcodec_if_broken runs next and swaps in the fallback decoder.
         pass
 
 

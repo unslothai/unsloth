@@ -61,6 +61,8 @@ export interface SystemInfoResponse {
   dense_quant_schemes?: string[];
   /** Absent on older backends, where readers treat it as off. */
   nvfp4_diffusion?: boolean;
+  /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") every card runs natively. Absent on older backends. */
+  checkpoint_quant_formats?: string[];
   /** Whether group offload can stream torchao weights. Absent on older backends. */
   quantised_streaming?: boolean;
   /** Extra Diffusers offload fit tiers per lower-cased repo id, GiB VRAM / GiB available RAM. Absent on older backends. */

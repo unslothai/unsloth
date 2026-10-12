@@ -4483,6 +4483,30 @@ class FastBaseModel:
             skip = _vllm_unmovable_embedding_modules(model, target_modules),
         )
         _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        # add_new_tokens rows stay frozen at their mean init otherwise, and on a padded vocab PEFT saves neither matrix, so reload drops them (#1343). Matches FastLanguageModel; skipped under vLLM, which cannot train them, and when trainable_token_indices already trains the rows.
+        if (
+            getattr(model, "_need_to_train_embeddings", False)
+            and finetune_language_layers
+            and getattr(model, "vllm_engine", None) is None
+            and not kwargs.get("trainable_token_indices")
+        ):
+            if modules_to_save is None:
+                modules_to_save = []
+            elif isinstance(modules_to_save, str):
+                modules_to_save = [modules_to_save]
+            else:
+                modules_to_save = list(modules_to_save)
+            _missing = [
+                m
+                for m in ("embed_tokens", "lm_head")
+                if m not in _embedding_leaves(modules_to_save)
+            ]
+            if _missing:
+                print(
+                    "Unsloth: You added new tokens but did not specify if you wanted to "
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
+                )
+                modules_to_save.extend(_missing)
         ensure_weight_tying = _effective_weight_tying(
             model,
             modules_to_save,
@@ -5027,6 +5051,10 @@ class FastBaseModel:
 
         # Returning hidden states must be disabled for GRPO, and returning logits enabled.
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        # Remember what the forced "1" replaced, for for_training() to put back (#3071).
+        _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        if _return_logits != "1":
+            os.environ["_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"] = _return_logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
@@ -5075,19 +5103,18 @@ class FastBaseModel:
             embeddings = _embeddings_or_none(model, _getter)
             if hasattr(embeddings, "training"):
                 embeddings.training = True
-        # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored it; the record only exists after a disable.
-        if (
-            use_gradient_checkpointing
-            and getattr(model, "_unsloth_use_cache_originals", None) is not None
-        ):
-            # Auto-enable grouped-GEMM MoE (transformers<5 ModuleList experts); see llama.py.
-            try:
-                from unsloth_zoo.training_utils import disable_use_cache
-                disable_use_cache(model)
-            except ImportError:
-                pass
+        # Not only under GC: with a KV cache transformers drops the packed-sequence mask (padding-free rows leak).
+        try:
+            from unsloth_zoo.training_utils import disable_use_cache
+            disable_use_cache(model)
+        except ImportError:
+            pass
 
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        # Undo only for_inference()'s "1": forcing "0" here wiped a user's UNSLOTH_RETURN_LOGITS=1 (#3071).
+        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
+        if _return_logits is None:
+            _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
