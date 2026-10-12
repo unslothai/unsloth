@@ -43,7 +43,7 @@ _USE_DIR_FD = (
 
 
 def _sandbox_dir(project_id: str) -> str:
-    from storage.studio_db import ensure_chat_project_workspace
+    from storage.studio_db import available_project_working_folder, ensure_chat_project_workspace
 
     project = ensure_chat_project_workspace(project_id)
     if not project:
@@ -57,7 +57,7 @@ def _sandbox_dir(project_id: str) -> str:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         raise ProjectNotFound(project_id)
-    return sandbox_real
+    return available_project_working_folder(project) or sandbox_real
 
 
 UNSAFE_NAME_CHARS = r"\\/:*?\"<>|\x00-\x1f\x7f"

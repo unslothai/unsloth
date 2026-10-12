@@ -24,6 +24,11 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
+  /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */
+  gpu_utilization_pct?: number | null;
+  temperature_c?: number | null;
+  power_draw_w?: number | null;
+  power_limit_w?: number | null;
 }
 
 export interface SystemGpuInfo {
@@ -61,6 +66,8 @@ export interface SystemInfoResponse {
   dense_quant_schemes?: string[];
   /** Absent on older backends, where readers treat it as off. */
   nvfp4_diffusion?: boolean;
+  /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") every card runs natively. Absent on older backends. */
+  checkpoint_quant_formats?: string[];
   /** Whether group offload can stream torchao weights. Absent on older backends. */
   quantised_streaming?: boolean;
   /** Extra Diffusers offload fit tiers per lower-cased repo id, GiB VRAM / GiB available RAM. Absent on older backends. */

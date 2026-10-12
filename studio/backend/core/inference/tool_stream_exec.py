@@ -26,7 +26,7 @@ import inspect
 import queue
 import threading
 import time
-from typing import Any, Callable, Generator
+from typing import Any, Callable, Generator, Sequence
 
 from loggers import get_logger
 
@@ -172,6 +172,7 @@ def stream_tool_execution(
     cancel_event: Any = None,
     heartbeat_interval_s: float = TOOL_HEARTBEAT_INTERVAL_S,
     poll_interval_s: float = _POLL_INTERVAL_S,
+    started_events: Sequence[dict] = (),
 ) -> Generator[dict, None, str]:
     """Run ``invoke(output_callback)`` in a thread; yield live events; return the result.
 
@@ -186,6 +187,8 @@ def stream_tool_execution(
     timeout. Set ONLY on that abnormal-exit path, never on a clean finish, because
     the event is shared across a turn's tool calls and setting it early would
     abort the next tool.
+
+    ``started_events`` are yielded once the worker is running, so a slow consumer never delays the tool.
     """
     output_queue: queue.Queue[Any] = queue.Queue()
     done_sentinel = object()
@@ -277,6 +280,8 @@ def stream_tool_execution(
 
     abnormal_exit = False
     try:
+        for event in started_events:
+            yield event
         while not finished:
             try:
                 item = output_queue.get(timeout = poll_interval_s)

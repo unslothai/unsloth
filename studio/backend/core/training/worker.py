@@ -146,11 +146,59 @@ def _dataset_local_files_only(config: dict) -> bool:
     return bool(config.get("dataset_snapshot_path"))
 
 
+def _uses_mlx_training_backend() -> bool:
+    from core.training.training import should_use_mlx_training_backend
+    return should_use_mlx_training_backend()
+
+
+def _adapter_trains_embeddings(model) -> bool:
+    """Whether a loaded adapter already trains embed_tokens or lm_head in full (#13140)."""
+    for adapter in (getattr(model, "peft_config", None) or {}).values():
+        saved = list(getattr(adapter, "modules_to_save", None) or [])
+        saved += list(getattr(adapter, "modules_to_tie", None) or [])
+        if any(str(m).rsplit(".", 1)[-1] in ("embed_tokens", "lm_head") for m in saved):
+            return True
+    return False
+
+
+def _adapter_base_changed_error(config: dict) -> str | None:
+    """Refuse when the adapter now names a different base than the one checked at start (#13140)."""
+    # None: no adapter was admitted. "": an adapter that named no base, which must stay that way.
+    pinned = config.get("adapter_base_pin")
+    if pinned is None:
+        return None
+    from utils.models.model_config import get_base_model_from_lora
+
+    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
+        return "The adapter's base model changed after the run was checked. Start the run again."
+    return None
+
+
 def _untrainable_model_format_error(config: dict) -> str | None:
     model_format = str(config.get("model_format") or "").strip().lower()
     if model_format == "gguf":
         return "GGUF models are inference-only and cannot be trained."
     if model_format == "adapter":
+        # LoRA / CPT may continue from a saved adapter; full finetune still cannot (#13140).
+        # The embedding, decision and MLX runners wrap a fresh adapter; only the CUDA trainer continues one.
+        if config.get("training_type") in ("LoRA/QLoRA", "Continued Pretraining") and not (
+            config.get("is_embedding", False)
+            or config.get("is_decision", False)
+            or _uses_mlx_training_backend()
+        ):
+            from utils.paths import is_local_path
+
+            if not is_local_path(str(config.get("model_name") or "")):
+                return (
+                    "Continuing from a Hugging Face adapter repository is not supported yet. "
+                    "Download it to a local folder and select that folder."
+                )
+            if config.get("is_dataset_image") or config.get("is_dataset_audio"):
+                return (
+                    "Continuing a saved adapter on an image or audio dataset is not supported "
+                    "yet. Start from its base model instead."
+                )
+            return None
         return "Adapter models are inference-only and cannot be trained as base models."
     return None
 
@@ -454,7 +502,7 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
 def _validate_training_worker_config(config: dict, event_queue: Any) -> bool:
     if not _verify_config_pins(config, event_queue):
         return False
-    format_error = _untrainable_model_format_error(config)
+    format_error = _untrainable_model_format_error(config) or _adapter_base_changed_error(config)
     if format_error:
         event_queue.put(
             {
@@ -4564,6 +4612,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _send_status(event_queue, "Loading model...")
         from utils.hf_xet_fallback import start_watchdog
 
+        # Recheck right before the load: the adapter folder may have been edited since start (#13140).
+        base_error = _adapter_base_changed_error(config)
+        if base_error:
+            event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
+            return
+
         event_queue.put({"type": "model_load_started", "ts": time.time()})
         _load_watchdog_stop = start_watchdog(
             repo_ids = [model_name],
@@ -4792,6 +4846,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     }
                 )
             return
+
+        if is_cpt and not cpt_trains_embeddings:
+            # A continued adapter keeps its own modules_to_save, so it may train them anyway.
+            cpt_trains_embeddings = _adapter_trains_embeddings(getattr(trainer, "model", None))
 
         lr_default = "5e-5" if is_cpt else "2e-4"
         try:

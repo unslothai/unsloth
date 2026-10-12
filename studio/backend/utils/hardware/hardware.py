@@ -5387,7 +5387,9 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
         except Exception:
             pass
         if tier != "default":
-            _tier_version = {"510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(tier, "5.x")
+            _tier_version = {"457": "4.57.6", "510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(
+                tier, "5.x"
+            )
             logger.info(
                 "Config for '%s' not parseable by the default transformers; "
                 "needs transformers %s and will be loaded with that sidecar in the worker",
@@ -6285,6 +6287,10 @@ def _installed_llama_backend() -> Optional[str]:
     return marker_backend(read_install_marker(LlamaCppBackend._find_llama_server_binary()))
 
 
+# Readings the utilization probes already return, passed through for the Live monitor's detailed view.
+LIVE_GPU_TELEMETRY_KEYS = ("gpu_utilization_pct", "temperature_c", "power_draw_w", "power_limit_w")
+
+
 def _smi_inference_device(
     index: int,
     ordinal: int,
@@ -6344,15 +6350,15 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
     devices = []
     for ordinal, row in enumerate(rows):
         util = usage_by_index.get(row["index"], {})
-        devices.append(
-            _smi_inference_device(
-                row["index"],
-                ordinal,
-                row.get("name"),
-                row.get("memory_total_gb") or util.get("vram_total_gb"),
-                util.get("vram_used_gb"),
-            )
+        device = _smi_inference_device(
+            row["index"],
+            ordinal,
+            row.get("name"),
+            row.get("memory_total_gb") or util.get("vram_total_gb"),
+            util.get("vram_used_gb"),
         )
+        device.update({k: util[k] for k in LIVE_GPU_TELEMETRY_KEYS if k in util})
+        devices.append(device)
     return devices
 
 

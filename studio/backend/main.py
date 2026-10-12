@@ -1378,6 +1378,7 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
+    SANDBOX_UPLOAD_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
@@ -1404,6 +1405,9 @@ _BODY_PROTECTED_PREFIXES = (
     # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
     "/api/auth",
     "/mcp",
+    # llama-server passthrough POSTs; keyless inference scope admits them.
+    "/tokenize",
+    "/detokenize",
     # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
     # prefix let an unauthenticated client stream an unbounded body into memory.
     "/api/",
@@ -1433,6 +1437,11 @@ _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
 # spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
 _RAG_DOCUMENT_UPLOAD_RE = _re.compile(
     r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
+)
+# One file into a chat's sandbox folder (multipart, capped by the route), on both mounts of the router.
+_SANDBOX_UPLOAD_RE = _re.compile(r"^/(?:api/inference|v1)/sandbox/[^/]+/upload/?$")
+_UPLOAD_PASSTHROUGH_RE = _re.compile(
+    f"(?:{_RAG_DOCUMENT_UPLOAD_RE.pattern})|(?:{_SANDBOX_UPLOAD_RE.pattern})"
 )
 # Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
 _AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
@@ -1469,6 +1478,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         return AUDIO_INPUT_MAX_BYTES
+    if _SANDBOX_UPLOAD_RE.match(path):
+        return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):
         from core.rag import config as _rag_config
 
@@ -1685,7 +1696,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
-    upload_passthrough_pattern = _RAG_DOCUMENT_UPLOAD_RE,
+    upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -2001,6 +2012,7 @@ _MEDIA_BACKEND_MODULES = (
     "core.inference.video",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
+    "core.inference.mlx_diffusion_backend",
     "routes.inference",
 )
 
@@ -2300,6 +2312,7 @@ def _get_cached_system_gpu_info(
     """Return training and inference GPU info with bounded live-probe churn."""
     import time
     from utils.hardware import (
+        LIVE_GPU_TELEMETRY_KEYS,
         amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
@@ -2374,6 +2387,7 @@ def _get_cached_system_gpu_info(
             enriched_dev["vram_utilization_pct"] = util.get(
                 "vram_utilization_pct", dev.get("vram_utilization_pct")
             )
+            enriched_dev.update({k: util[k] for k in LIVE_GPU_TELEMETRY_KEYS if k in util})
             enriched_devices.append(enriched_dev)
 
         # The tile divides the aggregate by the SUMMED per-device totals, so both must describe the same cards. The
@@ -2605,6 +2619,23 @@ def _nvfp4_diffusion_enabled() -> bool:
         return False
 
 
+def _checkpoint_quant_formats() -> list[str]:
+    """FP8 / NVFP4 checkpoint formats the Hub's Recommended filter may list. Torch-free.
+
+    Only on a CUDA backend: nvidia-smi still sees the cards under a CPU-only torch or a
+    CUDA_VISIBLE_DEVICES mask that hides them all, and neither can load these checkpoints."""
+    try:
+        from utils.hardware import get_device
+        from utils.hardware.hardware import _backend_label
+        from utils.hardware.nvidia import get_checkpoint_quant_formats
+
+        if _backend_label(get_device()) != "cuda":
+            return []
+        return get_checkpoint_quant_formats()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -2746,6 +2777,8 @@ def get_system_info(
         "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
+        # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
+        "checkpoint_quant_formats": _checkpoint_quant_formats(),
     }
 
 

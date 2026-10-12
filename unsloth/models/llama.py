@@ -21,6 +21,7 @@ from typing import Optional, Tuple, List, Union
 
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
+from ._utils import _ignore_block_swap_params_for_ddp
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device
@@ -35,6 +36,7 @@ from ._utils import (
     arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
+    switch_training_mode,
 )
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
@@ -56,6 +58,8 @@ from .loader_utils import (
     requested_device_map,
     resolve_unsloth_device_map,
     resolve_auto_block_swap,
+    ddp_auto_block_swap_launch,
+    auto_offload_for_launch,
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
@@ -251,6 +255,31 @@ def _offload_frozen_module_for_training(
     if offload_device is not None:
         module.original_module.to(device = offload_device, non_blocking = True)
     module.original_module.requires_grad_(False)
+
+
+def _unfreeze_modules_to_save(model) -> None:
+    """Re-train each ModulesToSaveWrapper's active copy, as PEFT and FastModel do: kbit prep
+    froze it, so a reloaded adapter dropped embed_tokens / lm_head and resume_from_checkpoint
+    failed (#3108). Dtype only, never device."""
+    for module in model.modules():
+        if not isinstance(module, ModulesToSaveWrapper) or getattr(
+            module, "disable_adapters", False
+        ):
+            continue
+        active = getattr(module, "active_adapters", None)
+        if active is None:
+            active = [getattr(module, "active_adapter", "default")]
+        elif isinstance(active, str):
+            active = [active]
+        for adapter_name in active:
+            if adapter_name not in module.modules_to_save:
+                continue
+            trainable = module.modules_to_save[adapter_name]
+            # Any param, not .weight (a saved block has none); fp16 must train in fp32 (#1200).
+            if any(p.dtype == torch.float16 for p in trainable.parameters()):
+                trainable.to(dtype = torch.float32)
+            trainable.requires_grad_(True)
+        module.original_module.requires_grad_(False)
 
 
 def _ensure_cache_is_dynamic(past_key_values):
@@ -651,6 +680,16 @@ def LlamaAttention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
 
+    if attention_mask is not None and attention_mask.dim() == 2:
+        attention_mask = attention_mask[:, None, None, :].to(torch.bool)
+    elif (
+        attention_mask is not None
+        and attention_mask.dim() == 4
+        and attention_mask.dtype != torch.bool
+    ):
+        # Decode is more stable with boolean keep masks than additive bf16 masks.
+        attention_mask = attention_mask.eq(0)
+
     # Grouped query attention.
     _, _, cached_len, _ = Knn.shape
     if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
@@ -670,20 +709,11 @@ def LlamaAttention_fast_forward_inference(
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805.
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        if attention_mask is not None:
+            A.masked_fill_(~attention_mask, float("-inf"))
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = torch_matmul(A, Vnn, out = Qn)
-    # attention_mask fixup for SDPA when the user passes a 2D padding mask.
     else:
-        if attention_mask is not None and attention_mask.dim() == 2:
-            attention_mask = attention_mask[:, None, None, :].to(torch.bool)
-        elif (
-            attention_mask is not None
-            and attention_mask.dim() == 4
-            and attention_mask.dtype != torch.bool
-        ):
-            # Decode is more stable with boolean keep masks than additive bf16 masks.
-            attention_mask = attention_mask.eq(0)
-
         if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(
                 Qn,
@@ -858,9 +888,11 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
-    use_varlen = seq_info is not None and past_key_value is None
+    use_varlen = seq_info is not None and not had_cache
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
 
     # Should dropout be hardcoded to 0.0?
@@ -3144,7 +3176,9 @@ class FastLlamaModel:
             offload_layers = refuse_block_swap_load(
                 offload_layers, "does not support fast_inference or classification heads."
             )
+        _ddp_auto_swap = False
         if offload_layers == "auto":
+            _ddp_auto_swap = ddp_auto_block_swap_launch(requested_device_map(device_map))
             offload_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,
@@ -3176,6 +3210,10 @@ class FastLlamaModel:
                     extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
                 ),
             )
+            _ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None
+            if _ddp_auto_swap:
+                # DDP refuses a CPU parameter.
+                offload_embedding = _offload_embedding_mode = False
         # Here, not in loader.py: the mapper there can still substitute the repo (a -bnb-4bit name
         # resolving to its 16-bit twin), so a plan sized for the caller's name is the wrong plan.
         device_map = resolve_unsloth_device_map(
@@ -3520,6 +3558,7 @@ class FastLlamaModel:
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
+        mark_auto_offload_for_ddp(model, _ddp_auto_swap)
         attach_offload_layers(
             model,
             _block_swap_saved,
@@ -3965,10 +4004,11 @@ class FastLlamaModel:
                 model = _exclude_rope_inv_freq_from_ddp(model)
                 install_block_swap(
                     model,
-                    offload_layers,
+                    auto_offload_for_launch(offload_layers),
                     prefetch_depth = prefetch_depth,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                 )
+                _ignore_block_swap_params_for_ddp(model)
                 skip_checkpointing(model, checkpoint_skip_layers)
                 return model
             else:
@@ -4276,7 +4316,7 @@ class FastLlamaModel:
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
-            offload_layers,
+            auto_offload_for_launch(offload_layers),
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
@@ -4379,6 +4419,8 @@ class FastLlamaModel:
         # otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
+        _ignore_block_swap_params_for_ddp(model)
         return model
 
     @staticmethod
@@ -4431,6 +4473,7 @@ class FastLlamaModel:
             use_reentrant = True,
         )
         freeze_peft_variant_weights(model)
+        _unfreeze_modules_to_save(model)
 
         for active_adapter in model.peft_config.keys():
             if False:
@@ -4639,12 +4682,9 @@ class FastLlamaModel:
             _for_inference(m)
             m = m.model
         _for_inference(m)
-        model.eval()  # to turn off training on modules deeper in
-
-        # Since transformers 4.53, this must be turned off explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = False
+        # Since transformers 4.53, checkpointing must be turned off explicitly.
+        for module in switch_training_mode(model, False):
+            module.gradient_checkpointing = False
 
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
@@ -4670,15 +4710,14 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
+        checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
-            model, use_gradient_checkpointing
+            model, use_gradient_checkpointing, checkpointing
         )
-        if use_gradient_checkpointing:
-            arm_gradient_checkpointing(model)
-
-        for param in model.parameters():
-            if hasattr(param, "_fast_lora"):
-                del param._fast_lora
+        if use_gradient_checkpointing and arm_gradient_checkpointing(model, checkpointing):
+            # Arming runs the model's enabler once (remote code can flag layers the walk did not see).
+            checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -4699,12 +4738,10 @@ class FastLlamaModel:
             _for_training(m)
             m = m.model
         _for_training(m)
-        model.train()  # to turn on training on modules deeper in
-
+        apply_training_mode()
         # Since transformers 4.53, this must be turned on explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
+        for module in checkpointing:
+            set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
@@ -4715,17 +4752,12 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = True
 
-        # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored
-        # it; the record only exists after a disable.
-        if (
-            use_gradient_checkpointing
-            and getattr(model, "_unsloth_use_cache_originals", None) is not None
-        ):
-            try:
-                from unsloth_zoo.training_utils import disable_use_cache
-                disable_use_cache(model)
-            except ImportError:
-                pass
+        # Not only under GC: with a KV cache transformers drops the packed-sequence mask (padding-free rows leak).
+        try:
+            from unsloth_zoo.training_utils import disable_use_cache
+            disable_use_cache(model)
+        except ImportError:
+            pass
         return model
 
 

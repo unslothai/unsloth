@@ -141,8 +141,12 @@ def require_explicit_credentials(values: dict) -> None:
 def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
     if not managed_account():
         return
+    from hub.services.models import account_access
+
     for key in ("model_name", "base_model", "base_model_id", "hf_dataset"):
         account_path(values.get(key), reference = True)
+    for key in ("model_name", "base_model", "base_model_id"):
+        account_access.require_model_allowed(values.get(key))
     for key, repo_type in (
         ("model_local_path", "model"),
         ("dataset_local_path", "dataset"),
@@ -161,7 +165,6 @@ def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
         reference = values.get(key)
         # A cached claim pins the shared cache, so the caller's token never authorizes it.
         if values.get(claimed) and reference:
-            from hub.services.models import account_access
             account_access.require_model_access(str(reference), repo_type)
     for key in (
         "checkpoint_path",
