@@ -87,6 +87,11 @@ export function ReactPreview({
   }, [source, lang, title, reloadNonce]);
 
   const prepared = state?.key === key ? state.prepared : null;
+  const unavailable = prepared?.status === "unavailable";
+  // No frame reports for this state, so clear what the previous one counted.
+  useEffect(() => {
+    if (unavailable) onOutputCountChange?.({ errors: 0, total: 0 });
+  }, [unavailable, onOutputCountChange]);
   if (!prepared) {
     return (
       <div className="flex size-full">
