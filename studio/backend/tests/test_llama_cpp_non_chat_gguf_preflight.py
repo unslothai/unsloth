@@ -439,8 +439,7 @@ def test_every_name_the_video_preflight_imports_from_routes_still_resolves():
 
 
 def test_an_image_arch_this_host_cannot_build_promises_no_page(tmp_path, monkeypatch):
-    # Qwen-Image-2.1 on a diffusers too old for its pipeline: the catalog tags it unsupported and
-    # the Images picker hides it, so the refusal must not send the user there.
+    # The catalog hides an unbuildable family, so the refusal must not name the Images page.
     import core.inference.diffusion_engine_router as router
 
     monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: False)

@@ -21013,14 +21013,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _image_arch_is_pickable(gguf_path: Optional[str], model_identifier: Optional[str]) -> bool:
-        """Whether the Images page would actually OFFER this GGUF.
-
-        Asks ``_gguf_family_buildable``, the same predicate ``routes.models._arch_to_task``
-        gates ``_DIFFUSION_GGUF_ARCHS`` on, over the same evidence (repo id, then filename): a
-        family this host cannot build (Qwen-Image-2.1 on Python 3.9, which diffusers-pin.txt
-        holds at diffusers 0.36) is tagged unsupported and hidden there, so the refusal must not
-        send the user to it.
-        Fails OPEN like that predicate, so an unresolved family still names the page."""
+        """The Images picker's fail-open buildability gate (Qwen-Image-2.1 needs diffusers 0.41)."""
         try:
             from routes.models import _gguf_family_buildable
             return _gguf_family_buildable((model_identifier, os.path.basename(gguf_path or "")))
