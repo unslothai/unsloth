@@ -1255,6 +1255,9 @@ _BODY_PROTECTED_PREFIXES = (
     # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
     "/api/auth",
     "/mcp",
+    # llama-server passthrough POSTs; keyless inference scope admits them.
+    "/tokenize",
+    "/detokenize",
     # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
     # prefix let an unauthenticated client stream an unbounded body into memory.
     "/api/",

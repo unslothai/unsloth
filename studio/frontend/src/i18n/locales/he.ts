@@ -1591,6 +1591,8 @@ export const he = {
         sectionTitle: "הקראה קולית",
         buttonLabel: "כפתור הקראה קולית",
         buttonDescription: "הצג בתשובות העוזר",
+        autoLabel: "הקראת תשובות אוטומטית",
+        autoDescription: "הקראת כל תשובה ברגע שהיא מסתיימת",
         engineLabel: "מנוע TTS",
         engineSystemDescription: "קולות מובנים במכשיר",
         engineStudioDescription: "משתמש במודל הדיבור שנטען באודיו",

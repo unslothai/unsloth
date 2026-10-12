@@ -45,6 +45,9 @@ _INFERENCE_ROUTES = frozenset(
         ("GET", "/props"),
         ("GET", "/v1/props"),
         ("GET", "/version"),
+        # Token counters, like /v1/chat/count_tokens. Not /slots or /metrics: those are server-wide.
+        ("POST", "/tokenize"),
+        ("POST", "/detokenize"),
     }
 )
 
