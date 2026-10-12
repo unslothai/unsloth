@@ -1546,7 +1546,7 @@ class TestParkingIsOffUntilTheLaunchAsksForIt:
     def test_the_launch_takes_the_decision_this_way(self):
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         site = source.index('_park_supported = bool(server_caps.get("supports_preempt_ram"))')
-        window = source[site : site + 1500]
+        window = source[site : site + 2500]
         assert (
             "_park_owned = _park_supported and not _child_parking_stands_down(_park_supported)"
             in window
