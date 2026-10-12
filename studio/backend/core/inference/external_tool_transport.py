@@ -20,7 +20,7 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import ExternalProviderClient, _is_kimi_k3
 
 
 # The cancel paths only set a threading.Event, so poll it (same interval as the Codex client).
@@ -69,7 +69,7 @@ class OAICompatTransport:
         self._last_tools: list[dict[str, Any]] | None = None
         self.preserves_reasoning = (
             client.provider_type == "llama_cpp" and request_kwargs.get("preserve_thinking") is True
-        )
+        ) or _is_kimi_k3(client.provider_type, model)
 
     def stream(
         self,

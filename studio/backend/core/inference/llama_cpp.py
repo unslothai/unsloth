@@ -32570,7 +32570,13 @@ class LlamaCppBackend:
                     return []
                 return r.json().get("tokens", [])
 
-            if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(128259):
+            from utils.audio_tokens import SNAC_PROBE_TOKEN_IDS
+
+            # Codec-specific tokens; ids past the vocab log a llama-server 500 (#10336).
+            vocab_size = getattr(self, "_vocab_size", None)
+            if (not vocab_size or vocab_size > max(SNAC_PROBE_TOKEN_IDS)) and all(
+                "<custom_token_" in _detok(tid) for tid in SNAC_PROBE_TOKEN_IDS
+            ):
                 return "snac"
             if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
                 return "csm"
