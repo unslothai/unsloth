@@ -18,7 +18,11 @@ from state.tool_policy import round_may_prompt
 
 
 def _call(arguments):
-    return {"id": "c", "type": "function", "function": {"name": "web_search", "arguments": arguments}}
+    return {
+        "id": "c",
+        "type": "function",
+        "function": {"name": "web_search", "arguments": arguments},
+    }
 
 
 def _gate(calls, controller = None):
