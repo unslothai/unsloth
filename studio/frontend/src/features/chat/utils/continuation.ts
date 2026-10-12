@@ -451,8 +451,9 @@ export type ContinuationRequest = {
   providerCompactionConnectionKey?: string;
   /** The answer being continued was re-prefilled after a park, so the joined answer was too. */
   preemptRecomputed?: boolean;
-  /** The model that re-prefill happened on, kept when Continue runs on another. */
-  preemptRecomputedModelId?: string;
+  /** Every model a re-prefill of the joined answer happened on, kept when Continue runs on
+   *  another: each part was recomputed on its own. */
+  preemptRecomputedModelIds?: string[];
 };
 
 type ProviderCompactionContinuationFields = Pick<
@@ -574,23 +575,42 @@ export function readContinuationRequest(
   };
 }
 
+/** The models an answer's re-prefills happened on, as recorded; a message saved with the single
+ *  `preemptRecomputedModelId` reads as that one. */
+export function recomputedModelIds(value: unknown): string[] {
+  const fields = value as
+    | { preemptRecomputedModelIds?: unknown; preemptRecomputedModelId?: unknown }
+    | undefined;
+  const listed = Array.isArray(fields?.preemptRecomputedModelIds)
+    ? fields.preemptRecomputedModelIds
+    : [fields?.preemptRecomputedModelId];
+  return listed.reduce<string[]>(
+    (ids, id) => (typeof id === "string" && id ? withRecomputedModel(ids, id) : ids),
+    [],
+  );
+}
+
+/** `ids` with `modelId` added, once. */
+export function withRecomputedModel(ids: string[], modelId: string | null | undefined): string[] {
+  return !modelId || ids.includes(modelId) ? ids : [...ids, modelId];
+}
+
 function preemptRecomputedField(
   value: unknown,
-): { preemptRecomputed?: true; preemptRecomputedModelId?: string } {
-  const fields = value as
-    | { preemptRecomputed?: unknown; preemptRecomputedModelId?: unknown }
-    | undefined;
-  if (fields?.preemptRecomputed !== true) return {};
-  const modelId = fields.preemptRecomputedModelId;
-  return typeof modelId === "string" && modelId
-    ? { preemptRecomputed: true, preemptRecomputedModelId: modelId }
+): { preemptRecomputed?: true; preemptRecomputedModelIds?: string[] } {
+  if ((value as { preemptRecomputed?: unknown } | undefined)?.preemptRecomputed !== true) {
+    return {};
+  }
+  const modelIds = recomputedModelIds(value);
+  return modelIds.length > 0
+    ? { preemptRecomputed: true, preemptRecomputedModelIds: modelIds }
     : { preemptRecomputed: true };
 }
 
 /** The recompute fields a Continue carries forward, read off the message being continued. */
 export function readPreemptRecomputedFields(
   metadata: unknown,
-): { preemptRecomputed?: true; preemptRecomputedModelId?: string } {
+): { preemptRecomputed?: true; preemptRecomputedModelIds?: string[] } {
   return preemptRecomputedField((metadata as { custom?: unknown } | undefined)?.custom);
 }
 

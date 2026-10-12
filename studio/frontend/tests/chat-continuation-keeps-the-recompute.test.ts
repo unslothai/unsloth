@@ -10,6 +10,8 @@ import {
   CONTINUATION_RUN_CONFIG_KEY,
   readContinuationRequest,
   readPreemptRecomputed,
+  recomputedModelIds,
+  withRecomputedModel,
 } from "../src/features/chat/utils/continuation.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -39,15 +41,44 @@ test("the request keeps the model the recompute happened on", () => {
       [CONTINUATION_RUN_CONFIG_KEY]: {
         partial: "Half an answer",
         preemptRecomputed: true,
-        preemptRecomputedModelId: "model-a",
+        preemptRecomputedModelIds: ["model-a"],
       },
     },
   });
-  assert.equal(request?.preemptRecomputedModelId, "model-a");
+  assert.deepEqual(request?.preemptRecomputedModelIds, ["model-a"]);
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  // Seeded from the request, moved only by a recompute of the continuation's own.
-  assert.match(adapter, /continuation\?\.preemptRecomputedModelId \?\?/);
-  assert.match(adapter, /sawPreemptRecompute = true;\s+preemptRecomputedOn = params\.checkpoint;/);
+  // Seeded from the request, and a recompute of the continuation's own adds its model.
+  assert.match(adapter, /continuation\?\.preemptRecomputedModelIds \?\?/);
+  assert.match(
+    adapter,
+    /sawPreemptRecompute = true;\s+preemptRecomputedOn = withRecomputedModel\(preemptRecomputedOn, params\.checkpoint\);/,
+  );
+});
+
+test("a second recompute on another model keeps the first", () => {
+  // Recomputed on A, continued on B and recomputed there too: both parts were re-prefilled.
+  const joined = withRecomputedModel(["model-a"], "model-b");
+  assert.deepEqual(joined, ["model-a", "model-b"]);
+  assert.deepEqual(withRecomputedModel(joined, "model-a"), joined);
+  const request = readContinuationRequest({
+    custom: {
+      [CONTINUATION_RUN_CONFIG_KEY]: {
+        partial: "Half an answer",
+        preemptRecomputed: true,
+        preemptRecomputedModelIds: joined,
+      },
+    },
+  });
+  assert.deepEqual(request?.preemptRecomputedModelIds, ["model-a", "model-b"]);
+});
+
+test("a message saved with one recompute model still reads as that one", () => {
+  assert.deepEqual(recomputedModelIds({ preemptRecomputedModelId: "model-a" }), ["model-a"]);
+  assert.deepEqual(recomputedModelIds({ preemptRecomputedModelIds: ["a", "", 3, "a", "b"] }), [
+    "a",
+    "b",
+  ]);
+  assert.deepEqual(recomputedModelIds(undefined), []);
 });
 
 test("the metadata reader reads what the adapter writes", () => {

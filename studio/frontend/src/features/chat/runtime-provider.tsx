@@ -151,7 +151,9 @@ import {
   budgetImpliesTruncation,
   completedAfterGivingUp,
   isPreemptGaveUp,
+  recomputedModelIds,
   restoredAssistantStatus,
+  withRecomputedModel,
 } from "./utils/continuation";
 import {
   generationChunkCountsTowardTiming,
@@ -1587,7 +1589,12 @@ function scheduleGenerationRecovery(
                     ...currentMetadata,
                     preemptRecomputed: true,
                     ...(typeof recomputedOn === "string" && recomputedOn
-                      ? { preemptRecomputedModelId: recomputedOn }
+                      ? {
+                          preemptRecomputedModelIds: withRecomputedModel(
+                            recomputedModelIds(currentMetadata),
+                            recomputedOn,
+                          ),
+                        }
                       : {}),
                   };
                   continue;
@@ -3664,23 +3671,23 @@ function VisibleAnswerRecomputeSync({
   const usage = custom?.contextUsage as { modelId?: unknown } | undefined;
   const details = custom?.responseDetails as { modelId?: unknown } | undefined;
   const answerRecomputed = custom?.preemptRecomputed === true;
-  const recomputedOn = custom?.preemptRecomputedModelId;
-  // An answer with no usage (interrupted, or a server that sent none) still has its details,
-  // and an interrupted one the model its recompute was recorded on. None known: keep the
-  // note, which can only add a caveat, never claim exact.
-  // The recompute's own model first: a Continue on another checkpoint stamps the joined answer's
-  // usage with that one, while the re-prefill happened on the first.
+  // The recomputes' own models first: a Continue on another checkpoint stamps the joined answer's
+  // usage with that one, while a re-prefill may have happened on either, so each counts.
+  const recomputedOn = recomputedModelIds(custom);
+  // An answer with no usage (interrupted, or a server that sent none) still has its details.
+  // None known: keep the note, which can only add a caveat, never claim exact.
   const answerModelId =
-    typeof recomputedOn === "string" && recomputedOn
-      ? recomputedOn
-      : typeof usage?.modelId === "string"
-        ? usage.modelId
-        : typeof details?.modelId === "string" && details.modelId
-          ? details.modelId
-          : null;
+    typeof usage?.modelId === "string"
+      ? usage.modelId
+      : typeof details?.modelId === "string" && details.modelId
+        ? details.modelId
+        : null;
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const recomputed =
-    answerRecomputed && (answerModelId === null || answerModelId === checkpoint);
+    answerRecomputed &&
+    (recomputedOn.length > 0
+      ? recomputedOn.includes(checkpoint)
+      : answerModelId === null || answerModelId === checkpoint);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
 
   useEffect(() => {

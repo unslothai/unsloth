@@ -372,6 +372,7 @@ import {
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
+  withRecomputedModel,
 } from "../utils/continuation";
 import {
   claimLiveGenerationRun,
@@ -596,6 +597,11 @@ type ThreadAutosaveHandle = {
 };
 
 const pendingFirstThreadSaves = new Map<string, Promise<void>>();
+
+/** The models an answer was re-prefilled on, for its metadata; none when it was not. */
+function recomputedOnField(recomputed: boolean, modelIds: string[]): string[] | undefined {
+  return recomputed && modelIds.length > 0 ? modelIds : undefined;
+}
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -5911,11 +5917,11 @@ export function createOpenAIStreamAdapter(
       // Seeded from the answer this continues, so a later round that was not recomputed does
       // not clear it off the joined answer.
       let sawPreemptRecompute = continuation?.preemptRecomputed === true;
-      // Where that recompute happened: a Continue on another checkpoint keeps it, and only a
-      // recompute of its own moves it to this one.
-      let preemptRecomputedOn =
-        continuation?.preemptRecomputedModelId ??
-        (sawPreemptRecompute ? params.checkpoint : undefined);
+      // Where those recomputes happened: a Continue on another checkpoint keeps them, and a
+      // recompute of its own adds this one, since the joined answer holds both parts.
+      let preemptRecomputedOn: string[] =
+        continuation?.preemptRecomputedModelIds ??
+        (sawPreemptRecompute ? withRecomputedModel([], params.checkpoint) : []);
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -5949,7 +5955,7 @@ export function createOpenAIStreamAdapter(
         contextTruncation,
         preemptRecomputed: sawPreemptRecompute || undefined,
         // Live yields carry no response details, and an interrupted answer persists from here.
-        preemptRecomputedModelId: sawPreemptRecompute ? preemptRecomputedOn : undefined,
+        preemptRecomputedModelIds: recomputedOnField(sawPreemptRecompute, preemptRecomputedOn),
         providerCompaction,
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
@@ -7272,7 +7278,7 @@ export function createOpenAIStreamAdapter(
                   // Qualifies the resume before it, so the status line stays as it is.
                   // Reaches the chip through the message metadata below, per branch.
                   sawPreemptRecompute = true;
-                  preemptRecomputedOn = params.checkpoint;
+                  preemptRecomputedOn = withRecomputedModel(preemptRecomputedOn, params.checkpoint);
                   continue;
                 }
                 runtime.setToolStatus(
@@ -8847,7 +8853,7 @@ export function createOpenAIStreamAdapter(
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
               preemptRecomputed: sawPreemptRecompute || undefined,
-              preemptRecomputedModelId: sawPreemptRecompute ? preemptRecomputedOn : undefined,
+              preemptRecomputedModelIds: recomputedOnField(sawPreemptRecompute, preemptRecomputedOn),
               providerCompaction,
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,
@@ -9029,7 +9035,7 @@ export function createOpenAIStreamAdapter(
                 contextTruncation,
                 // Replaces every earlier snapshot, so the re-prefill caveat rides it too.
                 preemptRecomputed: sawPreemptRecompute || undefined,
-                preemptRecomputedModelId: sawPreemptRecompute ? preemptRecomputedOn : undefined,
+                preemptRecomputedModelIds: recomputedOnField(sawPreemptRecompute, preemptRecomputedOn),
                 providerCompaction,
                 providerCompactionAfterToolCalls,
                 providerCompactionProviderType,

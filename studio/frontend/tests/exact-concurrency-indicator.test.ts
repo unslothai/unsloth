@@ -216,7 +216,7 @@ test("the recompute note is persisted with the answer and read from the answer o
   // loaded into the same thread before it has answered.
   assert.match(
     PROVIDER,
-    /answerRecomputed && \(answerModelId === null \|\| answerModelId === checkpoint\)/,
+    /answerRecomputed &&\s+\(recomputedOn\.length > 0\s+\? recomputedOn\.includes\(checkpoint\)\s+: answerModelId === null \|\| answerModelId === checkpoint\)/,
   );
   // An answer with no usage record still names its model in its details.
   assert.match(PROVIDER, /custom\?\.responseDetails as \{ modelId\?: unknown \}/);
@@ -224,17 +224,19 @@ test("the recompute note is persisted with the answer and read from the answer o
   // An interrupted answer persists from a live yield, which carries no details, so the
   // recompute records the model it happened on itself.
   assert.equal(
-    ADAPTER.match(/preemptRecomputedModelId: sawPreemptRecompute \? preemptRecomputedOn : undefined,/g)
-      ?.length,
+    ADAPTER.match(
+      /preemptRecomputedModelIds: recomputedOnField\(sawPreemptRecompute, preemptRecomputedOn\),/g,
+    )?.length,
     3,
     "the live, the final and the interrupted settlement all name the recompute's model",
   );
-  // Read before usage: a Continue on another checkpoint stamps the joined usage with that one.
-  assert.match(PROVIDER, /const answerModelId =\s+typeof recomputedOn === "string" && recomputedOn\s+\? recomputedOn/);
+  // Read before usage: a Continue on another checkpoint stamps the joined usage with that one,
+  // and every model a part was recomputed on counts.
+  assert.match(PROVIDER, /const recomputedOn = recomputedModelIds\(custom\);/);
   // And the durable follower, whose interrupted answers persist without details either.
   assert.match(
     PROVIDER,
-    /const recomputedOn = update\.run\.requestPayload\?\.model;[\s\S]{0,300}preemptRecomputedModelId: recomputedOn/,
+    /const recomputedOn = update\.run\.requestPayload\?\.model;[\s\S]{0,400}preemptRecomputedModelIds: withRecomputedModel\(\s+recomputedModelIds\(currentMetadata\),\s+recomputedOn,/,
   );
   // The selector hands back the message itself, never a fresh object: a new object on every
   // store read re-renders without end (React error 185, seen in the Windows UI lane).
