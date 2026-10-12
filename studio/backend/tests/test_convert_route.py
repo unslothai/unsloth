@@ -80,3 +80,34 @@ def test_routes_require_the_installation_owner():
         )
         assert client.get("/api/convert/status", params = {"model_id": "a/b"}).status_code == 401
     popen.assert_not_called()
+
+
+def test_reads_child_output_as_utf8(tmp_path):
+    # A locale codec (cp1252 on Windows) raises on tqdm's partial blocks, e.g. U+258F.
+    with mock.patch.object(convert.subprocess, "Popen") as popen:
+        convert._jobs.clear()
+        convert._jobs["m"] = {"state": "running", "stage": "starting"}
+        popen.return_value = mock.MagicMock(returncode = 0, stdout = iter([]))
+        with mock.patch.object(convert, "adopt_pid"):
+            convert.run_conversion_task("m", "ov_int4", tmp_path / "m" / "ov_int4")
+        kwargs = popen.call_args.kwargs
+        assert kwargs["encoding"] == "utf-8" and kwargs["errors"] == "replace"
+
+
+def test_failed_reader_stops_the_child(tmp_path):
+    def broken():
+        yield "STAGE loading\n"
+        raise UnicodeDecodeError("cp1252", b"\x8f", 0, 1, "undefined")
+
+    convert._jobs.clear()
+    convert._jobs["m"] = {"state": "running", "stage": "starting"}
+    fake = mock.MagicMock(pid = 4242, stdout = broken())
+    fake.poll.return_value = None
+    with (
+        mock.patch.object(convert.subprocess, "Popen", return_value = fake),
+        mock.patch.object(convert, "adopt_pid"),
+        mock.patch.object(convert, "terminate_pid") as term,
+    ):
+        convert.run_conversion_task("m", "ov_int4", tmp_path / "m" / "ov_int4")
+    assert convert._jobs["m"]["state"] == "error"
+    term.assert_called_once_with(4242, timeout = 5.0, owner_verified = True)

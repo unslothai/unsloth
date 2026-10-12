@@ -20,6 +20,7 @@ from utils.process_lifetime import (
     spawn_on_lifetime_thread,
     terminate_pid,
 )
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ def output_dir_for(model_id: str, format_type: str) -> Path:
 def run_conversion_task(model_id: str, format_type: str, output_dir: Path) -> None:
     job = _jobs[model_id]
     log_path = output_dir.parent / f"convert_{format_type}.log"
+    proc = None
     try:
         output_dir.parent.mkdir(parents = True, exist_ok = True)
         with open(log_path, "w", encoding = "utf-8") as log:
@@ -83,7 +85,12 @@ def run_conversion_task(model_id: str, format_type: str, output_dir: Path) -> No
                     argv,
                     stdout = subprocess.PIPE,
                     stderr = subprocess.STDOUT,
+                    stdin = subprocess.DEVNULL,
+                    # The child writes UTF-8 (tqdm bars, emoji); the locale codec (cp1252) cannot read it.
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    **windows_hidden_subprocess_kwargs(),
                     **child_popen_kwargs(),
                 )
             )
@@ -102,6 +109,9 @@ def run_conversion_task(model_id: str, format_type: str, output_dir: Path) -> No
     except Exception as e:
         logger.error(f"Conversion failed: {e}")
         job.update(state = "error", stage = str(e))
+        # Nobody reads the pipe any more, so a live child would block on it holding the GPU.
+        if proc is not None and proc.poll() is None:
+            terminate_pid(proc.pid, timeout = 5.0, owner_verified = True)
 
 
 @router.post("")
