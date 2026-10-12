@@ -184,6 +184,7 @@ studio = [
     "fastmcp>=3.0.2",
     "gguf==0.19.0 ; python_version >= '3.10'",
     "gguf==0.18.0 ; python_version < '3.10'",
+    "safetensors>=0.8.0 ; sys_platform == 'win32'",
     "av>=12.3.0",
     # No win_arm64 wheel and no sdist either, so it cannot be floored or built. Dropped rather
     # than pinned: the RAG store already treats a missing sqlite_vec as "RAG unavailable".
