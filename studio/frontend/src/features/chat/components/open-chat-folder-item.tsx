@@ -3,16 +3,21 @@
 
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { revealSandbox } from "@/components/assistant-ui/sandbox-reveal";
+import {
+  MAX_SANDBOX_UPLOAD_BYTES,
+  uploadToSandbox,
+} from "@/components/assistant-ui/sandbox-upload";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { FolderOpenIcon } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon, Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
 import { useState, type ComponentProps, type ComponentType } from "react";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
@@ -80,6 +85,81 @@ export function OpenChatFolderItem({
       <span>{t("library.chats.folder.openChat")}</span>
     </Item>
   );
+}
+
+/**
+ * "Upload to chat folder": files go to the folder the chat's next tool call runs in, without
+ * entering the conversation. The bytes travel to the backend, so a browser session can use it too.
+ */
+export function UploadToChatFolderItem({
+  item,
+  Item = DropdownMenuItem,
+}: {
+  item: SidebarItem;
+  Item?: ComponentType<ComponentProps<typeof DropdownMenuItem>>;
+}) {
+  const t = useT();
+  const sandboxSessionId =
+    item.type === "single" || item.projectId
+      ? sandboxSessionIdFor(getSidebarItemThreadIds(item)[0] ?? item.id, item.projectId)
+      : undefined;
+  if (!sandboxSessionId) return null;
+  return (
+    <Item
+      title={t("library.chats.folder.uploadTitle")}
+      onSelect={() =>
+        openFilePicker("*", (files) => void uploadToChatFolder(sandboxSessionId, files, t))
+      }
+    >
+      <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
+      <span>{t("library.chats.folder.upload")}</span>
+    </Item>
+  );
+}
+
+async function uploadToChatFolder(
+  sessionId: string,
+  files: File[],
+  t: ReturnType<typeof useT>,
+  overwrite = false,
+): Promise<void> {
+  const added: string[] = [];
+  const taken: File[] = [];
+  for (const file of files) {
+    const failed = (description: string) =>
+      toast.error(t("library.chats.folder.uploadFailed", { name: file.name }), { description });
+    if (file.size > MAX_SANDBOX_UPLOAD_BYTES) {
+      failed(t("library.toast.uploadTooLarge", { name: file.name }));
+      continue;
+    }
+    try {
+      added.push((await uploadToSandbox(sessionId, file, overwrite)).name);
+    } catch (error) {
+      if ((error as { status?: number } | null)?.status === 409) taken.push(file);
+      else failed(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (added.length > 0) {
+    toast.success(
+      added.length === 1
+        ? t("library.chats.folder.uploaded", { name: added[0] })
+        : t("library.chats.folder.uploadedMany", { count: added.length }),
+      { description: t("library.chats.folder.uploadedDescription") },
+    );
+  }
+  if (taken.length > 0) {
+    toast.info(
+      taken.length === 1
+        ? t("library.chats.folder.uploadExists", { name: taken[0].name })
+        : t("library.chats.folder.uploadExistsMany", { count: taken.length }),
+      {
+        action: {
+          label: t("library.chats.folder.replace"),
+          onClick: () => void uploadToChatFolder(sessionId, taken, t, true),
+        },
+      },
+    );
+  }
 }
 
 export function OpenProjectFolderItem({
