@@ -8,7 +8,7 @@ use crate::native_path_policy::{
     classify_native_document_folder, classify_native_model_path, has_transport_stream_extension,
     is_audio_only_3gp, is_binary_office_template, is_binary_property_list, is_binary_tracker_mod,
     is_binary_vobsub, is_compiled_fortran_mod, is_mpeg_transport_stream, is_text_attachment_name,
-    reveal_target, ClassifiedPath, NativeArtifactKind,
+    office_template_mime_type, reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -841,14 +841,13 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
             "Compiled Fortran .mod modules are not supported as text attachments.".to_string(),
         );
     }
-    if is_binary_office_template(path, &bytes) {
-        return Err(
-            "Legacy Word and PowerPoint templates are not supported as text attachments."
-                .to_string(),
-        );
-    }
-    let mime_type = attachment_payload_mime_type(path, &bytes)
-        .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
+    // A Word or PowerPoint template under .dot/.pot goes to the composer, which reads it on the server.
+    let mime_type = if is_binary_office_template(path, &bytes) {
+        office_template_mime_type(path)
+    } else {
+        attachment_payload_mime_type(path, &bytes)
+            .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?
+    };
     if mime_type.starts_with("text/") && bytes.len() as u64 > MAX_NATIVE_TEXT_BYTES {
         return Err("Attachment is unavailable or too large.".to_string());
     }
@@ -1147,6 +1146,33 @@ mod tests {
             assert_eq!(BASE64.decode(payload.base64).unwrap(), b"document bytes");
             let _ = fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn binary_office_templates_read_with_an_office_mime_and_graphviz_stays_text() {
+        let ole = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0];
+        for (ext, mime) in [
+            ("dot", "application/msword"),
+            ("pot", "application/vnd.ms-powerpoint"),
+        ] {
+            let path = temp_path("office-template").with_extension(ext);
+            fs::write(&path, ole).unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            assert_eq!(
+                read_attachment_payload(&entry).unwrap().mime_type,
+                mime,
+                "{ext}"
+            );
+            let _ = fs::remove_file(path);
+        }
+        let path = temp_path("graph").with_extension("dot");
+        fs::write(&path, b"digraph { a -> b }").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert_eq!(
+            read_attachment_payload(&entry).unwrap().mime_type,
+            "text/plain"
+        );
+        let _ = fs::remove_file(path);
     }
 
     #[test]

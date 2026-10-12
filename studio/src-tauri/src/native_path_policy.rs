@@ -51,8 +51,8 @@ pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "
 /// Office, Outlook and saved-page types RAG sources accept from a drop zone; chat drops take only the
 /// ones with a composer adapter (`DOC_EXTS` in `drop-paths.ts`).
 pub const OFFICE_ATTACHMENT_EXTS: &[&str] = &[
-    "doc", "xls", "xlt", "xlsx", "xlsm", "xltx", "xltm", "ppt", "pps", "pptx", "pptm", "ppsx", "ott",
-    "ots", "otp", "msg", "mht", "mhtml", "xhtml", "xht",
+    "doc", "xls", "xlt", "xlsx", "xlsm", "xltx", "xltm", "ppt", "pps", "pptx", "pptm", "ppsx",
+    "ott", "ots", "otp", "msg", "mht", "mhtml", "xhtml", "xht",
 ];
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
@@ -616,6 +616,15 @@ fn has_soundtracker_pattern_data(bytes: &[u8], pattern_end: usize) -> bool {
     true
 }
 
+/// The MIME a binary .dot/.pot is sent under: the composer reads it on the server, not as text.
+pub fn office_template_mime_type(path: &Path) -> &'static str {
+    if has_extension(path, "pot") {
+        "application/vnd.ms-powerpoint"
+    } else {
+        "application/msword"
+    }
+}
+
 /// Legacy Word `.dot` and PowerPoint `.pot` templates are OLE compound files,
 /// unlike Graphviz `.dot` and gettext `.pot`.
 pub fn is_binary_office_template(path: &Path, bytes: &[u8]) -> bool {
@@ -731,7 +740,8 @@ pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &[
 /// `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg, so this is what
 /// ffmpeg reads, not what the webview can play.
 pub const VIDEO_ATTACHMENT_EXTS: &[&str] = &[
-    "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "3g2", "ogv", "m2ts",
+    "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "3g2", "ogv",
+    "m2ts",
 ];
 
 fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {

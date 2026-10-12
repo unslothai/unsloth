@@ -4,7 +4,7 @@
 use crate::native_path_policy::{
     has_transport_stream_extension, is_audio_only_3gp, is_binary_office_template,
     is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_compiled_fortran_mod,
-    is_mpeg_transport_stream,
+    is_mpeg_transport_stream, office_template_mime_type,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
@@ -110,6 +110,12 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
         "rtf" => "application/rtf",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xlsm" => "application/vnd.ms-excel.sheet.macroEnabled.12",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        // Read on the server by the composer, which matches them by extension.
+        "doc" | "xls" | "xlt" | "xltx" | "xltm" | "ppt" | "pps" | "pptm" | "ppsx" | "ott"
+        | "ots" | "otp" | "msg" | "mht" | "mhtml" | "xhtml" | "xht" => "application/octet-stream",
         "mp3" | "mp2" => "audio/mpeg",
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
@@ -224,11 +230,12 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             || is_binary_vobsub(&path, &bytes)
             || is_binary_tracker_mod(&path, &bytes)
             || is_compiled_fortran_mod(&path, &bytes)
-            || is_binary_office_template(&path, &bytes)
         {
             continue;
         }
-        let mime_type = if is_3gp && is_audio_only_3gp(&bytes) {
+        let mime_type = if is_binary_office_template(&path, &bytes) {
+            office_template_mime_type(&path)
+        } else if is_3gp && is_audio_only_3gp(&bytes) {
             "audio/3gpp"
         } else if is_mpeg_transport_stream(&path, &bytes) {
             "video/mp2t"
@@ -483,10 +490,46 @@ mod tests {
 
     #[test]
     fn clipboard_file_mime_types_cover_composer_documents() {
-        assert_eq!(clipboard_file_mime_type(Path::new("notes.rtf")), Some("application/rtf"));
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("notes.rtf")),
+            Some("application/rtf")
+        );
         assert_eq!(
             clipboard_file_mime_type(Path::new("archive.tar.gz")),
             Some("application/octet-stream")
+        );
+        for name in [
+            "show.PPS",
+            "budget.xlt",
+            "letter.doc",
+            "mail.msg",
+            "page.mht",
+        ] {
+            assert_eq!(
+                clipboard_file_mime_type(Path::new(name)),
+                Some("application/octet-stream"),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("deck.pptx")),
+            Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        );
+    }
+
+    #[test]
+    fn office_templates_take_an_office_mime_and_text_dot_files_stay_text() {
+        assert_eq!(
+            office_template_mime_type(Path::new("letter.dot")),
+            "application/msword"
+        );
+        assert_eq!(
+            office_template_mime_type(Path::new("deck.POT")),
+            "application/vnd.ms-powerpoint"
+        );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("graph.dot")),
+            Some("text/plain")
         );
     }
 
