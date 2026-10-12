@@ -13,9 +13,8 @@ import {
 /** mounts the next page this far below the sidebar's visible edge. */
 const PRELOAD_PX = 800;
 
-// Scrollers the user has moved. A server page loads only after that, so a tall window never reads
-// page after page at startup just because the sentinel happens to be in view.
-const armedScrollers = new WeakSet<Element>();
+// A server page loads only after the user scrolls the sidebar, one page per scroll: a tall window
+// or the preload margin alone never reads page after page.
 const ARMING_EVENTS = ["scroll", "wheel", "touchmove"] as const;
 
 /** preserves mounted rows when the list grows because `render` remains stable. */
@@ -50,6 +49,7 @@ export function ProgressiveRows<T extends { id: string }>({
   const sentinelRef = useRef<HTMLLIElement>(null);
   const intersectingRef = useRef(false);
   const fetchingRef = useRef(false);
+  const armedRef = useRef(false);
   const mountedMore = items.length > limit;
   const fetchMore = hasMore && Boolean(onReachEnd);
   const showSentinel = mountedMore || fetchMore;
@@ -60,8 +60,8 @@ export function ProgressiveRows<T extends { id: string }>({
         setLimit((count) => count + pageSize);
         return;
       }
-      if (!fetchMore || fetchingRef.current) return;
-      if (!root || !armedScrollers.has(root)) return;
+      if (!fetchMore || fetchingRef.current || !root || !armedRef.current) return;
+      armedRef.current = false;
       fetchingRef.current = true;
       setLimit((count) => Math.max(count, items.length) + pageSize);
       void Promise.resolve(onReachEnd?.()).finally(() => {
@@ -85,10 +85,9 @@ export function ProgressiveRows<T extends { id: string }>({
       { root, rootMargin: `0px 0px ${PRELOAD_PX}px 0px` },
     );
     observer.observe(sentinel);
-    // the first scroll arms the scroller and loads a sentinel that was already in view
+    // a scroll arms the next fetch and loads a sentinel that was already in view
     const onArm = () => {
-      if (!root) return;
-      armedScrollers.add(root);
+      armedRef.current = true;
       if (intersectingRef.current) advance(root);
     };
     const armTarget = fetchMore ? root : null;

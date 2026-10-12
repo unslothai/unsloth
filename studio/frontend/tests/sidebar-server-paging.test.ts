@@ -445,7 +445,7 @@ test("a loaded page with more on the server ends in the sentinel, not the end st
   assert.match(renderRows(20, false), /<li data-end=""><\/li><\/ul>$/);
 });
 
-test("a server page is asked for only once the user has scrolled the sidebar", () => {
+test("a server page is asked for only after a scroll, one page per scroll", () => {
   const src = readSrc("components/progressive-rows.tsx");
   const advance = src.slice(
     src.indexOf("const advance = useCallback("),
@@ -453,14 +453,16 @@ test("a server page is asked for only once the user has scrolled the sidebar", (
   );
   assert.match(
     advance,
-    /if \(!root \|\| !armedScrollers\.has\(root\)\) return;/,
+    /if \(!fetchMore \|\| fetchingRef\.current \|\| !root \|\| !armedRef\.current\) return;\n\s*armedRef\.current = false;/,
   );
-  assert.match(advance, /if \(!fetchMore \|\| fetchingRef\.current\) return;/);
   // mounting rows already loaded needs no scroll, as before
   assert.ok(
-    advance.indexOf("items.length > limit") < advance.indexOf("armedScrollers"),
+    advance.indexOf("items.length > limit") < advance.indexOf("armedRef"),
     "local mounting waits for a scroll",
   );
+  // the arm is per list: one list's scroll-armed state cannot make another list fetch
+  assert.doesNotMatch(src, /new WeakSet/);
+  assert.match(src, /const onArm = \(\) => \{\n\s*armedRef\.current = true;/);
   assert.match(
     src,
     /const ARMING_EVENTS = \["scroll", "wheel", "touchmove"\] as const;/,
