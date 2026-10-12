@@ -7257,13 +7257,21 @@ def _merged_torchao_config_for_peft_qat(model):
             embedding = None
         embeddings.update(_merged_name(fqn) for fqn, m in model.named_modules() if m is embedding)
 
+    # transformers 5 applies a module entry (and "_default") to a Linear's bias as well, so key weights there;
+    # 4.x and torchao < 0.15 only look up module names.
+    weight_keys = Version(importlib_version("transformers")) >= Version("5.0.0") and Version(
+        importlib_version("torchao")
+    ) >= Version("0.15.0")
+    suffix = ".weight" if weight_keys else ""
+
     module_to_fqn_dict = {}
     include_embeddings = False
+    default_config = None
     for base_config, filter_fn in configs:
         if filter_fn is None:
-            if "_default" in module_to_fqn_dict:
+            if default_config is not None:
                 raise ValueError("Cannot use multiple default quantization configs")
-            module_to_fqn_dict["_default"] = base_config
+            default_config = base_config
             continue
         for fqn, module in model.named_modules():
             if not filter_fn(module, fqn):
@@ -7271,10 +7279,17 @@ def _merged_torchao_config_for_peft_qat(model):
             name = _merged_name(fqn)
             if not name:
                 continue
-            if name in module_to_fqn_dict:
+            if name + suffix in module_to_fqn_dict:
                 raise ValueError(f"Found multiple quantization configs for {name}")
-            module_to_fqn_dict[name] = base_config
+            module_to_fqn_dict[name + suffix] = base_config
             include_embeddings = include_embeddings or name in embeddings
+    if default_config is not None and not weight_keys:
+        module_to_fqn_dict["_default"] = default_config
+    elif default_config is not None:
+        for fqn, module in model.named_modules():
+            name = _merged_name(fqn)
+            if name and _is_linear(module, fqn) and name + suffix not in module_to_fqn_dict:
+                module_to_fqn_dict[name + suffix] = default_config
 
     kwargs = {}
     if include_embeddings:

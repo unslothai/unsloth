@@ -112,10 +112,43 @@ def test_peft_qat_multi_config_uses_merged_module_names(modules_to_save):
     )
     peft_model = _peft_qat_model(qat_config, modules_to_save = modules_to_save)
     config = _merged_torchao_config_for_peft_qat(peft_model)
-    names = config.quant_type.module_fqn_to_config
+    names = {
+        k.removesuffix(".weight"): v for k, v in config.quant_type.module_fqn_to_config.items()
+    }
     assert set(names) == {"layers.0.q_proj", "layers.0.down_proj", "embed_tokens"}
     assert names["embed_tokens"] is embedding_config
     assert config.include_input_output_embeddings
+
+
+def test_peft_qat_default_config_keys_every_linear_weight():
+    # int8-int4 shape: an Embedding entry plus a default for Linears. transformers 5 would apply a
+    # module or "_default" entry to a Linear's bias, so each weight gets its own key there.
+    from torchao.quantization import IntxWeightOnlyConfig
+    from torchao.quantization.granularity import PerAxis
+
+    from unsloth.models._utils import TorchAOConfig
+
+    embedding_config = IntxWeightOnlyConfig(weight_dtype = torch.int8, granularity = PerAxis(0))
+    linear_config = IntxWeightOnlyConfig(weight_dtype = torch.int8, granularity = PerAxis(0))
+    qat_config = TorchAOConfig(
+        qat_scheme = "int8-int4",
+        base_config_and_filter_fns = [
+            (embedding_config, lambda m, _: isinstance(m, torch.nn.Embedding)),
+            (linear_config, None),
+        ],
+    )
+    names = _merged_torchao_config_for_peft_qat(
+        _peft_qat_model(qat_config)
+    ).quant_type.module_fqn_to_config
+    if "_default" in names:  # transformers 4.x / torchao < 0.15: module names only
+        assert names == {"embed_tokens": embedding_config, "_default": linear_config}
+    else:
+        assert names == {
+            "embed_tokens.weight": embedding_config,
+            "layers.0.q_proj.weight": linear_config,
+            "layers.0.down_proj.weight": linear_config,
+            "layers.0.small.weight": linear_config,
+        }
 
 
 def test_qat_model_accepts_torchao_config(monkeypatch, tmp_path):
