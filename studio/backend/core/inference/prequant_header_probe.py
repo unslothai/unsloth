@@ -3,10 +3,7 @@
 
 """Read a SAFETENSORS pre-quant checkpoint's ``format`` + ``metadata`` without reading its weights.
 
-Only the safetensors container is read: its header is a length-prefixed JSON object, bounded here in
-bytes and structure before it is parsed. A ``.pt`` (pickle) checkpoint is never opened by this module;
-its header reads as None ("unknown"), like any other unreadable one, so the caller keeps today's
-behaviour for it (download, then the loader validates). Readers never raise and fail open (None).
+A ``.pt`` (pickle) is never opened. Readers never raise and fail open (None = unknown).
 """
 
 from __future__ import annotations
@@ -28,10 +25,7 @@ class _ProbeBudgetExceeded(Exception):
     pass
 
 
-# A safetensors header is parsed whole, so it is bounded by bytes AND by structure before ``json.loads``
-# builds anything: 64 MiB of ``[0,0,...]`` is tens of millions of objects. Real hosted pre-quant headers
-# are 0.2 to 2.9 MB with ~0.09 structural bytes per byte (cached Qwen-Image-2.1 INT8 / FP8: 0.23 to 0.33
-# MB, 20k to 23k); 16 MiB and 1M structural bytes leave >= 4x on the largest, and over either is "unknown".
+# Bounded by bytes AND structure before ``json.loads``; real headers are <= 2.9 MB, so >= 4x headroom.
 MAX_SAFETENSORS_HEADER_BYTES = 16 * 1024 * 1024
 MAX_JSON_STRUCTURE = 1_000_000
 

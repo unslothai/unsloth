@@ -2926,10 +2926,7 @@ class DiffusionBackend:
                 cache_dir = hub_cache_dir(),
             )
             if source is None:
-                # The candidate counted on a prequant, but asked with the load's own token (which can read a gated
-                # header the candidate's anonymous probe could not) the loader would refuse it: the dense shards are
-                # what the load opens, so they must be staged. Only when a source really resolves for this scheme:
-                # nothing resolving at all is no evidence either way, and keeps the candidate's verdict as before.
+                # With the load's token the loader would refuse it, so stage dense; only if a source resolves at all.
                 return (
                     resolve_prequant_source(
                         fam,

@@ -39,7 +39,6 @@ _STALE_INT8_EXCLUDES = [
 
 @pytest.fixture(autouse = True)
 def _fresh_probe(monkeypatch):
-    # Tolerant of a build without the probe, so the behavioural tests below run (and fail) there too.
     monkeypatch.delenv(
         getattr(pq, "HEADER_PROBE_ENV", "UNSLOTH_PREQUANT_HEADER_PROBE"), raising = False
     )
@@ -241,7 +240,6 @@ def test_a_stale_hosted_checkpoint_is_refused_before_any_weight_download(hub):
     writer = _write_safetensors
     writer(path, _qwen_int8_meta(_STALE_INT8_EXCLUDES), mb = 16)
     logger = _Lines()
-    # A missing ComfyUI twin ahead of it (404) is walked past, exactly as the resolver does.
     source = _source(repo, "Qwen-Image-2512-INT8-ComfyUI.safetensors", name)
 
     assert _load(source, logger) is None
@@ -306,7 +304,6 @@ def test_an_unreadable_or_foreign_header_is_never_a_refusal(hub):
     _repo_file(hub, repo, "odd-INT8.pt").write_bytes(b"not a zip at all" * 1000)
     from safetensors.torch import save_file
 
-    # A ComfyUI-style file: a valid safetensors without Unsloth's header keys.
     save_file({"a.weight": torch.zeros(4, 4)}, str(_repo_file(hub, repo, "odd-INT8.safetensors")))
     for name in ("odd-INT8.pt", "odd-INT8.safetensors", "absent-INT8.pt"):
         assert pq.hosted_prequant_refusal(_source(repo, name), "int8") is None
@@ -341,11 +338,6 @@ def test_the_kill_switch_turns_the_probe_off(hub, monkeypatch):
     assert hub.server.sent == 0
 
 
-# ── fingerprint across torchao generations ───────────────────────────────────────
-# Stand-ins named like torchao's classes (the fingerprint keys on the class NAME) holding REAL tensors,
-# laid out exactly as each generation stores one symmetric per-row int8 weight (probed on 0.17 / 0.18):
-#   0.17: LinearActivationQuantizedTensor -> AffineQuantizedTensor -> PlainAQTTensorImpl(int_data, bf16 scale [n])
-#   0.18: Int8Tensor(qdata, float32 scale [n, 1], int8 zero_point [n, 1] of zeros)
 class PlainAQTTensorImpl:
     def __init__(self, q, scale):
         self.int_data, self.scale, self.zero_point = q, scale, None
@@ -501,7 +493,6 @@ def test_real_torchao_int8_weight_matches_the_other_generations_layout():
     )
 
 
-# -- planning asks the loader's question: offline means no request, and the requested base is checked --
 
 
 def _counting_hub(hub, monkeypatch):
@@ -554,7 +545,6 @@ def test_an_offline_load_plans_without_any_hub_request(hub, monkeypatch):
     assert offline_load(local_files_only = True) is not None
     assert calls == [] and hub.server.sent == 0
 
-    # The same planner online still reads the header and refuses the stale file.
     assert pq.usable_prequant_source(fam, "int8", base_repo = base) is None
     assert calls and hub.server.sent > 0
     assert hub.downloads == []
@@ -610,7 +600,6 @@ def test_planning_checks_the_requested_base_like_the_loader(hub, recorded, usabl
     fam, base = _hosted_qwen_int8(hub, _current_int8_meta(base_model_id = recorded))
     src = pq.usable_prequant_source(fam, "int8", base_repo = base)
     assert (src is not None) is usable
-    # Planning and the loader agree, so a file planning stages is one the loader then opens.
     hosted = src or pq.resolve_prequant_source(fam, "int8", base_repo = base)
     assert (pq.hosted_prequant_refusal(hosted, "int8", base = base) is None) is usable
     assert hub.downloads == []
@@ -623,7 +612,6 @@ def test_no_requested_base_skips_the_base_check(hub):
     assert pq.hosted_prequant_refusal(src, "int8", base = None) is None
 
 
-# -- a safetensors header is bounded by structure before it is parsed --
 
 
 def _raw_safetensors(
@@ -713,7 +701,6 @@ def test_a_real_sized_safetensors_header_still_reads(tmp_path):
     assert header is not None and header["metadata"]["exclude_name_tokens"] == ["norm"]
 
 
-# -- a cached verdict is revalidated online when the publisher replaced the file in place --
 
 
 def _hf_cache_file(tmp_path, name, commit, etag, writer, meta):
@@ -770,7 +757,6 @@ def test_a_fixed_reupload_replaces_a_stale_cached_verdict_online(hub, replaced):
 
 
 def test_an_unchanged_cached_file_costs_one_head_and_no_range_read(hub, replaced):
-    # A later commit touched other files only: the etag still matches the cached blob.
     replaced.publish(False, "etag-stale", "c0ffee03")
     reason = pq.hosted_prequant_refusal(replaced.source, "int8")
     assert reason is not None and "txt_in" in reason
@@ -795,8 +781,7 @@ def test_an_online_cached_verdict_expires(hub, replaced, monkeypatch):
 
 
 def test_a_cached_name_the_hub_no_longer_serves_moves_on_to_the_next_name(hub, tmp_path, monkeypatch):
-    # The cached first name is stale and has been deleted from the Hub; the download 404s on it and loads
-    # the next name, which is current, so planning must judge that next file, not the obsolete cache.
+    # The stale cached name 404s on the Hub, so planning must judge the next name.
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
 
     repo = "unsloth/Qwen-Image-2512-FP8"
@@ -828,7 +813,6 @@ def test_unsloth_metadata_that_is_not_an_object_is_refused_before_download(hub):
     assert hub.downloads == []
 
 
-# -- the probe's memo and said-set stay bounded --
 
 
 def test_the_probe_memo_and_said_set_are_bounded():
@@ -841,7 +825,6 @@ def test_the_probe_memo_and_said_set_are_bounded():
             pq._said_first(("r", "n", f"reason {i}"))
     assert len(pq._HEADER_PROBE_MEMO) <= cap
     assert len(pq._HEADER_PROBE_SAID) <= cap
-    # Most recent kept, oldest dropped.
     assert (
         "hub",
         "r",
@@ -872,7 +855,6 @@ def test_many_requested_bases_keep_the_memo_bounded(hub, monkeypatch, tmp_path):
     assert len(pq._HEADER_PROBE_MEMO) <= pq._HEADER_PROBE_MAX
 
 
-# -- an unauthenticated 401 is not memoised over the authenticated probe --
 
 
 def test_an_anonymous_401_does_not_answer_for_a_token_probe(hub, monkeypatch):
@@ -898,11 +880,9 @@ def test_an_anonymous_401_does_not_answer_for_a_token_probe(hub, monkeypatch):
     assert pq.hosted_prequant_refusal(source, "int8") is None  # unknown: never a refusal
     reason = pq.hosted_prequant_refusal(source, "int8", hf_token = "hf_secret")
     assert reason is not None and "txt_in" in reason
-    # The key carries a one-way tag, never the token.
     assert all("hf_secret" not in repr(key) for key in pq._HEADER_PROBE_MEMO)
 
 
-# -- a video plan never stages a hosted denoiser its loader would refuse --
 
 
 _WAN_TI2V = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
@@ -938,12 +918,10 @@ def test_a_video_plan_drops_a_hosted_denoiser_its_loader_would_refuse(hub, base_
     assert (denoiser_prequant_sources(fam, "int8", _WAN_TI2V) is not None) is usable
     staged = VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V)
     assert bool(staged) is usable
-    # Refused: the dense shards stay in the plan, and the prefetch has nothing to download.
     assert VideoBackend._denoiser_prequant_covered(fam, "int8", _WAN_TI2V) is usable
     assert hub.downloads == [] and hub.server.full_gets == 0
 
 
-# -- round 4: gated video headers, extension opcodes, the Linear filter, and the zip directory --
 
 
 def _gated_hub(monkeypatch):
@@ -967,9 +945,7 @@ def test_a_gated_stale_video_denoiser_is_refused_with_the_plan_token(hub, monkey
 
     _gated_hub(monkeypatch)
     fam = _wan_int8(hub, "Other/Model")
-    # Anonymous: the header is unreadable, so unknown keeps today's answer.
     assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V)
-    # With the token the plan stages under, the stale header is read and refused.
     assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V, hf_token = "hf_x") == []
     assert not VideoBackend._denoiser_prequant_covered(fam, "int8", _WAN_TI2V, hf_token = "hf_x")
     listed: list = []
@@ -993,7 +969,6 @@ def test_planning_keeps_a_header_with_the_runtime_linear_filter(hub):
 
 
 
-# -- round 5: malformed typed fields, the requested cache root, and the authenticated reachability probe --
 
 
 @pytest.mark.parametrize(

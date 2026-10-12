@@ -1262,8 +1262,7 @@ def declares_nvfp4_checkpoint(model_path: Optional[str]) -> bool:
     return raw.rstrip("/\\").lower().endswith("-nvfp4")
 
 
-# Legacy (read-only): md5 of torchao internal attrs, which differ per version (0.17 ``int_data`` + bf16
-# scale; 0.18 ``qdata`` + scale + int8 ``zero_point``), so v1 only matches the generation that wrote it.
+# Legacy (read-only): hashes torchao internals, so v1 only matches the torchao generation that wrote it.
 FINGERPRINT_ALGO = "md5-packed-v1"
 # Stored under ``canonical_modules``, not ``modules``: older loaders would refuse it as a v1 mismatch.
 CANONICAL_FINGERPRINT_ALGO = "md5-canonical-v2"
@@ -1702,8 +1701,7 @@ def _verify_packed_fingerprint(
 
 HEADER_PROBE_ENV = "UNSLOTH_PREQUANT_HEADER_PROBE"
 _HEADER_PROBE_TTL_S = 600.0
-# Both are keyed partly by request values (base, component, ...), so both are bounded: the memo drops
-# expired entries and then its least recently used ones, the said-set its oldest.
+# Keyed by request values, so bounded: memo drops expired then LRU entries, the said-set its oldest.
 _HEADER_PROBE_MAX = 256
 _HEADER_PROBE_MEMO: dict = {}
 _HEADER_PROBE_SAID: dict = {}
@@ -1846,21 +1844,17 @@ def hosted_prequant_refusal(
         if not names:
             return None
         local = cached_checkpoint_path(source, cache_dir = cache_dir, names = names)
-        # A load scoped by ``scoped_local_files_only`` counts as offline too: its planners reach this through
-        # helpers that never see the flag, and a cache miss must not turn into Hub requests (and a probe timeout).
+        # A ``scoped_local_files_only`` load is offline too: a cache miss must not become Hub requests.
         offline = bool(local_files_only or _LOCAL_FILES_ONLY.get() or hub_offline())
         if local is None and offline:
             return None
         request = (scheme, base or "", min_features, fast_accum, component or "")
-        # Which credentials asked, never the token itself: a gated repo answers an anonymous probe with a 401
-        # (unknown, None), and that None must not stand in for the authenticated probe that can read it.
+        # Keyed by credentials: an anonymous 401 (unknown) must not stand in for the authenticated probe.
         auth = _token_fingerprint(hf_token)
         if local is not None:
             try:
                 st = os.stat(local)
-                # Offline the cached file IS what loads, so its verdict is final. Online the publisher may have
-                # replaced that filename since (a fixed re-upload), which hf_hub_download would fetch, so the
-                # verdict is revalidated against the Hub on the same TTL as a Hub probe.
+                # Offline the cached file is what loads; online it may have been re-uploaded, so revalidate.
                 key = (
                     "local" if offline else "cached",
                     os.path.realpath(local),
@@ -1882,8 +1876,7 @@ def hosted_prequant_refusal(
         from .prequant_header_probe import read_hub_checkpoint_header, read_local_checkpoint_header
 
         header, name = None, None
-        # False once the Hub could not answer at all (401/403, network): nothing is memoised then, so the
-        # next probe (with a token, or once the network is back) asks again.
+        # False when the Hub could not answer (401/403, network): not memoised, so the next probe retries.
         answered = True
         hub_names = names
         from .prequant_safetensors import is_safetensors_checkpoint
@@ -1891,8 +1884,7 @@ def hosted_prequant_refusal(
         # Only a safetensors header is ever read, so a cached pickle is "unknown" and not worth a HEAD.
         if local is not None and not offline and is_safetensors_checkpoint(local):
             if _cached_snapshot_current(source.location, local, hf_token) is False:
-                # Judge the revision the download would fetch, not the superseded one on disk. A name the
-                # Hub no longer serves 404s at download, which moves on to the next name, so probe from there.
+                # Judge what the download would fetch; a name now 404ing falls through to the next one.
                 cached_name = os.path.basename(local)
                 at = names.index(cached_name) if cached_name in names else -1
                 hub_names, local = (names[at:] if at >= 0 else [cached_name]), None
@@ -1925,9 +1917,7 @@ def hosted_prequant_refusal(
                     metadata_only = True,
                 )
             except Exception as exc:  # noqa: BLE001 - a PARSED header the loader cannot validate
-                # The header was read; a malformed typed field (min_features "bad") raises in the
-                # loader's validation the same way, which refuses the file after its download. So
-                # this is a refusal, not "unknown": only an unreadable header stays unknown.
+                # The loader raises on it too, so this is a refusal, not "unknown".
                 ok = False
                 collect.lines.insert(
                     0, f"malformed checkpoint metadata ({type(exc).__name__}: {exc})"[:300]
@@ -2062,9 +2052,7 @@ def usable_prequant_source(
                     return None
             except Exception:  # noqa: BLE001 -- unreadable: the scheme check above already decided
                 pass
-    # Refused metadata = no source, so planning budgets the dense path before any download.
-    # Same base and same fetch rules as the loader's own probe, so a file the loader would refuse for its
-    # base_model_id is not staged under a prequant plan, and an offline load never touches the Hub here.
+    # Refused metadata = no source, judged with the loader's base and fetch rules, so planning stages dense.
     if (
         src.kind == "repo"
         and hosted_prequant_refusal(
