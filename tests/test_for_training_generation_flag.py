@@ -3,8 +3,10 @@
 
 import ast
 import builtins
+import functools
 import inspect
 import os
+import types
 from pathlib import Path
 
 import pytest
@@ -41,6 +43,15 @@ def _helpers_used_by(method, tree):
     return list(wanted.values())
 
 
+def _torch_or_stub():
+    """The fakes below are not nn.Modules, so without torch the lifted code takes its non-Module path."""
+    try:
+        import torch
+    except ImportError:
+        return types.SimpleNamespace(nn = types.SimpleNamespace(Module = type("_NoTorch", (), {})))
+    return torch
+
+
 def _for_training(module, class_name):
     path = Path(__file__).parents[1] / "unsloth" / "models" / module
     tree = ast.parse(path.read_text(encoding = "utf-8"))
@@ -75,9 +86,7 @@ def _for_training(module, class_name):
     for node in shared:
         node.decorator_list = []
     compiled = ast.Module(body = shared + _helpers_used_by(method, tree) + [method], type_ignores = [])
-    namespace = _Namespace(
-        os = os, inspect = inspect, torch = __import__("torch"), functools = __import__("functools")
-    )
+    namespace = _Namespace(os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools)
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
     return namespace["for_training"]
 
