@@ -602,6 +602,15 @@ class ExportOrchestrator:
                     self.is_peft = False
                     self.decision = None
                     raise
+                # A cancel that landed while the old worker was torn down found nothing to kill: stop the new one.
+                if self._cancel_requested:
+                    self._shutdown_subprocess(timeout = 5)
+                    self.current_checkpoint = None
+                    self.is_vision = False
+                    self.is_peft = False
+                    self.decision = None
+                    op_message = OP_CANCELLED
+                    return False, OP_CANCELLED
 
                 try:
                     resp = self._wait_response("loaded")

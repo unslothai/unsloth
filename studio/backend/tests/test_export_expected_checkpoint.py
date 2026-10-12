@@ -114,3 +114,39 @@ def test_every_load_and_export_request_takes_an_op_id(name):
     assert model(save_directory = "out", op_id = "op-1").op_id == "op-1"
     assert models.LoadCheckpointRequest(checkpoint_path = "/x", op_id = "op-2").op_id == "op-2"
     assert models.ExportCancelRequest().expected_op_id is None
+
+
+def test_a_cancel_landing_while_the_old_worker_is_torn_down_stops_the_new_one(
+    orchestrator, monkeypatch
+):
+    # The matched cancel finds no live worker to kill, so the load must not carry on in a fresh one.
+    orch, _sent, _loaded, module = orchestrator
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: False)
+    spawned, shut = [], []
+
+    def shutdown(timeout = 10.0):
+        shut.append(orch._proc)
+        if len(shut) == 1:
+            orch._proc = None
+            assert orch.cancel_export(expected_op_id = "load-1") is False
+        return True
+
+    def spawn(config):
+        orch._proc = _Worker()
+        spawned.append(orch._proc)
+
+    monkeypatch.setattr(orch, "_shutdown_subprocess", shutdown)
+    monkeypatch.setattr(orch, "_spawn_subprocess", spawn)
+    monkeypatch.setattr(
+        orch,
+        "_wait_response",
+        lambda *a, **k: pytest.fail("a cancelled load must not wait for the worker"),
+    )
+    monkeypatch.setattr("utils.hardware.gpu_ids_with_torch_kernels", lambda: [])
+    orch._proc = _Worker()
+    assert orch.load_checkpoint("/ckpt", op_id = "load-1") == (False, module.OP_CANCELLED)
+    assert len(spawned) == 1 and shut[-1] is spawned[0]
+    assert orch.current_checkpoint is None
+    assert orch.get_last_op()["status"] == "cancelled"
