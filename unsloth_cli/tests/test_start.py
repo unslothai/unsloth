@@ -1323,6 +1323,14 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
     assert f"--as-subagent is not supported for {agent}." in result.output
 
 
+@pytest.mark.parametrize("agent", ["openclaw", "hermes", "dsh", "vibe"])
+@pytest.mark.parametrize("flag", ["--auto-route", "--auto-route=true"])
+def test_unsupported_agents_reject_auto_route(agent, flag):
+    result = CliRunner().invoke(start.start_app, [agent, flag])
+    assert result.exit_code == 1
+    assert f"--auto-route is not supported for {agent}." in result.output
+
+
 @pytest.mark.parametrize(
     "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh", "vibe"]
 )

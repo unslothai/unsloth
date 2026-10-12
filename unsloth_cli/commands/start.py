@@ -938,6 +938,7 @@ def _reject_as_subagent(agent: str, args: list) -> None:
     # Reject early, or the flag reaches the agent binary after Unsloth loaded the model.
     if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
+    _reject_auto_route(agent, args)
 
 
 def _reject_auto_route(agent: str, args: list) -> None:
