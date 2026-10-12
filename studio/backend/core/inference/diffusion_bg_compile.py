@@ -32,8 +32,6 @@ _FORCE_EAGER: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _NO_CAPTURE: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_no_capture", default = False
 )
-# Set around a render whose denoiser inputs must not seed the compile (an image-to-video render over a text-to-video
-# load): it still runs eager, it just is not recorded.
 _NO_RECORD: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_no_record", default = False
 )
@@ -62,7 +60,6 @@ def capture_suppressed() -> bool:
 
 @contextlib.contextmanager
 def no_record():
-    """Run eager as usual but keep this render's denoiser inputs out of the background compile's samples."""
     token = _NO_RECORD.set(True)
     try:
         yield

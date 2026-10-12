@@ -145,20 +145,12 @@ class VideoFamily:
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
-    # Image-to-video for a family whose text-to-video pipeline cannot take a picture: the diffusers class that serves a
-    # request carrying a first frame. It is built over the components the loaded pipeline already holds (video_i2v), so
-    # the weights, the quantisation, the offload hooks and the compiled blocks are the very ones text-to-video uses; a
-    # text-only request never sees it. None = no first frame (unless supports_keyframes, which covers it natively).
+    # Diffusers class serving a first-frame request over the loaded pipeline's components (video_i2v).
     i2v_pipeline_class: Optional[str] = None
-    # Pipeline config values that pipeline is constructed with, as (name, value), over the loaded pipeline's own config.
-    # Empty for every current family: Wan2.2-TI2V-5B's expand_timesteps already rides on the loaded WanPipeline config.
     i2v_pipeline_config: tuple[tuple[str, object], ...] = field(default_factory = tuple)
-    # Call kwargs a first-frame render adds, as (identifier regex, ((kwarg, value), ...)). The first row whose regex
-    # matches any of the load's identifiers (variant id, GGUF filename, repo ids) applies; a kwarg the pipeline signature
-    # does not take is dropped. The official reference i2v templates are the reference for the values.
+    # (identifier regex, ((kwarg, value), ...)); first matching row applies.
     i2v_call_kwargs: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = field(default_factory = tuple)
-    # Checkpoints this family's name tokens claim but that it cannot serve, as (identifier regex, refusal). The load is
-    # refused with that message instead of building the wrong pipeline over incompatible weights.
+    # (identifier regex, refusal) for checkpoints the name tokens claim but this family cannot run.
     unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
@@ -177,9 +169,7 @@ def _h3_480p_presets() -> tuple[tuple[int, int], ...]:
     return ((864, 480), (480, 864))  # fastest
 
 
-# LTX-Video 0.9.x (Lightricks/LTX-Video, ltxv-2b / ltxv-13b GGUFs) is a different architecture from LTX-2: the "ltx-video"
-# and "ltxv" tokens the ltx-2 family keeps for GGUF arch names would otherwise build LTX2Pipeline over its weights. An
-# identifier that names LTX-2 itself (ltx-2, ltx-2.3, ltx-video-2) is never refused.
+# LTX-Video 0.9.x matches ltx-2's "ltx-video"/"ltxv" tokens but is another architecture; names of LTX-2 itself pass.
 _LTX_VIDEO_09_RE = (
     r"^(?!.*(?<![a-z0-9])ltx[-_ ]?2(?:$|[-_ /.]))"
     r"(?=.*(?<![a-z0-9])ltx(?:[-_ ]?video|v)(?:$|[-_ /.](?!2(?:$|[-_ /.]|\.\d))))"
@@ -188,9 +178,6 @@ _LTX_VIDEO_09_REFUSAL = (
     "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Studio does not "
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
-# HunyuanVideo-1.5 image-to-video repacks ship their own transformer (image-conditioned input channels) plus a SigLIP
-# image encoder, served by HunyuanVideo15ImageToVideoPipeline. The t2v families' tokens claim them, and loading them
-# through HunyuanVideo15Pipeline would build a text-to-video pipeline over i2v weights.
 _HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])"
 _HV15_I2V_REFUSAL = (
     "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
@@ -321,10 +308,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         # Block RMSNorm (hidden 4096) R0_BLOCK 4096 vs 2048 tie on B200: 3 of 6 cold servers rendered another clip.
         filter_reduction_configs = True,
-        # Same components as LTX2Pipeline; the first frame is encoded through the loaded VAE and held clean.
         i2v_pipeline_class = "LTX2ImageToVideoPipeline",
-        # The conditioning frame is re-compressed as H.264 to look like a video frame. The reference LTX-2.3 i2v template
-        # runs LTXVPreprocess at 18; LTX-2.0's template uses 33, which is also diffusers' default for Gemma3 encoders.
+        # LTX-2.3's reference workflow re-compresses the frame at CRF 18; LTX-2.0 keeps diffusers' 33.
         i2v_call_kwargs = ((r"ltx[-_ ]?2[-_.]?3(?![0-9])", (("image_crf", 18),)),),
         unsupported_checkpoints = ((_LTX_VIDEO_09_RE, _LTX_VIDEO_09_REFUSAL),),
     ),
@@ -367,8 +352,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
-        # TI2V: the same checkpoint takes a first frame. expand_timesteps (on the loaded config) keeps its latent clean
-        # with a zero timestep, as the reference Wan22ImageToVideoLatent node does with its noise mask.
+        # expand_timesteps on the loaded config keeps the first-frame latent clean.
         i2v_pipeline_class = "WanImageToVideoPipeline",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are
@@ -803,20 +787,14 @@ def validate_video_request_shape(
 
 
 def video_family_accepts_first_frame(fam: VideoFamily) -> bool:
-    """Whether a request may carry a first frame: natively (MiniMax-H3's keyframes) or through the
-    family's declared image-to-video pipeline."""
     return bool(getattr(fam, "supports_keyframes", False) or getattr(fam, "i2v_pipeline_class", None))
 
 
 def video_family_accepts_last_frame(fam: VideoFamily) -> bool:
-    """Whether a request may carry a last frame. Only native keyframe conditioning takes one: the
-    declared image-to-video pipelines condition on the first frame alone."""
     return bool(getattr(fam, "supports_keyframes", False))
 
 
 def video_family_uses_i2v_pipeline(fam: VideoFamily) -> bool:
-    """Whether a first-frame request runs through ``i2v_pipeline_class`` rather than the loaded
-    pipeline itself (which is the case for native keyframe families)."""
     return bool(getattr(fam, "i2v_pipeline_class", None)) and not getattr(fam, "supports_keyframes", False)
 
 
@@ -825,12 +803,7 @@ def _identifier_blob(identifiers: tuple[Optional[str], ...]) -> list[str]:
 
 
 def video_checkpoint_refusal(fam: VideoFamily, *identifiers: Optional[str]) -> Optional[str]:
-    """The refusal for a checkpoint ``fam``'s name tokens claim but that it cannot serve, or None.
-
-    ``identifiers`` are the pick's names (repo id, display id, GGUF / single-file name), judged as
-    ONE line so a pattern can look across them: an LTX-2.3 GGUF kept in a folder called
-    ``ltx-video`` names LTX-2 in its filename, and that excuses the folder. Pure; a malformed table
-    row is skipped rather than raised, as on every refusal path here."""
+    """Identifiers are joined into one line so an LTX-2.3 filename excuses an ``ltx-video`` folder."""
     joined = " | ".join(_identifier_blob(identifiers))
     for entry in getattr(fam, "unsupported_checkpoints", ()) or ():
         if not isinstance(entry, (tuple, list)) or len(entry) != 2:
@@ -845,8 +818,6 @@ def video_checkpoint_refusal(fam: VideoFamily, *identifiers: Optional[str]) -> O
 
 
 def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict[str, object]:
-    """Extra pipeline kwargs for a first-frame render: the first ``i2v_call_kwargs`` row whose
-    pattern matches one of the load's identifiers, else none."""
     names = _identifier_blob(identifiers)
     for entry in getattr(fam, "i2v_call_kwargs", ()) or ():
         if not isinstance(entry, (tuple, list)) or len(entry) != 2:
@@ -861,10 +832,7 @@ def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict
 
 
 def first_frame_canvas(fam: VideoFamily, aspect_width: float, aspect_height: float) -> tuple[int, int]:
-    """The resolution preset whose aspect ratio is closest to a first frame's (in log space, so
-    2:1 and 1:2 are equally far from square). The frame is then centre-cropped onto it, as
-    the reference Wan22ImageToVideoLatent / LTX image resize do. Ties keep the table's order, so the
-    family default wins. A family without presets falls back to snapping the source size."""
+    """Nearest-aspect preset in log space; ties keep table order so the family default wins."""
     import math
 
     if aspect_width <= 0 or aspect_height <= 0:
@@ -891,9 +859,6 @@ def validate_video_keyframe_conditioning(
     the checkpoint it is about to SWITCH TO by the same rules the backend applies to the loaded
     one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
     target for a request that was already known to be unservable.
-
-    ``has_keyframes`` is "a first or a last frame is present"; ``has_last_frame`` narrows it so a
-    family that takes only a first frame (a declared image-to-video pipeline) refuses the last one.
     """
     if not (has_keyframes or has_last_frame):
         return

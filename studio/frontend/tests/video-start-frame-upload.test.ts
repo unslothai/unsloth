@@ -5,11 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-// The start / end frame controls follow what the LOADED checkpoint takes, per frame: every
-// image-to-video family (Wan2.2 TI2V 5B, LTX-2, MiniMax-H3) shows the start frame, only MiniMax-H3
-// the end frame, and the request carries each only where it is shown. A control rendered for a
-// family that cannot take it is a 400 on Generate; a payload that sends a hidden frame is worse,
-// because the user cannot see what conditioned the clip.
+// A hidden frame must never be sent: the user cannot see what conditioned the clip.
 
 const page = await readFile(
   new URL("../src/features/video/video-page.tsx", import.meta.url),
@@ -39,14 +35,12 @@ test("each dropzone renders only where its frame is supported", () => {
   const start = controls.indexOf('removeLabel="Remove start frame"');
   const end = controls.indexOf('removeLabel="Remove end frame"');
   assert.ok(start > 0 && end > 0);
-  // The nearest gate above each dropzone.
   const gateBefore = (index: number) => {
     const head = controls.slice(0, index);
     return head.slice(head.lastIndexOf("{supports")).split(" ")[0];
   };
   assert.equal(gateBefore(start), "{supportsFirstFrame");
   assert.equal(gateBefore(end), "{supportsLastFrame");
-  // One column when only a start frame is offered.
   assert.match(
     controls,
     /supportsLastFrame \? "grid grid-cols-2 gap-2" : "grid gap-2"/,

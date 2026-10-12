@@ -6772,12 +6772,10 @@ def test_wan_first_frame_runs_the_i2v_pipeline_over_the_loaded_one(fake_i2v):
     assert type(pipe) is t2v_cls
     assert "image_encoder" not in pipe.__dict__ and "video_processor" not in pipe.__dict__
     assert set(pipe.__dict__) - keys_before <= {"last_kwargs"}
-    # No size sent: the preset nearest the picture's 16:9, and the picture fitted onto it.
     assert (result["width"], result["height"]) == (1280, 704)
     assert call["image_size"] == (1280, 704)
     assert result["conditioning"] == "i2va"
 
-    # A text-only request afterwards runs the text-to-video __call__ with no image.
     _FakeWanI2VPipe.calls.clear()
     backend.generate(prompt = "a car", steps = 2)
     assert _FakeWanI2VPipe.calls == []
@@ -6789,7 +6787,6 @@ def test_wan_portrait_first_frame_takes_the_portrait_preset(fake_i2v):
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     result = backend.generate(prompt = "p", steps = 2, first_frame = _data_url(832, 1104))
     assert (result["width"], result["height"]) == (704, 1280)
-    # An explicit size wins over the picture, which is centre-cropped onto it.
     result = backend.generate(
         prompt = "p", steps = 2, width = 1280, height = 704, first_frame = _data_url(832, 1104)
     )
@@ -6839,7 +6836,6 @@ def test_ltx2_first_frame_keeps_the_pipeline_crf_default(fake_i2v, tmp_path):
     assert pipe.last_kwargs["class"] == "_FakeLTX2I2VPipe"
     assert pipe.last_kwargs["image_crf"] is None
     assert pipe.last_kwargs["image"].size == (512, 768)
-    # Text-to-video is untouched: the LTX2Pipeline fake's own __call__, no image.
     backend.generate(prompt = "p", steps = 2)
     assert "image" not in pipe.last_kwargs and "class" not in pipe.last_kwargs
 

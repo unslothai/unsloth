@@ -1295,8 +1295,6 @@ function VideoGenerator({
     );
   }, [resolutionPresets.length]);
 
-  // MiniMax-H3 takes a start and/or end frame; an image-to-video pipeline (Wan2.2 TI2V 5B, LTX-2) a
-  // start frame only.
   const { first: supportsFirstFrame, last: supportsLastFrame } = keyframeSupport(status);
   const supportsKeyframes = supportsFirstFrame || supportsLastFrame;
   // The keyframe the canvas follows: the first when there is one, else the last, matching the backend.

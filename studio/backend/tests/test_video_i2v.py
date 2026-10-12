@@ -42,7 +42,6 @@ def test_declared_families_take_a_first_frame_through_their_i2v_pipeline(name, i
     assert fam.i2v_pipeline_class == i2v_class
     assert video_family_accepts_first_frame(fam)
     assert video_family_uses_i2v_pipeline(fam)
-    # The declared pipelines condition on the first frame only.
     assert not video_family_accepts_last_frame(fam)
 
 
@@ -86,7 +85,6 @@ def test_last_frame_refused_by_first_frame_only_families():
             validate_video_keyframe_conditioning(
                 _fam(name), None, has_keyframes = True, has_last_frame = True
             )
-    # H3's keyframe partition keeps taking both.
     validate_video_keyframe_conditioning(
         _fam("minimax-h3"), "fl2va", has_keyframes = True, has_last_frame = True
     )
@@ -306,7 +304,6 @@ def test_class_swap_runs_i2v_over_the_same_modules_and_restores_t2v():
     assert pipe._unsloth_written_during_i2v == 1
     for key in ("transformer", "vae", "scheduler"):
         assert pipe.__dict__[key] is before_dict[key]
-    # No module was moved, copied or cast.
     assert {
         n: (p.data_ptr(), p.dtype, p.device) for n, p in pipe.transformer.named_parameters()
     } == params_before
@@ -314,7 +311,6 @@ def test_class_swap_runs_i2v_over_the_same_modules_and_restores_t2v():
     # Text-to-video after an image-to-video render is bit-identical to before it.
     t2v_b = _render(torch, pipe)
     assert (t2v_a == t2v_b).all()
-    # And the first frame actually conditioned the i2v clip.
     assert not (i2v_out == t2v_a).all()
 
 
@@ -362,7 +358,6 @@ def test_status_schema_carries_the_per_frame_support_and_the_canvas_rule():
 
 
 def test_request_last_frame_route_check_names_first_frame_only():
-    # The route judges a switch target with the same rule the backend applies to the loaded model.
     fam = _fam("wan2.2-ti2v-5b")
     with pytest.raises(ValueError, match = "first frame only"):
         validate_video_keyframe_conditioning(fam, None, has_keyframes = True, has_last_frame = True)

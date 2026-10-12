@@ -73,10 +73,8 @@ const ltx2: VideoGenerationDefaults = {
 };
 
 test("an image-to-video family previews the preset nearest the start frame", () => {
-  // The pairs the backend's first_frame_canvas test pins.
   assert.deepEqual(matchedCanvas(1920, 1080, ti2v), [1280, 704]);
   assert.deepEqual(matchedCanvas(832, 1104, ti2v), [704, 1280]);
-  // A tie keeps the family default.
   assert.deepEqual(matchedCanvas(512, 512, ti2v), [1280, 704]);
   assert.deepEqual(matchedCanvas(1920, 1080, ltx2), [1216, 704]);
   assert.deepEqual(matchedCanvas(3, 2, ltx2), [768, 512]);
@@ -101,7 +99,6 @@ test("keyframe support: per-frame fields win, the legacy flag covers old backend
     }),
     { first: true, last: false },
   );
-  // MiniMax-H3 on a new backend.
   assert.deepEqual(
     keyframeSupport({ supports_keyframes: true, supports_first_frame: true, supports_last_frame: true }),
     { first: true, last: true },
@@ -109,7 +106,6 @@ test("keyframe support: per-frame fields win, the legacy flag covers old backend
   // An older backend only reports supports_keyframes (MiniMax-H3's pair).
   assert.deepEqual(keyframeSupport({ supports_keyframes: true }), { first: true, last: true });
   assert.deepEqual(keyframeSupport({ supports_keyframes: false }), { first: false, last: false });
-  // HunyuanVideo-1.5 / Wan2.2 A14B, and nothing loaded.
   assert.deepEqual(
     keyframeSupport({ supports_keyframes: false, supports_first_frame: false, supports_last_frame: false }),
     { first: false, last: false },

@@ -6141,9 +6141,7 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
-    # Keyframe conditioning (MiniMax-H3, and the first frame of every family that declares an
-    # image-to-video pipeline). Bounded like the image backend's init_image so one request cannot
-    # buffer a multi-GB payload; ~32 MiB fits a full 4096px source.
+    # Bounded so one request cannot buffer a multi-GB payload; ~32 MiB fits a 4096px source.
     first_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,

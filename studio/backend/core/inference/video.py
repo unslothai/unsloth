@@ -2699,8 +2699,7 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
-        # A checkpoint the family's name tokens claim but that it cannot run (LTX-Video 0.9.x under ltx-2, a
-        # HunyuanVideo-1.5 i2v repack under the t2v family). Network-free, so it is refused before any eviction.
+        # Network-free, so refused before any eviction.
         refusal = video_checkpoint_refusal(fam, repo_id, display_repo_id, gguf_filename)
         if refusal:
             raise ValueError(refusal)
@@ -9050,8 +9049,7 @@ class VideoBackend:
             bg = getattr(state, "bg_compile", None)
             bg_eager = bg is not None and bg.pending()
             bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
-            # Holds the image-to-video class swap (video_i2v) for a first-frame render; closed in the finally below so
-            # the loaded pipeline is text-to-video again whether the render returns, is cancelled or fails.
+            # Closed in the finally so the pipeline is text-to-video again on return, cancel or failure.
             i2v_swap = contextlib.ExitStack()
             try:
                 # FIRST, before any device object exists. begin_generate runs this on a fresh daemon thread, so until it
@@ -9329,7 +9327,6 @@ class VideoBackend:
                 i2v_extra: dict[str, Any] = {}
                 i2v_active = first_pil is not None and video_family_uses_i2v_pipeline(fam)
                 if i2v_active:
-                    # Same object, same components, image-to-video __call__ (video_i2v): nothing loads or moves.
                     from .video_i2v import first_frame_pipeline
 
                     pipe = i2v_swap.enter_context(
@@ -9348,9 +9345,7 @@ class VideoBackend:
                     )
                     request_shape["pipeline"] = type(pipe).__name__
                     if bg_eager:
-                        # A pending background compile traces the shapes its recorded render fed the denoiser. LTX-2's
-                        # image-to-video passes a per-token timestep where text-to-video passes one per sample, so an
-                        # image-to-video render must not be the one it learns from: it runs eager, unrecorded.
+                        # LTX-2 i2v passes a per-token timestep (t2v: per sample), so it must not seed the compile.
                         i2v_swap.enter_context(bg_compile.no_record())
                 call_params = inspect.signature(pipe.__call__).parameters
                 kwargs: dict[str, Any] = {
@@ -9801,12 +9796,9 @@ class VideoBackend:
             from .diffusion import decode_b64_image
             first = decode_b64_image(first_frame, mode = "RGB") if first_frame else None
             last = decode_b64_image(last_frame, mode = "RGB") if last_frame else None
-        # A declared image-to-video pipeline (Wan2.2-TI2V-5B, LTX-2): the canvas is the resolution preset nearest the
-        # picture's aspect, and the picture is centre-cropped onto it, as the reference i2v templates resize it (Wan22Image-
-        # ToVideoLatent / LTX ResizeImageMaskNode, "center"). MiniMax-H3 keeps its own canvas and fit rules below.
+        # i2v pipelines centre-crop onto the nearest-aspect preset, as the reference workflow does.
         i2v_pipeline = video_family_uses_i2v_pipeline(fam)
         if first is not None and i2v_pipeline and not _i2v_pipeline_available(fam.i2v_pipeline_class):
-            # Refused here, on the request, rather than after it reserved the backend and reached the render.
             raise ValueError(
                 f"{fam.name} needs diffusers' {fam.i2v_pipeline_class} for a first frame, which this "
                 "install does not have. Update Unsloth to get a newer diffusers."
@@ -10604,8 +10596,7 @@ class VideoBackend:
             "supports_cfg": fam.supports_cfg,
             # Expose only conditioning supported by the resident partition.
             "supports_keyframes": fam.supports_keyframes and state.h3_task != H3_TASK_REFERENCES,
-            # Per keyframe, for every family: a declared image-to-video pipeline takes a first frame only, while
-            # supports_keyframes above stays MiniMax-H3's first-and/or-last contract for older frontends.
+            # supports_keyframes above stays MiniMax-H3's contract for older frontends.
             "supports_first_frame": video_family_accepts_first_frame(fam)
             and state.h3_task != H3_TASK_REFERENCES
             and (
@@ -10629,8 +10620,6 @@ class VideoBackend:
                 # Let the frontend preview the backend-owned "match source" rule.
                 "canvas_short_edge": H3_CANVAS_SHORT_EDGE if fam.supports_keyframes else None,
                 "canvas_max_pixels": H3_CANVAS_MAX_PIXELS if fam.supports_keyframes else None,
-                # A declared image-to-video pipeline instead takes the resolution preset nearest the first frame's
-                # aspect (first_frame_canvas); the frontend previews it from resolution_presets.
                 "canvas_from_presets": video_family_uses_i2v_pipeline(fam),
                 "flow_shift": fam.default_flow_shift,
                 "audio_flow_shift": fam.default_audio_flow_shift,
