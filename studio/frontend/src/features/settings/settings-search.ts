@@ -140,6 +140,10 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.groups.menu.title",
   ],
   browser: [
+    "browser.agentSettings.title",
+    "browser.agentSettings.enable",
+    "browser.agentSettings.history",
+    "browser.agentSettings.permissionsTitle",
     "browser.linksTitle",
     "browser.openLinksSetting",
     "browser.openFilesSetting",

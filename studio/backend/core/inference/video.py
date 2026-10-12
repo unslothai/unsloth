@@ -270,6 +270,8 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         # Wan2.2 official diffusers base repos: safetensors-only, no remote code.
         "wan-ai/wan2.2-ti2v-5b-diffusers",
         "wan-ai/wan2.2-t2v-a14b-diffusers",
+        "wan-ai/wan2.1-t2v-1.3b-diffusers",
+        "wan-ai/wan2.1-t2v-14b-diffusers",
         # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo has no model_index.json)
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
@@ -1092,12 +1094,26 @@ def _resolve_load_family(
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
-    # A local file's header outranks its name (the name still picks 480p vs 720p).
-    from .diffusion_content import local_pick_file, resolve_family_with_content
+    from .diffusion_content import SAME_ARCH_VARIANTS, local_pick_file, resolve_family_with_content
 
+    # Same layout, different model: the picked file's own name outranks its repo or folder (a Wan2.1 14B GGUF in a
+    # Wan2.2 A14B repo, or the reverse), local or remote.
+    if fam is not None and gguf_filename:
+        named = detect_video_family(os.path.basename(gguf_filename))
+        if named is not None and named.name != fam.name and (
+            named.name in SAME_ARCH_VARIANTS.get(fam.name, ())
+            or fam.name in SAME_ARCH_VARIANTS.get(named.name, ())
+            # A remote pick has no header pass, so a file naming another Wan model picks the base config.
+            or (named.name.startswith("wan") and fam.name.startswith("wan"))
+        ):
+            fam = named
+    # A local file's header outranks its name (the name still picks 480p vs 720p).
     path = local_pick_file(repo_id, gguf_filename)
     if path:
-        name, _ = resolve_family_with_content(fam.name if fam else None, path, "video")
+        file_fam = detect_video_family(os.path.basename(path))
+        name, _ = resolve_family_with_content(
+            fam.name if fam else None, path, "video", file_family = file_fam.name if file_fam else None
+        )
         if name is None:
             return None
         if fam is None or fam.name != name:
@@ -2709,6 +2725,17 @@ class VideoBackend:
         fam = _detect_load_family(
             repo_id, gguf_filename, family_override, display_repo_id, model_kind
         )
+        # Every pick name is judged, not just an unresolved one: a T2V repo id can hold an I2V / VACE file.
+        # A family override names the family for an opaque pick; it cannot make refused weights runnable.
+        from .video_families import unsupported_video_checkpoint_reason
+        reason = unsupported_video_checkpoint_reason(
+            display_repo_id,
+            repo_id,
+            gguf_filename,
+            wan21_checkpoint = (gguf_filename or repo_id) if fam and fam.name.startswith("wan2.1") else None,
+        )
+        if reason:
+            raise ValueError(reason)
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "

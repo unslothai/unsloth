@@ -240,3 +240,40 @@ def test_download_plan_drops_the_base_encoder_a_comfy_file_replaces(tmp_path, mo
         memory_verdict = False,
     )
     assert "text_encoder" in seen["skip_te_components"]
+
+
+def test_the_mlx_plan_keeps_the_base_encoder_it_always_opens(tmp_path, monkeypatch):
+    """The MLX loader reads the base repo's text_encoder/, so its plan never trades it for a single file."""
+    from core.inference import diffusion
+    from core.inference import mlx_diffusion_backend as mb
+
+    models = tmp_path / "ComfyUI" / "models"
+    for name in ("diffusion_models", "text_encoders", "vae", "loras"):
+        (models / name).mkdir(parents = True, exist_ok = True)
+    (models / "diffusion_models" / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"x")
+    te = _encoder_file(models / "text_encoders" / "qwen_3_4b.safetensors")
+    base = _base(tmp_path)
+    seen = []
+
+    def _estimate(*args, **kwargs):
+        seen.append(tuple(kwargs["skip_te_components"]))
+        return 0, []
+
+    monkeypatch.setattr(
+        diffusion.DiffusionBackend, "_estimate_download_bytes", staticmethod(_estimate)
+    )
+    monkeypatch.setattr(diffusion, "_resolve_base_repo", lambda *a, **k: base)
+    backend = diffusion.DiffusionBackend.__new__(diffusion.DiffusionBackend)
+    monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: backend)
+    pick = dict(
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        model_kind = "gguf",
+        allow_device_probe = False,
+    )
+    backend.download_plan(str(models / "diffusion_models"), memory_verdict = False, **pick)
+    mb.MlxDiffusionBackend().download_plan(str(models / "diffusion_models"), **pick)
+    mb.MlxDiffusionBackend().download_plan(
+        str(models / "diffusion_models"), text_encoder_files = [te], **pick
+    )
+    assert "text_encoder" in seen[0]
+    assert all("text_encoder" not in skip for skip in seen[1:])

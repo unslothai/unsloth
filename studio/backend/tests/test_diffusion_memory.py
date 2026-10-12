@@ -1447,6 +1447,12 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
         "ltx-2": {16, 24, 32, 64, 96},
         "wan2.2-ti2v-5b": {16, 24, 32},
         "wan2.2-t2v-a14b": {16, 24, 32, 64, 96},
+        # 14.7 GB (1.3B DiT + UMT5-XXL + the Wan2.1 VAE): plus overhead it just misses the ~14.4 GiB
+        # budget of a 24 GiB Mac, and fits from 32 GiB up.
+        "wan2.1-t2v-1.3b": {16, 24},
+        # 40.5 GB (one 14B DiT, same encoder + VAE): plus overhead it just misses the ~38.4 GiB budget
+        # at 64 GiB, and fits at 96 GiB and above (unlike the two-expert A14B at 69.1 GB).
+        "wan2.1-t2v-14b": {16, 24, 32, 64},
         "hunyuanvideo-1.5": {16, 24, 32},
         "hunyuanvideo-1.5-720p": {16, 24, 32},
     }
