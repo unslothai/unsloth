@@ -139,6 +139,7 @@ _remove_agent_instruction_files() {
 _FRONTEND_BG_PID=""
 _FRONTEND_BG_WATCH=""
 _FRONTEND_BG_LOG=""
+_FRONTEND_BG_STAMP=""
 
 # Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
 # 7 GB RSS, so ask for 4 CPUs and 12 GiB usable (cgroup-aware); an unreadable probe = serial.
@@ -171,9 +172,14 @@ _frontend_build_cleanup() {
 }
 
 # TERM the build's group, KILL it after 5 s (npm ci ignores TERM; KILL skips the build's EXIT
-# trap, hence the cleanup). A no-op once the group is gone.
+# trap, hence the cleanup). A no-op once the group is gone, or once its leader's start time no
+# longer matches: a finished build's id can be reused by an unrelated group.
 _frontend_bg_stop() {
     local _n=0
+    if [ -n "$_FRONTEND_BG_STAMP" ] &&
+        [ "$(ps -o lstart= -p "$1" 2>/dev/null)" != "$_FRONTEND_BG_STAMP" ]; then
+        return 0
+    fi
     kill -TERM -- "-$1" 2>/dev/null || return 0
     while [ "$_n" -lt 5 ] && kill -0 -- "-$1" 2>/dev/null; do
         sleep 1
@@ -198,6 +204,8 @@ _frontend_bg_start() {
     ) </dev/null >"$_FRONTEND_BG_LOG" 2>&1 &
     _FRONTEND_BG_PID=$!
     [ "$_monitor" = on ] || set +m
+    _FRONTEND_BG_STAMP=$(ps -o lstart= -p "$_FRONTEND_BG_PID" 2>/dev/null) || :
+    [ -n "$_FRONTEND_BG_STAMP" ] || kill -0 "$_FRONTEND_BG_PID" 2>/dev/null || _FRONTEND_BG_STAMP=exited
     (
         trap '' HUP INT TERM
         while kill -0 "$$" 2>/dev/null; do sleep 1; done

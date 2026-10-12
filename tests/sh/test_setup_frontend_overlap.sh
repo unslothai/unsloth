@@ -20,7 +20,7 @@ FNS="setup_fail _remove_agent_instruction_files _frontend_can_build_in_backgroun
     _frontend_build_cleanup _frontend_bg_stop _frontend_bg_start _frontend_bg_cancel
     _frontend_bg_join _frontend_bg_reap"
 {
-    printf '_FRONTEND_BG_PID=""\n_FRONTEND_BG_WATCH=""\n_FRONTEND_BG_LOG=""\n'
+    printf '_FRONTEND_BG_PID=""\n_FRONTEND_BG_WATCH=""\n_FRONTEND_BG_LOG=""\n_FRONTEND_BG_STAMP=""\n'
     for fn in $FNS; do
         sed -n "/^$fn() {/,/^}/p" "$SETUP_SH"
     done
@@ -165,6 +165,18 @@ os.killpg(p.pid, signal.SIGINT)
 p.wait()
 PY
 check_aftermath "Ctrl-C"
+
+echo "== a finished build's id reused by another group is never signalled =="
+python3 -c 'import subprocess as s; print(s.Popen(["sleep", "60"], start_new_session=True, stdout=s.DEVNULL, stderr=s.DEVNULL).pid)' > "$WORK/other"
+other=$(cat "$WORK/other")
+sleep 1.2
+out=$(run_case "
+_build_frontend() { sleep 1; }
+_frontend_bg_start
+_frontend_bg_join
+# The stamp belongs to the finished build; pretend its id came back as another group.
+_frontend_bg_stop $other")
+if kill -0 "$other" 2>/dev/null; then ok "unrelated process group left alone"; kill "$other"; else bad "unrelated process group $other was killed"; fi
 
 echo "== background build cleans agent guide files out of node_modules =="
 touch "$FE/node_modules/pkg/AGENTS.md"
