@@ -124,6 +124,11 @@ const state: any = {
 const useChatRuntimeStore: any = { getState: () => state };
 const useBrowserAgentStore: any = { getState: () => state.browserAgent };
 
+// Browser use off: the count must match a turn that offers no browser tools.
+function browserAgentToolsForTurn(): string[] {
+  return [];
+}
+
 export function seed(patch: any): void {
   Object.assign(state, patch);
 }

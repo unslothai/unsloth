@@ -374,7 +374,16 @@ for check in "$@"; do
       if [ ! -d "$root" ]; then
         fail "macho requested but $root does not exist"
       else
-        # The venv's base interpreter and uv live outside $root, so check them separately.
+        # SCOPE, part 2: the two payloads the install RUNS ON can live outside $root (a custom
+        # UNSLOTH_STUDIO_HOME keeps both under it, #11327). `uv
+        # venv` links <venv>/bin/python at its base interpreter and the find below has no
+        # -L, so the interpreter that ran every step is invisible to it; the uv that
+        # fetched it lands in $HOME/.local/bin. Both are what Rosetta 2 hides: an x86_64
+        # one runs green here and dies on the factory-fresh Mac this stands in for.
+        # -L follows that symlink; -maxdepth keeps this a bin/ lookup, not a second walk
+        # of site-packages through the venv's lib64 link -- depth 4 covers
+        # <root>/unsloth_studio, the .venv_t5_* sidecars and <root>/studio/unsloth_studio.
+        # In a variable so it can be counted separately from uv.
         base_py="$(find -L "$root" -maxdepth 4 -type f -path '*/bin/python' 2>/dev/null)"
         _macho_targets() {
           find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null
@@ -383,13 +392,14 @@ for check in "$@"; do
             [ -n "$_uv" ] && [ -f "$_uv" ] && printf '%s\n' "$_uv"
           done
         }
-        n=0 nexe=0 nout=0 nbase=0 bad_arch="" unsigned="" broken=""
+        n=0 nexe=0 nuv=0 nbase=0 bad_arch="" unsigned="" broken=""
         while IFS= read -r f; do
           # -L: plain `file` reports the symlink, not the Mach-O.
           desc="$(file -Lb "$f" 2>/dev/null || true)"
           case "$desc" in *Mach-O*) ;; *) continue ;; esac
           n=$((n + 1))
-          case "$f" in "$root"/*) ;; *) nout=$((nout + 1)) ;; esac
+          case "${f##*/}" in uv) nuv=$((nuv + 1)) ;; esac
+          # Classified, not merely found: an entry `file` could not read is invisible here.
           case "
 $base_py
 " in *"
@@ -425,8 +435,10 @@ $f
           fail "no Mach-O found under $root; the arch/signature assertion proved nothing"
         elif [ "$nbase" = "0" ]; then
           fail "no */bin/python under $root was classified as Mach-O, so the venv's base interpreter went unchecked (found: ${base_py:-none})"
-        elif [ "$nout" = "0" ]; then
-          fail "no Mach-O outside $root was scanned, so uv and the venv's base interpreter escaped the check"
+        elif [ "$nuv" = "0" ]; then
+          # uv is in $HOME/.local/bin, on PATH, or under $root for a custom home: none
+          # classified means uv's arch went unproven.
+          fail "no uv was classified as Mach-O, so uv's arch went unproven"
         elif [ -n "$bad_arch" ]; then
           fail "Mach-O is not $want, so it runs here only under Rosetta 2, which a fresh Mac does not have:$bad_arch"
         elif [ -n "$unsigned" ]; then
