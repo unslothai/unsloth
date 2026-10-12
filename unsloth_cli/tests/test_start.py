@@ -4987,9 +4987,36 @@ def test_resolve_model_reloading_a_kept_model_does_not_announce_the_primary(monk
     out = capsys.readouterr().out
     assert "Switching" not in out
     assert "Qwen3-4B" not in out
+    assert "Applying new load settings to unsloth/Qwen3-1.7B-GGUF." in out
     assert payloads == [
         {"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 16384}
     ]
+
+
+def test_resolve_model_kept_model_at_the_same_settings_does_not_warn(monkeypatch, capsys):
+    models = [
+        {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
+        {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
+    ]
+
+    def status(url):
+        return {**_kept_model_status(url), "requested_context_length": 16384}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: status(url))
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda *a, **k: {"status": "already_loaded", "model": "unsloth/Qwen3-1.7B-GGUF"},
+    )
+
+    start._resolve_model(
+        BASE, "key", "unsloth/Qwen3-1.7B-GGUF", start.LoadOptions(max_seq_length = 16384)
+    )
+
+    out = capsys.readouterr().out
+    assert "unloads" not in out
+    assert "Reusing loaded model: unsloth/Qwen3-1.7B-GGUF" in out
 
 
 def test_resolve_model_reload_option_keeps_the_running_quant(monkeypatch):

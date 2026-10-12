@@ -2277,6 +2277,15 @@ def _resolve_model(
                 )
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
+        elif active_id and loaded_match is not None:
+            try:
+                status = _model_status(base, key, active_id)
+            except Exception:
+                status = {}
+            if _load_settings_differ(status, load, overrides):
+                typer.echo(f"Applying new load settings to {active_id}.")
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
         elif not active_id and _inference_status(base, key).get("yours") is False:
             typer.echo(
                 "Switching the Unsloth server from another account's model to "
