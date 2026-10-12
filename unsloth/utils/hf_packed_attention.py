@@ -161,8 +161,7 @@ _EFFICIENT_DEVICES = {}
 
 
 def _efficient_varlen_takes(query, window) -> bool:
-    """SDPA's memory-efficient kernel, given cu_seqlens: the kernel SDPA itself runs over the dense mask
-    at these widths, one launch for the row and no T x T bias. Off under any policy that asks for SDPA."""
+    """SDPA's memory-efficient kernel over cu_seqlens: no T x T bias. Off under any policy asking for SDPA."""
     if os.environ.get(_EFFICIENT_ENV, "1").lower() in ("0", "false", "no", "off"):
         return False
     if not _EFFICIENT_VARLEN:
@@ -386,8 +385,7 @@ def _sdpa_packed_varlen(
             # flash-attn's ROCm backend lists sliding windows as work in progress: windowed rows keep sdpa there.
             if window is not None and torch.version.hip is not None:
                 backend = None
-            # Flash-2 varlen backward faults past int32 indexing. Keyed on training / grad mode, not
-            # requires_grad, so a reentrant checkpoint's no_grad forward and its recompute agree.
+            # Flash-2 varlen backward faults past int32; keyed on grad mode so checkpoint recompute agrees.
             if (
                 not _VARLEN_INT32_GUARD_DISABLED
                 and (getattr(module, "training", False) or torch.is_grad_enabled())
@@ -396,7 +394,7 @@ def _sdpa_packed_varlen(
                 )
             ):
                 torch_varlen, backend, refused = None, None, False
-            # The refused shape with no flash-attn / xformers either: the efficient kernel, not a dense mask.
+            # Refused shape and no flash-attn / xformers: the efficient kernel.
             if refused and backend not in (FLASH_VARLEN, XFORMERS):
                 efficient = _efficient_varlen_takes(query, window)
         if efficient or torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
