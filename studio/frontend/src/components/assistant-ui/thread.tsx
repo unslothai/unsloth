@@ -7460,13 +7460,14 @@ const GeneratingIndicator: FC = () => {
     return null;
   }
   // The plain copy hides while the sweep runs: in light mode the sweep is a faded band, which an
-  // opaque copy underneath would cover. Reduced motion keeps the plain copy instead.
+  // opaque copy underneath would cover. Reduced motion keeps the plain copy instead. One 1.5 s pass
+  // every 5 s (duration + repeat delay, in ms).
   return (
     <span className="relative inline-block whitespace-nowrap text-sm text-muted-foreground">
       <span className="motion-safe:text-transparent">Generating...</span>
       <span
         aria-hidden={true}
-        className="shimmer pointer-events-none absolute inset-0 motion-reduce:hidden"
+        className="shimmer pointer-events-none absolute inset-0 [--shimmer-duration:1500] [--shimmer-repeat-delay:3500] [--shimmer-spread:3ch] motion-reduce:hidden"
       >
         Generating...
       </span>
