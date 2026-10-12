@@ -50,6 +50,18 @@ export const hi = {
     removeFromMessage: "मैसेज से हटाएँ",
   },
   browser: {
+    agent: {
+      working: "Unsloth इस टैब में ब्राउज़ कर रहा है",
+      stop: "रोकें",
+      allow: "अनुमति दें",
+      deny: "अस्वीकार करें",
+      ask: {
+        open: "क्या Unsloth को {host} खोलने दें?",
+        signIn: "क्या Unsloth को {host} पर साइन इन करने दें?",
+        submit: "क्या Unsloth को {host} पर यह फ़ॉर्म भेजने दें?",
+        click: "क्या Unsloth को {host} पर “{name}” पर क्लिक करने दें?",
+      },
+    },
     title: "ब्राउज़र",
     tabs: "ब्राउज़र टैब",
     newTab: "नया टैब",

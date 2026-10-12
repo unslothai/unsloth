@@ -50,6 +50,18 @@ export const ko = {
     removeFromMessage: "메시지에서 제거",
   },
   browser: {
+    agent: {
+      working: "Unsloth가 이 탭에서 탐색 중입니다",
+      stop: "중지",
+      allow: "허용",
+      deny: "거부",
+      ask: {
+        open: "Unsloth가 {host}을(를) 열도록 허용할까요?",
+        signIn: "Unsloth가 {host}에 로그인하도록 허용할까요?",
+        submit: "Unsloth가 {host}에서 이 양식을 제출하도록 허용할까요?",
+        click: "Unsloth가 {host}에서 “{name}”을(를) 클릭하도록 허용할까요?",
+      },
+    },
     title: "브라우저",
     tabs: "브라우저 탭",
     newTab: "새 탭",

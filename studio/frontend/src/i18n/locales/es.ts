@@ -50,6 +50,18 @@ export const es = {
     removeFromMessage: "Quitar del mensaje",
   },
   browser: {
+    agent: {
+      working: "Unsloth está navegando en esta pestaña",
+      stop: "Detener",
+      allow: "Permitir",
+      deny: "Denegar",
+      ask: {
+        open: "¿Permitir que Unsloth abra {host}?",
+        signIn: "¿Permitir que Unsloth inicie sesión en {host}?",
+        submit: "¿Permitir que Unsloth envíe este formulario en {host}?",
+        click: "¿Permitir que Unsloth haga clic en «{name}» en {host}?",
+      },
+    },
     title: "Navegador",
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",

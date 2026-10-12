@@ -3728,6 +3728,7 @@ from models.inference import (
     ChatCompletion,
     ToolApprovalStatusRequest,
     ToolConfirmRequest,
+    BrowserActionResultRequest,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -6475,6 +6476,17 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    if tools_on and payload.enabled_tools is not None:
+        # Never in the default catalog: only a chat tab with the browser panel can run them, and it
+        # asks by name.
+        from core.inference.browser_agent import BROWSER_SCREENSHOT, BROWSER_TOOLS
+
+        tools += [
+            tool
+            for tool in BROWSER_TOOLS
+            if tool["function"]["name"] in payload.enabled_tools
+            and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
+        ]
     tools = [
         tool
         for tool in tools
@@ -21616,6 +21628,21 @@ async def confirm_tool_call(
     )
     if not matched:
         raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
+    return {"resolved": True}
+
+
+@studio_router.post("/browser-action-result")
+async def browser_action_result(
+    body: BrowserActionResultRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    from state.browser_actions import resolve_browser_action
+    from utils.account_context import current_account_id
+
+    if not resolve_browser_action(
+        body.action_id, body.result, body.session_id, current_account_id()
+    ):
+        raise HTTPException(status_code = 404, detail = "No pending browser action")
     return {"resolved": True}
 
 

@@ -49,6 +49,18 @@ export const it = {
     removeFromMessage: "Rimuovi dal messaggio",
   },
   browser: {
+    agent: {
+      working: "Unsloth sta navigando in questa scheda",
+      stop: "Interrompi",
+      allow: "Consenti",
+      deny: "Nega",
+      ask: {
+        open: "Consentire a Unsloth di aprire {host}?",
+        signIn: "Consentire a Unsloth di accedere a {host}?",
+        submit: "Consentire a Unsloth di inviare questo modulo su {host}?",
+        click: "Consentire a Unsloth di fare clic su «{name}» su {host}?",
+      },
+    },
     title: "Browser",
     tabs: "Schede del browser",
     newTab: "Nuova scheda",

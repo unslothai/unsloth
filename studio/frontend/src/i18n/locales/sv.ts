@@ -48,6 +48,18 @@ export const sv = {
     removeFromMessage: "Ta bort från meddelandet",
   },
   browser: {
+    agent: {
+      working: "Unsloth surfar i den här fliken",
+      stop: "Stoppa",
+      allow: "Tillåt",
+      deny: "Neka",
+      ask: {
+        open: "Låta Unsloth öppna {host}?",
+        signIn: "Låta Unsloth logga in på {host}?",
+        submit: "Låta Unsloth skicka det här formuläret på {host}?",
+        click: "Låta Unsloth klicka på ”{name}” på {host}?",
+      },
+    },
     title: "Webbläsare",
     tabs: "Webbläsarflikar",
     newTab: "Ny flik",

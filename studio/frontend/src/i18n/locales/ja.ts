@@ -51,6 +51,18 @@ export const ja = {
     removeFromMessage: "メッセージから削除",
   },
   browser: {
+    agent: {
+      working: "Unsloth がこのタブで操作しています",
+      stop: "停止",
+      allow: "許可",
+      deny: "拒否",
+      ask: {
+        open: "Unsloth に {host} を開かせますか？",
+        signIn: "Unsloth に {host} へサインインさせますか？",
+        submit: "Unsloth に {host} でこのフォームを送信させますか？",
+        click: "Unsloth に {host} の「{name}」をクリックさせますか？",
+      },
+    },
     title: "ブラウザ",
     tabs: "ブラウザのタブ",
     newTab: "新しいタブ",

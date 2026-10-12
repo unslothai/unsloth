@@ -50,6 +50,18 @@ export const zhCN = {
     removeFromMessage: "从消息中移除",
   },
   browser: {
+    agent: {
+      working: "Unsloth 正在此标签页中浏览",
+      stop: "停止",
+      allow: "允许",
+      deny: "拒绝",
+      ask: {
+        open: "允许 Unsloth 打开 {host}？",
+        signIn: "允许 Unsloth 登录 {host}？",
+        submit: "允许 Unsloth 在 {host} 上提交此表单？",
+        click: "允许 Unsloth 点击 {host} 上的“{name}”？",
+      },
+    },
     title: "浏览器",
     tabs: "浏览器标签页",
     newTab: "新标签页",

@@ -50,6 +50,18 @@ export const ptBR = {
     removeFromMessage: "Remover da mensagem",
   },
   browser: {
+    agent: {
+      working: "O Unsloth está navegando nesta aba",
+      stop: "Parar",
+      allow: "Permitir",
+      deny: "Negar",
+      ask: {
+        open: "Permitir que o Unsloth abra {host}?",
+        signIn: "Permitir que o Unsloth entre em {host}?",
+        submit: "Permitir que o Unsloth envie este formulário em {host}?",
+        click: "Permitir que o Unsloth clique em “{name}” em {host}?",
+      },
+    },
     title: "Navegador",
     tabs: "Abas do navegador",
     newTab: "Nova aba",

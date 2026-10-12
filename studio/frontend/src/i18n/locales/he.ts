@@ -51,6 +51,18 @@ export const he = {
     removeFromMessage: "הסר מההודעה",
   },
   browser: {
+    agent: {
+      working: "Unsloth גולש בכרטיסייה הזו",
+      stop: "עצירה",
+      allow: "אישור",
+      deny: "דחייה",
+      ask: {
+        open: "לאפשר ל-Unsloth לפתוח את {host}?",
+        signIn: "לאפשר ל-Unsloth להתחבר ל-{host}?",
+        submit: "לאפשר ל-Unsloth לשלוח את הטופס הזה ב-{host}?",
+        click: "לאפשר ל-Unsloth ללחוץ על „{name}” ב-{host}?",
+      },
+    },
     title: "דפדפן",
     tabs: "כרטיסיות דפדפן",
     newTab: "כרטיסייה חדשה",

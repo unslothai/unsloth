@@ -29,6 +29,7 @@ import { BulbIcon } from "@/lib/bulb-icon";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/composer-toggle";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -2908,6 +2909,7 @@ export function SharedComposer({
                     />
                   ) : null}
                 </DropdownMenuItem>
+                <BrowserAgentMenuItem />
                 {showImagePill && (
                   <DropdownMenuItem
                     disabled={imageDisabled}
@@ -3019,6 +3021,7 @@ export function SharedComposer({
               </PillGlyph>
               <span>Code</span>
             </button>
+            <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
             {showImagePill && (
               <button
                 type="button"

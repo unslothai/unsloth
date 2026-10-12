@@ -7,7 +7,9 @@
 turns it into a generator that yields:
 
 * ``{"type": "tool_output", "tool_name", "tool_call_id", "text"}`` -- an
-  incremental stdout/stderr chunk (python/terminal tools) for live UI output;
+  incremental stdout/stderr chunk (python/terminal tools) for live UI output,
+  or, with empty ``text``, a dict the tool passed to its callback (the browser
+  tools' ``browser_action`` requests for the chat tab);
 * ``{"type": "heartbeat"}`` -- emitted whenever nothing else has been yielded
   for ``heartbeat_interval_s`` seconds, so the SSE route can write a
   keepalive and reverse proxies (Cloudflare tunnels cap idle streams at
@@ -130,7 +132,12 @@ TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 
 
-def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
+def _drain_queue(
+    q: "queue.Queue",
+    sentinel: object,
+    max_chars: int | None,
+    held: list | None = None,
+) -> tuple[str, bool]:
     """Pull every currently-queued item, joining chunks in FIFO order.
 
     With ``max_chars`` set, stop concatenating at the budget and discard the
@@ -138,7 +145,8 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
     far more than the cap before the consumer wakes. The crossing chunk is sliced
     to one char past the budget, enough for the caller's truncation to stay
     byte-identical. Returns ``(joined_text, hit_sentinel)``; the surplus is still
-    scanned so completion is detected promptly.
+    scanned so completion is detected promptly. A structured event (a dict) ends
+    the run of text and waits in ``held``, so it is never joined or dropped.
     """
     parts: list[str] = []
     total = 0
@@ -151,6 +159,10 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
             break
         if item is sentinel:
             hit_sentinel = True
+            break
+        if isinstance(item, dict):
+            if held is not None:
+                held.append(item)
             break
         if dropping:
             continue
@@ -198,8 +210,12 @@ def stream_tool_execution(
     accepted_output_chars = 0
     accepted_output_lock = threading.Lock()
 
-    def _on_output(text: str) -> None:
+    def _on_output(text: "str | dict") -> None:
         nonlocal accepted_output_chars
+        if isinstance(text, dict):
+            # A structured request for the client (a browser action), outside the text budget.
+            output_queue.put(dict(text))
+            return
         if not text:
             return
         with accepted_output_lock:
@@ -237,9 +253,12 @@ def stream_tool_execution(
     stream_capped = False
     finished = False
 
+    # Structured events pulled while joining text, delivered before the queue is read again.
+    held: list[dict] = []
+
     def _drain_pending(max_chars: int | None = None) -> str:
         nonlocal finished
-        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars)
+        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars, held)
         if hit_sentinel:
             finished = True
         return text
@@ -259,6 +278,8 @@ def stream_tool_execution(
             if item is done_sentinel:
                 finished = True
                 return
+            if isinstance(item, dict):
+                held.append(item)
 
     # tool_end is masked downstream, but these chunks are what the frontend paints and persists
     # first. A key can straddle a chunk boundary, so `_hold_back_partial_secret` returns the index
@@ -277,9 +298,9 @@ def stream_tool_execution(
 
     abnormal_exit = False
     try:
-        while not finished:
+        while not finished or held:
             try:
-                item = output_queue.get(timeout = poll_interval_s)
+                item = held.pop(0) if held else output_queue.get(timeout = poll_interval_s)
             except queue.Empty:
                 # A disconnect sets cancel_event while the worker is silent; surface a heartbeat this poll so the route
                 # regains control and tears down at once, not after a full heartbeat interval.
@@ -295,13 +316,24 @@ def stream_tool_execution(
             if item is done_sentinel:
                 break
 
+            if isinstance(item, dict):
+                idle_polls = 0
+                yield {
+                    **item,
+                    "type": "tool_output",
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "text": "",
+                }
+                continue
+
             if stream_capped:
                 # Past the cap: drop this chunk and every queued sibling (see _drain_and_drop). Pace with one time.sleep
                 # per poll (not time.monotonic -- tests patch the clock), counted as an idle poll so heartbeats keep
                 # flowing while the queue stays non-empty.
                 _drain_and_drop()
                 if finished:
-                    break
+                    continue
                 time.sleep(poll_interval_s)
                 idle_polls += 1
                 if idle_polls >= idle_polls_per_heartbeat:

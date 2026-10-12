@@ -50,6 +50,18 @@ export const ar = {
     removeFromMessage: "إزالة من الرسالة",
   },
   browser: {
+    agent: {
+      working: "يتصفح Unsloth في علامة التبويب هذه",
+      stop: "إيقاف",
+      allow: "السماح",
+      deny: "الرفض",
+      ask: {
+        open: "هل تسمح لـ Unsloth بفتح {host}؟",
+        signIn: "هل تسمح لـ Unsloth بتسجيل الدخول إلى {host}؟",
+        submit: "هل تسمح لـ Unsloth بإرسال هذا النموذج على {host}؟",
+        click: "هل تسمح لـ Unsloth بالنقر على «{name}» في {host}؟",
+      },
+    },
     title: "المتصفح",
     tabs: "علامات تبويب المتصفح",
     newTab: "علامة تبويب جديدة",

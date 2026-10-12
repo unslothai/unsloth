@@ -50,6 +50,18 @@ export const ru = {
     removeFromMessage: "Убрать из сообщения",
   },
   browser: {
+    agent: {
+      working: "Unsloth работает в этой вкладке",
+      stop: "Остановить",
+      allow: "Разрешить",
+      deny: "Запретить",
+      ask: {
+        open: "Разрешить Unsloth открыть {host}?",
+        signIn: "Разрешить Unsloth войти на {host}?",
+        submit: "Разрешить Unsloth отправить эту форму на {host}?",
+        click: "Разрешить Unsloth нажать «{name}» на {host}?",
+      },
+    },
     title: "Браузер",
     tabs: "Вкладки браузера",
     newTab: "Новая вкладка",

@@ -50,6 +50,18 @@ export const fr = {
     removeFromMessage: "Retirer du message",
   },
   browser: {
+    agent: {
+      working: "Unsloth navigue dans cet onglet",
+      stop: "Arrêter",
+      allow: "Autoriser",
+      deny: "Refuser",
+      ask: {
+        open: "Autoriser Unsloth à ouvrir {host} ?",
+        signIn: "Autoriser Unsloth à se connecter sur {host} ?",
+        submit: "Autoriser Unsloth à envoyer ce formulaire sur {host} ?",
+        click: "Autoriser Unsloth à cliquer sur « {name} » sur {host} ?",
+      },
+    },
     title: "Navigateur",
     tabs: "Onglets du navigateur",
     newTab: "Nouvel onglet",

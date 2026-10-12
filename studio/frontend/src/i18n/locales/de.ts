@@ -50,6 +50,18 @@ export const de = {
     removeFromMessage: "Aus Nachricht entfernen",
   },
   browser: {
+    agent: {
+      working: "Unsloth surft in diesem Tab",
+      stop: "Stopp",
+      allow: "Erlauben",
+      deny: "Ablehnen",
+      ask: {
+        open: "Darf Unsloth {host} öffnen?",
+        signIn: "Darf sich Unsloth bei {host} anmelden?",
+        submit: "Darf Unsloth dieses Formular auf {host} absenden?",
+        click: "Darf Unsloth auf „{name}“ auf {host} klicken?",
+      },
+    },
     title: "Browser",
     tabs: "Browser-Tabs",
     newTab: "Neuer Tab",

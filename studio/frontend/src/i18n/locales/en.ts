@@ -47,6 +47,18 @@ export const en = {
     removeFromMessage: "Remove from message",
   },
   browser: {
+    agent: {
+      working: "Unsloth is browsing in this tab",
+      stop: "Stop",
+      allow: "Allow",
+      deny: "Deny",
+      ask: {
+        open: "Let Unsloth open {host}?",
+        signIn: "Let Unsloth sign in on {host}?",
+        submit: "Let Unsloth submit this form on {host}?",
+        click: "Let Unsloth click “{name}” on {host}?",
+      },
+    },
     title: "Browser",
     tabs: "Browser tabs",
     newTab: "New tab",

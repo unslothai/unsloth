@@ -45,7 +45,7 @@ MAX_IMAGE_PIXELS = 40_000_000
 
 
 def is_image_tool(name: str) -> bool:
-    return name == "view_image" or name.startswith(MCP_TOOL_PREFIX)
+    return name in ("view_image", "browser_screenshot") or name.startswith(MCP_TOOL_PREFIX)
 
 
 def split_images(result: str) -> tuple[str, list[dict]]:
