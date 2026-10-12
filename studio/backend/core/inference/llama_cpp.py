@@ -777,11 +777,21 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 _LLAMA_RANDOM_SEED = 0xFFFFFFFF
 
 
-def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
-    """Disable prompt caching for fixed seeds so repeated requests stay reproducible."""
+def _apply_seeded_llama_request(
+    payload: dict,
+    seed: Optional[int],
+    *,
+    reuse_prompt_cache: bool = False,
+) -> None:
+    """Disable prompt caching for fixed seeds so repeated requests stay reproducible.
+
+    ``reuse_prompt_cache``: a tool-loop continuation of this run; cold, it re-prefills (#10698).
+    """
     if seed is None:
         return
     payload["seed"] = seed
+    if reuse_prompt_cache:
+        return
     # Compared as uint32: the schemas also accept 4294967295, the same "pick at random".
     if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
         payload["cache_prompt"] = False
@@ -38336,6 +38346,8 @@ class LlamaCppBackend:
         _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        # A fixed seed keeps the prompt cache once this run has sent a request (#10698).
+        _prompt_sent = False
         iteration = -1
         # Outside the loop: the cap is across the whole run, and a per-iteration list
         # would only ever see the current batch, leaving every earlier iteration's
@@ -38608,7 +38620,8 @@ class LlamaCppBackend:
                 _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
-            _apply_seeded_llama_request(payload, seed)
+            _apply_seeded_llama_request(payload, seed, reuse_prompt_cache = _prompt_sent)
+            _prompt_sent = True
 
             _respawn_truncations: list[dict] = []
 
@@ -41350,7 +41363,7 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
-        _apply_seeded_llama_request(stream_payload, seed)
+        _apply_seeded_llama_request(stream_payload, seed, reuse_prompt_cache = _prompt_sent)
         stream_payload["stream_options"] = {"include_usage": True}
 
         # Progress events feed the first-token deadline; timings stay opt-in.
