@@ -38,6 +38,10 @@ function harness(response: ReturnType<typeof jsonResponse>) {
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
       "./skill-load-event": { skillLoadCardEvent },
+      "./thread-read-cache.ts": loadWithStubs(
+        new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
+        {},
+      ),
       "@/features/auth": {
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });

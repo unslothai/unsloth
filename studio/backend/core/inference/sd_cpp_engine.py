@@ -743,7 +743,11 @@ class SdCppEngine:
         process tree and raises ``SdCppCancelled``.
         """
         offload = list(offload or [])
-        speed = [f for f in native_speed_flags(native_speed) if f not in offload]
+        speed = [
+            f
+            for f in native_speed_flags(native_speed, [*offload, *(extra_args or ())])
+            if f not in offload
+        ]
         merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
             self._require_binary(),
@@ -968,6 +972,8 @@ class SdCppEngine:
 
 ENGINE_DIFFUSERS = "diffusers"
 ENGINE_SD_CPP = "sd_cpp"
+# Opt-in Apple Silicon MLX engine (core.inference.mlx_diffusion_backend), chosen only by the router, never here.
+ENGINE_MLX = "mlx"
 
 # Backends diffusers serves well with GPU acceleration; everything else is native-engine territory.
 _GPU_BACKENDS = frozenset({"cuda", "rocm", "xpu"})

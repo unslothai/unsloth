@@ -58,7 +58,7 @@ import {
   exportConversationByFormat,
   getSidebarItemThreadIds,
 } from "./chat-row-menu";
-import { OpenChatFolderItem } from "./open-chat-folder-item";
+import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -335,6 +335,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
         </DropdownMenuSubContent>
       </DropdownMenuSub>
       <OpenChatFolderItem item={menu.item} />
+      <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
       <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}

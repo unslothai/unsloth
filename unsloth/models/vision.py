@@ -128,9 +128,11 @@ from ._utils import (
     arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
+    switch_training_mode,
     _is_seq2seq_lm_config,
 )
 from ._utils import *
+from ._utils import _ignore_block_swap_params_for_ddp
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -160,6 +162,8 @@ from .loader_utils import (
     raise_if_bnb_cpu_spill,
     requested_device_map,
     resolve_auto_block_swap,
+    ddp_auto_block_swap_launch,
+    auto_offload_for_launch,
     resolve_unsloth_device_map,
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
@@ -3475,7 +3479,9 @@ class FastBaseModel:
                 "needs every layer on one GPU; pass offload_layers to get_peft_model instead.",
             )
         _embedding_needed = None
+        _ddp_auto_swap = False
         if _offload_layers == "auto":
+            _ddp_auto_swap = ddp_auto_block_swap_launch(requested_device_map(device_map))
             _offload_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,
@@ -3512,6 +3518,10 @@ class FastBaseModel:
                     extra_skip_modules = _architecture_skip_modules(model_types) or None,
                 ),
             )
+            _ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None
+            if _ddp_auto_swap:
+                # DDP refuses a CPU parameter.
+                offload_embedding = False
         _block_swap_device = block_swap_load_device(device_map)
         if (_offload_layers or _embedding_needed) and _block_swap_device is not None:
             # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
@@ -4337,6 +4347,7 @@ class FastBaseModel:
         finish_block_swap_load(
             model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
         )
+        mark_auto_offload_for_ddp(model, _ddp_auto_swap)
 
         # LAST, like the llama loader: patch_model_and_tokenizer below REPLACES the embedding and lm_head with fresh modules carrying the weights but not the _hf_hook, so a model split across cards would still meet the original cross-device index_select. Idempotent.
         # Embeddings offloaded later sit on the host on purpose: a dispatch hook would pull them back.
@@ -4482,6 +4493,30 @@ class FastBaseModel:
             skip = _vllm_unmovable_embedding_modules(model, target_modules),
         )
         _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        # add_new_tokens rows stay frozen at their mean init otherwise, and on a padded vocab PEFT saves neither matrix, so reload drops them (#1343). Matches FastLanguageModel; skipped under vLLM, which cannot train them, and when trainable_token_indices already trains the rows.
+        if (
+            getattr(model, "_need_to_train_embeddings", False)
+            and finetune_language_layers
+            and getattr(model, "vllm_engine", None) is None
+            and not kwargs.get("trainable_token_indices")
+        ):
+            if modules_to_save is None:
+                modules_to_save = []
+            elif isinstance(modules_to_save, str):
+                modules_to_save = [modules_to_save]
+            else:
+                modules_to_save = list(modules_to_save)
+            _missing = [
+                m
+                for m in ("embed_tokens", "lm_head")
+                if m not in _embedding_leaves(modules_to_save)
+            ]
+            if _missing:
+                print(
+                    "Unsloth: You added new tokens but did not specify if you wanted to "
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
+                )
+                modules_to_save.extend(_missing)
         ensure_weight_tying = _effective_weight_tying(
             model,
             modules_to_save,
@@ -4779,7 +4814,7 @@ class FastBaseModel:
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
-            offload_layers,
+            auto_offload_for_launch(offload_layers),
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
@@ -4800,6 +4835,8 @@ class FastBaseModel:
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
+        _ignore_block_swap_params_for_ddp(model)
         return model
 
     @staticmethod
@@ -5009,12 +5046,9 @@ class FastBaseModel:
             _for_inference(m)
             m = m.model
         _for_inference(m)
-        model.eval()  # to turn off training on modules deeper in
-
-        # Since transformers 4.53, this must be turned off explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = False
+        # Since transformers 4.53, checkpointing must be turned off explicitly.
+        for module in switch_training_mode(model, False):
+            module.gradient_checkpointing = False
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
@@ -5029,6 +5063,10 @@ class FastBaseModel:
 
         # Returning hidden states must be disabled for GRPO, and returning logits enabled.
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        # Remember what the forced "1" replaced, for for_training() to put back (#3071).
+        _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        if _return_logits != "1":
+            os.environ["_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"] = _return_logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
@@ -5040,15 +5078,14 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
+        checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
-            model, use_gradient_checkpointing
+            model, use_gradient_checkpointing, checkpointing
         )
-        if use_gradient_checkpointing:
-            arm_gradient_checkpointing(model)
-
-        for param in model.parameters():
-            if hasattr(param, "_fast_lora"):
-                del param._fast_lora
+        if use_gradient_checkpointing and arm_gradient_checkpointing(model, checkpointing):
+            # Arming runs the model's enabler once (remote code can flag layers the walk did not see).
+            checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5069,12 +5106,10 @@ class FastBaseModel:
             _for_training(m)
             m = m.model
         _for_training(m)
-        model.train()  # to turn on training on modules deeper in
-
+        apply_training_mode()
         # Since transformers 4.53, this must be turned on explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
+        for module in checkpointing:
+            set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
@@ -5087,7 +5122,11 @@ class FastBaseModel:
         except ImportError:
             pass
 
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        # Undo only for_inference()'s "1": forcing "0" here wiped a user's UNSLOTH_RETURN_LOGITS=1 (#3071).
+        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
+        if _return_logits is None:
+            _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model

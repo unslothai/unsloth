@@ -123,7 +123,7 @@ import { SiteFavicon } from "./site-favicon";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { BookmarkStar, BookmarksBar } from "./bookmarks";
 import { useBookmarkFor } from "./bookmarks-store";
-import { browserTabType, mediaKind, textFileKind } from "./file-kind";
+import { browserTabType, fileBarKind, mediaKind } from "./file-kind";
 import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
@@ -137,6 +137,7 @@ import {
 import {
   hasNativeView,
   nativeAction,
+  nativePageHasKeys,
   returnToNativePage,
   startNativeViews,
   useNativeBrowser,
@@ -1484,7 +1485,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
 
 /** HTML and code use the browser chrome; other files keep the floating controls. */
 function usesBrowserChrome(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   return kind === "html" || kind === "code";
 }
 
@@ -1503,7 +1504,7 @@ function BrowserFileToolbar({
   const { goBack, goForward } = useBrowserStore.getState();
   const download = tabDownload(tab);
   const blob = download?.blob;
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const hasSource = kind === "html" || kind === "markdown";
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
@@ -1766,7 +1767,7 @@ function FloatingFileToolbar({
   const [copied, setCopied] = useState(false);
   const download = tabDownload(tab);
   const blob = download?.blob;
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const hasSource = kind === "html" || kind === "markdown";
   const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
   const timed = media === "video" || media === "audio";
@@ -2115,7 +2116,7 @@ function CopySplit({
   onCopyContents: () => void;
 }) {
   const t = useT();
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
   // The desktop app's clipboard takes no images (video-registry.ts), so it copies the path instead.
   const images = canCopyVideoFrame();
@@ -2405,6 +2406,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         const tabId = useBrowserStore.getState().activeTabId;
         if (tabId) zoomTab(tabId, direction);
       },
+      holdsKeys: nativePageHasKeys,
     });
   }, [active]);
   // Studio's find bar searches the page while focus is in here, or when switched to it.
