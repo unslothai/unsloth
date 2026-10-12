@@ -84,16 +84,16 @@ function Test-StudioHomeIsCustom {{ return ${str(not profile_default).lower()} }
 
 @needs_pwsh
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_ps1_custom_home_installs_uv_into_its_own_bin(shell, tmp_path):
-    bin_dir = str(tmp_path / "bin")
+def test_ps1_custom_home_installs_uv_into_its_own_dir(shell, tmp_path):
+    bin_dir = str(tmp_path / "uv")
     found = _ps1_private_uv(shell, tmp_path)
     assert found["keeps"] == "True"
     assert Path(found["dir"]) == Path(bin_dir)
     # Nothing there yet, so PATH is untouched until a uv lands in it.
     assert bin_dir not in found["path"]
 
-    (tmp_path / "bin").mkdir()
-    (tmp_path / "bin" / "uv.exe").write_bytes(b"")
+    (tmp_path / "uv").mkdir()
+    (tmp_path / "uv" / "uv.exe").write_bytes(b"")
     assert _ps1_private_uv(shell, tmp_path)["path"].startswith(bin_dir)
 
 
@@ -175,12 +175,12 @@ def test_sh_custom_home_keeps_uv_and_python(tmp_path):
     studio = tmp_path / "drive" / "studio"
     studio.mkdir(parents = True)
     found = _sh(tmp_path / "home", studio)
-    assert (found["keeps"], found["uvdir"]) == ("true", f"{studio}/bin")
+    assert (found["keeps"], found["uvdir"]) == ("true", f"{studio}/uv")
     assert found["pydir"] == f"{studio}/python"
-    assert not found["path"].startswith(f"{studio}/bin")
+    assert not found["path"].startswith(f"{studio}/uv")
 
-    _uv_stub(studio / "bin")
-    assert _sh(tmp_path / "home", studio)["path"].startswith(f"{studio}/bin:")
+    _uv_stub(studio / "uv")
+    assert _sh(tmp_path / "home", studio)["path"].startswith(f"{studio}/uv:")
 
 
 @needs_sh
@@ -233,7 +233,7 @@ def test_backend_points_on_demand_installs_at_the_home(tmp_path, monkeypatch):
     monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising = False)
 
     legacy = home / ".unsloth" / "studio"
-    _uv_stub(legacy / "bin")
+    _uv_stub(legacy / "uv")
     monkeypatch.setattr(storage_roots, "studio_root", lambda: legacy)
     storage_roots._use_studio_uv_tools()
     assert os.environ["PATH"] == str(mine)
@@ -245,11 +245,22 @@ def test_backend_points_on_demand_installs_at_the_home(tmp_path, monkeypatch):
     assert os.environ["PATH"] == str(mine)
     assert os.environ["UV_PYTHON_INSTALL_DIR"] == str(studio / "python")
 
-    # The installer only places a uv here when PATH had none or an old one, so it goes first.
-    _uv_stub(studio / "bin")
+    # The installer only places a uv here when PATH had none or an old one, so it goes first,
+    # also when it is already further down PATH, and only once.
+    _uv_stub(studio / "uv")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(mine), str(studio / "uv")]))
     storage_roots._use_studio_uv_tools()
     storage_roots._use_studio_uv_tools()
-    assert os.environ["PATH"] == str(studio / "bin") + os.pathsep + str(mine)
+    assert os.environ["PATH"] == str(studio / "uv") + os.pathsep + str(mine)
+
+    # The engine installer's child keeps the Python store.
+    sys.path.insert(0, str(REPO_ROOT / "studio" / "backend"))
+    try:
+        from core.inference import engine_install
+    finally:
+        sys.path.pop(0)
+
+    assert engine_install.install_environment()["UV_PYTHON_INSTALL_DIR"] == str(studio / "python")
 
     monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", "/mine/python")
     storage_roots._use_studio_uv_tools()
@@ -275,11 +286,10 @@ def test_cli_update_hands_setup_the_private_uv(tmp_path, monkeypatch):
         "PATH": mine,
         "UV_PYTHON_INSTALL_DIR": str(home / "python"),
     }
-    _uv_stub(home / "bin")
-    out = studio_cli._with_studio_uv(env)
-    assert out["PATH"] == str(home / "bin") + os.pathsep + mine
+    _uv_stub(home / "uv")
+    out = studio_cli._with_studio_uv({"PATH": os.pathsep.join([mine, str(home / "uv")])})
+    assert out["PATH"] == str(home / "uv") + os.pathsep + mine
     assert studio_cli._with_studio_uv(out)["PATH"] == out["PATH"]
-    assert env == {"PATH": mine}
 
     monkeypatch.setattr(studio_cli, "_STUDIO_HOME_IS_CUSTOM", False)
     assert studio_cli._with_studio_uv(env) is env

@@ -6536,7 +6536,8 @@ exit 0
     $studioAutoStartProcess = $null
     $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
     $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
-    $previousUvPythonInstallDir = $env:UV_PYTHON_INSTALL_DIR
+    $hadPreviousUvPythonInstallDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_PYTHON_INSTALL_DIR")
+    $previousUvPythonInstallDir = [Environment]::GetEnvironmentVariable("UV_PYTHON_INSTALL_DIR", "Process")
     try {
         if ($studioNeedsRuntimeLock) {
             try {
@@ -7544,14 +7545,14 @@ exit 0
         return $true
     }
 
-    # A custom UNSLOTH_STUDIO_HOME keeps its own uv in <home>\bin, off the user PATH: winget and
+    # A custom UNSLOTH_STUDIO_HOME keeps its own uv in <home>\uv, off the user PATH: winget and
     # the default destination would put it in the profile and the registry PATH. A uv the
     # machine already has is still used. Re-runs find the private one first.
     $script:StudioKeepsTools = (-not $studioUsesLegacyLayout) -and (Test-StudioHomeIsCustom)
     $script:StudioPrivateUvDir = $null
     if ($script:StudioKeepsTools -and
         -not ($env:UV_INSTALL_DIR -or $env:UV_UNMANAGED_INSTALL -or $env:XDG_BIN_HOME)) {
-        $script:StudioPrivateUvDir = Join-Path $StudioHome "bin"
+        $script:StudioPrivateUvDir = Join-Path $StudioHome "uv"
         if (Test-Path -LiteralPath (Join-Path $script:StudioPrivateUvDir "uv.exe") -PathType Leaf) {
             $env:PATH = "$($script:StudioPrivateUvDir);$env:PATH"
         }
@@ -12341,10 +12342,10 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
     } finally {
         Restore-StudioUvCacheEnvironment -WasPresent $hadPreviousUvCacheDir -PreviousValue $previousUvCacheDir
-        if ([string]::IsNullOrEmpty($previousUvPythonInstallDir)) {
-            Remove-Item -LiteralPath Env:UV_PYTHON_INSTALL_DIR -ErrorAction SilentlyContinue
-        } else {
-            $env:UV_PYTHON_INSTALL_DIR = $previousUvPythonInstallDir
+        if ($hadPreviousUvPythonInstallDir) {
+            Set-Item -LiteralPath Env:UV_PYTHON_INSTALL_DIR -Value $previousUvPythonInstallDir
+        } elseif (Test-Path -LiteralPath Env:UV_PYTHON_INSTALL_DIR) {
+            Remove-Item -LiteralPath Env:UV_PYTHON_INSTALL_DIR
         }
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]

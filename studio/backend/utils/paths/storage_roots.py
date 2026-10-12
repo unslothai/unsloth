@@ -1286,7 +1286,7 @@ def parseable_cache_fallback(key: str, intended: str) -> str | None:
 
 
 def _use_studio_uv_tools() -> None:
-    """A custom-home install keeps its own uv in <studio>/bin, off the user PATH, and its
+    """A custom-home install keeps its own uv in <studio>/uv, off the user PATH, and its
     uv-managed Python in <studio>/python. Point on-demand installs at both. The installer only
     places a uv there when PATH had none or one below its minimum, so it goes first."""
     root = studio_root()
@@ -1297,12 +1297,14 @@ def _use_studio_uv_tools() -> None:
         return
     if not (os.environ.get("UV_PYTHON_INSTALL_DIR") or "").strip():
         os.environ["UV_PYTHON_INSTALL_DIR"] = str(root / "python")
-    bin_dir = root / "bin"
-    if not (bin_dir / ("uv.exe" if os.name == "nt" else "uv")).is_file():
-        return
-    current = os.environ.get("PATH", "")
-    if str(bin_dir) not in current.split(os.pathsep):
-        os.environ["PATH"] = str(bin_dir) + os.pathsep + current if current else str(bin_dir)
+    uv_dir = root / "uv"
+    if (uv_dir / ("uv.exe" if os.name == "nt" else "uv")).is_file():
+        os.environ["PATH"] = _path_with_first(os.environ.get("PATH", ""), str(uv_dir))
+
+
+def _path_with_first(path: str, first: str) -> str:
+    rest = [entry for entry in path.split(os.pathsep) if entry and entry != first]
+    return os.pathsep.join([first, *rest])
 
 
 def _setup_cache_env() -> None:

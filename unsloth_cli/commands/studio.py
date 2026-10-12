@@ -3800,7 +3800,7 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
 
 
 def _with_studio_uv(env: Optional[dict]) -> Optional[dict]:
-    """A custom-home install keeps its own uv in <home>/bin, off the user PATH, and its
+    """A custom-home install keeps its own uv in <home>/uv, off the user PATH, and its
     uv-managed Python in <home>/python. Without them setup would put both in the profile."""
     try:
         if (
@@ -3813,12 +3813,10 @@ def _with_studio_uv(env: Optional[dict]) -> Optional[dict]:
     out = {**(env if env is not None else os.environ)}
     if not (out.get("UV_PYTHON_INSTALL_DIR") or "").strip():
         out["UV_PYTHON_INSTALL_DIR"] = str(STUDIO_HOME / "python")
-    bin_dir = STUDIO_HOME / "bin"
-    current = out.get("PATH", "")
-    if (bin_dir / ("uv.exe" if os.name == "nt" else "uv")).is_file() and str(
-        bin_dir
-    ) not in current.split(os.pathsep):
-        out["PATH"] = str(bin_dir) + os.pathsep + current if current else str(bin_dir)
+    uv_dir = str(STUDIO_HOME / "uv")
+    if (Path(uv_dir) / ("uv.exe" if os.name == "nt" else "uv")).is_file():
+        rest = [e for e in out.get("PATH", "").split(os.pathsep) if e and e != uv_dir]
+        out["PATH"] = os.pathsep.join([uv_dir, *rest])
     return out
 
 

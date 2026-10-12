@@ -4130,10 +4130,10 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     return "$_uip_rc"
 }
 
-# A custom home keeps its own uv in <home>/bin, which is never written to a shell profile. A uv the host already has is still used; re-runs find the private one first.
+# A custom home keeps its own uv in <home>/uv, which is never written to a shell profile. A uv the host already has is still used; re-runs find the private one first.
 _STUDIO_UV_DIR=""
 if [ "$_STUDIO_KEEPS_TOOLS" = true ] && [ -z "${UV_INSTALL_DIR:-}${UV_UNMANAGED_INSTALL:-}${XDG_BIN_HOME:-}" ]; then
-    _STUDIO_UV_DIR="$STUDIO_HOME/bin"
+    _STUDIO_UV_DIR="$STUDIO_HOME/uv"
     [ -x "$_STUDIO_UV_DIR/uv" ] && export PATH="$_STUDIO_UV_DIR:$PATH"
 fi
 if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
