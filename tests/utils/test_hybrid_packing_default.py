@@ -465,3 +465,39 @@ def test_packed_boundary_labels_are_masked(monkeypatch):
     # Unpacked forwards keep their labels.
     model(input_ids = ids, labels = labels, use_cache = False)
     assert model.seen_labels is labels
+
+
+def test_positional_labels_are_masked_too(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    model = LabelEchoHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    ids = torch.arange(9)[None]
+    labels = ids.clone()
+    model(ids, None, torch.tensor([4, 1, 4], dtype = torch.int32), False, labels)
+    assert model.seen_labels.tolist() == [[0, 1, 2, 3, -100, -100, 6, 7, 8]]
+    assert labels.tolist() == [list(range(9))]
+
+
+def test_boundaries_follow_the_call_onto_its_device():
+    varlen = (torch.tensor([0, 4, 9], dtype = torch.int32), torch.tensor([[0] * 4 + [1] * 5], dtype = torch.int32))
+    x = torch.empty(1, 8, 9, device = "meta")
+    cu, seq_idx = packing_module._varlen_on(varlen, (), {"x": x})
+    assert cu.device.type == "meta" and seq_idx.device.type == "meta"
+    assert packing_module._varlen_on(varlen, (torch.zeros(1, 8, 9),), {}) is varlen
+
+
+def test_a_stale_stash_never_reaches_a_call_of_another_length(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    ids = torch.randint(0, 32, (1, 9), generator = torch.Generator().manual_seed(2))
+    model(input_ids = ids, packed_seq_lengths = torch.tensor([4, 1, 4], dtype = torch.int32), use_cache = False)
+    mixer = model.linear_attn
+    stale = mixer._unsloth_varlen
+    hidden = model.embed(ids[:, :5])
+    mixer._unsloth_varlen = None
+    plain = mixer(hidden)
+    mixer._unsloth_varlen = stale
+    mixer._unsloth_varlen_conv_hit = mixer._unsloth_varlen_scan_hit = False
+    torch.testing.assert_close(mixer(hidden), plain)
+    assert not mixer._unsloth_varlen_conv_hit and not mixer._unsloth_varlen_scan_hit

@@ -736,22 +736,32 @@ def _hybrid_varlen_dispatched(module) -> bool:
     )
 
 
+def _varlen_input(args, kwargs):
+    for name in ("x", "hidden_states", "zxbcdt", "query", "q"):
+        candidate = kwargs.get(name)
+        if isinstance(candidate, torch.Tensor):
+            return candidate
+    for arg in args:
+        if isinstance(arg, torch.Tensor):
+            return arg
+    return None
+
+
+def _varlen_on(varlen, args, kwargs):
+    """The (cu_seqlens, seq_idx) pair on the device of this call's input (a model split over GPUs
+    runs later mixers away from the input ids)."""
+    tensor = _varlen_input(args, kwargs)
+    if tensor is None or varlen[1].device == tensor.device:
+        return varlen
+    return tuple(t.to(tensor.device, non_blocking = True) for t in varlen)
+
+
 def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
     # generate() bypasses model.forward, so a stale training seq_idx must not reach a prompt.
     if seq_idx is None:
         return False
     total = seq_idx.shape[-1]
-    tensor = None
-    for name in ("x", "hidden_states", "zxbcdt"):
-        candidate = kwargs.get(name)
-        if isinstance(candidate, torch.Tensor):
-            tensor = candidate
-            break
-    if tensor is None:
-        for arg in args:
-            if isinstance(arg, torch.Tensor):
-                tensor = arg
-                break
+    tensor = _varlen_input(args, kwargs)
     if tensor is None or tensor.dim() < 2 or seq_idx.shape[0] != tensor.shape[0]:
         return False
     # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...).
@@ -954,6 +964,7 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         varlen = getattr(module, "_unsloth_varlen", None)
         if varlen is None or not _varlen_seq_idx_applies(varlen[1], args, kwargs):
             return forward_orig(*args, **kwargs)
+        varlen = _varlen_on(varlen, args, kwargs)
         if kwargs.get("seq_idx") is None:
             kwargs["seq_idx"] = varlen[1]
         if kwargs.get("cu_seq_lens_q") is None:
@@ -1181,7 +1192,8 @@ def _restore_mixers(saved) -> None:
 
 def _auto_hybrid_device_ok(module) -> bool:
     # Default-on is proven on CUDA only; ROCm (fla Triton unproven there) and others need the opt-in.
-    return torch.version.hip is None and module.conv1d.weight.device.type == "cuda"
+    weight = next(module.parameters(), None)
+    return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
 
 
 def _probe_target(modules):
@@ -1300,7 +1312,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     if mode == "auto" and not short_conv_only:
         if probe_target is None:
             return _hybrid_reject("no gated-delta mixer the exactness probe can run")
-        if not _auto_hybrid_device_ok(probe_target):
+        if not all(_auto_hybrid_device_ok(m) for m in gated_delta_modules):
             return _hybrid_reject(
                 f"default-on only on CUDA (set {_HYBRID_PACKING_ENV_VAR}=1 to opt in on this device)"
             )
@@ -1342,10 +1354,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             **kwargs,
         ):
             varlen = getattr(_module, "_unsloth_varlen", None)
-            if varlen is not None:
+            # Only a call over the packed row: a stale stash never reaches a call of another length.
+            if varlen is not None and _varlen_seq_idx_applies(varlen[1], args, kwargs):
                 _module._unsloth_varlen_conv_hit = True  # runtime dispatch handshake
                 if kwargs.get("seq_idx") is None:
-                    kwargs["seq_idx"] = varlen[1]
+                    kwargs["seq_idx"] = _varlen_on(varlen, args, kwargs)[1]
             return _orig(*args, **kwargs)
 
         @wraps(scan_orig)
@@ -1356,10 +1369,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             **kwargs,
         ):
             varlen = getattr(_module, "_unsloth_varlen", None)
-            if varlen is not None:
+            if varlen is not None and _varlen_seq_idx_applies(varlen[1], args, kwargs):
                 _module._unsloth_varlen_scan_hit = True
                 if kwargs.get("cu_seqlens") is None:
-                    kwargs["cu_seqlens"] = varlen[0]
+                    kwargs["cu_seqlens"] = _varlen_on(varlen, args, kwargs)[0]
             return _orig(*args, **kwargs)
 
         if conv_orig is not None:
@@ -1459,6 +1472,14 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             forward_sig = inspect.signature(forward_orig)
         except (TypeError, ValueError):
             forward_sig = None
+        labels_index = None
+        if forward_sig is not None:
+            names = list(forward_sig.parameters)
+            if "labels" in names and forward_sig.parameters["labels"].kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            ):
+                labels_index = names.index("labels")
 
         @wraps(forward_orig)
         def forward_with_varlen(*args, **kwargs):
@@ -1483,6 +1504,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_kwargs_hit = False
             if varlen is not None:
                 kwargs = _mask_hybrid_boundary_labels(kwargs, varlen)
+                if labels_index is not None and len(args) > labels_index:
+                    masked = _mask_hybrid_boundary_labels({"labels": args[labels_index]}, varlen)["labels"]
+                    args = args[:labels_index] + (masked,) + args[labels_index + 1 :]
             outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)
