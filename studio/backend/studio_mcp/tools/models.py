@@ -86,8 +86,8 @@ async def list_models(
     model: Optional[str] = None,
 ) -> ModelList:
     """Models this Unsloth Studio can serve: loaded ones and those already downloaded. Each entry has the id to pass to load_model, its kind and whether it is loaded. ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, so pass the kind explicitly to load_model. ``loaded_only`` returns just the resident models. ``model`` narrows the list to that model (empty when it is not downloaded yet) and adds Unsloth Studio's training defaults for it, which also works for a Hugging Face repo id that is not downloaded (send X-Unsloth-HF-Token for a gated repo)."""
-    if loaded_only and kind in (None, "llm"):
-        # Resident chat models without a scan of every model folder.
+    if loaded_only and kind == "llm":
+        # Resident chat models without a scan of every model folder; it never lists image, video or STT.
         listing = await route_json("GET", "/api/inference/loaded-models")
     else:
         listing = await route_json("GET", "/v1/models")

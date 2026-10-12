@@ -118,11 +118,17 @@ def test_output_modalities_is_never_sent(monkeypatch):
 
 
 def test_loaded_only_takes_the_fast_path_for_chat(monkeypatch):
-    result, studio = _list(monkeypatch, {"loaded_only": True})
+    result, studio = _list(monkeypatch, {"loaded_only": True, "kind": "llm"})
     assert [model["id"] for model in result["structuredContent"]["models"]] == [
         "unsloth/Llama-3.2-1B-Instruct-GGUF"
     ]
     assert [call[1] for call in studio.state.calls] == ["/api/inference/loaded-models"]
+
+    # Without a kind, resident media models are listed too; the fast path only knows chat models.
+    result, studio = _list(monkeypatch, {"loaded_only": True})
+    ids = [model["id"] for model in result["structuredContent"]["models"]]
+    assert "unsloth/Llama-3.2-1B-Instruct-GGUF" in ids and "Lightricks/LTX-Video" in ids
+    assert [call[1] for call in studio.state.calls] == ["/v1/models"]
 
     result, studio = _list(monkeypatch, {"loaded_only": True, "kind": "video"})
     assert [model["id"] for model in result["structuredContent"]["models"]] == [
