@@ -345,7 +345,8 @@ export function orderRecommendedRows<
    *  listing's sort. `results` must be one sorted listing of unsloth/* repos, since a family ranks
    *  by its index there. */
   familyOf?: (id: string) => string | undefined;
-  /** Family keys (as returned by `familyOf`) that lead the list in this order, whatever the sort. */
+  /** Family keys (as returned by `familyOf`) that lead the list in this order, whatever the sort.
+   *  Their rows interleave by position: every pinned family's first row, then every second one. */
   pinnedFamilies?: readonly string[];
 }): T[] {
   const { seeds, results, keep, deviceFiltered, fits, familyOf, pinnedFamilies = [] } = opts;
@@ -387,12 +388,21 @@ export function orderRecommendedRows<
     if (!firstSeen.has(key)) firstSeen.set(key, i);
   });
   const pinIndex = new Map(pinnedFamilies.map((key, i) => [key, i]));
+  // Row position within its family: pinned families' lead rows ("Fast FP8") come before their GGUFs.
+  const slotOf = new Map<number, number>();
+  const seenPerFamily = new Map<string, number>();
+  ordered.forEach((r, i) => {
+    const key = keyOf(r);
+    const slot = seenPerFamily.get(key) ?? 0;
+    slotOf.set(i, slot);
+    seenPerFamily.set(key, slot + 1);
+  });
   const sortKey = (r: T, i: number) => {
     const key = keyOf(r);
-    // A pinned family leads as a whole, ahead of first-party rows that trend higher.
+    // Pinned families lead, ahead of first-party rows that trend higher.
     const pin = pinIndex.get(key);
     if (pin != null) {
-      return [pin, 0, 0, firstSeen.get(key) ?? i, i];
+      return [slotOf.get(i) ?? 0, pin, 0, firstSeen.get(key) ?? i, i];
     }
     const ours = firstParty(r.id);
     const unranked = ours && !listable.has(key) ? -1 : Infinity;

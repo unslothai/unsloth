@@ -601,11 +601,11 @@ function AnswerPreview({
       </div>
     );
   }
-  const { keys, nearest, max } = scoreLevels(answer);
+  const { keys, top, max } = scoreLevels(answer);
   return (
     <div className="flex flex-col gap-6">
       <AnswerHeading
-        answer={criterionText(answer.legend[nearest]) ?? nearest}
+        answer={criterionText(answer.legend[top]) ?? top}
         detail={t("decisions.scoreDetail", {
           score: answer.score.toFixed(2),
           max,
@@ -618,7 +618,7 @@ function AnswerPreview({
             index={key}
             label={criterionText(answer.legend[key]) ?? key}
             value={answer.probabilities[key] ?? 0}
-            top={key === nearest}
+            top={key === top}
             percent={percent}
           />
         ))}

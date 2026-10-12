@@ -1,0 +1,573 @@
+{
+"source": "SG161222/RealVisXL_V4.0@26dfe44930964cd70d0a817b6d1cc945c130e38d RealVisXL_V4.0.safetensors (sha256 912c9dc74f5855175c31a7993f863a043ac8dcc31732b324cd05d75cd7e16844) converted with stable-diffusion.cpp `sd-cli -M convert --type q8_0`; real tensor names and shapes, trimmed to index 0 of every stack; the file carries no metadata keys (no general.architecture)",
+"shapes": {
+"conditioner.embedders.0.transformer.text_model.embeddings.position_embedding.weight": [
+77,
+768
+],
+"conditioner.embedders.0.transformer.text_model.embeddings.token_embedding.weight": [
+49408,
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.layer_norm1.bias": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.layer_norm1.weight": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.layer_norm2.bias": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.layer_norm2.weight": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.mlp.fc1.bias": [
+3072
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.mlp.fc1.weight": [
+3072,
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.mlp.fc2.bias": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.mlp.fc2.weight": [
+768,
+3072
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.k_proj.bias": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.k_proj.weight": [
+768,
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.out_proj.bias": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.out_proj.weight": [
+768,
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.q_proj.bias": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.q_proj.weight": [
+768,
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.v_proj.bias": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.v_proj.weight": [
+768,
+768
+],
+"conditioner.embedders.0.transformer.text_model.final_layer_norm.bias": [
+768
+],
+"conditioner.embedders.0.transformer.text_model.final_layer_norm.weight": [
+768
+],
+"first_stage_model.decoder.conv_in.bias": [
+512
+],
+"first_stage_model.decoder.conv_in.weight": [
+512,
+4,
+3,
+3
+],
+"first_stage_model.decoder.conv_out.bias": [
+3
+],
+"first_stage_model.decoder.conv_out.weight": [
+3,
+128,
+3,
+3
+],
+"first_stage_model.decoder.mid.attn_1.k.bias": [
+512
+],
+"first_stage_model.decoder.mid.attn_1.k.weight": [
+512,
+512,
+1,
+1
+],
+"first_stage_model.decoder.mid.attn_1.norm.bias": [
+512
+],
+"first_stage_model.decoder.mid.attn_1.norm.weight": [
+512
+],
+"first_stage_model.decoder.mid.attn_1.proj_out.bias": [
+512
+],
+"first_stage_model.decoder.mid.attn_1.proj_out.weight": [
+512,
+512,
+1,
+1
+],
+"first_stage_model.decoder.mid.attn_1.q.bias": [
+512
+],
+"first_stage_model.decoder.mid.attn_1.q.weight": [
+512,
+512,
+1,
+1
+],
+"first_stage_model.decoder.mid.attn_1.v.bias": [
+512
+],
+"first_stage_model.decoder.mid.attn_1.v.weight": [
+512,
+512,
+1,
+1
+],
+"first_stage_model.decoder.mid.block_1.conv1.bias": [
+512
+],
+"first_stage_model.decoder.mid.block_1.conv1.weight": [
+512,
+512,
+3,
+3
+],
+"first_stage_model.decoder.mid.block_1.conv2.bias": [
+512
+],
+"first_stage_model.decoder.mid.block_1.norm1.bias": [
+512
+],
+"first_stage_model.decoder.mid.block_1.norm1.weight": [
+512
+],
+"first_stage_model.decoder.mid.block_1.norm2.bias": [
+512
+],
+"first_stage_model.decoder.mid.block_1.conv2.weight": [
+512,
+512,
+3,
+3
+],
+"first_stage_model.decoder.mid.block_2.conv1.bias": [
+512
+],
+"first_stage_model.decoder.mid.block_2.conv1.weight": [
+512,
+512,
+3,
+3
+],
+"first_stage_model.decoder.mid.block_1.norm2.weight": [
+512
+],
+"first_stage_model.decoder.mid.block_2.conv2.bias": [
+512
+],
+"first_stage_model.decoder.mid.block_2.conv2.weight": [
+512,
+512,
+3,
+3
+],
+"first_stage_model.decoder.mid.block_2.norm1.bias": [
+512
+],
+"first_stage_model.decoder.mid.block_2.norm1.weight": [
+512
+],
+"first_stage_model.decoder.mid.block_2.norm2.bias": [
+512
+],
+"first_stage_model.decoder.mid.block_2.norm2.weight": [
+512
+],
+"first_stage_model.decoder.norm_out.bias": [
+128
+],
+"first_stage_model.decoder.norm_out.weight": [
+128
+],
+"first_stage_model.decoder.up.0.block.0.conv1.bias": [
+128
+],
+"first_stage_model.decoder.up.0.block.0.conv1.weight": [
+128,
+256,
+3,
+3
+],
+"first_stage_model.decoder.up.0.block.0.conv2.bias": [
+128
+],
+"first_stage_model.decoder.up.0.block.0.conv2.weight": [
+128,
+128,
+3,
+3
+],
+"first_stage_model.decoder.up.0.block.0.nin_shortcut.bias": [
+128
+],
+"first_stage_model.decoder.up.0.block.0.nin_shortcut.weight": [
+128,
+256,
+1,
+1
+],
+"first_stage_model.decoder.up.0.block.0.norm1.bias": [
+256
+],
+"first_stage_model.decoder.up.0.block.0.norm1.weight": [
+256
+],
+"first_stage_model.decoder.up.0.block.0.norm2.bias": [
+128
+],
+"first_stage_model.decoder.up.0.block.0.norm2.weight": [
+128
+],
+"first_stage_model.encoder.conv_in.bias": [
+128
+],
+"first_stage_model.encoder.conv_in.weight": [
+128,
+3,
+3,
+3
+],
+"first_stage_model.encoder.conv_out.bias": [
+8
+],
+"first_stage_model.encoder.conv_out.weight": [
+8,
+512,
+3,
+3
+],
+"first_stage_model.encoder.down.0.block.0.conv1.bias": [
+128
+],
+"first_stage_model.encoder.down.0.block.0.conv1.weight": [
+128,
+128,
+3,
+3
+],
+"first_stage_model.encoder.down.0.block.0.conv2.bias": [
+128
+],
+"first_stage_model.encoder.down.0.block.0.conv2.weight": [
+128,
+128,
+3,
+3
+],
+"first_stage_model.encoder.down.0.block.0.norm1.bias": [
+128
+],
+"first_stage_model.encoder.down.0.block.0.norm1.weight": [
+128
+],
+"first_stage_model.encoder.down.0.block.0.norm2.bias": [
+128
+],
+"first_stage_model.encoder.down.0.block.0.norm2.weight": [
+128
+],
+"first_stage_model.encoder.down.0.downsample.conv.bias": [
+128
+],
+"first_stage_model.encoder.down.0.downsample.conv.weight": [
+128,
+128,
+3,
+3
+],
+"first_stage_model.encoder.mid.attn_1.k.weight": [
+512,
+512,
+1,
+1
+],
+"first_stage_model.encoder.mid.attn_1.norm.bias": [
+512
+],
+"first_stage_model.encoder.mid.attn_1.k.bias": [
+512
+],
+"first_stage_model.encoder.mid.attn_1.norm.weight": [
+512
+],
+"first_stage_model.encoder.mid.attn_1.proj_out.bias": [
+512
+],
+"first_stage_model.encoder.mid.attn_1.proj_out.weight": [
+512,
+512,
+1,
+1
+],
+"first_stage_model.encoder.mid.attn_1.q.bias": [
+512
+],
+"first_stage_model.encoder.mid.attn_1.q.weight": [
+512,
+512,
+1,
+1
+],
+"first_stage_model.encoder.mid.attn_1.v.bias": [
+512
+],
+"first_stage_model.encoder.mid.block_1.conv1.bias": [
+512
+],
+"first_stage_model.encoder.mid.attn_1.v.weight": [
+512,
+512,
+1,
+1
+],
+"first_stage_model.encoder.mid.block_1.conv1.weight": [
+512,
+512,
+3,
+3
+],
+"first_stage_model.encoder.mid.block_1.conv2.bias": [
+512
+],
+"first_stage_model.encoder.mid.block_1.conv2.weight": [
+512,
+512,
+3,
+3
+],
+"first_stage_model.encoder.mid.block_1.norm1.bias": [
+512
+],
+"first_stage_model.encoder.mid.block_1.norm1.weight": [
+512
+],
+"first_stage_model.encoder.mid.block_1.norm2.bias": [
+512
+],
+"first_stage_model.encoder.mid.block_1.norm2.weight": [
+512
+],
+"first_stage_model.encoder.mid.block_2.conv1.bias": [
+512
+],
+"first_stage_model.encoder.mid.block_2.conv1.weight": [
+512,
+512,
+3,
+3
+],
+"first_stage_model.encoder.mid.block_2.conv2.bias": [
+512
+],
+"first_stage_model.encoder.mid.block_2.norm1.bias": [
+512
+],
+"first_stage_model.encoder.mid.block_2.conv2.weight": [
+512,
+512,
+3,
+3
+],
+"first_stage_model.encoder.mid.block_2.norm1.weight": [
+512
+],
+"first_stage_model.encoder.mid.block_2.norm2.bias": [
+512
+],
+"first_stage_model.encoder.mid.block_2.norm2.weight": [
+512
+],
+"first_stage_model.encoder.norm_out.bias": [
+512
+],
+"first_stage_model.encoder.norm_out.weight": [
+512
+],
+"first_stage_model.post_quant_conv.bias": [
+4
+],
+"first_stage_model.post_quant_conv.weight": [
+4,
+4,
+1,
+1
+],
+"first_stage_model.quant_conv.bias": [
+8
+],
+"first_stage_model.quant_conv.weight": [
+8,
+8,
+1,
+1
+],
+"model.diffusion_model.input_blocks.0.0.bias": [
+320
+],
+"model.diffusion_model.input_blocks.0.0.weight": [
+320,
+4,
+3,
+3
+],
+"model.diffusion_model.label_emb.0.0.bias": [
+1280
+],
+"model.diffusion_model.label_emb.0.0.weight": [
+1280,
+2816
+],
+"model.diffusion_model.label_emb.0.2.bias": [
+1280
+],
+"model.diffusion_model.label_emb.0.2.weight": [
+1280,
+1280
+],
+"model.diffusion_model.middle_block.0.in_layers.0.bias": [
+1280
+],
+"model.diffusion_model.middle_block.0.in_layers.0.weight": [
+1280
+],
+"model.diffusion_model.middle_block.0.out_layers.0.bias": [
+1280
+],
+"model.diffusion_model.middle_block.0.out_layers.0.weight": [
+1280
+],
+"model.diffusion_model.out.0.bias": [
+320
+],
+"model.diffusion_model.out.0.weight": [
+320
+],
+"model.diffusion_model.output_blocks.0.0.in_layers.0.bias": [
+2560
+],
+"model.diffusion_model.output_blocks.0.0.in_layers.0.weight": [
+2560
+],
+"model.diffusion_model.output_blocks.0.0.out_layers.0.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.0.out_layers.0.weight": [
+1280
+],
+"model.diffusion_model.output_blocks.0.0.skip_connection.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.0.skip_connection.weight": [
+1280,
+2560,
+1,
+1
+],
+"model.diffusion_model.output_blocks.0.1.norm.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.norm.weight": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.proj_in.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.proj_in.weight": [
+1280,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.proj_out.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.proj_out.weight": [
+1280,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn1.to_k.weight": [
+1280,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn1.to_out.0.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn1.to_out.0.weight": [
+1280,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn1.to_q.weight": [
+1280,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn1.to_v.weight": [
+1280,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn2.to_k.weight": [
+1280,
+2048
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn2.to_out.0.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn2.to_out.0.weight": [
+1280,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn2.to_q.weight": [
+1280,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.attn2.to_v.weight": [
+1280,
+2048
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.ff.net.0.proj.bias": [
+10240
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.ff.net.0.proj.weight": [
+10240,
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.norm1.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.norm1.weight": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.norm2.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.norm2.weight": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.norm3.bias": [
+1280
+],
+"model.diffusion_model.output_blocks.0.1.transformer_blocks.0.norm3.weight": [
+1280
+],
+"model.diffusion_model.time_embed.0.bias": [
+1280
+],
+"model.diffusion_model.time_embed.0.weight": [
+1280,
+320
+]
+}
+}

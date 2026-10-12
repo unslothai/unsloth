@@ -193,6 +193,68 @@ class TestOllamaAndFallback:
         assert "diffusion" in msg.lower()
         assert "Images page" in msg
 
+    def test_missing_gguf_key_names_key_not_memory(self):
+        # #8513: a MiniMax-M3 GGUF made before llama.cpp's native MSA support.
+        out = (
+            "llama_model_load: error loading model: error loading model hyperparameters: "
+            "key not found in model: minimax-m3.attention.indexer.head_count\n"
+            "llama_model_load_from_file_impl: failed to load model\n"
+        )
+        msg = _classify(
+            out, "/models/MiniMax-M3-UD-Q6_K_XL-00001-of-00009.gguf", "unsloth/MiniMax-M3-GGUF", 1
+        )
+        assert "'minimax-m3.attention.indexer.head_count'" in msg
+        assert "not a memory problem" in msg
+        assert "updated GGUF" in msg
+        assert "GGUF file is valid" not in msg
+        assert "minimax-m3.attention.indexer.head_count\n" in msg
+
+    @pytest.mark.parametrize(
+        "line, named",
+        [
+            # #11259 comment, prism-ml/Ternary-Bonsai-2-27B-gguf PQ2_0 on the bundled build.
+            (
+                "gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. "
+                "should be in [0, 67)\n"
+                "gguf_init_from_reader: failed to read tensor info\n",
+                "quantization type 142",
+            ),
+            # #11259 report: a group-128 Q2_0 tensor where the build defines group-64 Q2_0.
+            (
+                "gguf_init_from_reader: tensor 'dspark.fc.weight' has offset 337718592, "
+                "expected 357584192\n"
+                "gguf_init_from_reader: failed to read tensor data\n",
+                "download it again",
+            ),
+        ],
+    )
+    def test_unreadable_tensor_type_names_the_build_not_memory(self, line, named):
+        out = (
+            "load_model: loading model 'Ternary-Bonsai-27B-PQ2_0.gguf'\n"
+            + line
+            + "llama_model_load: error loading model: llama_model_loader: failed to load model\n"
+            "srv  llama_server: exiting due to model loading error\n"
+        )
+        msg = _classify(
+            out, "/models/Ternary-Bonsai-27B-PQ2_0.gguf", "prism-ml/Ternary-Bonsai-27B-gguf", 1
+        )
+        assert named in msg
+        assert "download it again" in msg
+        assert "not a memory problem" in msg
+        assert "another quant" in msg
+        assert "GGUF file is valid" not in msg
+
+    def test_truncated_gguf_keeps_the_generic_message(self):
+        # What a cut-off download prints: the header parses, the data does not fit.
+        out = (
+            "llama_model_load: error loading model: tensor 'output.weight' data is not "
+            "within the file bounds, model is corrupted or incomplete\n"
+            "llama_model_load_from_file_impl: failed to load model\n"
+        )
+        msg = _classify(out, "/models/m.gguf", "local/m", 1)
+        assert "GGUF file is valid" in msg
+        assert "cannot read this GGUF" not in msg
+
     def test_generic_oom_keeps_memory_message(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big")
         assert "enough memory" in msg.lower()
