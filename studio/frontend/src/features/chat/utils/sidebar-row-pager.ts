@@ -42,8 +42,7 @@ function dedupeAppend<T extends { id: string }>(head: T[], tail: T[]): T[] {
   return out;
 }
 
-/** One sidebar list read a page at a time; a refresh re-reads only the loaded window, and answers
- *  from an older generation (query change or refresh) are dropped. */
+/** One list read a page at a time; a refresh re-reads the loaded window; answers from an older generation are dropped. */
 export class RowPager<Q, T extends { id: string }> {
   private state: RowPagerState<T> = {
     rows: [],

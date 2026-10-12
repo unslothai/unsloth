@@ -1475,8 +1475,7 @@ export function AppSidebar() {
   // `allChatItems` is only what the paged lists have loaded, not the whole history.
   const sectionFiledChatIds = useMemo(() => Object.keys(sectionByChatId), [sectionByChatId]);
   const [openFolderIds, setOpenFolderIds] = useState<readonly string[]>([]);
-  // The open chat and the running ones are looked up by row (header actions, shortcuts, unread
-  // and running counts), so their rows load even when no list has paged that far.
+  // the open and running chats load their rows, so row lookups never miss them
   const slotStoreThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const runningThreadKey = useChatRuntimeStore((s) =>
     Object.keys(s.runningByThreadId)
@@ -1582,8 +1581,7 @@ export function AppSidebar() {
     (projectId: string) => chatRowLists[`folder:${projectId}`],
     [chatRowLists],
   );
-  // "No chats yet" needs no chat anywhere: archived ones and ones in folders that are not loaded
-  // (a collapsed Projects section) are not in the loaded lists.
+  // "No chats yet" also needs no archived chat and none in an unloaded folder
   const [hasUnlistedChats, setHasUnlistedChats] = useState(false);
   const sidebarLooksEmpty = chatItemsLoaded && allChatItems.length === 0;
   useEffect(() => {
@@ -1608,9 +1606,7 @@ export function AppSidebar() {
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, probe);
     };
   }, [sidebarLooksEmpty]);
-  // Which row every thread belongs to, listed or not. The published lists carry
-  // only what is on screen, so this is what keeps an unread Compare row behind
-  // a collapsed section counting as one chat.
+  // thread -> row for every loaded row, so an unread Compare pair behind a collapsed section counts once
   const rowIdByThreadId = useMemo(() => {
     const map: Record<string, string> = {};
     for (const item of allChatItems) {
@@ -2467,7 +2463,6 @@ export function AppSidebar() {
     selectRenderedChats();
   }, [selectAllPending, selectRenderedChats]);
 
-  // in a partly loaded list, unloaded rows keep their places after the dragged ones
   const manualOrderWritesRef = useRef(new Map<string, number>());
   const writeManualOrder = useCallback(
     (scope: string, ids: string[]) => {
@@ -2491,8 +2486,7 @@ export function AppSidebar() {
         setPendingManualOrder(({ [scope]: _superseded, ...rest }) => rest);
         return;
       }
-      // Saving the loaded ids alone would leave every unloaded row unranked, and unranked rows sort
-      // first, so the list would jump; show the order now, save it once every id is known.
+      // the loaded ids alone leave unloaded rows unranked (sorted first): show now, save once all are known
       const saved = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
       const shown = mergeManualOrderTail(ids, saved);
       setPendingManualOrder((pending) => ({ ...pending, [scope]: shown }));

@@ -267,9 +267,7 @@ export function useSidebarRowPages(
       registerPager(pager);
       void pager.start();
     }
-    // one sidebar render per 16 ms however many lists answer in it: each render rebuilds every
-    // derived list, and startup alone lands one response per list. A timer, not a frame
-    // callback, which a page that draws no frames would never run.
+    // one sidebar render per 16 ms however many lists answer; a timer, as a page drawing no frames never runs rAF
     let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = () => {
       if (timer !== null) return;

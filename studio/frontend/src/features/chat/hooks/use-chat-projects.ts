@@ -24,8 +24,7 @@ let projectsRequest: Promise<ProjectRecord[]> | null = null;
 let projectsRefreshPending = false;
 let lastProjectsUpdateEvent: Event | null = null;
 const projectSubscribers = new Set<() => void>();
-// lastActivityAt moves with chat activity, which fires only the history event; trailing, so a
-// streamed reply costs one re-read once it goes quiet
+// lastActivityAt moves with chat activity; trailing, so a streamed reply costs one re-read
 const ACTIVITY_REFRESH_DEBOUNCE_MS = 2000;
 let activityRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -125,8 +124,7 @@ export function useChatProjects(): {
     };
     // Cached rows render immediately, then one shared request reconciles changes made by another
     // browser tab or API client.
-    // its own function per consumer: one shared reference is one DOM listener, so the first
-    // consumer to unmount would remove it for every other (the debounce keeps it one read)
+    // one function per consumer: a shared reference is one DOM listener the first unmount would remove
     const onActivity = () => onChatActivity();
     void refresh(projectsLoaded);
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);

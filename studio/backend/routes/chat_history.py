@@ -752,7 +752,6 @@ def sidebar_thread_rows(
     thread_ids: list[str] = Query(default_factory = list),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Thread id -> sidebar row id for repeated `thread_ids`; unknown ids are left out."""
     if len(thread_ids) > _SIDEBAR_THREAD_ROWS_MAX:
         raise HTTPException(
             status_code = 400,
