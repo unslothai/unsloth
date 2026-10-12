@@ -2704,7 +2704,9 @@ class VideoBackend:
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
         _refuse_non_dit_pick(repo_id, gguf_filename, "video")
-        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id, model_kind)
+        fam = _detect_load_family(
+            repo_id, gguf_filename, family_override, display_repo_id, model_kind
+        )
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "
@@ -5014,7 +5016,9 @@ class VideoBackend:
         download manager."""
         from huggingface_hub import HfApi
 
-        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id, model_kind)
+        fam = _detect_load_family(
+            repo_id, gguf_filename, family_override, display_repo_id, model_kind
+        )
         # _detect_load_family resolves from the REPO id first, so a mixed repo answers its media family for every file
         # in it, a csm quant included. Refuse before the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)

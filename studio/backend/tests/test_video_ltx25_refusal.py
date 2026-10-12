@@ -93,7 +93,8 @@ def test_picked_file_name_outranks_the_folder():
     # ... while a 2.5 file is refused whatever the folder is called...
     with pytest.raises(ValueError, match = "ltx-2.5-22b-distilled-transformer-bf16"):
         assert_supported_ltx_version(
-            "Lightricks/LTX-2.5", "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors"
+            "Lightricks/LTX-2.5",
+            "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
         )
     # ... and a generically named file defers to the repo / display id.
     with pytest.raises(ValueError, match = "LTX-2.5"):
@@ -110,11 +111,21 @@ def test_detect_load_family_refuses_ltx25_even_with_an_override():
             _detect_load_family("Lightricks/LTX-2.5-Diffusers", None, override)
     with pytest.raises(ValueError, match = "LTX-2.5"):
         _detect_load_family(
-            "Lightricks/LTX-2.5", "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors", None
+            "Lightricks/LTX-2.5",
+            "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+            None,
         )
-    assert _detect_load_family("Lightricks/LTX-2.3", "ltx-2.3-22b-distilled.safetensors", None).name == "ltx-2"
+    assert (
+        _detect_load_family("Lightricks/LTX-2.3", "ltx-2.3-22b-distilled.safetensors", None).name
+        == "ltx-2"
+    )
     assert _detect_load_family("Lightricks/LTX-2", None, None).name == "ltx-2"
-    assert _detect_load_family("unsloth/LTX-2.3-GGUF", "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf", None).name == "ltx-2"
+    assert (
+        _detect_load_family(
+            "unsloth/LTX-2.3-GGUF", "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf", None
+        ).name
+        == "ltx-2"
+    )
 
 
 def test_validate_load_request_refuses_before_any_download():
@@ -134,11 +145,9 @@ def test_validate_load_request_refuses_before_any_download():
 
 def test_training_refuses_ltx25_base():
     from core.training.diffusion_train_common import resolve_trainable_family
-
     for family in (None, "ltx-2"):
         with pytest.raises(ValueError, match = "LTX-2.5"):
             resolve_trainable_family("Lightricks/LTX-2.5-Diffusers", family)
-
 
 
 _LTX23_KEYS = [
@@ -160,7 +169,11 @@ def _shapes(key):
 
 def _as_ltx25(shapes):
     """The 2.3 header with diffusers' 2.5 deltas applied: no video FFN bias, a keyframe position embedding."""
-    prefix = "model.diffusion_model." if any(k.startswith("model.diffusion_model.") for k in shapes) else ""
+    prefix = (
+        "model.diffusion_model."
+        if any(k.startswith("model.diffusion_model.") for k in shapes)
+        else ""
+    )
     out = {
         k: v
         for k, v in shapes.items()
@@ -245,7 +258,9 @@ def test_local_ltx25_diffusers_folder_is_refused_by_model_index(tmp_path):
     assert _detect_load_family(str(folder), None, None).name == "ltx-2"
 
 
-@pytest.mark.parametrize("filename", ["ltx-transformer.safetensors", "ltxv_dit.safetensors", "LTX.safetensors"])
+@pytest.mark.parametrize(
+    "filename", ["ltx-transformer.safetensors", "ltxv_dit.safetensors", "LTX.safetensors"]
+)
 def test_unversioned_ltx_file_name_defers_to_the_repo(filename):
     from core.inference.video import get_video_backend
 
@@ -253,7 +268,10 @@ def test_unversioned_ltx_file_name_defers_to_the_repo(filename):
         assert_supported_ltx_version("Lightricks/LTX-2.5", filename)
     with pytest.raises(ValueError, match = "LTX-2.5"):
         get_video_backend().validate_load_request(
-            "Lightricks/LTX-2.5", gguf_filename = filename, model_kind = "single_file", family_override = "ltx-2"
+            "Lightricks/LTX-2.5",
+            gguf_filename = filename,
+            model_kind = "single_file",
+            family_override = "ltx-2",
         )
     # A version-free name is no evidence either way in a 2.0 / 2.3 repo.
     assert_supported_ltx_version("Lightricks/LTX-2.3", filename)
@@ -305,7 +323,10 @@ def test_explicit_pipeline_load_ignores_the_unused_filename(tmp_path):
     with pytest.raises(ValueError, match = "model_index.json"):
         _detect_load_family(str(folder), "ltx-2.3.safetensors", "ltx-2", None, "pipeline")
     # A real single-file pick still lets its own ltx-2.3 file decide.
-    assert _detect_load_family(str(folder), "ltx-2.3.safetensors", "ltx-2", None, "single_file").name == "ltx-2"
+    assert (
+        _detect_load_family(str(folder), "ltx-2.3.safetensors", "ltx-2", None, "single_file").name
+        == "ltx-2"
+    )
 
 
 def test_training_name_guard_is_scoped_to_ltx(tmp_path):
@@ -321,14 +342,24 @@ def test_training_name_guard_is_scoped_to_ltx(tmp_path):
         resolve_trainable_family(str(folder), "ltx-2")
 
 
-@pytest.mark.parametrize("name", ["ltxv-2.5.safetensors", "ltxv25", "LTXV_2_5-dev.safetensors", "ltxv2.4"])
+@pytest.mark.parametrize(
+    "name", ["ltxv-2.5.safetensors", "ltxv25", "LTXV_2_5-dev.safetensors", "ltxv2.4"]
+)
 def test_versioned_ltxv_alias_is_refused(name):
     assert unsupported_ltx_version(name) is not None
     with pytest.raises(ValueError, match = "LTX-2"):
         assert_supported_ltx_version("/models/x", name)
 
 
-@pytest.mark.parametrize("filename", ["ltx-24fps-clip.safetensors", "ltx-23.safetensors", "ltx-2.10-x.safetensors", "ltx2fast.safetensors"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "ltx-24fps-clip.safetensors",
+        "ltx-23.safetensors",
+        "ltx-2.10-x.safetensors",
+        "ltx2fast.safetensors",
+    ],
+)
 def test_numeric_lookalike_file_name_defers_to_the_repo(filename):
     with pytest.raises(ValueError, match = "LTX-2.5"):
         assert_supported_ltx_version("Lightricks/LTX-2.5", filename)
@@ -339,11 +370,21 @@ def test_inference_name_guard_is_scoped_to_ltx():
     from core.inference.video import _detect_load_family
 
     fam = _detect_load_family(
-        "someone/wan-ltx-2.5-style", "wan-ltx-2.5-style.safetensors", "wan2.2-ti2v-5b", None, "single_file"
+        "someone/wan-ltx-2.5-style",
+        "wan-ltx-2.5-style.safetensors",
+        "wan2.2-ti2v-5b",
+        None,
+        "single_file",
     )
     assert fam is not None and fam.name == "wan2.2-ti2v-5b"
     with pytest.raises(ValueError, match = "LTX-2.5"):
-        _detect_load_family("someone/wan-ltx-2.5-style", "wan-ltx-2.5-style.safetensors", "ltx-2", None, "single_file")
+        _detect_load_family(
+            "someone/wan-ltx-2.5-style",
+            "wan-ltx-2.5-style.safetensors",
+            "ltx-2",
+            None,
+            "single_file",
+        )
 
 
 def test_ltx25_companion_base_is_refused(tmp_path, monkeypatch):
@@ -356,7 +397,9 @@ def test_ltx25_companion_base_is_refused(tmp_path, monkeypatch):
     backend = get_video_backend()
     pick = dict(gguf_filename = "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf", model_kind = "gguf")
     with pytest.raises(ValueError, match = "LTX-2.5"):
-        backend.validate_load_request("unsloth/LTX-2.3-GGUF", base_repo = "unsloth/LTX-2.5-Diffusers", **pick)
+        backend.validate_load_request(
+            "unsloth/LTX-2.3-GGUF", base_repo = "unsloth/LTX-2.5-Diffusers", **pick
+        )
     folder = tmp_path / "my-base"
     folder.mkdir()
     index = {

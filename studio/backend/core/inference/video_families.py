@@ -76,6 +76,7 @@ def assert_supported_ltx_version(
 ) -> None:
     """A file whose own name has a versioned LTX token decides alone (an ltx-2.3 file in an ``ltx-2.5-tests`` folder
     loads); any other file name (``model``, ``ltx-transformer``) defers to the repo / display id."""
+
     def leaf(name: Optional[str]) -> str:
         # Last segment only: a local parent folder must not decide.
         return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
@@ -84,7 +85,11 @@ def assert_supported_ltx_version(
     if ltx_name_version(base) is not None:
         picks: tuple[tuple[str, Optional[str]], ...] = ((base, filename),)
     else:
-        picks = ((base, filename), (leaf(display_repo_id), display_repo_id), (leaf(repo_id), repo_id))
+        picks = (
+            (base, filename),
+            (leaf(display_repo_id), display_repo_id),
+            (leaf(repo_id), repo_id),
+        )
     for name, shown in picks:
         version = unsupported_ltx_version(name)
         if version is not None:
@@ -119,7 +124,8 @@ def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
     encoder = spec.get("text_encoder")
     encoder_class = encoder[1] if isinstance(encoder, list) and len(encoder) == 2 else ""
     if str(encoder_class).startswith("Gemma4") or any(
-        isinstance(spec.get(k), list) and spec.get(k)[0] for k in ("diffusion_decoder", "duration_head")
+        isinstance(spec.get(k), list) and spec.get(k)[0]
+        for k in ("diffusion_decoder", "duration_head")
     ):
         raise ValueError(unsupported_ltx_message("2.5", f"'{path}' (by its model_index.json)"))
 
