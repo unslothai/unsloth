@@ -32487,6 +32487,33 @@ class LlamaCppBackend:
                     child_has_no_gpu = _child_has_no_gpu,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
+                # The parks were judged against the host before the placement was known, and
+                # the weights this launch leaves in host RAM take that room: judged again here,
+                # while auto can still fall back to a plain launch rather than find it short
+                # after the load, as the shortage before launch does.
+                _exact_writes_now = getattr(self, "_exact_parking_writes", None)
+                if (
+                    _exact_wanted
+                    and _host_weights_mib
+                    and _exact_writes_now is not None
+                    and getattr(self, "_exact_host_short", None) is None
+                ):
+                    _exact_free_now = _exact_host_free_mib(self)
+                    if _exact_free_now is not None:
+                        _exact_room = max(0, int(_exact_free_now) - _host_weights_mib)
+                        if int(_exact_writes_now) > _exact_room:
+                            self._exact_host_short = (int(_exact_writes_now), _exact_room)
+                            self._record_load_warning(
+                                "Exact concurrency may park up to %d MiB of KV state in host "
+                                "RAM, and this host has %d MiB free once the model's own %d "
+                                "MiB in host RAM is loaded. A park the host cannot hold is "
+                                "re-prefilled, which is not byte-identical. The load will run "
+                                "without exact concurrency, or fail, depending on the setting."
+                                % (int(_exact_writes_now), _exact_room, _host_weights_mib)
+                            )
+                            if _exact_setting == _exact.EXACT_AUTO:
+                                # Bounded below with the weights, as any plain launch is.
+                                _exact_wanted = False
                 if _host_weights_mib and _exact_budget is not None and not _exact_wanted:
                     # Sized before the placement was known: they come off the room its parking
                     # may pin.

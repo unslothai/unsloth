@@ -580,7 +580,7 @@ class TestExactParksAreCountedAcrossModels:
 
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         site = source.index("_offload_msg = self._launch_host_shortfall_message(")
-        window = source[site : site + 2200]
+        window = source[site : site + 4000]
         assert "_host_weights_mib = self._planned_host_weights_mib(" in window
         assert "if _host_weights_mib and _exact_budget is not None and not _exact_wanted:" in window
         assert (
@@ -711,4 +711,4 @@ class TestExactParksAreCountedAcrossModels:
     def test_every_exact_host_check_asks_for_this_backends_share(self):
         import inspect
         source = inspect.getsource(LlamaCppBackend.load_model)
-        assert source.count("_exact_host_free_mib(self)") == 4
+        assert source.count("_exact_host_free_mib(self)") == 5
