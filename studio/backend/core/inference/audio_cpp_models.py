@@ -265,8 +265,7 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
         # Empty lyrics still sing; only this tag stays wordless.
         instrumental_lyrics = "[Instrumental]",
         rtf = 6.0,
-        # Length is only a cap here: at 1.0x long lyrics were cut mid-song (#13337). 240 s x 1.5 =
-        # the runtime's own 9000-token default.
+        # 1.0x cut long lyrics mid-song (#13337); 240 s x 1.5 = the runtime's 9000-token default.
         overrun = 1.5,
     ),
 }
