@@ -390,7 +390,7 @@ class TestTheNamedBudgetIsJudged:
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         launch = source.index('cmd.extend(["--preempt-ram", str(_exact_budget)])')
         assert "self._exact_parking_writes = _exact_writes" in source[launch : launch + 1800]
-        after = source.index("_server_props = self._query_server_props() or {}")
+        after = source.index("_server_props = self._server_props_or_last()")
         again = source.index(
             '_exact_host_shortfall_after_load( getattr(self, "_exact_parking_writes", None)'
         )
