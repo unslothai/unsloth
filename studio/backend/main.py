@@ -1378,6 +1378,7 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
+    SANDBOX_UPLOAD_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
@@ -1434,6 +1435,11 @@ _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
 _RAG_DOCUMENT_UPLOAD_RE = _re.compile(
     r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
 )
+# One file into a chat's sandbox folder (multipart, capped by the route), on both mounts of the router.
+_SANDBOX_UPLOAD_RE = _re.compile(r"^/(?:api/inference|v1)/sandbox/[^/]+/upload/?$")
+_UPLOAD_PASSTHROUGH_RE = _re.compile(
+    f"(?:{_RAG_DOCUMENT_UPLOAD_RE.pattern})|(?:{_SANDBOX_UPLOAD_RE.pattern})"
+)
 # Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
 _AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1469,6 +1475,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         return AUDIO_INPUT_MAX_BYTES
+    if _SANDBOX_UPLOAD_RE.match(path):
+        return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):
         from core.rag import config as _rag_config
 
@@ -1685,7 +1693,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
-    upload_passthrough_pattern = _RAG_DOCUMENT_UPLOAD_RE,
+    upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -2609,6 +2617,23 @@ def _nvfp4_diffusion_enabled() -> bool:
         return False
 
 
+def _checkpoint_quant_formats() -> list[str]:
+    """FP8 / NVFP4 checkpoint formats the Hub's Recommended filter may list. Torch-free.
+
+    Only on a CUDA backend: nvidia-smi still sees the cards under a CPU-only torch or a
+    CUDA_VISIBLE_DEVICES mask that hides them all, and neither can load these checkpoints."""
+    try:
+        from utils.hardware import get_device
+        from utils.hardware.hardware import _backend_label
+        from utils.hardware.nvidia import get_checkpoint_quant_formats
+
+        if _backend_label(get_device()) != "cuda":
+            return []
+        return get_checkpoint_quant_formats()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -2750,6 +2775,8 @@ def get_system_info(
         "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
+        # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
+        "checkpoint_quant_formats": _checkpoint_quant_formats(),
     }
 
 

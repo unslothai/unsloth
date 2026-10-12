@@ -4403,6 +4403,24 @@ async def artifact_preview_page(token: str):
     )
 
 
+from core.inference import react_preview
+
+
+class ArtifactReactCompileRequest(BaseModel):
+    source: str
+    lang: Literal["jsx", "tsx"] = "tsx"
+
+
+@studio_router.post("/artifact-react-compile", include_in_schema = False)
+async def compile_artifact_react_preview(
+    request: ArtifactReactCompileRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Compile a chat React component for the preview frame; Node only transpiles, never runs it."""
+    if len(request.source.encode("utf-8", "surrogatepass")) > react_preview.MAX_SOURCE_BYTES:
+        raise HTTPException(status_code = 413, detail = "This component is too large to preview")
+    return await react_preview.compile_react_preview_async(request.source, request.lang)
+
+
 # A bare "*" is refused: such a template gets the default-deny.
 _MCP_APP_DOMAIN_RE = _re.compile(
     r"^(?:(?:https?|wss?)://)?"
@@ -35717,6 +35735,44 @@ async def reveal_sandbox_dir(
         logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to open file manager")
     return {"status": "ok", "path": sandbox_dir}
+
+
+@router.post("/sandbox/{session_id}/upload")
+async def upload_sandbox_file(
+    session_id: str,
+    file: UploadFile = File(...),
+    overwrite: bool = Form(False),
+    session: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Put one file into this chat's sandbox folder, where its tools read and write.
+
+    Saved at the folder's root under the file's own name. A taken name is a 409 unless
+    ``overwrite``, so a second upload never silently replaces what a tool wrote.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from core.inference.tools import SandboxUploadExists, save_sandbox_upload
+    from utils.upload_limits import SANDBOX_UPLOAD_MAX_BYTES
+
+    def _chunks():
+        total = 0
+        while chunk := file.file.read(1 << 20):
+            total += len(chunk)
+            if total > SANDBOX_UPLOAD_MAX_BYTES:
+                raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
+            yield chunk
+
+    try:
+        saved = await run_in_threadpool(
+            save_sandbox_upload, session or session_id, file.filename, _chunks(), overwrite
+        )
+    except SandboxUploadExists as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} already exists") from None
+    except OSError:
+        logger.error("Failed to save a sandbox upload", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Could not save the file") from None
+    return saved
 
 
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])

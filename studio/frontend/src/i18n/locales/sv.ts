@@ -330,6 +330,8 @@ export const sv = {
       pathCopied: "Sökvägen kopierad",
       openFailed: "Det gick inte att öppna {name}.",
       wrap: "Radbryt",
+      reactNeedsNode: "React-förhandsvisningar kräver Node.js 20.19 eller senare. Installera det om det saknas och kör sedan Unsloths installation igen.",
+      reactFailed: "Det gick inte att förbereda förhandsvisningen. Kör den igen för att försöka på nytt.",
     },
     pages: {
       searchDownloads: "Sök i hämtningshistoriken",
@@ -4212,6 +4214,15 @@ export const sv = {
         projectMissing: "Det här projektet har ingen mapp än.",
         missingDescription:
           "Den skapas första gången ett verktyg skriver en fil.",
+        upload: "Ladda upp till chattmapp",
+        uploadTitle: "Lägg till filer i mappen som den här chattens verktygsanrop läser och skriver i",
+        uploaded: "{name} lades till i chattmappen",
+        uploadedMany: "{count} filer lades till i chattmappen",
+        uploadedDescription: "Verktygen i den här chatten kan öppna dem nu. De läggs inte till i konversationen.",
+        uploadExists: "{name} finns redan i chattmappen",
+        uploadExistsMany: "{count} filer finns redan i chattmappen",
+        replace: "Ersätt",
+        uploadFailed: "Det gick inte att ladda upp {name}",
       },
     },
     empty: {

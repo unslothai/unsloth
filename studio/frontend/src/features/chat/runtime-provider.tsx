@@ -56,6 +56,7 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
+import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -3622,6 +3623,25 @@ function ActiveBranchRegistrar({
   return null;
 }
 
+// The header meter sits outside AssistantRuntimeProvider, so the count is published upward.
+// Same set the thread renders notices for, so the meter never disagrees with the transcript.
+function CompactionCountRegistrar({
+  onCountChange,
+}: {
+  onCountChange: (threadId: string, count: number) => void;
+}): ReactElement | null {
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const count = useAuiState(
+    ({ thread }) => compactionNoticeMessageIds(thread.messages).size,
+  );
+
+  useEffect(() => {
+    if (threadId) onCountChange(threadId, count);
+  }, [count, onCountChange, threadId]);
+
+  return null;
+}
+
 // include hidden panes because background replies also move the branch head
 function BranchHeadRecorder(): ReactElement | null {
   useBranchHeadRecorder();
@@ -4002,6 +4022,7 @@ export function ChatRuntimeProvider({
   listThreads = true,
   backgrounded = false,
   onInitialHistoryReady,
+  onCompactionCountChange,
 }: {
   children: ReactNode;
   modelType?: ModelType;
@@ -4015,6 +4036,7 @@ export function ChatRuntimeProvider({
   // stays alive, and everything driving the shared single-chat state stands down.
   backgrounded?: boolean;
   onInitialHistoryReady?: () => void;
+  onCompactionCountChange?: (threadId: string, count: number) => void;
 }): ReactElement {
   const signalReady = useAppShellReadySignal();
   // Read by the history adapter's own active-thread publication, the sibling of
@@ -4102,6 +4124,9 @@ export function ChatRuntimeProvider({
         <ThreadContextUsageRecount
           enabled={modelType === "base" && !pairId && !backgrounded}
         />
+        {onCompactionCountChange ? (
+          <CompactionCountRegistrar onCountChange={onCompactionCountChange} />
+        ) : null}
         <ThreadBackendAutosave
           modelType={modelType}
           pairId={pairId}
