@@ -46219,7 +46219,7 @@ async def diffusion_download_plan(
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
-    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+    from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -46271,13 +46271,25 @@ async def diffusion_download_plan(
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
         # Plan for the engine /images/load will pick: a GGUF on a GPU-less host routes to native
         # sd.cpp, which reads different files. Card-scoped, since the failure records are per card.
-        if (
-            fam is not None
-            and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
-        ):
+        predicted = (
+            predict_engine(
+                fam,
+                model_kind = kind,
+                gpu_ordinal = gpu_ordinal,
+                gguf_filename = request.gguf_filename,
+            )
+            if fam is not None
+            else None
+        )
+        if predicted == ENGINE_SD_CPP:
             _refuse_native_component_files(request)
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
+        elif predicted == ENGINE_MLX:
+            # Opt-in MLX engine (UNSLOTH_DIFFUSION_MLX=1): same single-GGUF contract as native.
+            _refuse_native_component_files(request)
+            from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
+            planner = get_mlx_diffusion_backend()
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -46479,7 +46491,7 @@ async def load_diffusion_model_gated(
     )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
-    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -46545,7 +46557,12 @@ async def load_diffusion_model_gated(
         try:
             # Card-scoped like the activation below, or the wrong engine's preflight runs.
             pending_name = (
-                predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal)
+                predict_engine(
+                    fam,
+                    model_kind = kind,
+                    gpu_ordinal = gpu_ordinal,
+                    gguf_filename = request.gguf_filename,
+                )
                 if fam is not None
                 else None
             )
@@ -46574,7 +46591,8 @@ async def load_diffusion_model_gated(
                 repo_id = request.model_path,
                 base_repo = request.base_repo,
             )
-        elif fam is not None and pending_name == ENGINE_SD_CPP:
+        elif fam is not None and pending_name in (ENGINE_SD_CPP, ENGINE_MLX):
+            # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
             _refuse_native_component_files(request)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
@@ -46621,6 +46639,8 @@ async def load_diffusion_model_gated(
                 before_fallback = (
                     _guard_diffusion_load_against_training if off_torch is not None else None
                 ),
+                # Only the opt-in MLX engine reads it (to judge the GGUF quant).
+                gguf_filename = request.gguf_filename,
             )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
@@ -46637,7 +46657,7 @@ async def load_diffusion_model_gated(
         # only when the prediction was inconclusive or wrong; a correct one already paid it.
         activated = active_engine_name()
         if fam is not None and activated != pending_name:
-            if activated == ENGINE_SD_CPP:
+            if activated in (ENGINE_SD_CPP, ENGINE_MLX):
                 _refuse_native_component_files(request)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,

@@ -3371,7 +3371,7 @@ class DiffusionBackend:
         # same predicate. Imported here, not at module import, because the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
-        if not family_buildable_here(fam, model_kind = kind):
+        if not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
         if (

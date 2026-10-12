@@ -5245,7 +5245,9 @@ class DiffusionStatusResponse(BaseModel):
         "max_output_side, max_output_pixels, reference_resolutions and localized_edit_modes. "
         "Null when nothing is loaded.",
     )
-    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    engine: Optional[str] = Field(
+        None, description = "Active diffusion engine: diffusers | sd_cpp | mlx (opt-in, Apple Silicon)"
+    )
     native_mode: Optional[str] = Field(
         None,
         description = "Native sd.cpp execution mode: server (resident sd-server) | oneshot "
@@ -5254,6 +5256,11 @@ class DiffusionStatusResponse(BaseModel):
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
+    )
+    mlx_fallback_reason: Optional[str] = Field(
+        None,
+        description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
+        "MLX was not requested or is in use)",
     )
     supports_lora: bool = Field(
         False,
