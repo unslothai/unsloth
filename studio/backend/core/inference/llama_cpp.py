@@ -5554,6 +5554,9 @@ _MMPROJ_NON_CAUSAL_IMAGE_TOKENS = {
 _MMPROJ_UNKNOWN_UBATCH = 2048
 _GEMMA4V_CAUSAL_TEXT_N_EMBD = frozenset({1536, 2560})  # E2B and E4B
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
+# A launch's `/props` read is asked again this often before its capabilities read as absent.
+_LAUNCH_PROPS_RETRIES = 2
+_LAUNCH_PROPS_RETRY_S = 0.25
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 _LLAMA_ARG_AUTO_VALUES = frozenset({"auto", "-1"})
 _LLAMA_ARG_TRUE_OR_AUTO_VALUES = _LLAMA_ARG_TRUE_VALUES | _LLAMA_ARG_AUTO_VALUES
@@ -38389,7 +38392,15 @@ class LlamaCppBackend:
     def _server_confirms_parking(self) -> bool:
         """Whether the running server reports, in ``/props``, that it parks slots. A build without
         the report counts as parking only when preemption was asked for by name: auto needs proof."""
-        props = self._query_server_props() or {}
+        # The first read of the launch, so a timeout is asked again: the exact-mode read that
+        # follows reuses the answer kept here, and both decisions see the same server.
+        props = self._query_server_props()
+        for _ in range(_LAUNCH_PROPS_RETRIES):
+            if props is not None:
+                break
+            time.sleep(_LAUNCH_PROPS_RETRY_S)
+            props = self._query_server_props()
+        props = props or getattr(self, "_server_props_seen", None) or {}
         preempt = props.get("preempt")
         if isinstance(preempt, dict):
             return preempt.get("enabled") is True

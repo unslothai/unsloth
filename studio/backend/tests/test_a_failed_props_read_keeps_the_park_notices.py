@@ -61,3 +61,24 @@ def test_nothing_seen_reads_as_nothing(monkeypatch):
 
     monkeypatch.setattr(llama_mod.httpx, "get", get)
     assert _backend()._server_props_or_last() == {}
+
+
+def test_a_timeout_on_the_first_read_is_asked_again(monkeypatch):
+    # The reverse order: the confirmation's read fails and the next one answers. Both decisions
+    # have to see that answer, or parking reads as absent beside a server reporting exact mode.
+    answers = [
+        llama_mod.httpx.ReadTimeout("slow"),
+        _Response({"exact_concurrency": True, "preempt": {"enabled": True}}),
+    ]
+
+    def get(*args, **kwargs):
+        answer = answers.pop(0) if answers else llama_mod.httpx.ReadTimeout("slow")
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(llama_mod.httpx, "get", get)
+    monkeypatch.setattr(llama_mod, "_LAUNCH_PROPS_RETRY_S", 0.0, raising = False)
+    backend = _backend()
+    assert backend._server_confirms_parking() is True
+    assert backend._server_props_or_last().get("exact_concurrency") is True
