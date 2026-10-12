@@ -350,7 +350,7 @@ def _same_path(a: Optional[str], b: Optional[str]) -> bool:
     return bool(a and b) and os.path.normpath(a) == os.path.normpath(b)
 
 
-async def _unload_target(model_id: str, row: dict) -> Optional[str]:
+async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str]:
     """What /unload must be named to stop this row, or None when nothing of it runs.
 
     /unload matches the resident or loading identifier, not an alias (LM Studio, scan folder,
@@ -367,7 +367,10 @@ async def _unload_target(model_id: str, row: dict) -> Optional[str]:
     path = resolved[0] if resolved else None
     base, suffix = split_model_ref(model_id)
     # Only a quant the caller named: a bare id resolves to the preferred quant, not the resident one.
-    wanted_variant = suffix if suffix and looks_like_quant(suffix) else None
+    # The resolver's spelling of it, which maps a legacy label (BF16) onto the current quant.
+    wanted_variant = None
+    if suffix and looks_like_quant(suffix):
+        wanted_variant = (resolved[1] if resolved else None) or suffix
 
     llama = inf.get_llama_cpp_backend()
     orchestrator = inf._peek_inference_backend()
@@ -389,14 +392,16 @@ async def _unload_target(model_id: str, row: dict) -> Optional[str]:
         )
         if not named:
             continue
-        if wanted_variant and running_variant and wanted_variant.lower() != running_variant.lower():
-            return None
+        # A pin names one quant: another one, or a backend with none, may sit in a kept slot instead.
+        if wanted_variant and (running_variant or "").lower() != wanted_variant.lower():
+            continue
         return running
     filling = inf.model_slots.visible_loading()
     if filling and _same_path(filling[1], path):
         return path
-    # A kept slot routes by the listed id inside /unload.
-    return model_id if row.get("loaded") else None
+    # A kept slot routes by the listed id inside /unload. A pin through its base row has no
+    # residency of its own: the base row's flag describes whatever quant is resident.
+    return model_id if row.get("loaded") and not pinned else None
 
 
 async def _resolve_load_target(model_id: str):
@@ -484,7 +489,7 @@ async def manage_unload_model(
     if pinned and await _resolve_local(model_id) is None:
         # A quant this machine does not have names nothing running; never the bare model.
         raise HTTPException(status_code = 404, detail = "Model not found")
-    target = await _unload_target(model_id, row)
+    target = await _unload_target(model_id, row, pinned)
     if target is None:
         return {"success": True, "model": model_id}
     request = UnloadRequest(model_path = target)

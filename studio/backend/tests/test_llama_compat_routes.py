@@ -1449,3 +1449,33 @@ def test_management_refuses_a_suffix_that_is_not_a_quant(suffix):
         for path in ("/models/load", "/models/unload"):
             assert c.post(path, json = {"model": f"{QWEN}:{suffix}"}).status_code == 404, path
     assert calls == []
+
+
+def test_management_unload_compares_a_legacy_pin_by_its_resolved_quant(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q4_K_M", QWEN),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":BF16"}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_routes_a_kept_slot_quant_past_the_primary(monkeypatch, _no_local_gguf):
+    """Q4 on the primary, Q8 kept in a slot: the Q8 pin goes to /unload, which routes it to the slot."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q8_0", QWEN),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    pin = {"id": QWEN + ":Q8_0", "object": "model", "loaded": True}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": pin["id"]}).status_code == 200
+    assert calls == [("unload", pin["id"])]
