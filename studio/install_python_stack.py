@@ -53,7 +53,12 @@ def _nvidia_library_inventory():
     return _nvidia_probe.probe() if _nvidia_probe is not None else None
 
 
-from backend.utils.kernel_install import install_kernel, install_prebuilt, uninstall_command
+from backend.utils.kernel_install import (
+    KERNELS,
+    install_kernel,
+    install_prebuilt,
+    uninstall_command,
+)
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
@@ -8560,7 +8565,8 @@ def _ensure_ssm_kernels() -> None:
 
     The same wheel-only install `unsloth install-kernels` and the SSM runtime run, so a
     Mamba / hybrid model does not wait on a download at load time. Never builds from source
-    and never changes torch; a cell with no published wheel is skipped.
+    and never changes torch; a cell with no published wheel is skipped, and a resident build
+    that no longer loads is removed, as flash-attn's resync does.
     """
     if _ssm_kernel_install_disabled() or NO_TORCH or IS_MACOS:
         return
@@ -8570,22 +8576,60 @@ def _ensure_ssm_kernels() -> None:
     )
     if env is None:
         return
+
+    # A new runner per call: install_kernel caches its GPU and Triton probes per runner, and a
+    # repair that moved torch can move Triton with it. Import probes are bounded so a wedged
+    # driver cannot hang setup; the installs themselves are not.
+    def run(cmd, *args, **kwargs):
+        if list(cmd[:2]) == [sys.executable, "-c"]:
+            kwargs.setdefault("timeout", _FLASH_ATTN_IMPORT_PROBE_TIMEOUT)
+        return subprocess.run(cmd, *args, **kwargs)
+
+    def loads(check: str) -> bool | None:
+        try:
+            return (
+                run(
+                    [sys.executable, "-c", check],
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                ).returncode
+                == 0
+            )
+        except subprocess.TimeoutExpired:
+            return None
+
     for name in ("causal_conv1d", "mamba_ssm"):
+        distribution, check = KERNELS[name]
+        installed = _installed_distribution_version(distribution) is not None
+        # Local first, so an offline re-run does not wait on a wheel HEAD request.
+        if installed and loads(check):
+            _note(f"{name} already installed and loads.")
+            continue
         buffer = io.StringIO()
         try:
             with contextlib.redirect_stdout(buffer):
-                status = install_kernel(name, env)
+                status = install_kernel(name, env, run = run, install_without_gpu = True)
         except Exception as exc:
             status = 1
             buffer.write(f"{type(exc).__name__}: {exc}")
-        if status:
-            _count_install_action()
-            _step("warning", f"Continuing without {name}", _cyan)
-        elif f"Unsloth: installed {name} " in buffer.getvalue():
-            _count_install_action()
         for line in buffer.getvalue().splitlines():
             if line.strip():
                 _note(line.removeprefix("Unsloth: "))
+        if status or f"Unsloth: installed {name} " in buffer.getvalue():
+            _count_install_action()
+        if _installed_distribution_version(distribution) is not None and loads(check) is False:
+            _count_install_action()
+            if _uninstall_distribution(distribution):
+                _step("warning", f"{name} does not load with this torch; removed it", _cyan)
+            else:
+                _step(
+                    "warning",
+                    f"{name} does not load with this torch and could not be removed; "
+                    f"uninstall {distribution} manually",
+                    _cyan,
+                )
+        elif status:
+            _step("warning", f"Continuing without {name}", _cyan)
 
 
 # -- uv bootstrap ------------------------------------------------------

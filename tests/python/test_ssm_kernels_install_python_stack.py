@@ -7,8 +7,10 @@ hybrid model does not wait on a download at load time."""
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -21,11 +23,40 @@ import install_python_stack as ips  # noqa: E402
 
 SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
 ENV = {"platform_tag": "linux_x86_64", "torch_mm": "2.13", "torch_version": "2.13.0+cu130"}
+DISTS = {"causal_conv1d": "causal-conv1d", "mamba_ssm": "mamba-ssm"}
+
+
+class _Host:
+    """Which kernels are installed and whether they import; the fake install_kernel edits it."""
+
+    def __init__(
+        self,
+        installed = (),
+        loading = (),
+        hangs = (),
+    ):
+        self.installed = set(installed)
+        self.loading = set(loading)
+        self.hangs = set(hangs)
+        self.timeouts = []
+
+    def version(self, distribution):
+        return "1.0" if distribution in self.installed else None
+
+    def run(self, cmd, *args, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        for name, distribution in DISTS.items():
+            if cmd[-1] == ips.KERNELS[name][1]:
+                if distribution in self.hangs:
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+                return SimpleNamespace(returncode = 0 if distribution in self.loading else 1)
+        return SimpleNamespace(returncode = 0)
 
 
 def _run(
-    *,
+    host,
     install_kernel,
+    *,
     env = ENV,
     no_torch = False,
     macos = False,
@@ -38,6 +69,11 @@ def _run(
         mock.patch.object(ips, "IS_WINDOWS", False),
         mock.patch.object(ips, "probe_torch_wheel_env", return_value = env) as probe,
         mock.patch.object(ips, "install_kernel", side_effect = install_kernel) as kernel,
+        mock.patch.object(ips, "_installed_distribution_version", side_effect = host.version),
+        mock.patch.object(ips.subprocess, "run", side_effect = host.run),
+        mock.patch.object(
+            ips, "_uninstall_distribution", side_effect = lambda d: host.installed.discard(d) or True
+        ) as uninstall,
         mock.patch.object(ips, "_count_install_action") as counted,
         mock.patch.object(ips, "_step", side_effect = lambda label, value, *_: steps.append(value)),
         mock.patch.object(ips, "_note", side_effect = lambda message, *_: notes.append(message)),
@@ -46,45 +82,100 @@ def _run(
         ),
     ):
         ips._ensure_ssm_kernels()
-    return kernel, probe, counted, steps, notes
+    return SimpleNamespace(
+        kernel = kernel,
+        probe = probe,
+        uninstall = uninstall,
+        counted = counted,
+        steps = steps,
+        notes = notes,
+    )
 
 
-def _installs(name, env):
-    print(f"Unsloth: installed {name} ({name}-x.whl).")
-    return 0
+def _installer(host):
+    def install(name, env, **kwargs):
+        print(f"Unsloth: installed {name} ({name}-x.whl).")
+        host.installed.add(DISTS[name])
+        host.loading.add(DISTS[name])
+        return 0
+
+    return install
 
 
 def test_both_kernels_install_for_the_resident_torch():
-    kernel, probe, counted, steps, notes = _run(install_kernel = _installs)
-    assert [c.args for c in kernel.call_args_list] == [("causal_conv1d", ENV), ("mamba_ssm", ENV)]
-    assert probe.call_args.kwargs["include_windows"] is True
-    assert counted.call_count == 2
-    assert steps == []
-    assert notes == [
+    host = _Host()
+    r = _run(host, _installer(host))
+    assert [c.args for c in r.kernel.call_args_list] == [("causal_conv1d", ENV), ("mamba_ssm", ENV)]
+    for call in r.kernel.call_args_list:
+        assert call.kwargs["install_without_gpu"] is True
+    assert r.probe.call_args.kwargs["include_windows"] is True
+    assert r.counted.call_count == 2
+    assert r.steps == [] and r.uninstall.call_count == 0
+    assert r.notes == [
         "installed causal_conv1d (causal_conv1d-x.whl).",
         "installed mamba_ssm (mamba_ssm-x.whl).",
     ]
 
 
-def test_an_already_loading_kernel_counts_no_install():
-    def loads(name, env):
-        print(f"Unsloth: {name} already installed and loads.")
+def test_a_kernel_that_already_loads_is_not_looked_up_online():
+    host = _Host(installed = DISTS.values(), loading = DISTS.values())
+    r = _run(host, _installer(host))
+    assert r.kernel.call_count == 0 and r.counted.call_count == 0
+    assert r.notes == [
+        "causal_conv1d already installed and loads.",
+        "mamba_ssm already installed and loads.",
+    ]
+
+
+def test_a_resident_build_that_no_longer_loads_is_removed_when_nothing_replaces_it():
+    host = _Host(installed = DISTS.values())
+
+    def no_wheel(name, env, **kwargs):
+        print(f"Unsloth: no prebuilt {name} for torch 2.15.0; using the torch fallback.")
         return 0
 
-    _, _, counted, steps, _ = _run(install_kernel = loads)
-    assert counted.call_count == 0 and steps == []
+    r = _run(host, no_wheel)
+    assert [c.args[0] for c in r.uninstall.call_args_list] == ["causal-conv1d", "mamba-ssm"]
+    assert r.steps == [
+        "causal_conv1d does not load with this torch; removed it",
+        "mamba_ssm does not load with this torch; removed it",
+    ]
 
 
 def test_a_failure_warns_and_the_next_kernel_still_runs():
-    def first_fails(name, env):
+    host = _Host()
+    install = _installer(host)
+
+    def first_fails(name, env, **kwargs):
         if name == "causal_conv1d":
             raise OSError("disk full")
-        return _installs(name, env)
+        return install(name, env, **kwargs)
 
-    kernel, _, _, steps, notes = _run(install_kernel = first_fails)
-    assert kernel.call_count == 2
-    assert steps == ["Continuing without causal_conv1d"]
-    assert "OSError: disk full" in notes
+    r = _run(host, first_fails)
+    assert r.kernel.call_count == 2
+    assert r.steps == ["Continuing without causal_conv1d"]
+    assert "OSError: disk full" in r.notes
+
+
+def test_a_hung_import_probe_is_bounded_and_never_read_as_broken():
+    host = _Host(installed = ["mamba-ssm"], hangs = ["mamba-ssm"])
+    r = _run(host, lambda name, env, **kwargs: 0)
+    assert r.uninstall.call_count == 0
+    assert host.timeouts
+    assert all(t == ips._FLASH_ATTN_IMPORT_PROBE_TIMEOUT for t in host.timeouts)
+
+
+def test_each_call_gets_a_fresh_runner_so_a_repaired_torch_is_probed_again():
+    runners = []
+
+    def record(name, env, **kwargs):
+        runners.append(kwargs["run"])
+        return 0
+
+    _run(_Host(), record)
+    _run(_Host(), record)
+    assert runners[0] is runners[1] and runners[2] is runners[3]
+    assert runners[0] is not runners[2]
 
 
 @pytest.mark.parametrize(
@@ -93,8 +184,9 @@ def test_a_failure_warns_and_the_next_kernel_still_runs():
     ids = ["no-torch", "macos", "opted-out", "no-cuda-torch"],
 )
 def test_nothing_is_installed_when_it_cannot_apply(kwargs):
-    kernel, _, _, _, _ = _run(install_kernel = _installs, **kwargs)
-    assert kernel.call_count == 0
+    host = _Host()
+    r = _run(host, _installer(host), **kwargs)
+    assert r.kernel.call_count == 0
 
 
 def test_every_flash_attn_site_also_resyncs_the_ssm_kernels():

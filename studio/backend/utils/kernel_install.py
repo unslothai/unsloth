@@ -328,15 +328,18 @@ def install_kernel(
     dry_run: bool = False,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     exists: Callable[[str], bool | None] = url_exists,
+    install_without_gpu: bool = False,
 ) -> int:
+    # install_without_gpu: setup may run where the GPU is not visible yet (an image build), so
+    # only a visible pre-Ampere GPU skips; no GPU at all still installs.
     distribution, check = KERNELS[name]
     url = resolve_wheel_url(name, env)
     if name in _GPU_GATED and url is not None:
         capability = _gpu_capability(run)
-        if capability is None:
+        if capability is None and not install_without_gpu:
             print(f"Unsloth: skipping {name}, which needs sm80 or newer (no CUDA GPU is visible).")
             return 0
-        if capability < (8, 0):
+        if capability is not None and capability < (8, 0):
             reason = _pre_ampere_skip_reason(name, capability, run)
             if reason is not None:
                 print(
