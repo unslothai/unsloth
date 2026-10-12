@@ -10,6 +10,10 @@ import type * as React from "react";
 import { createContext, useContext } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownGlowContext,
+  dialogDropdownGlow,
+} from "@/components/ui/dropdown-glow";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -87,6 +91,11 @@ function DialogContent({
   overlayPosition?: "fixed" | "absolute";
 }) {
   const resolvedContainer = container ?? null;
+  const inheritedGlow = useContext(DropdownGlowContext);
+  const glow =
+    resolvedContainer === null
+      ? dialogDropdownGlow(className, inheritedGlow)
+      : inheritedGlow;
   return (
     <DialogPortalContainerContext.Provider value={resolvedContainer}>
       <DialogPortal container={resolvedContainer ?? undefined}>
@@ -121,7 +130,9 @@ function DialogContent({
           }}
           {...props}
         >
-          {children}
+          <DropdownGlowContext.Provider value={glow}>
+            {children}
+          </DropdownGlowContext.Provider>
           {showCloseButton && (
             <DialogPrimitive.Close data-slot="dialog-close" asChild>
               <Button

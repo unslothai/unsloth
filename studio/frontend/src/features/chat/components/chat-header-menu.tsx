@@ -41,7 +41,6 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
-  Refresh01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
@@ -58,7 +57,7 @@ import {
   exportConversationByFormat,
   getSidebarItemThreadIds,
 } from "./chat-row-menu";
-import { OpenChatFolderItem } from "./open-chat-folder-item";
+import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -169,13 +168,6 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
     <>
       <Item icon={Edit03Icon} onSelect={menu.rename} shortcut="renameChat">
         {t("common.rename")}
-      </Item>
-      <Item
-        icon={Refresh01Icon}
-        onSelect={menu.regenerateTitle}
-        disabled={!menu.canRegenerateTitle}
-      >
-        {t("library.menu.regenerateTitle")}
       </Item>
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
@@ -335,6 +327,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
         </DropdownMenuSubContent>
       </DropdownMenuSub>
       <OpenChatFolderItem item={menu.item} />
+      <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
       <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}

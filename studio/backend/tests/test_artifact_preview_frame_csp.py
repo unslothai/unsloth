@@ -201,3 +201,23 @@ def test_console_serialization_stops_at_the_report_budget():
         "JSON.stringify(value)"
         not in shell[shell.index("const describe = ") : shell.index("const report = ")]
     )
+
+
+def test_the_strict_csp_is_exactly_the_reviewed_policy():
+    # React previews run compiled user code under this policy, so it is pinned whole: any
+    # widening (a script host, 'unsafe-eval', connect-src) has to change this literal too.
+    assert inf_mod._ARTIFACT_PREVIEW_FRAME_STRICT_CSP == (
+        "default-src 'none'; "
+        "script-src 'unsafe-inline'; "
+        "style-src 'unsafe-inline'; "
+        "img-src data: blob:; "
+        "font-src data:; "
+        "media-src data: blob:; "
+        "connect-src 'none'; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'none'; "
+        "frame-ancestors 'self' tauri://localhost http://tauri.localhost "
+        "http://localhost:* http://127.0.0.1:*; "
+        "sandbox allow-scripts"
+    )

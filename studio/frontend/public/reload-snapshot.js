@@ -18,6 +18,7 @@
   var overlay = null;
   var retainedSnapshot = null;
   var removalTimer = null;
+  var viewportObserver = null;
   var accountStorageKey = "unsloth.browser-account.v1";
   function readAccountMarker() {
     try {
@@ -340,6 +341,23 @@
       "reload-snapshot-shell " +
       (typeof snapshot.rootClass === "string" ? snapshot.rootClass : "");
     applyAppearanceAttributes(shellRoot, snapshot.appearance);
+    Array.prototype.forEach.call(
+      document.documentElement.attributes,
+      function (attribute) {
+        if (attribute.name.indexOf("data-mq-") === 0) {
+          shellRoot.setAttribute(attribute.name, attribute.value);
+        }
+      },
+    );
+    viewportObserver = new MutationObserver(function (records) {
+      records.forEach(function (record) {
+        var name = record.attributeName;
+        if (name.indexOf("data-mq-") === 0) {
+          shellRoot.toggleAttribute(name, document.documentElement.hasAttribute(name));
+        }
+      });
+    });
+    viewportObserver.observe(document.documentElement, { attributes: true });
     var tokens = snapshot.tokens || {};
     Object.keys(tokens).forEach(function (name) {
       if (name.slice(0, 2) === "--" && typeof tokens[name] === "string") {
@@ -849,6 +867,10 @@
   }
 
   function removeOverlay() {
+    if (viewportObserver) {
+      viewportObserver.disconnect();
+      viewportObserver = null;
+    }
     if (removalTimer !== null) {
       clearTimeout(removalTimer);
       removalTimer = null;

@@ -1681,8 +1681,8 @@ export function ExportPage() {
 
                     {torchaoUnavailable && (
                       <div className="text-ui-11 text-muted-foreground">
-                        Portable FP8/INT8 (torchao) export needs torchao, which
-                        is not installed here. Update Unsloth, or use
+                        Portable FP8/INT8 (torchao) export needs torchao 0.15 or
+                        newer, which is not installed here. Update Unsloth, or use
                         16-bit or GGUF.
                       </div>
                     )}

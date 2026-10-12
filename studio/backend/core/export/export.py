@@ -419,6 +419,15 @@ def _torchao_runtime_unavailable():
         return False
 
 
+def _torchao_too_old():
+    """Installed torchao version when it is below what transformers' TorchAoConfig accepts, else None."""
+    try:
+        from core._torchao_stub import torchao_too_old_for_export
+        return torchao_too_old_for_export()
+    except Exception:
+        return None
+
+
 def _is_torchao_alias(alias):
     """Any torchao spelling unsloth's normalizer accepts, else a torchao_ prefix, so the Windows
     ROCm guard catches it before it is misread as compressed-tensors."""
@@ -866,17 +875,22 @@ class ExportBackend:
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
+                from utils.models.spark_tts_adapter import spark_tts_adapter_load_target
+
                 logger.info("Loading as BiCodec (Spark-TTS) audio model...")
-                model, tokenizer = FastModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None if _IS_MLX else torch.float32,
-                    load_in_4bit = False,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
-                    local_files_only = local_files_only,
-                    **_device_map_kw,
-                )
+                with spark_tts_adapter_load_target(
+                    checkpoint_path, hf_token = token, local_files_only = local_files_only
+                ) as load_target:
+                    model, tokenizer = FastModel.from_pretrained(
+                        model_name = load_target,
+                        max_seq_length = max_seq_length,
+                        dtype = None if _IS_MLX else torch.float32,
+                        load_in_4bit = False,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        local_files_only = local_files_only,
+                        **_device_map_kw,
+                    )
 
             elif self._audio_type == "dac":
                 from unsloth import FastModel
@@ -1139,6 +1153,18 @@ class ExportBackend:
                 "16-bit merged or GGUF quantization instead.",
                 None,
             )
+
+        # transformers 5 refuses torchao < 0.15 as "requires torchao to be installed"; name the real cause.
+        if _is_torchao_alias(compressed_alias):
+            _old_torchao = _torchao_too_old()
+            if _old_torchao:
+                return (
+                    False,
+                    f"Portable torchao FP8/INT8 export needs torchao 0.15 or newer, but torchao "
+                    f"{_old_torchao} is installed. Update Unsloth to install a newer torchao, or "
+                    "use 16-bit merged or GGUF quantization instead.",
+                    None,
+                )
 
         compressed_suffix: Optional[str] = None
         # Classify the alias: torchao-portable vs compressed-tensors.
