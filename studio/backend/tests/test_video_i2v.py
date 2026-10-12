@@ -375,7 +375,7 @@ def test_an_unrecorded_render_never_seeds_the_background_compile():
 
 
 def test_a_component_assigned_mid_swap_stays_registered_after_it():
-    import diffusers
+    diffusers = pytest.importorskip("diffusers")
 
     from core.inference.video_i2v import first_frame_pipeline
 
