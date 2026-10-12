@@ -1524,11 +1524,18 @@ export function AppSidebar() {
       active: lookupIds.length ? { query: sidebarRowQuery({ includeIds: lookupIds }) } : null,
     };
     for (const section of customSections) {
-      if (hiddenSectionSet.has(section.id)) continue;
       const ids = sectionFiledChatIds.filter(
         (id) => sectionByChatId[id] === section.id && !pinnedIdSet.has(id),
       );
       if (ids.length === 0) continue;
+      // the newest chat alone, so a hidden or hand-ordered section keeps its place in Move to
+      if (hiddenSectionSet.has(section.id) || section.sort === "manual") {
+        slots[`latest:${section.id}`] = {
+          initialLimit: 1,
+          query: sidebarRowQuery({ includeIds: ids }),
+        };
+      }
+      if (hiddenSectionSet.has(section.id)) continue;
       slots[`section:${section.id}`] = {
         query: sidebarRowQuery({
           includeIds: ids,
@@ -2313,7 +2320,7 @@ export function AppSidebar() {
   useEffect(() => {
     if (!activeThreadId) return;
     for (const [name, list] of Object.entries(chatRowLists)) {
-      if (name === "recents" || !list.hasMore) continue;
+      if (name === "recents" || name.startsWith("latest:") || !list.hasMore) continue;
       if (list.rows[list.rows.length - 1]?.id === activeThreadId) void list.loadMore();
     }
   }, [activeThreadId, chatRowLists]);
