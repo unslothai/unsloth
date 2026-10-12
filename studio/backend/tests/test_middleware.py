@@ -1657,6 +1657,24 @@ def test_rag_document_uploads_pass_through_on_their_own_cap(main_module, monkeyp
         assert not pattern.match(path), path
 
 
+def test_sandbox_uploads_pass_through_on_their_own_cap(main_module):
+    from utils.upload_limits import SANDBOX_UPLOAD_MAX_BYTES, upload_request_limit_bytes
+
+    pattern = main_module._UPLOAD_PASSTHROUGH_RE
+    for path in (
+        "/api/inference/sandbox/thread-1/upload",
+        "/api/inference/sandbox/_/upload/",
+        "/v1/sandbox/thread-1/upload",
+    ):
+        assert pattern.match(path), path
+        assert main_module._get_upload_passthrough_request_max_bytes(
+            path
+        ) == upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
+    for path in ("/api/inference/sandbox/thread-1/reveal", "/api/inference/sandbox/a/b/upload"):
+        assert not pattern.match(path), path
+    assert pattern.match("/api/rag/threads/t1/documents")
+
+
 def test_pattern_passthrough_streams_and_refuses_oversized_declared_bodies(main_module):
     app = FastAPI()
     app.add_middleware(

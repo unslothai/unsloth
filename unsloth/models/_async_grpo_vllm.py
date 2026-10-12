@@ -293,6 +293,14 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(*owner.post(path, body))
 
 
+class _Server(ThreadingHTTPServer):
+    # socketserver listens with a backlog of 5. Each in-flight completion is its
+    # own connection, so a burst of them can overflow the accept queue and have
+    # connections reset before a handler thread picks them up.
+    request_queue_size = 1024
+    daemon_threads = True
+
+
 class UnslothAsyncVLLMServer:
     """Serves `model.vllm_engine` to TRL's AsyncGRPOTrainer on 127.0.0.1."""
 
@@ -320,8 +328,7 @@ class UnslothAsyncVLLMServer:
         self.url = f"http://127.0.0.1:{self._serve()}"
 
     def _serve(self):
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        httpd.daemon_threads = True
+        httpd = _Server(("127.0.0.1", 0), _Handler)
         httpd.owner = self
         self._thread = threading.Thread(
             target = httpd.serve_forever, name = "unsloth-async-grpo-http", daemon = True

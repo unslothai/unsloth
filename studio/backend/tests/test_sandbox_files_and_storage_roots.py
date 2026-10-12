@@ -405,6 +405,7 @@ def test_sandbox_listing_route_exists():
         "/sandbox/{session_id}",
         "/sandbox/{session_id}/open",
         "/sandbox/{session_id}/reveal",
+        "/sandbox/{session_id}/upload",
         "/sandbox/{session_id}/{filename:path}",
     ]
 
