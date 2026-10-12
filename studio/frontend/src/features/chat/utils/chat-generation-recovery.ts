@@ -821,12 +821,17 @@ export function isLiveGenerationRun(runId: string): boolean {
   return liveGenerationRuns.has(runId);
 }
 
-/** Whether `threadId` has a durable run, streaming here or named by the server. A
- *  subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence. */
-export function threadHasDurableGenerationRun(threadId: string): boolean {
+export function threadHasLiveGenerationRun(threadId: string): boolean {
   for (const [runId, owner] of liveGenerationThreads.entries()) {
     if (owner === threadId && !provisionalGenerationRuns.has(runId)) return true;
   }
+  return false;
+}
+
+/** Whether `threadId` has a durable run, streaming here or named by the server. A
+ *  subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence. */
+export function threadHasDurableGenerationRun(threadId: string): boolean {
+  if (threadHasLiveGenerationRun(threadId)) return true;
   for (const owner of serverActiveGenerationRuns.values()) {
     if (owner === threadId) return true;
   }

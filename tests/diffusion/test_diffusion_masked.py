@@ -456,6 +456,33 @@ def test_remote_class_keeps_checkpoint_weights(tmp_path):
     assert cls.is_remote_code()
 
 
+def test_converted_config_keeps_token_fields(monkeypatch, tmp_path):
+    from transformers import TrainingArguments
+    from trl import SFTConfig
+    from unsloth.models.diffusion_trainer import DiffusionConfig, DiffusionTrainer
+
+    seen = {}
+    monkeypatch.setattr(
+        DiffusionTrainer.__bases__[0],
+        "__init__",
+        lambda self, model, args, *a, **k: seen.update(args = args),
+    )
+    for args in (
+        SFTConfig(output_dir = str(tmp_path), report_to = "none", hub_token = "hf_x"),
+        TrainingArguments(output_dir = str(tmp_path), report_to = "none", hub_token = "hf_x"),
+    ):
+        DiffusionTrainer(model = None, args = args, diffusion_profile = _profile("dream"))
+        assert isinstance(seen["args"], DiffusionConfig)
+        assert seen["args"].eos_token is None and seen["args"].pad_token is None
+        assert seen["args"].hub_token == "hf_x"
+
+    ParallelismConfig = pytest.importorskip("accelerate.parallelism_config").ParallelismConfig
+    parallelism = ParallelismConfig()
+    args = SFTConfig(output_dir = str(tmp_path), report_to = "none", parallelism_config = parallelism)
+    DiffusionTrainer(model = None, args = args, diffusion_profile = _profile("dream"))
+    assert seen["args"].parallelism_config is parallelism
+
+
 _TINY_TRAIN = r"""
 import math, os, sys, torch
 import unsloth

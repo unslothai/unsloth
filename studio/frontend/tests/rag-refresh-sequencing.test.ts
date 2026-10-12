@@ -720,7 +720,12 @@ test("a failed project lookup leaves the scope unresolved", () => {
   // Nothing records a null project on the failure path any more.
   assert.doesNotMatch(
     THREAD_DOCUMENTS_BAR,
-    /setResolved\(\{ threadId, trigger: activeProjectId, projectId: null \}\);/,
+    /record\(null, 0\)|setResolved\(\{ threadId, projectId: null/,
+  );
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /\} catch \{\s*if \(cancelled \|\| announced\) return;\s*await new Promise/,
+    "a failed read records nothing and retries",
   );
   // And unresolved still disables the attach controls.
   assert.match(THREAD_DOCUMENTS_BAR, /const projectUnresolved = threadProjectId === undefined;/);

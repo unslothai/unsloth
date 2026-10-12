@@ -777,11 +777,21 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 _LLAMA_RANDOM_SEED = 0xFFFFFFFF
 
 
-def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
-    """Disable prompt caching for fixed seeds so repeated requests stay reproducible."""
+def _apply_seeded_llama_request(
+    payload: dict,
+    seed: Optional[int],
+    *,
+    reuse_prompt_cache: bool = False,
+) -> None:
+    """Disable prompt caching for fixed seeds so repeated requests stay reproducible.
+
+    ``reuse_prompt_cache``: a tool-loop continuation of this run; cold, it re-prefills (#10698).
+    """
     if seed is None:
         return
     payload["seed"] = seed
+    if reuse_prompt_cache:
+        return
     # Compared as uint32: the schemas also accept 4294967295, the same "pick at random".
     if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
         payload["cache_prompt"] = False
@@ -3227,7 +3237,8 @@ _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORE
 def _is_companion_gguf_path(path: str) -> bool:
     """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
     drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash, the ``eagle3-*.gguf`` draft heads). Mirrors
+    drafters for DeepSeek V4 Flash, the ``<model>-dspark-<quant>.gguf`` drafters for
+    prism-ml Bonsai, the ``eagle3-*.gguf`` draft heads). Mirrors
     hub.utils.gguf so variant resolution never picks a companion as the main model --
     a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
     ahead of the real weight.
@@ -3242,6 +3253,8 @@ def _is_companion_gguf_path(path: str) -> bool:
     # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
     # holding calibration statistics, so only the name rules it out.
     if _IMATRIX_TOKEN_RE.search(Path(p).stem):
+        return True
+    if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
         return True
     return _drafter_path_kind(path) is not None
 
@@ -3306,9 +3319,14 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_companion_gguf_path.
+_DSPARK_BEFORE_QUANT_RE = re.compile(
+    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
     re.IGNORECASE,
 )
 
@@ -4347,7 +4365,8 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
 
 # Not a CUDA/HIP FlashAttention KV type (ggml_cuda_fattn_kv_type_supported), so attention runs
 # on the CPU. q4_1 / q5_0 / q5_1 did too until ggml-org/llama.cpp#28079 added an f16 fallback.
-_GPU_UNACCELERATED_CACHE_TYPES = frozenset({"iq4_nl"})
+# Mapped to a same-size type that has the kernel, so the KV budget is unchanged (#10336).
+_GPU_UNACCELERATED_CACHE_TYPES = {"iq4_nl": "q4_0"}
 
 
 def _kv_cache_gpu_fallback_warning(
@@ -4365,8 +4384,8 @@ def _kv_cache_gpu_fallback_warning(
         return None
     return (
         f"KV cache type {cache_type_kv} has no CUDA/HIP flash-attention kernel, so attention "
-        "falls back to CPU, causing high CPU load and slow generation. "
-        "q8_0 or q4_0 is a GPU-accelerated quantized option."
+        "would fall back to CPU, causing high CPU load and slow generation. Using "
+        f"{_GPU_UNACCELERATED_CACHE_TYPES[cache_type_kv]} instead, the same size on the GPU."
     )
 
 
@@ -4902,6 +4921,46 @@ def _scale_diffusion_required_gb(required_gb: float, ngl: int, n_layers: Optiona
     if not n_layers or n_layers <= 0 or ngl >= n_layers:
         return required_gb
     return required_gb * (ngl / n_layers)
+
+
+# The runner's own CUDA context, which the free reading taken before spawn cannot see.
+_DIFFUSION_RUNNER_OVERHEAD_MIB = 512.0
+# Context the fitted split leaves room for when the runner auto-sizes (maxtok 0).
+_DIFFUSION_FIT_CTX = 4096
+
+
+def _diffusion_auto_ngl(
+    file_bytes: int,
+    n_layers: Optional[int],
+    n_head: Optional[int],
+    maxtok: int,
+    free_mib: float,
+    total_mib: float,
+    *,
+    sysmem_fallback: bool = False,
+) -> Optional[int]:
+    """GPU layers for an Auto-mode diffusion load, or None to keep every layer on the GPU.
+
+    Only a GGUF that cannot fit moves: all layers die in cudaMalloc, or on Windows spill into
+    shared system memory until RAM and the page file run out (#6456). The split leaves room
+    for the compute buffer (measured 1.75x the [n_head, N, N] fp32 scores) and the 8% of VRAM
+    the runner's context probe keeps free (diffusion-gemma-visual-server.cpp)."""
+    if not file_bytes or not n_layers or n_layers <= 0 or (free_mib <= 0 and total_mib <= 0):
+        return None
+    usable = _vram_usable_mib(
+        free_mib, total_mib, _active_vram_fraction(), sysmem_fallback = sysmem_fallback
+    )
+    usable -= _DIFFUSION_RUNNER_OVERHEAD_MIB
+    file_mib = file_bytes / (1024 * 1024)
+    if file_mib <= usable:
+        return None
+    # Mirrors unsloth_zoo's _canvas_maxtok: larger requests are sent as 0 (auto-size).
+    n_ctx = maxtok if 0 < maxtok <= 8192 else _DIFFUSION_FIT_CTX
+    scores_mib = max(1, n_head or 1) * n_ctx * n_ctx * 4 / (1024 * 1024)
+    ctx_reserve = 1.75 * scores_mib + 0.08 * (total_mib if total_mib > 0 else free_mib)
+    # The whole file over the block count also charges token_embd, which stays on the CPU.
+    per_layer_mib = file_mib / n_layers
+    return max(0, min(n_layers - 1, int((usable - ctx_reserve) // per_layer_mib)))
 
 
 def _source_declares_option(source: str, option: str) -> bool:
@@ -9009,6 +9068,10 @@ class LlamaCppBackend:
         leave a VRAM-less server holding the CHAT claim, unloadable by an owner it
         never competed with."""
         if self._arch_gate_forced_cpu:
+            return True
+        # A diffusion runner reports offload False only when its GPU token was masked: a
+        # manual zero split, or an Auto fit that found no room on the card.
+        if self._is_diffusion and self._gpu_offload_active is False:
             return True
         return (
             self._gpu_memory_mode == "manual"
@@ -19420,6 +19483,47 @@ class LlamaCppBackend:
                 return first
         return "0"
 
+    def _diffusion_fit_ngl(
+        self, model_path: str, gpu: str, maxtok: int, *, pinned: bool
+    ) -> Optional[int]:
+        """Auto-mode ``--ngl`` for the runner's device ``gpu``, or None to keep its default."""
+        # An NGL in the environment is the zoo runner's own override: leave it in charge.
+        if not gpu.isdigit() or "NGL" in os.environ:
+            return None
+        try:
+            binary = self._find_llama_server_binary()
+            # Vulkan ordinals are not the CUDA ids the runner's mask takes.
+            if binary and self._is_vulkan_backend(binary):
+                return None
+            rows = self._get_gpu_memory(binary)
+            file_bytes = self._get_gguf_size_bytes(model_path)
+            sysmem_fallback = self._sysmem_fallback_risk(binary)
+        except Exception as e:
+            logger.debug(f"DiffusionGemma layer fit skipped: {e}")
+            return None
+        row = next((r for r in rows if r[0] == int(gpu)), None)
+        # Unpinned, the child's "0" is CUDA's fastest-first device unless PCI order is set,
+        # not nvidia-smi's index 0: size against the roomiest card so no load that fits
+        # today is cut down.
+        if not pinned and len(rows) > 1 and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+            row = max(
+                rows,
+                key = lambda r: _vram_usable_mib(
+                    r[1], r[2], _active_vram_fraction(), sysmem_fallback = sysmem_fallback
+                ),
+            )
+        if row is None:
+            return None
+        return _diffusion_auto_ngl(
+            file_bytes,
+            self._n_layers,
+            self._n_heads,
+            maxtok,
+            row[1],
+            row[2],
+            sysmem_fallback = sysmem_fallback,
+        )
+
     def _start_diffusion_server(
         self,
         *,
@@ -19440,7 +19544,8 @@ class LlamaCppBackend:
         interface as llama-server, so the rest of Unsloth is unchanged.
 
         Manual mode forwards gpu_layers as --ngl so a GGUF larger than VRAM can be
-        split across GPU and RAM; auto leaves the runner's all-layers default."""
+        split across GPU and RAM; auto keeps every layer on the GPU unless the GGUF
+        cannot fit it."""
         assets = self._find_diffusion_assets()
         if assets is None:
             raise RuntimeError(
@@ -19489,6 +19594,32 @@ class LlamaCppBackend:
         # the device used == the echoed gpu_ids[0]). With no pick, fall back to the
         # CPU-only mask, else DG_GPU / 0.
         gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = holds_no_gpu)
+        # Auto: a GGUF too large for that device gets the split that fits it (#6456).
+        fit_ngl = None
+        if manual_ngl is None:
+            fit_ngl = self._diffusion_fit_ngl(model_path, gpu, maxtok, pinned = bool(gpu_ids))
+            # The probe runs under the load lock and can be slow: honour a Stop that came in.
+            if cancelled is not None and cancelled():
+                logger.info("Load cancelled before diffusion server start")
+                self._health_wait_cancelled = True
+                return False
+            if fit_ngl is not None and not _shim_supports_ngl(shim_cmd):
+                logger.warning(
+                    "DiffusionGemma does not fit GPU %s and the installed unsloth_zoo shim "
+                    "has no --ngl to split it. Run 'unsloth studio update'.",
+                    gpu,
+                )
+                fit_ngl = None
+            # Pin the context the split was sized for. Left to auto-size, the runner's second
+            # probe pass sizes against host RAM, which on Windows the driver backs with
+            # shared memory instead of refusing.
+            if fit_ngl is not None and not 0 < maxtok <= 8192:
+                maxtok = _DIFFUSION_FIT_CTX
+            # Nothing fits: run on the CPU like a manual zero-layer split, not on a
+            # GPU context the card may not have room for.
+            if fit_ngl == 0:
+                holds_no_gpu = True
+                gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = True)
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -19512,6 +19643,16 @@ class LlamaCppBackend:
                 "slower for block diffusion than for a regular model; prefer a smaller "
                 "quant over a large CPU split if throughput matters.",
                 manual_ngl,
+            )
+        elif fit_ngl is not None:
+            cmd += ["--ngl", str(fit_ngl)]
+            logger.warning(
+                "DiffusionGemma does not fit GPU %s: keeping %d of %s layers on it and the "
+                "rest on CPU, which is much slower for block diffusion. A smaller quant "
+                "that fits the GPU is faster.",
+                gpu,
+                fit_ngl,
+                self._n_layers,
             )
 
         env = child_env_without_native_path_secret()
@@ -20927,6 +21068,7 @@ class LlamaCppBackend:
     _IMAGE_ARCHES = frozenset(
         (
             "qwen_image",
+            "qwen_image21",
             "flux",
         )
     )
@@ -21018,6 +21160,16 @@ class LlamaCppBackend:
             return moe_pick_pairs(fam, gguf_path) and _video_family_buildable(fam)
         except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
             logger.debug("Family probe failed for video arch: %s", e)
+            return True
+
+    @staticmethod
+    def _image_arch_is_pickable(gguf_path: Optional[str], model_identifier: Optional[str]) -> bool:
+        """The Images picker's fail-open buildability gate (Qwen-Image-2.1 needs diffusers 0.41)."""
+        try:
+            from routes.models import _gguf_family_buildable
+            return _gguf_family_buildable((model_identifier, os.path.basename(gguf_path or "")))
+        except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
+            logger.debug("Family probe failed for image arch: %s", e)
             return True
 
     @staticmethod
@@ -21128,9 +21280,16 @@ class LlamaCppBackend:
                     "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
+                if self._image_arch_is_pickable(gguf_path, self._model_identifier):
+                    return (
+                        f"This is an image-generation GGUF (architecture '{arch}'), which "
+                        "cannot run as a chat model. Open it from the Images page instead."
+                    )
                 return (
                     f"This is an image-generation GGUF (architecture '{arch}'), which "
-                    "cannot run as a chat model. Open it from the Images page instead."
+                    "cannot run as a chat model. No image engine installed here can build "
+                    "this model family, so the Images page does not list it either. "
+                    "Updating Unsloth may add support for it."
                 )
             if arch in self._AMBIGUOUS_IMAGE_ARCHES:
                 if self._ambiguous_image_arch_is_pickable(gguf_path, self._model_identifier):
@@ -21939,7 +22098,10 @@ class LlamaCppBackend:
                     "a chat/completion model. Unsloth cannot assemble this particular "
                     "model from a GGUF, so the Video page does not list it either."
                 )
-            if arch in LlamaCppBackend._IMAGE_ARCHES or (
+            if (
+                arch in LlamaCppBackend._IMAGE_ARCHES
+                and LlamaCppBackend._image_arch_is_pickable(gguf_path, model_identifier)
+            ) or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
                 and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)
             ):
@@ -21948,6 +22110,13 @@ class LlamaCppBackend:
                     "llama-server cannot run as a chat/completion model. Use "
                     "Unsloth's Images page to generate with local diffusion "
                     "GGUFs such as FLUX and Qwen-Image."
+                )
+            if arch in LlamaCppBackend._IMAGE_ARCHES:
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. No image engine "
+                    "installed here can build this model family, so Unsloth's Images page "
+                    "does not list it either. Updating Unsloth may add support for it."
                 )
             if arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES:
                 # Same shared-arch resolution as the pre-launch refusal: unresolved means
@@ -21997,6 +22166,29 @@ class LlamaCppBackend:
                 "older or pre-release one; this is not a memory problem. Download an "
                 "updated GGUF of this model, or update llama.cpp if the file is newer "
                 "than this build.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        # A type this build lacks (prism-ml PQ2_0 / PTQ1_0 = 142 / 143) or packs differently (group-128 Q2_0, #11259).
+        # A truncated download fails later instead, as "data is not within the file bounds".
+        bad_type = re.search(r"tensor '([^']*)' has invalid ggml type (\d+)", scan_tail)
+        bad_layout = re.search(r"tensor '[^']*' has offset \d+, expected \d+", scan_tail)
+        if bad_type or bad_layout:
+            detail = (
+                f"tensor '{_short(bad_type.group(1))}' uses quantization type "
+                f"{bad_type.group(2)}, which this build does not have"
+                if bad_type
+                else "its tensor layout does not match this build's quantization types"
+            )
+            return LlamaCppBackend._with_startup_diagnostics(
+                "The installed llama.cpp cannot read this GGUF's weights "
+                f"({detail}); this is not a memory problem. The file was likely made for "
+                "a different llama.cpp build: a newer one, or a publisher's own fork. Pick "
+                "another quant of this model, or use the llama.cpp build the "
+                "model card names. If the model card says it runs on stock llama.cpp, "
+                "the file may be damaged: download it again.",
                 output,
                 log_path,
                 secrets,
@@ -25139,6 +25331,9 @@ class LlamaCppBackend:
                 # diffusion runner ignores the budget, so a previous llama-server's
                 # fraction would relaunch a healthy diffusion server on every Apply.
                 self._vram_fraction_launched = None
+                # Outside the lock, as for llama-server: the Auto layer fit reads free VRAM,
+                # which a just-killed runner still holds until the driver reclaims it.
+                self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
@@ -29061,15 +29256,12 @@ class LlamaCppBackend:
                     and cache_type_kv in _valid_cache_types
                     and not _cache_type_from_env
                 ):
-                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_K_FLAGS):
-                        cmd.extend(["--cache-type-k", cache_type_kv])
-                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_V_FLAGS):
-                        cmd.extend(["--cache-type-v", cache_type_kv])
-                    self._cache_type_kv = cache_type_kv
-                    logger.info(f"KV cache type: {cache_type_kv}")
                     gpu_fallback_warning = (
                         None
-                        if intent.cpu_fallback or _extras_cache is not None
+                        if intent.cpu_fallback
+                        or _arch_gate_forced_cpu
+                        or not _detected_gpus
+                        or _extras_cache is not None
                         else _kv_cache_gpu_fallback_warning(
                             cache_type_kv,
                             gpu_memory_mode,
@@ -29079,6 +29271,13 @@ class LlamaCppBackend:
                     )
                     if gpu_fallback_warning:
                         logger.warning(gpu_fallback_warning)
+                        cache_type_kv = _GPU_UNACCELERATED_CACHE_TYPES[cache_type_kv]
+                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_K_FLAGS):
+                        cmd.extend(["--cache-type-k", cache_type_kv])
+                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_V_FLAGS):
+                        cmd.extend(["--cache-type-v", cache_type_kv])
+                    self._cache_type_kv = cache_type_kv
+                    logger.info(f"KV cache type: {cache_type_kv}")
                 else:
                     # An env-only type is left inherited (untouched) so an
                     # asymmetric K/V env reaches the child as set.
@@ -38147,6 +38346,8 @@ class LlamaCppBackend:
         _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        # A fixed seed keeps the prompt cache once this run has sent a request (#10698).
+        _prompt_sent = False
         iteration = -1
         # Outside the loop: the cap is across the whole run, and a per-iteration list
         # would only ever see the current batch, leaving every earlier iteration's
@@ -38419,7 +38620,8 @@ class LlamaCppBackend:
                 _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
-            _apply_seeded_llama_request(payload, seed)
+            _apply_seeded_llama_request(payload, seed, reuse_prompt_cache = _prompt_sent)
+            _prompt_sent = True
 
             _respawn_truncations: list[dict] = []
 
@@ -41161,7 +41363,7 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
-        _apply_seeded_llama_request(stream_payload, seed)
+        _apply_seeded_llama_request(stream_payload, seed, reuse_prompt_cache = _prompt_sent)
         stream_payload["stream_options"] = {"include_usage": True}
 
         # Progress events feed the first-token deadline; timings stay opt-in.
@@ -42143,8 +42345,13 @@ class LlamaCppBackend:
                     return []
                 return r.json().get("tokens", [])
 
-            # Codec-specific tokens (not generic ones that non-audio models may have)
-            if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(128259):
+            from utils.audio_tokens import SNAC_PROBE_TOKEN_IDS
+
+            # Codec-specific tokens; ids past the vocab log a llama-server 500 (#10336).
+            vocab_size = getattr(self, "_vocab_size", None)
+            if (not vocab_size or vocab_size > max(SNAC_PROBE_TOKEN_IDS)) and all(
+                "<custom_token_" in _detok(tid) for tid in SNAC_PROBE_TOKEN_IDS
+            ):
                 return "snac"
             if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
                 return "csm"

@@ -3969,6 +3969,7 @@ from core.inference.providers import (
 )
 from core.inference.external_provider import (
     ExternalProviderClient,
+    _is_kimi_k3,
     _is_openai_family_cloud,
     compacts_server_side,
 )
@@ -4400,6 +4401,24 @@ async def artifact_preview_page(token: str):
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+from core.inference import react_preview
+
+
+class ArtifactReactCompileRequest(BaseModel):
+    source: str
+    lang: Literal["jsx", "tsx"] = "tsx"
+
+
+@studio_router.post("/artifact-react-compile", include_in_schema = False)
+async def compile_artifact_react_preview(
+    request: ArtifactReactCompileRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Compile a chat React component for the preview frame; Node only transpiles, never runs it."""
+    if len(request.source.encode("utf-8", "surrogatepass")) > react_preview.MAX_SOURCE_BYTES:
+        raise HTTPException(status_code = 413, detail = "This component is too large to preview")
+    return await react_preview.compile_react_preview_async(request.source, request.lang)
 
 
 # A bare "*" is refused: such a template gets the default-deny.
@@ -9834,7 +9853,7 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # Mixed catalogs require model-level vision capability; family flags do not
 # identify which models accept images. Qwen has unrestricted text defaults;
 # its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Kimi is excluded
-# because its allowlist permits only multimodal kimi-k2.5/k2.6.
+# because its allowlist permits only multimodal kimi-k3/k2.5/k2.6.
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
 _MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen"})
@@ -27615,6 +27634,7 @@ def _build_external_messages(
     api_type: Optional[str] = None,
     promoted_out: "Optional[list]" = None,
     promote_mcp_images: "Optional[bool]" = None,
+    model: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -27759,11 +27779,12 @@ def _build_external_messages(
             return {"type": "compaction", "encrypted_content": item.encrypted_content}
         return None
 
+    replays_reasoning = provider_type == "llama_cpp" or _is_kimi_k3(provider_type, model)
     result = []
     for msg in messages:
         replay = (
             {"reasoning_content": msg.reasoning_content}
-            if provider_type == "llama_cpp" and msg.role == "assistant" and msg.reasoning_content
+            if replays_reasoning and msg.role == "assistant" and msg.reasoning_content
             else {}
         )
         has_message_extra_content = bool(
@@ -28952,6 +28973,7 @@ async def _proxy_to_external_provider(
         promote_mcp_images = _external_takes_mcp_images(
             provider_type, _supports_vision, model, _pinfo
         ),
+        model = model,
     )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
@@ -35528,6 +35550,44 @@ async def reveal_sandbox_dir(
         logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to open file manager")
     return {"status": "ok", "path": sandbox_dir}
+
+
+@router.post("/sandbox/{session_id}/upload")
+async def upload_sandbox_file(
+    session_id: str,
+    file: UploadFile = File(...),
+    overwrite: bool = Form(False),
+    session: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Put one file into this chat's sandbox folder, where its tools read and write.
+
+    Saved at the folder's root under the file's own name. A taken name is a 409 unless
+    ``overwrite``, so a second upload never silently replaces what a tool wrote.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from core.inference.tools import SandboxUploadExists, save_sandbox_upload
+    from utils.upload_limits import SANDBOX_UPLOAD_MAX_BYTES
+
+    def _chunks():
+        total = 0
+        while chunk := file.file.read(1 << 20):
+            total += len(chunk)
+            if total > SANDBOX_UPLOAD_MAX_BYTES:
+                raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
+            yield chunk
+
+    try:
+        saved = await run_in_threadpool(
+            save_sandbox_upload, session or session_id, file.filename, _chunks(), overwrite
+        )
+    except SandboxUploadExists as exc:
+        raise HTTPException(status_code = 409, detail = f"{exc} already exists") from None
+    except OSError:
+        logger.error("Failed to save a sandbox upload", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Could not save the file") from None
+    return saved
 
 
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
@@ -46457,6 +46517,7 @@ async def load_diffusion_model_gated(
     )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
+    from core.inference.sd_cpp_args import forces_cpu_backend
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -46640,6 +46701,13 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
+        if (
+            activated == ENGINE_SD_CPP
+            and device == "mps"
+            and await asyncio.to_thread(forces_cpu_backend, device)
+        ):
+            needs_gpu = False
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,
