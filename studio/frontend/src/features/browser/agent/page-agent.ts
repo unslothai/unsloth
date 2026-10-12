@@ -159,7 +159,8 @@ export function installPageAgent(): PageAgent {
     const words: string[] = [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      let shown = true;
+      // Text under 2px is for the model, not the user, as in the snapshot.
+      let shown = !node.parentElement || Number.parseFloat(getComputedStyle(node.parentElement).fontSize) >= 2;
       for (let el = node.parentElement; el && shown; el = el === root ? null : el.parentElement) {
         const style = getComputedStyle(el);
         if (hidden(el, style)) shown = false;
@@ -228,8 +229,10 @@ export function installPageAgent(): PageAgent {
     }
   };
 
+  // The input type, not the role: role="textbox" on a password field must not show its value.
   const isSecret = (el: Element, role: string | null): boolean =>
     role === "password" ||
+    (el.tagName.toLowerCase() === "input" && (el as HTMLInputElement).type.toLowerCase() === "password") ||
     SECRET.test(el.getAttribute("autocomplete") ?? "") ||
     Boolean((el as HTMLInputElement).value && SECRET_NAME.test(nameOf(el)));
 
@@ -453,7 +456,7 @@ export function installPageAgent(): PageAgent {
           .filter((node) => node.nodeType === Node.TEXT_NODE)
           .map((node) => node.nodeValue ?? "")
           .join(" ");
-        if (!own.trim()) continue;
+        if (!own.trim() || Number.parseFloat(getComputedStyle(el).fontSize) < 2) continue;
         haystack = own;
       }
       const lower = haystack.toLowerCase();
