@@ -442,8 +442,7 @@ _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 # Keys start with a letter/underscore so ``10:00, 11:00`` in a value isn't misread as a new key
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
-# A bare value is a number only when JSON reads it as one, as tool_healing decides for the wrapped
-# form; int()/float() also take "007", "+1555...", "1_000" and "nan".
+# JSON number literals only, as tool_healing decides for the wrapped form (int()/float() take "007", "+1", "nan").
 _GEMMA_JSON_NUMBER_RE = re.compile(r"-?(?:0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?", re.ASCII)
 
 
@@ -3841,7 +3840,6 @@ def _gemma_parse_value(
         # Stray delimiter where a value was expected: consume one char so callers always advance (no infinite loop on
         # malformed input).
         return "", i + 1, True
-    # Quoted values took the branch above, so the quote stripping there is a no-op.
     return _gemma_coerce_scalar(text[i:end]), end, True
 
 
@@ -3870,18 +3868,18 @@ def _gemma_coerce_scalar(raw: str) -> Any:
         return raw
     first = raw[0]
     if first in "-0123456789":
-        # Plain JSON integers skip the regex; isascii() rejects non-ASCII digits that int() would accept.
+        # isascii(): int() also accepts non-ASCII digits.
         digits = raw[1:] if first == "-" else raw
         if digits.isdigit() and digits.isascii() and (digits[0] != "0" or len(digits) == 1):
             try:
                 return int(raw)
             except ValueError:
-                # Past sys.get_int_max_str_digits(); json.loads refuses it too, so the wrapped form keeps a string.
+                # Past sys.get_int_max_str_digits(); json.loads refuses it too.
                 return raw
         if _GEMMA_JSON_NUMBER_RE.fullmatch(raw) is None:
             return raw
         value = float(raw)
-        # "1e999" overflows to inf, which json.dumps writes as a bare Infinity.
+        # "1e999" -> inf, which json.dumps writes as invalid bare Infinity.
         return raw if abs(value) == float("inf") else value
     if len(raw) >= 2 and first == raw[-1] and first in "\"'":
         return raw[1:-1]
