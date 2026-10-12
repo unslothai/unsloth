@@ -162,6 +162,20 @@ def test_tools_in_the_users_folder_skip_the_isolation_scan(env, monkeypatch):
     assert os.path.realpath(env.repo) in ran
 
 
+def test_terminal_keeps_the_host_shell_for_the_users_folder(env, monkeypatch):
+    # On Windows cmd_isolated would turn Auto into Required and bring the scan back.
+    host_shell = []
+    monkeypatch.setattr(
+        env.tools,
+        "_terminal_profile",
+        lambda keep_host = False: host_shell.append(keep_host) or "bash",
+    )
+    env.tools.execute_tool("terminal", {"command": "pwd"}, session_id = "project-p1")
+    _use_repo(env)
+    env.tools.execute_tool("terminal", {"command": "pwd"}, session_id = "project-p1")
+    assert host_shell == [False, True]
+
+
 def test_project_delete_never_touches_the_users_folder(env):
     _use_repo(env)
     project = studio_db.get_chat_project("p1")

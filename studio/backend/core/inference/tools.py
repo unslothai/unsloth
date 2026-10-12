@@ -22889,8 +22889,14 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
-    profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC. So does a chosen project folder in
+    # Auto, which runs with software safeguards (_prepare_tool_launch); cmd_isolated would force Required instead.
+    chosen_folder = tool_execution_mode == "auto" and _is_user_project_folder(
+        session_id, _project_workdir_for(session_id) or ""
+    )
+    profile = _terminal_profile(
+        disable_sandbox or tool_execution_mode == "software" or chosen_folder
+    )
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()
