@@ -966,9 +966,7 @@ def test_a_huge_memo_index_checkpoint_is_unknown_with_bounded_memory(tmp_path):
         print(header is None, peak, round(time.monotonic() - started, 2))
         """
     )
-    out = subprocess.run(
-        [sys.executable, "-c", code], capture_output = True, text = True, timeout = 120
-    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 120)
     assert out.returncode == 0, out.stderr[-2000:]
     is_none, peak, took = out.stdout.split()
     assert is_none == "True"
@@ -984,7 +982,11 @@ def test_an_anonymous_401_does_not_answer_for_a_token_probe(hub, monkeypatch):
 
     real = huggingface_hub.get_hf_file_metadata
 
-    def gated(url, token = None, **kwargs):
+    def gated(
+        url,
+        token = None,
+        **kwargs,
+    ):
         if not token:
             err = Exception("401")
             err.response = types.SimpleNamespace(status_code = 401)
