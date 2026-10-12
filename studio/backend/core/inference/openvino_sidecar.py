@@ -85,6 +85,8 @@ class ThinkSplitter:
 
     def __init__(self, thinking: bool) -> None:
         self.in_think = thinking
+        # Qwen3-style templates leave the generation prompt bare and the model writes <think> itself.
+        self.leading_open = thinking
         self.buf = ""
         # With thinking off the template closes the think block, but some finetunes reason anyway
         # and end with a bare ``</think>``; the start is held back until that can be told apart.
@@ -110,6 +112,13 @@ class ThinkSplitter:
 
     def _split(self, piece: str) -> list[tuple[str, str]]:
         self.buf += piece
+        if self.leading_open:
+            head = self.buf.lstrip()
+            if THINK_OPEN.startswith(head) and len(head) < len(THINK_OPEN):
+                return []
+            self.leading_open = False
+            if head.startswith(THINK_OPEN):
+                self.buf = head[len(THINK_OPEN) :]
         out: list[tuple[str, str]] = []
         while self.buf:
             # Outside a block a bare </think> is stray reasoning's end: dropped, not shown.

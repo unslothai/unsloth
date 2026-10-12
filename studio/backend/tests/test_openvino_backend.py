@@ -420,3 +420,17 @@ def test_an_ir_beside_safetensors_needs_a_sidecar_python(tmp_path, monkeypatch):
     assert ovb.is_openvino_model_path(str(_ir(tmp_path / "ir_only")))
     monkeypatch.setattr(ovb.importlib.util, "find_spec", lambda name: object())
     assert ovb.is_openvino_model_path(str(both))
+
+
+def test_think_splitter_drops_the_open_tag_the_model_writes(monkeypatch):
+    # Qwen3's template ends the prompt at "assistant\n"; the model itself writes "<think>\n".
+    sc = _sidecar(monkeypatch)
+    run = lambda s, pieces: [p for x in pieces for p in s.feed(x)] + s.flush()
+    for pieces in (
+        ["<think>\nplan</think>\n\nA"],
+        ["<th", "ink>", "\nplan", "</think>A"],
+        ["\n<think>plan</think>A"],
+    ):
+        out = run(sc.ThinkSplitter(True), pieces)
+        assert "".join(t for k, t in out if k == "reasoning").strip() == "plan", pieces
+        assert "".join(t for k, t in out if k == "content") == "A", pieces
