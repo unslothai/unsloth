@@ -31,6 +31,15 @@ test("with vLLM, AutoRound is marked as vLLM-runnable", () => {
     reason: "Detected AutoRound quantization.",
     supportedIn: "vllm",
   });
+  // ROCm vLLM refuses AutoRound (rocm_loads_quantization), so the hub must not send users there.
+  assert.equal(
+    classifyUnslothSupport({ ...AUTOROUND, vllmAvailable: true, vllmPlatform: "rocm" }).supportedIn,
+    undefined,
+  );
+  assert.equal(
+    classifyUnslothSupport({ modelId: "o/m", quantMethod: "awq", vllmAvailable: true, vllmPlatform: "rocm" }).supportedIn,
+    "vllm",
+  );
   // vLLM recognises only the spelling transformers writes.
   assert.equal(
     classifyUnslothSupport({ modelId: "owner/model", quantMethod: "auto_round", vllmAvailable: true }).supportedIn,
