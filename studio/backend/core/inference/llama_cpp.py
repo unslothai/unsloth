@@ -3502,7 +3502,8 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
 
 # Not a CUDA/HIP FlashAttention KV type (ggml_cuda_fattn_kv_type_supported), so attention runs
 # on the CPU. q4_1 / q5_0 / q5_1 did too until ggml-org/llama.cpp#28079 added an f16 fallback.
-_GPU_UNACCELERATED_CACHE_TYPES = frozenset({"iq4_nl"})
+# Mapped to a same-size type that has the kernel, so the KV budget is unchanged (#10336).
+_GPU_UNACCELERATED_CACHE_TYPES = {"iq4_nl": "q4_0"}
 
 
 def _kv_cache_gpu_fallback_warning(
@@ -3520,8 +3521,8 @@ def _kv_cache_gpu_fallback_warning(
         return None
     return (
         f"KV cache type {cache_type_kv} has no CUDA/HIP flash-attention kernel, so attention "
-        "falls back to CPU, causing high CPU load and slow generation. "
-        "q8_0 or q4_0 is a GPU-accelerated quantized option."
+        "would fall back to CPU, causing high CPU load and slow generation. Using "
+        f"{_GPU_UNACCELERATED_CACHE_TYPES[cache_type_kv]} instead, the same size on the GPU."
     )
 
 
@@ -3976,6 +3977,46 @@ def _scale_diffusion_required_gb(required_gb: float, ngl: int, n_layers: Optiona
     if not n_layers or n_layers <= 0 or ngl >= n_layers:
         return required_gb
     return required_gb * (ngl / n_layers)
+
+
+# The runner's own CUDA context, which the free reading taken before spawn cannot see.
+_DIFFUSION_RUNNER_OVERHEAD_MIB = 512.0
+# Context the fitted split leaves room for when the runner auto-sizes (maxtok 0).
+_DIFFUSION_FIT_CTX = 4096
+
+
+def _diffusion_auto_ngl(
+    file_bytes: int,
+    n_layers: Optional[int],
+    n_head: Optional[int],
+    maxtok: int,
+    free_mib: float,
+    total_mib: float,
+    *,
+    sysmem_fallback: bool = False,
+) -> Optional[int]:
+    """GPU layers for an Auto-mode diffusion load, or None to keep every layer on the GPU.
+
+    Only a GGUF that cannot fit moves: all layers die in cudaMalloc, or on Windows spill into
+    shared system memory until RAM and the page file run out (#6456). The split leaves room
+    for the compute buffer (measured 1.75x the [n_head, N, N] fp32 scores) and the 8% of VRAM
+    the runner's context probe keeps free (diffusion-gemma-visual-server.cpp)."""
+    if not file_bytes or not n_layers or n_layers <= 0 or (free_mib <= 0 and total_mib <= 0):
+        return None
+    usable = _vram_usable_mib(
+        free_mib, total_mib, _active_vram_fraction(), sysmem_fallback = sysmem_fallback
+    )
+    usable -= _DIFFUSION_RUNNER_OVERHEAD_MIB
+    file_mib = file_bytes / (1024 * 1024)
+    if file_mib <= usable:
+        return None
+    # Mirrors unsloth_zoo's _canvas_maxtok: larger requests are sent as 0 (auto-size).
+    n_ctx = maxtok if 0 < maxtok <= 8192 else _DIFFUSION_FIT_CTX
+    scores_mib = max(1, n_head or 1) * n_ctx * n_ctx * 4 / (1024 * 1024)
+    ctx_reserve = 1.75 * scores_mib + 0.08 * (total_mib if total_mib > 0 else free_mib)
+    # The whole file over the block count also charges token_embd, which stays on the CPU.
+    per_layer_mib = file_mib / n_layers
+    return max(0, min(n_layers - 1, int((usable - ctx_reserve) // per_layer_mib)))
 
 
 def _source_declares_option(source: str, option: str) -> bool:
@@ -7184,6 +7225,10 @@ class LlamaCppBackend:
         """Zero-VRAM launches, incl. arch-gated automatic ones, let the arbiter spare image/video
         pipelines."""
         if self._arch_gate_forced_cpu:
+            return True
+        # A diffusion runner reports offload False only when its GPU token was masked: a
+        # manual zero split, or an Auto fit that found no room on the card.
+        if self._is_diffusion and self._gpu_offload_active is False:
             return True
         return (
             self._gpu_memory_mode == "manual"
@@ -15226,6 +15271,47 @@ class LlamaCppBackend:
                 return first
         return "0"
 
+    def _diffusion_fit_ngl(
+        self, model_path: str, gpu: str, maxtok: int, *, pinned: bool
+    ) -> Optional[int]:
+        """Auto-mode ``--ngl`` for the runner's device ``gpu``, or None to keep its default."""
+        # An NGL in the environment is the zoo runner's own override: leave it in charge.
+        if not gpu.isdigit() or "NGL" in os.environ:
+            return None
+        try:
+            binary = self._find_llama_server_binary()
+            # Vulkan ordinals are not the CUDA ids the runner's mask takes.
+            if binary and self._is_vulkan_backend(binary):
+                return None
+            rows = self._get_gpu_memory(binary)
+            file_bytes = self._get_gguf_size_bytes(model_path)
+            sysmem_fallback = self._sysmem_fallback_risk(binary)
+        except Exception as e:
+            logger.debug(f"DiffusionGemma layer fit skipped: {e}")
+            return None
+        row = next((r for r in rows if r[0] == int(gpu)), None)
+        # Unpinned, the child's "0" is CUDA's fastest-first device unless PCI order is set,
+        # not nvidia-smi's index 0: size against the roomiest card so no load that fits
+        # today is cut down.
+        if not pinned and len(rows) > 1 and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+            row = max(
+                rows,
+                key = lambda r: _vram_usable_mib(
+                    r[1], r[2], _active_vram_fraction(), sysmem_fallback = sysmem_fallback
+                ),
+            )
+        if row is None:
+            return None
+        return _diffusion_auto_ngl(
+            file_bytes,
+            self._n_layers,
+            self._n_heads,
+            maxtok,
+            row[1],
+            row[2],
+            sysmem_fallback = sysmem_fallback,
+        )
+
     def _start_diffusion_server(
         self,
         *,
@@ -15241,8 +15327,13 @@ class LlamaCppBackend:
         gpu_layers: int = -1,
         cancelled: Optional[Callable[[], bool]] = None,
     ) -> bool:
-        """Serves llama-server's /v1 and /health API; manual gpu_layers becomes --ngl, allowing RAM
-        splits."""
+        """Launch the OpenAI-compat diffusion shim (which drives the on-device
+        visual decoder) and wait for health. Presents the same /v1 + /health
+        interface as llama-server, so the rest of Unsloth is unchanged.
+
+        Manual mode forwards gpu_layers as --ngl so a GGUF larger than VRAM can be
+        split across GPU and RAM; auto keeps every layer on the GPU unless the GGUF
+        cannot fit it."""
         assets = self._find_diffusion_assets()
         if assets is None:
             raise RuntimeError(
@@ -15279,6 +15370,32 @@ class LlamaCppBackend:
         holds_no_gpu = manual_ngl == 0
         # The runner takes one device: the lowest picked GPU, matching the recorded gpu_ids[0].
         gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = holds_no_gpu)
+        # Auto: a GGUF too large for that device gets the split that fits it (#6456).
+        fit_ngl = None
+        if manual_ngl is None:
+            fit_ngl = self._diffusion_fit_ngl(model_path, gpu, maxtok, pinned = bool(gpu_ids))
+            # The probe runs under the load lock and can be slow: honour a Stop that came in.
+            if cancelled is not None and cancelled():
+                logger.info("Load cancelled before diffusion server start")
+                self._health_wait_cancelled = True
+                return False
+            if fit_ngl is not None and not _shim_supports_ngl(shim_cmd):
+                logger.warning(
+                    "DiffusionGemma does not fit GPU %s and the installed unsloth_zoo shim "
+                    "has no --ngl to split it. Run 'unsloth studio update'.",
+                    gpu,
+                )
+                fit_ngl = None
+            # Pin the context the split was sized for. Left to auto-size, the runner's second
+            # probe pass sizes against host RAM, which on Windows the driver backs with
+            # shared memory instead of refusing.
+            if fit_ngl is not None and not 0 < maxtok <= 8192:
+                maxtok = _DIFFUSION_FIT_CTX
+            # Nothing fits: run on the CPU like a manual zero-layer split, not on a
+            # GPU context the card may not have room for.
+            if fit_ngl == 0:
+                holds_no_gpu = True
+                gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = True)
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -15300,6 +15417,16 @@ class LlamaCppBackend:
                 "slower for block diffusion than for a regular model; prefer a smaller "
                 "quant over a large CPU split if throughput matters.",
                 manual_ngl,
+            )
+        elif fit_ngl is not None:
+            cmd += ["--ngl", str(fit_ngl)]
+            logger.warning(
+                "DiffusionGemma does not fit GPU %s: keeping %d of %s layers on it and the "
+                "rest on CPU, which is much slower for block diffusion. A smaller quant "
+                "that fits the GPU is faster.",
+                gpu,
+                fit_ngl,
+                self._n_layers,
             )
 
         env = child_env_without_native_path_secret()
@@ -19572,6 +19699,9 @@ class LlamaCppBackend:
                 self._spec_drafter_kind = None
                 self._dflash_retry_needed = False
                 self._vram_fraction_launched = None
+                # Outside the lock, as for llama-server: the Auto layer fit reads free VRAM,
+                # which a just-killed runner still holds until the driver reclaims it.
+                self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
@@ -22465,15 +22595,12 @@ class LlamaCppBackend:
                     and cache_type_kv in _valid_cache_types
                     and not _cache_type_from_env
                 ):
-                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_K_FLAGS):
-                        cmd.extend(["--cache-type-k", cache_type_kv])
-                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_V_FLAGS):
-                        cmd.extend(["--cache-type-v", cache_type_kv])
-                    self._cache_type_kv = cache_type_kv
-                    logger.info(f"KV cache type: {cache_type_kv}")
                     gpu_fallback_warning = (
                         None
-                        if intent.cpu_fallback or _extras_cache is not None
+                        if intent.cpu_fallback
+                        or _arch_gate_forced_cpu
+                        or not _detected_gpus
+                        or _extras_cache is not None
                         else _kv_cache_gpu_fallback_warning(
                             cache_type_kv,
                             gpu_memory_mode,
@@ -22483,6 +22610,13 @@ class LlamaCppBackend:
                     )
                     if gpu_fallback_warning:
                         logger.warning(gpu_fallback_warning)
+                        cache_type_kv = _GPU_UNACCELERATED_CACHE_TYPES[cache_type_kv]
+                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_K_FLAGS):
+                        cmd.extend(["--cache-type-k", cache_type_kv])
+                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_V_FLAGS):
+                        cmd.extend(["--cache-type-v", cache_type_kv])
+                    self._cache_type_kv = cache_type_kv
+                    logger.info(f"KV cache type: {cache_type_kv}")
                 else:
                     self._cache_type_kv = None
 

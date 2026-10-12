@@ -791,7 +791,8 @@ def test_a_cancelled_diffusion_start_reaps_the_runner():
                 model_identifier = "o/m",
                 n_ctx = 4096,
                 extra_args = None,
-                cancelled = lambda: True,
+                # Cancelled during the health wait: a Stop before the spawn launches nothing.
+                cancelled = lambda: getattr(b, "_health_wait_cancelled", False),
             )
             is False
         )
