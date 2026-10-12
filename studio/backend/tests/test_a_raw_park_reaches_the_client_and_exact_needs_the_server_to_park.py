@@ -651,6 +651,34 @@ class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
         assert runs._server_park_excused_recently() is True
         assert backend.asked == 2
 
+    def test_runs_silent_together_share_one_scrape(self, monkeypatch):
+        import threading
+
+        backend = self._Backend()
+        started = threading.Event()
+
+        def slow_scrape():
+            backend.asked += 1
+            started.set()
+            time.sleep(0.3)
+            return True
+
+        backend._server_park_grace = slow_scrape
+        monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
+        answers: list = []
+        workers = [
+            threading.Thread(target = lambda: answers.append(runs._server_park_excused_recently()))
+            for _ in range(6)
+        ]
+        workers[0].start()
+        assert started.wait(2.0)
+        for worker in workers[1:]:
+            worker.start()
+        for worker in workers:
+            worker.join(5.0)
+        assert answers == [True] * 6
+        assert backend.asked == 1, f"{backend.asked} scrapes for one expired entry"
+
     def test_a_probe_on_one_server_does_not_starve_another(self, monkeypatch):
         first, second = self._Backend(), self._Backend()
         routed = [first]

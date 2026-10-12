@@ -518,6 +518,9 @@ _PARK_PROBE_MIN_INTERVAL_S = 5.0
 # backend, so a run on another model's server is never starved of its own reading.
 _park_probe_last: "weakref.WeakKeyDictionary[Any, tuple]" = weakref.WeakKeyDictionary()
 _park_probe_lock = threading.Lock()
+# One probe in flight per backend: callers arriving while it runs wait for it and take its answer,
+# rather than each seeing the same expired entry and scraping at once.
+_park_probe_inflight: "weakref.WeakKeyDictionary[Any, threading.Lock]" = weakref.WeakKeyDictionary()
 
 
 def _server_park_probe_now(backend: Any) -> bool:
@@ -534,15 +537,20 @@ def _server_park_probe_now(backend: Any) -> bool:
     probe = getattr(backend, "_server_park_grace", None)
     if not callable(probe):
         return False
-    now = time.monotonic()
     with _park_probe_lock:
-        last = _park_probe_last.get(backend)
-        if last is not None and now - last[0] < _PARK_PROBE_MIN_INTERVAL_S:
-            return last[1]
-    answer = bool(probe())
-    with _park_probe_lock:
-        _park_probe_last[backend] = (now, answer)
-    return answer
+        inflight = _park_probe_inflight.get(backend)
+        if inflight is None:
+            inflight = _park_probe_inflight[backend] = threading.Lock()
+    with inflight:
+        now = time.monotonic()
+        with _park_probe_lock:
+            last = _park_probe_last.get(backend)
+            if last is not None and now - last[0] < _PARK_PROBE_MIN_INTERVAL_S:
+                return last[1]
+        answer = bool(probe())
+        with _park_probe_lock:
+            _park_probe_last[backend] = (now, answer)
+        return answer
 
 
 def _server_park_excused_recently() -> bool:
