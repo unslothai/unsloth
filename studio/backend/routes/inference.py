@@ -3298,6 +3298,46 @@ def _plan_for_unpausable_holder(controller, gen_id: str) -> None:
             gen_id = gen_id,
             preempted = ",".join(v.gen_id for v in victims),
         )
+        # Kept for the route to wait on: they decode into their cells until their streams see
+        # the signal, and a prompt sent first can outrun llama-server's KV-full retries.
+        # Not one parked on a tool: it never reads the signal, only an erase frees it.
+        holder = controller.participant(gen_id)
+        if holder is not None:
+            holder.awaiting_victims = [v.gen_id for v in victims if not v.parked_on_a_tool]
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # A worker thread (a caption or OCR call): wait here, nothing else is on it.
+            _openai_llama_wait_for_victims(controller, gen_id)
+
+
+# How long an unpausable holder waits for the chats its plan paused to let go before it sends
+# anyway, as it did before. A pause lands within a token or two of the signal.
+_UNPAUSABLE_VICTIM_WAIT_S = 2.0
+
+
+def _openai_llama_wait_for_victims(controller, gen_id: str) -> None:
+    victims = controller.take_awaited_victims(gen_id)
+    if victims and not controller.wait_released(victims, _UNPAUSABLE_VICTIM_WAIT_S):
+        _llama_preemption_log(
+            "raw-holder-victims-late", level = "debug", gen_id = gen_id, victims = ",".join(victims)
+        )
+
+
+async def _openai_llama_let_victims_go(llama_backend, gen_id: Optional[str]) -> None:
+    """Before an unpausable request goes upstream, wait for the chats its plan paused.
+
+    Off the loop: a paused chat's stream is advanced from it, so blocking it here would keep
+    the victim from ever seeing its signal. Nothing to wait on is a no-op."""
+    if gen_id is None or not preemption_enabled():
+        return
+    try:
+        controller = get_preemption_controller(_preempt_key(llama_backend))
+        if controller.participant(gen_id) is None:
+            return
+        await asyncio.to_thread(_openai_llama_wait_for_victims, controller, gen_id)
+    except Exception:
+        logger.debug("could not wait for the unpausable holder's victims", exc_info = True)
 
 
 def _prompt_kv_tokens(prompt) -> int:
@@ -9327,7 +9367,8 @@ def _direct_llama_request(counted: bool = True, *, kv_tokens: int = 0):
         holder = _openai_llama_count_direct_holder(backend, kv_tokens, "direct-holder")
     _direct_llama_request_started()
     try:
-        yield
+        # The holder's id, for a caller on the event loop to wait on its victims with.
+        yield holder
     finally:
         _direct_llama_request_finished()
         if holder is not None:
@@ -24230,7 +24271,10 @@ async def _generate_tts_wav(
         # of the request timeout after the chat had already reported it stopped.
         _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
         try:
-            with _direct_llama_request(_direct_llama_tts, kv_tokens = _direct_llama_kv_tokens):
+            with _direct_llama_request(
+                _direct_llama_tts, kv_tokens = _direct_llama_kv_tokens
+            ) as _tts_holder:
+                await _openai_llama_let_victims_go(get_llama_cpp_backend(), _tts_holder)
                 wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
             # An idle auto-unload cancels through the backend without setting this route's event.
@@ -38532,6 +38576,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 _cmpl_holder = _openai_llama_count_completions_holder(
                     llama_backend, body.get("prompt", "")
                 )
+                # The chats its plan paused let go first: they hold their cells until their
+                # streams see the signal.
+                await _openai_llama_let_victims_go(llama_backend, _cmpl_holder)
                 req = client.build_request(
                     "POST",
                     target_url,
@@ -38684,6 +38731,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _cmpl_holder = _openai_llama_count_completions_holder(
                 llama_backend, body.get("prompt", "")
             )
+            await _openai_llama_let_victims_go(llama_backend, _cmpl_holder)
             try:
                 resp = await _client.post(
                     target_url,
@@ -41510,6 +41558,7 @@ async def _responses_stream(
                 gen_id = resp_id,
                 payload = chat_req,
             )
+            await _openai_llama_let_victims_go(llama_backend, resp_id)
             iterator = event_generator()
             stream_started = True
             try:
@@ -43720,6 +43769,8 @@ async def anthropic_messages(
                 return
             # With the lease in hand: arming a still-queued generation returns None.
             _arm_anthropic(reservation, raw = raw)
+            if raw:
+                await _openai_llama_let_victims_go(llama_backend, message_id)
             body_started = True
             async for chunk in orig_body:
                 yield chunk
@@ -43909,6 +43960,8 @@ async def anthropic_messages(
             # called this, so a non-streaming /v1/messages request ran with an unbound
             # policy and no participant while admission priced it optimistically.
             _arm_anthropic(reservation, raw = raw)
+            if raw:
+                await _openai_llama_let_victims_go(llama_backend, message_id)
             # Registered only once admitted: a queued request is not holding
             # llama-server, so it has no business blocking a swap.
             monitored = await _tracked_anthropic_non_streaming(coro)
@@ -46774,6 +46827,7 @@ async def _openai_passthrough_stream_admitted(
         gen_id = completion_id,
         payload = payload,
     )
+    await _openai_llama_let_victims_go(llama_backend, completion_id)
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is seen: the
@@ -47758,6 +47812,7 @@ async def _openai_passthrough_non_streaming(
             gen_id = _raw_gen_id,
             payload = payload,
         )
+        await _openai_llama_let_victims_go(llama_backend, _raw_gen_id)
         return await _openai_passthrough_non_streaming_upstream(
             llama_backend,
             payload,

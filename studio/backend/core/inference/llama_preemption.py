@@ -537,6 +537,9 @@ class Participant:
     # The state this holder was in when the sweep chose it. Only read while PREEMPTING, so
     # a value left behind by an earlier round is never consulted.
     preempted_from: str = ""
+    # Who an unpausable holder's plan chose, for its route to wait on before it sends: the
+    # victims hold their cells until their streams see the signal.
+    awaiting_victims: List[str] = field(default_factory = list)
 
     def in_reading_tokens(self) -> int:
         """The part of the charge a reading taken now can hold: none until measured, and not a
@@ -1426,6 +1429,44 @@ class PreemptionController:
                 participant.tokens = max(participant.tokens, participant.prompt_tokens)
             else:
                 participant.tokens = max(participant.tokens, participant.base_tokens)
+
+    def wait_released(
+        self,
+        gen_ids,
+        timeout: float,
+        *,
+        poll_s: float = 0.02,
+    ) -> bool:
+        """Block until each of ``gen_ids`` has stopped being a pending victim, or ``timeout``.
+
+        A chosen chat keeps decoding into its cells until its stream sees the signal and
+        closes upstream, so the room a plan projected is not free yet. True when every one
+        has paused, finished, or declined. Blocking: never call it on the event loop."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        pending = list(gen_ids or ())
+        while True:
+            with self._lock:
+                pending = [
+                    gid
+                    for gid in pending
+                    if (p := self._participants.get(gid)) is not None
+                    and p.state == ParticipantState.PREEMPTING
+                ]
+            if not pending:
+                return True
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(poll_s, left))
+
+    def take_awaited_victims(self, gen_id: str) -> List[str]:
+        """The victims ``gen_id``'s plan chose and its route has not waited on yet."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return []
+            taken, participant.awaiting_victims = participant.awaiting_victims, []
+            return taken
 
     def set_state(self, gen_id: str, state: str) -> None:
         """Report a safe point."""
