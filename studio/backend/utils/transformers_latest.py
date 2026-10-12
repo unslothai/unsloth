@@ -448,11 +448,16 @@ def _hardcoded_model_types() -> frozenset[str]:
     )
 
 
+# Routed to a pinned tier for another reason (5.5: DiffusionGemma's mlx-vlm processor) though that release
+# has no model for the type. Known up front, so a fresh install prompts before the sidecar exists.
+_TIER_ROUTED_WITHOUT_MODEL = frozenset({"diffusion_gemma"})
+
+
 def _hardcoded_tier_ships(model_type: str) -> bool:
     """A hardcoded tier counts as handling *model_type* unless that sidecar is installed and its
     CONFIG_MAPPING lacks it: DiffusionGemma is routed to 5.5 for the mlx-vlm processor, but 5.5 has
     no DiffusionGemma model, so a CUDA load needs the latest-transformers prompt."""
-    if model_type not in _hardcoded_model_types():
+    if model_type not in _hardcoded_model_types() or model_type in _TIER_ROUTED_WITHOUT_MODEL:
         return False
     for tier, types in (
         ("530", _TRANSFORMERS_530_MODEL_TYPES),

@@ -607,6 +607,15 @@ def test_text_path_load_still_catches_a_diffusion_model():
 
 
 @_needs_torch
+def test_chat_classifies_a_hub_lora_by_its_base_before_the_vision_branch():
+    from core.inference import inference as inference_mod
+
+    src = inspect.getsource(inference_mod.InferenceBackend.load_model)
+    base_probe = src.index("diffusion_lm_profile_for_model(\n                    config.base_model")
+    diffusion_load = src.index("FastModel.from_pretrained(", base_probe)
+    assert diffusion_load < src.index("elif config.is_vision:", base_probe)
+
+
 def test_chat_diffusion_load_refuses_an_unmarked_model_and_keeps_the_token_boundary():
     from core.inference import inference as inference_mod
 
@@ -746,9 +755,11 @@ def test_diffusion_gemma_gets_the_latest_transformers_prompt_when_5_5_lacks_it(m
     monkeypatch.setattr(tl, "_config_model_types", lambda tier: shipped.get(tier, frozenset()))
     assert not tl._hardcoded_tier_ships("diffusion_gemma")
     assert tl._hardcoded_tier_ships("gemma4")
-    # Sidecar not provisioned yet: the hardcoded routing still counts as handling it.
+    # Sidecar not provisioned yet (fresh install): DiffusionGemma still prompts, other pinned types keep
+    # their routing.
     monkeypatch.setattr(tl, "_config_model_types", lambda tier: frozenset())
-    assert tl._hardcoded_tier_ships("diffusion_gemma")
+    assert not tl._hardcoded_tier_ships("diffusion_gemma")
+    assert tl._hardcoded_tier_ships("gemma4")
 
 
 def test_formatting_retries_in_one_process_when_workers_cannot_pickle():
