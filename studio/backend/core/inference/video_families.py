@@ -620,7 +620,12 @@ def unsupported_video_checkpoint_reason(
     needles = [normalize_family_name(str(identifier)) for identifier in identifiers if identifier]
     if wan21_checkpoint:
         needle = normalize_family_name(str(wan21_checkpoint))
-        needles += [needle, "wan2-1-" + re.split(r"[/\\]", needle.rstrip("/\\"))[-1]]
+        needles.append(needle)
+        name = re.split(r"[/\\]", needle.rstrip("/\\"))[-1]
+        # A leading "fun" is too generic to mark a Fun release unless it names one (version, size, InP, Control); the
+        # other markers are still judged.
+        generic_fun = re.match(r"fun(?![a-z0-9])", name) and not re.match(r"fun-(?:v\d|1-3b|14b|inp|control)", name)
+        needles.append(("wan2-1-t2v-" if generic_fun else "wan2-1-") + name)
     for needle in needles:
         for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
             if re.search(pattern, needle):

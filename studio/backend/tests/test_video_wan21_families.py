@@ -303,6 +303,22 @@ def test_remote_file_name_outranks_the_repo_for_same_layout_wan(repo, filename, 
     assert video._detect_load_family(repo, filename, None).name == expected
 
 
+@pytest.mark.parametrize(
+    "repo, filename, expected",
+    [
+        ("org/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-1.3B-Q8_0.gguf", "wan2.1-t2v-1.3b"),
+        ("org/Wan2.1-T2V-1.3B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", "wan2.1-t2v-14b"),
+        ("org/Wan2.1-T2V-14B-GGUF", "model-Q8_0.gguf", "wan2.1-t2v-14b"),
+    ],
+)
+def test_remote_file_name_naming_the_other_wan21_size_outranks_the_repo(repo, filename, expected, monkeypatch):
+    # No header pass for a remote pick, so the file's own size token decides which base config builds the transformer.
+    import core.inference.video as video
+
+    monkeypatch.setattr(video, "_picked_gguf_arch", lambda *a, **k: None)
+    assert video._detect_load_family(repo, filename, None).name == expected
+
+
 def test_renamed_wan21_1_3b_gguf_resolves_by_header(tmp_path):
     from core.inference.video import _detect_load_family
 
@@ -425,6 +441,9 @@ def test_load_validation_refuses_with_the_named_reason():
         ("city96/Wan2.1-T2V-14B-gguf", {"gguf_filename": "i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"}, _I2V),
         ("someorg/Wan2.1-T2V-1.3B-mix", {"gguf_filename": "vace-1.3b-Q8_0.gguf", "model_kind": "gguf"}, _VARIANT),
         ("someorg/Wan2.1-T2V-1.3B-mix", {"gguf_filename": "fun-inp-1.3b-Q8_0.gguf", "model_kind": "gguf"}, _VARIANT),
+        ("someorg/Wan2.1-T2V-14B-GGUF", {"gguf_filename": "fun-14b-control-Q4_K_M.gguf", "model_kind": "gguf"}, _VARIANT),
+        ("someorg/Wan2.1-T2V-1.3B-mix", {"gguf_filename": "fun-v1.1-1.3b-inp-Q8_0.gguf", "model_kind": "gguf"}, _VARIANT),
+        ("city96/Wan2.1-T2V-14B-gguf", {"gguf_filename": "fun-style-i2v-14b-Q4_K_M.gguf", "model_kind": "gguf"}, _I2V),
     ],
 )
 def test_unsupported_file_under_a_t2v_repo_is_refused(repo, kwargs, reason):
@@ -458,6 +477,16 @@ def test_unsupported_file_under_a_t2v_repo_is_refused(repo, kwargs, reason):
 def test_load_validation_accepts_wan21_t2v(repo, kwargs, family):
     from core.inference.video import VideoBackend
     assert VideoBackend().validate_load_request(repo, **kwargs).name == family
+
+
+@pytest.mark.parametrize("filename", ["fun-style-Q4_K_M.gguf", "funky-Q4_K_M.gguf"])
+def test_short_file_starting_with_fun_is_not_made_a_fun_release(filename):
+    # Spelled in one segment (Wan2.1-T2V-14B-fun-style) this is accepted; the family context must not change that.
+    from core.inference.video import VideoBackend
+    fam = VideoBackend().validate_load_request(
+        "someone/Wan2.1-T2V-14B-GGUF", gguf_filename = filename, model_kind = "gguf"
+    )
+    assert fam.name == "wan2.1-t2v-14b"
 
 
 def test_non_diffusers_upstream_repo_stays_untrusted():
