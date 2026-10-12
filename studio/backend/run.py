@@ -1653,7 +1653,7 @@ def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_T
 
 _server = None
 _server_thread = None
-# "https" for a --ssl-certfile/--ssl-keyfile launch; every URL the launch prints for itself uses it.
+# "https" for an --ssl-certfile launch, used by every URL the launch prints for itself
 _url_scheme = "http"
 
 _shutdown_event = None

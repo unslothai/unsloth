@@ -50,9 +50,8 @@ def resolve_studio_tls(certfile: Optional[str], keyfile: Optional[str]) -> Optio
 
 def server_ssl_context(tls: StudioTLS) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    # Native TLS (utils/native_tls.py) swaps in truststore's SSLContext, whose handshake hook verifies the PEER's
-    # chain against the OS store. On a server the peer is the browser, which sends none, so macOS and Windows would
-    # fail every handshake. The class must stay truststore's: uvloop checks isinstance against the injected name.
+    # Native TLS (utils/native_tls.py) injects truststore, whose handshake hook verifies the PEER chain: a browser sends
+    # none, so macOS / Windows fail every handshake. Keep truststore's class, uvloop isinstance-checks it.
     inner = getattr(ctx, "_ctx", None)
     if inner is not None and hasattr(inner, "sslobject_class"):
         inner.sslobject_class = ssl.SSLObject
