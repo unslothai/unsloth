@@ -810,3 +810,26 @@ def test_vscode_under_wsl_writes_the_windows_vscode_config(monkeypatch, tmp_path
     (tmp_path / "linux" / "Code" / "User").mkdir(parents = True)
     linux = tmp_path / "linux" / "Code" / "User" / "chatLanguageModels.json"
     assert start._vscode_models_path() == linux
+
+
+def test_vscode_over_ssh_prints_the_group_instead_of_writing_a_dead_file(studio, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    monkeypatch.setenv("SSH_CONNECTION", "10.0.0.2 51234 10.0.0.9 22")
+    user_dir = studio["home"] / ".config" / "Code" / "User"
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert not user_dir.exists()
+    assert "nothing was written" in result.output and "port 8888" in result.output
+    group = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
+    assert group["models"][0]["requestHeaders"] == {"Authorization": f"Bearer {APP_KEY}"}
+
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+    assert studio["minted"] == 1
+
+    # An SSH session on a machine that does run VS Code keeps writing the file.
+    user_dir.mkdir(parents = True)
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+    assert (user_dir / "chatLanguageModels.json").exists()

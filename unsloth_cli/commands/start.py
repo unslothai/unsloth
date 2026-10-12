@@ -6224,6 +6224,13 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
     )
 
 
+def _vscode_over_ssh(path: Path) -> bool:
+    # VS Code reads this file on the machine it runs on; a Remote-SSH host has no VS Code user dir.
+    if sys.platform in ("win32", "darwin") or path.parent.is_dir():
+        return False
+    return any(os.environ.get(name) for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+
+
 def _add_vscode_provider(
     base: str,
     explicit_key: Optional[str],
@@ -6239,8 +6246,9 @@ def _add_vscode_provider(
         state_path, state, text, key, key_id = _open_app_config(
             target, base, explicit_key, _vscode_groups
         )
+        remote = _vscode_over_ssh(target.path)
         new_text = _vscode_models_text(
-            text,
+            None if remote else text,
             target.path,
             base,
             key,
@@ -6258,11 +6266,26 @@ def _add_vscode_provider(
             "key_id": key_id,
             "models": [entry["id"]],
         }
-        _save_app_config(target, state_path, state, new_state, text, new_text)
+        if remote:
+            # Keep the key in state so a re-run reuses it; a file here would never be read.
+            _save_app_config(target, state_path, state, new_state, None, None)
+        else:
+            _save_app_config(target, state_path, state, new_state, text, new_text)
     except BaseException:
         _revoke_new_app_key(base, key_id, state)
         _shutdown_auto_served()
         raise
+    if remote:
+        port = urlparse(base).port or 80
+        typer.echo(
+            "This is an SSH session with no VS Code user dir here, so nothing was written: VS Code "
+            "reads its model list on the machine it runs on. There, run Chat: Manage Language "
+            f"Models, open chatLanguageModels.json and add the group below, then forward port "
+            f"{port} to the same local port (Remote-SSH: Ports view)."
+        )
+        typer.echo(json.dumps(json.loads(new_text)[0], indent = 2, ensure_ascii = False))
+        _app_server_notice(base)
+        return
     typer.echo(
         f"Added {entry['id']} from Unsloth at {base} to VS Code. In the Copilot Chat model "
         f"picker, pick it under {_VSCODE_GROUP} (Manage Models if it is hidden; run "
