@@ -1872,11 +1872,15 @@ from utils.first_token_timeout import (
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S, read = socket_timeout(_first_token_timeout_s()))
+    return httpx.Timeout(
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S, read = socket_timeout(_first_token_timeout_s())
+    )
 
 
 def _llama_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S, read = socket_timeout(_first_token_timeout_s()))
+    return httpx.Timeout(
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S, read = socket_timeout(_first_token_timeout_s())
+    )
 
 
 def _set_stream_response_read_timeout(
