@@ -59,7 +59,6 @@ def _single_file_folder(config: dict) -> str:
             raise RuntimeError(f"'{name}' is missing from '{repo}'")
     else:
         from huggingface_hub import hf_hub_download
-
         path = hf_hub_download(
             repo,
             name,
@@ -100,7 +99,6 @@ def _single_file_folder(config: dict) -> str:
                     fh.write(handle.get_tensor(tensor_name).numpy().tobytes())
     except BaseException:
         import shutil
-
         shutil.rmtree(folder, ignore_errors = True)
         raise
     return folder
@@ -138,7 +136,6 @@ def _load(config: dict) -> tuple[Any, Any]:
     }
     if config.get("single_file"):
         import shutil
-
         folder = _single_file_folder(config)
         try:
             tokenizer = transformers.AutoTokenizer.from_pretrained(folder)
@@ -149,8 +146,12 @@ def _load(config: dict) -> tuple[Any, Any]:
             shutil.rmtree(folder, ignore_errors = True)
     else:
         repo = config["repo"]
-        tokenizer = transformers.AutoTokenizer.from_pretrained(repo, subfolder = "tokenizer", **common)
-        model = model_cls.from_pretrained(repo, subfolder = "text_encoder", torch_dtype = dtype, **common)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            repo, subfolder = "tokenizer", **common
+        )
+        model = model_cls.from_pretrained(
+            repo, subfolder = "text_encoder", torch_dtype = dtype, **common
+        )
     model.eval()
     model.requires_grad_(False)
     if config.get("resident"):
@@ -172,7 +173,11 @@ def _weights_mib(model: Any) -> int:
     return total >> 20
 
 
-def _encode_device(config: dict, model: Any, server_reserved_mib: Optional[int] = None) -> str:
+def _encode_device(
+    config: dict,
+    model: Any,
+    server_reserved_mib: Optional[int] = None,
+) -> str:
     """Where a non-resident encoder runs this encode: the configured accelerator when it has room for the weights plus
     ``ENCODE_MARGIN_MIB``, else the CPU. Room is the card's free memory right now AND, when the server sent them, the
     load's memory budget minus what the server holds at this moment: the plan did not budget the encoder on the card,
@@ -206,7 +211,6 @@ def _memory_stats(device: str) -> dict:
     stats: dict = {}
     try:
         import torch
-
         if str(device).startswith("cuda") and torch.cuda.is_available():
             dev = torch.device(device)
             stats["gpu_peak_allocated_mib"] = torch.cuda.max_memory_allocated(dev) >> 20
@@ -217,7 +221,6 @@ def _memory_stats(device: str) -> dict:
         pass
     try:
         import resource
-
         stats["host_peak_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
         with open("/proc/self/statm", encoding = "ascii") as fh:
             stats["host_rss_mib"] = (int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")) >> 20
@@ -226,7 +229,9 @@ def _memory_stats(device: str) -> dict:
     return stats
 
 
-def _encode(tokenizer: Any, model: Any, config: dict, prompts: list, max_len: int) -> tuple[Any, Any]:
+def _encode(
+    tokenizer: Any, model: Any, config: dict, prompts: list, max_len: int
+) -> tuple[Any, Any]:
     embeds, mask, _device = _encode_on(tokenizer, model, config, prompts, max_len)
     return embeds, mask
 

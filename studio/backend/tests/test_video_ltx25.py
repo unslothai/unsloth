@@ -36,9 +36,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 _FIXTURE = json.loads((_FIXTURES / "comfy_checkpoint_headers.json").read_text(encoding = "utf-8"))
 # Range-read header of the official distilled DiT (Lightricks/LTX-2.5, via an ungated mirror), trimmed to the
 # non-block tensors and block 0. Shapes only.
-_LTX25_REAL = json.loads(
-    (_FIXTURES / "ltx25_checkpoint_headers.json").read_text(encoding = "utf-8")
-)
+_LTX25_REAL = json.loads((_FIXTURES / "ltx25_checkpoint_headers.json").read_text(encoding = "utf-8"))
 _LTX25_REAL_KEY = (
     "Lightricks/LTX-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors"
 )
@@ -83,16 +81,26 @@ LTX2X_NAMES = [
 
 @pytest.mark.parametrize(
     "version, family",
-    [("2.0", "ltx-2"), ("2.3", "ltx-2"), ("2.4", "ltx-2.5"), ("2.5", "ltx-2.5"), ("2.6", None), ("2.9", None)],
+    [
+        ("2.0", "ltx-2"),
+        ("2.3", "ltx-2"),
+        ("2.4", "ltx-2.5"),
+        ("2.5", "ltx-2.5"),
+        ("2.6", None),
+        ("2.9", None),
+    ],
 )
 def test_release_maps_to_one_family(version, family):
     assert ltx_family_for_version(version) == family
 
 
-
 @pytest.mark.parametrize(
     "name, version",
-    [("Lightricks/LTX-2.10", "2.10"), ("ltx-2.12-22b-distilled.safetensors", "2.12"), ("ltx_2_10-dev", "2.10")],
+    [
+        ("Lightricks/LTX-2.10", "2.10"),
+        ("ltx-2.12-22b-distilled.safetensors", "2.12"),
+        ("ltx_2_10-dev", "2.10"),
+    ],
 )
 def test_multi_digit_releases_are_refused_not_routed_to_ltx2(name, version):
     from core.inference.video import _detect_load_family
@@ -122,14 +130,12 @@ def test_ltx25_names_resolve_to_the_ltx25_family(name):
 @pytest.mark.parametrize("repo, filename", LTX25_FILES)
 def test_ltx25_files_resolve_to_the_ltx25_family(repo, filename):
     from core.inference.video import _detect_load_family
-
     assert _detect_load_family(repo, filename, None).name == LTX25_FAMILY
 
 
 @pytest.mark.parametrize("name", LTX2X_NAMES)
 def test_ltx2_and_ltx23_names_still_resolve_to_ltx2(name):
     from core.inference.video import _detect_load_family
-
     assert detect_video_family(name).name == "ltx-2"
     assert _detect_load_family(name, None, None).name == "ltx-2"
 
@@ -177,7 +183,11 @@ def test_an_override_never_crosses_releases():
     assert _detect_load_family("Lightricks/LTX-2.5-Diffusers", None, "ltx-2.5").name == LTX25_FAMILY
     # A non-LTX family never trips on an LTX token.
     fam = _detect_load_family(
-        "someone/wan-ltx-2.5-style", "wan-ltx-2.5-style.safetensors", "wan2.2-ti2v-5b", None, "single_file"
+        "someone/wan-ltx-2.5-style",
+        "wan-ltx-2.5-style.safetensors",
+        "wan2.2-ti2v-5b",
+        None,
+        "single_file",
     )
     assert fam.name == "wan2.2-ti2v-5b"
     assert_ltx_pick_supported("wan2.2-ti2v-5b", "someone/ltx-2.5")
@@ -217,9 +227,13 @@ def test_companion_base_must_be_the_same_release(tmp_path, monkeypatch):
         backend.validate_load_request(
             "unsloth/LTX-2.3-GGUF", base_repo = "unsloth/LTX-2.5-Diffusers", **ltx23
         )
-    ltx25 = dict(gguf_filename = "distilled/ltx-2.5-22b-distilled-transformer-Q4_K_M.gguf", model_kind = "gguf")
+    ltx25 = dict(
+        gguf_filename = "distilled/ltx-2.5-22b-distilled-transformer-Q4_K_M.gguf", model_kind = "gguf"
+    )
     with pytest.raises(ValueError, match = "'ltx-2' family, not 'ltx-2.5'"):
-        backend.validate_load_request("vantagewithai/LTX-2.5-GGUF", base_repo = "Lightricks/LTX-2", **ltx25)
+        backend.validate_load_request(
+            "vantagewithai/LTX-2.5-GGUF", base_repo = "Lightricks/LTX-2", **ltx25
+        )
     folder = tmp_path / "my-base"
     folder.mkdir()
     _write_index(folder, "Gemma4UnifiedForConditionalGeneration")
@@ -270,7 +284,9 @@ def test_local_diffusers_folder_answers_by_its_model_index(tmp_path):
     assert _detect_load_family(str(folder), None, None).name == "ltx-2"
     with pytest.raises(ValueError, match = "model_index.json"):
         _detect_load_family(str(folder), None, "ltx-2.5")
-    _write_index(folder, "Gemma3ForConditionalGeneration", duration_head = ["ltx2", "LTX2DurationHead"])
+    _write_index(
+        folder, "Gemma3ForConditionalGeneration", duration_head = ["ltx2", "LTX2DurationHead"]
+    )
     assert _detect_load_family(str(folder), None, None).name == LTX25_FAMILY
     _write_index(folder, "Gemma3ForConditionalGeneration", duration_head = [None, None])
     assert _detect_load_family(str(folder), None, None).name == "ltx-2"
@@ -301,7 +317,11 @@ def _shapes(key):
 
 def _as_ltx25(shapes):
     """A 2.x header with the 2.5 deltas: no video FFN bias, a keyframe position embedding."""
-    prefix = "model.diffusion_model." if any(k.startswith("model.diffusion_model.") for k in shapes) else ""
+    prefix = (
+        "model.diffusion_model."
+        if any(k.startswith("model.diffusion_model.") for k in shapes)
+        else ""
+    )
     out = {
         k: v
         for k, v in shapes.items()
@@ -349,7 +369,9 @@ def test_renamed_local_ltx25_file_loads_as_ltx25_by_its_header(tmp_path):
     bad = tmp_path / "ltx-2.3-but-really-2.5.safetensors"
     _write_header_only_safetensors(bad, shapes)
     assert dc.resolve_family_with_content("ltx-2", str(bad), "video") == (LTX25_FAMILY, True)
-    assert _detect_load_family(str(tmp_path), bad.name, None, None, "single_file").name == LTX25_FAMILY
+    assert (
+        _detect_load_family(str(tmp_path), bad.name, None, None, "single_file").name == LTX25_FAMILY
+    )
     # Forced into ltx-2 it still never reaches the 2.3 assembly.
     with pytest.raises(ValueError, match = "'ltx-2.5' family, not 'ltx-2'"):
         assert_not_ltx25_checkpoint(bad)
@@ -368,10 +390,15 @@ def test_a_forced_ltx_family_still_reads_a_local_header(tmp_path):
     _write_header_only_safetensors(v23 / "model.safetensors", shapes23)
     with pytest.raises(ValueError, match = "loads as the 'ltx-2' family, not 'ltx-2.5'"):
         _detect_load_family(str(v23), "model.safetensors", "ltx-2.5", None, "single_file")
-    assert _detect_load_family(str(v23), "model.safetensors", "ltx-2", None, "single_file").name == "ltx-2"
+    assert (
+        _detect_load_family(str(v23), "model.safetensors", "ltx-2", None, "single_file").name
+        == "ltx-2"
+    )
     v25_dir = tmp_path / "v25"
     v25_dir.mkdir()
-    _write_header_only_safetensors(v25_dir / "model.safetensors", _LTX25_REAL[_LTX25_REAL_KEY]["shapes"])
+    _write_header_only_safetensors(
+        v25_dir / "model.safetensors", _LTX25_REAL[_LTX25_REAL_KEY]["shapes"]
+    )
     with pytest.raises(ValueError, match = "loads as the 'ltx-2.5' family, not 'ltx-2'"):
         _detect_load_family(str(v25_dir), "model.safetensors", "ltx-2", None, "single_file")
     assert (
@@ -386,7 +413,10 @@ def test_a_forced_ltx_family_still_reads_a_local_header(tmp_path):
 def test_family_carries_the_reference_defaults():
     fam = detect_video_family("", override = LTX25_FAMILY)
     assert fam.base_repo == "Lightricks/LTX-2.5-Diffusers"
-    assert fam.pipeline_class == "LTX2Pipeline" and fam.transformer_class == "LTX2VideoTransformer3DModel"
+    assert (
+        fam.pipeline_class == "LTX2Pipeline"
+        and fam.transformer_class == "LTX2VideoTransformer3DModel"
+    )
     assert fam.has_audio and fam.supports_keyframes and fam.supports_cfg
     assert (fam.default_steps, fam.default_guidance) == (8, 1.0)
     assert (fam.default_num_frames, fam.default_fps) == (121, 24)
@@ -402,10 +432,23 @@ def test_family_carries_the_reference_defaults():
     "ids, expected",
     [
         (("Lightricks/LTX-2.5-Diffusers",), (8, 1.0)),
-        ((None, "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors", "Lightricks/LTX-2.5"), (8, 1.0)),
-        ((None, "dev/ltx-2.5-22b-dev-transformer-Q4_K_M.gguf", "vantagewithai/LTX-2.5-GGUF"), (30, 3.0)),
+        (
+            (
+                None,
+                "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+                "Lightricks/LTX-2.5",
+            ),
+            (8, 1.0),
+        ),
+        (
+            (None, "dev/ltx-2.5-22b-dev-transformer-Q4_K_M.gguf", "vantagewithai/LTX-2.5-GGUF"),
+            (30, 3.0),
+        ),
         ((None, "LTX-2.5-Distilled-Q4_K_M.gguf", "Abiray/LTX-2.5-Distilled-GGUF"), (8, 1.0)),
-        ((None, "ltx-2.5-22b-dev-transformer-bf16.safetensors", "/home/me/distilled-models"), (30, 3.0)),
+        (
+            (None, "ltx-2.5-22b-dev-transformer-bf16.safetensors", "/home/me/distilled-models"),
+            (30, 3.0),
+        ),
     ],
 )
 def test_ltx25_generation_defaults(ids, expected):
@@ -414,7 +457,9 @@ def test_ltx25_generation_defaults(ids, expected):
 
 def test_other_families_keep_their_defaults():
     assert default_video_generation_params("Lightricks/LTX-2") == (40, 4.0)
-    assert default_video_generation_params("ltx-2.3-22b-distilled.safetensors", "Lightricks/LTX-2.3") == (8, 1.0)
+    assert default_video_generation_params(
+        "ltx-2.3-22b-distilled.safetensors", "Lightricks/LTX-2.3"
+    ) == (8, 1.0)
     assert default_video_generation_params("Lightricks/LTX-2", family = "ltx-2") == (40, 4.0)
 
 
@@ -532,8 +577,14 @@ _PACK = [
     ("tokenizer/tokenizer.json", 32169626),
     ("tokenizer/tokenizer_config.json", 3735),
     ("transformer/config.json", 1440),
-    *[(f"transformer/diffusion_pytorch_model-0000{i}-of-00004.safetensors", 9_900_000_000) for i in range(1, 5)],
-    *[(f"transformer/diffusion_pytorch_model-0000{i}-of-00008.safetensors", 4_950_000_000) for i in range(1, 9)],
+    *[
+        (f"transformer/diffusion_pytorch_model-0000{i}-of-00004.safetensors", 9_900_000_000)
+        for i in range(1, 5)
+    ],
+    *[
+        (f"transformer/diffusion_pytorch_model-0000{i}-of-00008.safetensors", 4_950_000_000)
+        for i in range(1, 9)
+    ],
     ("transformer/diffusion_pytorch_model.safetensors.index.json", 446505),
     ("transformer_full/config.json", 1440),
     ("transformer_full/diffusion_pytorch_model-00001-of-00004.safetensors", 9932336016),
@@ -567,7 +618,9 @@ def test_pack_download_keeps_only_what_a_load_reads():
     assert "ltx-2.5-22b-distilled-lora-450-bf16.safetensors" not in names
     assert "connectors/diffusion_pytorch_model.safetensors" not in names
     assert "connectors/diffusion_pytorch_model-00001-of-00002.safetensors" in names
-    transformer = sorted(n for n in names if n.startswith("transformer/") and n.endswith(".safetensors"))
+    transformer = sorted(
+        n for n in names if n.startswith("transformer/") and n.endswith(".safetensors")
+    )
     # No index read: the coarsest set, the one the official pack's index names.
     assert len(transformer) == 4 and all("-of-00004" in n for n in transformer)
     for kept in (
@@ -591,7 +644,8 @@ def test_pack_download_follows_the_shard_index():
         {
             "transformer/diffusion_pytorch_model.safetensors.index.json": {
                 "weight_map": {
-                    f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00004.safetensors" for i in range(1, 5)
+                    f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00004.safetensors"
+                    for i in range(1, 5)
                 }
             },
             "connectors/diffusion_pytorch_model.safetensors.index.json": {
@@ -599,9 +653,16 @@ def test_pack_download_follows_the_shard_index():
             },
         }
     )
-    names = {n for n, _ in VideoBackend._base_download_files(_info(_PACK), "pipeline", ltx25_shards = shards)}
-    transformer = sorted(n for n in names if n.startswith("transformer/") and n.endswith(".safetensors"))
-    assert transformer == [f"transformer/diffusion_pytorch_model-0000{i}-of-00004.safetensors" for i in range(1, 5)]
+    names = {
+        n
+        for n, _ in VideoBackend._base_download_files(_info(_PACK), "pipeline", ltx25_shards = shards)
+    }
+    transformer = sorted(
+        n for n in names if n.startswith("transformer/") and n.endswith(".safetensors")
+    )
+    assert transformer == [
+        f"transformer/diffusion_pytorch_model-0000{i}-of-00004.safetensors" for i in range(1, 5)
+    ]
     assert {n for n in names if n.startswith("connectors/")} == {
         "connectors/config.json",
         "connectors/diffusion_pytorch_model-00001-of-00002.safetensors",
@@ -617,7 +678,10 @@ def test_download_plan_reads_the_pack_indexes(monkeypatch, tmp_path):
     indexes = {
         # Pointing at the 8-shard set proves the plan follows the index rather than the listing-only choice.
         "transformer/diffusion_pytorch_model.safetensors.index.json": {
-            "weight_map": {f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00008.safetensors" for i in range(1, 9)}
+            "weight_map": {
+                f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00008.safetensors"
+                for i in range(1, 9)
+            }
         },
         "connectors/diffusion_pytorch_model.safetensors.index.json": {
             "weight_map": {"a": "diffusion_pytorch_model-00001-of-00002.safetensors"}
@@ -643,11 +707,18 @@ def test_download_plan_reads_the_pack_indexes(monkeypatch, tmp_path):
     info = _info(pack)
     shards = VideoBackend._ltx25_plan_shards(info, "Lightricks/LTX-2.5-Diffusers", None)
     # Only the components a load stages: never transformer_full/.
-    assert ("Lightricks/LTX-2.5-Diffusers", "transformer/diffusion_pytorch_model.safetensors.index.json") in fetched
+    assert (
+        "Lightricks/LTX-2.5-Diffusers",
+        "transformer/diffusion_pytorch_model.safetensors.index.json",
+    ) in fetched
     assert not any(n.startswith("transformer_full/") for _, n in fetched)
     names = {n for n, _ in VideoBackend._base_download_files(info, "pipeline", ltx25_shards = shards)}
-    transformer = sorted(n for n in names if n.startswith("transformer/") and n.endswith(".safetensors"))
-    assert transformer == [f"transformer/diffusion_pytorch_model-0000{i}-of-00008.safetensors" for i in range(1, 9)]
+    transformer = sorted(
+        n for n in names if n.startswith("transformer/") and n.endswith(".safetensors")
+    )
+    assert transformer == [
+        f"transformer/diffusion_pytorch_model-0000{i}-of-00008.safetensors" for i in range(1, 9)
+    ]
     assert "text_encoder/model-00005-of-00005.safetensors" in names
 
     def offline(*_a, **_k):
@@ -658,7 +729,9 @@ def test_download_plan_reads_the_pack_indexes(monkeypatch, tmp_path):
     # Another family's repo never reads anything.
     fetched.clear()
     monkeypatch.setattr(hf_xet_fallback, "hf_hub_download_with_xet_fallback", fake_download)
-    ltx2 = _info([(n, sz) for n, sz in pack if not n.startswith(("duration_head/", "diffusion_decoder/"))])
+    ltx2 = _info(
+        [(n, sz) for n, sz in pack if not n.startswith(("duration_head/", "diffusion_decoder/"))]
+    )
     assert VideoBackend._ltx25_plan_shards(ltx2, "Lightricks/LTX-2", None) is None and fetched == []
 
 
@@ -677,19 +750,30 @@ def test_dev_loads_skip_the_latent_upsampler(monkeypatch):
     upsampler = "latent_upsampler/diffusion_pytorch_model.safetensors"
     dev = {n for n, _ in VideoBackend._base_download_files(_info(_PACK), "gguf", ltx25_dev = True)}
     assert upsampler not in dev and "vae/diffusion_pytorch_model.safetensors" in dev
-    single = [n for n, _ in VideoBackend._base_download_files(_info(_SINGLE_REPO), "single_file", ltx25_dev = True)]
+    single = [
+        n
+        for n, _ in VideoBackend._base_download_files(
+            _info(_SINGLE_REPO), "single_file", ltx25_dev = True
+        )
+    ]
     assert sorted(single) == sorted(set(v25.LTX25_SINGLE_COMPANIONS) - {v25.LTX25_SINGLE_UPSAMPLER})
     # The two-stage switch off: no load attaches the upsampler, so no plan stages it.
     monkeypatch.setenv(v25.TWO_STAGE_ENV, "0")
     assert upsampler not in {n for n, _ in VideoBackend._base_download_files(_info(_PACK), "gguf")}
     monkeypatch.delenv(v25.TWO_STAGE_ENV)
     fam = detect_video_family("", override = LTX25_FAMILY)
-    assert _ltx25_dev_load(fam, "single_file", "ltx-2.5-22b-dev-bf16.safetensors", "Lightricks/LTX-2.5")
-    assert not _ltx25_dev_load(fam, "single_file", "ltx-2.5-22b-distilled-bf16.safetensors", "Lightricks/LTX-2.5")
+    assert _ltx25_dev_load(
+        fam, "single_file", "ltx-2.5-22b-dev-bf16.safetensors", "Lightricks/LTX-2.5"
+    )
+    assert not _ltx25_dev_load(
+        fam, "single_file", "ltx-2.5-22b-distilled-bf16.safetensors", "Lightricks/LTX-2.5"
+    )
     # A pipeline decides by its display / repo id; the official pack is distilled.
     assert not _ltx25_dev_load(fam, "pipeline", None, "Lightricks/LTX-2.5-Diffusers")
     assert _ltx25_dev_load(fam, "pipeline", None, "/models/opaque", "someone/LTX-2.5-dev-Diffusers")
-    assert not _ltx25_dev_load(detect_video_family("", override = "ltx-2"), "gguf", "ltx-2.3-dev.gguf", "x")
+    assert not _ltx25_dev_load(
+        detect_video_family("", override = "ltx-2"), "gguf", "ltx-2.3-dev.gguf", "x"
+    )
 
 
 def test_other_packs_are_untouched():
@@ -698,7 +782,8 @@ def test_other_packs_are_untouched():
     ltx2 = [
         (n, s)
         for n, s in _PACK
-        if not n.startswith(("duration_head/", "diffusion_decoder/")) and n != "modular_model_index.json"
+        if not n.startswith(("duration_head/", "diffusion_decoder/"))
+        and n != "modular_model_index.json"
     ]
     assert not v25.is_ltx25_pack(n for n, _ in ltx2)
     names = {n for n, _ in VideoBackend._base_download_files(_info(ltx2), "pipeline")}
@@ -738,7 +823,11 @@ def test_worker_serves_encodes_until_shutdown(monkeypatch, tmp_path):
 
     from core.inference import video_ltx25_te_worker as worker
 
-    model = SimpleNamespace(config = SimpleNamespace(model_type = "gemma4_unified", text_config = SimpleNamespace(hidden_size = 4)))
+    model = SimpleNamespace(
+        config = SimpleNamespace(
+            model_type = "gemma4_unified", text_config = SimpleNamespace(hidden_size = 4)
+        )
+    )
     monkeypatch.setattr(worker, "_activate_sidecar", lambda venv: None)
     monkeypatch.setattr(worker, "_load", lambda config: ("tok", model))
     monkeypatch.setattr(
@@ -753,9 +842,15 @@ def test_worker_serves_encodes_until_shutdown(monkeypatch, tmp_path):
     cmd, resp = queue.Queue(), queue.Queue()
     cmd.put({"type": "encode", "id": 3, "prompts": ["a", "b"], "max_sequence_length": 5})
     cmd.put({"type": "shutdown"})
-    worker.run_text_encoder_worker(cmd_queue = cmd, resp_queue = resp, config = {"venv_dir": str(tmp_path)})
+    worker.run_text_encoder_worker(
+        cmd_queue = cmd, resp_queue = resp, config = {"venv_dir": str(tmp_path)}
+    )
     ready = resp.get_nowait()
-    assert ready["type"] == "ready" and ready["model_type"] == "gemma4_unified" and ready["hidden_size"] == 4
+    assert (
+        ready["type"] == "ready"
+        and ready["model_type"] == "gemma4_unified"
+        and ready["hidden_size"] == 4
+    )
     out = resp.get_nowait()
     assert out["type"] == "embeds" and out["id"] == 3 and tuple(out["embeds"].shape) == (2, 5, 8)
     assert out["device"] == "cpu" and out.get("host_rss_mib", 0) > 0
@@ -765,7 +860,12 @@ class _FakeClient:
     def __init__(self):
         self.calls = []
 
-    def encode(self, texts, max_len, cancel = None):
+    def encode(
+        self,
+        texts,
+        max_len,
+        cancel = None,
+    ):
         import torch
 
         self.calls.append((list(texts), max_len))
@@ -777,19 +877,27 @@ class _FakeClient:
 def test_remote_encode_prompt_keeps_diffusers_semantics():
     import torch
 
-    pipe = SimpleNamespace(_execution_device = torch.device("cpu"), transformer = SimpleNamespace(dtype = torch.bfloat16))
+    pipe = SimpleNamespace(
+        _execution_device = torch.device("cpu"), transformer = SimpleNamespace(dtype = torch.bfloat16)
+    )
     client = _FakeClient()
     v25.install_remote_encode_prompt(pipe, client)
     assert pipe._unsloth_ltx25_encoder is client
     pe, pm, ne, nm = pipe.encode_prompt(
-        prompt = "  a fox ", do_classifier_free_guidance = False, num_videos_per_prompt = 2, max_sequence_length = 4
+        prompt = "  a fox ",
+        do_classifier_free_guidance = False,
+        num_videos_per_prompt = 2,
+        max_sequence_length = 4,
     )
     assert client.calls == [(["a fox"], 4)]
     assert pe.shape == (2, 4, 6) and pe.dtype == torch.bfloat16 and pm.shape == (2, 4)
     assert ne is None and nm is None
     client.calls.clear()
     pe, pm, ne, nm = pipe.encode_prompt(
-        prompt = ["x"], negative_prompt = "blurry", do_classifier_free_guidance = True, max_sequence_length = 3
+        prompt = ["x"],
+        negative_prompt = "blurry",
+        do_classifier_free_guidance = True,
+        max_sequence_length = 3,
     )
     assert client.calls == [(["x"], 3), (["blurry"], 3)]
     assert ne.shape == (1, 3, 6)
@@ -799,15 +907,28 @@ def test_client_caches_recent_encodes_and_reports_a_dead_worker(monkeypatch):
     import torch
 
     client = v25.Ltx25TextEncoderClient(
-        repo = "r", hf_token = None, cache_dir = None, local_files_only = True, device = "cpu", dtype = "bfloat16",
-        resident = False, venv_dir = "/x",
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/x",
     )
     client._cmd, client._resp = queue.Queue(), queue.Queue()
     client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
     client._ready = True
 
     def fake_put(msg):
-        client._resp.put({"type": "embeds", "id": msg["id"], "embeds": torch.zeros(1, 2, 3), "mask": torch.ones(1, 2)})
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
 
     client._cmd.put = fake_put
     a = client.encode(["p"], 2)
@@ -820,29 +941,45 @@ def test_client_caches_recent_encodes_and_reports_a_dead_worker(monkeypatch):
         client._get(None, "encoding")
 
 
-
 def test_an_abandoned_encodes_error_does_not_fail_the_next_one():
     import torch
 
     client = v25.Ltx25TextEncoderClient(
-        repo = "r", hf_token = None, cache_dir = None, local_files_only = True, device = "cpu", dtype = "bfloat16",
-        resident = False, venv_dir = "/x",
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/x",
     )
     client._cmd, client._resp = queue.Queue(), queue.Queue()
     client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
     client._ready = True
     # Request 1 was abandoned by a cancel; its error arrives after request 2 was sent.
     client._seq = 1
-    client._resp.put({"type": "error", "id": 1, "error": "LTX-2.5 text encoder failed: CUDA out of memory"})
+    client._resp.put(
+        {"type": "error", "id": 1, "error": "LTX-2.5 text encoder failed: CUDA out of memory"}
+    )
 
     def fake_put(msg):
-        client._resp.put({"type": "embeds", "id": msg["id"], "embeds": torch.zeros(1, 2, 3), "mask": torch.ones(1, 2)})
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
 
     client._cmd.put = fake_put
     embeds, _mask = client.encode(["p"], 2)
     assert embeds.shape == (1, 2, 3) and client._seq == 2
     # Its own error still fails it.
-    client._cmd.put = lambda msg: client._resp.put({"type": "error", "id": msg["id"], "error": "boom"})
+    client._cmd.put = lambda msg: client._resp.put(
+        {"type": "error", "id": msg["id"], "error": "boom"}
+    )
     with pytest.raises(v25.TextEncoderWorkerError, match = "boom"):
         client.encode(["q"], 2)
 
@@ -855,7 +992,9 @@ def test_ancestral_step_matches_diffusers_rf_reference():
     from diffusers import FlowMatchEulerDiscreteScheduler
     from diffusers.schedulers.scheduling_ltx_euler_ancestral_rf import LTXEulerAncestralRFScheduler
 
-    base = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting = False, shift = 1.0, shift_terminal = None)
+    base = FlowMatchEulerDiscreteScheduler(
+        use_dynamic_shifting = False, shift = 1.0, shift_terminal = None
+    )
     ours = v25.make_ancestral_scheduler(base)
     ref = LTXEulerAncestralRFScheduler(eta = 1.0, s_noise = 1.0)
     sigmas = list(v25.LTX25_STAGE2_SIGMAS)
@@ -900,7 +1039,9 @@ def test_prepare_scheduler_per_variant(monkeypatch):
     assert hasattr(pipe.scheduler, "keep_tokens")
     pipe = SimpleNamespace(scheduler = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting = False))
     assert v25.prepare_scheduler(pipe, dev = True) == "euler"
-    assert pipe.scheduler.config.use_dynamic_shifting and pipe.scheduler.config.shift_terminal == 0.1
+    assert (
+        pipe.scheduler.config.use_dynamic_shifting and pipe.scheduler.config.shift_terminal == 0.1
+    )
     monkeypatch.setenv(v25.SAMPLER_ENV, "euler")
     pipe = SimpleNamespace(scheduler = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting = False))
     assert v25.prepare_scheduler(pipe, dev = False) == "euler"
@@ -974,7 +1115,6 @@ class _FakePipe:
 class _Upsampler:
     def __init__(self):
         import torch
-
         self.weight = torch.nn.Parameter(torch.zeros(1))
 
     def parameters(self):
@@ -985,14 +1125,19 @@ class _Upsampler:
 
     def __call__(self, latents):
         import torch
-
         return torch.nn.functional.interpolate(latents, scale_factor = (1, 2, 2))
 
 
 def _kwargs():
     return dict(
-        prompt = "p", num_inference_steps = 8, width = 1280, height = 704, num_frames = 121, generator = None,
-        guidance_scale = 1.0, frame_rate = 24.0,
+        prompt = "p",
+        num_inference_steps = 8,
+        width = 1280,
+        height = 704,
+        num_frames = 121,
+        generator = None,
+        guidance_scale = 1.0,
+        frame_rate = 24.0,
     )
 
 
@@ -1000,12 +1145,20 @@ def test_two_stage_t2v_follows_the_reference_recipe():
     pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
     seen = []
     out = v25.render(
-        pipe, _kwargs(), dev = False, upsampler = _Upsampler(), on_step = lambda p, i, t, kw: seen.append(i) or kw
+        pipe,
+        _kwargs(),
+        dev = False,
+        upsampler = _Upsampler(),
+        on_step = lambda p, i, t, kw: seen.append(i) or kw,
     )
     assert out.frames == ["final"]
     s1, s2 = pipe.calls
     assert (s1["width"], s1["height"]) == (640, 352) and s1["output_type"] == "latent"
-    assert s1["sigmas"] == list(v25.LTX25_STAGE1_SIGMAS) and s1["stg"] == 0.0 and s1["audio_cfg"] == 1.0
+    assert (
+        s1["sigmas"] == list(v25.LTX25_STAGE1_SIGMAS)
+        and s1["stg"] == 0.0
+        and s1["audio_cfg"] == 1.0
+    )
     assert (s2["width"], s2["height"]) == (1280, 704)
     assert s2["sigmas"] == [0.85, 0.725, 0.421875] and s2["noise_scale"] == 0.85
     assert s2["latents"] == (1, 8, 2, 22, 40)
@@ -1050,7 +1203,9 @@ def test_every_image_path_resets_the_offload_hooks(monkeypatch):
     pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
     pipe._unsloth_ltx25_condition_pipe = _FakePipe(pipe.scheduler)
     with pytest.raises(RuntimeError, match = "cancelled"):
-        v25.render(pipe, _kwargs(), dev = False, image = image, upsampler = _CancellingUpsampler(), cancel = cancel)
+        v25.render(
+            pipe, _kwargs(), dev = False, image = image, upsampler = _CancellingUpsampler(), cancel = cancel
+        )
     assert pipe.freed == 1
     # distilled with the two-stage recipe off
     monkeypatch.setenv(v25.TWO_STAGE_ENV, "0")
@@ -1074,7 +1229,9 @@ def test_dev_and_single_stage_paths(monkeypatch):
     pipe = _FakePipe(SimpleNamespace())
     v25.render(pipe, _kwargs(), dev = False)
     (call,) = pipe.calls
-    assert (call["width"], call["height"]) == (1280, 704) and call["sigmas"] == list(v25.LTX25_STAGE1_SIGMAS)
+    assert (call["width"], call["height"]) == (1280, 704) and call["sigmas"] == list(
+        v25.LTX25_STAGE1_SIGMAS
+    )
     assert v25.stage_steps(8, dev = False) == (8, 0)
 
 
@@ -1124,7 +1281,9 @@ def test_an_offloaded_upsampler_goes_back_where_it_was():
     import torch
 
     upsampler = _OffloadedUpsampler()
-    v25.render(_FakePipe(SimpleNamespace(keep_tokens = None)), _kwargs(), dev = False, upsampler = upsampler)
+    v25.render(
+        _FakePipe(SimpleNamespace(keep_tokens = None)), _kwargs(), dev = False, upsampler = upsampler
+    )
     assert upsampler.moves == [torch.device("cpu"), torch.device("meta")]
     assert upsampler.param.device == torch.device("meta")
 
@@ -1133,24 +1292,59 @@ def test_an_offloaded_upsampler_goes_back_where_it_was():
 
 # diffusers' scripts/convert_ltx2_to_diffusers.py, version "2.5" (what Lightricks/LTX-2.5-Diffusers transformer/ holds).
 _LTX25_TRANSFORMER_CONFIG = {
-    "in_channels": 128, "out_channels": 128, "patch_size": 1, "patch_size_t": 1, "num_attention_heads": 32,
-    "attention_head_dim": 128, "cross_attention_dim": 4096, "vae_scale_factors": (8, 32, 32), "pos_embed_max_pos": 20,
-    "base_height": 2048, "base_width": 2048, "gated_attn": True, "cross_attn_mod": True, "audio_in_channels": 128,
-    "audio_out_channels": 128, "audio_patch_size": 1, "audio_patch_size_t": 1, "audio_num_attention_heads": 32,
-    "audio_attention_head_dim": 64, "audio_cross_attention_dim": 2048, "audio_scale_factor": 4,
-    "audio_pos_embed_max_pos": 20, "audio_sampling_rate": 16000, "audio_hop_length": 160, "audio_gated_attn": True,
-    "audio_cross_attn_mod": True, "num_layers": 48, "activation_fn": "gelu-approximate",
-    "qk_norm": "rms_norm_across_heads", "norm_elementwise_affine": False, "norm_eps": 1e-6, "caption_channels": 3840,
-    "attention_bias": True, "attention_out_bias": True, "rope_theta": 10000.0, "rope_double_precision": True,
-    "causal_offset": 1, "timestep_scale_multiplier": 1000, "cross_attn_timestep_scale_multiplier": 1000,
-    "rope_type": "split", "use_prompt_embeddings": False, "perturbed_attn": True, "ff_bias": False,
+    "in_channels": 128,
+    "out_channels": 128,
+    "patch_size": 1,
+    "patch_size_t": 1,
+    "num_attention_heads": 32,
+    "attention_head_dim": 128,
+    "cross_attention_dim": 4096,
+    "vae_scale_factors": (8, 32, 32),
+    "pos_embed_max_pos": 20,
+    "base_height": 2048,
+    "base_width": 2048,
+    "gated_attn": True,
+    "cross_attn_mod": True,
+    "audio_in_channels": 128,
+    "audio_out_channels": 128,
+    "audio_patch_size": 1,
+    "audio_patch_size_t": 1,
+    "audio_num_attention_heads": 32,
+    "audio_attention_head_dim": 64,
+    "audio_cross_attention_dim": 2048,
+    "audio_scale_factor": 4,
+    "audio_pos_embed_max_pos": 20,
+    "audio_sampling_rate": 16000,
+    "audio_hop_length": 160,
+    "audio_gated_attn": True,
+    "audio_cross_attn_mod": True,
+    "num_layers": 48,
+    "activation_fn": "gelu-approximate",
+    "qk_norm": "rms_norm_across_heads",
+    "norm_elementwise_affine": False,
+    "norm_eps": 1e-6,
+    "caption_channels": 3840,
+    "attention_bias": True,
+    "attention_out_bias": True,
+    "rope_theta": 10000.0,
+    "rope_double_precision": True,
+    "causal_offset": 1,
+    "timestep_scale_multiplier": 1000,
+    "cross_attn_timestep_scale_multiplier": 1000,
+    "rope_type": "split",
+    "use_prompt_embeddings": False,
+    "perturbed_attn": True,
+    "ff_bias": False,
     "use_keyframes_abs_pos_embedding": True,
 }
 
 
 @pytest.mark.parametrize(
     "key",
-    [_LTX25_REAL_KEY, "vantagewithai/LTX-2.5-GGUF/distilled/ltx-2.5-22b-distilled-transformer-Q4_K_M.gguf"],
+    [
+        _LTX25_REAL_KEY,
+        "vantagewithai/LTX-2.5-GGUF/distilled/ltx-2.5-22b-distilled-transformer-Q4_K_M.gguf",
+    ],
 )
 def test_real_ltx25_header_converts_onto_the_ltx25_transformer(key):
     """Every DiT tensor of the official file and of a community GGUF (non-block tensors + block 0, by name and logical
@@ -1186,10 +1380,16 @@ _SINGLE_REPO = [
     ("README.md", 9000),
     ("diffusion_models/ltx-2.5-22b-dev-transformer-bf16.safetensors", 42_020_000_000),
     ("diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors", 42_020_000_000),
-    ("diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors", 21_500_000_000),
+    (
+        "diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+        21_500_000_000,
+    ),
     ("diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors", 18_720_000_000),
     ("hf-hero-web.webp", 90_000),
-    ("latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors", 1_000_000_000),
+    (
+        "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
+        1_000_000_000,
+    ),
     ("latent_upscale_models/ltx-2.5-latent-temporal-upscaler-x2-bf16-1.0.safetensors", 260_000_000),
     ("loras/ltx-2.5-22b-distilled-lora-450-bf16.safetensors", 8_900_000_000),
     ("model_patches/ltx-2.5-duration-head-bf16.safetensors", 4_000_000),
@@ -1215,7 +1415,9 @@ def test_single_file_release_is_its_own_base(tmp_path):
     assert resolve_video_base_repo(fam, "Lightricks/LTX-2.5-Diffusers", "Lightricks/LTX-2.5") == (
         "Lightricks/LTX-2.5-Diffusers"
     )
-    assert resolve_video_base_repo(fam, None, "someone/ltx-2.5-gguf") == "Lightricks/LTX-2.5-Diffusers"
+    assert (
+        resolve_video_base_repo(fam, None, "someone/ltx-2.5-gguf") == "Lightricks/LTX-2.5-Diffusers"
+    )
     ltx2 = detect_video_family("Lightricks/LTX-2")
     assert resolve_video_base_repo(ltx2, None, "Lightricks/LTX-2.5") == ltx2.base_repo
     # A local folder counts once the encoder file and the conv VAE sit in it.
@@ -1251,16 +1453,24 @@ def test_text_encoder_key_mapping_reaches_the_gemma4_names():
         return key
 
     # Real names from the encoder file -> the pack's text_encoder/ names (checked on the full headers).
-    assert mapped("model.layers.0.mlp.down_proj.weight") == "model.language_model.layers.0.mlp.down_proj.weight"
+    assert (
+        mapped("model.layers.0.mlp.down_proj.weight")
+        == "model.language_model.layers.0.mlp.down_proj.weight"
+    )
     assert mapped("model.embed_tokens.weight") == "model.language_model.embed_tokens.weight"
     assert mapped("model.norm.weight") == "model.language_model.norm.weight"
-    assert mapped("audio_projector.embedding_projection.weight") == "model.embed_audio.embedding_projection.weight"
+    assert (
+        mapped("audio_projector.embedding_projection.weight")
+        == "model.embed_audio.embedding_projection.weight"
+    )
     assert mapped("multi_modal_projector.embedding_projection.weight") == (
         "model.embed_vision.embedding_projection.weight"
     )
     assert mapped("vision_model.pos_embedding") == "model.vision_embedder.pos_embedding"
     assert mapped("model.language_model.norm.weight") == "model.language_model.norm.weight"
-    assert mapped("text_embedding_projection.video_aggregate_embed.weight").startswith("text_embedding_projection.")
+    assert mapped("text_embedding_projection.video_aggregate_embed.weight").startswith(
+        "text_embedding_projection."
+    )
 
 
 def test_config_dir_survives_a_concurrent_writer(monkeypatch, tmp_path):
@@ -1287,7 +1497,9 @@ def test_config_dir_survives_a_concurrent_writer(monkeypatch, tmp_path):
 
 def test_embedded_transformer_config_matches_the_tested_layout():
     # The config the real-header conversion test builds on, plus the two keys the pack's config spells out.
-    expected = {k: (list(v) if isinstance(v, tuple) else v) for k, v in _LTX25_TRANSFORMER_CONFIG.items()}
+    expected = {
+        k: (list(v) if isinstance(v, tuple) else v) for k, v in _LTX25_TRANSFORMER_CONFIG.items()
+    }
     extra = {k: v for k, v in v25.LTX25_TRANSFORMER_CONFIG.items() if k not in expected}
     assert extra == {"audio_ff_bias": True, "use_prompt_adaln_single": True}
     assert {k: v for k, v in v25.LTX25_TRANSFORMER_CONFIG.items() if k in expected} == expected
@@ -1295,7 +1507,10 @@ def test_embedded_transformer_config_matches_the_tested_layout():
     written = json.loads((folder / "transformer" / "config.json").read_text(encoding = "utf-8"))
     assert written["_class_name"] == "LTX2VideoTransformer3DModel" and written["ff_bias"] is False
     assert v25._transformer_config_source("Lightricks/LTX-2.5") == str(folder)
-    assert v25._transformer_config_source("Lightricks/LTX-2.5-Diffusers") == "Lightricks/LTX-2.5-Diffusers"
+    assert (
+        v25._transformer_config_source("Lightricks/LTX-2.5-Diffusers")
+        == "Lightricks/LTX-2.5-Diffusers"
+    )
 
 
 def test_single_file_assembly_refuses_quantized_connectors(tmp_path):
@@ -1338,7 +1553,9 @@ def test_encoder_worker_reads_the_single_file_release(tmp_path):
     save_file(
         {
             "model.norm.weight": torch.ones(4),
-            "tokenizer_json": torch.from_numpy(np.frombuffer(tokenizer_json, dtype = np.uint8).copy()),
+            "tokenizer_json": torch.from_numpy(
+                np.frombuffer(tokenizer_json, dtype = np.uint8).copy()
+            ),
             "hf_asset__tokenizer_config.json": torch.from_numpy(
                 np.frombuffer(tokenizer_config, dtype = np.uint8).copy()
             ),
@@ -1367,7 +1584,6 @@ def test_encoder_worker_reads_the_single_file_release(tmp_path):
         assert os.path.realpath(folder / "model.safetensors") == os.path.realpath(path)
     finally:
         import shutil
-
         shutil.rmtree(folder)
     # A pack base keeps the subfolder layout.
     pack_client = v25.Ltx25TextEncoderClient(
@@ -1394,7 +1610,9 @@ def _write_single_file_encoder(folder: Path) -> Path:
         {
             "model.norm.weight": torch.ones(4),
             "tokenizer_json": torch.from_numpy(np.frombuffer(b"{}", dtype = np.uint8).copy()),
-            "hf_asset__tokenizer_config.json": torch.from_numpy(np.frombuffer(b"{}", dtype = np.uint8).copy()),
+            "hf_asset__tokenizer_config.json": torch.from_numpy(
+                np.frombuffer(b"{}", dtype = np.uint8).copy()
+            ),
         },
         str(path),
         metadata = {"gemma_config": json.dumps({"model_type": "gemma4_unified"}), "format": "pt"},
@@ -1463,7 +1681,6 @@ def test_a_failed_load_stops_only_its_own_encoder_worker():
     backend._ltx25_pending_encoder = (3, other)
     backend._close_pending_ltx25_encoder()
     assert other.closed and backend._ltx25_pending_encoder is None
-
 
 
 def test_unload_stops_a_pending_encoder_worker():
@@ -1577,9 +1794,10 @@ class _FakeEncoderModel:
 
     def __call__(self, input_ids, attention_mask, output_hidden_states):
         import torch
-
         b, n = input_ids.shape
-        return SimpleNamespace(hidden_states = tuple(torch.full((b, n, 4), float(i)) for i in range(3)))
+        return SimpleNamespace(
+            hidden_states = tuple(torch.full((b, n, 4), float(i)) for i in range(3))
+        )
 
 
 class _FakeTokenizer:
@@ -1588,7 +1806,6 @@ class _FakeTokenizer:
 
     def __call__(self, prompts, **kwargs):
         import torch
-
         n = kwargs["max_length"]
         return SimpleNamespace(
             input_ids = torch.ones(len(prompts), n, dtype = torch.long),
@@ -1598,7 +1815,6 @@ class _FakeTokenizer:
 
 def _patch_free(monkeypatch, free_mib):
     import torch
-
     def _mem_get_info(device = None):
         if free_mib is None:
             raise RuntimeError("no device")
@@ -1623,7 +1839,6 @@ def test_offloaded_encoder_onloads_only_when_the_card_has_room(monkeypatch):
     # A resident encoder is already on the card; other devices are not probed.
     assert worker._encode_device({"device": "cuda:0", "resident": True}, model) == "cuda:0"
     assert worker._encode_device({"device": "mps", "resident": False}, model) == "mps"
-
 
 
 def test_offloaded_encoder_on_xpu_is_budgeted_too(monkeypatch):
@@ -1668,7 +1883,9 @@ def test_short_card_encodes_on_the_cpu_without_moving_the_encoder(monkeypatch):
     # Same packing as the GPU path: every hidden state stacked on a last axis, flattened.
     assert embeds.shape == (1, 6, 4 * 3) and embeds.dtype == torch.bfloat16
     assert mask.shape == (1, 6)
-    assert worker._encode(_FakeTokenizer(), model, {"device": "cpu", "resident": False}, ["a"], 2)[0].shape == (
+    assert worker._encode(_FakeTokenizer(), model, {"device": "cpu", "resident": False}, ["a"], 2)[
+        0
+    ].shape == (
         1,
         2,
         12,
@@ -1677,7 +1894,6 @@ def test_short_card_encodes_on_the_cpu_without_moving_the_encoder(monkeypatch):
 
 def test_worker_reports_its_own_memory():
     from core.inference import video_ltx25_te_worker as worker
-
     stats = worker._memory_stats("cpu")
     assert stats.get("host_rss_mib", 0) > 0 and "gpu_peak_allocated_mib" not in stats
 
@@ -1696,7 +1912,11 @@ def _ltx25_pack_plan(monkeypatch, total_gib):
 
     total = int(total_gib * 1024)
     target = SimpleNamespace(
-        device = "cuda", dtype = None, torch_device = "cuda", ordinal = None, supports_model_cpu_offload = True
+        device = "cuda",
+        dtype = None,
+        torch_device = "cuda",
+        ordinal = None,
+        supports_model_cpu_offload = True,
     )
     backend = vid.VideoBackend()
     monkeypatch.setattr(backend, "_device_target", lambda *a, **k: target)
@@ -1725,7 +1945,9 @@ def _ltx25_pack_plan(monkeypatch, total_gib):
     placement.__wrapped__ = v25.encoder_resident_for_plan
     monkeypatch.setattr(v25, "encoder_resident_for_plan", placement)
     with pytest.raises(_Planned):
-        backend.load_pipeline("Lightricks/LTX-2.5-Diffusers", local_files_only = True, model_kind = "pipeline")
+        backend.load_pipeline(
+            "Lightricks/LTX-2.5-Diffusers", local_files_only = True, model_kind = "pipeline"
+        )
     return seen["plan"], inputs[-1], seen["resident"]
 
 
@@ -1741,7 +1963,9 @@ def _ltx25_pack_plan(monkeypatch, total_gib):
         (180, "none", False, True, True),
     ],
 )
-def test_plan_counts_the_encoder_worker_per_card(monkeypatch, total_gib, policy, stream_te, stream_dit, resident):
+def test_plan_counts_the_encoder_worker_per_card(
+    monkeypatch, total_gib, policy, stream_te, stream_dit, resident
+):
     from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
     plan, inputs, placed_resident = _ltx25_pack_plan(monkeypatch, total_gib)
@@ -1760,7 +1984,11 @@ def test_plan_counts_the_encoder_worker_per_card(monkeypatch, total_gib, policy,
     if resident:
         # Whatever keeps the encoder resident budgeted its bytes on the card.
         budget = plan.estimates["safe_device_budget_mib"]
-        floor = plan.estimates["resident_required_mib"] if policy == "none" else plan.estimates["group_floor_mib"]
+        floor = (
+            plan.estimates["resident_required_mib"]
+            if policy == "none"
+            else plan.estimates["group_floor_mib"]
+        )
         assert floor <= budget and inputs["text_encoder_dense_mib"] <= floor
 
 
@@ -1778,7 +2006,9 @@ class _DeviceTensor:
 class _AnyDeviceTokenizer(_FakeTokenizer):
     def __call__(self, prompts, **kwargs):
         out = super().__call__(prompts, **kwargs)
-        return SimpleNamespace(input_ids = _DeviceTensor(out.input_ids), attention_mask = _DeviceTensor(out.attention_mask))
+        return SimpleNamespace(
+            input_ids = _DeviceTensor(out.input_ids), attention_mask = _DeviceTensor(out.attention_mask)
+        )
 
 
 def test_offloaded_encoder_is_released_after_each_encode_and_reloaded_for_the_next(monkeypatch):
@@ -1789,12 +2019,16 @@ def test_offloaded_encoder_is_released_after_each_encode_and_reloaded_for_the_ne
     model = _FakeEncoderModel()
     config = {"device": "cuda:0", "resident": False}
     for _ in range(2):
-        _embeds, _mask, device = worker._encode_on(_AnyDeviceTokenizer(), model, config, ["a fox"], 4)
+        _embeds, _mask, device = worker._encode_on(
+            _AnyDeviceTokenizer(), model, config, ["a fox"], 4
+        )
         assert device == "cuda:0"
     # Onto the card for each encode, back to the host after it.
     assert model.moves == ["cuda:0", "cpu", "cuda:0", "cpu"]
     resident = _FakeEncoderModel()
-    worker._encode_on(_AnyDeviceTokenizer(), resident, {"device": "cuda:0", "resident": True}, ["a fox"], 4)
+    worker._encode_on(
+        _AnyDeviceTokenizer(), resident, {"device": "cuda:0", "resident": True}, ["a fox"], 4
+    )
     assert resident.moves == []  # loaded onto the card once, at worker start
 
 
@@ -1808,7 +2042,9 @@ def test_offloaded_encoder_borrows_only_budget_the_server_leaves(monkeypatch):
     monkeypatch.setattr(worker, "WORKER_CONTEXT_MIB", 100)
     _patch_free(monkeypatch, 1 << 20)  # the card itself is wide open (a shared or larger card)
     config = {"device": "cuda:0", "resident": False, "budget_mib": 1000}
-    assert worker._encode_device(config, model, server_reserved_mib = 888) == "cuda:0"  # 1000 - 888 - 100 = 12
+    assert (
+        worker._encode_device(config, model, server_reserved_mib = 888) == "cuda:0"
+    )  # 1000 - 888 - 100 = 12
     assert worker._encode_device(config, model, server_reserved_mib = 889) == "cpu"
     # No server figure: the card's free memory decides, as before.
     assert worker._encode_device(config, model, server_reserved_mib = None) == "cuda:0"

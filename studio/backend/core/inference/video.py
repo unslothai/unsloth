@@ -1109,7 +1109,6 @@ def _detect_load_family(
     )
     if fam is not None and fam.name == "ltx-2.5" and not ltx_file:
         from .video_ltx25 import LTX25_SINGLE_FILE_REPO, is_ltx25_single_file_base
-
         if is_ltx25_single_file_base(repo_id):
             # No model_index.json there: a pipeline load would stage ~29 GB of companions and then fail.
             raise ValueError(
@@ -1160,7 +1159,9 @@ def _assert_local_ltx_header_matches(
     if found in LTX_FAMILIES and found != family:
         version = "2.5" if found == LTX25_FAMILY else "2.3"
         raise ValueError(
-            wrong_ltx_family_message(version, family, f"'{os.path.basename(path)}' (by its weights)")
+            wrong_ltx_family_message(
+                version, family, f"'{os.path.basename(path)}' (by its weights)"
+            )
         )
 
 
@@ -2044,7 +2045,6 @@ def _video_seed_stays_resident(
     companions_gb = text_encoder_gb + components[2] * vae_scale
     if getattr(fam, "name", None) == "ltx-2.5":
         from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
-
         companions_gb += LTX25_WORKER_RESIDENT_GB
     model_dense_mib = int((denoiser_gb + companions_gb) * mib_per_gb)
     device_memory = settled_snapshot_device_memory(target)
@@ -3236,7 +3236,8 @@ class VideoBackend:
                 repo_id = repo_id,
                 # A split LTX-2.5 single-file pick reads its companions from its own repo, not the pack.
                 base_repo = resolve_video_base_repo(fam, base_repo, repo_id)
-                if fam.name == "ltx-2.5" and resolve_video_model_kind(gguf_filename, model_kind) != "pipeline"
+                if fam.name == "ltx-2.5"
+                and resolve_video_model_kind(gguf_filename, model_kind) != "pipeline"
                 else fam.base_repo,
                 asset_repos = claimed_assets,
             )
@@ -3302,7 +3303,11 @@ class VideoBackend:
             )
             kind = resolve_video_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
             ltx25_dev = _ltx25_dev_load(
-                fam, kind, kwargs.get("gguf_filename"), kwargs["repo_id"], kwargs.get("display_repo_id")
+                fam,
+                kind,
+                kwargs.get("gguf_filename"),
+                kwargs["repo_id"],
+                kwargs.get("display_repo_id"),
             )
             from .video_minimax_h3 import is_h3_native
 
@@ -5124,7 +5129,9 @@ class VideoBackend:
         siblings = list(info.siblings or [])
         ltx25_pack = is_ltx25_pack(s.rfilename for s in siblings)
         # The LTX-2.5 pack ships a modular_model_index.json beside its model_index.json; it is not H3's layout.
-        is_h3_modular = not ltx25_pack and any(s.rfilename == "modular_model_index.json" for s in siblings)
+        is_h3_modular = not ltx25_pack and any(
+            s.rfilename == "modular_model_index.json" for s in siblings
+        )
         h3_is_references = is_h3_modular and (h3_task or "").strip().lower() == H3_TASK_REFERENCES
         h3_denoiser_prefix = "transformer_ref/" if h3_is_references else "transformer/"
         # Which component's dense weight shards ``skip_transformer_weights`` drops. It has to be the partition this load
@@ -5212,7 +5219,9 @@ class VideoBackend:
                     and name.endswith(".safetensors.index.json")
                     and not name.startswith(_PACK_SKIP_PREFIXES)
                 ):
-                    local = hf_hub_download_with_xet_fallback(base, name, hf_token, reuse_other_cache_root = True)
+                    local = hf_hub_download_with_xet_fallback(
+                        base, name, hf_token, reuse_other_cache_root = True
+                    )
                     indexes[name] = json.loads(Path(local).read_text(encoding = "utf-8"))
         except Exception as exc:  # noqa: BLE001 -- the plan falls back to ltx25_pack_files' listing-only choice
             logger.debug("video.ltx25_plan_shards: %s", exc)
@@ -5918,7 +5927,9 @@ class VideoBackend:
                 ltx25_shards_from_indexes,
             )
 
-            single_file_base = is_ltx25_single_file_listing(sib.rfilename for sib in (info.siblings or []))
+            single_file_base = is_ltx25_single_file_listing(
+                sib.rfilename for sib in (info.siblings or [])
+            )
             if not single_file_base and not any(name == "model_index.json" for name, _ in files):
                 return None
             from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -6999,7 +7010,10 @@ class VideoBackend:
                         cache_dir = hub_cache_dir(),
                         local_files_only = local_files_only,
                     )
-                from .video_ltx25 import assemble_ltx25_single_file_pipeline, is_ltx25_single_file_base
+                from .video_ltx25 import (
+                    assemble_ltx25_single_file_pipeline,
+                    is_ltx25_single_file_base,
+                )
 
                 if is_ltx25_single_file_base(_base_local_dir or base):
                     # The split single-file release: every component from the files beside the DiT, no pack.
@@ -7061,7 +7075,6 @@ class VideoBackend:
 
         if ltx25_client is not None:
             from .video_ltx25 import attach_to_pipeline
-
             attach_to_pipeline(
                 pipe,
                 ltx25_client,
@@ -7823,7 +7836,11 @@ class VideoBackend:
                 )
                 self._precommit_globals = None
                 pending_encoder = self._ltx25_pending_encoder
-                if ltx25_client is not None and pending_encoder is not None and pending_encoder[1] is ltx25_client:
+                if (
+                    ltx25_client is not None
+                    and pending_encoder is not None
+                    and pending_encoder[1] is ltx25_client
+                ):
                     self._ltx25_pending_encoder = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
@@ -10326,7 +10343,9 @@ class VideoBackend:
             has_last_frame = bool(last_frame),
         )
         if fam.name == "ltx-2.5":
-            return VideoBackend._resolve_ltx25_first_frame(fam, first_frame, last_frame, width, height)
+            return VideoBackend._resolve_ltx25_first_frame(
+                fam, first_frame, last_frame, width, height
+            )
         first = last = None
         if first_frame or last_frame:
             from .diffusion import decode_b64_image
@@ -10382,7 +10401,6 @@ class VideoBackend:
         first = None
         if first_frame:
             from .diffusion import decode_b64_image
-
             first = decode_b64_image(first_frame, mode = "RGB")
         if (width is None or height is None) and first is not None:
             width, height = ltx25_canvas_for_aspect(*first.size)
@@ -11005,7 +11023,6 @@ class VideoBackend:
             diffusion_prompt_cache.release(getattr(state, "pipe", None))
             if getattr(getattr(state, "family", None), "name", None) == "ltx-2.5":
                 from .video_ltx25 import close_encoder
-
                 close_encoder(getattr(state, "pipe", None))
             # A pinner still copying would hold its chunks past release_pinned_host_memory().
             stop_background_pins(getattr(state, "pipe", None))
@@ -11211,7 +11228,6 @@ def _keyframe_canvas(fam: Any) -> tuple[Optional[int], Optional[int]]:
         return None, None
     if getattr(fam, "name", None) == "ltx-2.5":
         from .video_ltx25 import LTX25_CANVAS_MAX_PIXELS, LTX25_CANVAS_SHORT_EDGE
-
         return LTX25_CANVAS_SHORT_EDGE, LTX25_CANVAS_MAX_PIXELS
     return H3_CANVAS_SHORT_EDGE, H3_CANVAS_MAX_PIXELS
 

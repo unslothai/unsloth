@@ -856,14 +856,15 @@ def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[
 
 
 def resolve_video_base_repo(
-    fam: VideoFamily, base_repo: Optional[str], repo_id: Optional[str] = None
+    fam: VideoFamily,
+    base_repo: Optional[str],
+    repo_id: Optional[str] = None,
 ) -> str:
     """The companion diffusers repo: caller-supplied if given, else the family fallback. An LTX-2.5 DiT picked from the
     split single-file release (or a local copy of it) defaults to that release, whose companion files sit beside it."""
     base = (base_repo or "").strip()
     if not base and fam.name == LTX25_FAMILY and repo_id:
         from .video_ltx25 import ltx25_default_base
-
         base = ltx25_default_base(repo_id) or ""
     return base or fam.base_repo
 

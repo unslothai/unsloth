@@ -48,7 +48,10 @@ LTX25_IMAGE_CRF = 18
 LTX25_STAGE1_IMAGE_STRENGTH = 0.7
 LTX25_STAGE2_IMAGE_STRENGTH = 1.0
 # Dev (full) DiT: the README's override of the distilled scheduler config.
-LTX25_DEV_SCHEDULER_OVERRIDES: dict[str, Any] = {"use_dynamic_shifting": True, "shift_terminal": 0.1}
+LTX25_DEV_SCHEDULER_OVERRIDES: dict[str, Any] = {
+    "use_dynamic_shifting": True,
+    "shift_terminal": 0.1,
+}
 
 # Kill switches: "0" runs one full-resolution stage on the distilled sigmas; "euler" swaps the ancestral sampler for
 # diffusers' deterministic Euler.
@@ -69,7 +72,13 @@ _PACK_SKIP_PREFIXES = (
 )
 _PACK_MARKERS = ("duration_head/config.json", "diffusion_decoder/config.json")
 # Components handed to from_pretrained as None: the Gemma 4 encoder lives in the worker, the rest is unused.
-LTX25_NONE_COMPONENTS = ("text_encoder", "tokenizer", "processor", "prompt_enhancer", "duration_head")
+LTX25_NONE_COMPONENTS = (
+    "text_encoder",
+    "tokenizer",
+    "processor",
+    "prompt_enhancer",
+    "duration_head",
+)
 LATENT_UPSAMPLER_SUBFOLDER = "latent_upsampler"
 TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
@@ -83,7 +92,9 @@ LTX25_SINGLE_FILE_REPO = "Lightricks/LTX-2.5"
 LTX25_SINGLE_TEXT_ENCODER = "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
 LTX25_SINGLE_VIDEO_VAE = "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
 LTX25_SINGLE_AUDIO_VAE = "vae/ltx-2.5-audio-vae-bf16.safetensors"
-LTX25_SINGLE_UPSAMPLER = "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+LTX25_SINGLE_UPSAMPLER = (
+    "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+)
 LTX25_SINGLE_COMPANIONS = (
     LTX25_SINGLE_TEXT_ENCODER,
     LTX25_SINGLE_VIDEO_VAE,
@@ -285,7 +296,9 @@ def ltx25_pack_files(
         if component and weight:
             index_name = None
             for candidate in names:
-                if candidate.startswith(component + "/") and candidate.endswith(".safetensors.index.json"):
+                if candidate.startswith(component + "/") and candidate.endswith(
+                    ".safetensors.index.json"
+                ):
                     index_name = candidate
                     break
             if index_name is not None:
@@ -419,7 +432,6 @@ def load_latent_upsampler(
     local_files_only: bool = False,
 ) -> Any:
     from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
-
     if is_ltx25_single_file_base(base_repo):
         from safetensors.torch import load_file
 
@@ -450,7 +462,9 @@ def is_ltx25_single_file_base(base: Optional[str]) -> bool:
         return False
     path = Path(text).expanduser()
     if path.is_dir():
-        return (path / LTX25_SINGLE_TEXT_ENCODER).is_file() and (path / LTX25_SINGLE_VIDEO_VAE).is_file()
+        return (path / LTX25_SINGLE_TEXT_ENCODER).is_file() and (
+            path / LTX25_SINGLE_VIDEO_VAE
+        ).is_file()
     return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
 
 
@@ -465,7 +479,9 @@ def ltx25_uses_upsampler(dev: bool) -> bool:
     return not dev and two_stage_enabled()
 
 
-def ltx25_single_file_companions(files: list[tuple[str, int]], dev: bool = False) -> list[tuple[str, int]]:
+def ltx25_single_file_companions(
+    files: list[tuple[str, int]], dev: bool = False
+) -> list[tuple[str, int]]:
     """The (rfilename, size) entries a load from the single-file release reads besides the picked DiT."""
     wanted = set(LTX25_SINGLE_COMPANIONS)
     if not ltx25_uses_upsampler(dev):
@@ -479,14 +495,19 @@ def ltx25_default_base(repo_id: Optional[str]) -> Optional[str]:
 
 
 def ltx25_companion_path(
-    base: str, filename: str, hf_token: Optional[str], local_files_only: bool = False
+    base: str,
+    filename: str,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
 ) -> str:
     """Local path of one companion file of a single-file base (downloaded into the hub cache when needed)."""
     path = Path(base).expanduser()
     if path.is_dir():
         target = path / filename
         if not target.is_file():
-            raise FileNotFoundError(f"LTX-2.5 needs '{filename}' beside the DiT in '{base}', and it is missing.")
+            raise FileNotFoundError(
+                f"LTX-2.5 needs '{filename}' beside the DiT in '{base}', and it is missing."
+            )
         return str(target)
     from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
@@ -508,7 +529,9 @@ def ltx25_transformer_config_dir() -> str:
     root = Path(tempfile.gettempdir()) / "unsloth_ltx25_config"
     target = root / "transformer" / "config.json"
     payload = json.dumps(
-        {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG}, indent = 1, sort_keys = True
+        {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG},
+        indent = 1,
+        sort_keys = True,
     )
     if not target.is_file() or target.read_text(encoding = "utf-8") != payload:
         target.parent.mkdir(parents = True, exist_ok = True)
@@ -532,7 +555,6 @@ def _read_tensors(path: str, keep: Callable[[str], bool]) -> dict[str, Any]:
     """The tensors of ``path`` whose names pass ``keep``, read selectively (GGUF files are read whole)."""
     if not str(path).lower().endswith(".safetensors"):
         from diffusers.loaders.single_file_utils import load_single_file_checkpoint
-
         return {k: v for k, v in load_single_file_checkpoint(str(path)).items() if keep(k)}
     from safetensors import safe_open
 
@@ -576,7 +598,9 @@ def assemble_ltx25_single_file_pipeline(
     }
     if not connector_state:
         raise ValueError(f"'{Path(str(checkpoint_path)).name}' carries no LTX-2.5 text connectors.")
-    if any(name.endswith((".weight_scale", ".input_scale", ".comfy_quant")) for name in connector_state):
+    if any(
+        name.endswith((".weight_scale", ".input_scale", ".comfy_quant")) for name in connector_state
+    ):
         raise ValueError(
             "This LTX-2.5 file stores its text connectors quantized, which the single-file assembly does not "
             "dequantize. Load it on the Lightricks/LTX-2.5-Diffusers base (base_repo), or pick the bf16 DiT or a GGUF "
@@ -596,7 +620,9 @@ def assemble_ltx25_single_file_pipeline(
         hf_token = hf_token,
         local_files_only = local_files_only,
     )
-    combined = load_file(ltx25_companion_path(base, LTX25_SINGLE_AUDIO_VAE, hf_token, local_files_only))
+    combined = load_file(
+        ltx25_companion_path(base, LTX25_SINGLE_AUDIO_VAE, hf_token, local_files_only)
+    )
     audio_vae, vocoder = load_ltx23_audio_vae_and_vocoder(
         {k[len("audio_vae.") :]: v for k, v in combined.items() if k.startswith("audio_vae.")},
         {k[len("vocoder.") :]: v for k, v in combined.items() if k.startswith("vocoder.")},
@@ -669,7 +695,6 @@ def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
         return None
     try:
         import torch
-
         return int(getattr(torch, kind).memory_reserved(torch.device(str(device)))) >> 20
     except Exception:  # noqa: BLE001 -- unknown: the worker judges by free memory alone
         return None
@@ -760,7 +785,6 @@ class Ltx25TextEncoderClient:
         self._ready = False
         try:
             from utils.process_lifetime import adopt_pid
-
             adopt_pid(proc.pid)
         except Exception:  # noqa: BLE001 -- the daemon flag still ties it to this process
             pass
@@ -782,7 +806,6 @@ class Ltx25TextEncoderClient:
         while True:
             if cancel is not None and cancel.is_set():
                 from .video_families import VIDEO_CANCELLED_MSG
-
                 raise RuntimeError(VIDEO_CANCELLED_MSG)
             try:
                 msg = self._resp.get(timeout = 0.25)
@@ -795,10 +818,16 @@ class Ltx25TextEncoderClient:
                         "for its error; the next request restarts it."
                     )
                 if timeout is not None and time.monotonic() - began > timeout:
-                    raise TextEncoderWorkerError(f"The LTX-2.5 text encoder worker timed out while {what}.")
+                    raise TextEncoderWorkerError(
+                        f"The LTX-2.5 text encoder worker timed out while {what}."
+                    )
                 continue
             if msg.get("type") == "error":
-                if request_id is not None and msg.get("id") is not None and msg.get("id") != request_id:
+                if (
+                    request_id is not None
+                    and msg.get("id") is not None
+                    and msg.get("id") != request_id
+                ):
                     continue
                 raise TextEncoderWorkerError(str(msg.get("error") or "unknown error"))
             return msg
@@ -808,7 +837,9 @@ class Ltx25TextEncoderClient:
             return self.info
         msg = self._get(cancel, "loading the Gemma 4 encoder")
         if msg.get("type") != "ready":
-            raise TextEncoderWorkerError(f"Unexpected reply from the text encoder worker: {msg.get('type')}")
+            raise TextEncoderWorkerError(
+                f"Unexpected reply from the text encoder worker: {msg.get('type')}"
+            )
         self._ready = True
         self.info = {k: v for k, v in msg.items() if k != "type"}
         logger.info("video.ltx25_te: encoder ready %s", self.info)
@@ -834,7 +865,10 @@ class Ltx25TextEncoderClient:
 
     # encoding
     def encode(
-        self, prompts: list[str], max_sequence_length: int, cancel: Optional[threading.Event] = None
+        self,
+        prompts: list[str],
+        max_sequence_length: int,
+        cancel: Optional[threading.Event] = None,
     ) -> tuple[Any, Any]:
         key = (tuple(prompts), int(max_sequence_length))
         with self._lock:
@@ -863,8 +897,12 @@ class Ltx25TextEncoderClient:
                 if msg.get("type") == "embeds" and msg.get("id") == seq:
                     break
             embeds, mask = msg["embeds"], msg["mask"]
-            self.last_encode = {k: v for k, v in msg.items() if k not in ("type", "id", "embeds", "mask")}
-            logger.info("video.ltx25_te: encoded on %s %s", self.last_encode.get("device"), self.last_encode)
+            self.last_encode = {
+                k: v for k, v in msg.items() if k not in ("type", "id", "embeds", "mask")
+            }
+            logger.info(
+                "video.ltx25_te: encoded on %s %s", self.last_encode.get("device"), self.last_encode
+            )
             self._cache.append((key, (embeds, mask)))
             del self._cache[: -self._CACHE_ENTRIES]
             return embeds.clone(), mask.clone()
@@ -911,7 +949,9 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         if do_classifier_free_guidance and negative_prompt_embeds is None:
             negative_prompt = negative_prompt or ""
             negative_prompt = (
-                batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+                batch_size * [negative_prompt]
+                if isinstance(negative_prompt, str)
+                else negative_prompt
             )
             if batch_size != len(negative_prompt):
                 raise ValueError(
@@ -1310,7 +1350,6 @@ def _render(
         video_latents, audio_latents = runner(**stage1)
     if cancel is not None and cancel.is_set():
         from .video_families import VIDEO_CANCELLED_MSG
-
         raise RuntimeError(VIDEO_CANCELLED_MSG)
 
     with torch.inference_mode() if torch.is_inference_mode_enabled() else torch.no_grad():
@@ -1327,7 +1366,6 @@ def _render(
                 upsampler.to(home)
     if cancel is not None and cancel.is_set():
         from .video_families import VIDEO_CANCELLED_MSG
-
         raise RuntimeError(VIDEO_CANCELLED_MSG)
 
     stage2 = dict(
