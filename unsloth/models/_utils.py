@@ -8796,18 +8796,13 @@ def switch_training_mode(
     training,
     defer = False,
 ):
-    """model.train() / model.eval() for for_inference / for_training, which GRPO calls every step.
+    """for_inference / for_training's model.train() / eval() plus their gradient_checkpointing and
+    `_fast_lora` scans (every GRPO step) in one walk; returns the modules with a gradient_checkpointing flag.
 
-    One walk over the tree replaces the recursive train() plus the modules() / parameters() scans that
-    followed it. Returns the modules carrying a gradient_checkpointing flag. Entering training drops the
-    `_fast_lora` dtype casts fast_linear_forward cached on LoRA weights.
-
-    `training` is written directly only where nn.Module.train would do nothing else. A module whose train()
-    differs (a class override, an instance one such as _unsloth_freeze_norm_running_stats' partial,
-    PreTrainedModel with kernels on, its own child traversal) gets its own train(mode) for its subtree, as
-    the recursive call would; a root that differs, or overrides eval(), gets model.train() / model.eval().
-    defer=True returns (modules, apply) so the caller can set the mode after its own bookkeeping, as
-    for_training did by calling model.train() last.
+    `training` is written directly only where nn.Module.train would do nothing else; any other train()
+    (class or instance override such as the frozen-norm partial, kernels on, own child traversal) runs for
+    its subtree, and a differing root or eval() gets model.train() / model.eval(). defer=True returns
+    (modules, apply) so for_training can still set the mode last.
     """
     if not isinstance(model, torch.nn.Module):
         if training:
