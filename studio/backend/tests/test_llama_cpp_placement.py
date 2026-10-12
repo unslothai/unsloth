@@ -4157,6 +4157,29 @@ def test_a_larger_pass_through_parallel_is_not_certified_resident(
     assert _ubatch_values(cmd) == expect_ub, cmd
 
 
+@pytest.mark.parametrize(
+    "extra_args, expect_ub",
+    [
+        (["--fit-ctx", "1024"], []),
+        (["-c", "0"], ["2048"]),
+        (["-c", "0", "--fit-ctx", "1024"], ["2048"]),
+        (["--ctx-size=0"], ["2048"]),
+    ],
+    ids = ["fit_ctx_under_studio_ctx", "zero_ctx", "zero_ctx_fit_ctx", "inline_zero_ctx"],
+)
+def test_a_pass_through_zero_ctx_is_not_certified_resident(
+    tmp_path, _discrete_linux_host, extra_args, expect_ub
+):
+    """fit.cpp trims context only when n_ctx is 0, so a lone --fit-ctx under Unsloth's -c
+    changes nothing; a later -c 0 lets llama.cpp choose a context the check never priced."""
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert cmd[cmd.index("-c") + 1] == "8192", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
 @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
 def test_an_inherited_projector_keeps_a_fit_on_moe_counted_as_spilled(
     tmp_path, _discrete_linux_host, monkeypatch, name

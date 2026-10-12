@@ -27912,6 +27912,11 @@ class LlamaCppBackend:
                         _np_override = _extra_args_n_parallel(_child_extras, {})
                         if _np_override is not None and _np_override > n_parallel:
                             return False
+                        # Likewise priced at Unsloth's -c, which fit.cpp leaves alone. Only a
+                        # later pass-through -c 0 lets llama.cpp pick (native, or trimmed
+                        # toward a --fit-ctx), so the context is unknown here.
+                        if parse_ctx_override(_child_extras) == 0:
+                            return False
                         # A GPU projector Studio never sized; Vision off keeps only audio-only.
                         _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
                         if _resolved_mmproj_offload(_child_extras, _child_env) is False:
