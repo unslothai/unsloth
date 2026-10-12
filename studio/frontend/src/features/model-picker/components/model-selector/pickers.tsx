@@ -169,6 +169,7 @@ import {
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   localAudioRowIsUndecodableGguf,
+  macMlxSttRowIsRunnable,
   macTtsHubRowIsRunnable,
   nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
@@ -4342,7 +4343,7 @@ export function HubModelPicker({
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
               ((c.task === "automatic-speech-recognition" ||
                 c.task === "text-to-speech") &&
-                communityAudioRowIsRunnable({
+                (communityAudioRowIsRunnable({
                   isStt: c.task === "automatic-speech-recognition",
                   isTts: c.task === "text-to-speech",
                   isGguf: false,
@@ -4350,7 +4351,13 @@ export function HubModelPicker({
                   tags: c.tags,
                   libraryName: c.library_name,
                   audioType: c.audio_type,
-                }) &&
+                }) ||
+                  macMlxSttRowIsRunnable({
+                    isMac,
+                    isStt: c.task === "automatic-speech-recognition",
+                    isGguf: false,
+                    libraryName: c.library_name,
+                  })) &&
                 macTtsHubRowIsRunnable({
                   isMac,
                   isTts: c.task === "text-to-speech",

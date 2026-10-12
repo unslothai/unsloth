@@ -1019,6 +1019,15 @@ def _is_whisper_model_config(config: object) -> bool:
     )
 
 
+def _is_mlx_stt_model_config(config: object) -> bool:
+    """A speech-to-text checkpoint the Transcribe page runs through mlx-audio on this Mac."""
+    try:
+        from core.inference.stt_mlx import is_mlx_stt_config
+        return is_mlx_stt_config(config)
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return False
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
@@ -1052,6 +1061,9 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     config = _read_json_object(snapshot / "config.json")
     if _is_whisper_model_config(config):
         result["_hidden_stt"] = True
+    elif _is_mlx_stt_model_config(config):
+        result["_hidden_stt"] = True
+        result["_mlx_stt"] = True
     tts_audio_type = detect_local_tts_audio_type(snapshot)
     if tts_audio_type is not None:
         result["_tts_audio_type"] = tts_audio_type
@@ -1145,6 +1157,7 @@ def _scan_cached_models(
                     else _cached_model_local_metadata(repo_path, load_snapshot)
                 )
                 is_whisper_stt = local_metadata.pop("_hidden_stt", False)
+                is_mlx_stt = local_metadata.pop("_mlx_stt", False)
                 tts_audio_type = local_metadata.pop("_tts_audio_type", None)
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
@@ -1185,7 +1198,11 @@ def _scan_cached_models(
                         else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )
                 )
-                if is_whisper_stt:
+                if is_mlx_stt:
+                    # The Transcribe picker admits non-Whisper speech rows by this name, on a Mac only.
+                    local_metadata["pipeline_tag"] = "automatic-speech-recognition"
+                    local_metadata["library_name"] = "mlx-audio"
+                elif is_whisper_stt:
                     local_metadata["pipeline_tag"] = "automatic-speech-recognition"
                     local_metadata["library_name"] = "transformers"
                     tags = list(local_metadata.get("tags", []))

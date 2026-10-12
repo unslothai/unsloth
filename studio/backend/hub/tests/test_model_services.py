@@ -2564,6 +2564,39 @@ def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch,
     assert all(row["capabilities"]["can_chat"] is False for row in rows_by_repo.values())
 
 
+@pytest.mark.parametrize("mlx_host", [True, False])
+def test_cached_models_scan_emits_an_mlx_audio_asr_checkpoint_as_stt_only_on_a_mac(
+    monkeypatch, tmp_path, mlx_host
+):
+    import core.inference.stt_mlx as stt_mlx
+
+    monkeypatch.setattr(stt_mlx, "mlx_stt_available", lambda: mlx_host)
+    repo_path = tmp_path / "hub" / "models--mlx-community--Qwen3-ASR-1.7B-8bit"
+    snapshot = repo_path / "snapshots" / ("b" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text('{"model_type": "qwen3_asr"}', encoding = "utf-8")
+    (snapshot / "README.md").write_text("---\nlibrary_name: mlx-audio\n---\n", encoding = "utf-8")
+    repo = _repo(
+        "mlx-community/Qwen3-ASR-1.7B-8bit",
+        [_file("config.json", 12), _file("model.safetensors", 90_000_000)],
+        repo_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", _not_partial_snapshot)
+    monkeypatch.setattr(cache_inventory, "_cached_model_snapshot_path", lambda _path: snapshot)
+
+    (row,) = cache_inventory._scan_cached_models(active_hub_cache = repo_path.parent)
+
+    if mlx_host:
+        assert row["task"] == "automatic-speech-recognition"
+        assert row["library_name"] == "mlx-audio"
+        assert row["capabilities"]["can_chat"] is False
+    else:
+        assert row["task"] != "automatic-speech-recognition"
+
+
 _SNAPSHOT_SHA = "a" * 40
 
 
