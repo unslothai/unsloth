@@ -155,7 +155,8 @@ def test_tools_in_the_users_folder_skip_the_isolation_scan(env, monkeypatch):
     assert "unsafe" in managed
     _use_repo(env)
     out = env.tools.execute_tool("terminal", {"command": "pwd"}, session_id = "project-p1")
-    assert os.path.realpath(env.repo) in out and "unsafe" not in out
+    # Git Bash prints the POSIX spelling (/c/Users/...), so match the folder names, not the full path.
+    assert f"{env.repo.parent.name}/repo" in out.replace("\\", "/") and "unsafe" not in out
     ran = env.tools.execute_tool(
         "python", {"code": "import os; print(os.getcwd())"}, session_id = "project-p1"
     )
