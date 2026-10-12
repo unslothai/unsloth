@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { listLinkedFolders } from "../api/rag-api";
 import type { RagDocument } from "../types/rag";
 
-/** Display names of a project's linked folders, read once per set of folder ids. */
 export function useLinkedFolderNames(
   projectId: string | null,
   folderIds: string,
@@ -20,7 +19,6 @@ export function useLinkedFolderNames(
         setNames(new Map(folders.map((f) => [f.id, f.displayName])));
       })
       .catch(() => {
-        // The card falls back to a generic label.
       });
     return () => {
       cancelled = true;
@@ -29,8 +27,7 @@ export function useLinkedFolderNames(
   return names;
 }
 
-/** Splits project documents into loose files and per-folder groups. A linked folder can
- * hold thousands of files, so it is drawn as one item rather than one per file. */
+/** A linked folder can hold thousands of files, so it is drawn as one item. */
 export function groupByLinkedFolder<T extends RagDocument>(
   docs: T[],
 ): {

@@ -52,7 +52,6 @@ function entryFile(entry: FileSystemFileEntry): Promise<File> {
 /** Call inside the drop handler: the browser empties `items` once the event returns. */
 export function filesFromDrop(
   dataTransfer: DataTransfer,
-  /** Inside a folder, files this rejects are left out before the cap counts them. */
   keep: (name: string) => boolean = () => true,
 ): Promise<FolderFiles> {
   const entries = Array.from(dataTransfer.items ?? [])
@@ -86,7 +85,6 @@ async function walkEntries(
       }
       try {
         const file = await entryFile(entry as FileSystemFileEntry);
-        // The upload refuses empty files.
         if (file.size > 0 || root) files.push(file);
       } catch {
       }
@@ -116,7 +114,6 @@ async function walkEntries(
 
 export function filesFromFolderInput(
   list: FileList | File[],
-  /** Files this rejects are left out before the cap counts them. */
   keep: (name: string) => boolean = () => true,
 ): FolderFiles {
   const all = Array.from(list).filter((file) => {

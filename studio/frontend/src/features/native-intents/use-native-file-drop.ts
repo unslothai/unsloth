@@ -285,7 +285,6 @@ export function useNativeFileDrop(
         take(Array.from(event.dataTransfer.files ?? []));
         return;
       }
-      // Read synchronously: the browser clears the drop's items once this handler returns.
       void filesFromDrop(event.dataTransfer, (name) =>
         hasAcceptedExt(name, exts),
       ).then(

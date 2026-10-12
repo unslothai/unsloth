@@ -34,7 +34,6 @@ export function DocumentStatusChip({
   stage?: string | null;
   error?: string | null;
   onRemove?: () => void;
-  /** Offered on a failed row whose original file is still in hand. */
   onRetry?: () => void;
   /** Indexed for the whole project rather than this one chat: swap the file
    * glyph for a folder so the two scopes are told apart at a glance. */

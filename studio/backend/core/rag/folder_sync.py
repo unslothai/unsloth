@@ -1200,7 +1200,6 @@ def _scan(
                         # authoritative for
                         # deletion.
                         pass
-                # Ingest fails on every pass for an empty file (e.g. __init__.py).
                 if st.st_size == 0:
                     continue
                 if (

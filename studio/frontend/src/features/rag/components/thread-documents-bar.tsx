@@ -438,7 +438,6 @@ function DocumentCard({
   doc: TrackedDocument;
   shared: boolean;
   onRemove?: () => void;
-  /** Offered on a failed card whose original file is still in hand. */
   onRetry?: () => void;
 }) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);

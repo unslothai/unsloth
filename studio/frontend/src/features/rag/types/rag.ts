@@ -99,13 +99,11 @@ export interface LinkedFolder {
   status: LinkedFolderStatus;
   documentCount?: number;
   lastSyncedAt?: string | null;
-  /** When the indexed set last changed; a pass that found nothing new leaves it alone. */
   lastChangedAt?: string | null;
   error?: string | null;
   activeJobId?: string | null;
   createdAt?: string | null;
   skipped?: Partial<Record<LinkedFolderSkipReason, number>>;
-  /** Files the last pass could not index (capped), and how many there were in all. */
   failures?: { path: string; error: string }[];
   failureCount?: number;
 }
@@ -159,8 +157,7 @@ export interface FolderSyncJob {
   error?: string | null;
 }
 
-/** Whether a finished job added, changed, removed or renamed anything; counts a backend left out
- *  are taken as a change. */
+/** Missing counts (older backends) count as a change. */
 export function jobChangedSources(job: FolderSyncJob): boolean {
   if (
     job.indexedFiles === undefined &&

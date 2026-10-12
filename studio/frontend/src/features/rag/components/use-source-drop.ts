@@ -159,7 +159,6 @@ export function useSourceDrop({
         toast.info(reason);
         return;
       }
-      // Read synchronously: the browser clears the drop's items once this handler returns.
       void filesFromDrop(event.dataTransfer, isSupportedSourceName).then(
         ({ files, truncated, hadFolder }) => {
           const { supported, unsupported } = partitionSupported(
