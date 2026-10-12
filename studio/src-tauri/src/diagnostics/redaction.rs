@@ -21,12 +21,13 @@ pub(crate) fn redact_text(text: &str, report: &mut RedactionReport) -> String {
     out = replace_regex(auth_scheme_re(), &out, "$1<redacted>", report);
     out = replace_with(secret_kv_re(), &out, redact_kv, report);
     out = replace_with(weak_secret_kv_re(), &out, redact_weak_kv, report);
+    out = replace_with(auth_value_re(), &out, redact_auth_value, report);
     out = replace_with(secret_flag_re(), &out, redact_kv, report);
     out = replace_with(bearer_re(), &out, redact_bearer, report);
     out = replace_regex(cookie_re(), &out, "$1<redacted>", report);
     out = replace_regex(sk_key_re(), &out, "$1<redacted token>", report);
     out = replace_regex(token_re(), &out, "$1<redacted token>", report);
-    out = replace_regex(env_secret_re(), &out, "$1=<redacted>", report);
+    out = replace_with(env_secret_re(), &out, redact_env, report);
     out = replace_regex(
         native_path_lease_re(),
         &out,
@@ -120,6 +121,26 @@ fn redact_weak_kv(caps: &Captures) -> Option<String> {
         return None;
     }
     redact_kv(caps)
+}
+
+// Catch-all for scheme-less, short or numeric Authorization values the rules above skip.
+fn redact_auth_value(caps: &Captures) -> Option<String> {
+    let value = &caps[2];
+    if value.starts_with("<redacted") || AUTH_SCHEMES.contains(&value.to_ascii_lowercase().as_str())
+    {
+        return None;
+    }
+    Some(format!("{}{REDACTED}", &caps[1]))
+}
+
+fn redact_env(caps: &Captures) -> Option<String> {
+    if caps[2]
+        .trim_start_matches(['"', '\''])
+        .starts_with("<redacted")
+    {
+        return None;
+    }
+    Some(format!("{}={REDACTED}", &caps[1]))
 }
 
 fn redact_bearer(caps: &Captures) -> Option<String> {
@@ -256,6 +277,11 @@ fn auth_scheme_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:proxy-)?authorization(?:\\*["'])?[ \t]*[:=][ \t]*(?:\\*["'])?(?:bearer|basic|digest|token|apikey|negotiate)[ \t]+)[^\s"'\\,}\]<]+"#).unwrap())
 }
 
+fn auth_value_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:proxy-)?authorization(?:\\*["'])?[ \t]*[:=][ \t]*(?:\\*["'])?)([^\s"'\\,}\]\[{(]+)"#).unwrap())
+}
+
 fn bearer_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r#"(?i)((?:\\[nrt]|\b)bearer[ \t]+)([^\s"'\\,}\]<]+)"#).unwrap())
@@ -282,7 +308,7 @@ fn token_re() -> &'static Regex {
 fn env_secret_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(?:["'][^"'<\r\n][^"'\r\n]*["']?|[^\s;&<"'][^\s;&]*)"#).unwrap()
+        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(["'][^"'\r\n]*["']?|[^\s;&"'][^\s;&]*)"#).unwrap()
     })
 }
 
@@ -592,6 +618,13 @@ mod tests {
                 r#"{"apiToken": "opaque0123456789", "cf_tunnel_token": "opaque0123456789"}"#,
                 "opaque0123456789",
                 r#""apiToken": "<redacted>""#,
+            ),
+            ("DATABASE_PASSWORD=<hunter2secret>", "hunter2secret", ""),
+            ("Authorization: abcde", "abcde", "Authorization: <redacted>"),
+            (
+                r#"{"Authorization": "123456789"}"#,
+                "123456789",
+                r#""Authorization": "<redacted>""#,
             ),
             (
                 r#"{"token": "opaque0123456789", "credentials": "opaque0123456789"}"#,
