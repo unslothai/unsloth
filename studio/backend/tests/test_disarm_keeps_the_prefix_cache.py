@@ -48,6 +48,7 @@ def erasures(monkeypatch):
         erase,
         *,
         needed = 0,
+        **_kwargs,
     ):
         for slot_id in occupancy.get("idle", []):
             seen.append(slot_id)

@@ -2982,13 +2982,18 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # Whether this reading's residue was already offered: see `_gguf_idle_residue_wanted`.
         _gguf_slots_seen["reclaim_tried"] = needed > 0
         if needed > 0 and occupancy.get("idle"):
+            _maybe_erased: list = []
             freed = reclaim_idle_slots(
                 occupancy,
                 lambda slot_id: erase_llama_slot(
                     base, slot_id, headers = _llama_slot_headers(llama_backend)
                 ),
                 needed = needed,
+                recheck = lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend)),
+                ambiguous = _maybe_erased,
             )
+            if _maybe_erased:
+                controller.note_cells_possibly_erased(parked_before)
             if freed:
                 _llama_preemption_log(
                     "reclaimed-idle-early",
@@ -3079,13 +3084,20 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                 occupancy = _gguf_slots_seen.get("occupancy")
                 if base and occupancy:
                     _idle_tokens = int(occupancy.get("idle_tokens") or 0)
+                    _maybe_erased: list = []
                     freed = reclaim_idle_slots(
                         occupancy,
                         lambda slot_id: erase_llama_slot(
                             base, slot_id, headers = _llama_slot_headers(llama_backend)
                         ),
                         needed = sum(v.tokens for v in victims),
+                        recheck = lambda: fetch_llama_slots(
+                            base, headers = _llama_slot_headers(llama_backend)
+                        ),
+                        ambiguous = _maybe_erased,
                     )
+                    if _maybe_erased:
+                        controller.note_cells_possibly_erased(_gguf_slots_seen.get("parked"))
                     if freed:
                         _llama_preemption_log("reclaimed-idle", freed = freed, gen_id = completion_id)
                         # ONLY when every idle slot went: `reclaim_idle_slots` stops at
@@ -3678,13 +3690,20 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                 )
                 if not occupancy or not occupancy.get("idle"):
                     return
+                _maybe_erased: list = []
                 freed = reclaim_idle_slots(
                     occupancy,
                     lambda slot_id: erase_llama_slot(
                         base, slot_id, headers = _llama_slot_headers(llama_backend)
                     ),
                     needed = int(occupancy.get("resident") or 0),
+                    recheck = lambda: fetch_llama_slots(
+                        base, headers = _llama_slot_headers(llama_backend)
+                    ),
+                    ambiguous = _maybe_erased,
                 )
+                if _maybe_erased:
+                    get_preemption_controller(key).note_cells_possibly_erased(parked_before)
                 if freed:
                     _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
                     _controller = get_preemption_controller(key)

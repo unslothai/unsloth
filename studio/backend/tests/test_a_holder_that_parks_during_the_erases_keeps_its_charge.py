@@ -154,6 +154,7 @@ class TestTheDisarmPath:
             erase,
             *,
             needed = 0,
+            **_kwargs,
         ):
             # The window: this is the blocking HTTP the comment describes.
             controller.note_state("late", ParticipantState.PARKED_ON_TOOL)

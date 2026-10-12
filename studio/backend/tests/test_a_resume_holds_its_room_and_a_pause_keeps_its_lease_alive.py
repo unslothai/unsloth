@@ -361,7 +361,7 @@ class TestAPartialEraseReclaimsNothingGlobal:
         it = iter(readings)
         monkeypatch.setattr(inference, "read_slot_occupancy", lambda scrape: next(it))
         monkeypatch.setattr(
-            inference, "reclaim_idle_slots", lambda occupancy, erase, *, needed = 0: freed
+            inference, "reclaim_idle_slots", lambda occupancy, erase, *, needed = 0, **_kwargs: freed
         )
         monkeypatch.setattr(inference, "erase_llama_slot", lambda base, slot_id, headers = None: True)
         return controller

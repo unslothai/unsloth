@@ -1419,6 +1419,25 @@ class PreemptionController:
                         participant.replay_pending = True
         return len(released)
 
+    def note_cells_possibly_erased(self, only: Optional[Dict[str, int]] = None) -> int:
+        """An erase may have taken a slot another request was handed after the reading.
+
+        The holders that reading did not see parked (`only`, a `parked_holders()` reading
+        from before it) are the ones whose cells it could not account for, so their next
+        round replays the whole prompt rather than only its growth. Their charge stays: the
+        cells may well be there. Returns how many holders it applied to."""
+        marked = 0
+        with self._lock:
+            for participant in self._participants.values():
+                if not participant.holds_kv or participant.cells_reclaimed:
+                    continue
+                if only is not None and only.get(participant.gen_id) == participant.park_seq:
+                    # Seen parked by the reading: `note_cells_reclaimed` accounts for it.
+                    continue
+                participant.replay_pending = True
+                marked += 1
+        return marked
+
     def restart(self, gen_id: str) -> None:
         """The same request starts over from its original prompt: the next of `n` choices.
         The replayed partials and the resume debt of the last choice are not its own."""
@@ -2178,6 +2197,9 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
     resident = 0
     idle_tokens = 0
     idle = []
+    # The task each idle slot last ran: an erase is tied to it, since the slot can be handed
+    # to another request between this reading and the erase.
+    idle_task = {}
     for slot in slots:
         # WHICH field this came from decides whether the decoded tokens still have to be
         # added, so the two cannot collapse into one `or` chain: `n_prompt_tokens` is TOTAL
@@ -2209,6 +2231,7 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
         if not slot.get("is_processing") and tokens > 0:
             idle_tokens += max(0, tokens)
             idle.append((slot.get("id"), max(0, tokens)))
+            idle_task[slot.get("id")] = slot.get("id_task")
     # Largest first: the fewest erases free the most.
     idle.sort(key = lambda pair: -pair[1])
     return {
@@ -2216,32 +2239,62 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
         # Reported separately so the caller can free it BEFORE pausing anybody.
         "idle_tokens": idle_tokens,
         "idle": idle,
+        "idle_task": idle_task,
         "slots": len(slots),
     }
 
 
+def _slot_incarnation(slots: Optional[list], slot_id) -> Optional[tuple]:
+    """``(is_processing, id_task)`` for one slot of a ``GET /slots`` reading, None if absent."""
+    for slot in slots or ():
+        if isinstance(slot, dict) and slot.get("id") == slot_id:
+            return bool(slot.get("is_processing")), slot.get("id_task")
+    return None
+
+
 def reclaim_idle_slots(
-    occupancy: Optional[dict], erase: Callable[[int], int], *, needed: int
+    occupancy: Optional[dict],
+    erase: Callable[[int], int],
+    *,
+    needed: int,
+    recheck: Optional[Callable[[], Optional[list]]] = None,
+    ambiguous: Optional[list] = None,
 ) -> int:
     """Free dead residue before asking a live chat to stop. Returns tokens freed.
 
     Strictly better than preempting: an idle slot's cache belongs to a finished request, so
     erasing it costs a future prefix-cache hit and nothing else. llama.cpp does this itself
     only on the KV-full retry, once the decode has ALREADY failed.
+
+    ``recheck`` re-reads ``GET /slots``. llama-server defers an erase aimed at a processing
+    slot and runs it once that slot goes idle, so a slot handed to another request since the
+    reading would have the NEW request's cache erased later. Each erase goes only to a slot
+    still idle on the task the reading saw; a slot on another task afterwards is added to
+    ``ambiguous``, since the erase may have taken the newer cache.
     """
     if not occupancy or needed <= 0:
         return 0
+    seen_task = occupancy.get("idle_task") or {}
     freed = 0
     for slot_id, tokens in occupancy.get("idle") or ():
         if freed >= needed:
             break
         if slot_id is None:
             continue
+        if recheck is not None:
+            now = _slot_incarnation(recheck(), slot_id)
+            if now is None or now[0] or now[1] != seen_task.get(slot_id, now[1]):
+                # Taken by another request, or unreadable: nothing here is dead residue.
+                continue
         try:
             freed += max(0, int(erase(slot_id) or 0))
         except Exception:
             # An erase that fails leaves the residue; the caller falls back to preempting.
             continue
+        if recheck is not None and ambiguous is not None:
+            after = _slot_incarnation(recheck(), slot_id)
+            if after is None or after[0] or after[1] != seen_task.get(slot_id, after[1]):
+                ambiguous.append(slot_id)
     return freed
 
 

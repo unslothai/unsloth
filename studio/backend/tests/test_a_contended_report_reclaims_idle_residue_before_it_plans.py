@@ -55,6 +55,7 @@ def _observer(monkeypatch, controller, erased: list):
         erase,
         *,
         needed = 0,
+        **_kwargs,
     ):
         erased.append(needed)
         return 3000

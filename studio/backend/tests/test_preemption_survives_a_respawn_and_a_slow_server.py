@@ -291,6 +291,7 @@ def slow_probe(monkeypatch):
         erase,
         *,
         needed = 0,
+        **_kwargs,
     ):
         for slot_id in occupancy.get("idle", []):
             seen["erased"].append(slot_id)
