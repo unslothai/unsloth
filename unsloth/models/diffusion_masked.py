@@ -175,19 +175,27 @@ class MaskedDiffusionProfile(DiffusionProfile):
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
         auto_map = getattr(config, "auto_map", None) or {}
-        class_ref = (
-            auto_map.get(self.auto_class)
-            or auto_map.get("AutoModelForCausalLM")
-            or auto_map.get("AutoModel")
+        auto_class = next(
+            (
+                name
+                for name in (self.auto_class, "AutoModelForCausalLM", "AutoModel")
+                if auto_map.get(name)
+            ),
+            None,
         )
-        if class_ref is None or not trust_remote_code:
+        if auto_class is None or not trust_remote_code:
             return super().model_class(config, trust_remote_code, **hub_kwargs)
         cls = get_class_from_dynamic_module(
-            class_ref,
+            auto_map[auto_class],
             config._name_or_path,
             revision = getattr(config, "_commit_hash", None),
             **hub_kwargs,
         )
+        # Register as the Auto classes do: transformers < 5.17 keys is_remote_code() on _auto_class alone, and a
+        # class it takes for library code gets its own _init_weights run over the loaded checkpoint (LLaDA-MoE and
+        # Dream then train from random weights).
+        if getattr(cls, "_auto_class", None) is None:
+            cls.register_for_auto_class(auto_class)
         _accept_new_validate_kwargs(cls)
         return _ensure_post_init(cls)
 

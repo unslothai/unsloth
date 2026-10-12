@@ -394,6 +394,68 @@ def test_mask_builder_signature_exposed_from_wrapper_closure():
     assert list(inspect.signature(wrapper).parameters)[:2] == ["config", "inputs_embeds"]
 
 
+_REMOTE_CONFIG = """
+from transformers import PretrainedConfig
+
+
+class TinyRemoteConfig(PretrainedConfig):
+    model_type = "tiny_remote_diffusion"
+"""
+
+_REMOTE_MODELING = """
+import torch
+from transformers import PreTrainedModel
+from .configuration_tiny_remote import TinyRemoteConfig
+
+
+class TinyRemoteModel(PreTrainedModel):
+    config_class = TinyRemoteConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.proj = torch.nn.Linear(4, 4, bias = False)
+        self.post_init()
+
+    def _init_weights(self, module):
+        # 4.x-era hub init writes in place, blind to which weights the checkpoint already filled.
+        if isinstance(module, torch.nn.Linear):
+            module.weight.data.normal_(0.0, 1.0)
+
+    def forward(self, x):
+        return self.proj(x)
+"""
+
+
+def test_remote_class_keeps_checkpoint_weights(tmp_path):
+    import json
+
+    from safetensors.torch import save_file
+    from transformers import AutoConfig
+
+    from unsloth.models.diffusion_masked import MaskedDiffusionProfile
+
+    (tmp_path / "configuration_tiny_remote.py").write_text(_REMOTE_CONFIG)
+    (tmp_path / "modeling_tiny_remote.py").write_text(_REMOTE_MODELING)
+    auto_map = {
+        "AutoConfig": "configuration_tiny_remote.TinyRemoteConfig",
+        "AutoModelForCausalLM": "modeling_tiny_remote.TinyRemoteModel",
+    }
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "tiny_remote_diffusion", "auto_map": auto_map})
+    )
+    weight = torch.arange(16, dtype = torch.float32).reshape(4, 4)
+    save_file(
+        {"proj.weight": weight}, str(tmp_path / "model.safetensors"), metadata = {"format": "pt"}
+    )
+
+    config = AutoConfig.from_pretrained(str(tmp_path), trust_remote_code = True)
+    profile = MaskedDiffusionProfile(name = "tiny_remote_test", requires_remote_code = True)
+    cls = profile.model_class(config, True)
+    model = cls.from_pretrained(str(tmp_path), config = config, trust_remote_code = True)
+    assert torch.equal(model.proj.weight.detach(), weight)
+    assert cls.is_remote_code()
+
+
 _TINY_TRAIN = r"""
 import math, os, sys, torch
 import unsloth
@@ -404,6 +466,18 @@ path, out = sys.argv[1], sys.argv[2]
 device = os.environ.get("TINY_DEVICE", "cpu")
 model, processor = FastModel.from_pretrained(path, trust_remote_code = True, dtype = torch.float32, device_map = {"": device})
 assert getattr(model, "_unsloth_slow_diffusion", False), type(model)
+import glob
+from safetensors import safe_open
+state, matched = model.state_dict(), 0
+for shard in glob.glob(os.path.join(path, "*.safetensors")):
+    with safe_open(shard, "pt") as f:
+        for key in f.keys():
+            # A GPU load defaults to 4-bit: packed linear weights cannot equal the checkpoint, the rest must.
+            if key not in state or tuple(state[key].shape) != tuple(f.get_slice(key).get_shape()):
+                continue
+            assert torch.equal(f.get_tensor(key).to(state[key].dtype), state[key].detach().cpu()), key
+            matched += 1
+assert matched, "no checkpoint tensor matched the model's names"
 tokenizer = getattr(processor, "tokenizer", processor)
 for module in model.modules():
     if hasattr(module, "rope_init_fn") and isinstance(getattr(module, "inv_freq", None), torch.Tensor):
