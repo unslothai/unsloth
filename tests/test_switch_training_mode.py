@@ -318,3 +318,55 @@ def test_gradient_checkpointing_exposed_by_getattribute_is_found(switch):
     model = nn.Sequential(_Dynamic(2, 2))
     got = switch(model, False)
     assert model[0] in got
+
+
+def test_a_child_registered_twice_in_one_parent_switches_once(switch):
+    calls = []
+
+    class _Counting(nn.Linear):
+        def train(self, mode = True):
+            calls.append(mode)
+            return super().train(mode)
+
+    child = _Counting(2, 2)
+    parent = nn.Module()
+    parent.first = child
+    parent.second = child
+    parent.train(False)
+    calls.clear()
+    parent.train(True)
+    expected = list(calls)
+    parent.train(False)
+    calls.clear()
+    switch(parent, True)
+    assert calls == expected == [True]
+
+
+class _ExposesExtra(nn.Module):
+    """Enumerates a layer and a parameter that are not registered children."""
+
+    def __init__(self):
+        super().__init__()
+        self.body = nn.Linear(2, 2)
+        self.__dict__["extra"] = _Layer()
+
+    def named_modules(self, *args, **kwargs):
+        yield from super().named_modules(*args, **kwargs)
+        yield "extra", self.__dict__["extra"]
+
+    def parameters(self, recurse = True):
+        yield from super().parameters(recurse)
+        yield from self.__dict__["extra"].parameters(recurse)
+
+
+def test_custom_module_enumeration_is_used_for_checkpoint_flags(switch):
+    model = _ExposesExtra()
+    assert model.__dict__["extra"] in switch(model, True)
+
+
+def test_custom_parameter_enumeration_is_used_for_fast_lora(switch):
+    model = _ExposesExtra()
+    weight = model.__dict__["extra"].proj.weight
+    weight._fast_lora = weight.detach().clone()
+    switch(model, True)
+    assert not hasattr(weight, "_fast_lora")

@@ -8741,12 +8741,13 @@ def set_module_gradient_checkpointing(module, value):
 
 @functools.lru_cache(maxsize = None)
 def _mode_switch_class_info(cls):
-    """(train, eval, gc, setattr) for switch_training_mode, per class.
+    """(train, eval, gc, setattr, walk) for switch_training_mode, per class.
 
     train: True when train() and the child traversal are nn.Module's, "kernels" for PreTrainedModel.train
     (adds a kernel re-cast only under `use_kernels`), False otherwise. eval: eval() is nn.Module's or
     PreTrainedModel's. gc: the class has gradient_checkpointing, None for classes with their own
-    __getattr__ (PEFT wrappers delegate it). setattr: `training` is a plain instance attribute.
+    __getattr__ / __getattribute__ (PEFT wrappers delegate it). setattr: `training` is a plain instance
+    attribute. walk: modules() / parameters() enumerate the registered tree, as the raw _modules walk does.
     """
     try:
         from transformers import PreTrainedModel
@@ -8770,7 +8771,11 @@ def _mode_switch_class_info(cls):
     plain_setattr = cls.__setattr__ is module.__setattr__ and not hasattr(
         type(descriptor), "__set__"
     )
-    return train, plain_eval, gc, plain_setattr
+    plain_walk = all(
+        getattr(cls, name) is getattr(module, name)
+        for name in ("modules", "named_modules", "parameters", "named_parameters", "_named_members")
+    )
+    return train, plain_eval, gc, plain_setattr, plain_walk
 
 
 def _has_gradient_checkpointing(module, on_class):
@@ -8819,12 +8824,14 @@ def switch_training_mode(
     # where the recursion would run them. The gc / _fast_lora scan sees each module once, as modules() does.
     ops, checkpointing = [], []
     seen = set()
+    plain_walk = True
     stack = [(model, False)]
     while stack:
         module, covered = stack.pop()
         if module is None:
             continue
-        train, plain_eval, gc, plain_setattr = _mode_switch_class_info(type(module))
+        train, plain_eval, gc, plain_setattr, walk = _mode_switch_class_info(type(module))
+        plain_walk = plain_walk and walk
         if not covered:
             if (
                 train is False
@@ -8851,9 +8858,20 @@ def switch_training_mode(
                 for param in module._parameters.values():
                     if param is not None and "_fast_lora" in param.__dict__:
                         del param._fast_lora
-        children = list(module._modules.values())
-        children.reverse()
-        stack.extend((child, covered) for child in children)
+        if module._modules:
+            children = [child for child in module._modules.values() if child is not None]
+            if len(children) > 1:
+                # named_children() yields a module registered under two names once per parent.
+                children = list({id(child): child for child in children}.values())
+                children.reverse()
+            stack.extend([(child, covered) for child in children])
+    if not plain_walk:
+        # Some class enumerates modules / parameters its own way: scan as the old code did.
+        checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        if training:
+            for param in model.parameters():
+                if hasattr(param, "_fast_lora"):
+                    del param._fast_lora
 
     def apply():
         if (ops and ops[0][0] is model and ops[0][1] is None) or len(ops) > 64 * len(seen):
