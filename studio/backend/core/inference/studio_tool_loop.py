@@ -1414,6 +1414,25 @@ def round_call_key(name: Any, arguments: Any) -> tuple:
         return (name, repr(arguments))
 
 
+def round_call_keys(controller: Any, calls: Any) -> list:
+    """Each call's identity for the overlap gate, after the controller's healing.
+
+    Keyed on the raw arguments, a bare `"echo hi"` and `{"command": "echo hi"}` look like two
+    calls; healed they are one, and overlapped both run before either result can mark the
+    other a repeat. A controller that cannot say falls back to `round_call_key`.
+    """
+    key_of = getattr(controller, "call_key", None)
+    keys = []
+    for item in calls or ():
+        fn = (item or {}).get("function") or {}
+        name = fn.get("name", "")
+        try:
+            keys.append((name, "healed:" + str(key_of(item))))
+        except Exception:
+            keys.append(round_call_key(name, fn.get("arguments")))
+    return keys
+
+
 async def _pump_tool_stream(
     tool_stream: Any,
     outcome: dict[str, Any],
@@ -1975,19 +1994,10 @@ async def stream_with_studio_tools(
         # And only when the calls cannot depend on each other's RESULTS. `prepare_call` has
         # two such dependencies, both written by `record_result`: the same call twice in one
         # turn is a no-op the second time, and a one-shot tool runs once per turn. Deciding
-        # either with both in flight runs the tool twice.
-        #
-        # Keyed on the arguments as they arrived rather than as healed, which is the one
-        # gap: two calls whose malformed arguments heal alike would both run, costing a
-        # repeated result rather than a wrong answer.
+        # either with both in flight runs the tool twice. Keyed as healed, so two calls that
+        # only heal alike count as the same call.
         _one_shot = frozenset(getattr(controller, "_one_shot_tools", ()) or ())
-        _round_keys = [
-            round_call_key(
-                (item.get("function") or {}).get("name", ""),
-                (item.get("function") or {}).get("arguments"),
-            )
-            for item in calls
-        ]
+        _round_keys = round_call_keys(controller, calls)
         _round_one_shot = [name for name, _args in _round_keys if name in _one_shot]
         parallel_round = (
             parallel_tool_calls_enabled()

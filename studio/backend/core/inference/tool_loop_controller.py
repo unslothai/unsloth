@@ -1207,15 +1207,7 @@ class ToolLoopController:
             active.append(copy.deepcopy(tool))
         return active
 
-    def prepare_call(
-        self,
-        tool_call: Mapping[str, Any],
-        *,
-        forced: bool = False,
-        provisional: bool = False,
-        allowed_tool_names: Collection[str] | None = None,
-    ) -> ToolCallDecision:
-        """Classify a parsed tool call before any visible event is yielded."""
+    def _healed_call(self, tool_call: Mapping[str, Any]):
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         tool_name = str(function.get("name") or "").strip()
@@ -1229,7 +1221,22 @@ class ToolLoopController:
         if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
             from core.inference.tools import canonicalize_web_search_arguments
             arguments = canonicalize_web_search_arguments(arguments)
-        key = canonical_tool_call_key(tool_name, arguments)
+        return tool_name, coerced, arguments, canonical_tool_call_key(tool_name, arguments)
+
+    def call_key(self, tool_call: Mapping[str, Any]) -> str:
+        """The identity `prepare_call` deduplicates on, after healing. Reads no state."""
+        return self._healed_call(tool_call)[3]
+
+    def prepare_call(
+        self,
+        tool_call: Mapping[str, Any],
+        *,
+        forced: bool = False,
+        provisional: bool = False,
+        allowed_tool_names: Collection[str] | None = None,
+    ) -> ToolCallDecision:
+        """Classify a parsed tool call before any visible event is yielded."""
+        tool_name, coerced, arguments, key = self._healed_call(tool_call)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
             healed = coerced.healed,

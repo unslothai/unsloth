@@ -38181,7 +38181,7 @@ class LlamaCppBackend:
         # Imported here rather than at module scope: this module is large and early.
         from core.inference.studio_tool_loop import (
             parallel_tool_calls_enabled as _parallel_tool_calls_enabled,
-            round_call_key as _round_call_key,
+            round_call_keys as _round_call_keys,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -40768,20 +40768,10 @@ class LlamaCppBackend:
                 # `_completed_one_shot_tools` runs render_html and its kind once per turn.
                 # Running together would decide both before any result existed, so a round
                 # containing either shape stays sequential.
-                #
-                # Keyed on the arguments as they arrived rather than as healed: two calls
-                # whose malformed arguments heal alike would both run, which is a repeated
-                # result rather than a wrong answer, and the alternative is serialising
-                # every round that calls one tool twice.
+                # Keyed as healed, so two calls that only heal alike count as one.
                 _one_shot = frozenset(getattr(tool_controller, "_one_shot_tools", ()) or ())
-                _round_keys: list = []
-                _round_one_shot: list = []
-                for _tc in tool_calls or []:
-                    _fn = (_tc or {}).get("function") or {}
-                    _nm = _fn.get("name", "")
-                    _round_keys.append(_round_call_key(_nm, _fn.get("arguments")))
-                    if _nm in _one_shot:
-                        _round_one_shot.append(_nm)
+                _round_keys = _round_call_keys(tool_controller, tool_calls)
+                _round_one_shot = [_nm for _nm, _key in _round_keys if _nm in _one_shot]
                 _parallel_round = (
                     _parallel_tool_calls_enabled()
                     and len(tool_calls or []) > 1
@@ -41299,10 +41289,18 @@ class LlamaCppBackend:
 
                         # Only a call the user answered: the executor lets it reach the host paths it names.
                         _host_access_approved = _decision not in (None, "deny")
+                        # Built here, on the generator thread, and copied: read from a worker,
+                        # an overlapped call saw whichever siblings had settled by then.
+                        _call_branch = (
+                            list(_extend_live_branch(conversation))
+                            if accepts_kwarg(execute_tool, "conversation_branch")
+                            else None
+                        )
 
                         def _invoke_tool(
                             _output_callback,
                             _decision = decision,
+                            _branch = _call_branch,
                             _approved = _host_access_approved,
                             _strict = strict_isolation,
                             _share = image_share,
@@ -41341,8 +41339,8 @@ class LlamaCppBackend:
                             # Same branch the forced recall is filtered against, so a
                             # model-initiated search cannot reach a sibling response the
                             # forced recall correctly refused.
-                            if accepts_kwarg(execute_tool, "conversation_branch"):
-                                kwargs["conversation_branch"] = _extend_live_branch(conversation)
+                            if _branch is not None:
+                                kwargs["conversation_branch"] = _branch
                             if _approved and accepts_kwarg(execute_tool, "host_access_approved"):
                                 kwargs["host_access_approved"] = True
                             # And the room actually left: the model picks its own top_k and
