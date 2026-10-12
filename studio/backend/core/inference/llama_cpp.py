@@ -32589,11 +32589,21 @@ class LlamaCppBackend:
                             if _exact_setting == _exact.EXACT_AUTO:
                                 # Bounded below with the weights, as any plain launch is.
                                 _exact_wanted = False
+                # A bounded plain budget: what it was sized from, the figure named on the argv
+                # and the host weights it was bounded against. A spawn placing other weights is
+                # bounded again from the first figure (`_reserve_launch_weights`).
+                _parking_bound: dict = {}
                 if _host_weights_mib and _exact_budget is not None and not _exact_wanted:
                     # Sized before the placement was known: they come off the room its parking
                     # may pin.
+                    _parking_required = _exact_budget
                     _exact_budget = _rebound_named_parking_budget(
                         cmd, _exact_budget, self, _host_weights_mib
+                    )
+                    _parking_bound.update(
+                        required = _parking_required,
+                        named = _exact_budget,
+                        weights = _host_weights_mib,
                     )
                 if _host_weights_mib:
                     # And held against a peer certifying exact parks until this launch is up:
@@ -32785,7 +32795,8 @@ class LlamaCppBackend:
                         child_has_no_gpu = _child_has_no_gpu,
                         shared_gpu_ids = _shared_gpu_ids,
                     )
-                    _rebound_named_parking_budget(launch_cmd, _named, self, _planned)
+                    _bounded = _rebound_named_parking_budget(launch_cmd, _named, self, _planned)
+                    _parking_bound.update(required = _named, named = _bounded, weights = _planned)
                     # The rebound reserves the budget alone; the spawn puts the weights back.
                     with _parking_budget_lock:
                         _reserved_weights_mib[0] = 0
@@ -32804,6 +32815,29 @@ class LlamaCppBackend:
                         child_has_no_gpu = _child_has_no_gpu,
                         shared_gpu_ids = _shared_gpu_ids,
                     )
+                    if (
+                        _parking_bound.get("named")
+                        and _planned != _parking_bound["weights"]
+                        and _named_preempt_ram_mib(launch_cmd, {}) == _parking_bound["named"]
+                    ):
+                        # A retry that re-placed the weights is bounded again against them, from
+                        # the figure the budget was sized from rather than the last cap.
+                        with _parking_budget_lock:
+                            _bounded = _host_bounded_parking_mib(
+                                _parking_bound["required"], self, _planned
+                            )
+                            _reserve_inflight_parking(self, _bounded)
+                            _reserved_weights_mib[0] = 0
+                        for _i in range(len(launch_cmd) - 1, 0, -1):
+                            if launch_cmd[_i - 1] == "--preempt-ram" and launch_cmd[_i] == str(
+                                _parking_bound["named"]
+                            ):
+                                if _bounded > 0:
+                                    launch_cmd[_i] = str(_bounded)
+                                else:
+                                    del launch_cmd[_i - 1 : _i + 1]
+                                break
+                        _parking_bound.update(named = _bounded or None, weights = _planned)
                     with _parking_budget_lock:
                         _held = getattr(self, "_parking_reserving_mib", None) or 0
                         if _held >= 0:
@@ -32883,10 +32917,11 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        # First: a re-placed spawn may rewrite its parking budget.
+                        _reserve_launch_weights(run_cmd)
                         _last_spawn_cmd = list(run_cmd)
                         # A new server: nothing the last one reported carries over.
                         self._server_props_seen = None
-                        _reserve_launch_weights(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
                         self._idle_slot_clearing_active = _idle_slot_clearing_active(

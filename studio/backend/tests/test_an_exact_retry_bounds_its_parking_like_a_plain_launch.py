@@ -67,10 +67,12 @@ def _namespace(
     budget = 40_000,
     done = None,
     reserved = None,
+    bound = None,
 ):
     namespace = dict(vars(llama_mod))
     namespace.update(
         self = backend,
+        _parking_bound = {} if bound is None else bound,
         _exact_budget = budget,
         _exact_wanted = exact_wanted,
         _parking_off_exact = [] if done is None else done,
@@ -146,6 +148,29 @@ class TestTheRetryPricesItsOwnWeights:
         backend.planned_mib = 2000
         _spawned(backend, reserved = reserved)(["llama-server"])
         assert backend._parking_reserving_mib == 4096 + 2000
+
+    def test_a_retry_that_leaves_more_weights_on_the_host_is_bounded_again(self, host):
+        # Bounded off the refused attempt's placement, then a CPU fallback puts 30 GB more in
+        # host RAM: the child must not keep the budget sized beside the lighter placement.
+        backend = _Backend(planned_mib = 20_000)
+        bound: dict = {}
+        cmd = ["llama-server", "--kv-unified", "--preempt-ram", "40000"]
+        _bound(backend, bound = bound)(cmd)
+        first = int(cmd[-1])
+        backend.planned_mib = 50_000
+        retry = list(cmd)
+        _spawned(backend, bound = bound)(retry)
+        expected = llama_mod._host_bounded_parking_mib(40_000, backend, 50_000)
+        if expected > 0:
+            assert int(retry[-1]) == expected < first, (retry, first)
+        else:
+            assert "--preempt-ram" not in retry, retry
+        # From the figure the budget was sized from: lighter weights give the room back.
+        backend.planned_mib = 0
+        lighter = ["llama-server", "--kv-unified", "--preempt-ram", str(first)]
+        bound.update(named = first, weights = 20_000)
+        _spawned(backend, bound = bound)(lighter)
+        assert int(lighter[-1]) == llama_mod._host_bounded_parking_mib(40_000, backend, 0)
 
     def test_an_unlimited_reservation_stays_unlimited(self, host):
         backend = _Backend(planned_mib = 30_000)
