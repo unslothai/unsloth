@@ -1603,7 +1603,7 @@ class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
         window = spawn[rung : rung + 1400]
         assert "continue" in window
         before = window.split("continue")[0]
-        assert "_rebound_named_parking_budget(run_cmd, _exact_budget, self)" in before
+        assert "_bound_parking_off_exact(run_cmd)" in before
 
     def test_a_short_budget_is_reported_as_the_mode_running_short_not_as_absent(self):
         # The child keeps the mode after a late shortfall, so the warning, and the `on`

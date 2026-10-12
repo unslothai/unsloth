@@ -32314,6 +32314,33 @@ class LlamaCppBackend:
                         )
                     return stripped
 
+                _parking_off_exact: list = []
+
+                def _bound_parking_off_exact(launch_cmd) -> None:
+                    """A retry that drops exact mode keeps the budget sized whole for exact parks:
+                    the plain server left behind gets the host-bounded one, less its own weights,
+                    as an ordinary launch does. Once: a later retry finds it bounded already."""
+                    if _exact_budget is None or not _exact_wanted or _parking_off_exact:
+                        return
+                    _parking_off_exact.append(True)
+                    _named = _named_preempt_ram_mib(launch_cmd, {})
+                    if _named is None:
+                        return
+                    _planned = self._planned_host_weights_mib(
+                        launch_cmd,
+                        _reachable_gpus,
+                        env,
+                        child_has_no_gpu = _child_has_no_gpu,
+                        shared_gpu_ids = _shared_gpu_ids,
+                    )
+                    _rebound_named_parking_budget(launch_cmd, _named, self, _planned)
+                    if _planned:
+                        with _parking_budget_lock:
+                            _held = getattr(self, "_parking_reserving_mib", None) or 0
+                            _reserve_inflight_parking(
+                                self, _held if _held < 0 else _held + _planned
+                            )
+
                 # Memoed only when the load ends terminally, so a recovering fallback is not blocked.
                 _sched_abort_seen = False
 
@@ -32490,11 +32517,7 @@ class LlamaCppBackend:
                             output = _startup_output,
                         ):
                             _did_exact_retry = True
-                            if _exact_budget is not None:
-                                # Sized whole for exact parks, which judge a short budget
-                                # themselves; the plain server left behind gets the host-bounded one,
-                                # as the preflight shortage fallback does.
-                                _rebound_named_parking_budget(run_cmd, _exact_budget, self)
+                            _bound_parking_off_exact(run_cmd)
                             logger.warning(
                                 "llama-server refused exact concurrency (exit code %s); "
                                 "retrying once without it, as the setting is auto. "
@@ -33696,6 +33719,8 @@ class LlamaCppBackend:
                         _drop_exact_for_no_flash(env, _exact_setting)
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _fa_cmd = _enable_managed_fit_for_no_flash(_fa_cmd)
+                        if _exact_setting == _exact.EXACT_AUTO:
+                            _bound_parking_off_exact(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
@@ -33772,6 +33797,8 @@ class LlamaCppBackend:
                         _drop_exact_for_no_flash(env, _exact_setting)
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _fa_cmd = _enable_managed_fit_for_no_flash(_fa_cmd)
+                        if _exact_setting == _exact.EXACT_AUTO:
+                            _bound_parking_off_exact(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = (
