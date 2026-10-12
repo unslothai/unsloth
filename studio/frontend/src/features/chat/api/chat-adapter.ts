@@ -7302,6 +7302,15 @@ export function createOpenAIStreamAdapter(
                   // Reaches the chip through the message metadata below, per branch.
                   sawPreemptRecompute = true;
                   preemptRecomputedOn = withRecomputedModel(preemptRecomputedOn, params.checkpoint);
+                  // Published now: a tab closed before the next text keeps the last live yield,
+                  // which would otherwise predate the recompute.
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
+                      custom: liveCustom(),
+                    },
+                  };
                   continue;
                 }
                 runtime.setToolStatus(
