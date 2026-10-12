@@ -2031,9 +2031,7 @@ def usable_prequant_source(
         # the dense shards, then resolve neither file.
         if (
             not any(n in declared for n in readable)
-            and cached_checkpoint_path(
-                src, cache_dir = cache_dir, names = readable, online = False
-            )
+            and cached_checkpoint_path(src, cache_dir = cache_dir, names = readable, online = False)
             is None
         ):
             return None

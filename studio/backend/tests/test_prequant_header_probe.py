@@ -268,8 +268,12 @@ def test_the_first_existing_name_decides_like_the_resolver(hub):
     with a .pt behind it, and a missing .safetensors leaves the .pt to the loader."""
     repo = "unsloth/Qwen-Image-2512-FP8"
     _write_pt(_repo_file(hub, repo, "q-INT8.pt"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
-    assert pq.hosted_prequant_refusal(_source(repo, "q-INT8.safetensors", "q-INT8.pt"), "int8") is None
-    _write_safetensors(_repo_file(hub, repo, "q-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    assert (
+        pq.hosted_prequant_refusal(_source(repo, "q-INT8.safetensors", "q-INT8.pt"), "int8") is None
+    )
+    _write_safetensors(
+        _repo_file(hub, repo, "q-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+    )
     pq._HEADER_PROBE_MEMO.clear()
     assert pq.hosted_prequant_refusal(_source(repo, "q-INT8.safetensors", "q-INT8.pt"), "int8")
 
@@ -322,7 +326,9 @@ def test_offline_with_nothing_cached_asks_nothing(hub, monkeypatch):
 
 
 def test_a_cached_checkpoint_is_judged_locally_without_the_network(hub, monkeypatch, tmp_path):
-    cached = _write_safetensors(tmp_path / "cached-INT8.safetensors", _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    cached = _write_safetensors(
+        tmp_path / "cached-INT8.safetensors", _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+    )
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
     monkeypatch.setattr(pq, "hub_offline", lambda: True)
     reason = pq.hosted_prequant_refusal(_source("unsloth/x", "cached-INT8.safetensors"), "int8")
@@ -332,7 +338,9 @@ def test_a_cached_checkpoint_is_judged_locally_without_the_network(hub, monkeypa
 
 def test_the_kill_switch_turns_the_probe_off(hub, monkeypatch):
     repo = "unsloth/Qwen-Image-2512-FP8"
-    _write_safetensors(_repo_file(hub, repo, "y-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    _write_safetensors(
+        _repo_file(hub, repo, "y-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+    )
     monkeypatch.setenv(pq.HEADER_PROBE_ENV, "0")
     assert pq.hosted_prequant_refusal(_source(repo, "y-INT8.safetensors"), "int8") is None
     assert hub.server.sent == 0
@@ -493,8 +501,6 @@ def test_real_torchao_int8_weight_matches_the_other_generations_layout():
     )
 
 
-
-
 def _counting_hub(hub, monkeypatch):
     """Counts every Hub HEAD the probe makes, on top of the byte count the range server keeps."""
     import huggingface_hub
@@ -612,8 +618,6 @@ def test_no_requested_base_skips_the_base_check(hub):
     assert pq.hosted_prequant_refusal(src, "int8", base = None) is None
 
 
-
-
 def _raw_safetensors(
     path,
     header: dict,
@@ -701,8 +705,6 @@ def test_a_real_sized_safetensors_header_still_reads(tmp_path):
     assert header is not None and header["metadata"]["exclude_name_tokens"] == ["norm"]
 
 
-
-
 def _hf_cache_file(tmp_path, name, commit, etag, writer, meta):
     """``<root>/snapshots/<commit>/<name>`` symlinked to ``blobs/<etag>``, as huggingface_hub lays it out."""
     root = tmp_path / "models--unsloth--Qwen-Image-2512-FP8"
@@ -724,7 +726,12 @@ def replaced(hub, tmp_path, monkeypatch):
 
     repo, name = "unsloth/Qwen-Image-2512-FP8", "Qwen-Image-2512-INT8.safetensors"
     cached = _hf_cache_file(
-        tmp_path, name, "c0ffee01", "etag-stale", _write_safetensors, _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+        tmp_path,
+        name,
+        "c0ffee01",
+        "etag-stale",
+        _write_safetensors,
+        _qwen_int8_meta(_STALE_INT8_EXCLUDES),
     )
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
     served = {"etag": "etag-stale", "commit": "c0ffee01"}
@@ -780,18 +787,26 @@ def test_an_online_cached_verdict_expires(hub, replaced, monkeypatch):
     assert pq.hosted_prequant_refusal(replaced.source, "int8") is None
 
 
-def test_a_cached_name_the_hub_no_longer_serves_moves_on_to_the_next_name(hub, tmp_path, monkeypatch):
+def test_a_cached_name_the_hub_no_longer_serves_moves_on_to_the_next_name(
+    hub, tmp_path, monkeypatch
+):
     # The stale cached name 404s on the Hub, so planning must judge the next name.
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
 
     repo = "unsloth/Qwen-Image-2512-FP8"
     gone, current = "Qwen-Image-2512-INT8-ComfyUI.safetensors", "Qwen-Image-2512-INT8.safetensors"
     cached = _hf_cache_file(
-        tmp_path, gone, "c0ffee01", "etag-stale", _write_safetensors, _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+        tmp_path,
+        gone,
+        "c0ffee01",
+        "etag-stale",
+        _write_safetensors,
+        _qwen_int8_meta(_STALE_INT8_EXCLUDES),
     )
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
     _write_safetensors(
-        _repo_file(hub, repo, current), _qwen_int8_meta(exclude_tokens_for_scheme("int8", "qwen-image"))
+        _repo_file(hub, repo, current),
+        _qwen_int8_meta(exclude_tokens_for_scheme("int8", "qwen-image")),
     )
     assert pq.hosted_prequant_refusal(_source(repo, gone, current), "int8") is None
     assert hub.downloads == []
@@ -811,8 +826,6 @@ def test_unsloth_metadata_that_is_not_an_object_is_refused_before_download(hub):
     reason = pq.hosted_prequant_refusal(_source(repo, name), "int8")
     assert reason is not None and "malformed" in reason
     assert hub.downloads == []
-
-
 
 
 def test_the_probe_memo_and_said_set_are_bounded():
@@ -847,14 +860,16 @@ def test_an_expired_memo_entry_is_dropped():
 
 
 def test_many_requested_bases_keep_the_memo_bounded(hub, monkeypatch, tmp_path):
-    cached = _write_safetensors(tmp_path / "c-INT8.safetensors", _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    cached = _write_safetensors(
+        tmp_path / "c-INT8.safetensors", _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+    )
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
     monkeypatch.setattr(pq, "hub_offline", lambda: True)
     for i in range(pq._HEADER_PROBE_MAX + 50):
-        pq.hosted_prequant_refusal(_source("unsloth/x", "c-INT8.safetensors"), "int8", base = f"org/b{i}")
+        pq.hosted_prequant_refusal(
+            _source("unsloth/x", "c-INT8.safetensors"), "int8", base = f"org/b{i}"
+        )
     assert len(pq._HEADER_PROBE_MEMO) <= pq._HEADER_PROBE_MAX
-
-
 
 
 def test_an_anonymous_401_does_not_answer_for_a_token_probe(hub, monkeypatch):
@@ -875,14 +890,14 @@ def test_an_anonymous_401_does_not_answer_for_a_token_probe(hub, monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", gated)
     repo = "unsloth/Qwen-Image-2512-FP8"
-    _write_safetensors(_repo_file(hub, repo, "g-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    _write_safetensors(
+        _repo_file(hub, repo, "g-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+    )
     source = _source(repo, "g-INT8.safetensors")
     assert pq.hosted_prequant_refusal(source, "int8") is None  # unknown: never a refusal
     reason = pq.hosted_prequant_refusal(source, "int8", hf_token = "hf_secret")
     assert reason is not None and "txt_in" in reason
     assert all("hf_secret" not in repr(key) for key in pq._HEADER_PROBE_MEMO)
-
-
 
 
 _WAN_TI2V = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
@@ -922,15 +937,17 @@ def test_a_video_plan_drops_a_hosted_denoiser_its_loader_would_refuse(hub, base_
     assert hub.downloads == [] and hub.server.full_gets == 0
 
 
-
-
 def _gated_hub(monkeypatch):
     """The fake Hub answers 401 to any HEAD without a token, as a gated repo does."""
     import huggingface_hub
 
     real = huggingface_hub.get_hf_file_metadata
 
-    def gated(url, token = None, **kwargs):
+    def gated(
+        url,
+        token = None,
+        **kwargs,
+    ):
         if not token:
             err = Exception("401")
             err.response = types.SimpleNamespace(status_code = 401)
@@ -946,11 +963,14 @@ def test_a_gated_stale_video_denoiser_is_refused_with_the_plan_token(hub, monkey
     _gated_hub(monkeypatch)
     fam = _wan_int8(hub, "Other/Model")
     assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V)
-    assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V, hf_token = "hf_x") == []
+    assert (
+        VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V, hf_token = "hf_x") == []
+    )
     assert not VideoBackend._denoiser_prequant_covered(fam, "int8", _WAN_TI2V, hf_token = "hf_x")
     listed: list = []
     api = types.SimpleNamespace(
-        token = "hf_x", model_info = lambda *a, **k: listed.append(a) or types.SimpleNamespace(siblings = [])
+        token = "hf_x",
+        model_info = lambda *a, **k: listed.append(a) or types.SimpleNamespace(siblings = []),
     )
     assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", _WAN_TI2V, api) == (None, [])
     assert listed == [] and hub.downloads == []
@@ -965,10 +985,6 @@ def test_planning_refuses_a_header_baked_under_another_linear_filter(hub):
 def test_planning_keeps_a_header_with_the_runtime_linear_filter(hub):
     fam, base = _hosted_qwen_int8(hub, _current_int8_meta(min_features = 512))
     assert pq.usable_prequant_source(fam, "int8", base_repo = base) is not None
-
-
-
-
 
 
 @pytest.mark.parametrize(
@@ -997,7 +1013,13 @@ def test_the_safetensors_evidence_check_looks_in_the_requested_cache(hub, monkey
     )
     asked: list = []
 
-    def cached(source, *, cache_dir = None, names = None, online = None):
+    def cached(
+        source,
+        *,
+        cache_dir = None,
+        names = None,
+        online = None,
+    ):
         asked.append(cache_dir)
         return "/live/cache/hit.safetensors" if cache_dir == "/live/cache" else None
 
