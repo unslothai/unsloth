@@ -138,8 +138,14 @@ def authenticate(state):
     return api, auth
 
 
-def open_chat_settings(page, url):
-    page.goto(url + "/chat", wait_until = "domcontentloaded")
+def open_chat_settings(
+    page,
+    url,
+    *,
+    navigate = True,
+):
+    if navigate:
+        page.goto(url + "/chat", wait_until = "domcontentloaded")
     page.get_by_role("button", name = "Settings", exact = True).click(timeout = 60000)
     page.get_by_test_id("settings-tab-chat").click()
     notice = page.get_by_role("button", name = "Remind me later", exact = True)
@@ -196,7 +202,7 @@ def scene(playwright, engine, label, state, api, auth, evidence):
             assert api.get(ROUTE).json()["minutes"] == 60
             page.get_by_role("dialog").screenshot(path = str(evidence / f"{engine}-after-custom.png"))
             page.reload(wait_until = "domcontentloaded")
-            open_chat_settings(page, state["url"])
+            open_chat_settings(page, state["url"], navigate = False)
             expect(field).to_have_value("60")
             control.click()
             page.get_by_role("option", name = "Unlimited", exact = True).click()
@@ -204,7 +210,7 @@ def scene(playwright, engine, label, state, api, auth, evidence):
             expect(save).to_be_disabled()
             assert api.get(ROUTE).json()["minutes"] == 0
             page.reload(wait_until = "domcontentloaded")
-            open_chat_settings(page, state["url"])
+            open_chat_settings(page, state["url"], navigate = False)
             expect(control).to_have_text("Unlimited")
             control.scroll_into_view_if_needed()
             facts.update(
@@ -252,11 +258,16 @@ def main():
     parser.add_argument("--after", type = Path, required = True)
     parser.add_argument("--backend-python", type = Path, required = True)
     parser.add_argument("--output", type = Path, required = True)
+    parser.add_argument(
+        "--resume",
+        action = "store_true",
+        help = "Reuse completed sides only at the same commit and frontend hash.",
+    )
     args = parser.parse_args()
     output = args.output.resolve()
-    output.mkdir(parents = True, exist_ok = False)
+    output.mkdir(parents = True, exist_ok = args.resume)
     evidence = output / "evidence"
-    evidence.mkdir()
+    evidence.mkdir(exist_ok = args.resume)
     meta = {
         "scene": "first-token-timeout-settings",
         "expect": EXPECT,
@@ -264,8 +275,24 @@ def main():
         "facts": [],
         "limitations": "Real settings API and production UI; no model/GPU inference. Backend timeout tests use simulated time.",
     }
+    if args.resume and (evidence / "meta.json").exists():
+        meta = json.loads((evidence / "meta.json").read_text())
     with sync_playwright() as playwright:
         for label, root in (("before", args.before.resolve()), ("after", args.after.resolve())):
+            previous = meta["sides"].get(label, {})
+            previous_facts = [fact for fact in meta["facts"] if fact["label"] == label]
+            if (
+                args.resume
+                and len(previous_facts) == 3
+                and previous.get("commit") == revision(root)
+                and previous.get("frontend_sha256")
+                == hashlib.sha256(
+                    (root / "studio/frontend/dist/index.html").read_bytes()
+                ).hexdigest()
+            ):
+                print(f"Reusing verified {label} at {revision(root)}", flush = True)
+                continue
+            meta["facts"] = [fact for fact in meta["facts"] if fact["label"] != label]
             with server(
                 root, output / (label + "-home"), args.backend_python, output / (label + ".log")
             ) as state:
