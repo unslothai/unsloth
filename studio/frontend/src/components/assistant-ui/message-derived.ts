@@ -127,3 +127,58 @@ export const compactionNoticeMessageIds = memoOnArray(
     return ids;
   },
 );
+
+export type CompactionDividers = {
+  /** Row id to the compaction whose divider is drawn above that row. */
+  readonly aboveRow: ReadonlyMap<string, ContextTruncation>;
+  /** Notice replies with no row to mark, which draw their divider inside themselves. */
+  readonly inside: ReadonlySet<string>;
+};
+
+const NO_COMPACTION_DIVIDERS: CompactionDividers = {
+  aboveRow: new Map(),
+  inside: new Set(),
+};
+
+/**
+ * Where each compaction in `compactionNoticeMessageIds` draws its divider. One set, two
+ * placements: between rows when the reply recorded the row its boundary sits above and that
+ * row is still earlier on this branch, otherwise inside the reply, as before. The meter's
+ * count stays the size of the notice set either way.
+ */
+export const compactionDividers = memoOnArray(
+  (messages: readonly MessageLike[]): CompactionDividers => {
+    const notices = compactionNoticeMessageIds(messages);
+    // Every streamed token is a new array; a thread that never compacted pays nothing for it.
+    if (notices.size === 0) return NO_COMPACTION_DIVIDERS;
+    const aboveRow = new Map<string, ContextTruncation>();
+    const inside = new Set<string>();
+    const earlier = new Set<string>();
+    for (const message of messages) {
+      if (notices.has(message.id)) {
+        const custom = (
+          message.metadata as
+            | {
+                custom?: {
+                  contextTruncation?: unknown;
+                  compactionBoundaryMessageId?: unknown;
+                };
+              }
+            | undefined
+        )?.custom;
+        const rowId = custom?.compactionBoundaryMessageId;
+        if (
+          typeof rowId === "string" &&
+          earlier.has(rowId) &&
+          !aboveRow.has(rowId)
+        ) {
+          aboveRow.set(rowId, custom?.contextTruncation as ContextTruncation);
+        } else {
+          inside.add(message.id);
+        }
+      }
+      earlier.add(message.id);
+    }
+    return { aboveRow, inside };
+  },
+);

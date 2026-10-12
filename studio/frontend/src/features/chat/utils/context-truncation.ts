@@ -52,6 +52,49 @@ export function shouldShowCompactionNotice(
   );
 }
 
+/** One message as it was sent, and the transcript row it came from (none for a synthetic one). */
+export type SentMessageRow = { readonly role: string; readonly rowId?: string };
+
+/**
+ * The transcript row the fit's boundary sits above, or null when it cannot be placed exactly.
+ *
+ * `sent` is the request's non-system messages in order. The backend counts on its own copy,
+ * which the route may have coalesced or pruned, so the position is trusted only when both
+ * sides agree on how many messages precede the newest user turn. A boundary inside a row (a
+ * tool exchange evicted from the middle of one reply) moves down to the next row, since the
+ * divider can only sit between rows.
+ */
+export function compactionBoundaryRowId(
+  truncation: ContextTruncation,
+  sent: readonly SentMessageRow[],
+): string | null {
+  const position = truncation.boundary_position;
+  const preceding = truncation.boundary_branch_messages;
+  if (position === undefined) return null;
+  let cutoff = Math.max(0, sent.length - 1);
+  for (let index = sent.length - 1; index >= 0; index -= 1) {
+    if (sent[index]?.role === "user") {
+      cutoff = index;
+      break;
+    }
+  }
+  if (
+    cutoff !== preceding ||
+    !Number.isSafeInteger(position) ||
+    position < 1 ||
+    position > cutoff
+  ) {
+    return null;
+  }
+  const above = sent[position - 1]?.rowId;
+  for (let index = position; index <= cutoff; index += 1) {
+    const rowId = sent[index]?.rowId;
+    if (rowId === undefined) return null;
+    if (rowId !== above) return rowId;
+  }
+  return null;
+}
+
 function nonNegativeInt(value: number | undefined): number {
   // A propagated NaN would print "NaN tokens on its own" at the user.
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;

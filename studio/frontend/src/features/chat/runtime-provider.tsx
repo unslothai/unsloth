@@ -1589,6 +1589,12 @@ function scheduleGenerationRecovery(
                     chunk.context_truncated,
                   ),
                 };
+                // The row is resolved against the request the sending tab built, which recovery
+                // does not have. A row saved for an earlier fit would pair with this fit's
+                // boundary, so the reply draws its divider inside itself instead.
+                if (chunk.context_truncated.boundary_messages !== undefined) {
+                  delete currentMetadata.compactionBoundaryMessageId;
+                }
               }
               if (recoveredProviderCompaction) {
                 const sourceProviderType = update.run.requestPayload.provider_type;

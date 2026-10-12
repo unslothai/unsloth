@@ -627,6 +627,38 @@ def test_branch_boundary_anchor_names_the_first_kept_message():
     assert llama_cpp._branch_boundary_anchor(conversation, branch) == "kept prompt"
 
 
+def test_branch_boundary_position_marks_the_gap_after_the_last_eviction():
+    """The divider's position is past the last eviction, which is not the count once a pin survives."""
+    from core.inference import llama_cpp
+
+    branch = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "evicted prompt"},
+        {"role": "user", "content": "pinned instruction"},
+        {"role": "assistant", "content": "evicted reply"},
+        {"role": "user", "content": "kept prompt"},
+        {"role": "assistant", "content": "kept reply"},
+        {"role": "user", "content": "the turn just sent"},
+    ]
+    conversation = [branch[0], branch[2]] + branch[4:]
+
+    assert llama_cpp._branch_boundary(conversation, branch) == 2
+    assert llama_cpp._branch_boundary_position(conversation, branch) == {
+        "boundary_position": 3,
+        "boundary_branch_messages": 5,
+    }
+    # The newest user turn and what follows it never move the position: an inline recall
+    # rewrites that turn into a new dict, and a tool loop appends its own exchanges after it.
+    rewritten = [branch[0], branch[2]] + branch[4:6] + [{**branch[6]}]
+    assert llama_cpp._branch_boundary_position(rewritten, branch)["boundary_position"] == 3
+    # Nothing evicted ahead of the newest user turn: no gap to mark.
+    assert llama_cpp._branch_boundary_position(branch, branch)["boundary_position"] == 0
+    assert set(llama_cpp._boundary_metadata(conversation, branch)) >= {
+        "boundary_position",
+        "boundary_branch_messages",
+    }
+
+
 def test_sticky_boundary_falls_back_for_turns_saved_before_the_boundary_existed(monkeypatch):
     """Rows written by an earlier build carry only the dropped count."""
     from core.inference import llama_cpp

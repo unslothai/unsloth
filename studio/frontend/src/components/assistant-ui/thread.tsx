@@ -22,9 +22,9 @@ import {
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
-import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
+import { CompactionDivider } from "@/components/assistant-ui/compaction-notice";
 import {
-  compactionNoticeMessageIds,
+  compactionDividers,
   memoOnArrayByKey,
 } from "@/components/assistant-ui/message-derived";
 import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
@@ -1848,10 +1848,23 @@ const ThreadMessage: FC = () => {
   }
   return (
     <>
+      <CompactionRowDivider />
       {body}
       <ForkContinuationRule />
     </>
   );
+};
+
+// Drawn above the first row the model still saw after a compaction. The selector returns the
+// compaction record itself, which keeps its identity between renders, so a row re-renders only
+// when a divider arrives or leaves above it.
+const CompactionRowDivider: FC = () => {
+  const truncation = useAuiState(
+    ({ thread, message }) =>
+      compactionDividers(thread.messages).aboveRow.get(message.id) ?? null,
+  );
+  if (!truncation) return null;
+  return <CompactionDivider truncation={truncation} placement="between" />;
 };
 
 /**
@@ -8065,9 +8078,10 @@ const AssistantMessage: FC = () => {
   // compacted" is true of every later reply and would put a notice on all of them. What
   // matters is when MORE of the conversation fell out of view: the eviction boundary
   // rising above the last turn that reported one, or a checkpoint starting inside a tool
-  // loop (which evicts without moving the boundary). Sticky replays stay quiet.
+  // loop (which evicts without moving the boundary). Sticky replays stay quiet. A divider
+  // already drawn between rows (CompactionRowDivider) is not repeated inside the reply.
   const showsNotice = useAuiState(({ thread }) =>
-    compactionNoticeMessageIds(thread.messages).has(messageId),
+    compactionDividers(thread.messages).inside.has(messageId),
   );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
@@ -8145,7 +8159,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {contextTruncation && showsNotice && !isEditing && (
-          <CompactionNotice truncation={contextTruncation} />
+          <CompactionDivider truncation={contextTruncation} placement="inside" />
         )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">

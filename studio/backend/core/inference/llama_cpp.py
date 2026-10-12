@@ -1523,7 +1523,31 @@ def _boundary_metadata(
         "boundary_messages": _branch_boundary(fitted, before),
         "boundary_anchor": _branch_boundary_anchor(fitted, before),
         "boundary_headroom_ratio": _effective_headroom_ratio(compaction_headroom_ratio),
+        **_branch_boundary_position(fitted, before),
     }
+
+
+def _branch_boundary_position(conversation: list[dict], branch: Optional[list[dict]]) -> dict:
+    """Where the boundary sits among the request's own messages, for the client to draw it.
+
+    ``boundary_messages`` is a count, which equals the position only while eviction is a
+    clean prefix. ``boundary_position`` is the index, in the branch without its instruction
+    turns, of the first message after the last one evicted ahead of the newest user turn,
+    which is the gap the transcript divider marks. ``boundary_branch_messages`` is how many
+    messages precede that user turn on the same terms: the route coalesces and drops turns
+    before the fit, so the client places the divider only when its own count agrees.
+    """
+    messages = _branch_non_system(branch)
+    cutoff = max(
+        (index for index, message in enumerate(messages) if message.get("role") == "user"),
+        default = max(0, len(messages) - 1),
+    )
+    live = {id(message) for message in conversation}
+    position = max(
+        (index + 1 for index, message in enumerate(messages[:cutoff]) if id(message) not in live),
+        default = 0,
+    )
+    return {"boundary_position": position, "boundary_branch_messages": cutoff}
 
 
 def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:

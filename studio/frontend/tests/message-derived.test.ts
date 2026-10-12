@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  compactionDividers,
   compactionNoticeMessageIds,
   memoOnArray,
   memoOnArrayByKey,
@@ -194,6 +195,47 @@ test("compaction notice ids match the per-message walk", () => {
   assert.equal(ids.has("missing"), false);
   assert.equal(compactionNoticeMessageIds(messages), ids);
   assert.notEqual(compactionNoticeMessageIds([...messages]), ids);
+});
+
+test("each compaction draws one divider, between rows when its row is known", () => {
+  const compacted = (boundary: number, row?: string) => ({
+    custom: {
+      contextTruncation: {
+        dropped_messages: boundary,
+        boundary_messages: boundary,
+        fits: true,
+      },
+      ...(row ? { compactionBoundaryMessageId: row } : {}),
+    },
+  });
+  const messages = [
+    { id: "u0", role: "user" },
+    { id: "a0", role: "assistant" },
+    { id: "u1", role: "user" },
+    { id: "a1", role: "assistant", metadata: compacted(2, "u1") },
+    { id: "u2", role: "user" },
+    // Saved before the row was recorded: stays inside the reply.
+    { id: "a2", role: "assistant", metadata: compacted(3) },
+    { id: "u3", role: "user" },
+    // Its row is not on this branch (an edited turn): stays inside the reply.
+    { id: "a3", role: "assistant", metadata: compacted(4, "elsewhere") },
+    { id: "u4", role: "user" },
+    // Never drawn below the reply it belongs to.
+    { id: "a4", role: "assistant", metadata: compacted(5, "u5") },
+    { id: "u5", role: "user" },
+    { id: "a5", role: "assistant", metadata: compacted(6, "u5") },
+  ];
+  const dividers = compactionDividers(messages);
+  assert.deepEqual([...dividers.aboveRow.keys()], ["u1", "u5"]);
+  assert.deepEqual([...dividers.inside], ["a2", "a3", "a4"]);
+  assert.equal(
+    dividers.aboveRow.get("u1"),
+    (messages[3].metadata as { custom: { contextTruncation: unknown } }).custom
+      .contextTruncation,
+  );
+  // One divider per compaction, wherever it is drawn, so the meter's count does not move.
+  assert.equal(compactionNoticeMessageIds(messages).size, 5);
+  assert.equal(compactionDividers(messages), dividers);
 });
 
 test("memoOnArrayByKey caches per array and per key", () => {

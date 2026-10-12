@@ -831,6 +831,10 @@ export interface OpenAIChatChunk {
     boundary_anchor?: string;
     // discard a replayed boundary when its trim used more headroom than the current request
     boundary_headroom_ratio?: number;
+    // where the transcript divider goes: an index among the request's non-system messages, and
+    // how many of them precede the newest user turn so the client can check it counted the same
+    boundary_position?: number;
+    boundary_branch_messages?: number;
     // the latest tool-loop message may be a tool result rather than a user message
     latest_turn_role?: string;
     // prompt share of context_length after the reply reserve, calculated by the fit
