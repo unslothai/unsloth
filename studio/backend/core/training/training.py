@@ -842,6 +842,7 @@ class _MLXTrainerAdapter:
         use_rslora: bool = False,
         use_loftq: bool = False,
         use_dora: bool = False,
+        random_state: int = 3407,
     ) -> bool:
         if use_gradient_checkpointing is _UNSET:
             # This entry overrides load_model's, so default to the mode recorded there.
