@@ -142,7 +142,7 @@ function creator(url: string): string {
 export function agentDownloadRule(tabId: string, site: string, fileUrl: string): DownloadsRule | null {
   const state = useBrowserAgentStore.getState();
   // Between runs the tab is the user's again, under their own download settings.
-  if (state.tabId !== tabId || !state.runKey) return null;
+  if (state.tabId !== tabId || (!state.runKey && Date.now() - runEndedAt > DOWNLOAD_GRACE_MS)) return null;
   const rule = ruleFor(creator(site || fileUrl), state.permissions).rule.downloads;
   const file = ruleFor(creator(fileUrl), state.permissions);
   if (!file.site) return rule;
@@ -155,8 +155,15 @@ export function setActiveAction(controller: AbortController | null): void {
   activeAction = controller;
 }
 
+// A download the agent started can be reported after its run ends (a slow response, a native
+// view's prompt), so the agent's rule outlasts the run by this much.
+const DOWNLOAD_GRACE_MS = 120_000;
+let runEndedAt = 0;
+
 export function endBrowserAgentRun(runKey: string): void {
-  if (useBrowserAgentStore.getState().runKey === runKey) useBrowserAgentStore.setState({ runKey: null });
+  if (useBrowserAgentStore.getState().runKey !== runKey) return;
+  runEndedAt = Date.now();
+  useBrowserAgentStore.setState({ runKey: null });
 }
 
 /** The agent bar's Stop: the action running now ends too, not just the ones after it. */

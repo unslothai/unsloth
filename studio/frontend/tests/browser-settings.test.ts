@@ -858,7 +858,7 @@ test("closing the last Downloads button dismisses its result, but a button swapp
   assert.equal(keptDownloadFile("save:swap"), null);
 });
 
-test("the agent's Downloads rule covers its tab only while a chat run is using it", async () => {
+test("the agent's Downloads rule covers its tab while a chat run is using it, and just after", async () => {
   const { agentDownloadRule, endBrowserAgentRun, useBrowserAgentStore } = await import(
     "../src/features/browser/agent/agent-store.ts"
   );
@@ -874,8 +874,9 @@ test("the agent's Downloads rule covers its tab only while a chat run is using i
     permissions: { defaults: { ...blocked, downloads: "allow" }, sites: { "site.example": blocked } },
   });
   assert.equal(agentDownloadRule("t1", "blob:https://site.example/3f2a", "blob:https://site.example/3f2a"), "block");
+  // A download reported just after the run ends is still the agent's.
   endBrowserAgentRun("run1");
-  assert.equal(agentDownloadRule("t1", "https://example.com/", "https://example.com/f.pdf"), null);
+  assert.equal(agentDownloadRule("t1", "blob:https://site.example/3f2a", "blob:https://site.example/3f2a"), "block");
 });
 
 test("file toolbars keep a Downloads button registered, and a hidden panel closes its popover", async () => {

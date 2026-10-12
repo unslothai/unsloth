@@ -98,14 +98,17 @@ function mentioned(host: string, text: string): boolean {
   const lower = text.toLowerCase();
   // example.com in "look at example.com", as a whole name (not e.com inside it).
   const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (new RegExp(`(^|[^a-z0-9.-])${escaped}($|[^a-z0-9-])`).test(lower)) return true;
+  // A dot after it only as the sentence's end: example.com.evil.test names another host.
+  if (new RegExp(`(^|[^a-z0-9.-])${escaped}($|[^a-z0-9.-]|\\.(?![a-z0-9-]))`).test(lower)) return true;
   // The site's name ("search wikipedia" for en.wikipedia.org), but not on a shared host, where each
   // subdomain is someone else's: "github" must not approve collector.github.io.
   // Only on the big generic TLDs: "wikipedia" must not approve a made-up wikipedia.xyz.
   if (SHARED_HOSTS.some((suffix) => host.endsWith(`.${suffix}`))) return false;
   const [name, tld] = host.split(".").slice(-2);
   if (!NAMED_TLDS.has(tld ?? "")) return false;
-  return Boolean(name && name.length >= 4 && new RegExp(`\\b${name.replace(/[^a-z0-9-]/g, "")}\\b`).test(lower));
+  // A word of its own, not a label inside some other hostname.
+  const word = name?.replace(/[^a-z0-9-]/g, "");
+  return Boolean(word && word.length >= 4 && new RegExp(`(^|[^a-z0-9.-])${word}($|[^a-z0-9.-]|\\.(?![a-z0-9-]))`).test(lower));
 }
 
 /** A new site needs the user's OK unless they named it or the page links to it: a made-up address

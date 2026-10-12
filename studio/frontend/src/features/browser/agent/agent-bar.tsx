@@ -10,9 +10,10 @@ import { answerQuestion, stopBrowserAgent, useBrowserAgentStore } from "./agent-
 export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
   const t = useT();
   const tabId = useBrowserAgentStore((state) => state.tabId);
-  const working = useBrowserAgentStore((state) => state.working);
+  // The whole run, not just each action: Stop between calls stops the next one before it starts.
+  const running = useBrowserAgentStore((state) => state.working || (!!state.runKey && state.stoppedRun !== state.runKey));
   const question = useBrowserAgentStore((state) => state.question);
-  if (!question && !(working && tabId === activeTabId)) return null;
+  if (!question && !(running && tabId === activeTabId)) return null;
   return (
     <div
       role={question ? "alertdialog" : "status"}

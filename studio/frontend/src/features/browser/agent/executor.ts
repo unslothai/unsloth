@@ -45,6 +45,7 @@ const LOAD_TIMEOUT_MS = 30_000;
 const SETTLE_QUIET_MS = 350;
 const SETTLE_MAX_MS = 3_000;
 const PAGE_READY_MS = 4_000;
+const POST_TIMEOUT_MS = 15_000;
 const EXPIRED = "Not done: the action ran out of time, likely waiting for the user to answer in the panel. Ask them before trying again.";
 export const STOPPED = "The user stopped the browser agent. Do not use browser tools again unless they ask.";
 
@@ -172,6 +173,8 @@ async function postResult(action: BrowserAction, result: Result): Promise<void> 
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action_id: action.id, session_id: action.sessionId, result }),
+        // A request that never answers would hold every later action behind it.
+        signal: AbortSignal.timeout(POST_TIMEOUT_MS),
       });
       // 404: the server already gave up on this action; nothing to deliver.
       if (response.ok || (response.status >= 400 && response.status < 500)) return;
@@ -467,7 +470,9 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, signal);
       if (refused) return { ok: false, error: refused };
     }
-    if (native && action.op !== "reload" && tab.nativeHistory?.[action.op]) nativeAction(tab.id, action.op);
+    // A native move starts when the view reports it; loading from now, so the wait below sees it.
+    if ((nativeMove || (native && action.op === "reload")) && hasNativeView(tab.id)) store.updateTab(tab.id, { loading: true });
+    if (nativeMove) nativeAction(tab.id, action.op as "back" | "forward");
     else if (native && action.op === "reload") nativeAction(tab.id, "reload");
     else if (action.op === "back") store.goBack(tab.id);
     else if (action.op === "forward") store.goForward(tab.id);
