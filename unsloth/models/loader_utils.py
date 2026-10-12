@@ -759,7 +759,7 @@ def resolve_unsloth_device_map(
 
 
 def _sharded_data_parallel_launch():
-    """"FSDP" / "DeepSpeed" when this process will hand the model to one, else None."""
+    """ "FSDP" / "DeepSpeed" when this process will hand the model to one, else None."""
     try:
         from accelerate.state import AcceleratorState
         distributed_type = str(AcceleratorState._shared_state.get("distributed_type", "")).upper()
@@ -798,6 +798,7 @@ def _agree_block_swap_layers(layers, device):
     layers = int(layers or 0)
     try:
         import torch.distributed as dist
+
         if not (dist.is_available() and dist.is_initialized()):
             print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
             return layers
@@ -938,7 +939,9 @@ def resolve_auto_block_swap(
     if distributed:
         layers = _agree_block_swap_layers(plan.layers, target)
         if layers != plan.layers:
-            print(f"Unsloth: offload_layers = 'auto' swaps {layers} layers to match the other ranks.")
+            print(
+                f"Unsloth: offload_layers = 'auto' swaps {layers} layers to match the other ranks."
+            )
         return layers, ({"": target} if layers else device_map), False
     if not plan.layers:
         return 0, device_map, embedding

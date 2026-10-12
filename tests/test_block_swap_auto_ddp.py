@@ -38,7 +38,11 @@ UTILS = os.path.join(MODELS, "_utils.py")
 _FAKE_PKG = "_block_swap_auto_ddp_pkg"
 
 
-def _extract(path, functions, assigns = ()):
+def _extract(
+    path,
+    functions,
+    assigns = (),
+):
     src = open(path, encoding = "utf-8").read()
     out = []
     for node in ast.parse(src).body:
@@ -50,7 +54,11 @@ def _extract(path, functions, assigns = ()):
 
 
 class _FakeCuda:
-    def __init__(self, count = 2, free = 8 << 30):
+    def __init__(
+        self,
+        count = 2,
+        free = 8 << 30,
+    ):
         self.count, self.free = count, free
 
     def is_available(self):
@@ -64,7 +72,11 @@ class _FakeCuda:
 
 
 class _Plan:
-    def __init__(self, layers, offload_embedding = False):
+    def __init__(
+        self,
+        layers,
+        offload_embedding = False,
+    ):
         self.layers, self.offload_embedding, self.device_plan = layers, offload_embedding, None
 
     def describe(self):
@@ -83,7 +95,13 @@ def resolve(monkeypatch):
         monkeypatch.delenv(key, raising = False)
     state = types.SimpleNamespace(distributed = False, calls = [], layers = 6)
 
-    def plan_block_swap(model_name, max_memory, seq_len, offload_embedding = None, **options):
+    def plan_block_swap(
+        model_name,
+        max_memory,
+        seq_len,
+        offload_embedding = None,
+        **options,
+    ):
         call = dict(max_memory = max_memory, **options)
         if offload_embedding is not None:
             call["offload_embedding"] = offload_embedding
@@ -249,9 +267,7 @@ def _ignore_helpers(monkeypatch, distributed = True):
         "torch": torch,
         "find_decoder_layers": block_swap.find_decoder_layers,
     }
-    exec(
-        _extract(UTILS, ("mark_auto_offload_for_ddp", "_ignore_block_swap_params_for_ddp")), ns
-    )
+    exec(_extract(UTILS, ("mark_auto_offload_for_ddp", "_ignore_block_swap_params_for_ddp")), ns)
     return ns
 
 
@@ -290,13 +306,13 @@ def test_ignore_list_names_the_frozen_decoder_weights_of_the_wrapped_model(monke
     assert not any(params[name].requires_grad for name in added)
     assert not any("lora_" in name for name in added)
     frozen_layer_params = {
-        name
-        for name, p in params.items()
-        if ".layers." in name and not p.requires_grad
+        name for name, p in params.items() if ".layers." in name and not p.requires_grad
     }
     assert set(added) == frozen_layer_params
     # Embedding, final norm and lm_head stay synced; the rotary entry survives the merge.
-    assert not any("embed_tokens" in n or "lm_head" in n or n.endswith("model.norm.weight") for n in added)
+    assert not any(
+        "embed_tokens" in n or "lm_head" in n or n.endswith("model.norm.weight") for n in added
+    )
     ignored = model._ddp_params_and_buffers_to_ignore
     assert "model.rotary_emb.inv_freq" in ignored and set(added) <= set(ignored)
     # Idempotent: a second Trainer on the same model adds nothing twice.
