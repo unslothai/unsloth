@@ -493,6 +493,8 @@ export function VoiceTab() {
   );
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const setTtsEnabled = useVoiceSettingsStore((s) => s.setTtsEnabled);
+  const autoReadAloud = useVoiceSettingsStore((s) => s.autoReadAloud);
+  const setAutoReadAloud = useVoiceSettingsStore((s) => s.setAutoReadAloud);
   const ttsEngine = useVoiceSettingsStore((s) => s.ttsEngine);
   const setTtsEngine = useVoiceSettingsStore((s) => s.setTtsEngine);
   const ttsVoiceURI = useVoiceSettingsStore((s) => s.ttsVoiceURI);
@@ -1546,6 +1548,16 @@ export function VoiceTab() {
               description={t("settings.voice.readAloud.buttonDescription")}
             >
               <Switch checked={ttsEnabled} onCheckedChange={setTtsEnabled} />
+            </SettingsRow>
+
+            <SettingsRow
+              label={t("settings.voice.readAloud.autoLabel")}
+              description={t("settings.voice.readAloud.autoDescription")}
+            >
+              <Switch
+                checked={autoReadAloud}
+                onCheckedChange={setAutoReadAloud}
+              />
             </SettingsRow>
 
             <SettingsRow

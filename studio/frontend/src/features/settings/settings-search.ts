@@ -237,6 +237,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.recents.sectionTitle",
     "settings.voice.readAloud.sectionTitle",
     "settings.voice.readAloud.buttonLabel",
+    "settings.voice.readAloud.autoLabel",
     "settings.voice.readAloud.engineLabel",
     "settings.voice.readAloud.voiceLabel",
     "settings.voice.readAloud.speedLabel",

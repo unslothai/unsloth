@@ -1478,6 +1478,8 @@ export const zhCN = {
         sectionTitle: "朗读",
         buttonLabel: "朗读按钮",
         buttonDescription: "在助手回复上显示",
+        autoLabel: "自动朗读回复",
+        autoDescription: "每条回复完成后立即朗读",
         engineLabel: "TTS 引擎",
         engineSystemDescription: "设备内置语音",
         engineStudioDescription: "使用在音频中加载的语音模型",

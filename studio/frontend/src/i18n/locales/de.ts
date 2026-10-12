@@ -1497,6 +1497,8 @@ export const de = {
         sectionTitle: "Vorlesen",
         buttonLabel: "Vorlesen-Schaltfläche",
         buttonDescription: "Bei Assistentenantworten anzeigen",
+        autoLabel: "Antworten automatisch vorlesen",
+        autoDescription: "Jede Antwort vorlesen, sobald sie fertig ist",
         engineLabel: "TTS-Engine",
         engineSystemDescription: "Auf dem Gerät integrierte Stimmen",
         engineStudioDescription: "Verwendet das in Audio geladene Sprachmodell",

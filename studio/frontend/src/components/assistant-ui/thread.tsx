@@ -20,6 +20,7 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
+import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
 import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
 import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
@@ -2088,6 +2089,7 @@ export const Thread: FC<{
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {!hideComposer && <AutoReadAloud />}
         <IntentAwareScrollProvider value={autoScrollContext}>
           <ThreadPrimitive.Viewport
             ref={composedViewportRef}

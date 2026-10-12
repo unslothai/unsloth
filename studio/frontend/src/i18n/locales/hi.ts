@@ -1491,6 +1491,8 @@ export const hi = {
         sectionTitle: "ज़ोर से पढ़ना",
         buttonLabel: "ज़ोर से पढ़ने का बटन",
         buttonDescription: "असिस्टेंट के जवाबों पर दिखाएँ",
+        autoLabel: "जवाब अपने आप पढ़ें",
+        autoDescription: "हर जवाब पूरा होते ही ज़ोर से पढ़ें",
         engineLabel: "TTS इंजन",
         engineSystemDescription: "डिवाइस की अंतर्निहित आवाज़ें",
         engineStudioDescription: "ऑडियो में लोड किए गए स्पीच मॉडल का उपयोग करता है",

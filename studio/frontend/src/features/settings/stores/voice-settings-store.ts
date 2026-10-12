@@ -137,7 +137,12 @@ export interface VoiceSettingsState {
   ttsEnabled: boolean;
   setTtsEnabled: (value: boolean) => void;
 
-  /** "system": speechSynthesis. "studio": loaded TTS model. "custom": a connection's /audio/speech. */
+  /** Speak each finished assistant reply without a click. Off by default. */
+  autoReadAloud: boolean;
+  setAutoReadAloud: (value: boolean) => void;
+
+  /** "system": speechSynthesis voices. "studio": the loaded TTS audio model.
+   * "custom": a saved connection's /audio/speech endpoint. */
   ttsEngine: TtsEngine;
   setTtsEngine: (value: TtsEngine) => void;
 
@@ -320,6 +325,8 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
 
       ttsEnabled: true,
       setTtsEnabled: (ttsEnabled) => set({ ttsEnabled }),
+      autoReadAloud: false,
+      setAutoReadAloud: (autoReadAloud) => set({ autoReadAloud }),
 
       ttsEngine: "system",
       setTtsEngine: (ttsEngine) => set({ ttsEngine }),
@@ -389,6 +396,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           recentDictations: normalizeRecentDictations(saved?.recentDictations),
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
+          autoReadAloud: saved?.autoReadAloud === true,
           ttsEngine:
             saved?.ttsEngine === "studio" || saved?.ttsEngine === "custom"
               ? saved.ttsEngine

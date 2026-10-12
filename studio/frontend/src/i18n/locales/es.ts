@@ -1494,6 +1494,8 @@ export const es = {
         sectionTitle: "Lectura en voz alta",
         buttonLabel: "Botón de lectura en voz alta",
         buttonDescription: "Mostrar en las respuestas del asistente",
+        autoLabel: "Leer las respuestas automáticamente",
+        autoDescription: "Lee en voz alta cada respuesta en cuanto termina",
         engineLabel: "Motor de TTS",
         engineSystemDescription: "Voces integradas del dispositivo",
         engineStudioDescription: "Usa el modelo de voz cargado en Audio",
