@@ -232,6 +232,17 @@ def _decode_image(image_base64: str):
     return Image.open(BytesIO(image_data))
 
 
+def _active_model_is_deepseek_ocr(backend) -> bool:
+    from core.inference.model_ids import is_deepseek_ocr
+
+    models = getattr(backend, "models", None)
+    if not isinstance(models, dict):
+        return False
+    return is_deepseek_ocr(
+        (models.get(getattr(backend, "active_model_name", None)) or {}).get("model")
+    )
+
+
 def _resize_image(img, max_size: int = 800):
     """Resize image while maintaining aspect ratio."""
     if img is None:
@@ -1067,14 +1078,16 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
 
 
 def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+    resize = _resize_image
+    if _active_model_is_deepseek_ocr(backend):
+        # Its infer() tiles full pages itself; an 800 px cap blurs document text.
+        resize = lambda img: img
     image = None
     image_b64 = cmd.get("image_base64")
     if image_b64:
-        image = _resize_image(_decode_image(image_b64))
+        image = resize(_decode_image(image_b64))
     images = [
-        _resize_image(_decode_image(encoded))
-        for encoded in cmd.get("images_base64") or ()
-        if encoded
+        resize(_decode_image(encoded)) for encoded in cmd.get("images_base64") or () if encoded
     ]
 
     gen_kwargs = {

@@ -35,6 +35,7 @@ from core.inference.runtime_context import (
     runtime_context_length,
 )
 from core.inference.message_content import content_to_text, named_turn
+from core.inference.model_ids import is_deepseek_ocr
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -544,12 +545,12 @@ def _prompt_already_has_bos(tokenizer, prompt):
     return bool(len(ids)) and ids[0] == bos_token_id
 
 
-_DEEPSEEK_OCR_ARCHITECTURES = frozenset({"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"})
+_MISSING = object()
 
 
-def _is_deepseek_ocr(model) -> bool:
-    architectures = getattr(getattr(model, "config", None), "architectures", None) or ()
-    return hasattr(model, "infer") and not _DEEPSEEK_OCR_ARCHITECTURES.isdisjoint(architectures)
+class _OcrNeedsImageError(ValueError):
+    public = True
+    openai_param = "messages"
 
 
 def _without_image_parts(messages) -> list[dict]:
@@ -1427,8 +1428,10 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
-        if _is_deepseek_ocr(model_info.get("model")):
-            yield from self._generate_deepseek_ocr_response(messages, image, images)
+        if is_deepseek_ocr(model_info.get("model")):
+            yield from self._generate_deepseek_ocr_response(
+                messages, image, images, max_new_tokens, cancel_event, _adapter_state
+            )
             return
 
         if is_vision and (image or images):
@@ -1622,7 +1625,7 @@ class InferenceBackend:
         )
 
     def _generate_deepseek_ocr_response(
-        self, messages, image, images
+        self, messages, image, images, max_new_tokens, cancel_event, _adapter_state
     ) -> Generator[str, None, None]:
         """DeepSeek-OCR ships no processor or chat template: its own infer() tiles the image."""
         import tempfile
@@ -1632,25 +1635,52 @@ class InferenceBackend:
         self.last_generation_stats = None
         picture = image if image is not None else next(iter(images or ()), None)
         if picture is None:
-            raise ValueError("DeepSeek-OCR reads text from an image: attach one to your message.")
+            raise _OcrNeedsImageError(
+                "DeepSeek-OCR reads text from an image: attach one to your message."
+            )
         model_info = self.models[self.active_model_name]
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
         prompt = "<image>\n" + (last_user_text(messages) or "Free OCR.")
-        with tempfile.TemporaryDirectory() as tmp:
+        infer = model_info["model"].infer
+        # infer() hardcodes max_new_tokens=8192 and takes no stopping criteria, so bound the
+        # generate() it calls on its own module (the base model under a PEFT wrapper).
+        owner = infer.__self__
+        previous = owner.__dict__.get("generate", _MISSING)
+        generate = owner.generate
+        stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+
+        def bounded_generate(*args, **kwargs):
+            if max_new_tokens:
+                kwargs["max_new_tokens"] = min(
+                    kwargs.get("max_new_tokens", max_new_tokens), max_new_tokens
+                )
+            if stopping_criteria is not None:
+                kwargs["stopping_criteria"] = stopping_criteria
+            return generate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp, self._generation_lock:
             path = str(Path(tmp) / "image.png")
             picture.convert("RGB").save(path)
-            # Gundam preset, the one the model card and Unsloth's notebooks use.
-            text = model_info["model"].infer(
-                getattr(tokenizer, "tokenizer", tokenizer),
-                prompt = prompt,
-                image_file = path,
-                output_path = tmp,
-                base_size = 1024,
-                image_size = 768,
-                crop_mode = True,
-                save_results = False,
-                eval_mode = True,
-            )
+            self._apply_adapter_state(_adapter_state)
+            owner.generate = bounded_generate
+            try:
+                # Gundam preset, the one the model card and Unsloth's notebooks use.
+                text = infer(
+                    getattr(tokenizer, "tokenizer", tokenizer),
+                    prompt = prompt,
+                    image_file = path,
+                    output_path = tmp,
+                    base_size = 1024,
+                    image_size = 768,
+                    crop_mode = True,
+                    save_results = False,
+                    eval_mode = True,
+                )
+            finally:
+                if previous is _MISSING:
+                    del owner.generate
+                else:
+                    owner.generate = previous
         yield text or ""
 
     def _generate_vision_response(

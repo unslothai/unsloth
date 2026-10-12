@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import importlib.machinery
+import io
 import json
 import sys
+import threading
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -108,14 +111,21 @@ class _OcrModel:
 
     def __init__(self):
         self.calls = []
+        self.generate_kwargs = None
+
+    def generate(self, **kwargs):
+        self.generate_kwargs = kwargs
+        return "ids"
 
     def infer(self, tokenizer, **kwargs):
         self.calls.append((tokenizer, kwargs, Path(kwargs["image_file"]).is_file()))
+        self.generate(max_new_tokens = 8192)  # what the real infer() hardcodes
         return "UNSLOTH 8732 OCR"
 
 
 def _backend(model):
     backend = InferenceBackend.__new__(InferenceBackend)
+    backend._generation_lock = threading.Lock()
     backend.active_model_name = "unsloth/DeepSeek-OCR-2"
     backend.models = {
         backend.active_model_name: {"model": model, "tokenizer": "tok", "is_vision": True}
@@ -127,25 +137,76 @@ def _generate(
     backend,
     image,
     text = "Free OCR.",
+    **kwargs,
 ):
     return list(
         backend._generate_chat_response_inner(
             messages = [{"role": "user", "content": text}],
             image = image,
+            **kwargs,
         )
     )
 
 
+def _image():
+    return pytest.importorskip("PIL.Image").new("RGB", (32, 32), "white")
+
+
 def test_chat_runs_the_models_own_infer_on_the_attached_image():
-    Image = pytest.importorskip("PIL.Image")
     model = _OcrModel()
 
-    assert _generate(_backend(model), Image.new("RGB", (32, 32), "white")) == ["UNSLOTH 8732 OCR"]
+    assert _generate(_backend(model), _image()) == ["UNSLOTH 8732 OCR"]
     tokenizer, kwargs, image_was_written = model.calls[0]
     assert (tokenizer, kwargs["prompt"], kwargs["eval_mode"]) == ("tok", "<image>\nFree OCR.", True)
     assert image_was_written
 
 
-def test_chat_without_an_image_says_one_is_needed():
-    with pytest.raises(ValueError, match = "attach one"):
+def test_the_request_bounds_and_can_cancel_the_generate_infer_runs():
+    model = _OcrModel()
+    _generate(_backend(model), _image(), max_new_tokens = 300, cancel_event = threading.Event())
+
+    assert model.generate_kwargs["max_new_tokens"] == 300
+    assert model.generate_kwargs["stopping_criteria"] is not None
+    assert "generate" not in vars(model), "the bound generate must not outlive the request"
+
+
+def test_the_requested_adapter_state_is_applied_under_the_generation_lock():
+    model = _OcrModel()
+    backend = _backend(model)
+    applied = []
+    backend._apply_adapter_state = lambda state: applied.append(
+        (state, backend._generation_lock.locked())
+    )
+    _generate(backend, _image(), _adapter_state = False)
+
+    assert applied == [(False, True)]
+
+
+def test_chat_without_an_image_gets_a_client_visible_error():
+    with pytest.raises(ValueError, match = "attach one") as raised:
         _generate(_backend(_OcrModel()), image = None)
+    assert (raised.value.public, raised.value.openai_param) == (True, "messages")
+
+
+def test_deepseek_ocr_does_not_count_as_a_transformers_5_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(tv.sys, "platform", "linux")
+    assert tv.needs_transformers_5(_local_model(tmp_path, _OCR2)) is False
+
+
+def test_the_worker_keeps_full_resolution_only_for_deepseek_ocr():
+    Image = pytest.importorskip("PIL.Image")
+    from core.inference import worker
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (1700, 2200), "white").save(buffer, "PNG")
+    cmd = {"messages": [], "image_base64": base64.b64encode(buffer.getvalue()).decode()}
+    other = types.SimpleNamespace(
+        config = types.SimpleNamespace(architectures = ["Qwen2VLForConditionalGeneration"])
+    )
+
+    def size_for(model):
+        backend = _backend(model)
+        return worker._generation_kwargs(backend, cmd, None)["image"].size
+
+    assert size_for(_OcrModel()) == (1700, 2200)
+    assert max(size_for(other)) == 800

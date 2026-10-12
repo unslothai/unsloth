@@ -2062,7 +2062,7 @@ def needs_transformers_5(model_name: str) -> bool:
     log-only parent caller never spawns sidecar probes (the worker re-resolves the exact
     tier with ``probe=True`` on the real activation path).
     """
-    return get_transformers_tier(model_name, probe = False) != "default"
+    return get_transformers_tier(model_name, probe = False) not in ("default", "457")
 
 
 # --- Version switching (in-process, used only by export) ---

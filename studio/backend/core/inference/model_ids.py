@@ -161,3 +161,12 @@ def mlx_bnb_substitutions(repos: Iterable[str]) -> list[tuple[str, str]]:
         if base:
             swaps.append((repo, base))
     return swaps
+
+
+_DEEPSEEK_OCR_ARCHITECTURES = frozenset({"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"})
+
+
+def is_deepseek_ocr(model) -> bool:
+    """A loaded DeepSeek-OCR model, which generates through its own infer()."""
+    architectures = getattr(getattr(model, "config", None), "architectures", None) or ()
+    return hasattr(model, "infer") and not _DEEPSEEK_OCR_ARCHITECTURES.isdisjoint(architectures)
