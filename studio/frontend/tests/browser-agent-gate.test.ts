@@ -45,7 +45,12 @@ test("a site the user named, already reached, or linked from the page opens with
   assert.equal(gateNavigation("https://en.wikipedia.org/wiki/GGUF", navigation({ userText: "look up GGUF on wikipedia" })).kind, "allow");
   assert.equal(gateNavigation("https://huggingface.co/unsloth", navigation({ userText: "check huggingface.co" })).kind, "allow");
   assert.equal(gateNavigation("https://github.com/x", navigation({ knownHosts: new Set(["github.com"]) })).kind, "allow");
-  assert.equal(gateNavigation("https://other.example/a", navigation({ pageLinks: new Set(["https://other.example/a"]) })).kind, "allow");
+  // A link opens, but marked: the page chose it, so its site isn't approved for made-up addresses.
+  assert.deepEqual(gateNavigation("https://other.example/a", navigation({ pageLinks: new Set(["https://other.example/a"]) })), {
+    kind: "allow",
+    linked: true,
+  });
+  assert.equal(gateNavigation("https://other.example/?d=secret", navigation({ pageLinks: new Set(["https://other.example/a"]) })).kind, "ask");
 });
 
 test("an address the model made up for a new site asks first", () => {

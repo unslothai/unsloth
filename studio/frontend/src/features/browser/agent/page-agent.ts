@@ -351,12 +351,16 @@ export function installPageAgent(): void {
       if (block) flush();
       // A label's words are already its field's name.
       const labelled = tag === "label" && Boolean((el as HTMLLabelElement).control);
+      // Text too small to read is there for the model, not the user. Only this element's own text:
+      // a font-size:0 parent whose children reset it is a common inline-block layout trick.
+      const unreadable = Number.parseFloat(style.fontSize) < 2;
       const children = el.shadowRoot ? [...Array.from(el.shadowRoot.childNodes), ...Array.from(el.childNodes)] : Array.from(el.childNodes);
       for (const node of children) {
         if (cut) return;
         if (node.nodeType === Node.TEXT_NODE) {
           const value = node.nodeValue ?? "";
-          if (!labelled) {
+          if (unreadable) buffer += " ";
+          else if (!labelled) {
             buffer += value;
             if (value.trim() && shown && sized(rect)) bufferShown = true;
           }

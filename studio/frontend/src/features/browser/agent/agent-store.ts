@@ -33,7 +33,7 @@ type BrowserAgentState = {
   tabId: string | null;
   working: boolean;
   question: AgentPrompt | null;
-  /** The chat run whose action is running, which Stop applies to. */
+  /** The chat run the agent is acting for, until it ends; Stop applies to it. */
   runKey: string | null;
   /** The chat run the user stopped from the agent bar; its actions answer "stopped". */
   stoppedRun: string | null;
@@ -125,7 +125,8 @@ const DOWNLOAD_STRICTNESS: Record<DownloadsRule, number> = { allow: 0, ask: 1, b
  *  file's own host only when it has a rule of its own, and then the stricter one wins. */
 export function agentDownloadRule(tabId: string, site: string, fileUrl: string): DownloadsRule | null {
   const state = useBrowserAgentStore.getState();
-  if (state.tabId !== tabId) return null;
+  // Between runs the tab is the user's again, under their own download settings.
+  if (state.tabId !== tabId || !state.runKey) return null;
   const rule = ruleFor(site || fileUrl, state.permissions).rule.downloads;
   const file = ruleFor(fileUrl, state.permissions);
   if (!file.site) return rule;
@@ -136,6 +137,10 @@ let activeAction: AbortController | null = null;
 
 export function setActiveAction(controller: AbortController | null): void {
   activeAction = controller;
+}
+
+export function endBrowserAgentRun(runKey: string): void {
+  if (useBrowserAgentStore.getState().runKey === runKey) useBrowserAgentStore.setState({ runKey: null });
 }
 
 /** The agent bar's Stop: the action running now ends too, not just the ones after it. */

@@ -71,6 +71,7 @@ function userTexts(
     .filter((message) => message?.role === "user")
     .map((message) => messageText(message.content));
 }
+import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -7455,6 +7456,7 @@ export function createOpenAIStreamAdapter(
                       if (action) {
                         void runBrowserAction(action, {
                           runKey: cancelId,
+                          scope: threadKey,
                           userText,
                           signal: runSignal,
                         });
@@ -9075,6 +9077,7 @@ export function createOpenAIStreamAdapter(
         // serverCancel narrows both clears: runs with no resolved thread id share the "__default" key.
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
+        if (browserTools.length > 0) endBrowserAgentRun(cancelId);
       }
     },
   } satisfies ChatModelAdapter;

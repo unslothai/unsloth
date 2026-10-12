@@ -6452,6 +6452,7 @@ async def _select_request_tools(
     mcp_allowed: bool,
     checkpoint_fitted: bool = False,
     supports_vision: bool = False,
+    ui_events: bool = True,
 ) -> list[dict]:
     """Resolve the tool list for a chat request: built-ins filtered by the
     caller's opt-in (empty when MCP-only), the RAG tool dropped without a
@@ -6476,11 +6477,11 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
-    if tools_on and payload.enabled_tools is not None:
+    if tools_on and ui_events and payload.enabled_tools is not None:
         # Never in the default catalog: only a chat tab with the browser panel can run them, and it
-        # asks by name.
+        # asks by name. Without UI frames the action never reaches a tab, so the tool would only
+        # wait out its timeout.
         from core.inference.browser_agent import BROWSER_SCREENSHOT, BROWSER_TOOLS
-
         tools += [
             tool
             for tool in BROWSER_TOOLS
@@ -21633,8 +21634,7 @@ async def confirm_tool_call(
 
 @studio_router.post("/browser-action-result")
 async def browser_action_result(
-    body: BrowserActionResultRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: BrowserActionResultRequest, current_subject: str = Depends(get_current_subject)
 ):
     from state.browser_actions import resolve_browser_action
     from utils.account_context import current_account_id
@@ -28647,6 +28647,7 @@ async def _proxy_to_external_provider(
                 supports_vision = model_supports_vision,
                 tools_on = _effective_enable_tools(payload) is True,
                 mcp_allowed = bool(payload.mcp_enabled),
+                ui_events = _ui_events,
             )
             if studio_tool_payloads:
                 # The loop runs iff the catalog is non-empty, and its approval handshake
@@ -29028,6 +29029,7 @@ async def _proxy_to_external_provider(
             ),
             tools_on = _effective_enable_tools(payload) is True,
             mcp_allowed = bool(payload.mcp_enabled),
+            ui_events = _ui_events,
         )
     run_studio_tool_loop = bool(external_studio_tools)
     _external_fit_tools = external_studio_tools if run_studio_tool_loop else payload.tools
@@ -31520,6 +31522,7 @@ async def produce_openai_chat_completions(
                 # Only this branch runs the checkpoint fit. The process-wide policy says a
                 # reset is POSSIBLE somewhere, not that this request can perform one.
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                ui_events = _ui_events,
             )
             _reject_missing_forced_tool(payload.tool_choice, tools_to_use)
             # Skip the tool loop when no tool survived, so the safetensors
@@ -33674,6 +33677,7 @@ async def produce_openai_chat_completions(
             mcp_allowed = _sf_mcp_allowed,
             supports_vision = bool(_sf_model_info.get("is_vision")),
             checkpoint_fitted = _sf_fit_overflow is not None,
+            ui_events = _ui_events,
         )
         _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing

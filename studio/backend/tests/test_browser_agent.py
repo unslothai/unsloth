@@ -307,7 +307,11 @@ def test_stream_wrapper_delivers_actions_in_order_with_the_result_unchanged():
     )
 
 
-def _selected(enabled, vision = False):
+def _selected(
+    enabled,
+    vision = False,
+    ui_events = True,
+):
     import routes.inference as routes_mod
 
     payload = types.SimpleNamespace(
@@ -315,7 +319,11 @@ def _selected(enabled, vision = False):
     )
     tools = asyncio.run(
         routes_mod._select_request_tools(
-            payload, tools_on = True, mcp_allowed = False, supports_vision = vision
+            payload,
+            tools_on = True,
+            mcp_allowed = False,
+            supports_vision = vision,
+            ui_events = ui_events,
         )
     )
     return {tool["function"]["name"] for tool in tools}
@@ -331,3 +339,5 @@ def test_browser_tools_are_offered_only_when_the_tab_asks_for_them(monkeypatch):
     chosen = _selected(["web_search", "browser_navigate", "browser_click", "browser_screenshot"])
     assert {"browser_navigate", "browser_click"} <= chosen and "browser_screenshot" not in chosen
     assert "browser_screenshot" in _selected(["browser_screenshot"], vision = True)
+    # An API caller without UI frames has no tab to run them, so they'd only wait out the timeout.
+    assert not _selected(["browser_navigate"], ui_events = False) & browser_agent.BROWSER_TOOL_NAMES

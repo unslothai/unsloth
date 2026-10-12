@@ -36,7 +36,8 @@ export type BrowserAction = {
   policy: SitePolicy;
 };
 
-export type ActionContext = { runKey: string; userText: string; signal?: AbortSignal };
+/** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another. */
+export type ActionContext = { runKey: string; scope?: string; userText: string; signal?: AbortSignal };
 
 // pageError: words the page script answered with; the server fences them, unlike `error`.
 type Result = { ok: boolean; error?: string; pageError?: string; url?: string; title?: string; text?: string; note?: string; image?: string };
@@ -78,9 +79,31 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
   };
 }
 
-// Sites approved or reached this session, and the links on the page the agent last read.
+// Sites the user approved or named, where the model may open addresses it made up; every site the
+// agent has been on (a page's link reaches its site, but the page chose it, not the user); and the
+// links on the page the agent last read. All per chat.
 const knownHosts = new Set<string>();
+const reachedHosts = new Set<string>();
 let pageLinks = new Set<string>();
+let scope: string | undefined;
+
+function enterScope(next: string | undefined): void {
+  if (next === scope) return;
+  // A new chat's first turn runs as "__default" until it is saved under its own id.
+  if (scope !== "__default") {
+    knownHosts.clear();
+    reachedHosts.clear();
+    pageLinks = new Set();
+  }
+  scope = next;
+}
+
+function admit(url: string, gate: Gate): void {
+  const host = hostOfUrl(url);
+  if (!host) return;
+  reachedHosts.add(host);
+  if (!(gate.kind === "allow" && gate.linked)) knownHosts.add(host);
+}
 
 const TEXT_ROLES = new Set(["textbox", "searchbox", "password", "combobox", "spinbutton"]);
 
@@ -337,12 +360,14 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     return { ok: false, error: "the browser panel can't be shown in this window; ask the user to widen it or open the chat." };
   }
   useBrowserAgentStore.setState({ working: true, runKey: context.runKey });
+  enterScope(context.scope);
 
   if (action.op === "navigate") {
     const url = action.url ?? "";
-    const refused = await pass(gateNavigation(url, navigationContext(action, context)), signal);
+    const gate = gateNavigation(url, navigationContext(action, context));
+    const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
-    knownHosts.add(hostOfUrl(url));
+    admit(url, gate);
     const tab = await open(url, signal);
     if (!tab) return { ok: false, error: "the browser tab closed." };
     return arrive(tab, url, action, context);
@@ -408,18 +433,21 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     (action.op === "type" && action.submit) ||
     (action.op === "press" && action.key === "Enter" && TEXT_ROLES.has(info.role)) ||
     ((action.op === "click" || activates) && info.submits);
-  if (submits && info.formAction) {
+  // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
+  const formAction = submits && info.formAction ? info.formAction : "";
+  const formGate =
+    formAction && hostOfUrl(formAction) !== hostOfUrl(before) ? gateNavigation(formAction, navigationContext(action, context)) : null;
+  if (formAction) {
     // A submit button's own click gate already asks what a submit would.
     if (!info.submits) gates.push(gateElement("submit", info, before, action.policy, permissions()));
-    // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
-    if (hostOfUrl(info.formAction) !== hostOfUrl(before)) gates.push(gateNavigation(info.formAction, navigationContext(action, context)));
+    if (formGate) gates.push(formGate);
   }
   for (const gate of gates) {
     const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  if (submits && info.formAction) knownHosts.add(hostOfUrl(info.formAction));
+  if (formGate) admit(formAction, formGate);
 
   let note: string | undefined;
   if (action.op === "click") {
@@ -428,9 +456,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     if (clicked.navigate) {
       // A link: opened in this tab, under the same rules as any other address. Its href is read
       // now, so it may not be one the last snapshot listed.
-      const refused = await pass(gateNavigation(clicked.navigate, navigationContext(action, context)), signal);
+      const gate = gateNavigation(clicked.navigate, navigationContext(action, context));
+      const refused = await pass(gate, signal);
       if (refused) return { ok: false, error: refused };
-      knownHosts.add(hostOfUrl(clicked.navigate));
+      admit(clicked.navigate, gate);
       useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: before }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
       return loaded ? arrive(loaded, clicked.navigate, action, context) : { ok: false, error: "the browser tab closed." };
@@ -472,12 +501,13 @@ async function arrive(
   if (url) {
     const blocked = navigationBlocks(url, action.policy, permissions());
     if (blocked) return { ok: false, error: `The page went to ${host}, but ${blocked}. Go back.` };
-    if (host && host !== hostOfUrl(requested) && !knownHosts.has(host)) {
+    if (host && host !== hostOfUrl(requested) && !reachedHosts.has(host)) {
       const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: requested });
       const refused = await pass(gate, context.signal);
       if (refused) return { ok: false, error: `The page went to ${host}. ${refused}` };
+      admit(url, gate);
     }
-    if (host) knownHosts.add(host);
+    if (host) reachedHosts.add(host);
   }
   return observeLoaded(tab, note);
 }
@@ -490,10 +520,11 @@ async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Act
   if (!host) return null;
   const blocked = navigationBlocks(url, action.policy, permissions());
   if (blocked) return `The page is on ${host}, but ${blocked}. Use browser_navigate to go elsewhere.`;
-  if (knownHosts.has(host)) return null;
-  const refused = await pass(gateNavigation(url, { ...navigationContext(action, context), currentUrl: "" }), context.signal);
+  if (reachedHosts.has(host)) return null;
+  const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: "" });
+  const refused = await pass(gate, context.signal);
   if (refused) return `The page is on ${host}. ${refused}`;
-  knownHosts.add(host);
+  admit(url, gate);
   return null;
 }
 

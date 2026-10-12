@@ -16,9 +16,14 @@ export type Question = {
   detail: string;
 };
 
-export type Gate = { kind: "allow" } | ({ kind: "ask"; prompt: string } & Question) | { kind: "block"; reason: string };
+/** `linked`: allowed only because the page links there, so its site isn't approved for addresses the model makes up. */
+export type Gate =
+  | { kind: "allow"; linked?: true }
+  | ({ kind: "ask"; prompt: string } & Question)
+  | { kind: "block"; reason: string };
 
 const ALLOW: Gate = { kind: "allow" };
+const LINKED: Gate = { kind: "allow", linked: true };
 
 export type SitePolicy = { allowedDomains: string[]; blockedDomains: string[] };
 
@@ -116,7 +121,8 @@ export function gateNavigation(url: string, context: NavigationContext): Gate {
     const here = hostOfUrl(context.currentUrl);
     return here && patternMatches(site, here) ? ALLOW : ask;
   }
-  if (context.knownHosts.has(host) || context.pageLinks.has(parsed.href) || mentioned(host, context.userText)) return ALLOW;
+  if (context.knownHosts.has(host) || mentioned(host, context.userText)) return ALLOW;
+  if (context.pageLinks.has(parsed.href)) return LINKED;
   return ask;
 }
 
