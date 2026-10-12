@@ -141,8 +141,7 @@ fn redact_env(caps: &Captures) -> Option<String> {
     Some(format!("{}={REDACTED}", &caps[1]))
 }
 
-// A value an earlier rule already replaced, matched with at most one trailing delimiter or
-// quote; anything else after the sentinel makes it a real value.
+// An earlier rule's sentinel plus at most one trailing delimiter; anything else is a real value.
 fn is_sentinel(value: &str) -> bool {
     let value = match value.chars().last() {
         Some(c) if c.is_whitespace() || "\"'\\,}];&".contains(c) => {
@@ -156,8 +155,7 @@ fn is_sentinel(value: &str) -> bool {
     )
 }
 
-// A quoted cookie value ends at its own quote, so later fields on the line survive;
-// an unquoted header runs to the end of the line.
+// A quoted cookie value ends at its own quote so later fields survive; unquoted runs to EOL.
 fn redact_cookie(caps: &Captures) -> Option<String> {
     let quote = ["eq", "dq", "sq"]
         .iter()
