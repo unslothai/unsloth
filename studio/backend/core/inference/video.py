@@ -2684,7 +2684,8 @@ class VideoBackend:
             )
         _refuse_non_dit_pick(repo_id, gguf_filename, "video")
         fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
-        if fam is None and not family_override:
+        # Every pick name is judged, not just an unresolved one: a T2V repo id can hold an I2V / VACE file.
+        if not family_override:
             from .video_families import unsupported_video_checkpoint_reason
 
             reason = unsupported_video_checkpoint_reason(display_repo_id, repo_id, gguf_filename)

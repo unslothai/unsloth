@@ -300,6 +300,35 @@ def test_load_validation_refuses_with_the_named_reason():
 
 
 @pytest.mark.parametrize(
+    "repo, kwargs, reason",
+    [
+        (
+            "city96/Wan2.1-T2V-14B-gguf",
+            {"gguf_filename": "wan2.1-i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"},
+            _I2V,
+        ),
+        (
+            "Wan-AI/Wan2.1-T2V-1.3B",
+            {"gguf_filename": "wan2.1_vace_1.3B_fp16.safetensors", "model_kind": "single_file"},
+            _VARIANT,
+        ),
+        (
+            "someorg/Wan2.1-T2V-1.3B-mix",
+            {"gguf_filename": "FastWan2.1-T2V-1.3B-Q8_0.gguf", "model_kind": "gguf"},
+            _FASTWAN,
+        ),
+    ],
+)
+def test_unsupported_file_under_a_t2v_repo_is_refused(repo, kwargs, reason):
+    # The repo id alone resolves a T2V family; the picked file must still be judged.
+    from core.inference.video import VideoBackend
+
+    assert vf.detect_video_family(repo) is not None
+    with pytest.raises(ValueError, match = reason):
+        VideoBackend().validate_load_request(repo, **kwargs)
+
+
+@pytest.mark.parametrize(
     "repo, kwargs, family",
     [
         ("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", {}, "wan2.1-t2v-1.3b"),
