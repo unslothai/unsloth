@@ -36508,8 +36508,7 @@ async def _openai_catalog_with_aliases() -> list[dict]:
 
     objects = await _openai_catalog_objects()
     aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_object)
-    # Requests naming an alias are rewritten, so a same-named model row would advertise weights
-    # that never serve.
+    # The rewrite gives an alias precedence, so a same-named model row would never be served.
     shadowed = {row["id"].lower() for row in aliases}
     return [o for o in objects if str(o.get("id", "")).lower() not in shadowed] + aliases
 

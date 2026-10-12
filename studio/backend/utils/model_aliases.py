@@ -17,7 +17,6 @@ MODEL_ALIASES_SETTING_KEY = "openai_api_model_aliases"
 MAX_MODEL_ALIASES = 100
 MAX_ALIAS_TARGET_LENGTH = 512
 _ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-# The OpenAI/Anthropic-compatible router, mounted under both prefixes.
 _ALIAS_PATH_PREFIXES = ("/v1/", "/api/inference/")
 _MODEL_VALUE_RE = re.compile(rb'"model"\s*:\s*"([^"\\]*)"')
 
@@ -167,8 +166,7 @@ class ModelAliasMiddleware:
         if root_path and path.startswith(root_path):
             path = path[len(root_path) :] or "/"
         content_type = dict(scope.get("headers", [])).get(b"content-type", b"").lower()
-        # JSON only: raw and multipart uploads (audio inputs, transcriptions) stream past the body
-        # cap and must never be held here.
+        # JSON only: raw and multipart uploads stream past the body cap and must never be held.
         if (
             not path.startswith(_ALIAS_PATH_PREFIXES)
             or b"json" not in content_type
