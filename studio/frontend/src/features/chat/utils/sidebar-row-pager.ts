@@ -56,6 +56,8 @@ export class RowPager<Q, T extends { id: string }> {
   private cursor: string | null = null;
   private generation = 0;
   private pending: Promise<void> | null = null;
+  // `pending` re-reads the window; a page asked for meanwhile follows it instead of joining it
+  private refreshing = false;
   // the rows on screen are not this query's top window (a refresh failed), so retry re-reads
   private stale = false;
   private readonly listeners = new Set<() => void>();
@@ -140,10 +142,12 @@ export class RowPager<Q, T extends { id: string }> {
     const window = Math.max(this.options.initialLimit, this.state.rows.length);
     // a loaded list keeps showing its rows while it re-reads them
     this.patch({ loading: true }, this.state.loaded);
+    this.refreshing = true;
     const run = (async () => {
       try {
         const result = await this.read(null, window, generation);
         if (generation !== this.generation) return;
+        this.refreshing = false;
         this.cursor = result.cursor;
         this.stale = false;
         const prev = this.state;
@@ -167,6 +171,7 @@ export class RowPager<Q, T extends { id: string }> {
         );
       } catch (error) {
         if (generation !== this.generation) return;
+        this.refreshing = false;
         this.stale = true;
         this.patch({ loaded: true, loading: false, error });
       }
@@ -176,7 +181,11 @@ export class RowPager<Q, T extends { id: string }> {
   }
 
   private extend(count: number): Promise<void> {
-    if (this.state.loading) return this.pending ?? Promise.resolve();
+    if (this.state.loading) {
+      // a history refresh (one per streamed reply) would otherwise swallow the scroll's page
+      if (this.refreshing && this.pending) return this.pending.then(() => this.extend(count));
+      return this.pending ?? Promise.resolve();
+    }
     if (!this.state.loaded || !this.state.hasMore || this.state.error) {
       return Promise.resolve();
     }

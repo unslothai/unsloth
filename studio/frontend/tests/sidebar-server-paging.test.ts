@@ -148,6 +148,29 @@ test("a refresh that reads the same rows renders nothing; one that reads a chang
   assert.equal(list.getState().rows[0].id, "new");
 });
 
+test("a page asked for while a history refresh is in flight loads after it, not never", async () => {
+  const server = fakeServer(() => rows(200));
+  let gate: Promise<void> | null = null;
+  let release = () => {};
+  const list = pager(async (query, limit, cursor) => {
+    if (gate) await gate;
+    return server.fetchPage(query, limit, cursor);
+  });
+  await list.start();
+  gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const refresh = list.refresh();
+  const more = list.loadMore();
+  gate = null;
+  release();
+  await Promise.all([refresh, more]);
+  assert.equal(list.getState().rows.length, 40);
+  // two scrolls during one page still ask for one page each, never more
+  await Promise.all([list.loadMore(), list.loadMore()]);
+  assert.equal(list.getState().rows.length, 60);
+});
+
 test("a window past one request's cap is read in steps", async () => {
   const server = fakeServer(() => rows(1000));
   const list = new RowPager<unknown, Row>(server.fetchPage, {}, "q", {
