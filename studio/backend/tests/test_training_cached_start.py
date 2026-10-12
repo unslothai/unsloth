@@ -130,6 +130,13 @@ def _known_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
 
 
+@pytest.fixture
+def _cuda_trainer():
+    # Continuation needs the CUDA trainer; an Apple Silicon runner would take the MLX refusal.
+    with patch("core.training.training.should_use_mlx_training_backend", return_value = False):
+        yield
+
+
 def _load_route_module(name: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / "routes" / "training.py")
     module = importlib.util.module_from_spec(spec)
@@ -474,6 +481,7 @@ def test_start_rejects_adapter_only_local_dir_for_full_finetuning(tmp_path):
     assert "Adapter-only local models" in exc_info.value.detail["message"]
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_allows_adapter_only_local_dir_for_lora(tmp_path):
     route = _load_route_module("training_route_allow_adapter_dir_lora")
     (tmp_path / "adapter_config.json").write_text("{}")
@@ -484,6 +492,7 @@ def test_start_allows_adapter_only_local_dir_for_lora(tmp_path):
     assert result.model_name == str(tmp_path.resolve())
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_rejects_adapter_weights_without_adapter_config_for_lora(tmp_path):
     route = _load_route_module("training_route_reject_adapter_without_config")
     (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
@@ -494,6 +503,7 @@ def test_start_rejects_adapter_weights_without_adapter_config_for_lora(tmp_path)
     assert "adapter_config.json" in exc_info.value.detail["message"]
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_untrainable_gate_refuses_cached_hub_adapter_snapshot_for_lora(tmp_path):
     route = _load_route_module("training_route_snapshot_adapter_lora")
     snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
@@ -531,6 +541,7 @@ def test_start_refuses_adapter_dir_where_runner_builds_a_fresh_adapter(tmp_path,
 
 
 @pytest.mark.parametrize("refused", [True, False])
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_checks_the_cached_base_a_local_adapter_names(tmp_path, refused):
     route = _load_route_module(f"training_route_adapter_base_{refused}")
     (tmp_path / "adapter_config.json").write_text('{"base_model_name_or_path": "org/private-base"}')
@@ -563,6 +574,7 @@ def test_start_checks_the_cached_base_a_local_adapter_names(tmp_path, refused):
     assert "org/private-base" in asked
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_checks_a_cache_path_base_named_by_a_local_adapter(tmp_path):
     route = _load_route_module("training_route_adapter_base_cache_path")
     base = tmp_path / "hub" / "models--org--private" / "snapshots" / "rev"
@@ -589,6 +601,7 @@ def test_start_checks_a_cache_path_base_named_by_a_local_adapter(tmp_path):
     assert refused.call_args.kwargs["repo_id"] == "org/private"
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_checks_a_local_base_against_the_account_workspace(tmp_path):
     route = _load_route_module("training_route_adapter_base_workspace")
     base = tmp_path / "other-account" / "base"
@@ -612,6 +625,7 @@ def test_start_checks_a_local_base_against_the_account_workspace(tmp_path):
     assert exc_info.value.status_code == 403
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_offline_start_refuses_an_uncached_adapter_base(tmp_path):
     route = _load_route_module("training_route_adapter_base_offline")
     (tmp_path / "adapter_config.json").write_text(
@@ -633,6 +647,7 @@ def test_offline_start_refuses_an_uncached_adapter_base(tmp_path):
 
 
 @pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_managed_adapter_base_needs_a_grant_only_for_a_cached_read(tmp_path, cached):
     route = _load_route_module(f"training_route_managed_adapter_base_{cached}")
     (tmp_path / "adapter_config.json").write_text(
@@ -658,6 +673,7 @@ def test_managed_adapter_base_needs_a_grant_only_for_a_cached_read(tmp_path, cac
             route._reject_untrainable_model_request(request, None, "hf_own")
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_probes_an_uncached_hub_base_named_by_a_local_adapter(tmp_path):
     route = _load_route_module("training_route_adapter_base_probe")
     (tmp_path / "adapter_config.json").write_text(
@@ -679,6 +695,7 @@ def test_start_probes_an_uncached_hub_base_named_by_a_local_adapter(tmp_path):
     assert probe.call_args.args[0] == "org/missing-base"
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_pins_the_base_a_local_adapter_was_checked_against(tmp_path):
     route = _load_route_module("training_route_adapter_base_pin")
     (tmp_path / "adapter_config.json").write_text(
@@ -723,6 +740,7 @@ def test_worker_rechecks_the_adapter_base_right_before_the_model_load():
     ast.parse(source)
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_adapter_without_a_base_is_pinned_and_cannot_gain_one(tmp_path):
     from core.training import worker
 
@@ -744,6 +762,7 @@ def test_adapter_without_a_base_is_pinned_and_cannot_gain_one(tmp_path):
     assert worker._adapter_base_changed_error(config) is not None
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_refuses_an_adapter_whose_local_base_is_gone(tmp_path):
     route = _load_route_module("training_route_adapter_base_gone")
     adapter = tmp_path / "adapter"
@@ -759,6 +778,7 @@ def test_start_refuses_an_adapter_whose_local_base_is_gone(tmp_path):
 
 
 @pytest.mark.parametrize("base_format", ["gguf", "adapter", "adapter_without_weights"])
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_refuses_an_adapter_whose_hub_base_is_not_trainable(tmp_path, base_format):
     route = _load_route_module(f"training_route_adapter_base_{base_format}")
     (tmp_path / "adapter_config.json").write_text(
@@ -777,6 +797,7 @@ def test_start_refuses_an_adapter_whose_hub_base_is_not_trainable(tmp_path, base
     assert exc_info.value.detail["code"] == "training_adapter_base_not_trainable"
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_refuses_an_adapter_whose_local_base_has_no_weights(tmp_path):
     route = _load_route_module("training_route_adapter_base_empty")
     base = tmp_path / "empty-base"
@@ -791,6 +812,7 @@ def test_start_refuses_an_adapter_whose_local_base_has_no_weights(tmp_path):
     assert exc_info.value.detail["code"] == "training_adapter_base_not_trainable"
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_cache_path_base_needs_the_account_grant(tmp_path):
     route = _load_route_module("training_route_adapter_cache_base_grant")
     base = tmp_path / "hub" / "models--org--private" / "snapshots" / "rev"
@@ -833,6 +855,7 @@ def test_adapter_trains_embeddings_reads_saved_modules():
 
 
 @pytest.mark.parametrize("dataset_flag", ["is_dataset_image", "is_dataset_audio"])
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_refuses_adapter_continuation_on_multimodal_data(tmp_path, dataset_flag):
     route = _load_route_module(f"training_route_adapter_{dataset_flag}")
     (tmp_path / "adapter_config.json").write_text("{}")
@@ -903,6 +926,7 @@ def test_uncached_offline_model_fails_without_remote_probe(monkeypatch, offline_
     remote_probe.assert_not_called()
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_rejects_partial_adapter_local_dir(tmp_path):
     route = _load_route_module("training_route_reject_partial_adapter_dir")
     (tmp_path / "adapter_config.json").write_text("{}")
@@ -1487,6 +1511,7 @@ def test_untrainable_gate_rejects_remote_adapter_for_full_finetuning():
     assert "Adapter models are inference-only" in exc_info.value.detail["message"]
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_untrainable_gate_refuses_remote_adapter_continuation_for_lora():
     route = _load_route_module("training_route_remote_adapter_lora")
     request = _request(model_format = "adapter")
@@ -1507,6 +1532,7 @@ def test_remote_format_probe_flags_adapter_repo_without_weights():
         )
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_untrainable_gate_rejects_remote_adapter_without_weights_for_lora():
     route = _load_route_module("training_route_remote_adapter_no_weights_lora")
     request = _request(model_format = "adapter")
@@ -1537,6 +1563,7 @@ def test_remote_format_probe_ignores_numbered_adapter_shards():
         )
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_start_rejects_local_adapter_with_only_numbered_shards(tmp_path):
     route = _load_route_module("training_route_local_adapter_shards")
     (tmp_path / "adapter_config.json").write_text("{}")
@@ -2850,6 +2877,7 @@ def test_apply_cache_pins_resume_pin_rejects_foreign(tmp_path):
     assert config["model_snapshot_path"] is None
 
 
+@pytest.mark.usefixtures("_cuda_trainer")
 def test_worker_rejects_inference_only_model_formats():
     from core.training import worker
 
