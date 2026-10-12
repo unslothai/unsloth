@@ -368,6 +368,10 @@ async function observe(tab: BrowserTab, note?: string, op: Record<string, unknow
   if (!answer.ok) return { ok: false, error: answer.error ?? "the page could not be read." };
   if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(answer.links ?? []);
   const fresh = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id) ?? tab;
+  // A page that moved during the read is one nobody checked: its words stay out.
+  if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
+    return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
+  }
   return {
     ok: true,
     url: tabUrl(fresh),
