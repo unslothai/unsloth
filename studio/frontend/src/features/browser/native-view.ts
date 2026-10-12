@@ -9,6 +9,7 @@ import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
+import { getAppliedInterfaceZoom, subscribeAppliedInterfaceZoom } from "@/features/settings/lib/interface-scale-runtime";
 import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR, cornerInsets } from "@/lib/toast-offset";
 import { hostOf } from "./address";
@@ -504,9 +505,13 @@ function openHole(tabId: string, bounds: Bounds): void {
 }
 
 // Per holed node, not the root: the vars don't inherit, so a move restyles only those nodes.
+// Under the desktop app's interface zoom (the webview's page zoom), WebKit scales a fixed
+// background's lengths by the zoom once more than the layout they were read from: undone here, or
+// a zoomed-out app covers the right and bottom of the page.
 function placeHole(): void {
   if (!holeBounds) return;
-  const values = [holeBounds.x, holeBounds.y, holeBounds.width, holeBounds.height];
+  const zoom = getAppliedInterfaceZoom() || 1;
+  const values = [holeBounds.x, holeBounds.y, holeBounds.width, holeBounds.height].map((value) => value / zoom);
   for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
 }
 
@@ -644,6 +649,11 @@ function pruneViews(shown: string | null): void {
     if (!oldest) break;
     closeView(oldest);
   }
+}
+
+/** A page view on screen has the keys: the app's document lost focus to it, not to another window. */
+export function nativePageHasKeys(): boolean {
+  return shownView !== null && !document.hasFocus();
 }
 
 function setShownView(tabId: string | null): void {
@@ -923,6 +933,11 @@ export function startNativeViews(): () => void {
   };
 
   const unsubscribe = useBrowserStore.subscribe(schedule);
+  // The zoom lands after the resize it causes is measured, so the hole is placed again then.
+  const unzoom = subscribeAppliedInterfaceZoom(() => {
+    placeHole();
+    schedule();
+  });
   const overlays = new MutationObserver(schedule);
   overlays.observe(document.body, { childList: true });
   overlays.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-palette"] });
@@ -950,6 +965,7 @@ export function startNativeViews(): () => void {
   return () => {
     cancelAnimationFrame(frame);
     unsubscribe();
+    unzoom();
     overlays.disconnect();
     resizeObserver.disconnect();
     window.removeEventListener("resize", schedule);
