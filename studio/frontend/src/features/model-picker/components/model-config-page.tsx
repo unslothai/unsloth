@@ -3720,6 +3720,10 @@ export function ModelConfigPage({
             freeGpuCapacityGb={memoryFreeGpuCapacityGb}
             freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
             freeGpuReserveDeficitGb={memoryFreeGpuReserveDeficitGb}
+            gpuDevices={gpuDevices}
+            selectedGpuIds={runtimeConfig.selectedGpuIds ?? null}
+            tensorSplit={runtimeConfig.tensorSplit ?? null}
+            tensorParallel={Boolean(runtimeConfig.tensorParallel)}
             usableSystemRamGb={memoryUsableSystemRamGb}
             usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
             systemRamReserveDeficitGb={memorySystemRamReserveDeficitGb}

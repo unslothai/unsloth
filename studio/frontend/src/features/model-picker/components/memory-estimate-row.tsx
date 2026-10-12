@@ -8,7 +8,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import type { SystemGpuDevice } from "@/hooks/gpu-selection";
 import type { MemoryEstimate } from "../api/memory-estimate";
+import { estimatePerGpuMemory } from "../model-config/per-gpu-memory-estimate";
 import {
   type MemoryFitVerdict,
   formatMemoryGb,
@@ -132,17 +134,19 @@ function MemoryBreakdownLine({
   value,
   note,
   muted,
+  tone,
 }: {
   label: string;
   value: string;
   note?: string;
   muted?: boolean;
+  tone?: string;
 }) {
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-1">
       <span className="min-w-0 text-ui-12 text-muted-foreground">{label}</span>
       <span
-        className={`whitespace-nowrap pr-2 text-ui-12 tabular-nums ${muted ? "text-muted-foreground" : "text-foreground"}`}
+        className={`whitespace-nowrap pr-2 text-ui-12 tabular-nums ${tone ?? (muted ? "text-muted-foreground" : "text-foreground")}`}
       >
         {value}
       </span>
@@ -166,6 +170,10 @@ export function MemoryEstimateRow({
   freeGpuCapacityGb,
   freeGpuCapacityKnown,
   freeGpuReserveDeficitGb,
+  gpuDevices,
+  selectedGpuIds,
+  tensorSplit,
+  tensorParallel,
   usableSystemRamGb,
   usableSystemRamKnown,
   systemRamReserveDeficitGb,
@@ -189,6 +197,11 @@ export function MemoryEstimateRow({
   freeGpuCapacityGb: number;
   freeGpuCapacityKnown?: boolean;
   freeGpuReserveDeficitGb?: number;
+  /** Ordered, pinnable devices available to the requested load. */
+  gpuDevices: readonly SystemGpuDevice[];
+  selectedGpuIds: readonly number[] | null;
+  tensorSplit: readonly number[] | null;
+  tensorParallel: boolean;
   /** Available host RAM minus the loader reserve, in GiB. */
   usableSystemRamGb: number;
   usableSystemRamKnown?: boolean;
@@ -225,6 +238,13 @@ export function MemoryEstimateRow({
     },
   );
   const kvNote = resolveKvNote(estimate);
+  const perGpuEstimates = estimatePerGpuMemory(
+    estimate,
+    gpuDevices,
+    selectedGpuIds,
+    tensorSplit,
+    tensorParallel,
+  );
   const draftCacheNote = resolveDraftCacheNote(
     estimate.drafterRuntimeGpuBytes,
     estimate.drafterRuntimeBytes,
@@ -317,6 +337,43 @@ export function MemoryEstimateRow({
           label="Compute buffers"
           value={formatMemoryGb(estimate.computeBytes)}
         />
+        {perGpuEstimates.length > 0 && (
+          <div className="space-y-2 border-t border-border pt-3">
+            <p className="text-ui-12 font-medium text-foreground">
+              Per-GPU placement estimate
+            </p>
+            {perGpuEstimates.map((item) => {
+              const capacityBytes =
+                Number.isFinite(item.device.memoryTotalGb) &&
+                item.device.memoryTotalGb > 0
+                  ? item.device.memoryTotalGb * 1024 ** 3
+                  : null;
+              const exceeds =
+                capacityBytes != null && item.totalBytes > capacityBytes;
+              const splitNote =
+                item.layers == null
+                  ? tensorParallel
+                    ? "Tensor-parallel split; layers are shared across GPUs"
+                    : "GPU layer count is chosen by Auto/--fit"
+                  : `${item.layers} of ${item.layerTotal} offloaded layers`;
+              const note = [
+                splitNote,
+                `model + sidecars ~${formatMemoryGb(item.modelBytes)}`,
+                `KV ~${formatMemoryGb(item.kvBytes)}`,
+                `compute ~${formatMemoryGb(item.computeBytes)}`,
+              ].join(" · ");
+              return (
+                <MemoryBreakdownLine
+                  key={`${item.device.indexKind ?? "gpu"}-${item.device.index}`}
+                  label={`${item.device.name || `GPU ${item.device.index}`}`}
+                  value={`${formatMemoryGb(item.totalBytes)}${capacityBytes == null ? "" : ` / ${formatMemoryGb(capacityBytes)}`}`}
+                  note={`${note}. Proportional estimate from the selected split/current free VRAM; actual layer sizes and automatic placement can differ.`}
+                  tone={exceeds ? "text-red-500" : undefined}
+                />
+              );
+            })}
+          </div>
+        )}
         {/* Projector weights are already included above. */}
         {estimate.projectorRuntimeBytes > 0 && (
           <MemoryBreakdownLine
