@@ -398,7 +398,6 @@ class TestMaxBodyMiddleware:
             assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
 
     def test_llama_passthrough_posts_are_capped(self, main_module):
-        # Bare llama-server routes, outside /v1 and /api, and admitted under keyless inference scope.
         from fastapi import Request
         from fastapi.testclient import TestClient
 

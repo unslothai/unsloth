@@ -45,8 +45,7 @@ _INFERENCE_ROUTES = frozenset(
         ("GET", "/props"),
         ("GET", "/v1/props"),
         ("GET", "/version"),
-        # llama-server's token counters (#11705), the same read-only grant as /v1/chat/count_tokens. /slots and
-        # /metrics are left out: they describe every session on the server, not the caller's.
+        # Token counters, like /v1/chat/count_tokens. Not /slots or /metrics: those are server-wide.
         ("POST", "/tokenize"),
         ("POST", "/detokenize"),
     }

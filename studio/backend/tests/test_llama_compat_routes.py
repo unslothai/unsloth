@@ -363,8 +363,7 @@ def test_a_real_asset_wins_over_the_probe_deny_list(tmp_path):
 
 
 def test_no_ui_route_or_public_asset_takes_a_forwarded_get_path():
-    """GET /metrics and /slots are router routes now, ahead of the catch-all, so a page or shipped
-    file by that name would be shadowed outright rather than served."""
+    """These GET routes sit ahead of the SPA catch-all, so a page or asset by that name would be shadowed."""
     frontend = _BACKEND.parent / "frontend"
     if not frontend.is_dir():
         pytest.skip("frontend sources not present in this checkout")
@@ -477,8 +476,6 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
     # Not the Ollama paths: they are not served at all.
     for path in ("/api/tags", "/api/show", "/api/version"):
         assert ("GET", path) not in _INFERENCE_ROUTES, path
-    # The token counters ride the same grant as /v1/chat/count_tokens; /slots and /metrics describe
-    # every session on the server, so a keyless caller does not get them.
     for path in ("/tokenize", "/detokenize"):
         assert ("POST", path) in _INFERENCE_ROUTES, path
     for path in ("/slots", "/metrics"):
@@ -576,8 +573,7 @@ def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
 
 
 def test_props_advertises_only_the_child_endpoints_studio_forwards():
-    """tools/server/server-context.cpp puts all three flags in the payload. /slots and /metrics are
-    forwarded (#11705), so the child's own answer stands; POST /props is not, so that one is False."""
+    """POST /props is not forwarded, so endpoint_props stays False."""
     upstream = {
         "endpoint_slots": True,
         "endpoint_props": True,
@@ -600,7 +596,6 @@ def test_props_advertises_only_the_child_endpoints_studio_forwards():
 
 
 def test_props_does_not_advertise_endpoints_the_child_has_off():
-    """A child launched with --no-metrics (pass-through arg) or --no-slots reports False; keep it."""
     upstream = {"endpoint_slots": False, "endpoint_metrics": False}
     mod = _load(backend = _Backend(props = upstream))
     with _client(mod) as c:
@@ -628,18 +623,12 @@ def test_props_does_not_advertise_forwarded_endpoints_to_a_managed_account(monke
 
 
 def test_post_props_is_still_not_served():
-    """POST /props is llama-server's props-change endpoint; Studio serves GET only."""
     mod = _load()
     with _client(mod) as c:
         assert c.post("/props", json = {}).status_code in (404, 405)
 
 
-# ── llama-server passthrough (#11705) ──────────────────────────────────────────
-
-
 class _Upstream:
-    """Records what reached the child and answers like llama-server does."""
-
     def __init__(self, *, fail = False):
         self.calls = []
         self.fail = fail
@@ -696,7 +685,6 @@ def test_the_forwarded_endpoints_reach_the_child_with_its_key(monkeypatch, metho
     (sent,) = upstream.calls
     assert sent.method == method
     assert str(sent.url) == "http://127.0.0.1:52345" + path
-    # The child's per-launch key, never the caller's Studio credential.
     assert sent.headers["authorization"] == "Bearer child-key"
     if method == "POST":
         assert json.loads(sent.content) == {"content": "Hello world"}
@@ -746,7 +734,7 @@ def test_nothing_loaded_is_503_in_llama_servers_error_shape(monkeypatch):
 
 
 def test_an_unload_racing_the_request_is_503_not_500(monkeypatch):
-    """unload_model flips is_loaded before it clears _port; a port already gone must not build a bad URL."""
+    """unload_model flips is_loaded before it clears _port."""
     backend = _Backend()
     backend._port = None
     mod = _load(backend = backend)
@@ -768,7 +756,6 @@ def test_an_unreachable_child_is_503_not_500(monkeypatch):
 
 
 def test_a_managed_account_gets_the_404_and_the_child_is_never_asked(monkeypatch):
-    """/slots carries prompt state for every session and /metrics the whole server's load."""
     mod = _load()
     upstream = _Upstream()
     _with_upstream(monkeypatch, mod, upstream)
@@ -792,7 +779,6 @@ def test_a_managed_account_gets_the_404_and_the_child_is_never_asked(monkeypatch
     ],
 )
 def test_only_the_read_only_methods_are_forwarded(monkeypatch, method, path):
-    """Slot save / restore / erase stays Studio's: it owns slot persistence across idle unload."""
     mod = _load()
     upstream = _Upstream()
     _with_upstream(monkeypatch, mod, upstream)

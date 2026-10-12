@@ -67,8 +67,7 @@ _ENGINE_PROBE_PATHS = frozenset(
 # /slots/:id_slot is the one dynamic entry in that table, and Studio calls it itself.
 _ENGINE_PROBE_PREFIXES = ("slots/",)
 
-# Forwarded to the resident llama-server (#11705); every other method on these paths keeps its 404. Read-only on the
-# child: slot save / restore / erase (/slots/:id_slot) stays denied because Studio owns slot persistence.
+# Forwarded to the resident llama-server (#11705). Slot save / restore stays denied: Studio owns slot persistence.
 _PASSTHROUGH_ROUTES = frozenset(
     {
         ("GET", "metrics"),
@@ -158,7 +157,7 @@ def _server_props() -> dict:
     # flags in the payload).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
-    # POST /props is never forwarded. /slots and /metrics are, for the owner, so keep the child's own answer there.
+    # Only GET /slots and /metrics are forwarded, and only for the owner.
     props["endpoint_props"] = False
     passthrough = llama_loaded and not _caller_is_managed_account()
     props["endpoint_slots"] = passthrough and props.get("endpoint_slots") is True
@@ -219,12 +218,11 @@ def _caller_is_managed_account() -> bool:
 
 
 def _upstream_client() -> httpx.AsyncClient:
-    """Plain HTTP to loopback: no proxy, no TLS context to build per call. A seam so a test swaps the transport."""
+    # verify=False: plain HTTP to loopback, skips loading the CA bundle per call (~35 ms).
     return httpx.AsyncClient(trust_env = False, verify = False)
 
 
 def _engine_error(status_code: int, message: str) -> JSONResponse:
-    """llama-server's own error shape, so a client written against it parses ours."""
     error_type = "unavailable_error" if status_code == 503 else "not_found_error"
     return JSONResponse(
         status_code = status_code,
@@ -233,11 +231,11 @@ def _engine_error(status_code: int, message: str) -> JSONResponse:
 
 
 async def _forward_to_llama_server(request: Request, path: str) -> Response:
-    # Owner only: /slots carries prompt state and /metrics the whole server's load, neither scoped per account.
+    # Owner only: /slots and /metrics are server-wide, not scoped per account.
     if await asyncio.to_thread(_caller_is_managed_account):
         return _engine_error(404, "API endpoint not found")
     llama_backend = _inference().get_llama_cpp_backend()
-    # Port read once: an unload clears it after is_loaded flips, and "127.0.0.1:None" is not an httpx.HTTPError.
+    # Unload flips is_loaded before clearing _port; "127.0.0.1:None" raises InvalidURL, not HTTPError.
     port = getattr(llama_backend, "_port", None)
     if not getattr(llama_backend, "is_loaded", False) or not port:
         return _engine_error(503, "No llama.cpp model is loaded")
@@ -274,7 +272,6 @@ def _make_passthrough(path: str):
     return passthrough
 
 
-# Both forms, like the denials below: no redirect rescues "POST /tokenize/".
 for _method, _path in sorted(_PASSTHROUGH_ROUTES):
     for _form in (f"/{_path}", f"/{_path}/"):
         router.add_api_route(
