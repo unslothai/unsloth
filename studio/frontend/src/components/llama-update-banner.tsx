@@ -136,6 +136,44 @@ interface UpdateRow {
   versionChanged: boolean;
 }
 
+function VersionLine({
+  row,
+  bundled,
+  backendPair,
+}: {
+  row: UpdateRow;
+  bundled: boolean;
+  backendPair: readonly [string, string] | null;
+}): ReactElement {
+  const [from, to] = backendPair ?? [
+    row.installedTag ?? "unknown",
+    row.latestTag ?? "",
+  ];
+  const rowSize = bundled ? sizeLabelOf(row.sizeBytes) : null;
+  const sizeSuffix = rowSize ? ` · ${rowSize}` : "";
+  return (
+    <p
+      // One line each, so the changelog floor can count them.
+      className={cn(
+        "mt-0.5 text-xs text-muted-foreground",
+        bundled && "truncate",
+      )}
+      title={
+        bundled
+          ? `${row.component} ${from} \u2192 ${to}${sizeSuffix}`
+          : undefined
+      }
+      data-testid="llama-update-version-line"
+    >
+      {bundled ? (
+        <span className="text-foreground">{row.component} </span>
+      ) : null}
+      {from} &rarr; <span className="font-medium text-foreground">{to}</span>
+      {sizeSuffix}
+    </p>
+  );
+}
+
 /** Bottom-right llama.cpp, whisper.cpp and audio.cpp update toast. */
 export function LlamaUpdateBanner({
   enabled = true,
@@ -281,6 +319,14 @@ export function LlamaUpdateBanner({
       : null;
   const llamaVersionChanged = Boolean(llamaRow?.versionChanged);
   const backendOnly = Boolean(backendChange) && !llamaVersionChanged;
+  // A migration at the installed release has no version pair, so llama.cpp's row
+  // shows the backend pair instead.
+  const backendPair = backendOnly
+    ? ([
+        backendLabel(status?.from_backend),
+        backendLabel(status?.to_backend),
+      ] as const)
+    : null;
   // Only the migration offer, and only the pair it was measured on: a version update
   // or a hand-picked switch keeps the plain line.
   const restartNote =
@@ -385,41 +431,14 @@ export function LlamaUpdateBanner({
             <p className="font-heading text-base font-medium text-foreground">
               {title}
             </p>
-            {rows.map((row) => {
-              // A migration at the installed release has no version pair to show.
-              const [from, to] =
-                row === llamaRow && backendOnly
-                  ? [
-                      backendLabel(status?.from_backend),
-                      backendLabel(status?.to_backend),
-                    ]
-                  : [row.installedTag ?? "unknown", row.latestTag ?? ""];
-              const rowSize = bundled ? sizeLabelOf(row.sizeBytes) : null;
-              const sizeSuffix = rowSize ? ` · ${rowSize}` : "";
-              return (
-                <p
-                  key={row.component}
-                  // One line each, so the changelog floor can count them.
-                  className={cn(
-                    "mt-0.5 text-xs text-muted-foreground",
-                    bundled && "truncate",
-                  )}
-                  title={
-                    bundled
-                      ? `${row.component} ${from} \u2192 ${to}${sizeSuffix}`
-                      : undefined
-                  }
-                  data-testid="llama-update-version-line"
-                >
-                  {bundled ? (
-                    <span className="text-foreground">{row.component} </span>
-                  ) : null}
-                  {from} &rarr;{" "}
-                  <span className="font-medium text-foreground">{to}</span>
-                  {sizeSuffix}
-                </p>
-              );
-            })}
+            {rows.map((row) => (
+              <VersionLine
+                key={row.component}
+                row={row}
+                bundled={bundled}
+                backendPair={row === llamaRow ? backendPair : null}
+              />
+            ))}
             <p className="mt-1 text-ui-11 text-muted-foreground/70">
               {sizeLabel ? `${sizeLabel} download · ` : ""}
               {llamaVersionChanged && backendChange

@@ -196,13 +196,25 @@ test("the llama.cpp card takes the desktop updater's floor only with its changel
     LLAMA.indexOf("pointer-events-auto flex "),
     LLAMA.indexOf('data-testid="llama-update-banner"'),
   );
-  // The constants match the desktop card, though their gates differ.
-  for (const floor of [
-    "min-h-[calc(117px+93px*var(--ui-font-scale,1))]",
-    "min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+  // The constants match the desktop card, though their gates differ. The llama.cpp
+  // card adds one text-xs row per extra bundled component, zero for a single one.
+  for (const [base, text] of [
+    ["117px", "93px"],
+    ["24px", "224px"],
   ]) {
-    assert.ok(slot.includes(floor) && TAURI.includes(floor));
+    assert.ok(
+      TAURI.includes(`min-h-[calc(${base}+${text}*var(--ui-font-scale,1))]`),
+    );
+    assert.ok(
+      slot.includes(
+        `min-h-[calc(${base}+(${text}+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]`,
+      ),
+    );
   }
+  assert.match(
+    slot,
+    /"--llama-update-extra-rows":\s*Math\.max\(\s*rows\.length - 1,\s*0\s*\)/,
+  );
   assert.match(slot, /max-\[383px\]:min-h-\[calc\(24px/);
   assert.match(
     slot,
