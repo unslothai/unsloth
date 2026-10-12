@@ -32866,6 +32866,8 @@ class LlamaCppBackend:
                             logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
                         _last_spawn_cmd = list(run_cmd)
+                        # A new server: nothing the last one reported carries over.
+                        self._server_props_seen = None
                         _reserve_launch_weights(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
@@ -34812,7 +34814,7 @@ class LlamaCppBackend:
                         _exact_short = (_named_now or 0, 0, 0)
                     self._exact_parking_short = _exact_short
                 # The server's own answer, not the launch's intent. See the helper.
-                _server_props = self._query_server_props() or {}
+                _server_props = self._server_props_or_last()
                 # unslothai/llama.cpp#197 carries the field and writes the per-request notices,
                 # so its silence is never excused from the aggregate reading.
                 self._server_park_notices = "exact_concurrency" in _server_props
@@ -38356,9 +38358,18 @@ class LlamaCppBackend:
             if resp.status_code != 200:
                 return None
             props = resp.json()
-            return props if isinstance(props, dict) else None
+            if not isinstance(props, dict):
+                return None
+            # Kept for this server's lifetime: see `_server_props_or_last`.
+            self._server_props_seen = props
+            return props
         except Exception:
             return None
+
+    def _server_props_or_last(self) -> dict:
+        """``/props`` now, or the last answer this server gave: a capability it reported once
+        does not go away because one later read timed out."""
+        return self._query_server_props() or getattr(self, "_server_props_seen", None) or {}
 
     def _server_confirms_parking(self) -> bool:
         """Whether the running server reports, in ``/props``, that it parks slots. A build without
