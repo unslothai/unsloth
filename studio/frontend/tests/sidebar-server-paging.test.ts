@@ -452,7 +452,11 @@ test("a server page is asked for only after a scroll, one page per scroll", () =
   );
   // the arm is per list: one list's scroll-armed state cannot make another list fetch
   assert.doesNotMatch(src, /new WeakSet/);
-  assert.match(src, /const onArm = \(\) => \{\n\s*armedRef\.current = true;/);
+  // a scroll while a page is in flight must not arm the next one
+  assert.match(
+    src,
+    /const onArm = \(\) => \{\n(?:\s*\/\/.*\n)?\s*if \(fetchingRef\.current\) return;\n\s*armedRef\.current = true;/,
+  );
   assert.match(
     src,
     /const ARMING_EVENTS = \["scroll", "wheel", "touchmove"\] as const;/,

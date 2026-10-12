@@ -81,6 +81,8 @@ export function ProgressiveRows<T extends { id: string }>({
     );
     observer.observe(sentinel);
     const onArm = () => {
+      // a scroll during a fetch arms nothing, or the page landing would fetch another unasked
+      if (fetchingRef.current) return;
       armedRef.current = true;
       if (intersectingRef.current) advance(root);
     };
