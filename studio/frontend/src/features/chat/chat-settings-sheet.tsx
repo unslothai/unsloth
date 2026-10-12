@@ -826,16 +826,14 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
-  // The tool-call budget is a knob of Unsloth's own tool loop, which the backend runs for local
-  // models and for external providers whose wire format carries a tool schema out and a tool
-  // result back (providers.py `provider_runs_local_tools`). `null` means the provider was never
-  // described, so show the slider rather than undercount, exactly as the sampling flags do.
-  const showToolCallBudget =
+  // Budget, duration and dedupe are knobs of Unsloth's own tool loop, which external turns run
+  // only when the provider supports Unsloth tools (`=== true`, the same test the request uses).
+  const showStudioToolLoopControls =
     !isExternalModel ||
     providerModelSupportsStudioTools(
       externalProviderType,
       externalSelection?.modelId,
-    ) !== false;
+    ) === true;
 
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
@@ -1709,21 +1707,27 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
+            {showStudioToolLoopControls ? (
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5">
               {isExternalModel ? null : (
                 <>
                   <AutoHealToolCallsToggle />
                   <NudgeToolCallsToggle />
-                  <DeduplicateToolCallsToggle />
+                </>
+              )}
+              <DeduplicateToolCallsToggle />
+              {isExternalModel ? null : (
+                <>
                   <ConfirmToolCallsToggle />
                   <BypassPermissionsToggle />
                 </>
               )}
-              {showToolCallBudget ? <MaxToolCallsSlider /> : null}
-              {isExternalModel ? null : <ToolCallTimeoutSlider />}
+              <MaxToolCallsSlider />
+              <ToolCallTimeoutSlider />
             </div>
           </CollapsibleSection>
+            ) : null}
 
             {isExternalModel ? null : (
           <CollapsibleSection label="Retrieval">
