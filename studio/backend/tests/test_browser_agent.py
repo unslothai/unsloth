@@ -164,6 +164,17 @@ def test_a_page_that_moved_off_the_policy_is_withheld():
     assert out.startswith("Error:") and "secret" not in out
 
 
+@pytest.mark.parametrize(
+    "url",
+    ["http://192.168.1.1/", "http://127.0.0.1:8888/", "http://router.local/", "http://[::1]/"],
+)
+def test_a_link_or_redirect_to_a_private_host_is_withheld(url):
+    out = browser_agent.format_result(
+        "browser_click", {"ok": True, "url": url, "text": "secret"}, None
+    )
+    assert out.startswith("Error:") and "secret" not in out
+
+
 def test_screenshot_rides_the_image_envelope_and_is_an_image_tool():
     import base64
     import io

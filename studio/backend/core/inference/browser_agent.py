@@ -394,6 +394,14 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
         error = _one_line(_clip(result.get("error"), 1000)) or "the browser could not do that."
         return f"Error: {error}"
     url = _one_line(_clip(result.get("url"), _MAX_URL_CHARS))
+    if url.lower().startswith(("http://", "https://")):
+        # A followed link or a redirect can land where browser_navigate would refuse to go.
+        problem = _host_problem(urlsplit(url).hostname or "")
+        if problem:
+            return (
+                f"Error: the page went to {problem}, so its content is withheld. "
+                "Navigate to a public site."
+            )
     if url.lower().startswith(("http://", "https://")) and website_policy:
         allowed, _reason, host = check_url_access(url, website_policy)
         if not allowed:
