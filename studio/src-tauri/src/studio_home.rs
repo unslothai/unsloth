@@ -77,7 +77,7 @@ pub(crate) fn root_for_picked_folder(picked: &Path) -> PathBuf {
     }
 }
 
-/// Network shares are refused: the venv, llama.cpp and memory-mapped models live there.
+/// UNC paths are refused: cmd.exe and the installer's child steps cannot run from one.
 pub(crate) fn validate_picked_folder(picked: &Path) -> Result<(), String> {
     if !picked.is_absolute() {
         return Err("Choose a folder on a local drive.".to_string());
@@ -98,6 +98,25 @@ pub(crate) fn validate_picked_folder(picked: &Path) -> Result<(), String> {
         .map_err(|_| "Unsloth cannot write to this folder. Choose another folder.".to_string())?;
     let _ = fs::remove_file(&probe);
     Ok(())
+}
+
+/// A root that already holds files must be an Unsloth install: uninstall.ps1 removes an owned
+/// root whole, so installing into someone else's folder would take their files with it.
+pub(crate) fn validate_root(root: &Path) -> Result<(), String> {
+    let Ok(mut entries) = fs::read_dir(root) else {
+        return Ok(());
+    };
+    if entries.next().is_none()
+        || root.join(".unsloth-studio-owned").is_file()
+        || root.join("share").join("studio.conf").is_file()
+        || root.join("unsloth_studio").join(".unsloth-studio-owned").is_file()
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "{} already contains other files. Choose another folder.",
+        root.display()
+    ))
 }
 
 /// Written to a temporary file and renamed; the default root removes the pointer instead.
@@ -204,8 +223,10 @@ pub async fn choose_studio_install_location(
         .into_path()
         .map_err(|_| "Choose a folder on a local drive.".to_string())?;
     validate_picked_folder(&picked)?;
+    let root = root_for_picked_folder(&picked);
+    validate_root(&root)?;
     let home = home_dir()?;
-    commit_choice(install.inner(), &home, &root_for_picked_folder(&picked))?;
+    commit_choice(install.inner(), &home, &root)?;
     Ok(Some(location_for_home(&home)))
 }
 
@@ -310,6 +331,20 @@ mod tests {
         let home = temp_home("writable");
         assert!(validate_picked_folder(&home).is_ok());
         assert!(validate_picked_folder(&home.join("missing")).is_err());
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_root_holding_foreign_files_is_refused() {
+        let home = temp_home("root");
+        let root = home.join("Unsloth").join("studio");
+        assert!(validate_root(&root).is_ok());
+        fs::create_dir_all(&root).unwrap();
+        assert!(validate_root(&root).is_ok());
+        fs::write(root.join("notes.txt"), b"mine").unwrap();
+        assert!(validate_root(&root).is_err());
+        fs::write(root.join(".unsloth-studio-owned"), b"").unwrap();
+        assert!(validate_root(&root).is_ok());
         fs::remove_dir_all(&home).unwrap();
     }
 
