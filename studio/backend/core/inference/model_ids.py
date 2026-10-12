@@ -164,6 +164,9 @@ def mlx_bnb_substitutions(repos: Iterable[str]) -> list[tuple[str, str]]:
 
 
 _DEEPSEEK_OCR_ARCHITECTURES = frozenset({"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"})
+# Its infer() tiles a page itself, so the 800 px chat cap blurs document text; still bounded, since a
+# request may carry many images.
+DEEPSEEK_OCR_MAX_IMAGE_SIDE = 2048
 
 
 def is_deepseek_ocr(model) -> bool:

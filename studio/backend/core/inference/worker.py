@@ -1080,8 +1080,8 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
 def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
     resize = _resize_image
     if _active_model_is_deepseek_ocr(backend):
-        # Its infer() tiles full pages itself; an 800 px cap blurs document text.
-        resize = lambda img: img
+        from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
+        resize = functools.partial(_resize_image, max_size = DEEPSEEK_OCR_MAX_IMAGE_SIDE)
     image = None
     image_b64 = cmd.get("image_base64")
     if image_b64:

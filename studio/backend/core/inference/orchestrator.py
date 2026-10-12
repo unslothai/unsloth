@@ -4024,6 +4024,11 @@ class InferenceOrchestrator:
         """Resize image preserving aspect ratio (runs locally, no ML imports)."""
         if img is None:
             return None
+        from utils.transformers_version import is_deepseek_ocr_checkpoint
+
+        if self.active_model_name and is_deepseek_ocr_checkpoint(self.active_model_name):
+            from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
+            max_size = max(max_size, DEEPSEEK_OCR_MAX_IMAGE_SIDE)
         if img.size[0] > max_size or img.size[1] > max_size:
             from PIL import Image
 

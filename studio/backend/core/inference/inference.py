@@ -1430,7 +1430,7 @@ class InferenceBackend:
 
         if is_deepseek_ocr(model_info.get("model")):
             yield from self._generate_deepseek_ocr_response(
-                messages, image, images, max_new_tokens, cancel_event, _adapter_state
+                messages, image, images, max_new_tokens, cancel_event, _adapter_state, stop
             )
             return
 
@@ -1625,7 +1625,14 @@ class InferenceBackend:
         )
 
     def _generate_deepseek_ocr_response(
-        self, messages, image, images, max_new_tokens, cancel_event, _adapter_state
+        self,
+        messages,
+        image,
+        images,
+        max_new_tokens,
+        cancel_event,
+        _adapter_state,
+        stop = None,
     ) -> Generator[str, None, None]:
         """DeepSeek-OCR ships no processor or chat template: its own infer() tiles the image."""
         import tempfile
@@ -1681,7 +1688,11 @@ class InferenceBackend:
                     del owner.generate
                 else:
                     owner.generate = previous
-        yield text or ""
+        text = text or ""
+        for sequence in stop or ():
+            if sequence and sequence in text:
+                text = text[: text.index(sequence)]
+        yield text
 
     def _generate_vision_response(
         self,

@@ -1196,6 +1196,11 @@ def _check_config_needs_457(model_name: str, hf_token: str | None = None) -> boo
     return result
 
 
+def is_deepseek_ocr_checkpoint(model_name: str, hf_token: str | None = None) -> bool:
+    """A DeepSeek-OCR checkpoint off macOS, read from its (cached) config.json."""
+    return _check_config_needs_457(model_name, hf_token)
+
+
 def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> bool:
     """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated with
     ``hf_token``; cached by (model, token) only for a definitive read)."""

@@ -30,7 +30,7 @@ def _stub_if_missing(
     attrs = (),
     named_spec = False,
 ):
-    """Same helper as test_chat_prompt_bos.py: core.inference.inference imports unsloth and trl."""
+    """Same helper as test_chat_prompt_bos.py: core.inference.inference imports unsloth, trl and peft."""
     if name in sys.modules:
         return
     try:
@@ -68,6 +68,7 @@ _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat1
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("unsloth_zoo")
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+_stub_if_missing("peft", ("PeftModel", "PeftModelForCausalLM"))
 
 from core.inference.inference import InferenceBackend  # noqa: E402
 
@@ -193,20 +194,48 @@ def test_deepseek_ocr_does_not_count_as_a_transformers_5_model(tmp_path, monkeyp
     assert tv.needs_transformers_5(_local_model(tmp_path, _OCR2)) is False
 
 
-def test_the_worker_keeps_full_resolution_only_for_deepseek_ocr():
-    Image = pytest.importorskip("PIL.Image")
-    from core.inference import worker
+def test_the_request_stop_sequence_ends_the_ocr_text():
+    assert _generate(_backend(_OcrModel()), _image(), stop = [" 8732"]) == ["UNSLOTH"]
 
+
+def _page_b64():
+    Image = pytest.importorskip("PIL.Image")
     buffer = io.BytesIO()
     Image.new("RGB", (1700, 2200), "white").save(buffer, "PNG")
-    cmd = {"messages": [], "image_base64": base64.b64encode(buffer.getvalue()).decode()}
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def test_the_worker_raises_the_image_cap_only_for_deepseek_ocr():
+    from core.inference import worker
+
+    cmd = {"messages": [], "image_base64": _page_b64()}
     other = types.SimpleNamespace(
         config = types.SimpleNamespace(architectures = ["Qwen2VLForConditionalGeneration"])
     )
 
-    def size_for(model):
-        backend = _backend(model)
-        return worker._generation_kwargs(backend, cmd, None)["image"].size
+    def longest_side(model):
+        return max(worker._generation_kwargs(_backend(model), cmd, None)["image"].size)
 
-    assert size_for(_OcrModel()) == (1700, 2200)
-    assert max(size_for(other)) == 800
+    assert longest_side(_OcrModel()) == 2048
+    assert longest_side(other) == 800
+
+
+def test_the_route_side_resize_raises_the_cap_only_for_deepseek_ocr(tmp_path, monkeypatch):
+    Image = pytest.importorskip("PIL.Image")
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    monkeypatch.setattr(tv.sys, "platform", "linux")
+    (tmp_path / "ocr").mkdir()
+    (tmp_path / "qwen").mkdir()
+    ocr = _local_model(tmp_path / "ocr", _OCR2)
+    qwen = _local_model(
+        tmp_path / "qwen",
+        {"architectures": ["Qwen2VLForConditionalGeneration"], "model_type": "qwen2_vl"},
+    )
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    page = Image.new("RGB", (1700, 2200), "white")
+
+    orchestrator.active_model_name = ocr
+    assert max(orchestrator.resize_image(page).size) == 2048
+    orchestrator.active_model_name = qwen
+    assert max(orchestrator.resize_image(page).size) == 800
