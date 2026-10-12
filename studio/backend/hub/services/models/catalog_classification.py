@@ -24,7 +24,9 @@ from utils.gguf_archs import (
 from utils.paths.path_utils import file_contents_available_locally
 
 
-_DIFFUSION_GGUF_ARCHS = frozenset({"flux", "flux2", "qwen_image", "qwenimage", "z_image", "zimage"})
+_DIFFUSION_GGUF_ARCHS = frozenset(
+    {"flux", "flux2", "qwen_image", "qwenimage", "qwen_image21", "qwenimage21", "z_image", "zimage"}
+)
 _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
 )
@@ -257,7 +259,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     if arch is None:
-        # Qwen-Image-2.1 GGUFs have kv_count 0; the name is the only evidence.
+        # unsloth/Qwen-Image-2.1-GGUF has kv_count 0 (others declare "qwen_image21"): the name is the only evidence.
         return _unhydrated_gguf_task(name_hints)
     normalized = arch.lower()
     if is_audio_cpp_gguf_architecture(normalized):

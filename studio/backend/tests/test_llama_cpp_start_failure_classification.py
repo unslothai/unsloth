@@ -59,6 +59,17 @@ class TestDiffusionArchitectures:
         assert "Images page" in msg
         assert arch in msg
 
+    def test_an_image_arch_this_host_cannot_build_promises_no_page(self, monkeypatch):
+        import core.inference.diffusion_engine_router as router
+
+        monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: False)
+        out = "error loading model: unknown model architecture: 'qwen_image21'"
+        msg = _classify(out, "/models/qwen-image-2.1-Q4_K_M.gguf", "unsloth/Qwen-Image-2.1-GGUF")
+        assert "qwen_image21" in msg
+        assert "Use Unsloth's Images page to generate" not in msg
+        assert "does not list it either" in msg
+
+    # A video arch must name the VIDEO page: Images cannot run it either.
     @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._VIDEO_ARCHES))
     def test_every_video_arch_routes_to_the_video_page(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"

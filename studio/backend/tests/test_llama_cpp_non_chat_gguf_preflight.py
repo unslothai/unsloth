@@ -375,3 +375,28 @@ def test_every_name_the_video_preflight_imports_from_routes_still_resolves():
         f"core/inference/llama_cpp.py imports {missing} from routes.models, but routes.models "
         f"does not bind them. The probe's broad except turns that into a silent fail-open."
     )
+
+
+def test_an_image_arch_this_host_cannot_build_promises_no_page(tmp_path, monkeypatch):
+    # The catalog hides an unbuildable family, so the refusal must not name the Images page.
+    import core.inference.diffusion_engine_router as router
+
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: False)
+    _, message = _refusal(
+        tmp_path,
+        arch = "qwen_image21",
+        name = "qwen-image-2.1-Q4_K_M.gguf",
+        identifier = "unsloth/Qwen-Image-2.1-GGUF",
+    )
+    assert message is not None
+    assert "cannot run as a chat model" in message
+    assert "Open it from the Images page" not in message
+
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: True)
+    _, message = _refusal(
+        tmp_path,
+        arch = "qwen_image21",
+        name = "qwen-image-2.1-Q4_K_M.gguf",
+        identifier = "unsloth/Qwen-Image-2.1-GGUF",
+    )
+    assert "Open it from the Images page" in message
