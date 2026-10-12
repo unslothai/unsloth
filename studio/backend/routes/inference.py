@@ -2979,6 +2979,8 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # prefill on resume, which is what vLLM's RECOMPUTE pays too.
         waiting = int(getattr(snapshot, "paused", 0) or 0)
         needed = over if over > 0 else (int(occupancy.get("resident") or 0) if waiting else 0)
+        # Whether this reading's residue was already offered: see `_gguf_idle_residue_wanted`.
+        _gguf_slots_seen["reclaim_tried"] = needed > 0
         if needed > 0 and occupancy.get("idle"):
             freed = reclaim_idle_slots(
                 occupancy,
@@ -3010,6 +3012,16 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                 if freed >= int(occupancy.get("idle_tokens") or 0):
                     controller.note_cells_reclaimed(parked_before)
                 _gguf_slots_seen["occupancy"] = None
+
+    def _gguf_idle_residue_wanted(controller) -> bool:
+        """Whether the cached reading holds idle residue it never offered, and the ledger is
+        now over the ceiling: inside the refresh throttle the plan would otherwise pause a
+        live chat for room that residue gives."""
+        occupancy = _gguf_slots_seen.get("occupancy")
+        if not occupancy or not occupancy.get("idle") or _gguf_slots_seen.get("reclaim_tried"):
+            return False
+        snapshot = controller.snapshot()
+        return int(snapshot.committed or 0) > max(0, snapshot.budget - snapshot.buffer)
 
     _gguf_live_state = {"state": ParticipantState.DECODING}
 
@@ -3058,7 +3070,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
             contended = controller.contended()
             victims = controller.observe(completion_id, generated, plan = not contended)
             if contended:
-                _gguf_refresh_residency(controller)
+                _gguf_refresh_residency(
+                    controller, force = _gguf_idle_residue_wanted(controller)
+                )
                 victims = controller.plan_preemptions(needed = 0)
             if victims:
                 # Dead residue first: erasing an idle slot costs a future prefix-cache hit,

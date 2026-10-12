@@ -1327,7 +1327,8 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         import routes.inference as inference
 
         source = Path(inference.__file__).read_text()
-        assert "_gguf_refresh_residency(controller)" in source
+        assert "_gguf_refresh_residency(\n" in source
+        assert "controller, force = _gguf_idle_residue_wanted(controller)" in source
         assert "controller.note_resident(" in source
         assert (
             "reclaim_idle_slots(" in source
