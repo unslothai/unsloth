@@ -105,12 +105,15 @@ async def _recipe_job(
     progress = as_dict(job.get("progress"))
     data_rows = total = None
     if rows and job_id:
-        page = await route_json(
+        response = await forward(
+            caller,
             "GET",
             f"{RECIPE_ROUTES}/jobs/{quote(job_id, safe = '')}/dataset",
-            caller = caller,
             params = {"limit": rows, "offset": offset},
         )
+        # 404 while no rows are written yet, 422 when the job ended without any (its detail names host
+        # paths): the status still answers, without rows.
+        page = None if response.status_code in (404, 422) else raise_for_route(response)
         if isinstance(page, dict):
             data_rows = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
             total = integer(page.get("total"))

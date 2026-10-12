@@ -116,3 +116,21 @@ def test_an_unknown_recipe_id_is_still_an_error(monkeypatch):
     result, _studio = run_tool(monkeypatch, routes, "get_job", {"kind": "recipe", "id": "nope"})
     assert result["isError"] is True
     assert "job not found" in result["content"][0]["text"]
+
+
+def test_rows_not_written_yet_still_report_the_status(monkeypatch):
+    # The dataset route answers 404 while a job runs and 422 (naming host paths) when it ended without rows.
+    for status_code, detail in ((404, "dataset not ready"), (422, "dataset path missing: /srv/x")):
+        routes = {
+            **PAYLOADS,
+            ("GET", "/api/data-recipe/jobs/job-1/status"): {**STATUS, "status": "running"},
+            ("GET", "/api/data-recipe/jobs/job-1/dataset"): JSONResponse(
+                {"detail": detail}, status_code = status_code
+            ),
+        }
+        args = {"kind": "recipe", "id": "job-1", "rows": 5}
+        result, _studio = run_tool(monkeypatch, routes, "get_job", args)
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["status"] == "running"
+        assert result["structuredContent"]["recipe"]["data_rows"] is None
+        assert "/srv/x" not in json.dumps(result)
