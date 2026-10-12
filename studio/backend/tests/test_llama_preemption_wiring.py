@@ -1236,7 +1236,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller = PreemptionController("resident-lag")
         controller.configure(budget = 16384, kv_unified = True)
         controller.register("a", tokens = 9000, signal = PreemptSignal())
-        controller.observe("a", 0)
+        controller.note_measured("a")
         controller.note_resident(12)  # mid prefill, almost nothing visible yet
         assert controller.committed_tokens() == 9000
 
@@ -1271,7 +1271,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller = PreemptionController("clamp")
         controller.configure(budget = 16384, kv_unified = True, slots = 4)
         controller.register("a", tokens = 100, signal = PreemptSignal())
-        controller.observe("a", 0)
+        controller.note_measured("a")
         controller.note_resident(21304, 0)
         assert controller.committed_tokens() == 16384
 
