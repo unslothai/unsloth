@@ -14,7 +14,10 @@ import { useBrowserAgentStore } from "./agent-store";
  *  does a chat with nowhere to show the panel (mobile, compare), where no browser tool is sent. */
 function useBrowserAgentDisabled(): boolean {
   const noTools = useChatRuntimeStore((s) => !!s.params.checkpoint && !s.modelLoading && !s.supportsTools);
-  return noTools || !useBrowserPanelAvailable();
+  // Both hooks every render: `noTools || !useBrowserPanelAvailable()` skips one once a tool-less
+  // model loads, and React's changed hook order crashes the chat.
+  const panelAvailable = useBrowserPanelAvailable();
+  return noTools || !panelAvailable;
 }
 
 export function BrowserAgentMenuItem() {
