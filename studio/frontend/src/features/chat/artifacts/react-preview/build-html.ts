@@ -50,7 +50,7 @@ export function previewBootstrap(available: readonly string[]): string {
       const names = meta && meta.importedNames;
       if (names) {
         for (const name of names) {
-          if (!(name in mod)) {
+          if (!Object.prototype.hasOwnProperty.call(mod, name)) {
             throw new SyntaxError("The requested module " + JSON.stringify(id) + " does not provide an export named " + JSON.stringify(name));
           }
         }
@@ -100,7 +100,7 @@ ${code}
       window.dispatchEvent(new ErrorEvent("error", { error, message: "Uncaught " + message }));
     },
     onCaughtError: (error) => console.error(error),
-  }).render(React.createElement(Component));
+  }).render(React.isValidElement(Component) ? Component : React.createElement(Component));
 })();`;
 }
 

@@ -176,7 +176,8 @@ export interface ReactFence {
 }
 
 const IMPORTS_REACT_RE = /\bfrom\s*["'](?:react|react-dom)(?:\/[^"']*)?["']/;
-const RENDERABLE_ENTRY_RE = /\bexport\s+default\b|\b(?:function|const|let|var|class)\s+App\b/;
+const RENDERABLE_ENTRY_RE =
+  /\bexport\s+default\b|\bas\s+default\s*[,}]|\b(?:function|const|let|var|class)\s+App\b/;
 
 // A fence gets a React preview only when it has something to mount: without a default export or an
 // App, every TS snippet in a coding answer would get a card that can only fail.
@@ -238,6 +239,7 @@ const COMPONENT_NAME_RES = [
   /\bexport\s+default\s+class\s+([A-Za-z_$][\w$]*)/,
   // Tabs and spaces only, around an optional `;`: `\s*;?\s*` backtracks quadratically on a long run.
   /\bexport\s+default\s+([A-Za-z_$][\w$]*)[ \t]*(?:;[ \t]*)?\r?$/m,
+  /\bexport\s*\{[^{}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b/,
 ];
 
 /** The component's name for the card title, or null. */

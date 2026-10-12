@@ -91,6 +91,35 @@ def test_dynamic_import_is_rejected_at_compile_time():
 
 
 @real_compiler
+@pytest.mark.parametrize("expr", ["import(`react`)", "import(name)"])
+def test_computed_dynamic_imports_are_rejected_too(expr):
+    source = f"export default function App() {{ return null; }}\nconst f = (name) => {expr};\n"
+    result = rp.compile_react_preview(source, "jsx")
+    assert result["status"] == "error", result
+    assert result["diagnostics"][0]["message"].startswith("Dynamic import() isn't supported")
+
+
+@real_compiler
+def test_a_ts_fence_with_generic_arrows_compiles():
+    # ```ts fences are sent as tsx, where `<T>(x: T) => x` parses as a JSX tag.
+    source = (
+        'import { createElement } from "react";\n'
+        "const identity = <T>(x: T): T => x;\n"
+        'export default function App() { return createElement("p", null, identity("hi")); }\n'
+    )
+    result = rp.compile_react_preview(source, "tsx")
+    assert result["status"] == "ok", result
+    assert "identity = (x) => x" in result["code"]
+
+
+@real_compiler
+def test_a_tsx_syntax_error_still_reports_the_tsx_diagnostic():
+    result = rp.compile_react_preview("export default () => <div>;\n", "tsx")
+    assert result["status"] == "error"
+    assert result["diagnostics"][0]["line"] == 1
+
+
+@real_compiler
 def test_a_long_import_name_cannot_amplify_the_output():
     # Linking spells the imported name at every use of its alias: 11 KB of this source
     # printed 12 MB, and 130 KB printed 480 MB through a 2.3 GB Node process.

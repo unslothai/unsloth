@@ -15,6 +15,7 @@ import {
 } from "../src/features/chat/artifacts/react-preview/build-html.ts";
 
 const AVAILABLE = ["react", "react/jsx-runtime", "lucide-react"];
+const ELEMENT = Symbol.for("react.transitional.element");
 
 class FakeErrorEvent {
   type: string;
@@ -29,7 +30,11 @@ class FakeErrorEvent {
 function frame(registry: Record<string, unknown> = {}) {
   const errors: string[] = [];
   const rendered: unknown[] = [];
-  const React = { createElement: (type: unknown) => ({ type }) };
+  const React = {
+    createElement: (type: unknown) => ({ type }),
+    isValidElement: (value: unknown) =>
+      typeof value === "object" && value !== null && (value as { $$typeof?: unknown }).$$typeof === ELEMENT,
+  };
   const context = vm.createContext({
     console: { error: (error: unknown) => errors.push(`console: ${String(error)}`) },
     ErrorEvent: FakeErrorEvent,
@@ -185,4 +190,20 @@ test("compile errors become error events with the original line and column", () 
     "Compile error: Unexpected token",
   ]);
   assert.equal(lower.split("</script").length - 1, 1);
+});
+
+test("an element as the default export is rendered as is, not wrapped", async () => {
+  const page = frame();
+  await page.run(`const el = { $$typeof: Symbol.for("react.transitional.element"), type: "p" };
+Object.defineProperty(__vite_ssr_exports__, "default", { enumerable: true, configurable: true, get() { return el; } });`);
+  assert.deepEqual(page.errors, []);
+  assert.equal((page.rendered[0] as { type: unknown }).type, "p");
+});
+
+test("an inherited name is not an export", async () => {
+  const page = frame();
+  await page.run(`const __vite_ssr_import_0__ = await __vite_ssr_import__("react", { importedNames: ["toString"] });
+function App() { return null; }`);
+  assert.equal(page.errors.length, 1);
+  assert.match(page.errors[0], /does not provide an export named "toString"/);
 });

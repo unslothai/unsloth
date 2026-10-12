@@ -25,30 +25,31 @@ export async function compileReactPreview(
   const timer = setTimeout(() => controller.abort(), COMPILE_TIMEOUT_MS);
   const onAbort = () => controller.abort();
   signal?.addEventListener("abort", onAbort, { once: true });
-  const response = await authFetch(apiUrl("/api/inference/artifact-react-compile"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source, lang }),
-    signal: controller.signal,
-  })
-    .catch((error: unknown) => {
-      if (signal?.aborted) throw error;
-      return null;
-    })
-    .finally(() => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
+  // The body read stays inside the timeout and the caller's abort, not just the headers.
+  try {
+    const response = await authFetch(apiUrl("/api/inference/artifact-react-compile"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source, lang }),
+      signal: controller.signal,
     });
-  if (response?.status === 413) {
-    return {
-      status: "error",
-      diagnostics: [{ message: "This component is too large to preview (256 KB limit).", line: 0, column: 0 }],
-    };
+    if (response.status === 413) {
+      return {
+        status: "error",
+        diagnostics: [{ message: "This component is too large to preview (256 KB limit).", line: 0, column: 0 }],
+      };
+    }
+    if (!response.ok) return { status: "unavailable", reason: "failed" };
+    const body = (await response.json().catch(() => null)) as CompileResult | null;
+    if (body?.status === "ok" && typeof body.code === "string" && Array.isArray(body.deps)) return body;
+    if (body?.status === "error" && Array.isArray(body.diagnostics)) return body;
+    if (body?.status === "unavailable") return body;
+    return { status: "unavailable", reason: "failed" };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return { status: "unavailable", reason: "failed" };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
   }
-  if (!response?.ok) return { status: "unavailable", reason: "failed" };
-  const body = (await response.json().catch(() => null)) as CompileResult | null;
-  if (body?.status === "ok" && typeof body.code === "string" && Array.isArray(body.deps)) return body;
-  if (body?.status === "error" && Array.isArray(body.diagnostics)) return body;
-  if (body?.status === "unavailable") return body;
-  return { status: "unavailable", reason: "failed" };
 }

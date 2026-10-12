@@ -68,41 +68,48 @@ function errorMessage(message) {
   return { status: "error", diagnostics: [{ message, line: 0, column: 0 }] };
 }
 
-function longImportName(parser, code) {
-  const parsed = parser.parseSync("App.js", code, { sourceType: "module" });
-  for (const entry of parsed.module.staticImports.flatMap((item) => item.entries)) {
+// The module-level problems linking cannot report, as a message, or null.
+function moduleProblem(parser, code) {
+  const { module } = parser.parseSync("App.js", code, { sourceType: "module" });
+  // Every import(), not just the string-literal ones linking lists in dynamicDeps.
+  if (module.dynamicImports.length > 0) return DYNAMIC_IMPORT_MESSAGE;
+  for (const entry of module.staticImports.flatMap((item) => item.entries)) {
     const name = entry.importName?.name;
-    if (typeof name === "string" && name.length > MAX_IMPORT_NAME_CHARS) return name;
+    if (typeof name === "string" && name.length > MAX_IMPORT_NAME_CHARS) {
+      return `Imported name "${name.slice(0, 40)}..." is longer than ${MAX_IMPORT_NAME_CHARS} characters.`;
+    }
   }
   return null;
 }
 
-function compile(oxc, parser, source, lang) {
+function transform(oxc, source, lang) {
   const transformed = oxc.transformSync(`App.${lang}`, source, {
     lang,
     sourceType: "module",
     jsx: { runtime: "automatic", development: false },
   });
-  const transformErrors = (transformed.errors || []).filter(isFatal);
-  if (transformErrors.length > 0) {
-    return errorResult(transformErrors, Buffer.from(source, "utf8"));
+  return { code: transformed.code, errors: (transformed.errors || []).filter(isFatal) };
+}
+
+function compile(oxc, parser, source, lang) {
+  let transformed = transform(oxc, source, lang);
+  if (transformed.errors.length > 0 && lang === "tsx") {
+    // ```ts fences arrive as tsx, where `<T>(x: T) => x` and `<T>value` read as JSX.
+    const asTs = transform(oxc, source, "ts");
+    if (asTs.errors.length === 0) transformed = asTs;
+  }
+  if (transformed.errors.length > 0) {
+    return errorResult(transformed.errors, Buffer.from(source, "utf8"));
   }
 
-  const longName = longImportName(parser, transformed.code);
-  if (longName !== null) {
-    return errorMessage(
-      `Imported name "${longName.slice(0, 40)}..." is longer than ${MAX_IMPORT_NAME_CHARS} characters.`,
-    );
-  }
+  const problem = moduleProblem(parser, transformed.code);
+  if (problem !== null) return errorMessage(problem);
 
   // Offsets here point into the transformed code, not the user's source.
   const linked = oxc.moduleRunnerTransformSync("App.js", transformed.code);
   const linkErrors = (linked.errors || []).filter(isFatal);
   if (linkErrors.length > 0) {
     return errorResult(linkErrors, null);
-  }
-  if (Array.isArray(linked.dynamicDeps) && linked.dynamicDeps.length > 0) {
-    return errorMessage(DYNAMIC_IMPORT_MESSAGE);
   }
   if (linked.code.length > MAX_CODE_CHARS) {
     return errorMessage(TOO_LARGE_MESSAGE);

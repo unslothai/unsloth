@@ -95,3 +95,11 @@ test("reactComponentName stays linear on a long run of spaces", () => {
   assert.ok(performance.now() - started < 200, "the name scan backtracked");
   assert.equal(reactComponentName(`function Widget() {}\r\nexport default Widget;  \r\n`), "Widget");
 });
+
+test("a default export by name gets a card and its title", () => {
+  const source = "const Dashboard = () => <p>hi</p>;\nexport { Dashboard as default };";
+  assert.equal(reactFenceLang("tsx", source), "tsx");
+  assert.equal(reactComponentName(source), "Dashboard");
+  // Re-exporting another module's default is not this file's component.
+  assert.equal(reactFenceLang("tsx", 'export { default as Chart } from "./chart";'), null);
+});
