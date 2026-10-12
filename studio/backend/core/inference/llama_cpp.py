@@ -38315,7 +38315,9 @@ class LlamaCppBackend:
             preempt_policy.on_resumed()
             # Paired with the yield above, so a client that shows one shows the other.
             yield {"type": "preempt", "state": "resumed"}
-            resumed = [dict(message) for message in messages]
+            # From the request this attempt sent, as the respawn replays it: rebuilt from the
+            # caller's messages, the fit ran again and reported the same evictions twice.
+            resumed = [dict(message) for message in retry_messages]
             continues = self._assemble_preempt_resume(
                 resumed, checkpoint, content_text, reasoning_text
             )
@@ -38343,8 +38345,8 @@ class LlamaCppBackend:
             # and dropping the flag there made the model answer again from the top.
             _reissue_continues = continues or continue_final_message
             for _resumed_item in self.generate_chat_completion(
-                messages = resumed if continues else messages,
-                image_b64 = image_b64,
+                messages = resumed if continues else retry_messages,
+                image_b64 = retry_image_b64,
                 temperature = temperature,
                 top_p = top_p,
                 top_k = top_k,
@@ -38367,7 +38369,7 @@ class LlamaCppBackend:
                 promote_reasoning_only = promote_reasoning_only,
                 perf_callback = perf_callback,
                 reasoning_provenance = reasoning_provenance,
-                context_overflow = context_overflow,
+                context_overflow = retry_context_overflow,
                 context_policy = context_policy,
                 compaction_headroom_ratio = compaction_headroom_ratio,
                 thread_id = thread_id,
