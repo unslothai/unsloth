@@ -32,6 +32,7 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
+    gguf_listed_checkpoints,
     gguf_variant_key,
     gguf_variant_keys_by_checkpoint,
     is_qualified_gguf_variant_key,
@@ -45,6 +46,7 @@ from hub.utils.hf_cache_state import (
     purge_partial_repo,
     purge_repo_cache_dirs,
     resolve_delete_target_root,
+    snapshot_selection_key,
 )
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
@@ -251,13 +253,27 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
     return removed, failures
 
 
+def _revision_selection_key(revision) -> tuple[float, str]:
+    snapshot = getattr(revision, "snapshot_path", None)
+    return snapshot_selection_key(Path(snapshot)) if snapshot else (0.0, "")
+
+
 def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
-    """map each main GGUF snapshot file to the lister's per-snapshot variant key."""
+    """map each main GGUF snapshot file to its variant key, the row's build taken from the newest snapshot.
+
+    Per snapshot alone, a different build that is the only one at its quant in an older snapshot would key as
+    the row and be deleted with it.
+    """
+    revisions = sorted(
+        getattr(target_repo, "revisions", ()), key = _revision_selection_key, reverse = True
+    )
+    matches = [_revision_file_matches(revision, _is_main_gguf_filename) for revision in revisions]
+    names = [[name for _snap, _blob, name in revision] for revision in matches]
+    listed = gguf_listed_checkpoints(names)
     keys: dict[Path, str] = {}
-    for revision in getattr(target_repo, "revisions", ()):
-        matches = _revision_file_matches(revision, _is_main_gguf_filename)
-        revision_keys = gguf_variant_keys_by_checkpoint(name for _snap, _blob, name in matches)
-        keys.update({snap: revision_keys[name] for snap, _blob, name in matches})
+    for revision, revision_names in zip(matches, names):
+        revision_keys = gguf_variant_keys_by_checkpoint(revision_names, listed)
+        keys.update({snap: revision_keys[name] for snap, _blob, name in revision})
     return keys
 
 

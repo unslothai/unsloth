@@ -110,22 +110,15 @@ def test_hidden_big_endian_file_cannot_take_the_visible_rows_key(tmp_path):
         assert not (snap / visible).is_symlink()
 
 
-def test_each_cache_revision_uses_the_checkpoint_its_lister_exposes(tmp_path):
-    from hub.services.models.companion_cleanup import (
-        _remaining_main_gguf_variants,
-        _variant_bytes,
-    )
-    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+def _revisioned_repo(tmp_path: Path, names_by_revision):
+    """an HF cache repo with one snapshot per revision, the last one newest."""
+    import os
 
     repo_dir = tmp_path / "models--org--Model-GGUF"
     blobs = repo_dir / "blobs"
     blobs.mkdir(parents = True)
     revisions = []
-    names_by_revision = (
-        ("old", ["alpha-Q4_K_M.gguf", "zeta-Q4_K_M.gguf"]),
-        ("new", ["beta-Q4_K_M.gguf", "gamma-Q4_K_M.gguf"]),
-    )
-    for revision_name, names in names_by_revision:
+    for age, (revision_name, names) in enumerate(names_by_revision):
         snapshot = repo_dir / "snapshots" / revision_name
         snapshot.mkdir(parents = True)
         files = []
@@ -142,24 +135,53 @@ def test_each_cache_revision_uses_the_checkpoint_its_lister_exposes(tmp_path):
                     size_on_disk = 64,
                 )
             )
+        os.utime(snapshot, (1_000_000 + age, 1_000_000 + age))
         revisions.append(SimpleNamespace(files = files, snapshot_path = str(snapshot)))
-    repo = SimpleNamespace(
+    return SimpleNamespace(
         repo_id = "org/Model-GGUF",
         repo_type = "model",
         repo_path = repo_dir,
         revisions = revisions,
-    )
+    ), repo_dir / "snapshots"
 
+
+def test_the_newest_snapshot_names_the_rows_build(tmp_path):
+    """the row lists the newest snapshot's build; older copies of it go too, other builds stay."""
+    from hub.services.models.companion_cleanup import (
+        _remaining_main_gguf_variants,
+        _variant_bytes,
+    )
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snapshots = _revisioned_repo(
+        tmp_path,
+        (
+            ("old", ["alpha-Q4_K_M.gguf", "beta-Q4_K_M.gguf", "zeta-Q4_K_M.gguf"]),
+            ("new", ["beta-Q4_K_M.gguf", "gamma-Q4_K_M.gguf"]),
+        ),
+    )
     assert _variant_bytes(repo, "Q4_K_M") == 128
     assert _remaining_main_gguf_variants(repo, excluding = "Q4_K_M") == {
+        "alpha-q4_k_m",
         "zeta-q4_k_m",
         "gamma-q4_k_m",
     }
     _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
-    assert not (repo_dir / "snapshots/old/alpha-Q4_K_M.gguf").is_symlink()
-    assert (repo_dir / "snapshots/old/zeta-Q4_K_M.gguf").is_symlink()
-    assert not (repo_dir / "snapshots/new/beta-Q4_K_M.gguf").is_symlink()
-    assert (repo_dir / "snapshots/new/gamma-Q4_K_M.gguf").is_symlink()
+    assert not (snapshots / "new/beta-Q4_K_M.gguf").is_symlink()
+    assert not (snapshots / "old/beta-Q4_K_M.gguf").is_symlink()
+    assert (snapshots / "old/alpha-Q4_K_M.gguf").is_symlink()
+    assert (snapshots / "old/zeta-Q4_K_M.gguf").is_symlink()
+    assert (snapshots / "new/gamma-Q4_K_M.gguf").is_symlink()
+
+
+def test_a_build_alone_in_an_older_snapshot_is_not_the_rows(tmp_path):
+    """an hf download before the repo moved on leaves another build alone in an older snapshot."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snapshots = _revisioned_repo(tmp_path, (("old", [SWIFT]), ("new", [LISTED])))
+    _delete_gguf_variant_from_repos(repo.repo_id, "IQ3_S", [repo], None, root = tmp_path)
+    assert not (snapshots / "new" / LISTED).is_symlink()
+    assert (snapshots / "old" / SWIFT).is_symlink()
 
 
 def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
@@ -232,3 +254,48 @@ def test_reclaiming_an_update_leaves_the_other_builds(monkeypatch, tmp_path):
     )
     assert (snap / SWIFT).exists()
     assert (repo_path / "blobs" / "SWIFTsha").exists()
+
+
+def test_reclaiming_an_update_keeps_a_build_alone_in_an_older_snapshot(monkeypatch, tmp_path):
+    import os
+
+    from hub.services.models import cache_inventory as CI
+    from hub.services.models import deletion as D
+
+    repo_path = tmp_path / "models--huihui-ai--Model-GGUF"
+    revisions = []
+    layout = (
+        ("a" * 40, LISTED, "OLDsha"),
+        ("c" * 40, SWIFT, "SWIFTsha"),
+        ("b" * 40, LISTED, "NEWsha"),
+    )
+    for age, (rev, name, sha) in enumerate(layout):
+        snap = repo_path / "snapshots" / rev
+        link = snap / name
+        blob = repo_path / "blobs" / sha
+        for path in (link, blob):
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_bytes(sha.encode())
+        os.utime(snap, (1_000_000 + age, 1_000_000 + age))
+        revisions.append(
+            SimpleNamespace(
+                files = [SimpleNamespace(file_name = name, file_path = str(link), blob_path = str(blob))],
+                snapshot_path = str(snap),
+            )
+        )
+    repo_info = SimpleNamespace(
+        repo_id = "huihui-ai/Model-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = revisions,
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    D.reclaim_replaced_gguf_variant(
+        repo_info.repo_id, "IQ3_S", frozenset({"NEWsha"}), hub_cache = tmp_path
+    )
+    assert not (repo_path / "blobs" / "OLDsha").exists()
+    assert (repo_path / "snapshots" / ("c" * 40) / SWIFT).exists()
+    assert (repo_path / "blobs" / "SWIFTsha").exists()
+    assert (repo_path / "blobs" / "NEWsha").exists()

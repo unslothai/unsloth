@@ -434,24 +434,48 @@ def _checkpoint_identity(filename: str) -> Optional[str]:
     return re.sub(r"[-_.\s]+", "-", family).strip("-").casefold() or None
 
 
-def gguf_variant_keys_by_checkpoint(paths: Iterable[str]) -> dict[str, str]:
-    """prevent destructive grouping of different checkpoints that share a variant key."""
-    from utils.models.model_config import _extract_quant_label as _loader_quant
-
+def _paths_by_variant_key(paths: Iterable[str]) -> dict[str, list[str]]:
     by_key: dict[str, list[str]] = {}
     for path in paths:
         by_key.setdefault(gguf_variant_key(path).lower(), []).append(path)
-    keys: dict[str, str] = {}
     for members in by_key.values():
         members.sort(key = lambda path: path.replace("\\", "/"))
-        selectable = [
-            path for path in members if not is_big_endian_gguf_path(path, _loader_quant(path))
-        ]
-        listed = _checkpoint_identity((selectable or members)[0])
+    return by_key
+
+
+def _listed_identity(members: Sequence[str]) -> Optional[str]:
+    """identity of the first file the lister shows, skipping big-endian files it hides."""
+    from utils.models.model_config import _extract_quant_label as _loader_quant
+
+    selectable = [
+        path for path in members if not is_big_endian_gguf_path(path, _loader_quant(path))
+    ]
+    return _checkpoint_identity((selectable or members)[0])
+
+
+def gguf_listed_checkpoints(snapshots: Iterable[Iterable[str]]) -> dict[str, Optional[str]]:
+    """lowercase variant key -> checkpoint identity its row lists, from snapshots ordered newest first."""
+    listed: dict[str, Optional[str]] = {}
+    for paths in snapshots:
+        for key, members in _paths_by_variant_key(paths).items():
+            listed.setdefault(key, _listed_identity(members))
+    return listed
+
+
+def gguf_variant_keys_by_checkpoint(
+    paths: Iterable[str], listed: Optional[dict[str, Optional[str]]] = None
+) -> dict[str, str]:
+    """prevent destructive grouping of different checkpoints that share a variant key.
+
+    *listed* (``gguf_listed_checkpoints``) names the row's checkpoint across snapshots; without it the first file
+    of *paths* does, which in an older snapshot can be a build no row shows.
+    """
+    keys: dict[str, str] = {}
+    for key, members in _paths_by_variant_key(paths).items():
+        identity_listed = listed[key] if listed and key in listed else _listed_identity(members)
         for path in members:
-            identity = _checkpoint_identity(path)
             normalized = path.replace("\\", "/")
-            if identity == listed:
+            if _checkpoint_identity(path) == identity_listed:
                 keys[path] = gguf_variant_key(normalized)
             else:
                 keys[path] = gguf_variant_family(normalized)
