@@ -245,6 +245,24 @@ def test_renamed_wan21_1_3b_gguf_resolves_by_header(tmp_path):
     assert fam is not None and fam.name == "wan2.1-t2v-1.3b"
 
 
+def test_comfy_folder_hides_refused_names_with_a_t2v_header(tmp_path):
+    # FastWan 1.3B and a renamed variant carry the plain 1.3B T2V layout; the loader refuses them by name, so the
+    # listing must not offer them.
+    from hub.utils import comfy_models
+
+    folder = tmp_path / "diffusion_models"
+    folder.mkdir()
+    shapes = _row("wan2.1_t2v_1.3B_bf16.safetensors")["shapes"]
+    for name in (
+        "wan2.1_t2v_1.3B_bf16.safetensors",
+        "FastWan2.1-T2V-1.3B_bf16.safetensors",
+        "wan2.1_fun_1.3B_bf16.safetensors",
+    ):
+        _write_safetensors(folder / name, shapes)
+    names = {p.name for p in comfy_models.loose_diffusion_checkpoints(folder)}
+    assert names == {"wan2.1_t2v_1.3B_bf16.safetensors"}
+
+
 def test_comfy_folder_lists_wan21_t2v_files(tmp_path):
     from hub.utils import comfy_models
 

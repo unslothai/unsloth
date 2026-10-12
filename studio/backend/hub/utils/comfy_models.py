@@ -364,6 +364,11 @@ def _offer_loose_checkpoint(path: Path) -> bool:
         if not info.family:
             return False
         if info.page == diffusion_content.PAGE_VIDEO:
+            from core.inference.video_families import unsupported_video_checkpoint_reason
+
+            # A name the loader refuses (FastWan, Wan2.1 I2V / VACE) is not offered, whatever the header says.
+            if unsupported_video_checkpoint_reason(path.name):
+                return False
             family = info.family
             # Same keys, different model: the name picks the variant (wan2.1_t2v_14B reads as an A14B expert by header).
             named = detect_video_family(path.name)
