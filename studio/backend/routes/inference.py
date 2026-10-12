@@ -8582,6 +8582,7 @@ def _gguf_request_intent(
         extra_args = extra_args,
         gpu_ids = gpu_ids,
         n_parallel = n_parallel,
+        n_parallel_from_default = getattr(request, "n_parallel", None) is None,
     )
     settings.update(changes)
     return replace(source, **settings)

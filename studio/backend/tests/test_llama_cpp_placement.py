@@ -1109,6 +1109,105 @@ def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
     assert backend.mtp_draft_path == str(sidecar)
 
 
+def _per_slot_mtp_backend(tmp_path: Path, *, gb_per_slot: float):
+    """The tight card with an embedded head whose reserve is all per-slot state."""
+    gb = 1024**3
+    backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 0.0)
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 8192
+
+    backend._read_gguf_metadata = read_metadata
+    backend._estimate_mtp_overhead_bytes = (
+        lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: int(
+            gb_per_slot * gb * int(_np or n_parallel or 1)
+        )
+    )
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+        "supports_kv_unified": True,
+    }
+    return backend, gguf
+
+
+def _launch_default_slots(
+    backend,
+    gguf,
+    *,
+    n_parallel = 4,
+    **kwargs,
+):
+    return _launch_auto_8k(
+        backend, gguf, n_ctx = 0, n_parallel = n_parallel, n_parallel_from_default = True, **kwargs
+    )
+
+
+def _launched(result, flag: str) -> Optional[str]:
+    cmd = result["cmd"]
+    return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+
+@pytest.mark.parametrize("gb_per_slot, slots", [(1.5, "3"), (2.0, "2"), (5.0, "1")])
+def test_auto_drops_serving_slots_before_the_drafter(tmp_path, gb_per_slot, slots):
+    """#8872: the largest slot count that holds the drafter at the same context."""
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = gb_per_slot)
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") == "draft-mtp"
+    assert _launched(result, "--parallel") == slots
+    assert _launched(result, "-c") == "8192"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize("n_parallel", [4, 1])
+def test_auto_drops_the_drafter_when_one_slot_cannot_hold_it(tmp_path, n_parallel):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 7.0)
+
+    result = _launch_default_slots(backend, gguf, n_parallel = n_parallel)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == str(n_parallel)
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_chosen_slot_count_is_kept_and_the_drafter_dropped(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0, n_parallel = 4)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+@pytest.mark.parametrize("ctx_with_drafter, keeps", [(7424, True), (6144, False)])
+def test_one_slot_may_trim_a_little_auto_context(tmp_path, ctx_with_drafter, keeps):
+    """Draft KV grows with context, so one slot can still need a few percent of it."""
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 0.0)
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: int(
+        6.2 * gb * n_ctx / 8192
+    )
+    backend._fit_context_to_vram = lambda requested, *args, mtp_engaged = False, **kwargs: (
+        min(requested, ctx_with_drafter) if mtp_engaged else requested
+    )
+
+    result = _launch_default_slots(backend, gguf)
+
+    if keeps:
+        assert _launched(result, "--spec-type") == "draft-mtp"
+        assert _launched(result, "--parallel") == "1"
+        assert _launched(result, "-c") == str(ctx_with_drafter)
+    else:
+        assert _launched(result, "--spec-type") != "draft-mtp"
+        assert _launched(result, "--parallel") == "4"
+        assert _launched(result, "-c") == "8192"
+
+
 def test_auto_keeps_a_drafter_that_fits(tmp_path):
     """The drop is scoped to the shortfall: with room for both, nothing changes."""
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 1.5)

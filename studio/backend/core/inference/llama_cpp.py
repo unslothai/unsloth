@@ -681,6 +681,9 @@ class GgufLoadIntent:
     gpu_ids_are_vulkan_ordinals: Optional[bool] = None
     n_threads: Optional[int] = None
     n_parallel: int = 1
+    # The caller left the slot count at the server default, so Auto speculation may
+    # lower it to keep a drafter that does not fit (#8872). A chosen count is kept.
+    n_parallel_from_default: bool = False
     # none follows the llama.cpp defaults (2048 / 512)
     n_batch: Optional[int] = None
     n_ubatch: Optional[int] = None
@@ -4531,6 +4534,9 @@ def _auto_mode_drops_mtp(
 _MLA_MTP_FAST_ARCHS = frozenset({"glm5next", "glm5-next"})
 # Smallest context Auto shrinks to so a fast MLA head still launches.
 _FAST_MTP_MIN_CTX = 65536
+# Share of the target-only Auto context a drafter may take once slots are down to one.
+# Qwen3.6-27B on a 46 GB card needs 7% at one slot (18% at four).
+_MTP_SLOT_CTX_TRIM = 0.10
 
 
 def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
@@ -26453,6 +26459,17 @@ class LlamaCppBackend:
                             - _cc_bytes(ctx, 1, slots, cache_type),
                         )
 
+                    # The lump below at a candidate slot count and its micro-batch.
+                    def _layer_compute_buffer(slots: int) -> int:
+                        cb = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _ubatch_for_slots(slots),
+                            n_parallel = slots,
+                            per_device_tensor = False,
+                        )
+                        return (
+                            cb if cb > 0 else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
+                        )
+
                     # Layer-split compute buffer (one lump; tensor mode reserves it
                     # per device in _plan_tensor_parallel). Context-independent, so
                     # fold it into the model footprint for the branches below. Falls
@@ -26883,7 +26900,11 @@ class LlamaCppBackend:
                                 else 0.0
                             )
 
-                        def _probe_base(drafter: bool, n: int) -> int:
+                        def _probe_base(
+                            drafter: bool,
+                            n: int,
+                            slots: int = 0,
+                        ) -> int:
                             # model_size_fit's terms, before it is built below.
                             _soft = self._CUDA_CONTEXT_RESERVE_BYTES
                             if effective_is_vision and mmproj_size > 0:
@@ -26892,7 +26913,11 @@ class LlamaCppBackend:
                                 _soft += self._MTP_DRAFT_COMPUTE_BYTES
                             return (
                                 model_size
-                                + _compute_buffer_pipeline
+                                + (
+                                    _layer_compute_buffer(slots)
+                                    if slots
+                                    else _compute_buffer_pipeline
+                                )
                                 + _soft
                                 + max(0, n - 1) * _pipeline_overhead_bytes
                             )
@@ -26942,6 +26967,9 @@ class LlamaCppBackend:
                         _both_fit_somewhere = False
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
+                        # (GPU count, target-only context, budget with the drafter) for
+                        # every subset the walk priced the target on.
+                        _target_placements: list[tuple[int, int, float]] = []
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
                                 break
@@ -27025,6 +27053,7 @@ class LlamaCppBackend:
                                         _foot_w,
                                         _budget_w,
                                     )
+                                _target_placements.append((_n, _ctx_wo, _budget_w))
                                 if _foot_w <= _budget_w:
                                     _both_fit_somewhere = True
                                     break
@@ -27084,6 +27113,101 @@ class LlamaCppBackend:
                                             _budget_w / 1024,
                                         )
                                     break
+                        # Fewer serving slots before no drafter: the KV, the compute buffer
+                        # and the drafter's per-slot rollback state all shrink with the slot
+                        # count, so a drafter that misses at the requested count can still
+                        # fit beside the target's own context. Largest count that holds both
+                        # on a subset the walk priced, at that subset's target-only context.
+                        # The draft KV grows with the context the target alone already
+                        # filled, so one slot can still fall short by a few percent: Auto
+                        # context may then give up at most _MTP_SLOT_CTX_TRIM of it.
+                        if (
+                            _target_fits_somewhere
+                            and not _both_fit_somewhere
+                            and n_parallel > 1
+                            and intent.n_parallel_from_default
+                        ):
+
+                            def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
+                                return (
+                                    _probe_base(True, n, s)
+                                    + self._estimate_kv_cache_bytes(
+                                        ctx,
+                                        cache_type_kv,
+                                        n_parallel = s,
+                                        swa_full = swa_full,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _ubatch_for_slots(s),
+                                        flash_attn = planned_flash_attn,
+                                    )
+                                    + _cc_bytes(ctx, n, s)
+                                    + _mtp_bytes(ctx, s, _ubatch_for_slots(s))
+                                ) / (1024 * 1024)
+
+                            _mtp_slots = _mtp_slots_ctx = 0
+                            for _s in range(n_parallel - 1, 0, -1):
+                                for _n, _ctx_c, _budget_c in _target_placements:
+                                    if _mtp_foot_mib(_n, _ctx_c, _s) <= _budget_c:
+                                        _mtp_slots, _mtp_slots_ctx = _s, _ctx_c
+                                        break
+                                if _mtp_slots:
+                                    break
+                            if not _mtp_slots and not explicit_ctx:
+                                for _n, _ctx_c, _budget_c in _target_placements:
+                                    _ctx_1 = self._fit_context_to_vram(
+                                        _ctx_c,
+                                        _budget_c,
+                                        _probe_base(True, _n, 1),
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = 1,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _ubatch_for_slots(1),
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = True,
+                                        mtp_overhead_fn = (
+                                            functools.partial(
+                                                mtp_overhead_fn,
+                                                _np = 1,
+                                                _n_ubatch = _ubatch_for_slots(1),
+                                            )
+                                            if mtp_overhead_fn is not None
+                                            else None
+                                        ),
+                                        compute_ctx_bytes_fn = lambda c, _k = _n: _cc_bytes(c, _k, 1),
+                                        budget_frac = 1.0,
+                                        pooled = True,
+                                        total_mib = None,
+                                        ctx_checkpoints = _placement_ctx_checkpoints,
+                                    )
+                                    if (
+                                        _ctx_1 >= _ctx_c * (1 - _MTP_SLOT_CTX_TRIM)
+                                        and _mtp_foot_mib(_n, _ctx_1, 1) <= _budget_c
+                                    ):
+                                        _mtp_slots, _mtp_slots_ctx = 1, _ctx_1
+                                        break
+                            if _mtp_slots:
+                                logger.info(
+                                    "Auto: serving slots reduced %d -> %d so the drafter fits "
+                                    "in VRAM at context %d (target alone: %d). Set Parallel "
+                                    "Slots to keep %d without the drafter.",
+                                    n_parallel,
+                                    _mtp_slots,
+                                    _mtp_slots_ctx,
+                                    _probe_ctx,
+                                    n_parallel,
+                                )
+                                n_parallel = _mtp_slots  # allow-slot-clamp: the drafter fits in VRAM only at fewer slots
+                                _effective_ubatch = _ubatch_for_slots(n_parallel)
+                                _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                                if mtp_overhead_fn is not None:
+                                    # Its defaults were bound at the requested count.
+                                    mtp_overhead_fn = functools.partial(
+                                        mtp_overhead_fn,
+                                        _np = n_parallel,
+                                        _n_ubatch = _effective_ubatch,
+                                    )
+                                _both_fit_somewhere = True
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
