@@ -599,26 +599,34 @@ export function installPageAgent(): PageAgent {
     return down;
   };
 
-  // The agent works only in its own tab: a form aimed at a new tab (target or formtarget) would be
-  // dropped by the panel, which opens tabs only on a real user click, while the model hears it sent.
-  // The target is read after the submit event, so pointing it here for the action is enough.
+  // The agent works only in its own tab: a form or link aimed at a new tab (target, formtarget)
+  // would be dropped by the panel, which opens tabs only on a real user click, while the model hears
+  // it went. The target is read after the event, by the browser or by the proxy shell's deferred
+  // setTimeout, so it points here for the action and is put back on a later timer.
   const inOwnTab = <T>(act: () => T): T => {
     const restore: Array<() => void> = [];
-    const retarget = (event: Event) => {
-      const submitter = (event as SubmitEvent).submitter;
-      for (const [el, name] of [[submitter, "formtarget"], [event.target, "target"]] as const) {
-        if (!(el instanceof Element) || !el.hasAttribute(name)) continue;
-        const old = el.getAttribute(name) ?? "";
-        el.setAttribute(name, "_self");
-        restore.push(() => el.setAttribute(name, old));
-      }
+    const point = (el: unknown, name: string) => {
+      if (!(el instanceof Element) || !el.hasAttribute(name)) return;
+      const old = el.getAttribute(name) ?? "";
+      el.setAttribute(name, "_self");
+      restore.push(() => el.setAttribute(name, old));
     };
-    window.addEventListener("submit", retarget, true);
+    const onSubmit = (event: Event) => {
+      point((event as SubmitEvent).submitter, "formtarget");
+      point(event.target, "target");
+    };
+    const onClick = (event: Event) => {
+      const link = event.composedPath().find((node) => node instanceof Element && node.matches("a[href], area[href]"));
+      point(link, "target");
+    };
+    window.addEventListener("submit", onSubmit, true);
+    window.addEventListener("click", onClick, true);
     try {
       return act();
     } finally {
-      window.removeEventListener("submit", retarget, true);
-      for (const undo of restore) undo();
+      window.removeEventListener("submit", onSubmit, true);
+      window.removeEventListener("click", onClick, true);
+      if (restore.length) setTimeout(() => restore.forEach((undo) => undo()));
     }
   };
 
