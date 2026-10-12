@@ -16,6 +16,7 @@ from starlette.datastructures import URL
 from starlette.requests import Request
 
 from studio_mcp.caller import STATE_KEY, Caller
+from utils.account_context import ROLE_OWNER
 from utils.mcp_access import is_mcp_enabled
 
 LEGACY_TOKEN_ENV = "UNSLOTH_STUDIO_MCP_TOKEN"
@@ -203,7 +204,9 @@ class StudioMcpGate:
         scope.setdefault("state", {})[STATE_KEY] = Caller(
             token = token,
             account_id = record["account_id"],
-            direct_local = is_direct_local_request(Request(scope)),
+            # Host files are the owner's: a managed account stays inside its sandbox even on loopback.
+            direct_local = record.get("role") == ROLE_OWNER
+            and is_direct_local_request(Request(scope)),
             public_base = f"{outer.scheme}://{outer.netloc}{prefix}",
             studio_app = scope.get("app"),
             hf_token = hf_token or None,

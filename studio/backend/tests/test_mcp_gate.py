@@ -279,6 +279,18 @@ def test_a_managed_account_key_carries_its_account():
     assert result["bound_account"] == "owner"
 
 
+def test_a_managed_account_key_never_reads_host_files_even_from_loopback():
+    seed_owner()
+    alice = storage.issue_account_setup_code(username = "alice")["account"]["account_id"]
+    raw_key, _row = storage.create_api_key("alice", name = "agent", account_id = alice)
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp()), **LOCAL) as http:
+        response, result = call_tool(http, bearer(raw_key))
+    assert response.status_code == 200, response.text
+    assert result["account_id"] == alice
+    assert result["direct_local"] is False
+
+
 def test_two_authorization_headers_are_refused(live_key):
     with TestClient(served(probe_mcp())) as http:
         response = http.post(
