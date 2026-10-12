@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows: transformers reads fp32-stored safetensors shards with safetensors' ``pread`` backend during a media load.
+"""Windows video loads read fp32 safetensors shards with safetensors' ``pread`` backend instead of mmap (#9977).
 
-The default backend maps each shard through ``torch.UntypedStorage.from_file(shared=False)``, a copy-on-write view that
-Windows charges in full against the commit limit, and transformers 5 opens every shard of a model before loading any.
-LTX-2's Gemma3 encoder is 48.7 GB of fp32 loaded at bf16, so the load needs ~73 GB of commit; on a 32 GB host torch's
-unchecked ``MapViewOfFile`` returns NULL and the first read is an access violation (#9977). ``pread`` reads each tensor
-into its own buffer: the same bytes, no mapping. Only fp32 shards switch: a media load converts them, so their mapping
-is pure overhead, while a bf16 / fp16 shard's mapping is the loaded weight itself and keeps the faster mmap path.
+torch maps a shard copy-on-write and Windows charges the whole view to commit while transformers holds every shard
+open: LTX-2's 48.7 GB fp32 Gemma3 loaded at bf16 needs ~73 GB, and torch's unchecked ``MapViewOfFile`` NULL is an
+access violation on a 32 GB host. bf16 / fp16 shards keep mmap: their mapping is the loaded weight.
 ``UNSLOTH_SAFETENSORS_PREAD=0|1`` disables / forces it on any OS.
 """
 
@@ -63,9 +60,8 @@ def _with_pread(safe_open: Any) -> Any:
 
 @contextlib.contextmanager
 def pread_safetensors() -> Iterator[bool]:
-    """Route ``transformers.modeling_utils.safe_open`` of fp32 shards through ``pread`` for the duration; yields
-    whether it did.
-    Nests, and a concurrent load in another thread only gets the same bytes through another backend."""
+    """Route ``transformers.modeling_utils.safe_open`` of fp32 shards through ``pread``; yields whether it did. Nests; a
+    concurrent load in another thread only gets the same bytes through another backend."""
     global _depth, _original
     installed = False
     if pread_wanted():
