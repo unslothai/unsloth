@@ -134,3 +134,22 @@ def test_qat_model_accepts_torchao_config(monkeypatch, tmp_path):
     )
     assert seen["torchao_config"] is config
     assert seen["stripped"] is model
+
+
+def test_peft_qat_save_reloads_with_merged_names(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(
+        save_mod, "_unsloth_save_torchao_with_given_config", lambda **kw: seen.update(kw)
+    )
+    qat_config = _int8_qat_config()
+    peft_model = _peft_qat_model(qat_config)
+    save_mod._unsloth_save_torchao_with_attached_config(
+        model = peft_model, save_directory = str(tmp_path), tokenizer = object()
+    )
+    config = seen["torchao_config"]
+    assert config.quant_type is qat_config.base_config_and_filter_fns[0][0]
+    assert sorted(config.modules_to_not_convert) == ["embed_tokens", "layers.0.small"]
+    # The merge reads 16-bit base layers: nothing fake-quantized or already quantized is left.
+    for module in peft_model.modules():
+        assert not hasattr(module, "weight_fake_quantizer")
+        assert not _is_quantized(getattr(module, "weight", None))
