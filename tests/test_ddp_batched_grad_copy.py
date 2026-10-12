@@ -13,11 +13,7 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Opt-in DDP `batched_grad_copy` (UNSLOTH_DDP_BATCHED_GRAD_COPY=1): the Trainer's
-accelerate DDP kwargs handler gains `batched_grad_copy = True` only for plain DDP on a
-torch whose DDP accepts it. `import unsloth` needs CUDA or XPU, so the helpers are
-loaded from `_utils.py` source.
-"""
+"""`import unsloth` needs CUDA or XPU, so the helpers are loaded from `_utils.py` source."""
 
 import ast
 import functools
@@ -122,7 +118,6 @@ def test_opt_in_adds_kwarg_and_keeps_user_fields(opt_in):
     }
     trainer.accelerator.prepare_model(object())
     assert seen[-1]["batched_grad_copy"] is True
-    # A second trainer reuses the cached subclass, and re-applying is a no-op.
     other, _ = _trainer(DistributedDataParallelKwargs())
     ns["_enable_ddp_batched_grad_copy"](other)
     assert type(other.accelerator.ddp_handler) is type(h)
@@ -190,7 +185,6 @@ def test_not_added_outside_plain_ddp(opt_in, distributed_type, state):
 
 
 def test_trainer_init_calls_it():
-    """The Trainer.__init__ wrapper runs it after the original init."""
     tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
     init = [
         n

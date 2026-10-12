@@ -7690,7 +7690,6 @@ def _ddp_batched_grad_copy_handler(handler):
     if not isinstance(handler, DistributedDataParallelKwargs):
         return handler
     if _DDP_BGC_KWARG in getattr(type(handler), "__dataclass_fields__", {}):
-        # A future accelerate with the field natively.
         setattr(handler, _DDP_BGC_KWARG, True)
         return handler
     cls = type(handler)
