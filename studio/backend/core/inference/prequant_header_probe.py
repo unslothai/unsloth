@@ -348,7 +348,6 @@ def hub_file_revision(
     """``(etag, commit)`` the Hub serves for ``filename`` now (one HEAD, no body), or None if unanswerable."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
-
         meta = get_hf_file_metadata(
             hf_hub_url(repo_id, filename, revision = revision),
             token = token,

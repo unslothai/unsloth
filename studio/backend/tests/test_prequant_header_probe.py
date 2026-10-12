@@ -712,7 +712,11 @@ def test_a_metadata_pickle_under_the_budget_still_reads(tmp_path):
 # -- a safetensors header is bounded by structure before it is parsed --
 
 
-def _raw_safetensors(path, header: dict, pad: bytes = b""):
+def _raw_safetensors(
+    path,
+    header: dict,
+    pad: bytes = b"",
+):
     """A safetensors file whose JSON header is ``header`` (plus raw ``pad`` spliced into it), no tensors."""
     import struct
 
@@ -726,8 +730,10 @@ def _raw_safetensors(path, header: dict, pad: bytes = b""):
 
 def _unsloth_extra(meta):
     from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
-
-    return {UNSLOTH_FORMAT_KEY: PREQUANT_FORMAT, UNSLOTH_METADATA_KEY: json.dumps(meta, default = str)}
+    return {
+        UNSLOTH_FORMAT_KEY: PREQUANT_FORMAT,
+        UNSLOTH_METADATA_KEY: json.dumps(meta, default = str),
+    }
 
 
 def _traced(fn):
@@ -765,7 +771,9 @@ def test_a_nested_metadata_string_with_millions_of_entries_is_unknown(tmp_path):
 
     meta = _qwen_int8_meta(["norm"])
     meta["pad"] = [0] * 1_200_000
-    bomb = _raw_safetensors(tmp_path / "nested-INT8.safetensors", {"__metadata__": _unsloth_extra(meta)})
+    bomb = _raw_safetensors(
+        tmp_path / "nested-INT8.safetensors", {"__metadata__": _unsloth_extra(meta)}
+    )
     assert read_local_checkpoint_header(str(bomb)) is None
 
 
@@ -879,12 +887,19 @@ def test_the_probe_memo_and_said_set_are_bounded():
     cap = pq._HEADER_PROBE_MAX
     with pq._HEADER_PROBE_LOCK:
         for i in range(cap * 4):
-            pq._memo_put(("hub", "r", ("n",), ("int8", f"base{i}", None, None, "")), (0.0, None), 0.0)
+            pq._memo_put(
+                ("hub", "r", ("n",), ("int8", f"base{i}", None, None, "")), (0.0, None), 0.0
+            )
             pq._said_first(("r", "n", f"reason {i}"))
     assert len(pq._HEADER_PROBE_MEMO) <= cap
     assert len(pq._HEADER_PROBE_SAID) <= cap
     # Most recent kept, oldest dropped.
-    assert ("hub", "r", ("n",), ("int8", f"base{cap * 4 - 1}", None, None, "")) in pq._HEADER_PROBE_MEMO
+    assert (
+        "hub",
+        "r",
+        ("n",),
+        ("int8", f"base{cap * 4 - 1}", None, None, ""),
+    ) in pq._HEADER_PROBE_MEMO
 
 
 def test_an_expired_memo_entry_is_dropped():

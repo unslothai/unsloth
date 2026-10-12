@@ -1748,9 +1748,7 @@ def _said_first(said: Any) -> bool:
     return first
 
 
-def _cached_snapshot_current(
-    repo_id: str, local: str, token: Optional[str]
-) -> Optional[bool]:
+def _cached_snapshot_current(repo_id: str, local: str, token: Optional[str]) -> Optional[bool]:
     """Whether the Hub still serves the cached ``local`` snapshot of its file: True / False, or None when
     unanswerable (not a Hub-cache path, no network, no etag nor commit), which keeps the cached verdict.
     One HEAD, no range read. The blob name is the file's etag and the snapshot directory its commit, so
