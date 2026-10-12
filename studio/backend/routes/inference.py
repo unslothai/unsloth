@@ -3198,7 +3198,12 @@ def _openai_llama_publish_round_charge(
 
 
 def _openai_llama_count_raw_holder(
-    *, llama_backend, lease, gen_id: str, payload = None, conversation = None
+    *,
+    llama_backend,
+    lease,
+    gen_id: str,
+    payload = None,
+    conversation = None,
 ) -> None:
     """Register a surface that occupies the cache but cannot be paused.
 

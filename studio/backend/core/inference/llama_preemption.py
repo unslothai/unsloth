@@ -971,7 +971,13 @@ class PreemptionController:
             return need <= self._solo_ceiling_locked()
         return False
 
-    def observe(self, gen_id: str, generated: int, *, plan: bool = True) -> List["Participant"]:
+    def observe(
+        self,
+        gen_id: str,
+        generated: int,
+        *,
+        plan: bool = True,
+    ) -> List["Participant"]:
         """Live growth during generation, and the eviction check that follows it.
 
         THE watermark sweep. Admission deliberately overcommits, so what prevents the cache

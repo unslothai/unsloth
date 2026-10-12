@@ -45,7 +45,11 @@ def controller(monkeypatch):
     return made
 
 
-def _count(monkeypatch, priced, payload = object()):
+def _count(
+    monkeypatch,
+    priced,
+    payload = object(),
+):
     def price(*args, **kwargs):
         if isinstance(priced, Exception):
             raise priced
@@ -59,9 +63,9 @@ def _count(monkeypatch, priced, payload = object()):
 
 def test_the_prefill_announced_is_the_prompt(monkeypatch, controller):
     _count(monkeypatch, 300)
-    assert controller.snapshot().prefilling == 300, (
-        "the output allowance was announced as a prefill"
-    )
+    assert (
+        controller.snapshot().prefilling == 300
+    ), "the output allowance was announced as a prefill"
     assert controller.participant("raw").tokens == 6000
 
 

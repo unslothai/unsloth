@@ -50,7 +50,12 @@ def _observer(monkeypatch, controller, erased: list):
         lambda scrape: {"idle": [(3, 3000)], "resident": 9000, "idle_tokens": 3000},
     )
 
-    def reclaim(occupancy, erase, *, needed = 0):
+    def reclaim(
+        occupancy,
+        erase,
+        *,
+        needed = 0,
+    ):
         erased.append(needed)
         return 3000
 
@@ -69,9 +74,9 @@ def test_the_erase_lands_before_anybody_is_signalled(monkeypatch):
     assert erased, "the idle slot was never reclaimed"
     for gen_id in ("live", "other"):
         participant = controller.participant(gen_id)
-        assert participant.state != ParticipantState.PREEMPTING, (
-            f"{gen_id} was signalled for room the idle erase gave back"
-        )
+        assert (
+            participant.state != ParticipantState.PREEMPTING
+        ), f"{gen_id} was signalled for room the idle erase gave back"
         assert not participant.preempt_event.is_set()
 
 
