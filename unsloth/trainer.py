@@ -315,10 +315,10 @@ def _is_media_name(name) -> bool:
 
 def _features_have_media(features) -> bool:
     """True if a `datasets` feature tree holds an Image / Audio / Video feature anywhere."""
-    stack = [features]
+    stack = [(features, False)]
     seen = 0
     while stack:
-        node = stack.pop()
+        node, nested = stack.pop()
         seen += 1
         if seen > 10_000:
             return True  # pathological schema: assume media rather than guess
@@ -327,13 +327,17 @@ def _features_have_media(features) -> bool:
         if isinstance(node, dict):
             if any(_is_media_name(key) for key in node):
                 return True
-            stack.extend(node.values())
+            # A content part names its modality only in the "type" value ({"type": "audio", "url": ...});
+            # only {"type", "text"} parts are provably text.
+            if nested and "type" in node and set(node) - {"type", "text"}:
+                return True
+            stack.extend((value, True) for value in node.values())
         elif isinstance(node, (list, tuple)):
-            stack.extend(node)
+            stack.extend((value, True) for value in node)
         else:
             inner = getattr(node, "feature", None)  # Sequence / List / LargeList
             if inner is not None:
-                stack.append(inner)
+                stack.append((inner, True))
     return False
 
 

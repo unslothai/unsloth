@@ -170,6 +170,32 @@ def test_an_image_path_string_inside_messages_stays_blocked():
     assert _blocked(train_dataset = ds)
 
 
+def _chat(*parts):
+    return datasets.Dataset.from_dict({"messages": [[{"role": "user", "content": list(parts)}]]})
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "audio", "url": "speech.wav"},
+        {"type": "image", "url": "https://example.com/cat.png"},
+        {"type": "video", "path": "clip.mp4"},
+        {"type": "image", "base64": "aGk="},
+    ],
+)
+def test_a_media_part_named_only_by_its_type_stays_blocked(part):
+    ds = _chat({"type": "text", "text": "hi"}, part)
+    assert not _is_text_only_dataset(ds)
+    assert _blocked(train_dataset = ds)
+
+
+def test_text_parts_and_a_top_level_type_column_stay_text():
+    assert _is_text_only_dataset(_chat({"type": "text", "text": "hi"}))
+    assert _is_text_only_dataset(
+        datasets.Dataset.from_dict({"text": ["a"], "type": ["news"], "source": ["web"]})
+    )
+
+
 @pytest.mark.parametrize("model_type", ["mllama", "paligemma", "llava", "mistral3", "qwen2_vl"])
 def test_processors_outside_the_verified_families_stay_blocked(model_type):
     assert _blocked(model = _Model(_Cfg(model_type = model_type)))
