@@ -65,14 +65,14 @@ def assert_supported_ltx_version(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """A file whose own name has an LTX token decides alone (an ltx-2.3 file in an ``ltx-2.5-tests`` folder loads);
-    a generic file name defers to the repo / display id."""
+    """A file whose own name has a versioned LTX token decides alone (an ltx-2.3 file in an ``ltx-2.5-tests`` folder
+    loads); any other file name (``model``, ``ltx-transformer``) defers to the repo / display id."""
     def leaf(name: Optional[str]) -> str:
         # Last segment only: a local parent folder must not decide.
         return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
 
     base = leaf(filename)
-    if base and re.search(r"(?<![a-z0-9])ltx", base.lower()):
+    if base and re.search(r"(?<![a-z0-9])ltx(?:[-_ ]?video)?[-_ ]?[0-9]", base.lower()):
         picks: tuple[tuple[str, Optional[str]], ...] = ((base, filename),)
     else:
         picks = ((base, filename), (leaf(display_repo_id), display_repo_id), (leaf(repo_id), repo_id))
@@ -80,6 +80,28 @@ def assert_supported_ltx_version(
         version = unsupported_ltx_version(name)
         if version is not None:
             raise ValueError(unsupported_ltx_message(version, f"'{shown}'"))
+
+
+def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
+    """Refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
+    import json
+    from pathlib import Path
+
+    try:
+        index = Path(str(path or "")).expanduser() / "model_index.json"
+        if not path or not index.is_file():
+            return
+        spec = json.loads(index.read_text(encoding = "utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    if not isinstance(spec, dict) or not str(spec.get("_class_name", "")).startswith("LTX2"):
+        return
+    encoder = spec.get("text_encoder")
+    encoder_class = encoder[1] if isinstance(encoder, list) and len(encoder) == 2 else ""
+    if str(encoder_class).startswith("Gemma4") or any(
+        isinstance(spec.get(k), list) and spec.get(k)[0] for k in ("diffusion_decoder", "duration_head")
+    ):
+        raise ValueError(unsupported_ltx_message("2.5", f"'{path}' (by its model_index.json)"))
 
 
 @dataclass(frozen = True)

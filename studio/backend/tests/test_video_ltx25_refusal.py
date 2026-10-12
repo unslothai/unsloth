@@ -243,3 +243,43 @@ def test_local_ltx25_diffusers_folder_is_refused_by_model_index(tmp_path):
     index["duration_head"] = [None, None]
     (folder / "model_index.json").write_text(json.dumps(index), encoding = "utf-8")
     assert _detect_load_family(str(folder), None, None).name == "ltx-2"
+
+
+@pytest.mark.parametrize("filename", ["ltx-transformer.safetensors", "ltxv_dit.safetensors", "LTX.safetensors"])
+def test_unversioned_ltx_file_name_defers_to_the_repo(filename):
+    from core.inference.video import get_video_backend
+
+    with pytest.raises(ValueError, match = "LTX-2.5"):
+        assert_supported_ltx_version("Lightricks/LTX-2.5", filename)
+    with pytest.raises(ValueError, match = "LTX-2.5"):
+        get_video_backend().validate_load_request(
+            "Lightricks/LTX-2.5", gguf_filename = filename, model_kind = "single_file", family_override = "ltx-2"
+        )
+    # A version-free name is no evidence either way in a 2.0 / 2.3 repo.
+    assert_supported_ltx_version("Lightricks/LTX-2.3", filename)
+
+
+@pytest.mark.parametrize(
+    "filename", ["ltx-2-19b-dev.safetensors", "ltx2_dit.safetensors", "ltx-video-2.3-x.safetensors"]
+)
+def test_versioned_supported_file_name_still_outranks_the_folder(filename):
+    assert_supported_ltx_version("/models/ltx-2.5-tests", filename)
+
+
+def test_training_refuses_renamed_local_ltx25_pipeline(tmp_path):
+    from core.training.diffusion_train_common import resolve_trainable_family
+
+    folder = tmp_path / "my-video-base"
+    folder.mkdir()
+    index = {
+        "_class_name": "LTX2Pipeline",
+        "text_encoder": ["transformers", "Gemma4UnifiedForConditionalGeneration"],
+        "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
+    }
+    (folder / "model_index.json").write_text(json.dumps(index), encoding = "utf-8")
+    for family in (None, "ltx-2"):
+        with pytest.raises(ValueError, match = "model_index.json"):
+            resolve_trainable_family(str(folder), family)
+    index["text_encoder"] = ["transformers", "Gemma3ForConditionalGeneration"]
+    (folder / "model_index.json").write_text(json.dumps(index), encoding = "utf-8")
+    assert resolve_trainable_family(str(folder), "ltx-2") == "ltx-2"
