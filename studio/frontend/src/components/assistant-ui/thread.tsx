@@ -2836,7 +2836,7 @@ const Composer: FC<{
       useChatRuntimeStore.getState().setDeepResearchEnabled(false);
     }
   }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
-  // More than 4 pills: collapse to icons only. Search, Code, and permissions
+  // More than 4 pills: collapse to icons only. Search, Tools, and permissions
   // always show; Images, RAG, MCP and Deep Research are conditional.
   // Narrow viewports collapse too: the labelled row is wider than a phone composer.
   const isMobile = useIsMobile();

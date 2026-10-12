@@ -991,7 +991,7 @@ export function SharedComposer({
   const ragDisabled =
     modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
   const showRagPill = !isExternalModel || externalUsesStudioTools;
-  // Above 4 pills, collapse to icons only. Compare, Search, Code and permissions always show.
+  // Above 4 pills, collapse to icons only. Compare, Search, Tools and permissions always show.
   // Narrow viewports collapse too: the labelled row is wider than a phone-width composer.
   const isMobile = useIsMobile();
   const pillCount =

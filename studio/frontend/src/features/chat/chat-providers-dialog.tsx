@@ -327,7 +327,7 @@ export function ChatProvidersSettings({
     (!editingProviderId || editingBackendProviderType === "custom");
   const showCustomReasoning =
     isCustomReasoningConnection && apiType === "chat_completions";
-  // Unsloth runs Search, Code, MCP and RAG on this machine for any provider advertising the
+  // Unsloth runs Search, Tools, MCP and RAG on this machine for any provider advertising the
   // capability, with no extra opt-in. Say so where the connection is created: tool results
   // also travel back to the provider as the next turn's input.
   const runsStudioToolsLocally =
