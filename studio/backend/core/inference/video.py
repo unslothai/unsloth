@@ -200,6 +200,7 @@ from .video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
+    assert_supported_ltx_version,
     pipeline_available_video_families,
     VideoFamily,
     default_video_generation_params,
@@ -1045,6 +1046,32 @@ def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) 
     assert_local_pick_is_dit(repo_id, gguf_filename, page)
 
 
+def _refuse_local_ltx25_pipeline(repo_id: str, gguf_filename: Optional[str]) -> None:
+    """ValueError for a LOCAL diffusers folder holding an LTX-2.5 pipeline under a name that does not say so: its
+    model_index names a Gemma 4 text encoder or ships the 2.5-only diffusion_decoder / duration_head. Header-sized
+    reads only; anything unreadable passes."""
+    if gguf_filename:
+        return
+    import json
+
+    try:
+        index = Path(repo_id).expanduser() / "model_index.json"
+        if not index.is_file():
+            return
+        spec = json.loads(index.read_text(encoding = "utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    if not isinstance(spec, dict) or not str(spec.get("_class_name", "")).startswith("LTX2"):
+        return
+    encoder = spec.get("text_encoder")
+    encoder_class = encoder[1] if isinstance(encoder, list) and len(encoder) == 2 else ""
+    if str(encoder_class).startswith("Gemma4") or any(
+        isinstance(spec.get(k), list) and spec.get(k)[0] for k in ("diffusion_decoder", "duration_head")
+    ):
+        from .video_families import unsupported_ltx_message
+        raise ValueError(unsupported_ltx_message("2.5", f"'{repo_id}' (by its model_index.json)"))
+
+
 def _detect_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -1055,6 +1082,9 @@ def _detect_load_family(
     repo id first, then the picked filename -- a local directory or generically
     named repo often carries the family token only in the checkpoint filename,
     and the worker must resolve the same family the validator accepted."""
+    # Before the override too: family_override="ltx-2" must not force an LTX-2.5 pick through the 2.x loader.
+    assert_supported_ltx_version(repo_id, gguf_filename, display_repo_id)
+    _refuse_local_ltx25_pipeline(repo_id, gguf_filename)
     if family_override:
         return detect_video_family(repo_id, family_override)
     fam = (
@@ -6409,8 +6439,15 @@ class VideoBackend:
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
-            from .video_ltx2 import direct_load_device, is_ltx23_checkpoint, load_ltx23_pipeline
+            from .video_ltx2 import (
+                assert_not_ltx25_checkpoint,
+                direct_load_device,
+                is_ltx23_checkpoint,
+                load_ltx23_pipeline,
+            )
 
+            if fam.name == "ltx-2":
+                assert_not_ltx25_checkpoint(checkpoint_path)
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
                 # Explicit fp8 takes the hosted DiT, resident only: offload hooks' Module.to() rejects torchao tensors.
                 ltx23_override = None

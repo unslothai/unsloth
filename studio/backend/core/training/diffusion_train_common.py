@@ -313,6 +313,11 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # Same shape as the component-only refusal: the name resolves to a real, trainable family, but the repo is not
     # something the training loader can open.
     _refuse_ltx23_training_base(base_model)
+    # LTX-2.5 would otherwise resolve to the ltx-2 trainer (name or model_family="ltx-2") and train against the
+    # wrong text encoder; refused before either branch.
+    from core.inference.video_families import assert_supported_ltx_version
+
+    assert_supported_ltx_version(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)

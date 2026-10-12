@@ -239,6 +239,22 @@ def _any(keys, pattern: str) -> bool:
     return any(rx.search(k) for k in keys)
 
 
+LTX25_VARIANT = "ltx-2.5"
+
+
+def is_ltx25_dit_keys(keys) -> bool:
+    """An LTX-2 audio-video DiT header from the 2.5 generation (diffusers' ``ff_bias=False`` +
+    ``use_keyframes_abs_pos_embedding``): a learned keyframe position embedding, or a first video FFN
+    that has weights but no bias. Every LTX-2.0 / 2.3 file (bf16, fp8, GGUF, diffusers) carries
+    ``transformer_blocks.0.ff.net.0.proj.bias``. Keys are relative to the DiT prefix."""
+    names = set(keys)
+    if "keyframes_abs_pos_embedding" in names:
+        return True
+    ff = "transformer_blocks.0.ff.net.0.proj"
+    has_weight = any(k == f"{ff}.weight" or k.startswith(f"{ff}.weight") for k in names)
+    return has_weight and f"{ff}.bias" not in names
+
+
 def _dit(family: Optional[str], what: str, layout: str) -> CheckpointInfo:
     return CheckpointInfo(ROLE_DIT, family, family_page(family), what, layout)
 
@@ -313,6 +329,18 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         or "av_cross_attn_audio_scale_shift" in tops
         or "audio_caption_projection" in tops
     ):
+        if is_ltx25_dit_keys(keys):
+            # Recognised but unsupported, like LTX-Video 0.9 below: the ltx-2 name must not revive it. The variant
+            # marks it for is_ltx25_checkpoint; no family means no defaults are ever looked up under it.
+            return CheckpointInfo(
+                ROLE_DIT,
+                None,
+                None,
+                "an LTX-2.5 audio-video diffusion transformer, which Studio does not support yet "
+                "(use LTX-2.3 for now)",
+                "diffusers" if "proj_in" in tops else "comfy",
+                LTX25_VARIANT,
+            )
         return _dit(
             "ltx-2",
             "an LTX-2 audio-video diffusion transformer",
@@ -628,6 +656,12 @@ def refusal_for(path: str, page: str) -> Optional[str]:
         other = "Video" if info.page == PAGE_VIDEO else "Image"
         return f"'{name}' is {info.what} ({info.family}); load it from the {other} page."
     return None
+
+
+def is_ltx25_checkpoint(path: str) -> bool:
+    """Header-only: whether a local ``.safetensors`` / ``.gguf`` is an LTX-2.5 DiT (``is_ltx25_dit_keys`` under any DiT
+    prefix). Unreadable -> False."""
+    return inspect_checkpoint(path).variant == LTX25_VARIANT
 
 
 def resolve_family_with_content(
