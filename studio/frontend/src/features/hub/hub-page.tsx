@@ -682,6 +682,8 @@ export function ModelsPage() {
   const handleTabChange = useCallback(
     (next: ModelsTab) => {
       setSortBrowseActive(false);
+      // The filters control is Discover-only, so a hidden filter must not reapply on return.
+      setSearchFilters({});
       setModelsTab(next);
     },
     [setModelsTab],
