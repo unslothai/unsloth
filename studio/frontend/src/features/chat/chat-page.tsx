@@ -4632,16 +4632,9 @@ export function ChatPage({
           used to own it only renders once it is. Mounted through the route change so it can close
           itself on the way out. */}
       <McpServersDialogMount />
-      {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is on screen; the thread viewport
-          adds it to the top padding, so without it the first message reads under an opaque bar.
-          Declared on the nearest ancestor of BOTH so the two cannot disagree. `has-[>...]`, not
-          `has-[...]`: a `:has()` with a DESCENDANT argument is re-checked on any insertion in the
-          subtree, which walks the whole thread on every mutation - 17.5 ms per append on a 357k-
-          element thread, against 0.10 ms without this rule (Chromium). ChatModelNotice renders a
-          direct child, which tests/thread-ancestor-has-scope.test.ts asserts. */}
       <div
         data-chat-content-root=""
-        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]"
+        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       >
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll beneath it, instead of a hard cut. */}
@@ -4649,7 +4642,7 @@ export function ChatPage({
           <div
             aria-hidden
             data-side-panel-inset=""
-            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
@@ -4722,6 +4715,15 @@ export function ChatPage({
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+              />
+            )}
+            {active && view.mode === "single" && (
+              <ChatModelNotice
+                threadId={view.threadId ?? newChatThreadId ?? undefined}
+                checkpoint={inferenceParams.checkpoint}
+                activeGgufVariant={activeGgufVariant}
+                selectableModelIds={selectableModelIds}
+                onSwitch={handleSwitchBackToChatModel}
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
@@ -4899,16 +4901,6 @@ export function ChatPage({
             )}
           </div>
         </div>
-
-        {view.mode === "single" && (
-          <ChatModelNotice
-            threadId={view.threadId ?? newChatThreadId ?? undefined}
-            checkpoint={inferenceParams.checkpoint}
-            activeGgufVariant={activeGgufVariant}
-            selectableModelIds={selectableModelIds}
-            onSwitch={handleSwitchBackToChatModel}
-          />
-        )}
 
         {/* One provider shared by the project and single views, never keyed on thread / nonce / project,
             so switching between them reattaches the live run instead of remounting the runtime and

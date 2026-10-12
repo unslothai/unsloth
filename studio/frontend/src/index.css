@@ -5959,10 +5959,9 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 
 .chat-full-view-dock {
 	--dock-surface: #ffffff;
-	/* No header or notice above this thread. */
+	/* No header above this thread. */
 	--studio-content-top-inset: 0px;
 	--studio-chat-header-height: 0px;
-	--studio-chat-notice-height: 0px;
 	--thread-scrollbar-gutter: 0px;
 	height: auto;
 	border-radius: 28px;
