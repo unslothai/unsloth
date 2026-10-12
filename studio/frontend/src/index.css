@@ -6068,8 +6068,8 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
-	/* Light mode: a flat 1px edge, about #dedede on white, no shadow. */
-	border: 1px solid rgb(0 0 0 / calc(0.13 * var(--contrast-edge-gain, 1)));
+	/* Light mode: a flat 1px edge, about #e6e6e6 on white, no shadow. */
+	border: 1px solid rgb(0 0 0 / calc(0.1 * var(--contrast-edge-gain, 1)));
 	transition: box-shadow 0.1s, border-color 0.1s;
 }
 .dark .unsloth-files-panel {
