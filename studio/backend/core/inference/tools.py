@@ -18615,6 +18615,7 @@ def _check_signal_escape_patterns(code: str):
         if not any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
     )
     _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
+    _LOCAL_DATABASE_CONNECTS = frozenset({"sqlite3.connect", "duckdb.connect"})
     _PROXY_KEYWORDS = ("proxy", "proxies")
     _DESTINATION_ATTRS = {
         "proxies": frozenset(
@@ -20561,7 +20562,13 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                         host_lit = e0.value
                 elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                    target = a0.value.lower()
+                    if not (
+                        any(c in _LOCAL_DATABASE_CONNECTS for c in fq_candidates)
+                        and not target.startswith(("md:", "motherduck:"))
+                        and ("://" not in target or target.startswith("file:"))
+                    ):
+                        host_lit = a0.value
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
