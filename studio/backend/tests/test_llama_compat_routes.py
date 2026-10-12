@@ -1360,7 +1360,17 @@ def test_management_unload_leaves_an_unrelated_load_alone(monkeypatch, _no_local
     assert calls == []
 
 
-def test_management_unload_keeps_a_resident_of_another_quant(_no_local_gguf):
+def test_management_unload_keeps_a_resident_of_another_quant(monkeypatch, _no_local_gguf):
+    # Both quants are on disk; only the resident one may be unloaded.
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: (
+            "/media/models/qwen/model.gguf",
+            requested.rpartition(":")[2],
+            QWEN,
+        ),
+    )
     backend = _Backend()
     backend.hf_variant = "UD-Q4_K_XL"
     mod, calls = _management(backend = backend)
@@ -1413,3 +1423,10 @@ def test_management_unload_cancels_a_switch_while_the_old_model_stays_active(
     with _client(mod) as c:
         assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
     assert calls == ["/models/laguna"]
+
+
+def test_management_unload_refuses_a_pin_this_machine_does_not_have(_no_local_gguf):
+    mod, calls = _management()
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 404
+    assert calls == []

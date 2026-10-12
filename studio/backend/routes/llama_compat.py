@@ -474,7 +474,10 @@ async def manage_unload_model(
 ):
     from models.inference import UnloadRequest
 
-    model_id, row, _ = await _catalog_row(body.model)
+    model_id, row, pinned = await _catalog_row(body.model)
+    if pinned and await _resolve_local(model_id) is None:
+        # A quant this machine does not have names nothing running; never the bare model.
+        raise HTTPException(status_code = 404, detail = "Model not found")
     target = await _unload_target(model_id, row)
     if target is None:
         return {"success": True, "model": model_id}
