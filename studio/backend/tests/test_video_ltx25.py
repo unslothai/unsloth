@@ -274,9 +274,13 @@ def _write_index(folder: Path, encoder: str, **extra) -> None:
 def test_empty_optional_components_count_as_absent(tmp_path):
     from core.inference.video_families import local_ltx_pipeline_family
 
-    _write_index(tmp_path, "Gemma3ForConditionalGeneration", duration_head = [], diffusion_decoder = None)
+    _write_index(
+        tmp_path, "Gemma3ForConditionalGeneration", duration_head = [], diffusion_decoder = None
+    )
     assert local_ltx_pipeline_family(str(tmp_path)) == "ltx-2"
-    _write_index(tmp_path, "Gemma3ForConditionalGeneration", duration_head = ["diffusers", "LTX2DurationHead"])
+    _write_index(
+        tmp_path, "Gemma3ForConditionalGeneration", duration_head = ["diffusers", "LTX2DurationHead"]
+    )
     assert local_ltx_pipeline_family(str(tmp_path)) == LTX25_FAMILY
 
 
@@ -300,14 +304,20 @@ def test_a_local_split_release_is_a_companion_base(tmp_path):
         (split / name).parent.mkdir(parents = True, exist_ok = True)
         (split / name).write_bytes(b"")
     assert v25.is_ltx25_single_file_base(str(split))
-    ltx25 = dict(gguf_filename = "distilled/ltx-2.5-22b-distilled-transformer-Q4_K_M.gguf", model_kind = "gguf")
-    fam = get_video_backend().validate_load_request("vantagewithai/LTX-2.5-GGUF", base_repo = str(split), **ltx25)
+    ltx25 = dict(
+        gguf_filename = "distilled/ltx-2.5-22b-distilled-transformer-Q4_K_M.gguf", model_kind = "gguf"
+    )
+    fam = get_video_backend().validate_load_request(
+        "vantagewithai/LTX-2.5-GGUF", base_repo = str(split), **ltx25
+    )
     assert fam.name == LTX25_FAMILY
     # Any other folder without a model_index.json is still refused as a base.
     other = tmp_path / "not-a-base"
     other.mkdir()
     with pytest.raises(ValueError):
-        get_video_backend().validate_load_request("vantagewithai/LTX-2.5-GGUF", base_repo = str(other), **ltx25)
+        get_video_backend().validate_load_request(
+            "vantagewithai/LTX-2.5-GGUF", base_repo = str(other), **ltx25
+        )
 
 
 def test_local_diffusers_folder_answers_by_its_model_index(tmp_path):

@@ -3055,7 +3055,6 @@ class VideoBackend:
         split_ltx25_base = False
         if fam.name == "ltx-2.5" and kind in ("gguf", "single_file") and base_repo:
             from .video_ltx25 import is_ltx25_single_file_base
-
             split_ltx25_base = is_ltx25_single_file_base(base_repo)
         if not split_ltx25_base:
             _assert_local_base_is_pipeline(base_repo, excluded_components = excluded)
