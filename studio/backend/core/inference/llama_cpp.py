@@ -38306,6 +38306,10 @@ class LlamaCppBackend:
                 )
                 yield from _finish_after_giving_up()
                 return
+            # Cleared before `on_resumed`, as the tool paths do: the policy protocol does not
+            # promise a clear, and a signal still set aborts the resumed attempt at once.
+            if preempt_event is not None:
+                preempt_event.clear()
             # Tell the controller this one is decoding again, or the ledger keeps it PAUSED
             # while it generates and counts its cells as reclaimable.
             preempt_policy.on_resumed()
