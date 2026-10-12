@@ -319,6 +319,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "require_exact_model_resource": values.get("require_exact_model_resource", False),
         "require_exact_dataset_resource": values.get("require_exact_dataset_resource", False),
         "require_validated_model_snapshot": values.get("require_validated_model_snapshot", False),
+        "adapter_base_pin": values.get("adapter_base_pin"),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -356,6 +357,7 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
             "require_exact_dataset_resource",
             "require_validated_model_snapshot",
             "resume_model_load_mode",
+            "adapter_base_pin",
         }
     }
     s3_config = config.get("s3_config")

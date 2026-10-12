@@ -294,6 +294,87 @@ def normalize_gradient_checkpointing(value) -> Union[str, bool]:
     return "unsloth"
 
 
+def _ignored_adapter_settings(
+    peft_config,
+    lora_r,
+    lora_alpha,
+    modules_to_save,
+    target_modules = None,
+    lora_dropout = None,
+    use_dora = False,
+    use_rslora = False,
+    use_loftq = False,
+) -> list[str]:
+    """Requested LoRA settings a continued adapter keeps from its own config instead."""
+    adapter = next(iter(peft_config.values()), None) if isinstance(peft_config, dict) else None
+    if adapter is None:
+        return []
+
+    def leaf(module):
+        return str(module).rsplit(".", 1)[-1]
+
+    ignored = []
+    saved_r = getattr(adapter, "r", None)
+    if saved_r is not None and saved_r != lora_r:
+        ignored.append(f"rank {lora_r} (adapter has {saved_r})")
+    saved_alpha = getattr(adapter, "lora_alpha", None)
+    if saved_alpha is not None and saved_alpha != lora_alpha:
+        ignored.append(f"alpha {lora_alpha} (adapter has {saved_alpha})")
+    saved_dropout = getattr(adapter, "lora_dropout", None)
+    if lora_dropout is not None and saved_dropout is not None and saved_dropout != lora_dropout:
+        ignored.append(f"dropout {lora_dropout} (adapter has {saved_dropout})")
+    if bool(use_dora) != bool(getattr(adapter, "use_dora", False)):
+        ignored.append("DoRA on" if use_dora else "DoRA off")
+    if bool(use_rslora) != bool(getattr(adapter, "use_rslora", False)):
+        ignored.append("rsLoRA on" if use_rslora else "rsLoRA off")
+    if use_loftq:
+        # LoftQ only initializes a new adapter; an existing one keeps its weights.
+        ignored.append("LoftQ initialization")
+    # A string target is a PEFT regex or "all-linear"; only explicit lists compare cleanly.
+    saved_targets = getattr(adapter, "target_modules", None)
+    requested_list = target_modules if isinstance(target_modules, (list, tuple)) else []
+    wants_all_linear = target_modules == "all-linear" or "all-linear" in requested_list
+    requested = [m for m in requested_list if m != "all-linear"]
+    if isinstance(saved_targets, str) and requested:
+        # Saved as "all-linear" or a PEFT regex: an explicit selection cannot narrow it.
+        ignored.append(
+            f"target modules {', '.join(sorted({leaf(m) for m in requested}))} "
+            f"(adapter has {saved_targets})"
+        )
+    elif isinstance(saved_targets, (list, set, tuple)) and (requested or wants_all_linear):
+        saved_names = ", ".join(sorted({leaf(m) for m in saved_targets}))
+        if wants_all_linear:
+            ignored.append(f"all-linear targets (adapter has {saved_names})")
+        elif {leaf(m) for m in requested} != {leaf(m) for m in saved_targets}:
+            ignored.append(
+                f"target modules {', '.join(sorted({leaf(m) for m in requested}))} "
+                f"(adapter has {saved_names})"
+            )
+    saved_modules = {leaf(m) for m in (getattr(adapter, "modules_to_save", None) or [])}
+    missing = [m for m in (modules_to_save or []) if leaf(m) not in saved_modules]
+    if missing:
+        ignored.append(f"training {', '.join(missing)} (adapter does not train them)")
+    return ignored
+
+
+def _load_adapter_aware_tokenizer(lookup_name, hf_token, **kwargs):
+    """AutoTokenizer for *lookup_name*. A PEFT adapter saved without tokenizer files falls back
+    to the base it names, as Unsloth's own adapter loader does (#13140)."""
+    from transformers import AutoTokenizer
+    try:
+        return AutoTokenizer.from_pretrained(lookup_name, token = hf_token, **kwargs)
+    except Exception:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        base = get_base_model_from_lora_identifier(lookup_name, hf_token)
+        if not base:
+            raise
+        # The adapter's revision and subfolder do not apply to its base repo.
+        kwargs.pop("revision", None)
+        kwargs.pop("subfolder", None)
+        return AutoTokenizer.from_pretrained(base, token = hf_token, **kwargs)
+
+
 class UnslothTrainer:
     def __new__(cls, *args, **kwargs):
         if cls is UnslothTrainer and should_use_mlx_training_backend():
@@ -422,11 +503,10 @@ class UnslothTrainer:
                     revision = model_revision,
                 )
             else:
-                from transformers import AutoTokenizer
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer = _load_adapter_aware_tokenizer(
                     lookup_name,
+                    hf_token,
                     trust_remote_code = trust_remote_code,
-                    token = hf_token,
                     local_files_only = local_files_only,
                     revision = model_revision,
                     **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
@@ -1409,6 +1489,32 @@ class UnslothTrainer:
 
             self._use_gradient_checkpointing = use_gradient_checkpointing
 
+            # Saved LoRA dirs load as PeftModel via from_pretrained; do not stack a second adapter (#13140).
+            if getattr(self.model, "peft_config", None):
+                ignored = _ignored_adapter_settings(
+                    self.model.peft_config,
+                    lora_r,
+                    lora_alpha,
+                    modules_to_save,
+                    target_modules = target_modules,
+                    lora_dropout = lora_dropout,
+                    use_dora = use_dora,
+                    use_rslora = use_rslora,
+                    use_loftq = use_loftq,
+                )
+                status = "Continuing from existing LoRA adapters"
+                if ignored:
+                    # The adapter's own shape wins; say so instead of dropping the request silently.
+                    status += f" (kept the adapter's settings, ignoring {'; '.join(ignored)})"
+                    logger.warning(f"{status}\n")
+                self._update_progress(status_message = status)
+                logger.info(
+                    "Model already has LoRA adapters from the checkpoint; "
+                    "continuing training without creating a new adapter\n"
+                )
+                return True
+
+            # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
                 if len(target_modules) == 1:
                     target_modules = "all-linear"

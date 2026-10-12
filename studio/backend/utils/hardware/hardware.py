@@ -5134,7 +5134,9 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
         except Exception:
             pass
         if tier != "default":
-            _tier_version = {"510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(tier, "5.x")
+            _tier_version = {"457": "4.57.6", "510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(
+                tier, "5.x"
+            )
             logger.info(
                 "Config for '%s' not parseable by the default transformers; "
                 "needs transformers %s and will be loaded with that sidecar in the worker",
