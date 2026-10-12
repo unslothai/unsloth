@@ -2071,9 +2071,7 @@ function Install-UnslothStudio {
         return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
-    # The Studio environment is always built on a uv-managed CPython, never one already on the
-    # machine: --python > UNSLOTH_PYTHON (mirrors install.sh) > the existing environment's minor
-    # (resolved once the install dir is known) > 3.13. An explicit request is exact.
+    # Always a uv-managed CPython: --python > UNSLOTH_PYTHON > the existing environment's minor > 3.13.
     $PythonExplicitRequest = if ($null -ne $PythonRequestArg) { $PythonRequestArg.Trim() } elseif ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON.Trim() } else { "" }
     if (($null -ne $PythonRequestArg -or $PythonExplicitRequest) -and $PythonExplicitRequest -notmatch '^3\.1[1-3](\.\d+)?$') {
         Write-StudioLine "[ERROR] Unsupported Python request '$PythonExplicitRequest': use 3.11, 3.12 or 3.13 (optionally with a patch, e.g. 3.13.9)." -ForegroundColor Red
@@ -2083,7 +2081,7 @@ function Install-UnslothStudio {
     $PythonVersion = if ($PythonExplicitRequest) { (($PythonExplicitRequest -split '\.')[0..1]) -join '.' } else { "3.13" }
     # Patch releases the stack cannot run; mirrors PYTHON_SKIP in install.sh.
     $PythonSkip = @("3.13.8")
-    # Skipped for one reason: it cannot `import torch`, which a -NoTorch install never does.
+    # It cannot `import torch`, which a -NoTorch install never does.
     if ($SkipTorch) { $PythonSkip = @() }
     if ($PythonPatchRequest -and ($PythonSkip -contains $PythonPatchRequest)) {
         Write-StudioLine "[ERROR] Python $PythonPatchRequest cannot import torch; request $PythonVersion or another patch." -ForegroundColor Red
@@ -6691,8 +6689,7 @@ exit 0
         return $true
     }
 
-    # The minor an existing environment was built on, from its pyvenv.cfg (uv writes version_info,
-    # the stdlib venv writes version), or $null.
+    # uv writes version_info to pyvenv.cfg, the stdlib venv writes version.
     function Get-StudioVenvPythonMinor {
         param([Parameter(Mandatory = $true)][string]$VenvDir)
         $cfg = Join-Path $VenvDir "pyvenv.cfg"
@@ -6703,10 +6700,9 @@ exit 0
         return $null
     }
 
-    # ── Choose the uv-managed Python: minor and architecture now, the interpreter once uv is installed ──
+    # ── uv-managed Python: minor and arch now, the interpreter once uv is installed ──
     Write-TauriLog "STEP" "Installing Python"
-    # A reinstall keeps the environment's minor, so its cp3XX wheels (torch included) come from
-    # uv's cache rather than a new download; UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) moves it.
+    # A reinstall keeps its minor so cached cp3XX wheels (torch) are reused; UNSLOTH_TORCH_UPGRADE=1 moves it.
     if (-not $PythonExplicitRequest -and $env:UNSLOTH_TORCH_UPGRADE -ne '1') {
         $_existingPythonMinor = Get-StudioVenvPythonMinor -VenvDir $VenvDir
         if ($_existingPythonMinor) { $PythonVersion = $_existingPythonMinor }
@@ -6717,8 +6713,7 @@ exit 0
         step "gpu" "Windows on ARM + NVIDIA: native CUDA wheels available -- installing the ARM64 stack" "Green"
         substep "torch index: $(Remove-IndexUrlCredentials $script:WoaTorchIndexUrl)"
     }
-    # Windows on ARM runs x64 Python under emulation unless the native CUDA stack applies:
-    # pyarrow (via datasets) and hf-transfer publish no win_arm64 wheels (#8495, #10875).
+    # Windows on ARM: x64 under emulation unless the native CUDA stack applies (no win_arm64 pyarrow / hf-transfer, #8495).
     $PythonArch = "x86_64"
     if ((Get-HostMachineArch) -eq "arm64" -and ($script:WoaNativeCudaTorch -or (Test-Arm64PythonOptOut))) {
         $PythonArch = "arm64"
@@ -7101,9 +7096,8 @@ exit 0
         $env:UV_HTTP_TIMEOUT = "180"
     }
 
-    # --no-bin / --no-registry: only uv's own Python store changes, nothing on PATH or in the py
-    # launcher. --system: `find` otherwise answers with an active venv's python; --managed-python:
-    # never an interpreter uv did not install. @{Version; Full; Path; Arch} or $null.
+    # --no-bin / --no-registry leave PATH and the py launcher alone; --system skips an active venv;
+    # --managed-python never returns an interpreter uv did not install.
     function Resolve-UvManagedPython {
         param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
         $uvArch = if ($Arch -eq "arm64") { "aarch64" } else { "x86_64" }
@@ -7140,9 +7134,7 @@ exit 0
         return $null
     }
 
-    # A legacy environment is only moved in and reused when its base (pyvenv.cfg home) lies in
-    # uv's own Python store and it runs the Python this install resolved (the exact patch when
-    # one was requested); anything else is rebuilt rather than kept.
+    # Reuse a legacy environment only on uv's store and the resolved Python (exact patch if requested).
     function Test-LegacyVenvReusable {
         param([Parameter(Mandatory = $true)][string]$VenvDir, $Python, [bool]$Exact = $false)
         $cfg = Join-Path $VenvDir "pyvenv.cfg"
@@ -7890,9 +7882,8 @@ exit 0
         $_Migrated = $false
     }
 
-    # The opt-out has to keep something: the ordinary reinstall has already moved the ARM64
-    # environment into a rollback that success would delete. The tree is kept, under the same
-    # unsloth_studio.arm64.* name the rebuild branch uses, and the user is told where it is.
+    # The reinstall already moved the ARM64 environment into a rollback success would delete, so
+    # the opt-out keeps it as unsloth_studio.arm64.*.
     if ($script:PrevVenvPlatformTag -eq "win-arm64" -and (Test-Arm64PythonOptOut) -and
         $script:StudioVenvRollbackActive) {
         $script:StudioVenvRollbackPreserve = $true

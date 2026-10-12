@@ -210,7 +210,7 @@ def test_an_explicit_patch_is_exact(shell, tmp_path):
 REQUEST = _between(
     "    $argList = $args\n", "    # Env-var equivalent for web installs"
 ) + _between(
-    "    # The Studio environment is always built on a uv-managed CPython",
+    "    # Always a uv-managed CPython:",
     "    # An elevated run writes",
 )
 
@@ -265,7 +265,7 @@ def test_the_request(shell, args, env_python, expected):
 # ── The choice made before uv exists: minor and architecture ──
 
 CHOOSE = _function("Get-StudioVenvPythonMinor") + _between(
-    "    # ── Choose the uv-managed Python", "    $DetectedPython = $null\n"
+    "    # ── uv-managed Python: minor and arch now", "    $DetectedPython = $null\n"
 )
 
 
