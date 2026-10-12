@@ -22626,6 +22626,16 @@ def _defuse_sentinels(text: str) -> str:
 _MAX_SNAPSHOT_HASH_BYTES = 64 * 1024 * 1024
 
 
+# Dependency and bytecode trees. Walked early, their thousands of files spent the walk's budget and a file the call
+# wrote beside them got no download row.
+_SNAPSHOT_SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
+
+
+def _snapshot_skips_dir(base: str, name: str) -> bool:
+    """`node_modules`, `__pycache__`, or a virtualenv (marked by its pyvenv.cfg, whatever it is named)."""
+    return name in _SNAPSHOT_SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff. All files, not
     just images: a .csv the model wrote used to be invisible. Size rides along with mtime because
@@ -22656,6 +22666,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 for d in dirs
                 if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
                 and _servable_segment(d)
+                and not _snapshot_skips_dir(base, d)
             ]
         )
         for name in names:
