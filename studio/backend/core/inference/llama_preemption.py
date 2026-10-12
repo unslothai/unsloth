@@ -1215,39 +1215,53 @@ class PreemptionController:
         if state not in self._LIVE_STATES:
             return False
         with self._lock:
-            participant = self._participants.get(gen_id)
-            if (
-                participant is not None
-                and participant.state == ParticipantState.PREEMPTING
-                and state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING)
-            ):
-                # Chosen as its stream finished a tool call: nothing reads the signal while the
-                # tool runs, so the choice is undone as `note_declined` undoes one. A tool holder
-                # is the cheapest room anyway: its idle cells are reclaimed, and the next sweep
-                # can choose it again.
-                participant.preempt_chosen_at = 0.0
-                participant.consecutive_preemptions = max(
-                    0, participant.consecutive_preemptions - 1
-                )
-                participant.preempt_event.clear()
-                participant.state = ParticipantState.DECODING
-            if participant is None or participant.state not in self._LIVE_STATES:
-                return False
-            if participant.state == state:
-                return False
-            participant.state = state
-            if state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING):
-                participant.park_seq += 1
-                participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
-            if state == ParticipantState.DECODING:
-                # Back at the model: llama-server prefills the prompt in again, so the
-                # cells are real once more.
-                if participant.cells_reclaimed:
-                    # The WHOLE prompt, not a round's growth: the reclaim erased every
-                    # cell, so there is no prefix left to hit.
-                    participant.announce_prefill(participant.tokens)
-                participant.cells_reclaimed = False
+            changed = self._note_state_locked(gen_id, state)
+        if changed is None:
+            # The plan that chose it counted its cells as leaving, and nothing else may sweep
+            # before the room is used: an unpausable holder plans once and reports no growth.
+            # Planned again, in memory only, since the streaming drains call this on the loop.
+            self.plan_preemptions(needed = 0)
             return True
+        return changed
+
+    def _note_state_locked(self, gen_id: str, state: str) -> Optional[bool]:
+        """`note_state` under the lock: None when a pending choice was undone (and the state
+        then recorded), else whether the state changed."""
+        revoked = False
+        participant = self._participants.get(gen_id)
+        if (
+            participant is not None
+            and participant.state == ParticipantState.PREEMPTING
+            and state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING)
+        ):
+            # Chosen as its stream finished a tool call: nothing reads the signal while the
+            # tool runs, so the choice is undone as `note_declined` undoes one. A tool holder
+            # is the cheapest room anyway: its idle cells are reclaimed, and the next sweep
+            # can choose it again.
+            participant.preempt_chosen_at = 0.0
+            participant.consecutive_preemptions = max(
+                0, participant.consecutive_preemptions - 1
+            )
+            participant.preempt_event.clear()
+            participant.state = ParticipantState.DECODING
+            revoked = True
+        if participant is None or participant.state not in self._LIVE_STATES:
+            return False
+        if participant.state == state:
+            return None if revoked else False
+        participant.state = state
+        if state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING):
+            participant.park_seq += 1
+            participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
+        if state == ParticipantState.DECODING:
+            # Back at the model: llama-server prefills the prompt in again, so the
+            # cells are real once more.
+            if participant.cells_reclaimed:
+                # The WHOLE prompt, not a round's growth: the reclaim erased every
+                # cell, so there is no prefix left to hit.
+                participant.announce_prefill(participant.tokens)
+            participant.cells_reclaimed = False
+        return None if revoked else True
 
     def parked_holders(self) -> Dict[str, int]:
         """Who is parked on a tool right now, with each one's park count.
