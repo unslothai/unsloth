@@ -249,69 +249,44 @@ test("a snapshot-path chat is labelled by its repo name, not the revision sha", 
   assert.match(body, /modelDisplayName\(createdModel\.modelId\)/);
 });
 
-test("the notice clears the chat header instead of rendering underneath it", () => {
-  // A positioned header paints above in-flow siblings, so the notice must itself be positioned.
-  const header = slice(page, "chat-header-fade", "</div>");
-  assert.match(header, /z-40/, "the header is still the z-40 absolute overlay");
-
-  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  const tag = slice(body, "data-chat-model-notice", "\n    >");
-  const div = slice(tag, 'className="', '"');
-  assert.match(div, /\babsolute\b/);
+test("the original-model control sits beside the picker in the chat header", () => {
+  const header = slice(page, "chat-header-fade", "{/* One provider shared");
+  assert.match(header, /<ModelSelector[\s\S]*<ChatModelNotice/);
   assert.match(
-    div,
-    /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/,
+    header,
+    /\{view\.mode === "single" && \(\s*<ChatModelNotice\s+active=\{active\}/,
   );
-  const z = /\bz-(\d+)\b/.exec(div);
-  assert.ok(z, "the notice needs an explicit z-index");
-  assert.ok(
-    Number(z[1]) > 20 && Number(z[1]) < 40,
-    `notice z-${z[1]} must sit above the z-20 fade and below the z-40 header`,
+  // Hide the portaled UI after the hook runs, keeping the saved model and subscription off-route.
+  assert.match(
+    notice,
+    /const createdModel = useChatCreatedModel\(threadId\);[\s\S]*?if \(!active\) return null;/,
   );
-  assert.doesNotMatch(
-    div,
-    /bg-muted\//,
-    "a translucent overlay lets messages show through",
-  );
+  // A chat change must dismiss a portaled popover along with its old model details.
+  assert.match(notice, /<Popover key=\{threadId\}>/);
 });
 
-test("the conversation reserves the space the notice overlay takes", () => {
-  // One height declaration on the common ancestor. `has-[>...]` (child form) avoids re-checking
-  // `:has()` on every DOM change; see tests/thread-ancestor-has-scope.test.ts.
-  assert.match(
-    page,
-    /has-\[>\[data-chat-model-notice\]\]:\[--studio-chat-notice-height:2\.25rem\]/,
-  );
-  assert.match(notice, /data-chat-model-notice=""/);
-  assert.match(notice, /h-\[var\(--studio-chat-notice-height,2\.25rem\)\]/);
-  assert.doesNotMatch(
-    notice.slice(notice.indexOf("data-chat-model-notice")),
-    /py-1\.5/,
-    "a fixed height and a vertical padding would disagree about the bar's size",
-  );
+test("the conversation and research panel reserve only the chat header", () => {
+  // The original-model control lives inside the header, so it needs no extra row.
+  for (const source of [page, notice, thread, researchPanel]) {
+    assert.doesNotMatch(source, /--studio-chat-notice-height/);
+  }
   assert.match(
     thread,
-    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)-var\(--studio-chat-scroller-top,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\] mt-\[var\(--studio-chat-scroller-top,0px\)\] pt-\[var\(--thread-header-offset\)\]/,
+    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)-var\(--studio-chat-scroller-top,0px\)\+var\(--studio-chat-header-height,48px\)\)\] mt-\[var\(--studio-chat-scroller-top,0px\)\] pt-\[var\(--thread-header-offset\)\]/,
   );
   const fade = slice(page, "chat-header-fade", '"');
-  assert.match(fade, /\+var\(--studio-chat-notice-height,0px\)\)\]/);
-});
-
-test("the research panel reserves the notice's height too", () => {
-  // The notice spans the whole chat container, including the research panel, which must offset too.
+  assert.match(
+    fade,
+    /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/,
+  );
   const style = slice(researchPanel, 'variant === "panel"', ": undefined");
   assert.match(
     style,
-    /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ var\(--studio-chat-header-height, 48px\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+    /marginTop:\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ var\(--studio-chat-header-height, 48px\)\)"/,
   );
   assert.match(
     style,
-    /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - var\(--studio-chat-header-height, 48px\) - var\(--studio-chat-notice-height, 0px\)\)"/,
-  );
-  assert.doesNotMatch(
-    style,
-    /--studio-chat-notice-height,\s*2\.25rem/,
-    "the panel must not assume a notice is present",
+    /height:\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - var\(--studio-chat-header-height, 48px\)\)"/,
   );
 });
 

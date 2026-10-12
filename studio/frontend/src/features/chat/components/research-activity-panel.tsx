@@ -885,11 +885,11 @@ export function ResearchActivityPanel({
       style={
         variant === "panel"
           ? {
-              // Clear the absolute chat-model notice bar like the header does; 0px when no notice shows.
+              // Keep the panel's controls below the absolute chat header.
               height:
-                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px) - var(--studio-chat-notice-height, 0px))",
+                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px))",
               marginTop:
-                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px) + var(--studio-chat-notice-height, 0px))",
+                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
             }
           : undefined
       }

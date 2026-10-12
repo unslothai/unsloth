@@ -242,24 +242,42 @@ function useVideoModels(
   );
 }
 
-// Matched by repo-id substring, most specific first.
+// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
+// normalized like the backend's family matcher (separator runs become "-", plus a trailing "-"), so "Wan2_1-T2V-14B"
+// and "wan2.1_t2v_14b" hit the same row.
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "minimax-h3", steps: 30, guidance: 1 },
-  { match: "minimax_h3", steps: 30, guidance: 1 },
+  // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
+  // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
+  { match: "fusionx", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
   { match: "a14b", steps: 20, guidance: 3.5 },
-  { match: "wan2.2-14b", steps: 20, guidance: 3.5 },
+  { match: "wan2-2-14b", steps: 20, guidance: 3.5 },
+  // Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
+  { match: "wan2-1-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan2-1-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-14b-", steps: 20, guidance: 6 },
+  { match: "wan2-1-", steps: 30, guidance: 6 },
+  { match: "wan21-", steps: 30, guidance: 6 },
   // The backend supplies the fps per family.
   { match: "wan", steps: 20, guidance: 5 },
   { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {
-  const id = repoId.toLowerCase();
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
+  const fold = (text: string) => `${text.toLowerCase().replace(/[-_.\s]+/g, "-")}-`;
+  const id = fold(repoId);
+  // The Wan and FusionX rows count only in the model / file name, as on the backend.
+  const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
+  return (
+    MODEL_DEFAULTS.find((d) =>
+      (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),
+    ) ?? DEFAULT_GEN
+  );
 }
 
 function defaultsKeyFor(repoId: string, familyOverride: string): string {

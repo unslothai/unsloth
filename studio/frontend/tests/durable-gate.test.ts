@@ -42,7 +42,14 @@ test("a plain text turn stays durable", () => {
 });
 
 test("only a browser-executed tool forces the legacy stream", () => {
-  assert.equal(BROWSER_EXECUTED_TOOLS.size, 0, "nothing is browser-executed today");
+  // The browser tools drive this tab's browser panel, so the turn can't outlive it.
+  assert.ok(BROWSER_EXECUTED_TOOLS.has("browser_click"));
+  assert.ok(BROWSER_EXECUTED_TOOLS.has("browser_screenshot"));
+  assert.ok(![...BROWSER_EXECUTED_TOOLS].some((name) => !name.startsWith("browser_")));
+  assert.equal(
+    turnRequiresLegacyStream({ enable_tools: true, enabled_tools: ["web_search", "browser_navigate"] }),
+    true,
+  );
 });
 
 const durableTurn = {

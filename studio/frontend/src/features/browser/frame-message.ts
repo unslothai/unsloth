@@ -23,7 +23,9 @@ export type FrameMessage =
   | { type: "snapshot"; html: string | null }
   | { type: "shortcut"; key: string; shift: boolean }
   | { type: "zoom"; direction: 1 | -1 | 0; wheel: boolean }
-  | { type: "annotate"; event: AnnotateEvent };
+  | { type: "annotate"; event: AnnotateEvent }
+  /** The browser agent's answer to command `id` (agent/page-agent.ts); the panel checks `result`. */
+  | { type: "agent"; id: string; installed: boolean; result: Record<string, unknown> | null };
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
@@ -163,6 +165,15 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case "annotate": {
       const event = annotateEvent(message);
       return event ? { type: "annotate", event } : null;
+    }
+    case "agent": {
+      const id = text(message.id, 64);
+      if (!id) return null;
+      const result =
+        message.result && typeof message.result === "object" && !Array.isArray(message.result)
+          ? (message.result as Record<string, unknown>)
+          : null;
+      return { type: "agent", id, installed: message.installed === true, result };
     }
     default:
       return null;

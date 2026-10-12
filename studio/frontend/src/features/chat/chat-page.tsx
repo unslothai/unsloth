@@ -4503,18 +4503,16 @@ export function ChatPage({
       {active && <RootSandboxSetupDialog />}
       {/* Mounted always: its chord must work before MCP is on, and it closes itself on route change. */}
       <McpServersDialogMount />
-      {/* Declares --studio-chat-notice-height for both. `has-[>...]`, not `has-[...]`: a descendant
-          :has() is re-checked on every insertion in the thread. ChatModelNotice is a direct child. */}
       <div
         data-chat-content-root=""
-        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]"
+        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       >
         <NativeModelDropOverlay state={nativeModelDropState} />
         {view.mode !== "compare" && (
           <div
             aria-hidden
             data-side-panel-inset=""
-            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
@@ -4532,7 +4530,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="pointer-events-auto flex min-w-0 items-center gap-1">
+          <div className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -4586,7 +4584,17 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
+              />
+            )}
+            {view.mode === "single" && (
+              <ChatModelNotice
+                active={active}
+                threadId={view.threadId ?? newChatThreadId ?? undefined}
+                checkpoint={inferenceCheckpoint}
+                activeGgufVariant={activeGgufVariant}
+                selectableModelIds={selectableModelIds}
+                onSwitch={handleSwitchBackToChatModel}
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
@@ -4664,6 +4672,7 @@ export function ChatPage({
               (view.mode === "project" && activeThreadId != null)) &&
             (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
+                compactUnknownAsIcon={view.mode === "single"}
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
@@ -4765,18 +4774,11 @@ export function ChatPage({
           </div>
         </div>
 
-        {view.mode === "single" && (
-          <ChatModelNotice
-            threadId={view.threadId ?? newChatThreadId ?? undefined}
-            checkpoint={inferenceCheckpoint}
-            activeGgufVariant={activeGgufVariant}
-            selectableModelIds={selectableModelIds}
-            onSwitch={handleSwitchBackToChatModel}
-          />
-        )}
-
-        {/* Never keyed: a key remounts the runtime on view switch and aborts generation. Compare is
-            a sibling because ComparePane builds its own providers and nesting throws. */}
+        {/* One provider shared by the project and single views, never keyed on thread / nonce / project,
+            so switching between them reattaches the live run instead of remounting the runtime and
+            aborting generation (#8908). Any key here brings the bug back. Compare renders as a
+            sibling so it hides this rather than unmounting it, since ComparePane builds its own
+            providers and nesting throws. */}
         {baseView ? (
           <div
             className={

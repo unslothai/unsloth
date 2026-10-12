@@ -2,10 +2,27 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Tools the BROWSER must execute, forcing the cancel-on-disconnect stream. Intentionally empty:
- * every current tool runs on the server. Add one only if it truly needs a live tab.
+ * Tools the BROWSER has to execute itself, so a turn that uses one genuinely cannot proceed once the tab is gone
+ * and must stay on the subscriber-owned (cancel-on-disconnect) stream.
+ *
+ * Every other tool Studio runs for a local model - web_search, web_fetch, python, terminal, edit_file, render_html,
+ * image_generation, MCP - is executed by the SERVER and streams as chunk events, so it is durable like plain text.
+ * The browser tools are the exception: they drive this tab's browser panel. Add a name here only if a tool truly
+ * needs a live tab. Spelled out rather than imported from features/browser/agent/tools.ts, which the barrel cycle
+ * would leave uninitialized here; tests/browser-agent-gate.test.ts keeps the two lists equal.
  */
-export const BROWSER_EXECUTED_TOOLS: ReadonlySet<string> = new Set<string>([]);
+export const BROWSER_EXECUTED_TOOLS: ReadonlySet<string> = new Set<string>([
+  "browser_navigate",
+  "browser_snapshot",
+  "browser_find",
+  "browser_click",
+  "browser_type",
+  "browser_select",
+  "browser_scroll",
+  "browser_press_key",
+  "browser_screenshot",
+  "browser_history",
+]);
 
 /**
  * Keys on `enabled_tools`, the resolved server-executed tool list. `requestPayload.tools` is absent
