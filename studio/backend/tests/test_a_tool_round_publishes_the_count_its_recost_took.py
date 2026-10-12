@@ -63,11 +63,12 @@ def test_the_recost_hands_back_the_count_of_what_the_round_sends(monkeypatch):
     assert counted == {"prompt": 5000}
 
 
-def test_a_count_of_another_catalogue_is_not_handed_back(monkeypatch):
+def test_another_catalogue_is_counted_on_its_own(monkeypatch):
+    counts = {True: 5000, False: 4900}
     monkeypatch.setattr(
         inference,
         "_count_gguf_admission_prompt_detail",
-        lambda *a, **k: (5000, True),
+        lambda backend, payload, messages, tools = None, **k: (counts[bool(tools)], True),
     )
     counted: dict = {}
     inference._openai_llama_admission_recost(
@@ -78,6 +79,27 @@ def test_a_count_of_another_catalogue_is_not_handed_back(monkeypatch):
         payload = SimpleNamespace(),
         injected_tools = [{"type": "function", "function": {"name": "a"}}],
         # The final pass renders no catalogue, so the count of the charged one does not stand.
+        wire_tools = None,
+        count_prepared_prompt = True,
+        counted_out = counted,
+    )
+    assert counted == {"prompt": 4900}
+
+
+def test_an_estimated_count_is_not_handed_back(monkeypatch):
+    monkeypatch.setattr(
+        inference,
+        "_count_gguf_admission_prompt_detail",
+        lambda *a, **k: (5000, False),
+    )
+    counted: dict = {}
+    inference._openai_llama_admission_recost(
+        _Reservation(),
+        [{"role": "user", "content": "hi"}],
+        request = None,
+        llama_backend = _backend(),
+        payload = SimpleNamespace(),
+        injected_tools = [{"type": "function", "function": {"name": "a"}}],
         wire_tools = None,
         count_prepared_prompt = True,
         counted_out = counted,

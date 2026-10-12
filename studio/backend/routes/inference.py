@@ -4116,6 +4116,14 @@ def _openai_llama_admission_recost(
                 vision = vision,
             )
         )
+        if count_prepared_prompt and prompt_exact and not wire_counted:
+            # Another catalogue (none on the final pass): counted too, since the estimate
+            # undercounts dense text by several times.
+            wire_prompt_tokens, wire_counted = _count_gguf_admission_prompt_detail(
+                llama_backend, payload, conversation, wire_tools, cancel_event = cancel_event
+            )
+            if cancel_event is not None and cancel_event.is_set():
+                raise LlamaAdmissionCancelled("stopped while the round was being counted")
         if counted_out is not None and wire_counted:
             counted_out["prompt"] = wire_prompt_tokens
         # Reading "Max" literally here would put the run back on the whole cache at its
