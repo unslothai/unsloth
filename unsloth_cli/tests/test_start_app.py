@@ -863,6 +863,7 @@ def test_vscode_in_a_dev_container_prints_the_group(studio, monkeypatch, name):
     assert not (studio["home"] / ".config" / "Code").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "WSL paths are POSIX paths")
 def test_vscode_under_wsl_says_to_use_a_local_window(studio, monkeypatch, tmp_path):
     monkeypatch.setattr(start.sys, "platform", "linux")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
