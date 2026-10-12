@@ -950,10 +950,7 @@ _EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
-def extract_text(
-    file: UploadFile = File(...),
-    subject: str = Depends(get_current_subject),
-) -> dict:
+def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
     from core.rag import parsers
 
     stored_path, filename, _digest = _save_upload(file)

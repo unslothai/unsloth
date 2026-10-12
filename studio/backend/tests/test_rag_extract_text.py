@@ -42,7 +42,9 @@ def test_works_without_sqlite_vec(rag_home, monkeypatch):
     from storage import rag_db
 
     monkeypatch.setattr(rag_db, "rag_available", lambda: False)
-    result = rag_routes.extract_text(_upload("page.xhtml", b"<html><body><p>hello</p></body></html>"), subject = "owner")
+    result = rag_routes.extract_text(
+        _upload("page.xhtml", b"<html><body><p>hello</p></body></html>"), subject = "owner"
+    )
     assert result["text"] == "hello"
 
 
