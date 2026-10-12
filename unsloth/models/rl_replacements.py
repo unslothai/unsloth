@@ -67,7 +67,7 @@ try:
     )
 except Exception:
     UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False
-# Output-head bias in GRPO scoring needs unslothai/unsloth-zoo#1685's lm_head_bias argument; mirrored via RL_PRE_ITEMS.
+# Zoo >= unslothai/unsloth-zoo#1685 scores a biased output head; mirrored via RL_PRE_ITEMS.
 try:
     UNSLOTH_ZOO_HAS_HEAD_BIAS = (
         "lm_head_bias" in inspect.signature(chunked_hidden_states_selective_log_softmax).parameters
@@ -2378,7 +2378,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             lm_head = output_embeddings.weight
             lm_head_bias = getattr(output_embeddings, "bias", None)
             if lm_head_bias is not None and not UNSLOTH_ZOO_HAS_HEAD_BIAS:
-                # An older unsloth_zoo has no bias argument: score without it rather than raise.
                 import warnings
                 warnings.warn(
                     "Unsloth: this model's output head has a bias, which GRPO scoring needs "
