@@ -141,9 +141,7 @@ def _fast_llama_for_training():
 
 @pytest.mark.parametrize("before", [None, "0", "1"])
 def test_fast_language_model_for_training_undoes_generate(fbm, monkeypatch, before):
-    # FastLanguageModel loads Qwen3.5 / Gemma 3 / Gemma 4 through FastModel, so generate() runs
-    # FastBaseModel.for_inference(); FastLanguageModel.for_training() must undo its "1" too, or the next
-    # trainer keeps full logits and drops packing.
+    # FastModel-backed models (Qwen3.5, Gemma 3/4) run FastBaseModel.for_inference() in generate().
     if before is not None:
         monkeypatch.setenv(FLAG, before)
     model = _Model()
