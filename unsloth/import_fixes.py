@@ -6628,8 +6628,7 @@ def fix_triton_module_cache_python_key():
         return
     tag = f"\n/* unsloth: {sysconfig.get_config_var('EXT_SUFFIX') or sys.implementation.cache_tag} */\n"
     for backend in backends.values():
-        # Backends load via spec_from_file_location, outside sys.modules: reach the module
-        # the driver class was defined in through its own globals.
+        # Backend drivers load outside sys.modules: patch the defining module via its globals.
         namespace = getattr(getattr(backend.driver, "__init__", None), "__globals__", None)
         if not isinstance(namespace, dict):
             continue
