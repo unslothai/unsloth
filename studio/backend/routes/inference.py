@@ -32061,6 +32061,14 @@ async def produce_openai_chat_completions(
                             _stream_finish = event.get("finish_reason")
                             continue
 
+                        if event["type"] == "context_usage":
+                            # Must not reach the content branch below: its empty text resets prev_text.
+                            if _ui_events:
+                                yield f"data: {json.dumps(event)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
+
                         if event["type"] == "quote_cut":
                             # Bypass content handling to avoid resetting the text cursor.
                             if _ui_events:
