@@ -741,3 +741,72 @@ class TestQGaLoreIntegration:
 
         for h in handles:
             h.remove()
+
+
+class _TinyBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q_proj = nn.Linear(32, 32, bias = False)
+        self.down_proj = nn.Parameter(torch.randn(4, 32, 16) * 0.02)
+
+    def forward(self, x):
+        return torch.einsum("bh,eho->bo", self.q_proj(x), self.down_proj)
+
+
+def _q_galore_step(model, device, weight_quant, targets):
+    groups = make_q_galore_param_groups(
+        model,
+        rank = 4,
+        proj_quant = False,
+        weight_quant = weight_quant,
+        stochastic_round = False,
+        weight_group_size = 32,
+        target_modules = targets,
+    )
+    if weight_quant:
+        _adamw_mod.QGaLoreAdamW8bit.init_weight_quantization(model, groups, group_size = 32)
+        _adamw_mod.install_weight_quant_hooks(model)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit(groups, lr = 1e-2)
+    model(torch.randn(2, 32, device = device)).square().sum().backward()
+    optimizer.step()
+    return groups
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_stacked_expert_weights_use_plain_adamw_not_galore():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    model = _TinyBlock().to(device)
+    before = model.down_proj.detach().clone()
+    groups = _q_galore_step(model, device, weight_quant = False, targets = ["q_proj", "down_proj"])
+    galore = next(g for g in groups if "rank" in g)["params"]
+    assert [p.dim() for p in galore] == [2]
+    assert not torch.equal(model.down_proj.detach(), before)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_weight_quant_state_dict_after_step_holds_full_weights():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    model = _TinyBlock().to(device)
+    _q_galore_step(model, device, weight_quant = True, targets = ["q_proj"])
+    weight = model.q_proj.weight
+    assert weight.shape == (1,)
+
+    state_dict = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    expected = _dequantize(weight._q_data, weight._q_scales, weight._q_zeros, weight._q_shape)
+    torch.testing.assert_close(state_dict["q_proj.weight"], expected)
+    assert weight.shape == (1,)
+
+    fresh = _TinyBlock().to(device)
+    fresh.load_state_dict(state_dict)
+    x = torch.randn(2, 32, device = device)
+    torch.testing.assert_close(model(x), fresh(x))
+
+    # Loading into the live quantized model must not be overwritten by the stale INT8 copy.
+    target = {k: torch.randn_like(v) for k, v in state_dict.items()}
+    model.load_state_dict(target)
+    fresh.load_state_dict(target)
+    torch.testing.assert_close(model(x), fresh(x))
