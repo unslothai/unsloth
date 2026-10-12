@@ -910,3 +910,180 @@ def test_derived_batch_seeds_stay_json_safe(env):
     result = backend.generate(prompt = "x", steps = 1, width = 256, height = 256, seed = 2**53 - 1, batch_size = 2)
     assert result["seeds"] == [2**53 - 1, 0]
     assert [g["seed"] for g in runtime.generates] == [2**53 - 1, 0]
+
+
+def test_a_failed_replacement_hands_the_resident_model_back_to_its_owner(env, monkeypatch):
+    import core.inference.gpu_arbiter as arbiter
+    import hub.services.models.account_access as account_access
+
+    backend, _rt, _calls = env
+    restored = []
+    monkeypatch.setattr(
+        arbiter, "restore_owner_account", lambda owner, *a, **k: restored.append(owner)
+    )
+    monkeypatch.setattr(
+        account_access, "restore_resident_metadata", lambda kind: restored.append(kind)
+    )
+    real_fetch_gguf = mb.fetch_gguf
+    failing = [True]
+
+    def _fetch(*a, **k):
+        if failing[0]:
+            raise OSError("fetch failed")
+        return real_fetch_gguf(*a, **k)
+
+    monkeypatch.setattr(mb, "fetch_gguf", _fetch)
+    assert _load(backend)["phase"] == "error"
+    assert restored == []  # nothing resident to hand back
+    failing[0] = False
+    assert _load(backend)["phase"] == "ready"
+    failing[0] = True
+    assert _load(backend)["phase"] == "error"
+    assert backend.is_loaded
+    assert restored == [arbiter.DIFFUSION, "diffusion"]
+
+
+def _hub_listing(monkeypatch, files):
+    import huggingface_hub
+
+    listed = []
+    info = type(
+        "Info", (), {"sha": "abc", "siblings": [type("S", (), {"rfilename": f}) for f in files]}
+    )
+    monkeypatch.setattr(
+        huggingface_hub.HfApi,
+        "model_info",
+        lambda self, repo, *a, **k: listed.append(repo) or info,
+    )
+    return listed
+
+
+def test_base_companions_come_from_the_repo_the_plan_staged(monkeypatch):
+    import utils.hf_xet_fallback as xet
+
+    files = ["text_encoder/a.safetensors", "vae/c.safetensors"]
+    listed = _hub_listing(monkeypatch, files)
+    judged = []
+    monkeypatch.setattr(
+        mb,
+        "prefer_ungated_mirror",
+        lambda base, tok = None, *, files = None: judged.append(files) or "unsloth/Z-Image-Turbo",
+        raising = False,
+    )
+    fetched = []
+    monkeypatch.setattr(
+        xet,
+        "hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **k: fetched.append((repo, fn, k.get("revision")))
+        or f"/hub/snapshots/abc/{fn}",
+    )
+    mb.fetch_base_snapshot(BASE, None, local_files_only = False)
+    assert judged == [files]
+    assert listed == [BASE, "unsloth/Z-Image-Turbo"]
+    assert fetched == [("unsloth/Z-Image-Turbo", f, "abc") for f in files]
+
+
+def test_cache_only_companions_read_the_mirror_and_the_live_cache_root(monkeypatch, tmp_path):
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    import utils.hf_cache_settings as cache_settings
+
+    live = str(tmp_path / "live")
+    monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: live)
+    monkeypatch.setattr(
+        mb,
+        "prefer_ungated_mirror",
+        lambda base, tok = None, **k: "unsloth/Z-Image-Turbo",
+        raising = False,
+    )
+    asked = []
+
+    def _snapshot(repo, *, cache_dir = None, local_files_only = False, **_k):
+        assert local_files_only
+        asked.append((repo, cache_dir))
+        if (repo, cache_dir) == ("unsloth/Z-Image-Turbo", live):
+            return f"{live}/models--unsloth--Z-Image-Turbo/snapshots/abc"
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot)
+    out = mb.fetch_base_snapshot(BASE, None, local_files_only = True)
+    assert out.startswith(live)
+    assert asked == [("unsloth/Z-Image-Turbo", live)]
+    asked.clear()
+    monkeypatch.setattr(mb, "prefer_ungated_mirror", lambda base, tok = None, **k: base)
+    with pytest.raises(LocalEntryNotFoundError):
+        mb.fetch_base_snapshot(BASE, None, local_files_only = True)
+    assert asked and all(repo == BASE for repo, _ in asked)
+    assert asked[0] == (BASE, live)
+
+
+def _mlx_route_stubs(monkeypatch, *, predicted = "mlx"):
+    import core.inference.diffusion_engine_router as router_module
+    import core.inference.gpu_arbiter as arbiter
+
+    touched = []
+    monkeypatch.setattr(router_module, "predict_engine", lambda *a, **k: predicted)
+    monkeypatch.setattr(router_module, "active_engine_name", lambda: "diffusers")
+    monkeypatch.setattr(
+        router_module, "engine_for", lambda name: touched.append(("engine_for", name))
+    )
+    monkeypatch.setattr(
+        router_module,
+        "select_and_activate_engine",
+        lambda *a, **k: touched.append("select"),
+    )
+    monkeypatch.setattr(
+        arbiter, "acquire_for_request", lambda *a, **k: touched.append("acquire")
+    )
+    monkeypatch.setattr("routes.inference._guard_diffusion_load_against_training", lambda: None)
+    monkeypatch.setattr("routes.inference._training_is_active", lambda: False)
+
+    async def _no_ordinal(_gpu_ids, **_k):
+        return None
+
+    monkeypatch.setattr("routes.inference._selected_gpu_ordinal", _no_ordinal)
+    return touched
+
+
+def test_the_load_route_refuses_mlx_loras_before_activation_or_eviction(monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from models.inference import DiffusionLoadRequest
+    from routes.inference import load_diffusion_model_gated
+
+    touched = _mlx_route_stubs(monkeypatch)
+    request = DiffusionLoadRequest(
+        model_path = REPO, gguf_filename = GGUF, loras = [{"id": "a/b", "weight": 1.0}]
+    )
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(load_diffusion_model_gated(request, "test-user", user_initiated = False))
+    assert err.value.status_code == 400
+    assert "LoRA" in err.value.detail
+    assert touched == []
+
+
+def test_the_download_plan_refuses_mlx_loras_before_planning(monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from models.inference import DiffusionLoadRequest
+    from routes import inference as routes
+
+    touched = _mlx_route_stubs(monkeypatch)
+    monkeypatch.setattr(
+        mb.MlxDiffusionBackend,
+        "download_plan",
+        lambda self, *a, **k: touched.append("plan") or {},
+    )
+    request = DiffusionLoadRequest(
+        model_path = REPO, gguf_filename = GGUF, loras = [{"id": "a/b", "weight": 1.0}]
+    )
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(routes.diffusion_download_plan(request, current_subject = "u"))
+    assert err.value.status_code == 400
+    assert "LoRA" in err.value.detail
+    assert "plan" not in touched

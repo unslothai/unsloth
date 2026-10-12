@@ -46190,6 +46190,14 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
         )
 
 
+def _refuse_mlx_loras(request: DiffusionLoadRequest) -> None:
+    if request.loras:
+        raise HTTPException(
+            status_code = 400,
+            detail = "LoRA adapters are not supported on the MLX engine yet.",
+        )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -46288,6 +46296,7 @@ async def diffusion_download_plan(
         elif predicted == ENGINE_MLX:
             # Opt-in MLX engine (UNSLOTH_DIFFUSION_MLX=1): same single-GGUF contract as native.
             _refuse_native_component_files(request)
+            _refuse_mlx_loras(request)
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
             planner = get_mlx_diffusion_backend()
         if fam is not None and not training:
@@ -46597,6 +46606,8 @@ async def load_diffusion_model_gated(
         elif fam is not None and pending_name in (ENGINE_SD_CPP, ENGINE_MLX):
             # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
             _refuse_native_component_files(request)
+            if pending_name == ENGINE_MLX:
+                _refuse_mlx_loras(request)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
             # loads it "works" for are precisely the silent mismatch this whole change exists to
@@ -46662,6 +46673,8 @@ async def load_diffusion_model_gated(
         if fam is not None and activated != pending_name:
             if activated in (ENGINE_SD_CPP, ENGINE_MLX):
                 _refuse_native_component_files(request)
+                if activated == ENGINE_MLX:
+                    _refuse_mlx_loras(request)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,

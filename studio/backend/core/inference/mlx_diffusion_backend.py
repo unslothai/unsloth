@@ -31,6 +31,7 @@ from core.inference.diffusion_families import (
     load_identity,
     mlx_model_config_for,
     named_variant_base,
+    prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -366,31 +367,50 @@ def fetch_base_snapshot(
     from huggingface_hub import snapshot_download
 
     if local_files_only:
-        return snapshot_download(
-            base_repo,
-            allow_patterns = list(BASE_ALLOW_PATTERNS),
-            token = hf_token,
-            local_files_only = True,
-        )
+        from huggingface_hub import constants
+        from huggingface_hub.errors import LocalEntryNotFoundError
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        missing: Optional[Exception] = None
+        for repo in dict.fromkeys((prefer_ungated_mirror(base_repo, hf_token), base_repo)):
+            for cache_dir in dict.fromkeys((active_hf_hub_cache(), constants.HF_HUB_CACHE)):
+                try:
+                    return snapshot_download(
+                        repo,
+                        allow_patterns = list(BASE_ALLOW_PATTERNS),
+                        token = hf_token,
+                        local_files_only = True,
+                        cache_dir = cache_dir,
+                    )
+                except LocalEntryNotFoundError as exc:
+                    missing = exc
+        raise missing
     import fnmatch
 
     from huggingface_hub import HfApi
     from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-    info = HfApi().model_info(base_repo, token = hf_token, files_metadata = False)
-    wanted = [
-        s.rfilename
-        for s in info.siblings or ()
-        if any(fnmatch.fnmatch(s.rfilename, pattern) for pattern in BASE_ALLOW_PATTERNS)
-    ]
+    def _listing(repo: str) -> tuple[Any, list[str]]:
+        info = HfApi().model_info(repo, token = hf_token, files_metadata = False)
+        return info, [
+            s.rfilename
+            for s in info.siblings or ()
+            if any(fnmatch.fnmatch(s.rfilename, pattern) for pattern in BASE_ALLOW_PATTERNS)
+        ]
+
+    info, wanted = _listing(base_repo)
+    # The repo the delegated download plan staged from: the ungated mirror unless the upstream is cached.
+    fetch_repo = prefer_ungated_mirror(base_repo, hf_token, files = wanted) if wanted else base_repo
+    if fetch_repo != base_repo:
+        info, wanted = _listing(fetch_repo)
     if not wanted:
-        raise FileNotFoundError(f"'{base_repo}' has no text_encoder / tokenizer / vae files")
+        raise FileNotFoundError(f"'{fetch_repo}' has no text_encoder / tokenizer / vae files")
     snapshot_dir: Optional[str] = None
     for filename in wanted:
         if cancel_event is not None and cancel_event.is_set():
             raise MlxCancelled("load cancelled")
         path = hf_hub_download_with_xet_fallback(
-            base_repo,
+            fetch_repo,
             filename,
             hf_token,
             cancel_event = cancel_event,
@@ -791,6 +811,12 @@ class MlxDiffusionBackend:
             if self._load_token != _load_token or _cancel_event.is_set():
                 return
             logger.error("mlx_diffusion.load_failed: %s", exc, exc_info = True)
+            if self._state is not None:
+                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from hub.services.models.account_access import restore_resident_metadata
+
+                restore_owner_account(DIFFUSION)
+                restore_resident_metadata("diffusion")
             from utils.native_path_leases import redact_native_paths
 
             with self._lock:
