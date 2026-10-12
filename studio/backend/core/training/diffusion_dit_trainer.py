@@ -1774,13 +1774,16 @@ def _should_compile(
     if mode == "on":
         return True
     if base_precision == "nf4":
-        return _nf4_compile_supported()
+        return cfg.train_steps >= NF4_COMPILE_MIN_STEPS and _nf4_compile_supported()
     return base_precision in ("bf16", "fp8", "mxfp8")
 
 
 # Lowest stack where bnb 4-bit ops are torch custom ops (0 graph breaks, loss matches eager); ROCm unmeasured, stays eager.
 NF4_COMPILE_MIN_TORCH = "2.10"
 NF4_COMPILE_MIN_BNB = "0.46.1"
+# The nf4 compile costs 60-130 s even with a warm inductor cache and saves ~0.15 s/step on a B200 (break-even ~400
+# steps; sooner on slower GPUs), so a short test run stays eager.
+NF4_COMPILE_MIN_STEPS = 200
 
 
 def _nf4_compile_supported() -> bool:
