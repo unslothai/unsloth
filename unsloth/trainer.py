@@ -161,21 +161,26 @@ def _collator_packing_conflict(
     return None
 
 
-def _unpacked_for_predict(trainer, collator):
-    """predict() needs one row per example: build its dataloader from an unpacked copy of the collator."""
+def _unpacked_for_evaluation(trainer, collator):
+    """Pack only training batches: evaluate() / predict() count examples (and weight eval_loss) by
+    input_ids.shape[0], and predict() returns one row per example. A DataLoader captures its collate_fn
+    when built, so build the eval / test ones from an unpacked copy of the collator."""
     unpacked = copy.copy(collator)
     unpacked._padding_free = False
-    original = trainer.get_test_dataloader
 
-    @wraps(original)
-    def get_test_dataloader(*args, **kwargs):
-        packed, trainer.data_collator = trainer.data_collator, unpacked
-        try:
-            return original(*args, **kwargs)
-        finally:
-            trainer.data_collator = packed
+    def unpack(original):
+        @wraps(original)
+        def get_dataloader(*args, **kwargs):
+            packed, trainer.data_collator = trainer.data_collator, unpacked
+            try:
+                return original(*args, **kwargs)
+            finally:
+                trainer.data_collator = packed
 
-    trainer.get_test_dataloader = get_test_dataloader
+        return get_dataloader
+
+    trainer.get_eval_dataloader = unpack(trainer.get_eval_dataloader)
+    trainer.get_test_dataloader = unpack(trainer.get_test_dataloader)
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
@@ -1999,7 +2004,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     f"Unsloth: UnslothVisionDataCollator(padding_free=True) ignored ({reason})."
                 )
             else:
-                _unpacked_for_predict(self, collator)
+                _unpacked_for_evaluation(self, collator)
 
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)

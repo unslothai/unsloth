@@ -158,13 +158,15 @@ def test_a_forward_without_packed_seq_lengths_turns_the_collator_off(monkeypatch
     assert "packed_seq_lengths" in _collator_packing_conflict(_trainer(), False, True)
 
 
-def test_predict_builds_its_dataloader_from_an_unpacked_collator():
-    from unsloth.trainer import _unpacked_for_predict
+@pytest.mark.parametrize("getter", ["get_eval_dataloader", "get_test_dataloader"])
+def test_evaluation_dataloaders_are_built_from_an_unpacked_collator(getter):
+    from unsloth.trainer import _unpacked_for_evaluation
 
     collator = _collator()
     trainer = SimpleNamespace(data_collator = collator)
+    trainer.get_eval_dataloader = lambda dataset = None: trainer.data_collator
     trainer.get_test_dataloader = lambda dataset: trainer.data_collator
-    _unpacked_for_predict(trainer, collator)
-    used = trainer.get_test_dataloader([])
+    _unpacked_for_evaluation(trainer, collator)
+    used = getattr(trainer, getter)([])
     assert used is not collator and used.padding_free is False
     assert trainer.data_collator is collator and collator.padding_free is True
