@@ -674,8 +674,20 @@ def test_tiny_mistral_packed_row_matches_the_masked_path(monkeypatch, window):
 
 
 # Gemma-4 global layers: head_dim 512, past every flash kernel, take SDPA's efficient kernel over cu_seqlens.
+def _efficient_varlen_op() -> bool:
+    try:
+        forward = torch.ops.aten._efficient_attention_forward.default._schema
+        backward = torch.ops.aten._efficient_attention_backward.default._schema
+    except Exception:
+        return False
+    return {"cu_seqlens_q", "scale", "window_size"} <= {a.name for a in forward.arguments} and (
+        "window_size" in {a.name for a in backward.arguments}
+    )
+
+
 _EFFICIENT_HOST = pytest.mark.skipif(
-    torch.version.hip is not None, reason = "the efficient varlen route is off on ROCm"
+    torch.version.hip is not None or not _efficient_varlen_op(),
+    reason = "the efficient varlen route is off on ROCm and on torch without its varlen schema",
 )
 
 
