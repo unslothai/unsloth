@@ -691,6 +691,10 @@ class Participant:
     # the epoch the probe captured before its HTTP call, since a sample already in flight
     # returns later while describing a cache from before the prefill.
     measured_at_seq: Optional[int] = None
+    # A measured holder's round growth no reading holds yet: on top of the resident figure,
+    # its prefix inside it, until a sample STARTED after `growth_at_seq` lands.
+    unconfirmed_growth: int = 0
+    growth_at_seq: Optional[int] = None
     # What admission charged and the prompt part of it, kept so a request that starts over
     # (the next of `n` choices) can be put back to them.
     charged_tokens: int = 0
@@ -698,6 +702,17 @@ class Participant:
     # The state this holder was in when the sweep chose it. Only read while PREEMPTING, so
     # a value left behind by an earlier round is never consulted.
     preempted_from: str = ""
+
+    def in_reading_tokens(self) -> int:
+        """The part of the charge a reading taken now can hold: none until measured, and not a
+        round's growth until a reading started after the round lands."""
+        if not self.measured:
+            return 0
+        return max(0, self.tokens - self.unconfirmed_growth)
+
+    def on_top_tokens(self) -> int:
+        """The part of the charge no reading holds yet, counted on top of the resident figure."""
+        return max(0, self.tokens - self.in_reading_tokens())
 
     def replay_tokens(self) -> int:
         """What a resume sends back as prompt: the prompt, with every paused partial folded
@@ -1072,9 +1087,9 @@ class PreemptionController:
         ``measured`` says.
         """
         participant = self._participants.get(gen_id)
-        if participant is None or not participant.holds_kv or not participant.measured:
+        if participant is None or not participant.holds_kv:
             return 0
-        return max(0, int(participant.tokens or 0))
+        return participant.in_reading_tokens()
 
     def _room_for_locked(
         self,
@@ -1088,10 +1103,10 @@ class PreemptionController:
         pending = self._pending_prefill_locked(exclude = gen_id) + max(0, int(want or 0))
         ceiling = max(0, self._budget - self._buffer_locked(pending = pending))
         holders = [p for gid, p in self._participants.items() if p.holds_kv and gid != gen_id]
-        measured = sum(p.tokens for p in holders if p.measured)
+        measured = sum(p.in_reading_tokens() for p in holders)
         # Not yet in any reading (a resume granted ahead of this one, a prefill under way): on
         # top of it, as the watermark counts them, or two resumes are each granted the same room.
-        unmeasured = sum(p.tokens for p in holders if not p.measured)
+        unmeasured = sum(p.on_top_tokens() for p in holders)
         others = measured + unmeasured
         if self._resident is not None:
             # Minus the idle residue, erased for the waiter rather than waited out. Counting it
@@ -1223,6 +1238,12 @@ class PreemptionController:
             self._last_sample_seq = self._resident_seq
             self._resident_at = self._clock()
             for participant in self._participants.values():
+                if participant.growth_at_seq is not None and not (
+                    started_at_seq is not None and participant.growth_at_seq > started_at_seq
+                ):
+                    # Started after the round, so the growth it announced is inside.
+                    participant.unconfirmed_growth = 0
+                    participant.growth_at_seq = None
                 if participant.measured_at_seq is None:
                     continue
                 if started_at_seq is not None and participant.measured_at_seq > started_at_seq:
@@ -1299,6 +1320,15 @@ class PreemptionController:
                 participant.generated_seen = 0
                 # Not after an erase: no reading can hold the replay until it is sent, so it is
                 # added on top until a token or a later sample says it is in.
+                if replayed:
+                    participant.unconfirmed_growth = 0
+                    participant.growth_at_seq = None
+                elif growth > 0 and participant.measured:
+                    # The prefix is in the cache, the growth is not: a reading from before this
+                    # round, larger than the ledger, would otherwise fold the growth into it.
+                    participant.unconfirmed_growth += growth
+                    self._resident_seq += 1
+                    participant.growth_at_seq = self._resident_seq
                 participant.measured = not replayed
                 participant.measured_at_seq = None
                 participant.cells_reclaimed = False
@@ -1451,6 +1481,8 @@ class PreemptionController:
             participant.generated_seen = 0
             participant.measured = False
             participant.measured_at_seq = None
+            participant.unconfirmed_growth = 0
+            participant.growth_at_seq = None
             participant.cells_reclaimed = False
             participant.replay_pending = False
             participant.consecutive_preemptions = 0
@@ -1622,8 +1654,8 @@ class PreemptionController:
         # Not max(ledger, resident): that double counts every chat the resident figure ALREADY
         # includes, the ledger having overstated the cache in 1212 of 1218 samples.
         holders = [p for p in self._participants.values() if p.holds_kv]
-        measured = sum(p.tokens for p in holders if p.measured)
-        pending = sum(p.tokens for p in holders if not p.measured)
+        measured = sum(p.in_reading_tokens() for p in holders)
+        pending = sum(p.on_top_tokens() for p in holders)
         return max(self._resident, measured) + pending
 
     def _contended_locked(self) -> bool:
@@ -1669,11 +1701,13 @@ class PreemptionController:
             buffer = self._buffer_locked()
             ceiling = max(0, self._budget - buffer)
             # Net of holders already chosen: they are on their way out, and counting them again
-            # would stop a second chat for room the first is already giving back.
+            # would stop a second chat for room the first is already giving back. Not one parked
+            # on a tool: it cannot see the signal, so only the erase frees it, and an erase that
+            # failed or never ran leaves its cells resident while later plans netted them out.
             total = self._committed_locked() - sum(
                 p.tokens
                 for p in self._participants.values()
-                if p.holds_kv and p.state == ParticipantState.PREEMPTING
+                if p.holds_kv and p.state == ParticipantState.PREEMPTING and not p.parked_on_a_tool
             )
             want = max(0, int(needed or 0))
             # The two figures the sweep chooses between, recorded whenever they disagree: a run
@@ -1697,8 +1731,8 @@ class PreemptionController:
                     "holders=%s",
                     total,
                     self._resident,
-                    sum(p.tokens for p in holders if p.measured),
-                    sum(p.tokens for p in holders if not p.measured),
+                    sum(p.in_reading_tokens() for p in holders),
+                    sum(p.on_top_tokens() for p in holders),
                     ledger,
                     ceiling,
                     buffer,
@@ -1739,8 +1773,10 @@ class PreemptionController:
                 if total + want <= ceiling:
                     break
                 # `total` is the PROJECTION used to decide how many victims are needed. The
-                # participant's own state stays KV-holding until on_preempted says so.
-                total -= victim.tokens
+                # participant's own state stays KV-holding until on_preempted says so. A parked one
+                # is counted freed only once its erase lands, so a decoder goes too where it cannot.
+                if victim.state not in _PARKED_ON_A_TOOL:
+                    total -= victim.tokens
                 victim.consecutive_preemptions += 1
                 # Before the state goes: PREEMPTING erases the only record that this
                 # holder's cells are an idle slot's, which is what the reclaim keys on.
