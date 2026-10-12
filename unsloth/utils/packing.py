@@ -1295,7 +1295,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     if mode == "auto" and not short_conv_only:
         if probe_target is None:
             return _hybrid_reject("no gated-delta mixer the exactness probe can run")
-        if not all(_auto_hybrid_device_ok(m) for m in gated_delta_modules):
+        # Every stateful mixer, kwargs-mode ones included (transformers 5.16+ Qwen mixers move there).
+        if not all(_auto_hybrid_device_ok(m) for m in hybrid_modules):
             return _hybrid_reject(
                 f"default-on only on CUDA (set {_HYBRID_PACKING_ENV_VAR}=1 to opt in on this device)"
             )

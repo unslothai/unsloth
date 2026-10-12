@@ -507,6 +507,25 @@ def test_default_on_is_cuda_only(monkeypatch, caplog):
     assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet())) is True
 
 
+def test_default_on_is_cuda_only_for_kwargs_mixers(monkeypatch, caplog):
+    # transformers 5.16+ Qwen mixers are kwargs-mode, so they leave gated_delta_modules: the
+    # CUDA-only default must still cover them.
+    monkeypatch.undo()
+    monkeypatch.delenv(ENV, raising = False)
+    name = "fake_modeling_kwargs_cpu_gdn"
+    try:
+        model = _kwargs_model(name, _zoo_style_dispatch)
+        with caplog.at_level(logging.WARNING, logger = "unsloth.hybrid_packing"):
+            assert patch_hybrid_linear_attention_varlen(model) is False
+        assert "only on CUDA" in caplog.text
+        monkeypatch.setenv(ENV, "1")
+        assert (
+            patch_hybrid_linear_attention_varlen(_kwargs_model(name, _zoo_style_dispatch)) is True
+        )
+    finally:
+        sys.modules.pop(name, None)
+
+
 def test_engagement_counters(monkeypatch):
     monkeypatch.delenv(ENV, raising = False)
     stats = dict(packing_module.HYBRID_PACKING_STATS)
