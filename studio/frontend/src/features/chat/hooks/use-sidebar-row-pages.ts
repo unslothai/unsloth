@@ -267,19 +267,16 @@ export function useSidebarRowPages(
       registerPager(pager);
       void pager.start();
     }
-    // one sidebar render per frame however many lists answer in it: each render rebuilds every
-    // derived list, and startup alone lands one response per list
-    let frame: ReturnType<typeof setTimeout> | number | null = null;
+    // one sidebar render per 16 ms however many lists answer in it: each render rebuilds every
+    // derived list, and startup alone lands one response per list. A timer, not a frame
+    // callback, which a page that draws no frames would never run.
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = () => {
-      if (frame !== null) return;
-      const flush = () => {
-        frame = null;
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
         bump();
-      };
-      frame =
-        typeof requestAnimationFrame === "function"
-          ? requestAnimationFrame(flush)
-          : setTimeout(flush, 16);
+      }, 16);
     };
     const unsubscribes = [...pagers.values()].map((pager) =>
       pager.subscribe(schedule),
@@ -287,12 +284,7 @@ export function useSidebarRowPages(
     bump();
     return () => {
       for (const unsubscribe of unsubscribes) unsubscribe();
-      if (frame === null) return;
-      if (typeof cancelAnimationFrame === "function" && typeof frame === "number") {
-        cancelAnimationFrame(frame);
-      } else {
-        clearTimeout(frame as ReturnType<typeof setTimeout>);
-      }
+      if (timer !== null) clearTimeout(timer);
     };
   }, [slotKey, enabled]);
 
@@ -325,7 +317,14 @@ export function useSidebarRowPages(
         ...state,
         // nothing renders `error`, so the next scroll is the retry
         loadMore: () => (state.error ? pager.retry() : pager.loadMore()),
-        loadAll: () => pager.loadAll(),
+        // rejects when a page failed, so a caller never takes the partial list for the whole
+        loadAll: async () => {
+          await pager.loadAll();
+          // render now, not on the batched timer: a caller acting on the rows (Select All) renders next
+          bump();
+          const { error } = pager.getState();
+          if (error) throw error;
+        },
         retry: () => pager.retry(),
       };
     }

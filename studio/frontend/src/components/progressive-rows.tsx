@@ -12,6 +12,8 @@ import {
 
 /** mounts the next page this far below the sidebar's visible edge. */
 const PRELOAD_PX = 800;
+/** frees a fetch that drew no rows (an error or the end), past the sidebar's render batching. */
+const FETCH_SETTLE_MS = 250;
 
 // one server page per user scroll, so a tall window or the preload margin never drains pages
 const ARMING_EVENTS = ["scroll", "wheel", "touchmove"] as const;
@@ -45,6 +47,8 @@ export function ProgressiveRows<T extends { id: string }>({
   const intersectingRef = useRef(false);
   const fetchingRef = useRef(false);
   const armedRef = useRef(false);
+  const fetchFromRef = useRef(0);
+  const itemCountRef = useRef(items.length);
   const mountedMore = items.length > limit;
   const fetchMore = hasMore && Boolean(onReachEnd);
   const showSentinel = mountedMore || fetchMore;
@@ -58,13 +62,23 @@ export function ProgressiveRows<T extends { id: string }>({
       if (!fetchMore || fetchingRef.current || !root || !armedRef.current) return;
       armedRef.current = false;
       fetchingRef.current = true;
+      fetchFromRef.current = items.length;
       setLimit((count) => Math.max(count, items.length) + pageSize);
+      // busy until the page's rows are drawn (see below); this only frees a fetch that added none
       void Promise.resolve(onReachEnd?.()).finally(() => {
-        fetchingRef.current = false;
+        setTimeout(() => {
+          if (itemCountRef.current === fetchFromRef.current) fetchingRef.current = false;
+        }, FETCH_SETTLE_MS);
       });
     },
     [items.length, limit, pageSize, fetchMore, onReachEnd],
   );
+
+  // a scroll between the answer and the rows being drawn sees the old sentinel and would fetch again
+  useEffect(() => {
+    itemCountRef.current = items.length;
+    if (fetchingRef.current && items.length > fetchFromRef.current) fetchingRef.current = false;
+  }, [items.length]);
 
   // re-observe because IntersectionObserver does not repeat while the sentinel stays intersecting
   useEffect(() => {

@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { ProgressiveRows } from "@/components/progressive-rows";
+import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
   HELP_GROUPS,
   HELP_ITEMS,
@@ -1492,7 +1493,11 @@ export function AppSidebar() {
   const chatRowSlots = useMemo(() => {
     const excludeIds = [...pinnedIds, ...sectionFiledChatIds];
     const lookupIds = [
-      ...new Set([slotActiveId, ...runningThreadKey.split("\n")].filter((id): id is string => Boolean(id))),
+      ...new Set(
+        [slotActiveId, ...runningThreadKey.split("\n")].filter(
+          (id): id is string => Boolean(id) && !isAssistantLocalThreadId(id),
+        ),
+      ),
     ];
     const slots: Record<string, SidebarRowSlot | null> = {
       recents: {
@@ -1570,17 +1575,22 @@ export function AppSidebar() {
     (projectId: string) => chatRowLists[`folder:${projectId}`],
     [chatRowLists],
   );
-  // "No chats yet" also needs zero archived chats, which are not listed here.
-  const [hasArchivedChats, setHasArchivedChats] = useState(false);
+  // "No chats yet" needs no chat anywhere: archived ones and ones in folders that are not loaded
+  // (a collapsed Projects section) are not in the loaded lists.
+  const [hasUnlistedChats, setHasUnlistedChats] = useState(false);
   const sidebarLooksEmpty = chatItemsLoaded && allChatItems.length === 0;
   useEffect(() => {
     if (!sidebarLooksEmpty) return;
     let cancelled = false;
     // re-asked on every history change: archiving or deleting can flip it while the list stays empty
     const probe = () => {
-      void fetchSidebarRowPage(sidebarRowQuery({ archived: true }), 1, null)
-        .then((page) => {
-          if (!cancelled) setHasArchivedChats(page.rows.length > 0);
+      void Promise.all(
+        [sidebarRowQuery({}), sidebarRowQuery({ archived: true })].map((query) =>
+          fetchSidebarRowPage(query, 1, null),
+        ),
+      )
+        .then((pages) => {
+          if (!cancelled) setHasUnlistedChats(pages.some((page) => page.rows.length > 0));
         })
         .catch(() => undefined);
     };
@@ -2419,9 +2429,10 @@ export function AppSidebar() {
       return name.startsWith("folder:") && expandedChatProjectIds.has(name.slice(7));
     });
     if (partial.length > 0) {
-      void Promise.all(partial.map(([, list]) => list.loadAll())).then(() =>
-        setSelectAllPending(true),
-      );
+      // a failed page selects nothing: a bulk action must never take a silent subset for "all"
+      void Promise.all(partial.map(([, list]) => list.loadAll()))
+        .then(() => setSelectAllPending(true))
+        .catch(() => undefined);
       return;
     }
     setSelectAllPending(true);
@@ -6192,7 +6203,7 @@ export function AppSidebar() {
                   </SidebarMenu>
                   {/* existing project or archived threads can leave Recents empty. */}
                   {sidebarLooksEmpty &&
-                    !hasArchivedChats && (
+                    !hasUnlistedChats && (
                       <p className="px-3 py-2 text-xs text-muted-foreground">
                         {t("shell.navigation.noChatsYet")}
                       </p>

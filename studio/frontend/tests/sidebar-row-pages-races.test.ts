@@ -181,3 +181,22 @@ test("a scroll after one failed page asks for that page again", async () => {
   await render().loadMore();
   assert.equal(render().rows.length, 40);
 });
+
+test("Select All's full read rejects when a page fails, so no partial list is taken for all", async () => {
+  let calls = 0;
+  const { render } = hookHarness(async ({ limit, cursor }) => {
+    calls += 1;
+    if (calls === 2) throw new Error("offline");
+    const offset = cursor ? Number(cursor) : 0;
+    const end = offset + limit;
+    return {
+      rows: sidebarRows(Array.from({ length: limit }, (_, i) => `c${offset + i}`)),
+      nextCursor: String(end),
+      hasMore: end < 100,
+      total: 100,
+    };
+  });
+  render();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await assert.rejects(render().loadAll());
+});

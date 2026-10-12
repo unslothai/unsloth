@@ -551,7 +551,9 @@ test("the full-list fallback finds a compare row through one of its pane threads
 test("the open and running chats load their rows, so row lookups never miss them", () => {
   const src = readSrc("components/app-sidebar.tsx");
   assert.match(src, /active: lookupIds\.length \? \{ query: sidebarRowQuery\(\{ includeIds: lookupIds \}\) \} : null,/);
-  assert.match(src, /\.\.\.new Set\(\[slotActiveId, \.\.\.runningThreadKey\.split\("\\n"\)\]/);
+  assert.match(src, /\[slotActiveId, \.\.\.runningThreadKey\.split\("\\n"\)\]\.filter\(/);
+  // an unsaved draft has no row to look up
+  assert.match(src, /Boolean\(id\) && !isAssistantLocalThreadId\(id\)/);
 });
 
 test("follow-ups that main got from the full list still happen with paged lists", () => {
@@ -566,4 +568,11 @@ test("follow-ups that main got from the full list still happen with paged lists"
   // project activity follows chat activity, not only project edits
   const projects = readSrc("features/chat/hooks/use-chat-projects.ts");
   assert.match(projects, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, onChatActivity\);/);
+});
+
+test("\"No chats yet\" asks for any chat, archived or in an unloaded folder, before it shows", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /\[sidebarRowQuery\(\{\}\), sidebarRowQuery\(\{ archived: true \}\)\]/);
+  assert.match(src, /!hasUnlistedChats && \(/);
+  assert.match(src, /\.then\(\(\) => setSelectAllPending\(true\)\)\n\s*\.catch\(\(\) => undefined\);/);
 });
