@@ -89,15 +89,21 @@ test("focus landing in the clipped lines lifts the cap instead of staying invisi
 test("a bounded transcript corrects nothing through the thread and mounts the tail", () => {
   assert.match(
     transcript,
-    /shouldAdjustScrollPositionOnItemSizeChange = \(item, delta\) => \{\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*if \(bounded\) return false;/,
+    /const adjustAbove = useCallback\(\s*\(delta: number\) => !boundedRef\.current && adjustThread\(delta\),/,
+    "a bounded transcript still writes thread corrections",
   );
-  assert.match(transcript, /if \(passage && !bounded\)\s*adjustAbove/);
-  assert.match(transcript, /if \(readingAnchor && !bounded\)/);
+  assert.equal(
+    (transcript.match(/adjustThread\(/g) ?? []).length,
+    1,
+    "every thread correction goes through the bounded guard",
+  );
+  assert.match(transcript, /boundedRef\.current = bounded;/);
   assert.match(
     transcript,
-    /if \(bounded\) \{[\s\S]*?fragments\.length - 1[\s\S]*?BOUNDED_TAIL_PX[\s\S]*?mounted\.add\(i\)/,
+    /if \(!bounded \|\| covered\) return;[\s\S]*?BOUNDED_TAIL_PX[\s\S]*?end: fragments\.length[\s\S]*?setIslands\(next\);/,
+    "the newest rows are not mounted while the prefix catches up",
   );
-  assert.match(transcript, /\}, \[viewport, virtualizer, bounded\]\);/);
+  assert.match(transcript, /recapture\.current\(true\);\s*\}, \[bounded\]\);/);
 });
 
 test("a closing block keeps the cap it had while open", () => {
