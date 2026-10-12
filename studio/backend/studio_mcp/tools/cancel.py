@@ -118,8 +118,7 @@ async def cancel(
         )
     elif kind == "export":
         job = export_jobs.lookup(caller.account_id, id) if id else None
-        # Studio has one export worker, and cancelling it stops whatever it is doing, so only cancel
-        # when the op it is running is the one meant. An idle worker still holds its checkpoint.
+        # One export worker; cancelling stops whatever it runs, so only when that op is ours (idle still holds a checkpoint).
         if job is not None and job.finished:
             return done(False, f"The export already {job.status}.")
         status = await route_json("GET", EXPORT_STATUS, caller = caller)
@@ -127,9 +126,7 @@ async def cancel(
             if job is None:
                 return done(False, "No export is running.")
             if job.phase == "exporting":
-                # Either its export just ended and the answer is on its way, or it is about to
-                # send the export. Give it a moment, then look again: a finished export is
-                # reported as such, and one that has started is stopped on the worker below.
+                # Its export just ended or is about to start: wait, then report it finished or stop it below.
                 await export_jobs.settle(job, SETTLE_S)
                 if job.finished:
                     return done(False, f"The export already {job.status}.")

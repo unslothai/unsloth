@@ -98,9 +98,6 @@ def test_kind_routes_to_the_matching_start_route(monkeypatch):
     assert bodies(studio, "/api/train/start") == []
 
 
-# ---------------------------------------------------------------- runs and checkpoints
-
-
 def _run(run_id, folder):
     return {
         "id": run_id,

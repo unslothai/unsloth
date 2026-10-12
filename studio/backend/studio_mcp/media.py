@@ -74,7 +74,6 @@ def audio_gallery_path(clip_id: str) -> str:
 def media_result(contents: list[Any], output: ToolOutput) -> ToolResult:
     """Media plus the typed output, which also goes first as JSON text for clients that ignore structuredContent."""
     structured = output.model_dump(mode = "json")
-    # Compact, like the JSON FastMCP writes for the other tools.
     text = TextContent(
         type = "text", text = json.dumps(structured, ensure_ascii = False, separators = (",", ":"))
     )

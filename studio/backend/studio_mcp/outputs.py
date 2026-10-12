@@ -59,7 +59,6 @@ def _route_value(annotation: Any, value: Any) -> Any:
 class ChatModel(ToolOutput):
     id: RouteText
     display_name: Optional[RouteText] = None
-    # Known for the active model only.
     is_gguf: Optional[bool] = None
 
 
@@ -72,14 +71,12 @@ class ImageSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
     family: Optional[RouteText] = None
-    # An image is being generated right now.
     generating: bool = False
 
 
 class VideoSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
-    # A video is being generated right now.
     generating: bool = False
 
 
@@ -176,7 +173,6 @@ class LoadResult(ToolOutput):
     model: RouteText
     loaded: bool = True
     display_name: Optional[RouteText] = None
-    # Models Studio unloaded to make room.
     evicted: list[RouteText] = []
 
 
@@ -228,7 +224,6 @@ class SystemOneResult(ToolOutput):
 
 class ImageItem(ToolOutput):
     id: RouteText
-    # Built from the agent's own address for /mcp.
     url: str
     width: Optional[int] = None
     height: Optional[int] = None
@@ -258,12 +253,10 @@ class AudioResult(ToolOutput):
 class TranscriptSegment(ToolOutput):
     start: Optional[float] = None
     end: Optional[float] = None
-    # Model-written.
     text: str = ""
 
 
 class TranscriptResult(ToolOutput):
-    # Model-written.
     text: str
     language: Optional[RouteText] = None
     model: Optional[RouteText] = None
@@ -310,7 +303,6 @@ class RecipeInfo(ToolOutput):
     # The saved dataset's name under Studio's recipes folder, never its path.
     dataset: Optional[RouteText] = None
     total_rows: Optional[int] = None
-    # Generated rows, as the recipe wrote them.
     data_rows: Optional[list[dict[str, Any]]] = None
 
 
@@ -330,7 +322,6 @@ class JobStatus(ToolOutput):
     video: Optional[VideoInfo] = None
     recipe: Optional[RecipeInfo] = None
     export: Optional[ExportInfo] = None
-    # Recent jobs, when no id was given.
     jobs: Optional[list[JobSummary]] = None
 
 

@@ -72,10 +72,8 @@ def as_dict(value: Any) -> dict:
 
 
 def leaf_name(path: str) -> str:
-    # The last segment of a POSIX or Windows path, ignoring trailing separators.
     return re.split(r"[\\/]", path.rstrip("\\/"))[-1]
 
 
 def present(**values: Any) -> dict[str, Any]:
-    # The given values that are not None, in order: the optional fields of a route body.
     return {key: value for key, value in values.items() if value is not None}

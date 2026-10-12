@@ -96,9 +96,7 @@ async def load_llm(
         raise ToolError("Unsloth Studio did not confirm the load")
     loaded = opt_text(payload.get("model")) or model
     evicted = strings(payload.get("evicted"))
-    # Some loads (an engine switch for an audio model, say) unload the chat model without the
-    # route listing it, so name whatever was serving before and is gone now. Only then: the
-    # route names what it did drop by another id form, which would list it twice.
+    # Some loads (an audio engine switch) drop the chat model unlisted; only then, since the route lists its own drops by another id form.
     if before and not evicted:
         after = set(await _serving_or_empty(caller))
         evicted += [

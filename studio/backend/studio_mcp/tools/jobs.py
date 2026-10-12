@@ -149,8 +149,7 @@ async def _export_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
             for job in export_jobs.jobs_of(caller.account_id)
         ]
         return media_result([], JobStatus(kind = "export", jobs = jobs))
-    # The job settles from its own export call. The export status is not read here: it describes
-    # whichever op ran last, which may be an export started from the Export page.
+    # Settles from its own export call, not the export status (that is whichever op ran last).
     return media_result([], _export_status(export_jobs.lookup(caller.account_id, job_id)))
 
 

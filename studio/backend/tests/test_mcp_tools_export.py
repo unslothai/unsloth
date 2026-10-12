@@ -132,8 +132,6 @@ def test_capacity_drops_the_oldest_finished_jobs_first():
     assert export_jobs.lookup("owner", "running") is running
 
 
-# ---------------------------------------------------------------- export_model
-
 CHECKPOINTS = {**RUN_CHECKPOINTS, "models": RUN_CHECKPOINTS["models"][:1]}
 ARGS = {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"}
 DONE = {

@@ -176,7 +176,6 @@ def _cancel_directly(
         return status(None, None)
 
     monkeypatch.setattr(cancel_module, "route_json", route_json)
-    # cancel reads only the account from its caller.
     monkeypatch.setattr(
         cancel_module, "current_caller", lambda: types.SimpleNamespace(account_id = "owner")
     )
@@ -187,7 +186,6 @@ def _cancel_directly(
         await asyncio.sleep(0)
         result = await cancel_module.cancel("export", job.job_id)
         status = job.status
-        # Clean up a job the cancel left running.
         export_jobs.mark_cancelled(job)
         await asyncio.gather(job.task, return_exceptions = True)
         job.status = status

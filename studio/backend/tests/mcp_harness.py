@@ -419,7 +419,6 @@ def fast_polls(monkeypatch):
 
 @pytest.fixture
 def owner_auth(isolated_auth):
-    # isolated_auth with the owner account created.
     seed_owner()
 
 

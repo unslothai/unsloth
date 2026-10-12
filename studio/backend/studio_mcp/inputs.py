@@ -23,7 +23,6 @@ PATH_REMOTE = (
     "File paths work only when the agent runs on the Unsloth Studio computer. "
     "Send data_url/data_base64 or an Unsloth Studio id instead."
 )
-# The image routes take at most 32 MiB of base64 per image.
 MAX_IMAGE_BYTES = 32 * 1024 * 1024 * 3 // 4
 IMAGE_MIMES = ("image/png", "image/jpeg", "image/webp")
 _DATA_URL = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,(.*)$", re.DOTALL)
@@ -130,7 +129,6 @@ def data_url(data: bytes, mime: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
-# The /audio/inputs route's own limit.
 MAX_AUDIO_BYTES = 200 * 1024 * 1024
 _AUDIO_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 

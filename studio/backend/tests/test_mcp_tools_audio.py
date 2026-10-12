@@ -88,7 +88,6 @@ WORKFLOWS = [
         "speak",
         {"text": "Hi", "reference": {"voice_id": "voice-1"}, "language": "en"},
         RUN,
-        # A saved voice is the reference.
         lambda body, result: body["inputs"] == {"reference": {"voice_id": "voice-1"}},
     ),
     (
@@ -111,7 +110,6 @@ WORKFLOWS = [
         "music",
         {"text": "lo-fi", "mode": "song", "lyrics": "la", "duration_s": 30, "variations": 2},
         MUSIC,
-        # Variations share a group.
         lambda body, result: (
             body["variations"] == 2
             and result["structuredContent"]["group_id"] == "grp-9"
@@ -123,7 +121,6 @@ WORKFLOWS = [
         "separate",
         {"source": {"clip_id": "song-1"}},
         SEPARATED,
-        # Every stem comes back.
         lambda body, result: (
             [c["role"] for c in result["structuredContent"]["clips"]] == list(STEMS)
             and result["structuredContent"]["group_id"] == "grp-1"
@@ -204,8 +201,6 @@ def test_inline_audio_is_uploaded_with_a_content_length(monkeypatch, status):
     (run,) = bodies(studio, "/v1/audio/run")
     assert run["inputs"]["reference"] == {"input_id": "in-1"}
 
-
-# ---------------------------------------------------------------- transcribe
 
 TRANSCRIPT = {"text": "Hello from Studio."}
 VERBOSE = {
@@ -325,8 +320,6 @@ def test_a_second_refusal_is_not_retried_again(monkeypatch, fast_polls):
     assert result["isError"] is True
     assert [c[1] for c in studio.state.calls].count("/v1/audio/transcriptions") == 2
 
-
-# ---------------------------------------------------------------- large or stored audio
 
 TURBO = "whisper-large-v3-turbo-q5"
 STT_STATUS = {

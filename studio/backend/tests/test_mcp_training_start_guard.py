@@ -352,8 +352,7 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
     studio = route_studio(training_routes.router, "/api/train")
     result, _studio = run_tool(monkeypatch, studio, "start_training", {"config": _config()})
 
-    # An isError CallToolResult carrying the route's detail, not a raised HTTPException or
-    # a {"status": ...} dict.
+    # An isError result with the route's detail, not a raised HTTPException or a status dict.
     assert result["isError"] is True
     assert "inference request is in progress" in result["content"][0]["text"]
     assert "(HTTP 409)" in result["content"][0]["text"]

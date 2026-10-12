@@ -89,7 +89,6 @@ def test_kind_comes_from_the_task(monkeypatch, kind, expected):
     models = result["structuredContent"]["models"]
     assert {model["id"] for model in models} == expected
     assert {model["kind"] for model in models} == {kind}
-    # output_modalities is never sent.
     assert [query for _m, _p, query in studio.state.queries] == [""]
 
 

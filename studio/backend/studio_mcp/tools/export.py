@@ -91,8 +91,7 @@ async def export_model(
         job.phase = "loading"
         await _op(caller, "/api/export/load-checkpoint", load)
         before = await route_json("GET", EXPORT_STATUS, caller = caller)
-        # The load and the export are two calls, so a load from the Export page between them would
-        # be exported in this job's name.
+        # Load and export are two calls; an Export page load between them would export under this job.
         if not _same_checkpoint(before, found.path):
             raise ToolError(
                 "Another checkpoint was loaded for export before this job's export began; nothing was exported."
