@@ -10589,10 +10589,10 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
     """True when every AMD GPU here is an integrated part Vulkan serves better.
 
     A preference, not a fallback: unlike _should_auto_vulkan_for_amd_windows these archs
-    have a working HIP prebuilt, just slower. Linux only: on Windows the AMD driver's Vulkan
-    prefill on gfx1151 is ~3.4x slower than HIP at 16k depth (#10656). Every guard that
-    fallback applies is applied here for the same reasons, over every PHYSICAL gfx so a
-    masked-off discrete card is not moved.
+    have a working HIP prebuilt, just slower. Linux only: the AMD Windows driver's Vulkan
+    prefill falls far behind HIP past short prompts (#10656). Every guard that fallback
+    applies is applied here for the same reasons, over every PHYSICAL gfx so a masked-off
+    discrete card is not moved.
     """
     if host.is_windows:
         return False
