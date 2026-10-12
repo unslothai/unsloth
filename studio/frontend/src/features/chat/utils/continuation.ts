@@ -177,6 +177,23 @@ export function incompleteRemedy(reason: IncompleteReason): string | null {
   return INCOMPLETE_REMEDIES[reason] ?? null;
 }
 
+/** The way out where resuming would be the answer but the turn cannot be resumed: a paused
+ *  tool turn holds calls a continuation cannot replay, and with no remedy and no Resume the
+ *  bar showed nothing, so the pause went unexplained. */
+const UNRESUMABLE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
+  paused: "Regenerate the response once the other chat finishes",
+};
+
+/** `incompleteRemedy`, falling back to the unresumable one when the turn cannot resume. */
+export function incompleteRemedyFor(
+  reason: IncompleteReason,
+  canResume: boolean,
+): string | null {
+  return (
+    incompleteRemedy(reason) ?? (canResume ? null : (UNRESUMABLE_REMEDIES[reason] ?? null))
+  );
+}
+
 /** Drop text the continuation repeated from the end of the partial: local models continue
  *  token-exactly, but a provider that ignores assistant prefill can restate the last few
  *  words. Only a suffix the continuation opens with is removed. */

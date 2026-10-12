@@ -188,7 +188,7 @@ import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
   incompleteLabel,
-  incompleteRemedy,
+  incompleteRemedyFor,
   isContinuableContent,
   isProviderReportedReason,
   modeAllowsContinuation,
@@ -7668,8 +7668,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
 
   const resumable = Boolean(reason) && canResume;
 
-  // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
-  const remedy = reason ? incompleteRemedy(reason) : null;
+  // A cut with a remedy is one resuming cannot undo, so the way out replaces the button. So
+  // is a paused turn that cannot resume (its tool calls cannot be replayed): it still says why.
+  const remedy = reason ? incompleteRemedyFor(reason, canResume) : null;
 
   // The parent is what every round of one logical turn shares; the message id changes
   // each round, because a continuation runs as a sibling.
