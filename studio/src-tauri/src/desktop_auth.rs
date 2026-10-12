@@ -268,8 +268,8 @@ async fn provision_desktop_auth() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Inherited UNSLOTH_STUDIO_HOME / STUDIO_HOME are dropped and the desktop's own root is
-    // passed, so provisioning writes match what the Rust auth code reads.
+    // Inherited roots are dropped and the desktop's own root passed, so provisioning writes
+    // match what the Rust auth code reads.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     if let Some(root) = crate::studio_home::chosen_root() {

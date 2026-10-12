@@ -518,8 +518,7 @@ fn current_windows_user_sid() -> Result<String, String> {
 const STUDIO_MANAGED_RUNTIME_PATH_MUTEX_PREFIX: &str =
     "Global\\UnslothStudioManagedEnvironmentPath-";
 
-/// `_resolved_windows_path` in unsloth_cli/_studio_runtime_gate.py, so both sides hash the
-/// same spelling of a custom root.
+/// Mirrors `_resolved_windows_path` in unsloth_cli/_studio_runtime_gate.py.
 #[cfg(windows)]
 fn resolved_windows_path_text(path: &std::path::Path) -> String {
     let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -536,8 +535,7 @@ fn resolved_windows_path_text(path: &std::path::Path) -> String {
     trimmed.to_string()
 }
 
-/// The CLI and install.ps1 lock a custom root by a hash of its path rather than by user SID
-/// (runtime_mutex_name_for_studio_home), so the desktop takes that lock too for a chosen root.
+/// The CLI and install.ps1 lock a custom root by path hash, not SID; take that lock too.
 #[cfg(windows)]
 fn chosen_root_runtime_mutex_name() -> Option<String> {
     use sha2::{Digest, Sha256};
@@ -3764,10 +3762,9 @@ pub fn start_backend(
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
 
-    // Tauri uses its own root (the default, or the folder chosen at first install)
-    // whatever the environment says; scrub so the spawned Python backend can't
-    // diverge. Off the shared list, so a name added there cannot be honoured by
-    // the backend and missed here.
+    // Tauri uses its own root whatever the environment says; scrub so the
+    // spawned Python backend can't diverge. Off the shared list, so a name added
+    // there cannot be honoured by the backend and missed here.
     // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
     for name in MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);

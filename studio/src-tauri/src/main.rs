@@ -794,8 +794,7 @@ fn setup_logging() {
         simplelog::ColorChoice::Auto,
     ));
 
-    // Try to set up file logging to ~/.unsloth/studio/tauri.log, or the chosen Studio folder
-    // once it exists (creating it here would make the installer treat it as someone else's).
+    // Try to set up file logging to ~/.unsloth/studio/tauri.log (a chosen root once it exists).
     if let Some(home) = dirs::home_dir() {
         let log_dir = studio_home::chosen_root_for_home(&home)
             .filter(|root| root.is_dir())

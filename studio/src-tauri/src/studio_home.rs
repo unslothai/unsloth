@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-//! Where the desktop keeps its Studio install.
-//!
-//! The default is `~/.unsloth/studio`. On Windows the first-run screen lets the user pick another
-//! folder before anything is installed; the choice is a one-line pointer file at
-//! `~/.unsloth/desktop_studio_home`, and every managed child then gets it as UNSLOTH_STUDIO_HOME,
-//! which the installer and the CLI already honour as a custom root. No pointer file means the
-//! default root, so installs that never chose a folder are unchanged.
+//! Where the desktop keeps its Studio install: `~/.unsloth/studio`, or the folder picked on the
+//! Windows first-run screen, recorded in `~/.unsloth/desktop_studio_home` and passed to managed
+//! children as UNSLOTH_STUDIO_HOME. No pointer file means the default root.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,8 +12,7 @@ const POINTER_FILE: &str = "desktop_studio_home";
 
 pub(crate) const STUDIO_HOME_ENV: &str = "UNSLOTH_STUDIO_HOME";
 
-/// Tells install.ps1 under --tauri that UNSLOTH_STUDIO_HOME is the folder the desktop chose,
-/// rather than one inherited from the user's shell (which it still refuses).
+/// Marks UNSLOTH_STUDIO_HOME as the desktop's choice; install.ps1 --tauri refuses any other.
 pub(crate) const DESKTOP_CHOSEN_HOME_ENV: &str = "UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME";
 
 pub(crate) fn default_root_for_home(home: &Path) -> PathBuf {
@@ -28,8 +23,7 @@ fn pointer_path(home: &Path) -> PathBuf {
     home.join(".unsloth").join(POINTER_FILE)
 }
 
-/// The folder chosen on the first-run screen, if any. A missing, empty or relative pointer is
-/// ignored, so a damaged file falls back to the default root instead of breaking launch.
+/// A missing, empty or relative pointer falls back to the default root.
 pub(crate) fn chosen_root_for_home(home: &Path) -> Option<PathBuf> {
     let text = fs::read_to_string(pointer_path(home)).ok()?;
     let root = PathBuf::from(text.trim());
@@ -50,7 +44,6 @@ pub(crate) fn studio_root() -> Option<PathBuf> {
     dirs::home_dir().map(|home| studio_root_for_home(&home))
 }
 
-/// The chosen root when it differs from the default; what managed children receive.
 pub(crate) fn chosen_root() -> Option<PathBuf> {
     dirs::home_dir().and_then(|home| chosen_root_for_home(&home))
 }
@@ -68,9 +61,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
     normalize(left) == normalize(right)
 }
 
-/// The Studio root a picked folder maps to: `<picked>\studio` when the folder is already
-/// called Unsloth, else `<picked>\Unsloth\studio`, so picking a drive root or a shared folder
-/// never spreads Studio's files across it.
+/// `<picked>\studio` for a folder already named Unsloth, else `<picked>\Unsloth\studio`.
 pub(crate) fn root_for_picked_folder(picked: &Path) -> PathBuf {
     let named_unsloth = picked
         .file_name()
@@ -86,8 +77,7 @@ pub(crate) fn root_for_picked_folder(picked: &Path) -> PathBuf {
     }
 }
 
-/// Network shares are refused: the installer builds a Python environment and llama.cpp there,
-/// and the backend memory-maps model files from it.
+/// Network shares are refused: the venv, llama.cpp and memory-mapped models live there.
 pub(crate) fn validate_picked_folder(picked: &Path) -> Result<(), String> {
     if !picked.is_absolute() {
         return Err("Choose a folder on a local drive.".to_string());
@@ -99,8 +89,7 @@ pub(crate) fn validate_picked_folder(picked: &Path) -> Result<(), String> {
             "Network folders are not supported. Choose a folder on a local drive.".to_string(),
         );
     }
-    // create_new: an entry already at the probe name (or a link planted there) is never
-    // truncated or deleted; only a file this call created is removed.
+    // create_new: never truncates or deletes an existing entry (or link) at the probe name.
     let probe = picked.join(format!(".unsloth-write-probe-{}", std::process::id()));
     fs::OpenOptions::new()
         .write(true)
@@ -111,8 +100,7 @@ pub(crate) fn validate_picked_folder(picked: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Record `root` as the desktop's Studio root, or clear the choice when `root` is the default.
-/// Written to a temporary file and renamed, so a crash never leaves half a path behind.
+/// Written to a temporary file and renamed; the default root removes the pointer instead.
 pub(crate) fn write_choice_for_home(home: &Path, root: &Path) -> Result<(), String> {
     let pointer = pointer_path(home);
     if same_path(root, &default_root_for_home(home)) {
@@ -140,7 +128,6 @@ pub(crate) fn write_choice_for_home(home: &Path, root: &Path) -> Result<(), Stri
 pub struct StudioInstallLocation {
     pub path: String,
     pub is_default: bool,
-    /// Only the Windows first-run screen offers a choice.
     pub can_change: bool,
 }
 
@@ -160,7 +147,6 @@ fn home_dir() -> Result<PathBuf, String> {
     dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())
 }
 
-/// The location can only move while nothing is installed: an installed root is never relocated.
 fn ensure_changeable(install: &crate::install::InstallState) -> Result<(), String> {
     if !cfg!(windows) {
         return Err("Choosing an install location is only available on Windows.".to_string());
@@ -174,8 +160,7 @@ fn ensure_changeable(install: &crate::install::InstallState) -> Result<(), Strin
     Ok(())
 }
 
-/// Written under the install lock: the dialog can stay open while an install starts, and an
-/// installer already given the old root must not see the pointer move under it.
+/// Under the install lock: an install that already has the old root never sees it move.
 fn commit_choice(
     install: &crate::install::InstallState,
     home: &Path,
@@ -273,14 +258,12 @@ mod tests {
         write_choice_for_home(&home, &custom).unwrap();
         assert_eq!(studio_root_for_home(&home), custom);
         assert_eq!(chosen_root_for_home(&home), Some(custom.clone()));
-        // Idempotent: writing the same choice twice leaves the same pointer.
         write_choice_for_home(&home, &custom).unwrap();
         assert_eq!(chosen_root_for_home(&home), Some(custom));
 
         write_choice_for_home(&home, &default_root_for_home(&home)).unwrap();
         assert!(!pointer_path(&home).exists());
         assert_eq!(chosen_root_for_home(&home), None);
-        // Resetting again is a no-op, not an error.
         write_choice_for_home(&home, &default_root_for_home(&home)).unwrap();
         fs::remove_dir_all(&home).unwrap();
     }

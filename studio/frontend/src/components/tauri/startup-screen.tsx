@@ -78,7 +78,7 @@ function CheckingContent() {
   );
 }
 
-// Loaded on use: only the Windows first-run screen shows it, so it stays out of the startup bundle.
+// Lazy: only the Windows first-run screen needs it (startup bundle budget).
 const InstallLocation = lazy(() => import("@/components/tauri/install-location"));
 
 function NotInstalledContent({ onInstall }: { onInstall: () => void }) {

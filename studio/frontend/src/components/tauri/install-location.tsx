@@ -10,8 +10,7 @@ interface StudioInstallLocation {
   can_change: boolean;
 }
 
-// Where the install goes. Only the Windows shell offers a choice; elsewhere, or
-// on a shell without these commands, nothing renders and the screen is unchanged.
+// Windows Desktop only: elsewhere, or on an older shell, nothing renders.
 export default function InstallLocation({ disabled }: { disabled: boolean }) {
   const [location, setLocation] = useState<StudioInstallLocation | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +26,7 @@ export default function InstallLocation({ disabled }: { disabled: boolean }) {
         );
         if (!cancelled) setLocation(next);
       } catch {
-        // No location command: keep the default install.
+        // Older shell without the command.
       }
     })();
     return () => {

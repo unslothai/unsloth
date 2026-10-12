@@ -53,8 +53,7 @@ pub(crate) fn new_id(prefix: &str) -> String {
     format!("{}-{}-{}", sanitize_component(prefix), now_ms(), n)
 }
 
-/// A chosen root is used once it exists. Before that the first install's logs stay in the
-/// default root: creating the chosen folder here would stop install.ps1 claiming it as its own.
+/// A chosen root only once it exists: creating it here would stop install.ps1 claiming it.
 pub fn studio_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     crate::studio_home::chosen_root_for_home(&home)

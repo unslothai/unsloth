@@ -707,8 +707,7 @@ fn llama_runtime_root(bin: &Path) -> Option<PathBuf> {
     if let Some(inferred) = inferred_studio_llama_root(bin) {
         return Some(inferred);
     }
-    // A root chosen on the first-run screen is a custom root to the CLI, which keeps llama.cpp
-    // inside it (commands/studio.py, _ensure_studio_env_exported).
+    // The CLI keeps llama.cpp inside a custom root (_ensure_studio_env_exported).
     #[cfg(not(test))]
     if let Some(chosen) = crate::studio_home::chosen_root() {
         return Some(chosen.join("llama.cpp"));
@@ -1013,8 +1012,7 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Inherited UNSLOTH_STUDIO_HOME / STUDIO_HOME are dropped; the desktop's own root (the
-    // default, or the folder chosen at first install) is the one probes see, as in process.rs.
+    // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     if let Some(root) = crate::studio_home::chosen_root() {
@@ -1091,8 +1089,7 @@ async fn probe_cli_capability(bin: &Path) -> Result<Option<DesktopCapability>, S
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Inherited UNSLOTH_STUDIO_HOME / STUDIO_HOME are dropped; the desktop's own root (the
-    // default, or the folder chosen at first install) is the one probes see, as in process.rs.
+    // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     if let Some(root) = crate::studio_home::chosen_root() {

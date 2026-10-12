@@ -815,7 +815,7 @@ Environment:
             $confRoot = _RootFromConf (Join-Path $env:LOCALAPPDATA "Unsloth Studio\studio.conf")
             if ($confRoot) { & $emit $confRoot }
         }
-        # The folder Unsloth Desktop was told to install into (studio_home.rs), one path per file.
+        # The folder Unsloth Desktop installed into (studio_home.rs).
         if ($env:USERPROFILE) {
             $desktopChoice = Join-Path $env:USERPROFILE ".unsloth\desktop_studio_home"
             if (Test-Path -LiteralPath $desktopChoice -PathType Leaf) {
@@ -1318,8 +1318,7 @@ Environment:
             }
         }
     }
-    # Desktop's install-location choice goes with the folder it names, so a reinstall starts
-    # from the default again; a folder this run had to keep keeps its choice too.
+    # Desktop's install-location choice goes with the folder it names.
     if ($defaultUnslothHome) {
         $desktopChoice = Join-Path $defaultUnslothHome "desktop_studio_home"
         if (Test-Path -LiteralPath $desktopChoice -PathType Leaf) {

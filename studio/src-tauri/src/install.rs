@@ -697,9 +697,8 @@ fn spawn_script(
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // install.sh / install.ps1 reject inherited custom roots under --tauri. Scrub
-    // so an inherited value can't trip the guard, then pass the folder chosen at
-    // first install (Windows), flagged so install.ps1 knows the desktop chose it.
+    // install.sh / install.ps1 reject inherited custom roots under --tauri, so
+    // scrub them and pass only the desktop's chosen root, with its flag.
     // Applied by hand here, the one managed spawn outside
     // apply_managed_cli_context: the Python setup.sh starts reads whatever is
     // exported, even though setup.sh assigns UNSLOTH_HOME itself.
@@ -709,7 +708,6 @@ fn spawn_script(
     if let Some(root) = crate::studio_home::chosen_root() {
         cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
         cmd.env(crate::studio_home::DESKTOP_CHOSEN_HOME_ENV, "1");
-        // The torch wheels are most of the download; keep their cache on the chosen drive too.
         cmd.env("UNSLOTH_ISOLATE_UV_CACHE", "1");
     }
     cmd.env(
@@ -1208,8 +1206,7 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
     }
 }
 
-/// Runs `operation` with the install lock held and no installer running, so an install cannot
-/// start part way through it. spawn_script reads the Studio root under the same lock.
+/// Runs `operation` under the install lock with no installer running (spawn_script reads the root under it).
 pub fn while_install_idle<T>(
     state: &InstallState,
     operation: impl FnOnce() -> Result<T, String>,

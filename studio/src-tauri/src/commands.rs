@@ -332,8 +332,7 @@ pub async fn check_install_status() -> bool {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Inherited UNSLOTH_STUDIO_HOME / STUDIO_HOME are dropped; the desktop's own root (the
-    // default, or the folder chosen at first install) is the one probes see, as in process.rs.
+    // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     if let Some(root) = crate::studio_home::chosen_root() {

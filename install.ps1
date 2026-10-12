@@ -3139,8 +3139,7 @@ function Install-UnslothStudio {
 
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root,
-    # or the folder the desktop itself chose at first install: it scrubs inherited
-    # values and sets UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME=1 only beside its own.
+    # or the one the desktop chose (UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME=1).
     $tauriChosenRoot = ($TauriMode -and $envOverrideVar -eq "UNSLOTH_STUDIO_HOME" -and
         $env:UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME -eq "1")
     if ($TauriMode -and $envOverride -and -not $tauriChosenRoot) {
@@ -3234,10 +3233,8 @@ function Install-UnslothStudio {
             Restore-StudioTempEnvironment
             throw "$envOverrideVar=$StudioHome is not writable."
         }
-        # A folder the desktop chose outside the profile inherits that drive's ACL, which on a
-        # non-system drive usually lets every signed-in account write. Give a root created here
-        # the profile's access (this account, SYSTEM, Administrators) before anything lands in
-        # it; a folder that already existed keeps its ACL.
+        # A new desktop-chosen root would inherit its drive's ACL (often writable by every
+        # account): give it the profile's access instead. An existing folder keeps its ACL.
         if ($tauriChosenRoot -and -not $script:StudioEnvRootExisted) {
             try {
                 $rootAcl = New-Object System.Security.AccessControl.DirectorySecurity
