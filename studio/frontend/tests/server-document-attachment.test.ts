@@ -50,6 +50,31 @@ test("no earlier composer adapter claims a server document by extension", () => 
   assert.equal(isServerDocumentAttachmentName("notes.docx"), false);
 });
 
+test("a failed read cancels the send, and a textless tool-only type falls back to the python tool", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  const adapter = source.slice(
+    source.indexOf("class ServerDocumentAttachmentAdapter"),
+    source.indexOf("class LargeDocumentFallbackAdapter"),
+  );
+  assert.match(adapter, /text = await pending;\s*\} catch \(cause\) \{[\s\S]*?throw cause;/);
+  assert.doesNotMatch(adapter, /pending\.catch\(/);
+  assert.match(
+    adapter,
+    /cause instanceof NoDocumentTextError &&\s*isToolOnlyAttachmentName\(file\.name\) &&\s*pythonToolOpensAttachments\(\)/,
+  );
+  assert.match(adapter, /only the python tool can read this file/);
+  const preview = readFileSync(
+    new URL("../src/components/assistant-ui/attachment-preview.tsx", import.meta.url),
+    "utf8",
+  );
+  const webPage = new RegExp(/const WEB_PAGE_NAME = \/(.+)\/i;/.exec(preview)![1]!, "i");
+  assert.ok(webPage.test("page.html"));
+  assert.ok(!webPage.test("page.xhtml"), "extracted .xhtml text must not render as markup");
+});
+
 test("server documents are routed ahead of text and tool-only adapters", () => {
   const source = readFileSync(
     new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),

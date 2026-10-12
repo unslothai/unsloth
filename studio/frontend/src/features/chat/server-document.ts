@@ -5,6 +5,9 @@ import { extractDocumentText } from "@/features/rag/api/rag-api";
 import { MAX_SERVER_DOCUMENT_BYTES } from "./open-document-accept";
 import { MAX_TEXT_ATTACHMENT_BYTES } from "./text-attachment-accept";
 
+/** Parsed fine, but nothing to inline: an image-only .epub or .odp. */
+export class NoDocumentTextError extends Error {}
+
 // Per File, so the chip's preview reuses the upload the adapter already made.
 const extracted = new WeakMap<File, Promise<string>>();
 
@@ -22,7 +25,7 @@ async function extract(file: File): Promise<string> {
     );
   }
   if (!result.text.trim()) {
-    throw new Error(`${file.name} has no text to read.`);
+    throw new NoDocumentTextError(`${file.name} has no text to read.`);
   }
   return result.truncated
     ? `${result.text}\n\n[Truncated: the text stops after ${MAX_TEXT_ATTACHMENT_BYTES.toLocaleString("en-US")} bytes.]`

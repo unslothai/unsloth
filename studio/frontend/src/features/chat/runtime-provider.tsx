@@ -122,8 +122,9 @@ import {
   RTF_ATTACHMENT_ACCEPT,
   SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS,
   TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+  isToolOnlyAttachmentName,
 } from "./open-document-accept";
-import { extractServerDocumentText } from "./server-document";
+import { NoDocumentTextError, extractServerDocumentText } from "./server-document";
 import {
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
@@ -892,10 +893,24 @@ class RtfAttachmentAdapter implements AttachmentAdapter {
 
 class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
   accept = SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS;
-  private readonly texts = new Map<string, Promise<string>>();
+  // null: no text to inline, so the python tool opens the file, as when .epub/.odp were tool-only.
+  private readonly texts = new Map<string, Promise<string | null>>();
 
   owns(id: string): boolean {
     return this.texts.has(id);
+  }
+
+  private read(file: File): Promise<string | null> {
+    return extractServerDocumentText(file).catch((cause: unknown) => {
+      if (
+        cause instanceof NoDocumentTextError &&
+        isToolOnlyAttachmentName(file.name) &&
+        pythonToolOpensAttachments()
+      ) {
+        return null;
+      }
+      throw cause;
+    });
   }
 
   // Read at add, like PDFAttachmentAdapter: a running chip parks Send until the backend answers.
@@ -912,7 +927,7 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
       file,
       status: { type: "running", reason: "uploading", progress: 0 },
     } satisfies PendingAttachment;
-    const text = extractServerDocumentText(file);
+    const text = this.read(file);
     this.texts.set(attachment.id, text);
     yield attachment;
     let error: string | null = null;
@@ -935,17 +950,30 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const pending =
-      this.texts.get(attachment.id) ?? extractServerDocumentText(attachment.file);
+    const pending = this.texts.get(attachment.id) ?? this.read(attachment.file);
     this.texts.delete(attachment.id);
-    const text = await pending.catch((cause: Error) => `[${cause.message}]`);
+    let text: string | null;
+    try {
+      text = await pending;
+    } catch (cause) {
+      // Thrown, not sent as text: PreStreamAwareAttachmentAdapter cancels the run, so a failed read
+      // never reaches the model in place of the document.
+      toast.error((cause as Error).message);
+      throw cause;
+    }
     return {
       id: attachment.id,
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
       content: [
-        { type: "text", text: attachmentContentText(attachment.name, text, false) },
+        {
+          type: "text",
+          text:
+            text === null
+              ? `[${attachment.name}: only the python tool can read this file]`
+              : attachmentContentText(attachment.name, text, false),
+        },
       ],
       status: { type: "complete" },
     };
