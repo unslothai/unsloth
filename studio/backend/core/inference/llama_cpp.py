@@ -27129,6 +27129,7 @@ class LlamaCppBackend:
                         ):
 
                             def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
+                                ub = _ubatch_for_slots(s)
                                 return (
                                     _probe_base(True, n, s)
                                     + self._estimate_kv_cache_bytes(
@@ -27137,11 +27138,11 @@ class LlamaCppBackend:
                                         n_parallel = s,
                                         swa_full = swa_full,
                                         kv_unified = planned_kv_unified,
-                                        n_ubatch = _ubatch_for_slots(s),
+                                        n_ubatch = ub,
                                         flash_attn = planned_flash_attn,
                                     )
                                     + _cc_bytes(ctx, n, s)
-                                    + _mtp_bytes(ctx, s, _ubatch_for_slots(s))
+                                    + _mtp_bytes(ctx, s, ub)
                                 ) / (1024 * 1024)
 
                             _mtp_slots = _mtp_slots_ctx = 0
@@ -27153,6 +27154,7 @@ class LlamaCppBackend:
                                 if _mtp_slots:
                                     break
                             if not _mtp_slots and not explicit_ctx:
+                                _ub_1 = _ubatch_for_slots(1)
                                 for _n, _ctx_c, _budget_c in _target_placements:
                                     _ctx_1 = self._fit_context_to_vram(
                                         _ctx_c,
@@ -27162,14 +27164,14 @@ class LlamaCppBackend:
                                         swa_full = swa_full,
                                         n_parallel = 1,
                                         kv_unified = planned_kv_unified,
-                                        n_ubatch = _ubatch_for_slots(1),
+                                        n_ubatch = _ub_1,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = True,
                                         mtp_overhead_fn = (
                                             functools.partial(
                                                 mtp_overhead_fn,
                                                 _np = 1,
-                                                _n_ubatch = _ubatch_for_slots(1),
+                                                _n_ubatch = _ub_1,
                                             )
                                             if mtp_overhead_fn is not None
                                             else None
