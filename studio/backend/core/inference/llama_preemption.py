@@ -680,6 +680,7 @@ class PreemptionController:
         "_resident_at",
         "_clock",
         "_resume_tickets",
+        "_replaced_by",
         "_reclaimable",
         "_residency_probe",
         "_drift_logged_at",
@@ -725,6 +726,9 @@ class PreemptionController:
         # an older one is waiting for and the older one waits out its deadline. The
         # admission queue keeps the same rule one layer down; see `_unpark_tickets`.
         self._resume_tickets: "OrderedDict[str, int]" = OrderedDict()
+        # A revoked victim -> who the re-plan chose in its place, so a holder waiting on it
+        # waits on them. None while that re-plan is still running.
+        self._replaced_by: Dict[str, Optional[List[str]]] = {}
         # Optional: everything works from the ledger alone, less precisely.
         self._residency_probe: Optional[Callable[[], None]] = None
         # Never decreasing: the one figure that moves whenever ANYBODY decodes, where
@@ -806,6 +810,7 @@ class PreemptionController:
         with self._lock:
             self._participants.pop(gen_id, None)
             self._resume_tickets.pop(gen_id, None)
+            self._replaced_by.pop(gen_id, None)
 
     def begin_resume(self, gen_id: str, want: int) -> None:
         """Take a place in the resume line, before asking whether there is room.
@@ -1281,7 +1286,14 @@ class PreemptionController:
             # The plan that chose it counted its cells as leaving, and nothing else may sweep
             # before the room is used: an unpausable holder plans once and reports no growth.
             # Planned again, in memory only, since the streaming drains call this on the loop.
-            self.plan_preemptions(needed = 0)
+            replacements: List[str] = []
+            try:
+                replacements = [
+                    v.gen_id for v in self.plan_preemptions(needed = 0) if not v.parked_on_a_tool
+                ]
+            finally:
+                with self._lock:
+                    self._replaced_by[gen_id] = replacements
             return True
         return changed
 
@@ -1303,6 +1315,8 @@ class PreemptionController:
             participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
             participant.preempt_event.clear()
             participant.state = ParticipantState.DECODING
+            # Held pending for a waiter until the re-plan says who replaces it.
+            self._replaced_by[gen_id] = None
             revoked = True
         if participant is None or participant.state not in self._LIVE_STATES:
             return False
@@ -1452,14 +1466,26 @@ class PreemptionController:
         has paused, finished, or declined. Blocking: never call it on the event loop."""
         deadline = time.monotonic() + max(0.0, float(timeout))
         pending = list(gen_ids or ())
+        seen = set(pending)
         while True:
             with self._lock:
-                pending = [
-                    gid
-                    for gid in pending
-                    if (p := self._participants.get(gid)) is not None
-                    and p.state == ParticipantState.PREEMPTING
-                ]
+                # A victim revoked into a tool was replaced by the re-plan: wait on those too.
+                still: List[str] = []
+                work = list(pending)
+                while work:
+                    gid = work.pop()
+                    replaced = self._replaced_by.get(gid, ())
+                    if replaced is None:
+                        still.append(gid)
+                        continue
+                    for new in replaced:
+                        if new not in seen:
+                            seen.add(new)
+                            work.append(new)
+                    p = self._participants.get(gid)
+                    if p is not None and p.state == ParticipantState.PREEMPTING:
+                        still.append(gid)
+                pending = still
             if not pending:
                 return True
             left = deadline - time.monotonic()
@@ -1782,6 +1808,8 @@ class PreemptionController:
                 # holder's cells are an idle slot's, which is what the reclaim keys on.
                 victim.preempted_from = victim.state
                 victim.state = ParticipantState.PREEMPTING
+                # Chosen afresh: whoever replaced an earlier revoked choice is not its stand-in.
+                self._replaced_by.pop(victim.gen_id, None)
                 victim.preempt_chosen_at = time.monotonic()
                 victim.preempt_event.set()
                 chosen.append(victim)
