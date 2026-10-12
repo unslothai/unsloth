@@ -162,6 +162,7 @@ from .loader_utils import (
     requested_device_map,
     resolve_auto_block_swap,
     ddp_auto_block_swap_launch,
+    auto_offload_for_launch,
     resolve_unsloth_device_map,
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
@@ -3516,6 +3517,8 @@ class FastBaseModel:
                     extra_skip_modules = _architecture_skip_modules(model_types) or None,
                 ),
             )
+            # Marked only when the resolver planned: a veto (None) loads every layer, as before.
+            _ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None
             if _ddp_auto_swap:
                 # DDP refuses a module with a CPU parameter: the embedding stays on this rank's card.
                 offload_embedding = False
@@ -4787,7 +4790,7 @@ class FastBaseModel:
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
-            offload_layers,
+            auto_offload_for_launch(offload_layers),
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )

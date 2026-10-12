@@ -58,6 +58,7 @@ from .loader_utils import (
     resolve_unsloth_device_map,
     resolve_auto_block_swap,
     ddp_auto_block_swap_launch,
+    auto_offload_for_launch,
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
@@ -3180,6 +3181,8 @@ class FastLlamaModel:
                     extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
                 ),
             )
+            # Marked only when the resolver planned: a veto (None) loads every layer, as before.
+            _ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None
             if _ddp_auto_swap:
                 # DDP refuses a module with a CPU parameter: the embedding stays on this rank's card.
                 offload_embedding = _offload_embedding_mode = False
@@ -3973,7 +3976,7 @@ class FastLlamaModel:
                 model = _exclude_rope_inv_freq_from_ddp(model)
                 install_block_swap(
                     model,
-                    offload_layers,
+                    auto_offload_for_launch(offload_layers),
                     prefetch_depth = prefetch_depth,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                 )
@@ -4286,7 +4289,7 @@ class FastLlamaModel:
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
-            offload_layers,
+            auto_offload_for_launch(offload_layers),
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )

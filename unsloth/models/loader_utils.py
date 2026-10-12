@@ -801,6 +801,18 @@ def ddp_auto_block_swap_launch(device_map):
     )
 
 
+def auto_offload_for_launch(offload_layers):
+    """get_peft_model(offload_layers = "auto") on a launch that shows FSDP / DeepSpeed: no swap (the
+    backend shards the weights itself), so no marker, and the Trainer starts as before."""
+    if (
+        offload_layers == "auto"
+        and is_distributed()
+        and _sharded_data_parallel_launch() is not None
+    ):
+        return 0
+    return offload_layers
+
+
 _BLOCK_SWAP_PLANNER_KEYS = (
     "batch_size",
     "lora_rank",

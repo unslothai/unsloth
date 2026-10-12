@@ -7734,12 +7734,12 @@ def _block_swap_for_trainer_backend(trainer):
         return _ignore_block_swap_params_for_ddp(model)
     swapper = getattr(model, "_unsloth_block_swap", None) if model is not None else None
     swapped = len(getattr(swapper, "indices", None) or ())
-    # from_pretrained planned "auto" for DDP: every rank refuses, also one whose own plan swapped
-    # nothing, since a peer may have swapped and a one-sided refusal would hang the others.
-    # get_peft_model(offload_layers = "auto"): refuse where it swapped.
+    # "auto" planned per rank (from_pretrained or get_peft_model): every rank refuses, also one whose
+    # own plan swapped nothing, since a peer may have swapped and a one-sided refusal would hang the
+    # others. A launch that already showed FSDP / DeepSpeed never planned, so it never gets here.
     auto = model is not None and (
         getattr(model, "_unsloth_offload_layers_auto_ddp", False)
-        or (getattr(model, "_unsloth_offload_layers_auto", None) is not None and swapped)
+        or getattr(model, "_unsloth_offload_layers_auto", None) is not None
     )
     if auto:
         raise ValueError(

@@ -138,6 +138,7 @@ def resolve(monkeypatch):
                 "_single_card_device_map",
                 "_single_device_index",
                 "ddp_auto_block_swap_launch",
+                "auto_offload_for_launch",
                 "_as_bytes",
             ),
             (
@@ -440,13 +441,40 @@ def test_a_sharded_trainer_refuses_an_auto_swap(monkeypatch, backend):
         check(_swapped_model(swapped = (), **{backend: True}))
     # No "auto": nothing to refuse.
     assert check(_swapped_model(mark = False, **{backend: True})) == []
-    # get_peft_model(offload_layers = "auto") alone: refuse where it swapped, not where it did not.
+    # get_peft_model(offload_layers = "auto") alone: every rank refuses, also a zero-swap one.
     peft_auto = _swapped_model(mark = False, **{backend: True})
     peft_auto.model._unsloth_offload_layers_auto = 1
     with pytest.raises(ValueError, match = "swapped 1 decoder layers"):
         check(peft_auto)
     peft_auto.model._unsloth_block_swap.indices = []
-    assert check(peft_auto) == []
+    with pytest.raises(ValueError, match = "swapped 0 decoder layers"):
+        check(peft_auto)
+
+
+def test_auto_declines_up_front_on_a_launch_that_shows_a_sharded_backend():
+    """Neither loader marks a resolver veto, and get_peft_model(offload_layers = "auto") neither swaps
+    nor marks on a launch that already shows FSDP / DeepSpeed: such jobs load every layer, as before."""
+    for name in ("llama.py", "vision.py"):
+        src = open(os.path.join(MODELS, name), encoding = "utf-8").read()
+        veto = src.index("_ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None")
+        assert (
+            veto
+            < src.index("if _ddp_auto_swap:", veto)
+            < src.index("mark_auto_offload_for_ddp(model, _ddp_auto_swap)")
+        ), name
+    for name, calls in (("llama.py", 2), ("vision.py", 1)):
+        src = open(os.path.join(MODELS, name), encoding = "utf-8").read()
+        assert src.count("install_block_swap(") == calls
+        assert src.count("auto_offload_for_launch(offload_layers),") == calls, name
+
+
+def test_get_peft_auto_declines_on_a_launch_that_shows_a_sharded_backend(resolve, monkeypatch):
+    decline = resolve.ns["auto_offload_for_launch"]
+    assert decline("auto") == "auto" and decline(4) == 4
+    resolve.distributed = True
+    assert decline("auto") == "auto"
+    monkeypatch.setenv("ACCELERATE_USE_DEEPSPEED", "true")
+    assert decline("auto") == 0 and decline(4) == 4
 
 
 def test_ignore_list_is_applied_at_the_end_of_get_peft_model():
