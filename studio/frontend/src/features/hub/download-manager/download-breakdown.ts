@@ -40,7 +40,9 @@ export function downloadParts(
 ): DownloadPart[] | null {
   if (!breakdown) return null;
   const parts = new Map<DownloadPartKind, DownloadPart>();
+  // An unknown size arrives as 0: it has no width to draw, and an all-zero split would divide by zero.
   const add = (kind: DownloadPartKind, bytes: number, doneBytes: number) => {
+    if (!(bytes > 0)) return;
     const part = parts.get(kind) ?? { kind, bytes: 0, doneBytes: 0 };
     part.bytes += bytes;
     part.doneBytes += doneBytes;

@@ -183,6 +183,20 @@ test("a hosted prequant transformer at the repo root is the model, its encoder t
   );
 });
 
+test("files of unknown size make no segment, so an all-unknown plan keeps the single bar", () => {
+  assert.equal(
+    downloadParts(
+      {
+        fileBytes: { "model_index.json": 0 },
+        earlierBytes: { "flux1-dev-Q4_K_M.gguf": 0 },
+        laterBytes: { "vae/diffusion_pytorch_model.safetensors": 0 },
+      },
+      5 * GB,
+    ),
+    null,
+  );
+});
+
 test("LTX-2's vocoder is part of the VAE, and files fill in name order, not plan order", () => {
   const parts = downloadParts(
     {
