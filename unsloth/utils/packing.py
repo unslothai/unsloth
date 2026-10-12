@@ -321,9 +321,11 @@ def enable_padding_free_metadata(model, trainer):
     collator._unsloth_padding_free_lengths_wrapped = True
 
 
-# Experimental packing for hybrid linear-attention (Qwen3.5 / Qwen3-Next gated-delta, Nemotron-H Mamba2):
-# a flattened batch leaks recurrent + conv state across sequences unless seq_idx / cu_seqlens reach the
-# accelerated kernels, so this is env-gated and fails closed on the pure-torch fallbacks.
+# Packing for hybrid linear-attention (Qwen3.5 / Qwen3-Next gated-delta, Nemotron-H Mamba2): a flattened
+# batch leaks recurrent + conv state across sequences unless seq_idx / cu_seqlens reach the accelerated
+# kernels, so it fails closed on the pure-torch fallbacks. Gated-delta (conv1d) models pack by default once
+# the kernel checks and an exactness probe pass; UNSLOTH_EXPERIMENTAL_HYBRID_PACKING=0 turns that off and
+# =1 also opts in the other mixers (Mamba2, q/k/v short-conv gated-delta).
 _MAMBA2_FUSED_NAMES = (
     "mamba2_split_conv1d_scan_combined",
     "mamba_split_conv1d_scan_combined",
@@ -333,18 +335,41 @@ _HYBRID_LOGGER = logging.getLogger("unsloth.hybrid_packing")
 _HYBRID_WARNED: set = set()
 
 
+def _hybrid_packing_mode() -> str:
+    """"on" / "off" when UNSLOTH_EXPERIMENTAL_HYBRID_PACKING is set to a truthy / falsy value, else "auto".
+    Read at call time so setting the flag after `import unsloth` still takes effect."""
+    value = os.environ.get(_HYBRID_PACKING_ENV_VAR, "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return "on"
+    if value in {"0", "false", "no", "off"}:
+        return "off"
+    return "auto"
+
+
 def _hybrid_packing_enabled() -> bool:
-    # Read at call time so setting the flag after `import unsloth` still takes effect.
-    return os.environ.get(_HYBRID_PACKING_ENV_VAR, "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return _hybrid_packing_mode() == "on"
+
+
+# Mixers that pack by default (auto): the conv1d gated-delta of Qwen3.5 / Qwen3.5-MoE / Qwen3-Next, whose
+# conv (causal_conv1d or unsloth-zoo's Triton conv) and fla scan reset at seq_idx / cu_seqlens. Only on
+# CUDA: ROCm and other devices need the explicit opt-in. As for every packed MoE, a router auxiliary
+# loss (Qwen3.5-MoE, Qwen3-Next) is computed over the whole packed row, not per document.
+_HYBRID_AUTO_KINDS = ("gated_delta",)
+
+# Engagement counters: probe runs / passes / failures, models patched, and the last probe error.
+HYBRID_PACKING_STATS = {
+    "probe_runs": 0,
+    "probe_passed": 0,
+    "probe_failed": 0,
+    "patched": 0,
+    "rejected": 0,
+    "last_probe_rel_err": None,
+}
 
 
 def _hybrid_reject(reason: str) -> bool:
     # One deduped diagnostic explaining why hybrid packing stayed on the padded path.
+    HYBRID_PACKING_STATS["rejected"] += 1
     if reason not in _HYBRID_WARNED:
         _HYBRID_WARNED.add(reason)
         _HYBRID_LOGGER.warning(
@@ -826,11 +851,24 @@ _KWARGS_TRACE: list = [None]
 
 
 def _hub_closure(fn) -> dict:
-    fn = getattr(fn, "_unsloth_varlen_probe_of", fn)
-    try:
-        return inspect.getclosurevars(fn).nonlocals
-    except (TypeError, ValueError):
-        return {}
+    """The kernel-hub wrapper's closure (implementation, torch_function, applicable_params), looking
+    through Unsloth's probes and pass-through wrappers such as the compiled modules'
+    torch_compiler_disable_unless_decode; {} when there is none."""
+    for _ in range(8):
+        if fn is None:
+            break
+        try:
+            nonlocals = inspect.getclosurevars(fn).nonlocals
+        except (TypeError, ValueError):
+            nonlocals = {}
+        if "implementation" in nonlocals:
+            return nonlocals
+        fn = (
+            getattr(fn, "_unsloth_varlen_probe_of", None)
+            or getattr(fn, "_unsloth_undisabled", None)
+            or getattr(fn, "__wrapped__", None)
+        )
+    return {}
 
 
 def _is_kwargs_mixer(module) -> bool:
@@ -846,6 +884,22 @@ def _is_kwargs_mixer(module) -> bool:
     return "implementation" in _hub_closure(globs.get("causal_conv1d_fn"))
 
 
+# unsloth-zoo's Triton GatedDeltaNet conv (gdn_causal_conv1d.py) marks its dispatch with this attribute.
+# The hub wrapper sees it as the "torch function" (the causal_conv1d package is absent), but it runs
+# Triton and, when it names seq_idx, honours it on both its Triton and torch paths.
+_ZOO_TRITON_CONV_MARK = "_unsloth_triton_causal_conv1d"
+
+
+def _is_unsloth_seq_idx_conv(fn) -> bool:
+    try:
+        fn = inspect.unwrap(fn, stop = lambda f: getattr(f, _ZOO_TRITON_CONV_MARK, False))
+        return bool(getattr(fn, _ZOO_TRITON_CONV_MARK, False)) and (
+            "seq_idx" in inspect.signature(fn).parameters
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _kwargs_kernels_available(modules, recurrent_ids = ()) -> Optional[str]:
     for module in modules:
         globs = getattr(inspect.getmodule(type(module)), "__dict__", {})
@@ -858,7 +912,10 @@ def _kwargs_kernels_available(modules, recurrent_ids = ()) -> Optional[str]:
             closure = _hub_closure(fn)
             # The hub wrapper drops kwargs its bound implementation does not name, silently.
             impl = closure.get("implementation")
-            if impl is None or impl is closure.get("torch_function"):
+            if impl is None or (
+                impl is closure.get("torch_function")
+                and not (name == "causal_conv1d_fn" and _is_unsloth_seq_idx_conv(impl))
+            ):
                 return f"{name} has no accelerated kernel"
             if _KWARGS_KERNELS[name] not in closure.get("applicable_params", ()):
                 return f"{name} kernel does not accept {_KWARGS_KERNELS[name]}"
@@ -1083,15 +1140,130 @@ def _hybrid_varlen_metadata(kwargs):
     return _varlen_from_position_ids(kwargs.get("position_ids"))
 
 
+# A 1-token document, one shorter than the conv width, and one crossing fla's 64-token chunk boundary.
+_HYBRID_PROBE_LENGTHS = (5, 1, 70, 7)
+_HYBRID_PROBE_RTOL = {torch.float32: 1e-4, torch.bfloat16: 2e-2, torch.float16: 1e-2}
+_HYBRID_SNAPSHOT_ATTRS = (
+    "forward",
+    "causal_conv1d_fn",
+    "chunk_gated_delta_rule",
+    "_unsloth_varlen",
+    "_unsloth_varlen_wrapped",
+    "_unsloth_varlen_orig_scan",
+    "_unsloth_varlen_orig_conv",
+    "_unsloth_varlen_kwargs_mode",
+    "_unsloth_varlen_conv_hit",
+    "_unsloth_varlen_scan_hit",
+    "_unsloth_varlen_kwargs_hit",
+)
+_MISSING = object()
+
+
+def _snapshot_mixers(modules):
+    saved = []
+    for module in modules:
+        owners = [module] + [getattr(module, c, None) for c in _QKV_CONVS]
+        for owner in owners:
+            if isinstance(owner, torch.nn.Module):
+                state = {k: owner.__dict__.get(k, _MISSING) for k in _HYBRID_SNAPSHOT_ATTRS}
+                saved.append((owner, state))
+    return saved
+
+
+def _restore_mixers(saved) -> None:
+    for owner, state in saved:
+        for key, value in state.items():
+            if value is _MISSING:
+                owner.__dict__.pop(key, None)
+            else:
+                owner.__dict__[key] = value
+
+
+def _auto_hybrid_device_ok(module) -> bool:
+    # Default-on is proven on CUDA only; ROCm (fla Triton unproven there) and others need the opt-in.
+    return torch.version.hip is None and module.conv1d.weight.device.type == "cuda"
+
+
+def _probe_target(modules):
+    """The first conv1d gated-delta mixer the exactness probe can drive, else None."""
+    for module in modules:
+        if _stateful_mixer_kind(module) != "gated_delta":
+            continue
+        hidden = getattr(module, "hidden_size", None)
+        weight = getattr(getattr(module, "conv1d", None), "weight", None)
+        if isinstance(hidden, int) and hidden > 0 and isinstance(weight, torch.Tensor):
+            if weight.device.type != "meta" and weight.dtype in _HYBRID_PROBE_RTOL:
+                return module
+    return None
+
+
+def _hybrid_exactness_probe(module) -> Optional[str]:
+    """Run one (already wrapped) gated-delta mixer on a packed row of short documents and on each
+    document alone. None when the boundary kernels were dispatched and the packed output matches, else
+    the reason. Leaves the mixer as it found it and does not touch the global RNG."""
+    weight = module.conv1d.weight
+    dtype, device = weight.dtype, weight.device
+    lengths = torch.tensor(_HYBRID_PROBE_LENGTHS, dtype = torch.int32)
+    cu_seqlens = torch.cat([torch.zeros(1, dtype = torch.int32), lengths.cumsum(0, dtype = torch.int32)])
+    total = int(cu_seqlens[-1])
+    seq_idx = torch.repeat_interleave(torch.arange(len(_HYBRID_PROBE_LENGTHS), dtype = torch.int32), lengths)
+    generator = torch.Generator().manual_seed(0)
+    hidden = torch.randn(1, total, module.hidden_size, generator = generator)
+    hidden = hidden.to(device = device, dtype = dtype)
+    varlen = (cu_seqlens.to(device), seq_idx[None].to(device))
+
+    def run(x):
+        out = module(x)
+        return out[0] if isinstance(out, (tuple, list)) else out
+
+    saved = _snapshot_mixers([module])
+    HYBRID_PACKING_STATS["probe_runs"] += 1
+    try:
+        with torch.no_grad():
+            for flag in (
+                "_unsloth_varlen_conv_hit",
+                "_unsloth_varlen_scan_hit",
+                "_unsloth_varlen_kwargs_hit",
+            ):
+                module.__dict__[flag] = False
+            module.__dict__["_unsloth_varlen"] = varlen
+            packed = run(hidden)
+            dispatched = _hybrid_varlen_dispatched(module)
+            module.__dict__["_unsloth_varlen"] = None
+            starts = cu_seqlens.tolist()
+            alone = torch.cat([run(hidden[:, s:e]) for s, e in zip(starts[:-1], starts[1:])], dim = 1)
+    except Exception as exc:
+        return f"exactness probe failed to run ({type(exc).__name__}: {str(exc)[:200]})"
+    finally:
+        _restore_mixers(saved)
+    if not dispatched:
+        return "exactness probe: boundary kernels were not dispatched"
+    if not isinstance(packed, torch.Tensor) or packed.shape != alone.shape:
+        return "exactness probe: unexpected mixer output"
+    packed, alone = packed.float(), alone.float()
+    if not bool(torch.isfinite(packed).all()) or not bool(torch.isfinite(alone).all()):
+        return "exactness probe: non-finite mixer output"
+    scale = alone.abs().max().clamp_min(1e-6)
+    err = ((packed - alone).abs().max() / scale).item()
+    HYBRID_PACKING_STATS["last_probe_rel_err"] = err
+    if err > _HYBRID_PROBE_RTOL[dtype]:
+        return f"exactness probe: packed output differs from per-document output (rel {err:.2e})"
+    return None
+
+
 def patch_hybrid_linear_attention_varlen(model) -> bool:
     """Feed seq_idx / cu_seqlens to hybrid mixers so packing resets state at sequence boundaries.
-    Gated by UNSLOTH_EXPERIMENTAL_HYBRID_PACKING (short-conv-only models pack without it), fail-closed,
-    idempotent. True when active."""
+    Gated-delta (conv1d) and short-conv-only models pack by default; UNSLOTH_EXPERIMENTAL_HYBRID_PACKING=0
+    disables the gated-delta default and =1 opts in every supported mixer. Fail-closed, idempotent.
+    True when active."""
     mixers = _iter_stateful_mixers(model)
     # Short-conv-only models (LFM2) reset at seq_idx on both kernel and torch paths, so they pack by default.
     short_conv_only = bool(mixers) and all(kind == "short_conv" for _, kind in mixers)
-    if not (_hybrid_packing_enabled() or short_conv_only):
-        return False
+    mode = _hybrid_packing_mode()
+    auto_eligible = bool(mixers) and all(kind in _HYBRID_AUTO_KINDS for _, kind in mixers)
+    if not short_conv_only:
+        if mode == "off" or (mode == "auto" and not auto_eligible):
+            return False
     unsupported = sorted({type(m).__name__ for m, kind in mixers if kind == "unsupported"})
     if unsupported:
         return _hybrid_reject(f"no varlen kernel path for {unsupported}")
@@ -1117,6 +1289,16 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         return True
 
     hub_short_convs = [m for m in short_conv_modules if _uses_hub_conv(m)]
+    # Gated-delta mixers get an exactness probe once wrapped; auto mode needs one to probe.
+    probe_target = _probe_target(gated_delta_modules + kwargs_modules)
+    if mode == "auto" and not short_conv_only:
+        if probe_target is None:
+            return _hybrid_reject("no gated-delta mixer the exactness probe can run")
+        if not _auto_hybrid_device_ok(probe_target):
+            return _hybrid_reject(
+                f"default-on only on CUDA (set {_HYBRID_PACKING_ENV_VAR}=1 to opt in on this device)"
+            )
+    rollback = _snapshot_mixers(hybrid_modules)
     if kwargs_modules or hub_short_convs:
         reason = _kwargs_kernels_available(
             kwargs_modules + hub_short_convs, recurrent_ids = {id(m) for m in kwargs_modules}
@@ -1194,6 +1376,14 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             _wrap_short_conv_forward(module)
             module._unsloth_varlen = None
             module._unsloth_varlen_wrapped = True
+
+    if probe_target is not None:
+        reason = _hybrid_exactness_probe(probe_target)
+        if reason is not None:
+            HYBRID_PACKING_STATS["probe_failed"] += 1
+            _restore_mixers(rollback)
+            return _hybrid_reject(reason)
+        HYBRID_PACKING_STATS["probe_passed"] += 1
 
     wrapped_fused: dict[int, Any] = {}
 
@@ -1291,9 +1481,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                         m._unsloth_varlen = None
                     _hybrid_reject("varlen kernels not dispatched (dispatch changed?)")
                     raise RuntimeError(
-                        "Unsloth: experimental hybrid packing cannot continue because the "
+                        "Unsloth: hybrid packing cannot continue because the "
                         "varlen boundary kernels were not invoked for "
-                        f"{sorted(set(missing))}. Unset UNSLOTH_EXPERIMENTAL_HYBRID_PACKING "
+                        f"{sorted(set(missing))}. Set UNSLOTH_EXPERIMENTAL_HYBRID_PACKING=0 "
                         "to train these models on the padded path.\n"
                         + _mamba2_handshake_debug(
                             [m for m in hybrid_modules if _stateful_mixer_kind(m) == "ssd"]
@@ -1306,6 +1496,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         model._unsloth_varlen_forward_wrapped = True
 
     _wrap_generate_clears_varlen(model, hybrid_modules)
+    HYBRID_PACKING_STATS["patched"] += 1
     return True
 
 
