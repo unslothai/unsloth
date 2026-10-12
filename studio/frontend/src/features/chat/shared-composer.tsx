@@ -29,6 +29,7 @@ import { BulbIcon } from "@/lib/bulb-icon";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -222,6 +223,7 @@ import {
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  kimiSearchExcludesThinking,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -891,7 +893,10 @@ export function SharedComposer({
   // Kimi's $web_search builtin mandates thinking=disabled
   // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay clickable, but turning
   // one on flips the other off, so the visible state matches what the backend sends.
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
   // drops the stored level is shown truthfully without overwriting the choice.
@@ -2930,8 +2935,13 @@ export function SharedComposer({
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator />
+                {/* Browser use sits right under Chat with files, or leads this section without it. */}
+                {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
                 {pinnedPlusItems.map((id) => (
-                  <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  <Fragment key={id}>
+                    {plusMenuNodes[id]}
+                    {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
+                  </Fragment>
                 ))}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
@@ -3019,6 +3029,7 @@ export function SharedComposer({
               </PillGlyph>
               <span>Code</span>
             </button>
+            <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
             {showImagePill && (
               <button
                 type="button"

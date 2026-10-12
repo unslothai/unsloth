@@ -105,8 +105,12 @@ test("token updates keep Streamdown's expensive configuration props stable", () 
   const streamdown = findChatStreamdown();
   assert.ok(streamdown, "chat <Streamdown> is missing");
 
+  assert.equal(
+    jsxAttribute(streamdown, "plugins")?.initializer?.getText(source).replace(/\s+/g, " "),
+    "{ highlightCode ? STREAMDOWN_PLUGINS : STREAMDOWN_PLAIN_CODE_PLUGINS }",
+    "plugins must retain object identity while raw tokens arrive",
+  );
   for (const [attribute, constant] of [
-    ["plugins", "STREAMDOWN_PLUGINS"],
     ["controls", "STREAMDOWN_CONTROLS"],
     ["shikiTheme", "STREAMDOWN_SHIKI_THEME"],
   ]) {
@@ -118,7 +122,7 @@ test("token updates keep Streamdown's expensive configuration props stable", () 
   }
 });
 
-test("stream updates are paint-coalesced without a time or length throttle", () => {
+test("stream updates are paint-coalesced with a cost-aware cadence and no length throttle", () => {
   const markdownSource = source.getText();
   const hookStart = markdownSource.indexOf(
     "function useCoalescedStreamingText",
@@ -129,6 +133,17 @@ test("stream updates are paint-coalesced without a time or length throttle", () 
 
   assert.ok(hook.includes("requestAnimationFrame"));
   assert.ok(!hook.includes("setTimeout"));
+  assert.match(hook, /if \(frameTime > frameAtRef\.current\) \{\s*frameIntervalRef\.current = Math\.min\(\s*frameIntervalRef\.current,\s*frameTime - frameAtRef\.current,\s*\);\s*frameAtRef\.current = frameTime;\s*\}/, "the shortest gap between frames is the display's frame interval");
+  assert.match(
+    hook,
+    /frameTime - renderedAtRef\.current <\s*Math\.max\(\s*16 - Math\.min\(frameIntervalRef\.current, 16\) \/ 2,\s*STREAMING_RENDER_DUTY \* costRef\.current,\s*\)/,
+    "frame times come in whole frames, so the 16 ms floor allows half a frame or a 75, 90 or 144 Hz display renders every second or third frame",
+  );
+  assert.match(
+    hook,
+    /afterFrame\(\(\) => \{\s*const startedAt = performance\.now\(\);\s*flushSync\(\(\) => setDisplayed\(pendingRef\.current\)\);\s*costRef\.current = performance\.now\(\) - startedAt;\s*\}\);/,
+    "the cost is the render alone, in the task after the frame, so an unrelated long task is not charged to the stream and the text resumes as soon as it ends",
+  );
 
   // A running message can be replaced rather than appended to, as the audio
   // path does when it swaps its placeholder for the player, so holding the last

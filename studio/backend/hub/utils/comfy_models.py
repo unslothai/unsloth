@@ -4,8 +4,9 @@
 """ComfyUI models-folder discovery and loose single-file diffusion checkpoints.
 
 Role folders hold many loose ``.safetensors`` with no ``config.json``; each denoiser is listed as its
-own row when its header says DiT. Text-encoder / VAE folders are resolved but nothing loads from
-them yet. No torch: called on every listing.
+own row when its header says DiT. A local DiT's text encoder is taken from the layout's text-encoder
+folders when one fits (``diffusion_comfy_components.pick_comfy_text_encoders``); VAE folders are
+resolved but nothing loads from them. No torch: called on every listing.
 """
 
 from __future__ import annotations
@@ -216,6 +217,58 @@ def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
     return tuple(roots)
 
 
+# models/<dit folder>/ plus the scanner's subfolder depth, then the ComfyUI root above models/.
+_MAX_LAYOUT_ANCESTORS = _MAX_SUBDIR_DEPTH + 3
+_MAX_COMPONENT_FILES = 64
+
+
+def _within(path: Path, roots: Iterable[Path]) -> bool:
+    try:
+        real = Path(os.path.realpath(path))
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            base = Path(os.path.realpath(root))
+        except OSError:
+            continue
+        if real == base or base in real.parents:
+            return True
+    return False
+
+
+def comfy_text_encoder_files(dit_path: Path, scan_folders: Iterable[Path] = ()) -> tuple[Path, ...]:
+    """The ``.safetensors`` in the text-encoder folders of the ComfyUI layout whose DiT folders hold
+    ``dit_path``: one found above the file, else a registered ``scan_folders`` entry whose layout lists it
+    (``extra_model_paths.yaml`` pointing outside the tree). Empty when the file is in none. Never raises."""
+    try:
+        dit_path = Path(dit_path)
+        folders = [*list(dit_path.parents)[:_MAX_LAYOUT_ANCESTORS], *map(Path, scan_folders)]
+    except (OSError, ValueError, TypeError):
+        return ()
+    for folder in folders:
+        layout = comfy_layout(folder)
+        if layout is None or not _within(dit_path.parent, layout.dit_dirs):
+            continue
+        out: list[Path] = []
+        for root in layout.text_encoder_dirs:
+            for sub in (root, *_plain_subdirs(root)):
+                try:
+                    with os.scandir(sub) as entries:
+                        names = sorted(e.name for e in entries if e.is_file())
+                except OSError:
+                    continue
+                for name in names:
+                    path = sub / name
+                    if name.startswith(".") or not is_loose_checkpoint_candidate(path):
+                        continue
+                    out.append(path)
+                    if len(out) >= _MAX_COMPONENT_FILES:
+                        return tuple(out)
+        return tuple(out)
+    return ()
+
+
 def comfy_role_dirs(folder: Path) -> frozenset[str]:
     layout = comfy_layout(folder)
     if layout is None:
@@ -311,9 +364,21 @@ def _offer_loose_checkpoint(path: Path) -> bool:
         if not info.family:
             return False
         if info.page == diffusion_content.PAGE_VIDEO:
-            return _single_file_loadable(
-                None, detect_video_family("", override = info.family), path.name
-            )
+            from core.inference.video_families import unsupported_video_checkpoint_reason
+
+            family = info.family
+            # Same keys, different model: the name picks the variant (wan2.1_t2v_14B reads as an A14B expert by header).
+            named = detect_video_family(path.name)
+            if named is not None and named.name in diffusion_content.SAME_ARCH_VARIANTS.get(
+                family, frozenset()
+            ):
+                family = named.name
+            # A name the loader refuses (FastWan, Wan2.1 I2V / VACE) is not offered, whatever the header says.
+            if unsupported_video_checkpoint_reason(
+                path.name, wan21_checkpoint = path.name if family.startswith("wan2.1") else None
+            ):
+                return False
+            return _single_file_loadable(None, detect_video_family("", override = family), path.name)
         return _single_file_loadable(detect_family("", override = info.family), None, path.name)
     return _single_file_loadable(
         detect_family(path.name), detect_video_family(path.name), path.name
