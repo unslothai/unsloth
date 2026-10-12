@@ -1386,9 +1386,9 @@ _START_SWITCHES = frozenset(
 )
 
 
-# A program spelled as a Windows path, spaces allowed (C:\Program Files\...). The characters Windows forbids in a file
-# name are not, so a whole command line (`dir C:\x\curl`) does not read as one path.
-_WIN_PROGRAM_PATH_RE = re.compile(r'(?:[A-Za-z]:|\.{1,2})?[\\/][^:*?"<>|\r\n]*')
+# A program spelled as a Windows path, spaces allowed (C:\Program Files\..., %SystemDrive%\...). The characters
+# Windows forbids in a file name are not, so a whole command line (`dir C:\x\curl`) does not read as one path.
+_WIN_PROGRAM_PATH_RE = re.compile(r'(?:[A-Za-z]:|\.{1,2}|%[A-Za-z_][\w()]*%)?[\\/][^:*?"<>|\r\n]*')
 _WIN_RELATIVE_PROGRAM_PATH_RE = re.compile(r'[^:*?"<>|\r\n]*[\\/][^:*?"<>|\r\n]*')
 
 

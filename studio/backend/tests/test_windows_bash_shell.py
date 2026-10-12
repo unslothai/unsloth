@@ -492,6 +492,7 @@ def test_dot_as_a_command_is_still_screened(monkeypatch, command, _windows_backs
         ('cmd /c "C:/x y/rm.exe" -rf z', "rm"),
         # START's program slot holds only a program, so a relative path counts there too.
         (r'start "" "tools dir\pwsh.exe" -c ls', "pwsh"),
+        (r'cmd /c "%SystemDrive%\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
     ],
 )
 def test_a_quoted_program_path_handed_to_cmd_or_start_is_screened(
