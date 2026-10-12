@@ -19,6 +19,9 @@ import core.inference.safetensors_pread as sp
 transformers = pytest.importorskip("transformers")
 import transformers.modeling_utils as modeling_utils  # noqa: E402
 
+# transformers < 5.6 passes no backend (None), later releases pass "mmap" off Windows.
+MMAP = {None, "mmap"}
+
 requires_backend = pytest.mark.skipif(
     not sp._supports_backend(modeling_utils.safe_open),
     reason = "installed safetensors has no backend keyword",
@@ -110,9 +113,9 @@ def test_windows_fp32_load_reads_with_pread_and_matches_mmap(monkeypatch, tmp_pa
     model_cls = _save_llama(tmp_path, torch.float32)
     seen = _record_backends(monkeypatch)
     dense = model_cls.from_pretrained(tmp_path, dtype = torch.bfloat16)
-    assert seen and set(seen) == {None}
+    assert seen and set(seen) <= MMAP
 
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv(sp.PREAD_ENV, "1")
     seen.clear()
     spy = modeling_utils.safe_open
     with sp.pread_safetensors() as engaged:
@@ -132,24 +135,37 @@ def test_windows_fp32_load_reads_with_pread_and_matches_mmap(monkeypatch, tmp_pa
 def test_windows_bf16_shards_keep_mmap(monkeypatch, tmp_path):
     """A bf16 shard's mapping is the loaded weight, so it stays on the default backend."""
     model_cls = _save_llama(tmp_path, torch.bfloat16)
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv(sp.PREAD_ENV, "1")
     seen = _record_backends(monkeypatch)
     with sp.pread_safetensors() as engaged:
         assert engaged is True
         model_cls.from_pretrained(tmp_path, dtype = torch.bfloat16)
-    assert seen and set(seen) == {None}
+    assert seen and set(seen) <= MMAP
 
 
 @requires_backend
-def test_explicit_backend_is_kept(monkeypatch):
+@pytest.mark.parametrize(
+    "dtype, passed, expected",
+    [
+        (torch.float32, None, "pread"),
+        (torch.float32, "mmap", "pread"),
+        (torch.float32, "pread", "pread"),
+        (torch.bfloat16, None, None),
+        (torch.bfloat16, "mmap", "mmap"),
+    ],
+)
+def test_backend_choice(monkeypatch, tmp_path, dtype, passed, expected):
+    from safetensors.torch import save_file
+
+    path = tmp_path / "shard.safetensors"
+    save_file({"w": torch.zeros(64, 64, dtype = dtype)}, str(path))
     monkeypatch.setattr(sys, "platform", "win32")
     seen = _record_backends(monkeypatch)
+    kwargs = {} if passed is None else {"backend": passed}
     with sp.pread_safetensors():
-        with pytest.raises(Exception):
-            modeling_utils.safe_open("missing.safetensors", framework = "pt", backend = "mmap")
-        with pytest.raises(Exception):
-            modeling_utils.safe_open("missing.safetensors", framework = "pt")
-    assert seen == ["mmap", None]
+        with modeling_utils.safe_open(str(path), framework = "pt", device = "cpu", **kwargs) as handle:
+            assert torch.equal(handle.get_slice("w")[...], torch.zeros(64, 64, dtype = dtype))
+    assert seen == [expected]
 
 
 @requires_backend
