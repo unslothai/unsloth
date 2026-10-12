@@ -7,7 +7,8 @@ ControlNet), from the safetensors or GGUF header only: no torch, no weight bytes
 
 Same-architecture variants (FLUX.1 dev / Krea / Kontext, Qwen-Image / 2512 / Edit / Edit-2509,
 klein distilled / base, Z-Image base / Turbo, HiDream full / dev / fast, LTX-2 / 2.3,
-HunyuanVideo-1.5 480p / 720p, Wan A14B high / low noise) have identical keys: the file name decides.
+HunyuanVideo-1.5 480p / 720p, Wan A14B high / low noise, Wan2.1-T2V-14B vs an A14B expert) have identical keys: the
+file name decides.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ SAME_ARCH_VARIANTS: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({"qwen-image", "qwen-image-edit"}),
     "qwen-image-edit": frozenset({"qwen-image-edit"}),
     "hunyuanvideo-1.5": frozenset({"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"}),
+    # A name naming neither keeps the header's A14B answer.
+    "wan2.2-t2v-a14b": frozenset({"wan2.2-t2v-a14b", "wan2.1-t2v-14b"}),
 }
 
 _VIDEO_FAMILIES = frozenset(
@@ -45,6 +48,8 @@ _VIDEO_FAMILIES = frozenset(
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
+        "wan2.1-t2v-1.3b",
+        "wan2.1-t2v-14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
         "minimax-h3",
@@ -64,6 +69,8 @@ class CheckpointInfo:
     what: str = ""  # e.g. "a VAE", used in refusals
     layout: str = ""
     variant: Optional[str] = None  # flux.1-schnell vs flux.1-dev
+    # denoiser + text encoder(s) + VAE in one file (an SDXL checkpoint, or its stable-diffusion.cpp GGUF)
+    whole_pipeline: bool = False
 
 
 def family_page(family: Optional[str]) -> Optional[str]:
@@ -200,6 +207,11 @@ _DIT_PREFIXES = (
     "",
 )
 
+# Not cond_stage_model: older stable-diffusion.cpp converts keep SDXL's second encoder there in HF CLIP
+# names, which diffusers reads as the first encoder, so the load would fail after eviction.
+_BUNDLED_TEXT_ENCODER_TOPS = frozenset({"conditioner", "text_encoders"})
+_BUNDLED_VAE_TOPS = frozenset({"first_stage_model", "vae"})
+
 _LORA_RE = re.compile(
     r"(?:^|\.)(?:lora_[AB]|lora_down|lora_up|lora\.(?:up|down)|lokr_w\d|hada_w\d_[ab])(?:\.|$)|^lora_unet_|^lora_te\d?_"
 )
@@ -230,6 +242,19 @@ def _dim(
 def _any(keys, pattern: str) -> bool:
     rx = re.compile(pattern)
     return any(rx.search(k) for k in keys)
+
+
+LTX25_VARIANT = "ltx-2.5"
+
+
+def is_ltx25_dit_keys(keys) -> bool:
+    """LTX-2.5 DiT: keyframe position embedding, or block 0 video FFN without bias (every 2.0 / 2.3 file has it)."""
+    names = set(keys)
+    if "keyframes_abs_pos_embedding" in names:
+        return True
+    ff = "transformer_blocks.0.ff.net.0.proj"
+    has_weight = any(k == f"{ff}.weight" or k.startswith(f"{ff}.weight") for k in names)
+    return has_weight and f"{ff}.bias" not in names
 
 
 def _dit(family: Optional[str], what: str, layout: str) -> CheckpointInfo:
@@ -306,6 +331,17 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         or "av_cross_attn_audio_scale_shift" in tops
         or "audio_caption_projection" in tops
     ):
+        if is_ltx25_dit_keys(keys):
+            # No family: the ltx-2 name must not revive it.
+            return CheckpointInfo(
+                ROLE_DIT,
+                None,
+                None,
+                "an LTX-2.5 audio-video diffusion transformer, which Studio does not support yet "
+                "(use LTX-2.3 for now)",
+                "diffusers" if "proj_in" in tops else "comfy",
+                LTX25_VARIANT,
+            )
         return _dit(
             "ltx-2",
             "an LTX-2 audio-video diffusion transformer",
@@ -330,11 +366,17 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         if in_ch == 16 and width == 5120:
             return _dit(
                 "wan2.2-t2v-a14b",
-                "a Wan 14B text-to-video diffusion transformer (one A14B expert)",
+                "a Wan 14B text-to-video diffusion transformer (Wan2.1 T2V-14B or one Wan2.2 A14B expert)",
                 layout,
             )
+        if in_ch == 16 and width == 1536:
+            return _dit("wan2.1-t2v-1.3b", "a Wan2.1 T2V-1.3B diffusion transformer", layout)
         if in_ch == 36:
-            return _dit(None, "a Wan image-to-video diffusion transformer (not supported)", layout)
+            return _dit(
+                None,
+                "a Wan image-to-video diffusion transformer (not supported yet: image-to-video is coming)",
+                layout,
+            )
         return _dit(None, "a Wan diffusion transformer of an unsupported size", layout)
 
     if (
@@ -499,6 +541,7 @@ def classify_tensors(shapes: dict[str, list[int]], meta: Optional[dict] = None) 
             "audio_vae",
         }
     )
+    whole_pipeline = bool(tops & _BUNDLED_TEXT_ENCODER_TOPS) and bool(tops & _BUNDLED_VAE_TOPS)
     for prefix in _DIT_PREFIXES:
         sub = _strip(shapes, prefix)
         if not sub:
@@ -507,7 +550,7 @@ def classify_tensors(shapes: dict[str, list[int]], meta: Optional[dict] = None) 
         if info is not None:
             layout = "gguf" if arch else ("checkpoint" if bundled else info.layout)
             return CheckpointInfo(
-                info.role, info.family, info.page, info.what, layout, info.variant
+                info.role, info.family, info.page, info.what, layout, info.variant, whole_pipeline
             )
 
     te = _match_text_encoder(keys)
@@ -564,6 +607,22 @@ def offer_as_dit(path: str) -> bool:
     return inspect_checkpoint(path).role not in NON_DIT_ROLES
 
 
+def whole_pipeline_gguf_family(path: Optional[str]) -> Optional[str]:
+    """Family of a GGUF carrying the whole pipeline (denoiser, text encoders, VAE) of a single-file-pipeline family
+    (SDXL), as stable-diffusion.cpp ``convert`` writes it. None otherwise."""
+    if not path or not str(path).lower().endswith(".gguf"):
+        return None
+    info = inspect_checkpoint(str(path))
+    if info.role != ROLE_DIT or not info.family or not info.whole_pipeline:
+        return None
+    try:
+        from .diffusion_families import detect_family
+        fam = detect_family("", override = info.family)
+    except Exception:  # noqa: BLE001 - no registry: not a pick this module can vouch for
+        return None
+    return info.family if fam is not None and fam.single_file_is_pipeline else None
+
+
 def local_pick_file(repo_id: Optional[str], filename: Optional[str]) -> Optional[str]:
     try:
         if not repo_id:
@@ -606,15 +665,22 @@ def refusal_for(path: str, page: str) -> Optional[str]:
     return None
 
 
+def is_ltx25_checkpoint(path: str) -> bool:
+    return inspect_checkpoint(path).variant == LTX25_VARIANT
+
+
 def resolve_family_with_content(
     name_family: Optional[str],
     path: Optional[str],
     page: str,
     name_vetoed: bool = False,
+    file_family: Optional[str] = None,
 ) -> tuple[Optional[str], bool]:
     """(family, decided_by_content). Non-DiT / other page -> None; a same-architecture name variant
     keeps the name, else the header wins; no supported header family -> the name. A name the variant
-    guard refused (``...-inpaint``) stays refused."""
+    guard refused (``...-inpaint``) stays refused. ``file_family``, the family the checkpoint's own file
+    name implies, outranks ``name_family`` (which may come from a repo or folder) among same-architecture
+    variants."""
     if not path:
         return name_family, False
     info = inspect_checkpoint(path)
@@ -627,7 +693,10 @@ def resolve_family_with_content(
         return None, True
     if info.page != page:
         return None, True
-    if name_family and name_family in SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family})):
+    variants = SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family}))
+    if file_family and file_family in variants:
+        return file_family, False
+    if name_family and name_family in variants:
         return name_family, False
     if name_vetoed and name_family is None:
         return None, False

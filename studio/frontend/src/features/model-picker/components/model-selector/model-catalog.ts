@@ -254,6 +254,25 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // A different denoiser with its own FP8/INT8 checkpoints; no unsloth mirror, so the vendor pipeline is the row.
+    canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
+    displayName: "Qwen-Image 2.1 Turbo",
+    description: "Text-to-image and image editing in 8 steps",
+    scope: "image",
+    // Same reason as 2.1's alias: the int8 half of the prequant repo has no artifact row.
+    aliases: ["unsloth/Qwen-Image-2.1-Turbo-FP8"],
+    // Right after 2.1's group, so its "Fast FP8" row sits directly under 2.1's at the top.
+    pinToTop: true,
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
+        totalParams: 7115124736,
+        prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+      }),
+      gguf("unsloth/Qwen-Image-2.1-Turbo-GGUF"),
+    ],
+  },
+  {
     canonicalId: "unsloth/Qwen-Image-2512",
     displayName: "Qwen-Image 2512",
     description: "Text-to-image",
@@ -544,6 +563,20 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video, dual-expert",
     scope: "video",
     artifacts: [bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, { totalParams: 14288491584 })],
+  },
+  {
+    canonicalId: "Wan-AI/Wan2.1-T2V-1.3B",
+    displayName: "Wan 2.1 T2V 1.3B",
+    description: "Text-to-video 480p, small",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 15, { totalParams: 1418996800 })],
+  },
+  {
+    canonicalId: "Wan-AI/Wan2.1-T2V-14B",
+    displayName: "Wan 2.1 T2V 14B",
+    description: "Text-to-video 480p / 720p",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-14B-Diffusers", 41, { totalParams: 14288491584 })],
   },
   {
     canonicalId: "hunyuanvideo-community/HunyuanVideo-1.5",

@@ -357,8 +357,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             if (modelDetails.is_lora) {
+              // LoRA / CPT can continue from a saved adapter; full finetune and decision
+              // adapters cannot (#13140).
+              const canContinue =
+                isAdapterMethod(get().trainingMethod) &&
+                !modelDetails.is_decision;
+              // Keep the modality the backend reported even when refusing, so switching the
+              // method afterwards still validates the adapter as what it is.
               set({
-                ...(shouldApplyTrainingDefaults
+                ...(!canContinue && shouldApplyTrainingDefaults
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
@@ -367,22 +374,31 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       },
                     }
                   : {}),
-                modelType: null,
+                modelType: resolveTrainingModelType({
+                  modelType: modelDetails.model_type,
+                  isEmbedding: !!modelDetails.is_embedding,
+                  isDecision: !!modelDetails.is_decision,
+                  isVision: modelDetails.is_vision,
+                  isAudio: modelDetails.is_audio,
+                }),
                 decisionLayout: null,
                 modelFormat: "adapter",
-                isVisionModel: false,
-                isEmbeddingModel: false,
-                isAudioModel: false,
-                audioCapabilityUnknown: false,
+                isVisionModel: modelDetails.is_vision,
+                isEmbeddingModel: !!modelDetails.is_embedding,
+                isAudioModel: !!modelDetails.is_audio,
+                audioCapabilityUnknown: modelDetails.audio_type_known === false,
                 isLoadingModelDefaults: false,
                 isCheckingVision: false,
                 modelDefaultsError: null,
                 modelDefaultsAppliedFor: modelName,
-                maxPositionEmbeddings: null,
+                maxPositionEmbeddings:
+                  modelDetails.max_position_embeddings ?? null,
               });
-              toast.error(translate("studio.modelPicker.cantUseModel"), {
-                description: translate("studio.modelPicker.reasonAdapter"),
-              });
+              if (!canContinue) {
+                toast.error(translate("studio.modelPicker.cantUseModel"), {
+                  description: translate("studio.modelPicker.reasonAdapter"),
+                });
+              }
               return;
             }
 
@@ -1598,6 +1614,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
           setUserEdit({ gradientCheckpointing }),
+        setOffloadLayers: (offloadLayers) => setUserEdit({ offloadLayers }),
+        setOffloadVramGb: (offloadVramGb) => setUserEdit({ offloadVramGb }),
+        setOffloadVramGbForDevice: (gpuIndex, value) =>
+          setUserEdit((state) => ({
+            offloadVramGbPerDevice: {
+              ...state.offloadVramGbPerDevice,
+              [String(gpuIndex)]: value,
+            },
+          })),
+        setPrefetchDepth: (prefetchDepth) => setUserEdit({ prefetchDepth }),
         setRandomSeed: (randomSeed) => setUserEdit({ randomSeed }),
         setEnableWandb: (enableWandb) => setUserEdit({ enableWandb }),
         setWandbToken: (wandbToken) => setUserEdit({ wandbToken }),

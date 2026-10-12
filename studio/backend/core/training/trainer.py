@@ -339,6 +339,87 @@ def normalize_gradient_checkpointing(value) -> Union[str, bool]:
     return "unsloth"
 
 
+def _ignored_adapter_settings(
+    peft_config,
+    lora_r,
+    lora_alpha,
+    modules_to_save,
+    target_modules = None,
+    lora_dropout = None,
+    use_dora = False,
+    use_rslora = False,
+    use_loftq = False,
+) -> list[str]:
+    """Requested LoRA settings a continued adapter keeps from its own config instead."""
+    adapter = next(iter(peft_config.values()), None) if isinstance(peft_config, dict) else None
+    if adapter is None:
+        return []
+
+    def leaf(module):
+        return str(module).rsplit(".", 1)[-1]
+
+    ignored = []
+    saved_r = getattr(adapter, "r", None)
+    if saved_r is not None and saved_r != lora_r:
+        ignored.append(f"rank {lora_r} (adapter has {saved_r})")
+    saved_alpha = getattr(adapter, "lora_alpha", None)
+    if saved_alpha is not None and saved_alpha != lora_alpha:
+        ignored.append(f"alpha {lora_alpha} (adapter has {saved_alpha})")
+    saved_dropout = getattr(adapter, "lora_dropout", None)
+    if lora_dropout is not None and saved_dropout is not None and saved_dropout != lora_dropout:
+        ignored.append(f"dropout {lora_dropout} (adapter has {saved_dropout})")
+    if bool(use_dora) != bool(getattr(adapter, "use_dora", False)):
+        ignored.append("DoRA on" if use_dora else "DoRA off")
+    if bool(use_rslora) != bool(getattr(adapter, "use_rslora", False)):
+        ignored.append("rsLoRA on" if use_rslora else "rsLoRA off")
+    if use_loftq:
+        # LoftQ only initializes a new adapter; an existing one keeps its weights.
+        ignored.append("LoftQ initialization")
+    # A string target is a PEFT regex or "all-linear"; only explicit lists compare cleanly.
+    saved_targets = getattr(adapter, "target_modules", None)
+    requested_list = target_modules if isinstance(target_modules, (list, tuple)) else []
+    wants_all_linear = target_modules == "all-linear" or "all-linear" in requested_list
+    requested = [m for m in requested_list if m != "all-linear"]
+    if isinstance(saved_targets, str) and requested:
+        # Saved as "all-linear" or a PEFT regex: an explicit selection cannot narrow it.
+        ignored.append(
+            f"target modules {', '.join(sorted({leaf(m) for m in requested}))} "
+            f"(adapter has {saved_targets})"
+        )
+    elif isinstance(saved_targets, (list, set, tuple)) and (requested or wants_all_linear):
+        saved_names = ", ".join(sorted({leaf(m) for m in saved_targets}))
+        if wants_all_linear:
+            ignored.append(f"all-linear targets (adapter has {saved_names})")
+        elif {leaf(m) for m in requested} != {leaf(m) for m in saved_targets}:
+            ignored.append(
+                f"target modules {', '.join(sorted({leaf(m) for m in requested}))} "
+                f"(adapter has {saved_names})"
+            )
+    saved_modules = {leaf(m) for m in (getattr(adapter, "modules_to_save", None) or [])}
+    missing = [m for m in (modules_to_save or []) if leaf(m) not in saved_modules]
+    if missing:
+        ignored.append(f"training {', '.join(missing)} (adapter does not train them)")
+    return ignored
+
+
+def _load_adapter_aware_tokenizer(lookup_name, hf_token, **kwargs):
+    """AutoTokenizer for *lookup_name*. A PEFT adapter saved without tokenizer files falls back
+    to the base it names, as Unsloth's own adapter loader does (#13140)."""
+    from transformers import AutoTokenizer
+    try:
+        return AutoTokenizer.from_pretrained(lookup_name, token = hf_token, **kwargs)
+    except Exception:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        base = get_base_model_from_lora_identifier(lookup_name, hf_token)
+        if not base:
+            raise
+        # The adapter's revision and subfolder do not apply to its base repo.
+        kwargs.pop("revision", None)
+        kwargs.pop("subfolder", None)
+        return AutoTokenizer.from_pretrained(base, token = hf_token, **kwargs)
+
+
 class UnslothTrainer:
     def __new__(cls, *args, **kwargs):
         if cls is UnslothTrainer and should_use_mlx_training_backend():
@@ -363,6 +444,11 @@ class UnslothTrainer:
         self.is_audio_vlm = False
         self._audio_type = None
         self._use_gradient_checkpointing = "unsloth"
+        self._offload_layers = 0
+        self._prefetch_depth = 2
+        self._gpu_ids = None
+        self._offload_layer_devices = None
+        self._offload_plan_shape = {}
         # True until a probe says otherwise, so a path that never probes cannot trip the inconclusive-detection guard.
         self._audio_type_known = True
         self._is_dataset_audio = False
@@ -470,11 +556,10 @@ class UnslothTrainer:
                     revision = model_revision,
                 )
             else:
-                from transformers import AutoTokenizer
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer = _load_adapter_aware_tokenizer(
                     lookup_name,
+                    hf_token,
                     trust_remote_code = trust_remote_code,
-                    token = hf_token,
                     local_files_only = local_files_only,
                     revision = model_revision,
                     # Spark-TTS keeps its tokenizer under LLM/; reading the root finds no vocab and fails blaming a
@@ -570,6 +655,96 @@ class UnslothTrainer:
                     callback(self.training_progress)
                 except Exception as e:
                     logger.error(f"Error in progress callback: {e}")
+
+    def _offload_load_kwargs(self, device_map = None) -> dict:
+        # Loading the offloaded layers straight into host RAM is what lets a model larger than the card load at all.
+        if not self._offload_layers:
+            return {}
+        # A fixed count loads to host only onto one card (core raises on a multi-GPU map); get_peft_model swaps it there.
+        if self._offload_layers != "auto" and device_map in ("unsloth_balanced", "balanced"):
+            return {}
+        return {
+            "offload_layers": self._offload_layers,
+            # Auto plans at load; without the run's batch and rank it sizes for batch 1, rank 16.
+            "device_map_planner_kwargs": {
+                "prefetch_depth": self._prefetch_depth,
+                **self._offload_plan_shape,
+            },
+        }
+
+    def _offload_peft_kwargs(self) -> dict:
+        if not self._offload_layers:
+            return {}
+        return {"offload_layers": self._offload_layers, "prefetch_depth": self._prefetch_depth}
+
+    def _offload_snapshot(self) -> Optional[dict]:
+        """Where each decoder layer is and what the last steps' copies cost, for the live panel."""
+        swapper = (
+            getattr(self.model, "_unsloth_block_swap", None) if self.model is not None else None
+        )
+        stats = getattr(swapper, "stats", None)
+        if stats is None:
+            return None
+        try:
+            snap = stats()
+            # JSON object keys must be strings.
+            snap["state"] = {str(k): v for k, v in snap["state"].items()}
+            if torch.cuda.is_available():
+                device = getattr(swapper, "device", None)
+                snap["vram_allocated_bytes"] = torch.cuda.memory_allocated(device)
+                snap["vram_peak_bytes"] = torch.cuda.max_memory_allocated(device)
+                snap["vram_total_bytes"] = torch.cuda.get_device_properties(device).total_memory
+                get_fraction = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+                if get_fraction is not None:
+                    snap["vram_fraction"] = get_fraction(device)
+                snap["vram_devices"] = self._offload_vram_devices()
+                snap["layer_device"] = self._offload_layer_device_map(swapper)
+            return snap
+        except Exception as exc:
+            logger.debug("offload stats unavailable: %s", exc)
+            return None
+
+    def _offload_vram_devices(self) -> list:
+        gpu_ids = getattr(self, "_gpu_ids", None)
+        get_fraction = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+        devices = []
+        for i in range(torch.cuda.device_count()):
+            entry = {
+                "index": i,
+                "gpu_id": gpu_ids[i] if gpu_ids and i < len(gpu_ids) else i,
+                "name": torch.cuda.get_device_properties(i).name,
+                "allocated_bytes": torch.cuda.memory_allocated(i),
+                "peak_bytes": torch.cuda.max_memory_allocated(i),
+                "total_bytes": torch.cuda.get_device_properties(i).total_memory,
+            }
+            if get_fraction is not None:
+                entry["fraction"] = get_fraction(i)
+            devices.append(entry)
+        return devices
+
+    def _offload_layer_device_map(self, swapper) -> dict:
+        """Torch ordinal of every decoder layer: an offloaded one's home card, a resident one's weights."""
+        key = (id(swapper), tuple(getattr(swapper, "indices", ())))
+        cached = getattr(self, "_offload_layer_devices", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        devices = {}
+        for li, block in zip(getattr(swapper, "indices", ()), getattr(swapper, "blocks", ())):
+            home = getattr(block, "home", None)
+            if home is not None and home.type == "cuda" and home.index is not None:
+                devices[str(li)] = home.index
+        try:
+            from unsloth_zoo.block_swap import find_decoder_layers
+            for li, layer in enumerate(find_decoder_layers(self.model)):
+                if str(li) in devices:
+                    continue
+                p = next(layer.parameters(), None)
+                if p is not None and p.device.type == "cuda" and p.device.index is not None:
+                    devices[str(li)] = p.device.index
+        except Exception as exc:
+            logger.debug("offload layer devices unavailable: %s", exc)
+        self._offload_layer_devices = (key, devices)
+        return devices
 
     def _create_progress_callback(self):
         """Create a TrainerCallback for progress tracking. Reused by all training branches."""
@@ -689,6 +864,7 @@ class UnslothTrainer:
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
                     is_run_summary = is_run_summary,
+                    offload = trainer_ref._offload_snapshot(),
                     status_message = "",
                 )
 
@@ -902,8 +1078,17 @@ class UnslothTrainer:
         model_revision: Optional[str] = None,
         use_gradient_checkpointing: Union[str, bool] = "unsloth",
         on_model_resolved: Optional[Callable[[str], None]] = None,
+        offload_layers: Union[int, str] = 0,
+        prefetch_depth: Union[int, str] = 2,
+        offload_plan_shape: Optional[dict] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
+        # Offloading streams frozen base weights, so it has nothing to do in a full finetune.
+        self._offload_layers = 0 if full_finetuning else (offload_layers or 0)
+        self._prefetch_depth = prefetch_depth or 2
+        # Physical ids behind each torch ordinal, so the panel names cards as the settings do.
+        self._gpu_ids = list(gpu_ids) if gpu_ids else None
+        self._offload_plan_shape = {k: v for k, v in (offload_plan_shape or {}).items() if v}
         self.load_in_4bit = load_in_4bit
         self.trust_remote_code = trust_remote_code
         # The loader installs the checkpointing implementation; a full finetune never reinstalls it.
@@ -1123,6 +1308,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -1199,6 +1385,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -1216,6 +1403,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded vision model")
 
@@ -1245,6 +1433,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded text model")
 
@@ -1297,6 +1486,9 @@ class UnslothTrainer:
                     model_revision = model_revision,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    offload_layers = offload_layers,
+                    prefetch_depth = prefetch_depth,
+                    offload_plan_shape = offload_plan_shape,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -1384,6 +1576,31 @@ class UnslothTrainer:
 
             self._use_gradient_checkpointing = use_gradient_checkpointing
 
+            # Saved LoRA dirs load as PeftModel via from_pretrained; do not stack a second adapter (#13140).
+            if getattr(self.model, "peft_config", None):
+                ignored = _ignored_adapter_settings(
+                    self.model.peft_config,
+                    lora_r,
+                    lora_alpha,
+                    modules_to_save,
+                    target_modules = target_modules,
+                    lora_dropout = lora_dropout,
+                    use_dora = use_dora,
+                    use_rslora = use_rslora,
+                    use_loftq = use_loftq,
+                )
+                status = "Continuing from existing LoRA adapters"
+                if ignored:
+                    # The adapter's own shape wins; say so instead of dropping the request silently.
+                    status += f" (kept the adapter's settings, ignoring {'; '.join(ignored)})"
+                    logger.warning(f"{status}\n")
+                self._update_progress(status_message = status)
+                logger.info(
+                    "Model already has LoRA adapters from the checkpoint; "
+                    "continuing training without creating a new adapter\n"
+                )
+                return True
+
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
                 if len(target_modules) == 1:
@@ -1447,6 +1664,7 @@ class UnslothTrainer:
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **self._offload_peft_kwargs(),
                 )
                 if self.is_audio_vlm:
                     peft_kwargs.update(
@@ -1524,6 +1742,7 @@ class UnslothTrainer:
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
+                    **self._offload_peft_kwargs(),
                 )
             else:
                 logger.info(f"Text model LoRA configuration:")
@@ -1544,6 +1763,7 @@ class UnslothTrainer:
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
+                    **self._offload_peft_kwargs(),
                 )
 
             if self.should_stop:

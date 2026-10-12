@@ -453,6 +453,28 @@ def test_causal_conv1d_still_installs_below_sm80(uv):
     assert run.installer_calls[0][-1].startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10")
 
 
+@pytest.mark.parametrize(
+    "without_gpu, capability, installs",
+    [(False, "None", False), (True, "None", True), (True, "7 0", False), (True, "9 0", True)],
+)
+def test_setup_installs_mamba_ssm_before_a_gpu_is_visible(
+    uv, monkeypatch, without_gpu, capability, installs
+):
+    # An image build sees no GPU; a visible pre-Ampere one still skips. Linux, so Windows'
+    # triton-windows gate (its own test) does not answer first.
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "linux")
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
+    run = _Runner([False, True], capability = capability)
+    assert (
+        kernel_install.install_kernel(
+            "mamba_ssm", _COLAB, run = run, exists = lambda url: True, install_without_gpu = without_gpu
+        )
+        == 0
+    )
+    assert bool(run.installer_calls) is installs
+
+
 def test_the_gpu_is_probed_once_for_every_sm80_kernel(capsys, monkeypatch):
     monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
     run = _Runner([], capability = "7 5")
@@ -674,3 +696,36 @@ def test_source_build_run_kwargs(monkeypatch):
 def test_uninstall_command(use_uv, system, expected):
     cmd = kernel_install.uninstall_command("k", use_uv = use_uv, uv_needs_system = system)
     assert cmd == [sys.executable if part == "PY" else part for part in expected]
+
+
+_WIN = {
+    "platform_tag": "win_amd64",
+    "torch_mm": "2.13",
+    "torch_version": "2.13.0+cu130",
+    "cuda_major": "13",
+    "cuda_version": "13.0",
+    "cxx11abi": "TRUE",
+    "python_tag": "cp313",
+    "abi_tag": "cp313",
+    "hip_version": "",
+}
+
+
+def test_windows_mamba_ssm_waits_for_triton(uv, monkeypatch, capsys):
+    """mamba_ssm imports triton at load; on Windows that is triton-windows, absent from its METADATA."""
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "win32")
+    run = _Runner([], triton = None)
+    assert kernel_install.install_kernel("mamba_ssm", _WIN, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls == []
+    assert "needs Triton on Windows" in capsys.readouterr().out
+
+
+def test_windows_mamba_ssm_installs_with_triton(uv, monkeypatch):
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "win32")
+    run = _Runner([False, True], triton = "3.7.1")
+    assert kernel_install.install_kernel("mamba_ssm", _WIN, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls[0][-1].endswith(
+        "mamba_ssm-2.3.2.post1+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
+    )

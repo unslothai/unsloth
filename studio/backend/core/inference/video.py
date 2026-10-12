@@ -200,6 +200,8 @@ from .video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
+    assert_local_pipeline_not_ltx25,
+    assert_ltx_pick_supported,
     pipeline_available_video_families,
     VideoFamily,
     default_video_generation_params,
@@ -268,6 +270,8 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         # Wan2.2 official diffusers base repos: safetensors-only, no remote code.
         "wan-ai/wan2.2-ti2v-5b-diffusers",
         "wan-ai/wan2.2-t2v-a14b-diffusers",
+        "wan-ai/wan2.1-t2v-1.3b-diffusers",
+        "wan-ai/wan2.1-t2v-14b-diffusers",
         # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo has no model_index.json)
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
@@ -1045,7 +1049,28 @@ def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) 
     assert_local_pick_is_dit(repo_id, gguf_filename, page)
 
 
+def _refuse_local_ltx25_pipeline(repo_id: str, gguf_filename: Optional[str]) -> None:
+    if not gguf_filename:
+        assert_local_pipeline_not_ltx25(repo_id)
+
+
 def _detect_load_family(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    family_override: Optional[str],
+    display_repo_id: Optional[str] = None,
+    model_kind: Optional[str] = None,
+) -> Optional[VideoFamily]:
+    # An explicit pipeline load never opens the filename, so it must not vouch for the repo.
+    ltx_file = None if str(model_kind or "").strip().lower() == "pipeline" else gguf_filename
+    _refuse_local_ltx25_pipeline(repo_id, ltx_file)
+    fam = _resolve_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+    # After resolution: family_override="ltx-2" must not load LTX-2.5, and a non-LTX pick never trips on the name.
+    assert_ltx_pick_supported(fam.name if fam else None, repo_id, ltx_file, display_repo_id)
+    return fam
+
+
+def _resolve_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
     family_override: Optional[str],
@@ -1069,12 +1094,26 @@ def _detect_load_family(
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
-    # A local file's header outranks its name (the name still picks 480p vs 720p).
-    from .diffusion_content import local_pick_file, resolve_family_with_content
+    from .diffusion_content import SAME_ARCH_VARIANTS, local_pick_file, resolve_family_with_content
 
+    # Same layout, different model: the picked file's own name outranks its repo or folder (a Wan2.1 14B GGUF in a
+    # Wan2.2 A14B repo, or the reverse), local or remote.
+    if fam is not None and gguf_filename:
+        named = detect_video_family(os.path.basename(gguf_filename))
+        if named is not None and named.name != fam.name and (
+            named.name in SAME_ARCH_VARIANTS.get(fam.name, ())
+            or fam.name in SAME_ARCH_VARIANTS.get(named.name, ())
+            # A remote pick has no header pass, so a file naming another Wan model picks the base config.
+            or (named.name.startswith("wan") and fam.name.startswith("wan"))
+        ):
+            fam = named
+    # A local file's header outranks its name (the name still picks 480p vs 720p).
     path = local_pick_file(repo_id, gguf_filename)
     if path:
-        name, _ = resolve_family_with_content(fam.name if fam else None, path, "video")
+        file_fam = detect_video_family(os.path.basename(path))
+        name, _ = resolve_family_with_content(
+            fam.name if fam else None, path, "video", file_family = file_fam.name if file_fam else None
+        )
         if name is None:
             return None
         if fam is None or fam.name != name:
@@ -1686,8 +1725,10 @@ def _video_auto_denoiser_scheme(
     requested: Optional[str],
     base_repo: Optional[str],
     speed_mode: Optional[str] = None,
+    hf_token: Optional[str] = None,
 ) -> Optional[str]:
-    """The scheme a CONVENTIONAL video load would seed from a hosted checkpoint, or None."""
+    """The scheme a CONVENTIONAL video load would seed from a hosted checkpoint, or None. ``hf_token``
+    reaches the hosted header probe, so a gated artifact is judged, not read as unknown."""
     # Only an AUTO precision becomes "off" under Speed="off"; an EXPLICIT scheme is honored, so it keeps its seed.
     auto = requested is None or str(requested).strip().lower() in ("", "auto")
     if auto and speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
@@ -1701,7 +1742,7 @@ def _video_auto_denoiser_scheme(
         hosted = tuple(
             s
             for s in video_family_prequant_schemes(fam)
-            if denoiser_prequant_sources(fam, s, base_repo) is not None
+            if denoiser_prequant_sources(fam, s, base_repo, hf_token = hf_token) is not None
         )
         if not hosted or (not auto and normalize_transformer_quant(requested) not in hosted):
             return None
@@ -1712,13 +1753,13 @@ def _video_auto_denoiser_scheme(
             family = getattr(fam, "name", None),
             base_repo = base_repo,
             has_prequant = lambda candidate: (
-                denoiser_prequant_sources(fam, candidate, base_repo) is not None
+                denoiser_prequant_sources(fam, candidate, base_repo, hf_token = hf_token) is not None
             ),
         )
         if scheme is None or scheme == TQ_AUTO:
             return None
         # EVERY component or none: partial coverage drops shards the dense fallback then has to open.
-        if denoiser_prequant_sources(fam, scheme, base_repo) is None:
+        if denoiser_prequant_sources(fam, scheme, base_repo, hf_token = hf_token) is None:
             return None
         from .diffusion_prequant import restricted_prequant_load_supported
 
@@ -2681,7 +2722,20 @@ class VideoBackend:
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
         _refuse_non_dit_pick(repo_id, gguf_filename, "video")
-        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+        fam = _detect_load_family(
+            repo_id, gguf_filename, family_override, display_repo_id, model_kind
+        )
+        # Every pick name is judged, not just an unresolved one: a T2V repo id can hold an I2V / VACE file.
+        # A family override names the family for an opaque pick; it cannot make refused weights runnable.
+        from .video_families import unsupported_video_checkpoint_reason
+        reason = unsupported_video_checkpoint_reason(
+            display_repo_id,
+            repo_id,
+            gguf_filename,
+            wan21_checkpoint = (gguf_filename or repo_id) if fam and fam.name.startswith("wan2.1") else None,
+        )
+        if reason:
+            raise ValueError(reason)
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "
@@ -2826,6 +2880,10 @@ class VideoBackend:
                 f"base_repo is limited to unsloth/* repos, the official family base "
                 f"repos, and local paths; '{base_repo}' is neither."
             )
+        if base_repo and base_repo.strip():
+            # The companion supplies the text encoder / VAE, so an LTX-2.5 base is refused like an LTX-2.5 pick.
+            assert_ltx_pick_supported(fam.name, base_repo)
+            assert_local_pipeline_not_ltx25(base_repo)
         # A local base_repo loads as a full pipeline (needs model_index.json); reject a non-pipeline one here, before
         # the load.
         from core.inference.diffusion import _assert_local_base_is_pipeline
@@ -3070,6 +3128,7 @@ class VideoBackend:
                 kwargs.get("gguf_filename"),
                 kwargs.get("family_override"),
                 kwargs.get("display_repo_id"),
+                kwargs.get("model_kind"),
             )
             # Also on the worker, which a direct begin_load reaches without a plan. Here rather than in
             # validate_load_request, which is network-free by contract.
@@ -3143,6 +3202,7 @@ class VideoBackend:
                 memory_mode = kwargs.get("memory_mode"),
                 text_encoder_quant = kwargs.get("text_encoder_quant"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
+                hf_token = kwargs.get("hf_token"),
             )
             video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
             if video_seed_declined:
@@ -3325,7 +3385,7 @@ class VideoBackend:
                 from .video_ltx2 import LTX23_PREQUANT_BASE
 
                 ltx23_sources = self._denoiser_prequant_source_list(
-                    fam, TQ_FP8, LTX23_PREQUANT_BASE
+                    fam, TQ_FP8, LTX23_PREQUANT_BASE, hf_token = kwargs.get("hf_token")
                 )
                 with self._lock:
                     if self._load_token == token and self._loading is not None:
@@ -3350,6 +3410,7 @@ class VideoBackend:
                         h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
                         base,
                         kwargs.get("h3_task"),
+                        hf_token = kwargs.get("hf_token"),
                     ),
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
@@ -3436,6 +3497,7 @@ class VideoBackend:
         prebuilt install, and every file resolved from the cache."""
         from huggingface_hub import HfApi
 
+        from . import sd_cpp_args as sd_cpp_args_mod
         from .sd_cpp_args import (
             GRAPH_CUT_STREAM_FLAGS,
             GRAPH_CUT_VRAM_FLAGS,
@@ -3512,6 +3574,9 @@ class VideoBackend:
             selected_card,
         )
         native_device = target.device
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend: CPU policy, and no VIDEO claim held.
+        if sd_cpp_args_mod.forces_cpu_backend(native_device):
+            native_device = "cpu"
         # What the accelerator decision below was made on, or None when it was never asked (a CPU or MPS target never
         # consults it). Re-checked under the reader claim, so a replacement that arrives mid-load cannot silently change
         # the answer this device choice rests on.
@@ -4122,7 +4187,9 @@ class VideoBackend:
         The pure probe answers from the registry, which is right where it must not raise or touch
         the network, but a renamed / gated task artifact still reads covered there. Unanswerable
         keeps the dense shards; ``local_files_only`` answers from the cache."""
-        if not self._denoiser_prequant_covered(fam, transformer_quant, base, h3_task, kind = kind):
+        if not self._denoiser_prequant_covered(
+            fam, transformer_quant, base, h3_task, kind = kind, hf_token = hf_token
+        ):
             return False
         from .diffusion_prequant import restricted_prequant_load_supported
 
@@ -4138,7 +4205,7 @@ class VideoBackend:
             return False
         if local_files_only:
             repo = self._denoiser_prequant_cached_repo(
-                fam, transformer_quant, base, h3_task, online = False
+                fam, transformer_quant, base, h3_task, online = False, hf_token = hf_token
             )
         else:
             try:
@@ -4192,7 +4259,9 @@ class VideoBackend:
             if planned == DENOISER_SEED_DECLINED and not modular:
                 return False
             task = (h3_task or getattr(fam, "modular_workflow", None)) if modular else h3_task
-            if not self._denoiser_prequant_covered(fam, "nvfp4", base, task, kind = kind):
+            if not self._denoiser_prequant_covered(
+                fam, "nvfp4", base, task, kind = kind, hf_token = hf_token
+            ):
                 return False
             from .diffusion_prequant import restricted_prequant_load_supported
 
@@ -4200,7 +4269,12 @@ class VideoBackend:
                 return False
             if (
                 self._denoiser_prequant_cached_repo(
-                    fam, "nvfp4", base, task, online = False if local_files_only else None
+                    fam,
+                    "nvfp4",
+                    base,
+                    task,
+                    online = False if local_files_only else None,
+                    hf_token = hf_token,
                 )
                 is not None
             ):
@@ -4289,6 +4363,7 @@ class VideoBackend:
         memory_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        hf_token: Optional[str] = None,
     ) -> Optional[str]:
         """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload."""
         try:
@@ -4312,6 +4387,7 @@ class VideoBackend:
                     requested = transformer_quant,
                     base_repo = base,
                     speed_mode = speed_mode,
+                    hf_token = hf_token,
                 )
                 if scheme is None:
                     return None
@@ -4553,20 +4629,31 @@ class VideoBackend:
         h3_task: Optional[str] = None,
         *,
         kind: str = "pipeline",
+        hf_token: Optional[str] = None,
     ) -> bool:
-        """True when hosted pre-quantized checkpoints replace ALL the family's dense DiT shards; offline, never raises."""
+        """True when hosted pre-quantized checkpoints replace ALL the family's dense DiT shards; never raises.
+        Registry plus the hosted header probe (cache-only offline); ``hf_token`` lets it read a gated header."""
         try:
             scheme = normalize_transformer_quant(transformer_quant)
             # An unresolved "auto" must NOT drop dense shards; the backend settles it first.
             if scheme is None or scheme == TQ_AUTO:
                 return False
             if getattr(fam, "modular_workflow", None):
-                return video_family_prequant_available(fam, scheme, task = h3_task, base_repo = base)
+                if not video_family_prequant_available(fam, scheme, task = h3_task, base_repo = base):
+                    return False
+                # Covered only by a checkpoint the loader will accept: a stale header keeps the dense shards.
+                from .diffusion_prequant import resolve_prequant_source
+                from .video_denoiser_prequant import hosted_denoiser_refused
+
+                source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
+                return source is None or not hosted_denoiser_refused(
+                    source, scheme, base, hf_token = hf_token
+                )
             if kind != "pipeline":
                 return False
             from .video_denoiser_prequant import denoiser_prequant_sources
 
-            return denoiser_prequant_sources(fam, scheme, base) is not None
+            return denoiser_prequant_sources(fam, scheme, base, hf_token = hf_token) is not None
         except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
             return False
 
@@ -4576,19 +4663,27 @@ class VideoBackend:
         transformer_quant: Optional[str],
         base: Optional[str],
         h3_task: Optional[str] = None,
+        *,
+        hf_token: Optional[str] = None,
     ) -> list[Any]:
-        """Every ``PrequantSource`` a seeded load would open, or ``[]``; registry only, never raises."""
+        """Every ``PrequantSource`` a seeded load would open, or ``[]``; never raises. A hosted source the
+        loader would refuse from its header is dropped; ``hf_token`` lets that probe read a gated repo."""
         scheme = (transformer_quant or "").strip().lower()
         if scheme in ("", "auto", "off", "none"):
             return []
         try:
             from .diffusion_prequant import resolve_prequant_source
-            from .video_denoiser_prequant import denoiser_prequant_sources
+            from .video_denoiser_prequant import denoiser_prequant_sources, hosted_denoiser_refused
 
             if getattr(fam, "modular_workflow", None):
                 source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
-                return [source] if source is not None else []
-            resolved = denoiser_prequant_sources(fam, scheme, base)
+                # The modular loader checks no component; a header it would refuse is never staged.
+                if source is None or hosted_denoiser_refused(
+                    source, scheme, base, hf_token = hf_token
+                ):
+                    return []
+                return [source]
+            resolved = denoiser_prequant_sources(fam, scheme, base, hf_token = hf_token)
             return list(resolved.values()) if resolved else []
         except Exception as exc:  # noqa: BLE001 -- a bad registry entry must not sink the plan
             logger.warning("video.denoiser_prequant_unresolved: %s", exc)
@@ -4621,8 +4716,16 @@ class VideoBackend:
         h3_task: Optional[str] = None,
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
         """``(repo_id, [(rfilename, size)])`` for every hosted denoiser artifact, or ``(None, [])``, so preflight
-        counts the checkpoint that replaces the dropped dense shards."""
-        sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
+        counts the checkpoint that replaces the dropped dense shards. The header probe asks with ``api``'s own
+        token, so a gated artifact is judged by the same credentials that would stage it."""
+        token = getattr(api, "token", None)
+        sources = VideoBackend._denoiser_prequant_source_list(
+            fam,
+            transformer_quant,
+            base,
+            h3_task,
+            hf_token = token if isinstance(token, str) and token else None,
+        )
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):
             return None, []
         locations = {src.location for src in sources}
@@ -4672,11 +4775,14 @@ class VideoBackend:
         base: Optional[str],
         h3_task: Optional[str] = None,
         online: Optional[bool] = None,
+        hf_token: Optional[str] = None,
     ) -> Optional[str]:
         """The hosted pre-quantized denoiser repo when its checkpoint is ALREADY cached, else None.
 
         Offline twin of ``_denoiser_prequant_hub_files``; online semantics per ``first_cached_as_resolved``."""
-        sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
+        sources = VideoBackend._denoiser_prequant_source_list(
+            fam, transformer_quant, base, h3_task, hf_token = hf_token
+        )
         # A local override is on disk by definition; only a hosted checkpoint has a cache to probe
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):
             return None
@@ -4986,7 +5092,9 @@ class VideoBackend:
         download manager."""
         from huggingface_hub import HfApi
 
-        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+        fam = _detect_load_family(
+            repo_id, gguf_filename, family_override, display_repo_id, model_kind
+        )
         # _detect_load_family resolves from the REPO id first, so a mixed repo answers its media family for every file
         # in it, a csm quant included. Refuse before the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
@@ -5023,6 +5131,7 @@ class VideoBackend:
             memory_mode = load_kwargs.get("memory_mode"),
             text_encoder_quant = text_encoder_quant,
             gpu_ordinal = load_kwargs.get("gpu_ordinal"),
+            hf_token = hf_token,
         )
         if video_planned == DENOISER_SEED_DECLINED:
             video_planned = None
@@ -5207,7 +5316,7 @@ class VideoBackend:
                         skip_transformer_weights = (
                             dq_repo is not None
                             and self._denoiser_prequant_covered(
-                                fam, transformer_quant, base, h3_task, kind = kind
+                                fam, transformer_quant, base, h3_task, kind = kind, hf_token = hf_token
                             )
                         ),
                         skip_transformer_components = _planned_denoiser_components(fam, kind),
@@ -5254,6 +5363,7 @@ class VideoBackend:
                 "repo_id": repo,
                 "files": names,
                 "bytes": sum(size for _name, size in staged),
+                "file_bytes": {name: int(size) for name, size in staged},
                 "gguf_filename": gguf,
                 # Describes the ENTRY, not the pick: a 2.3 repo whose checkpoint is already cached stages companion
                 # files only, and calling that "Model file" misdescribes what is downloading. A pipeline pick has no
@@ -6197,11 +6307,14 @@ class VideoBackend:
                 requested = transformer_quant,
                 base_repo = base,
                 speed_mode = speed_mode,
+                hf_token = hf_token,
             )
         denoiser_seed_sources: dict[str, Any] = {}
         if denoiser_seed_scheme is not None:
             from .video_denoiser_prequant import denoiser_prequant_sources
-            denoiser_seed_sources = denoiser_prequant_sources(fam, denoiser_seed_scheme, base) or {}
+            denoiser_seed_sources = (
+                denoiser_prequant_sources(fam, denoiser_seed_scheme, base, hf_token = hf_token) or {}
+            )
             if not denoiser_seed_sources:
                 denoiser_seed_scheme = None
         denoiser_seed_gb: Optional[float] = None
@@ -6409,8 +6522,15 @@ class VideoBackend:
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
-            from .video_ltx2 import direct_load_device, is_ltx23_checkpoint, load_ltx23_pipeline
+            from .video_ltx2 import (
+                assert_not_ltx25_checkpoint,
+                direct_load_device,
+                is_ltx23_checkpoint,
+                load_ltx23_pipeline,
+            )
 
+            if fam.name == "ltx-2":
+                assert_not_ltx25_checkpoint(checkpoint_path)
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
                 # Explicit fp8 takes the hosted DiT, resident only: offload hooks' Module.to() rejects torchao tensors.
                 ltx23_override = None

@@ -27,6 +27,15 @@ export function resolveReasoningOpen({
   return resolveOpen(visibility, isStreaming, override);
 }
 
+/** `auto` opens a block only for its stream, so it shows the newest lines in a bounded box
+ *  instead of growing the thread (#11703). Opening it by hand, or `expanded`, shows it all. */
+export function reasoningTailCapped({
+  visibility,
+  override,
+}: Omit<ReasoningOpenStateInput, "isStreaming">): boolean {
+  return visibility === "auto" && override !== true;
+}
+
 /** Whether the block sits where the setting alone would put it. */
 export function reasoningFollowsPreference(
   open: boolean,

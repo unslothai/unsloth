@@ -8,6 +8,7 @@ handlers explicitly send their database transaction through Starlette's threadpo
 """
 
 import asyncio
+import os
 import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
@@ -38,6 +39,7 @@ from core.inference.llama_server_args import (
 from loggers import get_logger
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
+from utils.account_context import is_owner_context
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatForkActiveGenerationError,
@@ -74,6 +76,7 @@ from storage.studio_db import (
     count_chat_messages_for_threads,
     list_chat_threads,
     remap_chat_thread_document_ids,
+    set_chat_project_working_folder,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -322,9 +325,20 @@ class ChatProject(BaseModel):
     instructions: str = ""
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
+    # Read only: a saved record cannot set the folder.
+    workingFolder: Optional[str] = None
     archived: bool = False
     createdAt: int
     updatedAt: int
+
+
+class ChatProjectWorkingFolder(BaseModel):
+    model_config = ConfigDict(extra = "forbid", populate_by_name = True)
+    native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+
+
+class ChatAgentsMd(BaseModel):
+    text: str = ""
 
 
 class ChatProjectDeleted(ChatProject):
@@ -468,6 +482,13 @@ class ChatResearchWebsitePolicy(BaseModel):
     )
 
 
+class ChatResearchMcpSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    serverId: str = Field(min_length = 1, max_length = 200)
+    tool: str = Field(min_length = 1, max_length = 500)
+
+
 class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
@@ -490,6 +511,7 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
+    deduplicateToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
@@ -502,6 +524,7 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    researchMcpSources: Optional[list[ChatResearchMcpSource]] = Field(default = None, max_length = 20)
     # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
     # like the run route so a value it would reject cannot be persisted and replayed.
     researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
@@ -1189,6 +1212,15 @@ def get_project(project_id: str, current_subject: str = Depends(get_current_subj
     return ChatProject(**project)
 
 
+@router.get("/agents-md", response_model = ChatAgentsMd)
+def get_agents_md(
+    project_id: Optional[str] = Query(None), current_subject: str = Depends(get_current_subject)
+):
+    from core.agents_md import agents_md_text
+    project = get_chat_project(project_id) if project_id else None
+    return ChatAgentsMd(text = agents_md_text(project))
+
+
 @router.patch("/projects/{project_id}", response_model = ChatProject)
 def patch_project(
     project_id: str,
@@ -1207,6 +1239,88 @@ def patch_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    return ChatProject(**project)
+
+
+def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
+    """Studio's own roots are reserved: they hold every account's data."""
+    from core.inference.tools import shared_sandbox_root
+    from core.rag import folder_sync
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+    from utils.paths.path_utils import is_path_within
+    from utils.paths.storage_roots import (
+        shared_project_workspaces_root,
+        shared_tmp_root,
+        studio_root,
+    )
+
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = "link-documents",
+            expected_kind = "document-folder",
+            expected_path_type = "directory",
+        )
+        path = folder_sync.validate_folder_path(str(grant.canonical_path))
+    except (NativePathLeaseError, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    for reserved in (
+        studio_root(),
+        shared_project_workspaces_root(),
+        shared_sandbox_root(),
+        shared_tmp_root(),
+    ):
+        reserved = os.path.realpath(str(reserved))
+        if is_path_within(path, reserved, allow_root = True) or is_path_within(
+            reserved, path, allow_root = True
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Studio's own folders cannot be used as a project folder.",
+            )
+    if not os.access(path, os.W_OK):
+        raise HTTPException(status_code = 400, detail = "The folder is not writable.")
+    st = os.stat(path)
+    return path, (st.st_dev, st.st_ino)
+
+
+@router.put("/projects/{project_id}/working-folder", response_model = ChatProject)
+def set_project_working_folder(
+    project_id: str,
+    payload: ChatProjectWorkingFolder,
+    current_subject: str = Depends(get_current_subject),
+):
+    if not is_owner_context():
+        raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
+    if get_chat_project(project_id) is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+    try:
+        path, identity = _resolve_project_working_folder(payload.native_path_lease)
+        project = set_chat_project_working_folder(project_id, path, identity)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # HTTPException keeps CORS so the webview does not resend a spent grant (#13131).
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not use the folder.",
+            event = "chat_history.project_working_folder_failed",
+            log = logger,
+        ) from exc
+    if project is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+    return ChatProject(**project)
+
+
+@router.delete("/projects/{project_id}/working-folder", response_model = ChatProject)
+def clear_project_working_folder(
+    project_id: str, current_subject: str = Depends(get_current_subject)
+):
+    # The user's folder is never touched.
+    project = set_chat_project_working_folder(project_id, None)
+    if project is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
     return ChatProject(**project)
 
 

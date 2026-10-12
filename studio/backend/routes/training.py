@@ -228,6 +228,8 @@ class _ModelPreflightResult:
     model_name: str
     model_local_path: Optional[str]
     cached_model_pin: Optional[tuple[str, str]]
+    # The base an admitted adapter named at preflight; the worker refuses a different one.
+    adapter_base_pin: Optional[str] = None
 
 
 # Consecutive 1s polls without a step update that count as a stall (~30 min). Applied only once
@@ -472,6 +474,28 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
+def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
+    """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140).
+
+    Only the CUDA trainer keeps an adapter it loaded; the embedding, decision and Apple Silicon
+    (MLX) runners always build a fresh one on top, so those still need a base model."""
+    if request.training_type not in ("LoRA/QLoRA", "Continued Pretraining"):
+        return False
+    if getattr(request, "is_embedding", False) or getattr(request, "is_decision", False):
+        return False
+    from core.training.training import should_use_mlx_training_backend
+
+    return not should_use_mlx_training_backend()
+
+
+# The names PEFT and Unsloth's loader open; numbered adapter shards are not loaded.
+_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+
+
+def _has_local_adapter_weights(path: Path) -> bool:
+    return path.is_dir() and any((path / name).is_file() for name in _ADAPTER_WEIGHT_FILES)
+
+
 _HF_MODEL_ACCESS_DENIED = (
     "Hugging Face denied access to this model. Add a valid Hugging Face "
     "token with repository access and accept any required access terms, "
@@ -644,7 +668,10 @@ def _remote_untrainable_model_format(
             if normalized.startswith(root) and "/" not in normalized[len(root) :]:
                 root_files.add(normalized[len(root) :])
     if "adapter_config.json" in root_files:
-        return "adapter"
+        # Same weight files the local check accepts; config-only repos fail later in the loader.
+        if any(name in root_files for name in _ADAPTER_WEIGHT_FILES):
+            return "adapter"
+        return "adapter_without_weights"
     has_trainable_weights = any(name in root_files for name, _ in _MODEL_WEIGHT_CANDIDATES)
     if has_gguf and not has_trainable_weights:
         return "gguf"
@@ -919,6 +946,108 @@ def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None
         account_access.require_model_access(reference, repo_type)
 
 
+def _refuse_hub_adapter_continuation(request: TrainingStartRequest) -> None:
+    # Only saved local adapter folders are continued (#13140). A Hub adapter's tokenizer,
+    # base capabilities and revision are resolved differently by the loader; follow-up work.
+    if not is_local_path(request.model_name):
+        raise _training_start_error(
+            400,
+            "training_hub_adapter_unsupported",
+            "Continuing from a Hugging Face adapter repository is not supported yet. "
+            "Download it to a local folder and select that folder.",
+        )
+
+
+def _refuse_multimodal_adapter_continuation(request: TrainingStartRequest) -> None:
+    # The modality probes read the adapter, not its base, so an image or audio run would be
+    # formatted as text. Refuse it until the base is resolved for those probes (#13140).
+    if request.is_dataset_image or request.is_dataset_audio:
+        raise _training_start_error(
+            400,
+            "training_adapter_multimodal_unsupported",
+            "Continuing a saved adapter on an image or audio dataset is not supported yet. "
+            "Start from its base model instead.",
+        )
+
+
+def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]:
+    """A continued adapter also loads the base it names. Check that base the way the adapter
+    was checked, or a public adapter could open a private base from the shared cache (#13140)."""
+    from hub.utils.hf_cache_state import (
+        cached_repo_ref_for_path,
+        repo_cache_has_usable_snapshot,
+    )
+    from utils.models.model_config import get_base_model_from_lora_identifier
+
+    base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
+    if not base:
+        return None
+    if is_local_path(base):
+        # A managed account may only reach bases in its own workspace or the shared cache.
+        account_path(base, shared_cache = True)
+        base_path = Path(base).expanduser()
+        if not base_path.is_dir():
+            raise _training_start_error(
+                400,
+                "training_adapter_base_missing",
+                "The base model folder this adapter names no longer exists.",
+            )
+        if not _has_trainable_local_weights(base_path):
+            raise _training_start_error(
+                400,
+                "training_adapter_base_not_trainable",
+                "The base model folder this adapter names has no trainable weights.",
+            )
+        # A base path inside the Hub cache is still that repository's cached weights.
+        cached_ref = cached_repo_ref_for_path(base)
+        if cached_ref is None:
+            return base
+        repo_id, repo_type = cached_ref
+        is_cached = lambda: True  # noqa: E731 -- the path itself is the evidence
+        # Reading the shared cache needs a grant, as for a selected cached model.
+        _authorize_cache_fallback(repo_id, repo_type)
+    else:
+        repo_id, repo_type = canonical_model_repo_id(base), "model"
+        is_cached = lambda: repo_cache_has_usable_snapshot("model", repo_id)  # noqa: E731
+        # Like the selected model: a grant is needed only to read the shared cache, not the Hub.
+        if is_cached():
+            _authorize_cache_fallback(base)
+        if hf_env_offline() and not is_cached():
+            raise _hf_preflight_error(
+                409,
+                "hf_model_not_cached_offline",
+                (
+                    "Offline mode is enabled, but this adapter's base model is not available "
+                    "in the local cache. Disable offline mode to download it before starting "
+                    "training."
+                ),
+            )
+        if not is_cached():
+            # The same Hub probe a selected model gets: a private, missing or misspelled base
+            # fails here with its access or not-found error, not later in the loader.
+            if _remote_untrainable_model_format(base, hf_token) is not None:
+                raise _training_start_error(
+                    400,
+                    "training_adapter_base_not_trainable",
+                    "The base model this adapter names is GGUF-only or adapter-only, "
+                    "so it cannot be trained.",
+                )
+    if cached_read_refused(
+        hf_token,
+        repo_id = repo_id,
+        repo_type = repo_type,
+        is_cached = is_cached,
+        offline = hf_env_offline(),
+    ):
+        raise _hf_preflight_error(
+            422,
+            "hf_model_access_denied",
+            "Hugging Face denied access to this adapter's cached base model. "
+            "Add a token with repository access.",
+        )
+    return base
+
+
 def _is_decision_checkpoint(request: TrainingStartRequest) -> bool:
     # A Laya or Clef checkpoint, not an LLM that is trained with a new decision head.
     return bool(request.is_decision) and request.decision_layout != "llm"
@@ -936,7 +1065,7 @@ def _reject_untrainable_model_request(
             "training_model_gguf_not_trainable",
             "GGUF models are inference-only and cannot be trained.",
         )
-    if model_format == "adapter":
+    if model_format == "adapter" and not _continue_from_adapter_allowed(request):
         raise _training_start_error(
             400,
             "training_model_adapter_not_trainable",
@@ -1135,11 +1264,22 @@ def _reject_untrainable_model_request(
                     "training_remote_model_gguf_only",
                     "GGUF-only remote models are inference-only and cannot be trained.",
                 )
-            raise _training_start_error(
-                400,
-                "training_remote_model_adapter_only",
-                "Adapter models are inference-only and cannot be trained as base models.",
-            )
+            if not _continue_from_adapter_allowed(request):
+                raise _training_start_error(
+                    400,
+                    "training_remote_model_adapter_only",
+                    "Adapter models are inference-only and cannot be trained as base models.",
+                )
+            if remote_format == "adapter_without_weights":
+                raise _training_start_error(
+                    400,
+                    "training_remote_model_adapter_weights_missing",
+                    "Adapter repository is missing adapter_model weights.",
+                )
+            _refuse_hub_adapter_continuation(request)
+            _refuse_multimodal_adapter_continuation(request)
+            _authorize_adapter_base(request.model_name, hf_token)
+            return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _is_decision_checkpoint(request):
         folder = path / request.model_subfolder if request.model_subfolder else path
         if not is_decision_model(str(folder)):
@@ -1155,11 +1295,33 @@ def _reject_untrainable_model_request(
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
-    if _has_adapter_metadata(path):
-        raise _training_start_error(
-            400,
-            "training_local_model_adapter_only",
-            "Adapter-only local models are inference-only and cannot be trained as base models.",
+    if _has_adapter_metadata(path) or (
+        model_format == "adapter" and _has_local_adapter_weights(path)
+    ):
+        if not _continue_from_adapter_allowed(request):
+            raise _training_start_error(
+                400,
+                "training_local_model_adapter_only",
+                "Adapter-only local models are inference-only and cannot be trained as base models.",
+            )
+        if not _has_local_adapter_weights(path):
+            raise _training_start_error(
+                400,
+                "training_local_model_adapter_weights_missing",
+                "Adapter directory is missing adapter_model weights.",
+            )
+        # The loader needs adapter_config.json to find the base model.
+        if not _has_adapter_metadata(path):
+            raise _training_start_error(
+                400,
+                "training_local_model_adapter_config_missing",
+                "Adapter directory is missing adapter_config.json.",
+            )
+        _refuse_hub_adapter_continuation(request)
+        _refuse_multimodal_adapter_continuation(request)
+        adapter_base = _authorize_adapter_base(str(path), hf_token)
+        return _ModelPreflightResult(
+            model_name, model_local_path, cached_model_pin, adapter_base_pin = adapter_base or ""
         )
     try:
         has_gguf = _detect_local_gguf(path) is not None
@@ -1201,11 +1363,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
         raise HTTPException(
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
-        )
-    if request.is_decision:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Decision model training is not supported for MLX training yet.",
         )
     if request.is_dataset_audio:
         raise HTTPException(
@@ -1281,13 +1438,9 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
         from core.systemone.catalog import clef_unsupported_reason
         from utils.hardware import hardware
 
-        # Runs before _validate_training_platform: name the MLX limit, not a missing GPU.
-        if hardware.get_device() == hardware.DeviceType.MLX:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Decision model training is not supported for MLX training yet.",
-            )
-        if (reason := clef_unsupported_reason()) is not None:
+        # Apple Silicon trains Clef with MLX; elsewhere it needs the GPU the torch path runs on.
+        mlx = hardware.get_device() == hardware.DeviceType.MLX
+        if not mlx and (reason := clef_unsupported_reason()) is not None:
             raise HTTPException(status_code = 400, detail = reason)
         request.decision_layout = "llm" if llm else "clef"
         if request.model_subfolder is not None:
@@ -1516,6 +1669,18 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
     # Off-loop: the first call blocks on detection while the warm is importing torch.
     with gpu_query.display_reads():
         return await asyncio.to_thread(get_gpu_utilization)
+
+
+@router.get("/offload")
+async def get_offload_state(current_subject: str = Depends(get_current_subject)):
+    """Offload layers state from the last logged step: which decoder layers sit on the GPU or in
+    host RAM, prefetch depth, copy / stall / compute time, VRAM. ``{"active": false}`` when the run
+    does not offload. Polled by the live training view."""
+    progress = get_training_backend().trainer.get_training_progress()
+    offload = getattr(progress, "offload", None)
+    if not offload:
+        return {"active": False}
+    return {"active": True, **offload}
 
 
 @router.get("/hardware/visible")
@@ -1982,6 +2147,10 @@ async def start_training(
             "gradient_checkpointing": request.gradient_checkpointing.strip()
             if request.gradient_checkpointing and request.gradient_checkpointing.strip()
             else "unsloth",
+            "offload_layers": request.offload_layers,
+            "offload_vram_gb": request.offload_vram_gb,
+            "offload_vram_gb_per_device": request.offload_vram_gb_per_device,
+            "prefetch_depth": request.prefetch_depth,
             "use_rslora": request.use_rslora,
             "use_loftq": request.use_loftq,
             "use_dora": request.use_dora,
@@ -2007,6 +2176,7 @@ async def start_training(
             "require_exact_model_resource": resume_requires_exact_model,
             "require_exact_dataset_resource": resume_requires_exact_dataset,
             "require_validated_model_snapshot": cached_model_pin is not None,
+            "adapter_base_pin": getattr(model_preflight, "adapter_base_pin", None),
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,

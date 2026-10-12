@@ -97,7 +97,10 @@ def updated_section(
             raise RuntimeError(f"{section['repo']} {tag} has no {asset_name}.")
         sha256, size = hasher(asset["browser_download_url"])
         github_digest = asset.get("digest")
-        if github_digest and github_digest != f"sha256:{sha256}":
+        # Fail closed: without GitHub's digest the hash proves only what this runner downloaded.
+        if not github_digest:
+            raise RuntimeError(f"{asset_name}: GitHub publishes no digest; refusing to pin it.")
+        if github_digest != f"sha256:{sha256}":
             raise RuntimeError(
                 f"{asset_name} hashed to sha256:{sha256}, but GitHub publishes {github_digest}."
             )

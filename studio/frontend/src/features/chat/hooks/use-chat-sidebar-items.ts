@@ -15,6 +15,7 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { clearBranchHead } from "../utils/branch-head";
 import { clearComposerDraft } from "../utils/composer-draft";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
@@ -344,10 +345,9 @@ export async function deleteChatItems(
     cancelIfRunning(id);
   }
 
-  // Drop saved composer drafts so deleted threads leave no orphan keys.
+  // clear composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
 
-  // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);
   notifyChatHistoryUpdated();
 
@@ -358,9 +358,9 @@ export async function deleteChatItems(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
-    // Whether or not deletion was asked for: a sandbox that could not be removed leaves files with
-    // no card to reach them from, and the chat is already gone, so this offer is the only notice
-    // and the only retry.
+    // retain the head until deletion succeeds so a restored chat reopens on the same branch.
+    for (const id of threadIds) clearBranchHead(id);
+    // offer recovery for sandbox files that outlive a deleted chat and lose their sidebar entry.
     offerToDeleteKeptSandboxes(kept);
   } catch (error) {
     removeChatThreadTombstones(threadIds);

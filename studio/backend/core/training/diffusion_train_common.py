@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core._torchao_stub import (
+    alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -42,6 +43,7 @@ from utils.paths.path_utils import drop_appledouble_metadata
 install_xformers_windows_rocm_stub()
 hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
+alias_torchao_fqn_to_config()
 # Same child: the DiT trainer's int8 base-weight quantisation goes through torchao.
 install_torchao_int_mm_patch()
 
@@ -278,6 +280,14 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
+    family = _resolve_trainable_family(base_model, model_family)
+    from core.inference.video_families import assert_ltx_pick_supported
+
+    assert_ltx_pick_supported(family, base_model)
+    return family
+
+
+def _resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     """Resolve the trainer family for a base model, or raise ValueError with a clear reason.
     Positive resolution, before anything is downloaded: a ``.gguf`` name can never be a training
     base; an explicit ``model_family`` must name a registry family, and that family must be
@@ -311,6 +321,10 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # Same shape as the component-only refusal: the name resolves to a real, trainable family, but the repo is not
     # something the training loader can open.
     _refuse_ltx23_training_base(base_model)
+    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
+    from core.inference.video_families import assert_local_pipeline_not_ltx25
+
+    assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -2166,6 +2180,8 @@ def _write_lora_sidecar(
         "trigger_prompt": cfg.instance_prompt,
         "created_at": time.time(),
         "source": "studio-trained",
+        # diffusion_lora.LORA_SIDECAR_KIND: marks the adapter as an image LoRA wherever it is copied.
+        "kind": "diffusion-lora",
     }
     sidecar_path.write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
 

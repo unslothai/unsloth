@@ -125,6 +125,41 @@ assert.ok(qwen21);
 assert.equal(qwen21.canonicalId, "unsloth/Qwen-Image-2.1");
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-FP8", IMAGE_CATALOG), qwen21);
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-INT8", IMAGE_CATALOG), qwen21);
+// Turbo is its own group, prequant repo included: its checkpoints are baked from a different denoiser.
+const qwen21Turbo = groupForRepoId("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG);
+assert.ok(qwen21Turbo);
+assert.equal(qwen21Turbo.canonicalId, "Qwen/Qwen-Image-2.1-Turbo");
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-FP8", IMAGE_CATALOG), qwen21Turbo);
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG), qwen21Turbo);
+assert.equal(loadSpecFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canonicalId, "unsloth/Qwen-Image-2.1");
+{
+  const qwen21 = groupForRepoId("unsloth/Qwen-Image-2.1", IMAGE_CATALOG);
+  assert.ok(qwen21);
+  for (const host of [
+    { gpuGb: 0, systemRamGb: 64 },
+    { gpuGb: 12, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] },
+    { gpuGb: 24, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] },
+    { gpuGb: 80, systemRamGb: 256, denseQuantSchemes: ["int8", "fp8"] },
+  ]) {
+    const input = { ...host, isDownloaded: () => false };
+    const base = pickDefaultArtifact(qwen21, input);
+    const turbo = pickDefaultArtifact(qwen21Turbo, input);
+    assert.equal(turbo.format, base.format, JSON.stringify(host));
+    assert.equal(
+      turbo.repoId,
+      base.format === "gguf" ? "unsloth/Qwen-Image-2.1-Turbo-GGUF" : "Qwen/Qwen-Image-2.1-Turbo",
+    );
+  }
+  assert.equal(
+    curatedRowLabelFor("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    "Qwen-Image 2.1 Turbo (Fast FP8)",
+  );
+  assert.equal(
+    curatedRowLabelFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    "Qwen-Image-2.1-Turbo-GGUF (Slow)",
+  );
+}
 assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
 assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
@@ -1181,6 +1216,8 @@ const PREQUANT_ROWS = [
   ["Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512-FP8"],
   ["black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell-FP8"],
   ["krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo-FP8"],
+  ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"],
+  ["Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"],
 ] as const;
 
 for (const [id, repo] of PREQUANT_ROWS) {

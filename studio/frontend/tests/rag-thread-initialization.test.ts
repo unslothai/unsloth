@@ -15,6 +15,13 @@ const OUTGOING_ID = "__LOCALID_outgoing";
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 type Scope = { type: "thread"; threadId: string };
 
+type AnnouncedRow = {
+  id: string;
+  projectId?: string | null;
+  updatedAt?: number;
+  modifiedAt?: number | null;
+};
+
 function harness(
   options: {
     propId?: string | null;
@@ -24,6 +31,7 @@ function harness(
     persist?: Promise<void>;
     itemId?: string;
     storedIds?: string[];
+    row?: AnnouncedRow;
     ragSource?: { type: "thread" } | { type: "kb"; kbId: string };
   } = {},
 ) {
@@ -43,6 +51,9 @@ function harness(
   }> = [];
   const dismissed: number[] = [];
   const adopted: string[] = [];
+  let threadReads = 0;
+  const announce: Array<(detail: { thread?: AnnouncedRow }) => void> = [];
+  const scopes: unknown[] = [];
   const itemId = options.itemId ?? ID;
   const storedIds = new Set(options.storedIds ?? []);
   const state = {
@@ -91,6 +102,7 @@ function harness(
       ];
     },
   };
+  let pickedFiles: ((files: File[]) => void) | null = null;
   const nativeStore = Object.assign(() => nativePending, {
     getState: () => nativeState,
   });
@@ -114,11 +126,15 @@ function harness(
           return [
             slots[index],
             (next: unknown) => {
-              slots[index] = next;
+              slots[index] =
+                typeof next === "function"
+                  ? (next as (previous: unknown) => unknown)(slots[index])
+                  : next;
             },
           ];
         },
         useCallback: (fn: unknown) => fn,
+        useMemo: (fn: () => unknown) => fn(),
         useEffect(effect: () => void, deps: unknown[]) {
           const index = cursor++;
           const previous = slots[index] as unknown[] | undefined;
@@ -131,7 +147,20 @@ function harness(
       "react/jsx-runtime": stubJsxRuntime(),
       "@hugeicons/react": {},
       "@hugeicons/core-free-icons": {},
+      "lucide-react": {},
       "@/lib/tick-icon": {},
+      "@/lib/open-file-picker": {
+        openFilePicker: (_accept: string, onFiles: (files: File[]) => void) => {
+          pickedFiles = onFiles;
+        },
+      },
+      "@/components/assistant-ui/attachment": {},
+      "@/components/assistant-ui/attachment-card-preview": {},
+      "@/components/assistant-ui/attachment-document-dialog": {},
+      "@/components/file-viewer": {},
+      "@/components/ui/tooltip": {},
+      "@/components/ui/spinner": {},
+      "./preview-store": { useDocumentPreviewStore: () => undefined },
       "@/lib/chevron-icons": {},
       "@assistant-ui/react": { useAui: () => ({ threadListItem: () => item }) },
       "@/lib/utils": { cn: () => "" },
@@ -146,7 +175,18 @@ function harness(
         chatHistoryClearBoundary: { capture: () => 0 },
         ChatThreadDeletedError: class extends Error {},
         isThreadIncognito: () => incognito,
-        getStoredChatThread: async () => undefined,
+        isPastedTextFile: () => false,
+        annotationsOfFile: () => null,
+        getStoredChatThread: async () => {
+          threadReads += 1;
+          return options.row;
+        },
+        subscribeChatHistoryUpdated: (listener: (typeof announce)[number]) => {
+          announce.push(listener);
+          return () => {
+            announce.splice(announce.indexOf(listener), 1);
+          };
+        },
         ensureStoredChatThread: async (threadId: string) => {
           if (storedIds.has(threadId)) return { id: threadId };
           if (!initialized || options.missing) return undefined;
@@ -179,7 +219,13 @@ function harness(
           select: (s: { isUnavailable: () => boolean }) => unknown,
         ) => select({ isUnavailable: () => false }),
       },
-      "../types/rag": { RAG_UPLOAD_ACCEPT: ".docx" },
+      "../types/rag": {},
+      "./source-drop-policy": {
+        RAG_SOURCE_UPLOAD_ACCEPT: ".docx",
+        SUPPORTED_SOURCES_HINT: "",
+        isSupportedSourceName: (name: string) => name.endsWith(".docx"),
+      },
+      "./use-source-drop": {},
       "./document-status-chip": {},
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
       "./staged-source": { EXPIRY_GRACE_MS: 30_000 },
@@ -192,7 +238,8 @@ function harness(
           token: intent.path.token,
           name: intent.displayLabel,
         }),
-        useRagDocuments: () => ({
+        useRagDocuments: (scope: unknown) => ({
+          ...(scopes.push(scope), {}),
           documents: [],
           uploading: false,
           hasIndexing: false,
@@ -220,14 +267,9 @@ function harness(
     });
   }
   function pick() {
-    const input = findElement(tree, "input")!;
-    const onChange = input.props.onChange as (event: unknown) => void;
-    onChange({
-      target: {
-        files: [new File(["document"], "report.docx")],
-        value: "report.docx",
-      },
-    });
+    const addCard = findComponent(tree, "AddFilesCard")!;
+    (addCard.props.onClick as () => void)();
+    pickedFiles!([new File(["document"], "report.docx")]);
   }
   return {
     render,
@@ -252,6 +294,20 @@ function harness(
     },
     get initializeCalls() {
       return initializeCalls;
+    },
+    get threadReads() {
+      return threadReads;
+    },
+    get projectScopes() {
+      return scopes.filter(
+        (scope) => (scope as { type?: string } | null)?.type === "project",
+      );
+    },
+    setActiveProjectId(projectId: string | null) {
+      state.activeProjectId = projectId as never;
+    },
+    announce(thread: AnnouncedRow) {
+      for (const listener of [...announce]) listener({ thread });
     },
   };
 }
@@ -336,6 +392,49 @@ test("overlapping attachments initialize once and wait for persistence", async (
   assert.ok(app.uploads.every((scope) => scope.threadId === ID));
 });
 
+test("the chat's row is read once, however often the open project changes", async () => {
+  const app = harness({ row: { id: ID, projectId: "p1" } });
+  app.render();
+  await flush();
+  app.render();
+  app.setActiveProjectId("p1");
+  app.render();
+  await flush();
+  app.render();
+  assert.equal(app.threadReads, 1);
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p1" });
+});
+
+test("a row announced on the history event moves the chat without another read", async () => {
+  const app = harness({ row: { id: ID, projectId: "p1" } });
+  app.render();
+  await flush();
+  app.render();
+  app.announce({ id: ID, projectId: "p2" });
+  app.render();
+  assert.equal(app.threadReads, 1);
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p2" });
+  app.announce({ id: "someone-else", projectId: "p3" });
+  app.render();
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p2" });
+});
+
+test("announcements are ordered by the row's edit clock, not by message activity", async () => {
+  const app = harness({ row: { id: ID, projectId: "p1", updatedAt: 9_000, modifiedAt: 100 } });
+  app.render();
+  await flush();
+  app.render();
+  app.announce({ id: ID, projectId: "p2", updatedAt: 5_000, modifiedAt: 200 });
+  app.render();
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p2" }, "a move after a pruned message lowered updatedAt still lands");
+  app.announce({ id: ID, projectId: "p1", updatedAt: 9_500, modifiedAt: 100 });
+  app.render();
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p2" }, "a response written before the move cannot move it back");
+  app.announce({ id: ID, projectId: "p3", modifiedAt: 300 });
+  app.render();
+  assert.deepEqual(app.projectScopes.at(-1), { type: "project", projectId: "p3" });
+});
+
 test("initialization tags a temporary chat before the persistence check", async () => {
   const app = harness({ temporary: true, missing: true });
   app.render();
@@ -358,6 +457,25 @@ function findElement(node: unknown, type: string): StubElement | undefined {
   const element = node as StubElement;
   if (element.type === type) return element;
   return findElement(element.props.children, type);
+}
+
+function findComponent(node: unknown, name: string): StubElement | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findComponent(child, name);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  if (!node || typeof node !== "object" || !("props" in node)) return undefined;
+  const element = node as StubElement;
+  if (typeof element.type === "function" && element.type.name === name) return element;
+  return findComponent(element.props.children, name);
+}
+
+function manageFiles(tree: StubElement): StubElement {
+  const panel = findComponent(tree, "ChatFilesPanel")!;
+  return panel.props.headerControls as StubElement;
 }
 
 function kbDialog(tree: StubElement): StubElement | undefined {
@@ -417,13 +535,10 @@ test("the drop's Add still opens its knowledge base after the chat's source move
   assert.deepEqual(app.uploads, []);
 });
 
-test("the knowledge base chip opens that knowledge base without uploading anything", () => {
+test("the knowledge base panel opens that knowledge base without uploading anything", () => {
   const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
   app.render();
-  const chip = (app.tree.props.children as StubElement[]).find(
-    (child) => typeof child?.type === "function",
-  )!;
-  (chip.props.onOpen as () => void)();
+  (manageFiles(app.tree).props.onClick as () => void)();
   app.render();
   const dialog = kbDialog(app.tree)!;
   assert.equal(dialog.props.open, true);
@@ -436,10 +551,7 @@ test("an open dialog keeps its place when deleting the active knowledge base mov
   // tree would remount, replaying its animation and dropping its state.
   const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
   app.render();
-  const chip = (app.tree.props.children as StubElement[]).find(
-    (child) => typeof child?.type === "function",
-  )!;
-  (chip.props.onOpen as () => void)();
+  (manageFiles(app.tree).props.onClick as () => void)();
   app.render();
   const place = (tree: StubElement) => ({
     root: tree.type,
