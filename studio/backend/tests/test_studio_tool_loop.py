@@ -725,9 +725,7 @@ def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch)
     assert "mcp_image" not in executed[0]
 
 
-def test_settled_image_call_is_replayed_and_deduped_with_sent_arguments(
-    executed, monkeypatch
-):
+def test_settled_image_call_is_replayed_and_deduped_with_sent_arguments(executed, monkeypatch):
     from core.inference.mcp_image import ATTACHED_IMAGE, McpImage
 
     image = McpImage(mime = "image/png", data = b"IMG")
@@ -742,9 +740,7 @@ def test_settled_image_call_is_replayed_and_deduped_with_sent_arguments(
 
     monkeypatch.setattr(loop_mod, "mcp_image_share", settle)
     monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
-    monkeypatch.setattr(
-        loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow"
-    )
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow")
     monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *_args: None)
     call = {"index": 0, "function": {"name": "python", "arguments": "{}"}}
     transport = FakeTransport(
@@ -782,9 +778,7 @@ def test_settled_image_call_keeps_signed_provider_replay_exact(executed, monkeyp
 
     monkeypatch.setattr(loop_mod, "mcp_image_share", settle)
     monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
-    monkeypatch.setattr(
-        loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow"
-    )
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow")
     monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *_args: None)
     call = {
         "index": 0,
@@ -808,9 +802,7 @@ def test_settled_image_call_keeps_signed_provider_replay_exact(executed, monkeyp
         if message.get("role") == "assistant" and message.get("tool_calls")
     )["tool_calls"][0]
     assert replayed["function"]["arguments"] == "{ }"
-    assert replayed["extra_content"] == {
-        "google": {"thought_signature": "SIG-A"}
-    }
+    assert replayed["extra_content"] == {"google": {"thought_signature": "SIG-A"}}
 
 
 def test_the_model_is_told_about_the_attached_image(executed, monkeypatch):

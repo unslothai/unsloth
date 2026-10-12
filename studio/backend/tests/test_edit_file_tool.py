@@ -253,8 +253,9 @@ class TestReviewFindings:
         assert not result.startswith("Error:")
         assert (workdir / "a.py").read_text() == "x = 2\n"
 
-    def test_a_habit_path_outside_the_workdir_still_remaps(self, workdir):
+    def test_a_habit_path_outside_the_workdir_still_remaps(self, workdir, monkeypatch):
         # The fix above must not switch off the remap it narrows.
+        monkeypatch.setattr(tools, "_MISSING_PATH_PREFIXES", (str(workdir.parent), "/mnt/data"))
         result = _edit(path = "/mnt/data/out.txt", old_string = "", new_string = "hi\n")
         assert not result.startswith("Error:")
         assert (workdir / "out.txt").read_text() == "hi\n"

@@ -103,10 +103,10 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
-  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  Refresh01Icon,
   FolderExportIcon,
   Folder01Icon,
   Folder02Icon,
@@ -139,10 +139,7 @@ import {
   LayerIcon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  MessageCircleIcon,
-  TestTubeOutlineIcon,
-} from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -166,6 +163,7 @@ import {
   canForkChatRow,
   EditProjectDialog,
   forkChatRow,
+  regenerateChatTitle,
   showForkCreatedToast,
   getSidebarItemThreadIds,
   useForkInFlight,
@@ -2866,7 +2864,7 @@ export function AppSidebar() {
       },
     },
     audio: {
-      icon: AudioWave01Icon,
+      icon: AiSpeechIcon,
       label: t("shell.navigation.audio"),
       badge: t("shell.navigation.newBadge"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
@@ -3088,6 +3086,21 @@ export function AppSidebar() {
       }
     } finally {
       inFlight.setForking(false);
+    }
+  }
+
+  async function regenerateChatTitleFromMenu(item: SidebarItem) {
+    // A fast refresh would only flash the toast.
+    const toastId = `regenerate-title-${item.id}`;
+    const slow = setTimeout(() => toast.loading("Regenerating title...", { id: toastId }), 400);
+    const outcome = await regenerateChatTitle(item);
+    clearTimeout(slow);
+    if (outcome === "empty") {
+      toast.error("This chat has no messages to title yet.", { id: toastId });
+    } else if (outcome === "failed") {
+      toast.error("Could not regenerate the title.", { id: toastId });
+    } else {
+      toast.dismiss(toastId);
     }
   }
 
@@ -3688,6 +3701,8 @@ export function AppSidebar() {
           : null,
         section: section ? { id: section.id, name: section.name } : null,
         rename: () => openRenameChat(item, false),
+        canRegenerateTitle: !generating,
+        regenerateTitle: () => void regenerateChatTitleFromMenu(item),
         togglePin: () => togglePinnedChat(item.id),
         toggleUnread: () =>
           unread
@@ -4645,6 +4660,13 @@ export function AppSidebar() {
             >
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Rename</span>
+            </P.Item>
+            <P.Item
+              disabled={isGenerating}
+              onSelect={() => void regenerateChatTitleFromMenu(item)}
+            >
+              <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-icon" />
+              <span>{t("library.menu.regenerateTitle")}</span>
             </P.Item>
             <P.Item onSelect={() => togglePinnedChat(item.id)}>
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />

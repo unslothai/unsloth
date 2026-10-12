@@ -17,6 +17,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import {
@@ -109,6 +110,7 @@ import {
   resumeActionLabel,
 } from "./resume-diffusion-run";
 import {
+  catalogFileName,
   resolveDiffusionDeployBase,
   resolveDiffusionTrainingBase,
 } from "./diffusion-train-deploy";
@@ -1300,6 +1302,11 @@ export function DiffusionTrainPanel({
     [info?.families],
   );
 
+  const navigate = useNavigate();
+  const exportAdapter = useCallback(
+    (catalogPath: string) => void navigate({ to: "/export", search: { imageLora: catalogFileName(catalogPath) } }),
+    [navigate],
+  );
   const onDeployClick = useCallback(() => {
     if (!status?.catalog_path) {
       toast.error("The trained adapter is not available yet.");
@@ -2090,6 +2097,16 @@ export function DiffusionTrainPanel({
                     Deploy to Create
                   </Button>
                 )}
+                {viewRun.saved && viewRun.catalog_path && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => exportAdapter(viewRun.catalog_path as string)}
+                  >
+                    Export
+                  </Button>
+                )}
                 <Button
                   type="button"
                   size="sm"
@@ -2302,6 +2319,16 @@ export function DiffusionTrainPanel({
                   {status?.catalog_path && (
                     <Button type="button" size="sm" onClick={onDeployClick}>
                       Deploy to Create
+                    </Button>
+                  )}
+                  {status?.catalog_path && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => exportAdapter(status.catalog_path as string)}
+                    >
+                      Export
                     </Button>
                   )}
                   {/* Only a run stopped short can be continued. Disabled until the run record lands, with the

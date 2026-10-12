@@ -4,7 +4,6 @@
 // Name and MIME type only: the bytes can be megabytes and this runs on every tile and row.
 
 import {
-  AudioWave01Icon,
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
@@ -15,7 +14,7 @@ import {
   Zip02Icon,
 } from "@hugeicons/core-free-icons";
 // Relative so the node tests can load this file.
-import { SheetIcon } from "../../../lib/hugeicons-derived.ts";
+import { AiSpeechIcon, SheetIcon } from "../../../lib/hugeicons-derived.ts";
 
 export type AttachmentFileKind =
   | "image"
@@ -102,7 +101,7 @@ export function attachmentFileKind(
 export const ATTACHMENT_KIND_ICONS = {
   image: Image02Icon,
   pdf: Pdf01Icon,
-  audio: AudioWave01Icon,
+  audio: AiSpeechIcon,
   video: FlimSlateIcon,
   word: Doc01Icon,
   document: FileEmpty02Icon,
