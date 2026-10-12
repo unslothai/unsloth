@@ -429,8 +429,7 @@ def test_a_cancelled_request_keeps_its_slot_until_node_exits(monkeypatch):
 
 
 def test_an_anyio_cancelled_request_returns_without_spinning(monkeypatch):
-    # anyio's cancellation is level-triggered: waiting for the worker inside the cancelled scope
-    # re-raised at once on every await and spun the event loop until Node exited.
+    # anyio re-cancels every await: waiting for the worker in the scope spun until Node exited.
     import anyio
 
     release = threading.Event()
@@ -456,7 +455,6 @@ def test_an_anyio_cancelled_request_returns_without_spinning(monkeypatch):
                 tg.start_soon(cancel_soon)
                 await rp.compile_react_preview_async("a", "tsx")
         assert scope.cancelled_caught
-        # Returned while the worker still runs, and the worker still holds the only slot.
         second = asyncio.ensure_future(rp.compile_react_preview_async("b", "tsx"))
         await asyncio.sleep(0.2)
         assert started == ["a"]

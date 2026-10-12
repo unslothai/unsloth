@@ -213,7 +213,6 @@ async def compile_react_preview_async(source: str, lang: str) -> dict[str, Any]:
     except BaseException:
         semaphore.release()
         raise
-    # The permit follows the worker, not the request: a cancelled request returns at once (anyio
-    # re-cancels every await, so waiting here spins) while its Node child still holds the slot.
+    # The worker releases the permit: waiting for it here spins under anyio's repeated cancellation.
     task.add_done_callback(lambda done: (semaphore.release(), done.cancelled() or done.exception()))
     return await asyncio.shield(task)

@@ -51,7 +51,6 @@ export function createRuntimeLoader(manifest: PreviewRuntimeManifest, fetchBytes
     return entry;
   };
 
-  /** One message per import no file provides, worded like the frame's runtime error. */
   const unknownImports = (deps: readonly string[]): string[] => {
     const available = Object.keys(manifest.modules).sort().join(", ");
     return resolve(deps).unknown.map((dep) => `${JSON.stringify(dep)} isn't available in previews. Available: ${available}`);
