@@ -1832,9 +1832,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                         "Unsloth: packing=True ignored (this TRL version refuses it for processors)."
                     )
                 else:
-                    logger.info(
-                        "Unsloth: padding-free disabled for the processor (%s).", exc
-                    )
+                    logger.info("Unsloth: padding-free disabled for the processor (%s).", exc)
                 for _attr in ("packing", "padding_free"):
                     if hasattr(config_arg, _attr):
                         setattr(config_arg, _attr, False)

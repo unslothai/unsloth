@@ -24,7 +24,6 @@ try:
     from unsloth.trainer import _is_text_only_dataset, _uses_multimodal_rope  # noqa: E402
 except ImportError:
     import unsloth
-
     if getattr(unsloth, "DEVICE_TYPE", None) != "mlx":
         raise
     pytest.skip("unsloth.trainer is the MLX shim here", allow_module_level = True)
@@ -61,7 +60,11 @@ class _Model(nn.Module):
         super().__init__()
         self.config = config if config is not None else _Cfg()
 
-    def forward(self, input_ids = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
         return None
 
 
@@ -69,8 +72,15 @@ def _patched(raise_on = None):
     calls = []
 
     class _StubSFTTrainer:
-        def __init__(self, model = None, args = None, **kwargs):
-            calls.append((bool(getattr(args, "packing", False)), getattr(args, "padding_free", None)))
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
+            calls.append(
+                (bool(getattr(args, "packing", False)), getattr(args, "padding_free", None))
+            )
             if raise_on is not None and (args.packing or args.padding_free):
                 raise ValueError(raise_on)
             self.model = model
@@ -91,7 +101,9 @@ TEXT = datasets.Dataset.from_dict({"text": ["a b c", "d e"]})
 @pytest.mark.parametrize("packing", [False, True])
 def test_text_only_processor_is_unblocked(packing):
     module, _ = _patched()
-    t = module.SFTTrainer(model = _Model(), args = _config(packing), train_dataset = TEXT, processing_class = _Proc())
+    t = module.SFTTrainer(
+        model = _Model(), args = _config(packing), train_dataset = TEXT, processing_class = _Proc()
+    )
     assert t.args.padding_free is True
     assert bool(t.args.packing) is packing
 
@@ -99,7 +111,9 @@ def test_text_only_processor_is_unblocked(packing):
 def test_kill_switch_restores_the_block(monkeypatch):
     monkeypatch.setenv("UNSLOTH_PROCESSOR_TEXT_PACKING", "0")
     module, _ = _patched()
-    t = module.SFTTrainer(model = _Model(), args = _config(True), train_dataset = TEXT, processing_class = _Proc())
+    t = module.SFTTrainer(
+        model = _Model(), args = _config(True), train_dataset = TEXT, processing_class = _Proc()
+    )
     assert t.args.padding_free is False and t.args.packing is False
 
 
@@ -139,7 +153,9 @@ def test_an_image_feature_nested_in_messages_stays_blocked():
     assert _blocked(train_dataset = ds)
 
 
-@pytest.mark.parametrize("column", ["image_path", "audio_url", "input_values", "image_patches", "Video_File"])
+@pytest.mark.parametrize(
+    "column", ["image_path", "audio_url", "input_values", "image_patches", "Video_File"]
+)
 def test_media_named_string_columns_stay_blocked(column):
     ds = datasets.Dataset.from_dict({"text": ["a"], column: ["x"]})
     assert not _is_text_only_dataset(ds)
@@ -187,10 +203,14 @@ def test_custom_collator_and_tokenizerless_processor_stay_blocked():
 
 def test_multimodal_rope_models_stay_blocked():
     """Qwen2-VL family builds the packed mask only from 4-row position_ids, so 2D ids leak."""
-    cfg = _Cfg(model_type = "qwen2_5_vl", text_config = {"rope_parameters": {"mrope_section": [1, 1, 0]}})
+    cfg = _Cfg(
+        model_type = "qwen2_5_vl", text_config = {"rope_parameters": {"mrope_section": [1, 1, 0]}}
+    )
     assert _uses_multimodal_rope(cfg)
     assert _blocked(model = _Model(cfg))
-    assert not _uses_multimodal_rope(_Cfg(text_config = {"rope_parameters": {"rope_type": "default"}}))
+    assert not _uses_multimodal_rope(
+        _Cfg(text_config = {"rope_parameters": {"rope_type": "default"}})
+    )
 
 
 def test_a_transformed_dataset_stays_blocked():
@@ -205,7 +225,9 @@ def test_trl_before_1_10_never_tries_a_processor(monkeypatch, version):
     """TRL < 1.10 refuses packing / padding-free for any processor: no doomed __init__ first."""
     monkeypatch.setattr(trainer_module.trl, "__version__", version)
     module, calls = _patched(raise_on = "Packing is not supported for vision-language models.")
-    t = module.SFTTrainer(model = _Model(), args = _config(True), train_dataset = TEXT, processing_class = _Proc())
+    t = module.SFTTrainer(
+        model = _Model(), args = _config(True), train_dataset = TEXT, processing_class = _Proc()
+    )
     assert calls == [(False, False)]
     assert t.args.padding_free is False and t.args.packing is False
 
@@ -225,7 +247,9 @@ def test_a_trl_refusal_falls_back_to_the_old_block(message):
     """A refusal TRL still raises falls back to exactly the old behaviour."""
     module, calls = _patched(raise_on = message)
     packing = message.startswith("Packing")
-    t = module.SFTTrainer(model = _Model(), args = _config(packing), train_dataset = TEXT, processing_class = _Proc())
+    t = module.SFTTrainer(
+        model = _Model(), args = _config(packing), train_dataset = TEXT, processing_class = _Proc()
+    )
     assert len(calls) == 2
     assert calls[-1] == (False, False)
     assert t.args.padding_free is False and t.args.packing is False
@@ -234,7 +258,9 @@ def test_a_trl_refusal_falls_back_to_the_old_block(message):
 def test_an_unrelated_value_error_still_propagates():
     module, _ = _patched(raise_on = "something else entirely")
     with pytest.raises(ValueError, match = "something else"):
-        module.SFTTrainer(model = _Model(), args = _config(False), train_dataset = TEXT, processing_class = _Proc())
+        module.SFTTrainer(
+            model = _Model(), args = _config(False), train_dataset = TEXT, processing_class = _Proc()
+        )
 
 
 if __name__ == "__main__":
