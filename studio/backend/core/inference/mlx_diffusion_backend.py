@@ -556,6 +556,16 @@ class MlxDiffusionBackend:
             te_bits = text_encoder_bits()
             t2 = time.perf_counter()
             runtime = self._rt()
+            # A replaced model goes before the new one is built: two resident DiTs do not fit a small Mac.
+            with self._lock:
+                displaced = self._state if self._load_token == _load_token else None
+                if displaced is not None:
+                    self._state = None
+            if displaced is not None:
+                del displaced
+                with self._generate_lock:
+                    pass
+                runtime.free()
             model = runtime.build(
                 str(out_dir),
                 model_config = model_config,

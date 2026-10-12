@@ -385,3 +385,21 @@ def test_importing_the_engine_does_not_import_mlx():
     out = subprocess.run([sys.executable, "-c", code], cwd = backend_root, capture_output = True, text = True, timeout = 300)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().splitlines()[-1] == "False"
+
+
+def test_a_replacing_load_frees_the_old_model_first(env):
+    backend, runtime, _calls = env
+    _load(backend)
+    freed_before = runtime.freed
+    seen = []
+    real_build = runtime.build
+
+    def _build(*a, **k):
+        seen.append(backend.status()["loaded"])
+        return real_build(*a, **k)
+
+    runtime.build = _build
+    _load(backend)
+    assert seen == [False]
+    assert runtime.freed == freed_before + 1
+    assert backend.status()["loaded"] is True
