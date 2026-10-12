@@ -62,7 +62,12 @@ def _call(
             {"save": False, "expected_job_id": "job-7"},
         ),
         ({"kind": "training_start", "id": "req-1"}, "/api/train/start-requests/req-1/cancel", None),
-        ({"kind": "diffusion_training"}, "/api/train/diffusion/stop", None),
+        ({"kind": "diffusion_training"}, "/api/train/diffusion/stop", {"save": True}),
+        (
+            {"kind": "diffusion_training", "save": False},
+            "/api/train/diffusion/stop",
+            {"save": False},
+        ),
         ({"kind": "recipe", "id": "rec-1"}, "/api/data-recipe/jobs/rec-1/cancel", None),
         ({"kind": "image"}, "/api/inference/images/generate/cancel", None),
         ({"kind": "video"}, "/api/inference/video/generate/cancel", None),
