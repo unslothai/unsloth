@@ -7665,10 +7665,15 @@ def _ddp_batched_grad_copy_reason(accelerator):
         return f"distributed type {distributed_type or None}"
     state = getattr(accelerator, "state", None)
     for plugin in ("fsdp_plugin", "deepspeed_plugin", "megatron_lm_plugin"):
-        if getattr(state, plugin, None) is not None or getattr(accelerator, plugin, None) is not None:
+        if (
+            getattr(state, plugin, None) is not None
+            or getattr(accelerator, plugin, None) is not None
+        ):
             return plugin
     try:
-        parameters = inspect.signature(torch.nn.parallel.DistributedDataParallel.__init__).parameters
+        parameters = inspect.signature(
+            torch.nn.parallel.DistributedDataParallel.__init__
+        ).parameters
     except (TypeError, ValueError):
         return "torch DDP signature unavailable"
     if _DDP_BGC_KWARG not in parameters:
@@ -7702,7 +7707,11 @@ def _ddp_batched_grad_copy_handler(handler):
         subclass = type(
             cls.__name__,
             (cls,),
-            {"to_kwargs": to_kwargs, "_unsloth_batched_grad_copy": True, "__module__": cls.__module__},
+            {
+                "to_kwargs": to_kwargs,
+                "_unsloth_batched_grad_copy": True,
+                "__module__": cls.__module__,
+            },
         )
         _DDP_BGC_HANDLER_CLASSES[cls] = subclass
     handler.__class__ = subclass
@@ -7728,7 +7737,9 @@ def _enable_ddp_batched_grad_copy(trainer):
             @functools.wraps(prepare_model)
             def _prepare_model_batched_grad_copy(*args, **kwargs):
                 try:
-                    accelerator.ddp_handler = _ddp_batched_grad_copy_handler(accelerator.ddp_handler)
+                    accelerator.ddp_handler = _ddp_batched_grad_copy_handler(
+                        accelerator.ddp_handler
+                    )
                 except Exception:
                     pass
                 return prepare_model(*args, **kwargs)

@@ -41,9 +41,10 @@ _NAMES = (
     "_ddp_batched_grad_copy_handler",
     "_enable_ddp_batched_grad_copy",
 )
-_HAS_KWARG = "batched_grad_copy" in inspect.signature(
-    torch.nn.parallel.DistributedDataParallel.__init__
-).parameters
+_HAS_KWARG = (
+    "batched_grad_copy"
+    in inspect.signature(torch.nn.parallel.DistributedDataParallel.__init__).parameters
+)
 
 
 def _helpers():
@@ -63,7 +64,11 @@ def _helpers():
     return ns
 
 
-def _trainer(handler, distributed_type = DistributedType.MULTI_GPU, **state):
+def _trainer(
+    handler,
+    distributed_type = DistributedType.MULTI_GPU,
+    **state,
+):
     seen = []
 
     def prepare_model(model, device_placement = None):
@@ -149,7 +154,12 @@ def test_unsupported_torch_signature_not_added(opt_in, monkeypatch):
     ns = _helpers()
 
     class OldDDP(torch.nn.Module):
-        def __init__(self, module, device_ids = None, bucket_cap_mb = None):
+        def __init__(
+            self,
+            module,
+            device_ids = None,
+            bucket_cap_mb = None,
+        ):
             super().__init__()
 
     monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", OldDDP)
