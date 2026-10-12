@@ -4788,6 +4788,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         allow_device_probe: bool = True,
         memory_verdict: bool = True,
+        discover_text_encoders: bool = True,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, so the Hub download manager can fetch them with the
@@ -4806,6 +4807,7 @@ class DiffusionBackend:
         verdict while training owns the GPU. It is not free: the pre-cast encoder and the DiT
         prequant need a target to resolve, so clearing it also changes WHICH FILES the plan counts.
         ``memory_verdict=False`` suppresses only the oversized-unified-memory refusal.
+        ``discover_text_encoders=False`` keeps the base repo's encoder for an engine that never opens a single-file one.
         """
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         kind = resolve_model_kind(gguf_filename, model_kind)
@@ -4828,7 +4830,11 @@ class DiffusionBackend:
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         component_overrides = None
-        if not load_kwargs.get("text_encoder_files") and not load_kwargs.get("vae_file"):
+        if (
+            discover_text_encoders
+            and not load_kwargs.get("text_encoder_files")
+            and not load_kwargs.get("vae_file")
+        ):
             # The same pick the load makes, so the plan stages no encoder the load will not open.
             load_kwargs["text_encoder_files"] = (
                 self._comfy_text_encoders(

@@ -854,7 +854,12 @@ class MlxDiffusionBackend:
         from core.inference.diffusion import get_diffusion_backend
 
         kwargs.setdefault("memory_verdict", False)
-        return get_diffusion_backend().download_plan(repo_id, **kwargs)
+        # The loader always opens the base repo's text_encoder/ and vae/, never a single-file component.
+        kwargs.pop("text_encoder_files", None)
+        kwargs.pop("vae_file", None)
+        return get_diffusion_backend().download_plan(
+            repo_id, discover_text_encoders = False, **kwargs
+        )
 
     def preflight_base_access(
         self, repo_id: str, fam: Optional[DiffusionFamily], **kwargs: Any
