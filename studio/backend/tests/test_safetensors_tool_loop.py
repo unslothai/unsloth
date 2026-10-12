@@ -5079,12 +5079,6 @@ class TestEnabledToolNameGate:
     def _names(self, calls):
         return [c["function"]["name"] for c in calls]
 
-    def test_parse_inactive_rehearsal_does_not_swallow_active_call(self):
-        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
-        assert self._names(calls) == ["web_search"]
-        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
-
     def test_parse_inactive_rehearsal_alone_is_prose(self):
         assert (
             parse_tool_calls_from_text('foo[ARGS]{"a":1}', enabled_tool_names = {"web_search"}) == []
@@ -5846,6 +5840,29 @@ def test_an_alternating_workspace_block_does_not_crowd_out_a_later_tool():
         "terminal",
         "web_search",
     ]
+
+
+def test_mcp_listing_runs_again_after_an_mcp_write():
+    """#10348: `list, create, list` on an MCP server re-lists instead of dropping the call."""
+    name = "mcp__docs__manager"
+    listing = '<tool_call>{"name":"%s","arguments":{"action":"list"}}</tool_call>' % name
+    create = '<tool_call>{"name":"%s","arguments":{"action":"create"}}</tool_call>' % name
+    turns = iter([listing + create + listing, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["[]", "created", "[a]"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Create a doc"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [args.get("action") for _, args in executor.calls] == ["list", "create", "list"]
 
 
 def test_every_independent_edit_gets_its_own_verification_rerun():

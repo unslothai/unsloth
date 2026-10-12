@@ -50,6 +50,7 @@ import {
 } from "@/features/library";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
+import { asPng } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
@@ -131,20 +132,6 @@ const useObjectUrl = (file: File | undefined): string | undefined => {
 const loadGalleryImage = (image: GalleryImage): Promise<Blob> =>
   image.file ? Promise.resolve(image.file) : fetchBlob(image.image ?? "");
 
-/** As PNG: the one image type every browser's clipboard takes. */
-const pngOf = async (blob: Blob): Promise<Blob> => {
-  if (blob.type === "image/png") return blob;
-  const bitmap = await createImageBitmap(blob);
-  const canvas = document.createElement("canvas");
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
-  bitmap.close();
-  return new Promise((resolve, reject) =>
-    canvas.toBlob((png) => (png ? resolve(png) : reject(new Error("PNG encoding failed"))), "image/png"),
-  );
-};
-
 const copyImage = (image: GalleryImage, t: ReturnType<typeof useT>): void => {
   if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
     toast.error(t("imageViewer.copyFailed"));
@@ -152,7 +139,7 @@ const copyImage = (image: GalleryImage, t: ReturnType<typeof useT>): void => {
   }
   // The item is made now, inside the click, and resolves later: Safari refuses a write made after.
   navigator.clipboard
-    .write([new ClipboardItem({ "image/png": loadGalleryImage(image).then(pngOf) })])
+    .write([new ClipboardItem({ "image/png": loadGalleryImage(image).then(asPng) })])
     .then(
       () => toast.success(t("imageViewer.copied")),
       () => toast.error(t("imageViewer.copyFailed")),

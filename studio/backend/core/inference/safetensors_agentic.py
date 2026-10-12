@@ -63,8 +63,8 @@ from core.inference.mcp_images import (
 )
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
-    _WORKSPACE_TOOLS,
     ToolLoopController,
+    _reruns_after_new_work,
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
@@ -1433,7 +1433,7 @@ def run_safetensors_tool_loop(
             for _tc in tool_calls if deduplicate_tool_calls else ():
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _fn.get("name") in _WORKSPACE_TOOLS:
+                if _reruns_after_new_work(_fn.get("name")):
                     if _key == last_workspace_key:
                         continue
                     if _key in seen_keys:
@@ -1492,10 +1492,7 @@ def run_safetensors_tool_loop(
             image_share = None
             if decision.should_execute and mcp_image is not None:
                 from core.inference.tools import mcp_image_share
-
-                image_share = mcp_image_share(
-                    decision.tool_name, decision.arguments, mcp_image
-                )
+                image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
                 if image_share is not None:
                     decision = tool_controller.reprepare_call(
                         decision, provisional = provisional_match
