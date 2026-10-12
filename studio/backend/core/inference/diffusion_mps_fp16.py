@@ -11,6 +11,7 @@ projections are bias-free and attention is linear in v), then are clamped to the
 
 Patched per instance, never class-level, so other pipes / models are untouched.
 """
+
 from __future__ import annotations
 
 import os
@@ -51,7 +52,6 @@ def _source_ok(key: str, obj: Any, tokens: tuple[str, ...]) -> bool:
     if key not in _SOURCE_OK:
         try:
             import inspect
-
             src = inspect.getsource(obj)
             _SOURCE_OK[key] = all(tok in src for tok in tokens)
         except Exception:  # noqa: BLE001 - unreadable source: keep stock bf16
@@ -61,7 +61,6 @@ def _source_ok(key: str, obj: Any, tokens: tuple[str, ...]) -> bool:
 
 def _compute_dtype() -> Any:
     import torch
-
     return getattr(torch, COMPUTE_DTYPE)
 
 
@@ -136,7 +135,6 @@ def processor_cls() -> type:
 
 def _rope(x_in: Any, freqs_cis: Any) -> Any:
     import torch
-
     x = torch.view_as_complex(x_in.float().reshape(*x_in.shape[:-1], -1, 2))
     return torch.view_as_real(x * freqs_cis.unsqueeze(2)).flatten(3).type_as(x_in)
 
@@ -188,7 +186,9 @@ def _block_targets(block: Any) -> Optional[tuple[Any, Any, list]]:
     # The headroom is exact only through bias-free projections.
     if any(m is None or getattr(m, "bias", None) is not None for m in leaves):
         return None
-    norms = [n for n in (getattr(attn, "norm_q", None), getattr(attn, "norm_k", None)) if n is not None]
+    norms = [
+        n for n in (getattr(attn, "norm_q", None), getattr(attn, "norm_k", None)) if n is not None
+    ]
     return attn, ffn, leaves + norms
 
 
@@ -228,7 +228,11 @@ def unsupported_reason(root: Any, target: Any) -> Optional[str]:
     return None
 
 
-def install_mps_fp16(root: Any, target: Any, logger: Any = None) -> int:
+def install_mps_fp16(
+    root: Any,
+    target: Any,
+    logger: Any = None,
+) -> int:
     # All or nothing: one mismatched block keeps the whole model bf16.
     reason = unsupported_reason(root, target)
     if reason is not None:

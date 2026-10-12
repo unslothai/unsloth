@@ -92,8 +92,6 @@ def _same(a, b):
         assert torch.equal(a[2][k][1], b[2][k][1]), k
 
 
-
-
 @pytest.mark.parametrize(
     "target",
     [
@@ -139,8 +137,17 @@ def test_engages_on_mps_bf16_and_keeps_the_stream_bf16():
     assert mf.install_mps_fp16(model, MPS_BF16) == n_blocks  # idempotent
     assert mf.is_installed(model)
     assert model.dtype is torch.bfloat16
-    fp16 = ("attention.to_q", "attention.to_k", "attention.to_v", "attention.to_out.0", "attention.norm_q",
-            "attention.norm_k", "feed_forward.w1", "feed_forward.w2", "feed_forward.w3")
+    fp16 = (
+        "attention.to_q",
+        "attention.to_k",
+        "attention.to_v",
+        "attention.to_out.0",
+        "attention.norm_q",
+        "attention.norm_k",
+        "feed_forward.w1",
+        "feed_forward.w2",
+        "feed_forward.w3",
+    )
     for name, p in model.named_parameters():
         want = torch.float16 if any(f"{s}." in name for s in fp16) else torch.bfloat16
         assert p.dtype is want, name
@@ -190,7 +197,9 @@ def test_quantized_storage_keeps_the_whole_model_bf16():
 
 def test_diffusers_source_matches_the_reimplemented_attention():
     mf._SOURCE_OK.clear()
-    assert mf._source_ok("processor", zmod.ZSingleStreamAttnProcessor.__call__, mf._PROCESSOR_TOKENS)
+    assert mf._source_ok(
+        "processor", zmod.ZSingleStreamAttnProcessor.__call__, mf._PROCESSOR_TOKENS
+    )
     assert mf._source_ok("ffn", zmod.FeedForward, mf._FFN_TOKENS)
 
 
@@ -198,8 +207,6 @@ def test_changed_diffusers_attention_keeps_bf16(monkeypatch):
     monkeypatch.setattr(mf, "_SOURCE_OK", {"processor": False})
     model = _model()
     assert mf.install_mps_fp16(model, MPS_BF16) == 0
-
-
 
 
 def test_headroom_identities_are_exact_in_fp32(monkeypatch):
@@ -288,23 +295,28 @@ def test_ffn_output_saturates_instead_of_inf(monkeypatch):
         ffn.w1.weight.fill_(1.0)
         ffn.w3.weight.fill_(1.0)
         ffn.w2.weight.fill_(1e4)
-        out = mf._ffn_forward(ffn, torch.full((1, 8), 30.0, dtype = torch.bfloat16)) if _fp16_ok() else None
+        out = (
+            mf._ffn_forward(ffn, torch.full((1, 8), 30.0, dtype = torch.bfloat16))
+            if _fp16_ok()
+            else None
+        )
     if out is None:
         pytest.skip("this torch has no CPU float16 matmul")
     assert out.dtype is torch.bfloat16 and torch.isfinite(out).all()
     # 65504 rounds to 65536 in bf16.
-    assert float(out.abs().max()) == float(torch.tensor(65504.0).to(torch.bfloat16)) * mf.FFN_HEADROOM
-
-
+    assert (
+        float(out.abs().max()) == float(torch.tensor(65504.0).to(torch.bfloat16)) * mf.FFN_HEADROOM
+    )
 
 
 class NativeWeightOnlyLinear(nn.Module):
-
     def __init__(self, lin):
         super().__init__()
         w = lin.weight.detach().float()
         scale = w.abs().amax(dim = 1).clamp(min = 1e-12) / 127.0
-        self.register_buffer("weight_q", (w / scale[:, None]).round().clamp(-127, 127).to(torch.int8))
+        self.register_buffer(
+            "weight_q", (w / scale[:, None]).round().clamp(-127, 127).to(torch.int8)
+        )
         self.register_buffer("weight_scale", scale)
         self.scheme, self.act_int8, self.bias, self.seen = "int8", False, None, []
 
@@ -319,13 +331,19 @@ def test_int8_weight_only_layers_keep_storage_and_get_fp16_activations():
     model = _model()
     q = []
     for blk in (*model.layers, *model.noise_refiner, *model.context_refiner):
-        for parent, names in ((blk.attention, ("to_q", "to_k", "to_v")), (blk.feed_forward, ("w1", "w2", "w3"))):
+        for parent, names in (
+            (blk.attention, ("to_q", "to_k", "to_v")),
+            (blk.feed_forward, ("w1", "w2", "w3")),
+        ):
             for n in names:
                 layer = NativeWeightOnlyLinear(getattr(parent, n))
                 setattr(parent, n, layer)
                 q.append(layer)
     assert mf.install_mps_fp16(model, MPS_BF16) > 0
-    assert all(layer.weight_q.dtype is torch.int8 and layer.weight_scale.dtype is torch.float32 for layer in q)
+    assert all(
+        layer.weight_q.dtype is torch.int8 and layer.weight_scale.dtype is torch.float32
+        for layer in q
+    )
     out = _run(model, torch.bfloat16)
     assert torch.isfinite(out).all()
     assert q[0].seen and all(d is torch.float16 for layer in q for d in layer.seen)
@@ -349,7 +367,14 @@ def test_lora_injected_after_install_rides_the_headroom():
     def adapt(model):
         torch.manual_seed(1)
         for name, m in list(model.named_modules()):
-            if isinstance(m, nn.Linear) and name.rsplit(".", 1)[-1] in ("w1", "w2", "w3", "to_q", "to_k", "to_v"):
+            if isinstance(m, nn.Linear) and name.rsplit(".", 1)[-1] in (
+                "w1",
+                "w2",
+                "w3",
+                "to_q",
+                "to_k",
+                "to_v",
+            ):
                 parent, _, child = name.rpartition(".")
                 setattr(model.get_submodule(parent), child, _LoRALinear(m))
         return model
