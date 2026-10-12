@@ -420,8 +420,24 @@ def test_last_frame_is_refused_and_canvas_follows_the_image():
     buf = io.BytesIO()
     Image.new("RGB", (1920, 1080), (10, 20, 30)).save(buf, format = "PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
-    with pytest.raises(ValueError, match = "no end frame"):
+    with pytest.raises(ValueError, match = "takes no last frame"):
         VideoBackend._resolve_keyframes(fam, None, b64, b64, None, None)
+    # The same pure check the generate route applies before switching models; a first frame alone passes.
+    from core.inference.video_families import (
+        validate_video_keyframe_conditioning,
+        video_family_accepts_first_frame,
+        video_family_accepts_last_frame,
+        video_family_uses_i2v_pipeline,
+    )
+
+    with pytest.raises(ValueError, match = "takes no last frame"):
+        validate_video_keyframe_conditioning(fam, None, has_keyframes = True, has_last_frame = True)
+    validate_video_keyframe_conditioning(fam, None, has_keyframes = True, has_last_frame = False)
+    assert video_family_accepts_first_frame(fam) and not video_family_accepts_last_frame(fam)
+    # Its first frame goes through its own two-stage render, not the generic image-to-video pipeline.
+    assert not video_family_uses_i2v_pipeline(fam)
+    h3 = detect_video_family("", override = "minimax-h3")
+    assert video_family_accepts_last_frame(h3)
     first, last, w, h, mode = VideoBackend._resolve_keyframes(fam, None, b64, None, None, None)
     assert (w, h) == (1280, 704) and first.size == (1280, 704) and last is None and mode == "i2va"
     first, _, w, h, mode = VideoBackend._resolve_keyframes(fam, None, None, None, None, None)
@@ -601,7 +617,11 @@ def test_worker_serves_encodes_until_shutdown(monkeypatch, tmp_path):
     monkeypatch.setattr(
         worker,
         "_encode_on",
-        lambda tok, m, config, prompts, n: (torch.ones(len(prompts), n, 8), torch.ones(len(prompts), n), "cpu"),
+        lambda tok, m, config, prompts, n, server_reserved_mib = None: (
+            torch.ones(len(prompts), n, 8),
+            torch.ones(len(prompts), n),
+            "cpu",
+        ),
     )
     cmd, resp = queue.Queue(), queue.Queue()
     cmd.put({"type": "encode", "id": 3, "prompts": ["a", "b"], "max_sequence_length": 5})
@@ -1275,3 +1295,155 @@ def test_worker_reports_its_own_memory():
 
     stats = worker._memory_stats("cpu")
     assert stats.get("host_rss_mib", 0) > 0 and "gpu_peak_allocated_mib" not in stats
+
+
+class _Planned(Exception):
+    pass
+
+
+def _ltx25_pack_plan(monkeypatch, total_gib):
+    """Drive ``load_pipeline`` for the LTX-2.5 pack on a card of ``total_gib`` up to the encoder worker's start; return
+    the plan it is placed by, the plan inputs and the placement."""
+    import core.inference.diffusion_auto_policy as auto_policy
+    import core.inference.diffusion_te_prequant as te_prequant
+    import core.inference.video as vid
+    from core.inference.diffusion_memory import DeviceMemory
+
+    total = int(total_gib * 1024)
+    target = SimpleNamespace(
+        device = "cuda", dtype = None, torch_device = "cuda", ordinal = None, supports_model_cpu_offload = True
+    )
+    backend = vid.VideoBackend()
+    monkeypatch.setattr(backend, "_device_target", lambda *a, **k: target)
+    monkeypatch.setattr(
+        vid,
+        "settled_snapshot_device_memory",
+        lambda _t: DeviceMemory("cuda", "cuda", "discrete_vram", total - 600, total),
+    )
+    monkeypatch.setattr(te_prequant, "te_prequant_budget_scale", lambda *a, **k: 1.0)
+    # The family table, not whatever pack sizes this machine's cache holds.
+    monkeypatch.setattr(auto_policy, "base_repo_bf16_components_gb", lambda *_a, **_k: None)
+    inputs = []
+    real = vid.plan_diffusion_memory
+
+    def capture(**kw):
+        inputs.append(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(vid, "plan_diffusion_memory", capture)
+    seen = {}
+
+    def placement(plan):
+        seen["plan"], seen["resident"] = plan, v25.encoder_resident_for_plan.__wrapped__(plan)
+        raise _Planned()
+
+    placement.__wrapped__ = v25.encoder_resident_for_plan
+    monkeypatch.setattr(v25, "encoder_resident_for_plan", placement)
+    with pytest.raises(_Planned):
+        backend.load_pipeline("Lightricks/LTX-2.5-Diffusers", local_files_only = True, model_kind = "pipeline")
+    return seen["plan"], inputs[-1], seen["resident"]
+
+
+@pytest.mark.parametrize(
+    "total_gib, policy, stream_te, stream_dit, resident",
+    [
+        # Companions alone exceed the card: the DiT and the encoder both stream; the worker never holds Gemma 4.
+        (24, "group", True, True, False),
+        # The DiT streams, the companions (Gemma 4 included) stay: the worker keeps it on the card.
+        (48, "group", False, True, True),
+        # The DiT fits once the encoder is not resident: the worker onloads only for an encode, when there is room.
+        (80, "group", True, False, False),
+        (180, "none", False, True, True),
+    ],
+)
+def test_plan_counts_the_encoder_worker_per_card(monkeypatch, total_gib, policy, stream_te, stream_dit, resident):
+    from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
+
+    plan, inputs, placed_resident = _ltx25_pack_plan(monkeypatch, total_gib)
+    mib = 1000.0**3 / 2**20
+    te_mib = int(23.9 * mib)
+    # The worker's weights are the encoder term, its context the always-resident companion share.
+    assert inputs["text_encoder_dense_mib"] == te_mib
+    assert inputs["companion_dense_mib"] == int((23.9 + 9.2 + LTX25_WORKER_RESIDENT_GB) * mib)
+    assert inputs["model_dense_mib"] == int((42.0 + 23.9 + 9.2 + LTX25_WORKER_RESIDENT_GB) * mib)
+    assert (plan.offload_policy, plan.stream_text_encoders, plan.stream_transformer) == (
+        policy,
+        stream_te,
+        stream_dit,
+    )
+    assert placed_resident is resident
+    if resident:
+        # Whatever keeps the encoder resident budgeted its bytes on the card.
+        budget = plan.estimates["safe_device_budget_mib"]
+        floor = plan.estimates["resident_required_mib"] if policy == "none" else plan.estimates["group_floor_mib"]
+        assert floor <= budget and inputs["text_encoder_dense_mib"] <= floor
+
+
+class _DeviceTensor:
+    """Input ids / mask that accept a move to any device (no accelerator in CPU CI)."""
+
+    def __init__(self, real):
+        self.real = real
+        self.shape = real.shape
+
+    def to(self, device):
+        return self if not str(device).startswith("cpu") else self.real
+
+
+class _AnyDeviceTokenizer(_FakeTokenizer):
+    def __call__(self, prompts, **kwargs):
+        out = super().__call__(prompts, **kwargs)
+        return SimpleNamespace(input_ids = _DeviceTensor(out.input_ids), attention_mask = _DeviceTensor(out.attention_mask))
+
+
+def test_offloaded_encoder_is_released_after_each_encode_and_reloaded_for_the_next(monkeypatch):
+    from core.inference import video_ltx25_te_worker as worker
+
+    monkeypatch.setattr(worker, "ENCODE_MARGIN_MIB", 0)
+    _patch_free(monkeypatch, 1 << 20)
+    model = _FakeEncoderModel()
+    config = {"device": "cuda:0", "resident": False}
+    for _ in range(2):
+        _embeds, _mask, device = worker._encode_on(_AnyDeviceTokenizer(), model, config, ["a fox"], 4)
+        assert device == "cuda:0"
+    # Onto the card for each encode, back to the host after it.
+    assert model.moves == ["cuda:0", "cpu", "cuda:0", "cpu"]
+    resident = _FakeEncoderModel()
+    worker._encode_on(_AnyDeviceTokenizer(), resident, {"device": "cuda:0", "resident": True}, ["a fox"], 4)
+    assert resident.moves == []  # loaded onto the card once, at worker start
+
+
+def test_offloaded_encoder_borrows_only_budget_the_server_leaves(monkeypatch):
+    """A free card is not enough: the plan did not budget the encoder, so it may only use the load's budget minus what
+    the server holds at encode time."""
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _FakeEncoderModel()  # 2 MiB
+    monkeypatch.setattr(worker, "ENCODE_MARGIN_MIB", 10)
+    monkeypatch.setattr(worker, "WORKER_CONTEXT_MIB", 100)
+    _patch_free(monkeypatch, 1 << 20)  # the card itself is wide open (a shared or larger card)
+    config = {"device": "cuda:0", "resident": False, "budget_mib": 1000}
+    assert worker._encode_device(config, model, server_reserved_mib = 888) == "cuda:0"  # 1000 - 888 - 100 = 12
+    assert worker._encode_device(config, model, server_reserved_mib = 889) == "cpu"
+    # No server figure: the card's free memory decides, as before.
+    assert worker._encode_device(config, model, server_reserved_mib = None) == "cuda:0"
+    # No free figure: the budget alone decides.
+    _patch_free(monkeypatch, None)
+    assert worker._encode_device(config, model, server_reserved_mib = 889) == "cpu"
+    assert worker._encode_device(config, model, server_reserved_mib = 0) == "cuda:0"
+
+
+def test_client_sends_the_budget_and_the_servers_share():
+    client = v25.Ltx25TextEncoderClient(
+        repo = "Lightricks/LTX-2.5-Diffusers",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/nonexistent",
+        budget_mib = 43622,
+    )
+    assert client.config["budget_mib"] == 43622
+    assert v25._server_reserved_mib("cpu") is None

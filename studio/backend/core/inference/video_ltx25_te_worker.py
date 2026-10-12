@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
-from typing import Any
+from typing import Any, Optional
 
 _BACKEND_PATH = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -133,6 +133,8 @@ def _load(config: dict) -> tuple[Any, Any]:
 # Room an onloaded encode needs beyond the weights: every hidden state stacked for the packed embeddings (49 x 1024 x
 # 3840 bf16 is ~0.4 GB per prompt, twice over while stacking) plus the forward's own activations.
 ENCODE_MARGIN_MIB = 4096
+# This process's own CUDA context, which the budget must also hold.
+WORKER_CONTEXT_MIB = 768
 
 
 def _weights_mib(model: Any) -> int:
@@ -142,21 +144,31 @@ def _weights_mib(model: Any) -> int:
     return total >> 20
 
 
-def _encode_device(config: dict, model: Any) -> str:
-    """Where a non-resident encoder runs this encode: the configured accelerator when its free memory right now covers
-    the weights plus ``ENCODE_MARGIN_MIB`` (the server is idle at encode time: the denoise has not started), else the
-    CPU. An unreadable free count onloads, as before."""
+def _encode_device(config: dict, model: Any, server_reserved_mib: Optional[int] = None) -> str:
+    """Where a non-resident encoder runs this encode: the configured accelerator when it has room for the weights plus
+    ``ENCODE_MARGIN_MIB``, else the CPU. Room is the card's free memory right now AND, when the server sent them, the
+    load's memory budget minus what the server holds at this moment: the plan did not budget the encoder on the card,
+    so it may only borrow budget the server is not using (encodes run before the denoise). An unreadable free count
+    falls back to the budget alone."""
     device = str(config["device"])
     if config.get("resident") or not device.startswith("cuda"):
         return device
     import torch
 
+    need = _weights_mib(model) + ENCODE_MARGIN_MIB
+    room: Optional[int] = None
     try:
         free, _total = torch.cuda.mem_get_info(torch.device(device))
-    except Exception:  # noqa: BLE001 -- unknown free memory: keep the planned onload
+        room = free >> 20
+    except Exception:  # noqa: BLE001 -- judged by the budget alone
+        pass
+    budget = config.get("budget_mib")
+    if budget is not None and server_reserved_mib is not None:
+        allowed = int(budget) - int(server_reserved_mib) - WORKER_CONTEXT_MIB
+        room = allowed if room is None else min(room, allowed)
+    if room is None:
         return device
-    need = _weights_mib(model) + ENCODE_MARGIN_MIB
-    return device if (free >> 20) >= need else "cpu"
+    return device if room >= need else "cpu"
 
 
 def _memory_stats(device: str) -> dict:
@@ -189,11 +201,18 @@ def _encode(tokenizer: Any, model: Any, config: dict, prompts: list, max_len: in
     return embeds, mask
 
 
-def _encode_on(tokenizer: Any, model: Any, config: dict, prompts: list, max_len: int) -> tuple[Any, Any, str]:
+def _encode_on(
+    tokenizer: Any,
+    model: Any,
+    config: dict,
+    prompts: list,
+    max_len: int,
+    server_reserved_mib: Optional[int] = None,
+) -> tuple[Any, Any, str]:
     import torch
 
     resident = bool(config.get("resident"))
-    device = _encode_device(config, model)
+    device = _encode_device(config, model, server_reserved_mib)
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -221,8 +240,10 @@ def _encode_on(tokenizer: Any, model: Any, config: dict, prompts: list, max_len:
     finally:
         if onloaded:
             model.to("cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        if str(device).startswith("cuda") and torch.cuda.is_available():
+            # Return the encode's activations (and, onloaded, the weights) to the card: a resident worker otherwise
+            # keeps ~1.7 GB cached through the denoise.
+            torch.cuda.empty_cache()
     return embeds_host, mask_host, device
 
 
@@ -264,7 +285,12 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
             continue
         try:
             embeds, mask, device = _encode_on(
-                tokenizer, model, config, msg["prompts"], msg.get("max_sequence_length") or 1024
+                tokenizer,
+                model,
+                config,
+                msg["prompts"],
+                msg.get("max_sequence_length") or 1024,
+                msg.get("server_reserved_mib"),
             )
             resp_queue.put(
                 {

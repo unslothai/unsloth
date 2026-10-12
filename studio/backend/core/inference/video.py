@@ -1983,6 +1983,10 @@ def _video_seed_stays_resident(
     mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
     text_encoder_gb = components[1] * te_scale * dtype_scale
     companions_gb = text_encoder_gb + components[2] * vae_scale
+    if getattr(fam, "name", None) == "ltx-2.5":
+        from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
+
+        companions_gb += LTX25_WORKER_RESIDENT_GB
     model_dense_mib = int((denoiser_gb + companions_gb) * mib_per_gb)
     device_memory = settled_snapshot_device_memory(target)
     if reclaimable_mib > 0 and device_memory.free_mib is not None:
@@ -6326,6 +6330,12 @@ class VideoBackend:
             # pins the VAE to fp32 either way, so scaling it counts those bytes twice (2.8 GB on Wan TI2V-5B) against a
             # hard refusal.
             vae_gb = components[2] if components is not None else 0.0
+            if components is not None and fam.name == "ltx-2.5":
+                from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
+
+                # The encoder worker is a second process on the card: its CUDA context and allocator slack stay
+                # resident on every tier, even when its weights are off the card.
+                vae_gb += LTX25_WORKER_RESIDENT_GB
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
@@ -6565,6 +6575,7 @@ class VideoBackend:
                 device = str(target.torch_device),
                 dtype = str(dtype).replace("torch.", ""),
                 resident = encoder_resident_for_plan(plan),
+                budget_mib = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib"),
             )
             self._ltx25_pending_encoder = ltx25_client
 

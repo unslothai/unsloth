@@ -72,6 +72,9 @@ _PACK_MARKERS = ("duration_head/config.json", "diffusion_decoder/config.json")
 LTX25_NONE_COMPONENTS = ("text_encoder", "tokenizer", "processor", "prompt_enhancer", "duration_head")
 LATENT_UPSAMPLER_SUBFOLDER = "latent_upsampler"
 TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
+# What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
+# Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
+LTX25_WORKER_RESIDENT_GB = 1.0
 
 # The split single-file release. A DiT picked from it assembles from the companion files beside it (no Diffusers pack):
 # connectors from the DiT file plus the encoder file's text projections, the conv VAE, the audio VAE + vocoder and the
@@ -640,6 +643,18 @@ def ensure_text_encoder_sidecar() -> str:
     return _VENV_T5_510_DIR
 
 
+def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
+    """What this (server) process holds on ``device`` right now, for the worker's budget check."""
+    if not str(device or "").startswith("cuda"):
+        return None
+    try:
+        import torch
+
+        return int(torch.cuda.memory_reserved(torch.device(str(device)))) >> 20
+    except Exception:  # noqa: BLE001 -- unknown: the worker judges by free memory alone
+        return None
+
+
 class TextEncoderWorkerError(RuntimeError):
     pass
 
@@ -667,6 +682,7 @@ class Ltx25TextEncoderClient:
         venv_dir: str,
         cancel_event: Optional[threading.Event] = None,
         single_file: Optional[str] = None,
+        budget_mib: Optional[int] = None,
     ) -> None:
         self.config = {
             "repo": repo,
@@ -680,6 +696,8 @@ class Ltx25TextEncoderClient:
             "dtype": dtype,
             "resident": bool(resident),
             "venv_dir": venv_dir,
+            # The load's memory budget: a non-resident encoder onloads only into what the server leaves of it.
+            "budget_mib": budget_mib,
         }
         self.cancel_event = cancel_event
         self._proc: Any = None
@@ -806,6 +824,7 @@ class Ltx25TextEncoderClient:
                     "id": seq,
                     "prompts": list(prompts),
                     "max_sequence_length": int(max_sequence_length),
+                    "server_reserved_mib": _server_reserved_mib(self.config.get("device")),
                 }
             )
             while True:
@@ -901,6 +920,7 @@ def start_text_encoder(
     device: str,
     dtype: str,
     resident: bool,
+    budget_mib: Optional[int] = None,
 ) -> Ltx25TextEncoderClient:
     """Check the sidecar (a named refusal before any weight is read), then spawn the encoder worker so the Gemma 4
     load overlaps the DiT load."""
@@ -915,6 +935,7 @@ def start_text_encoder(
         resident = resident,
         venv_dir = venv_dir,
         single_file = LTX25_SINGLE_TEXT_ENCODER if is_ltx25_single_file_base(repo) else None,
+        budget_mib = budget_mib,
     )
     client.start()
     return client

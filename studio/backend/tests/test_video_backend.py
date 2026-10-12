@@ -8921,8 +8921,12 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
             continue
         calls.clear()
         VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
+        # LTX-2.5's encoder runs in a second process; its CUDA context is priced on top of the table.
+        from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
+
+        extra_gb = LTX25_WORKER_RESIDENT_GB if fam.name == "ltx-2.5" else 0.0
         assert calls[0]["model_dense_mib"] == int(
-            sum(fam.bf16_components_gb) * _MIB_PER_GB
+            (sum(fam.bf16_components_gb) + extra_gb) * _MIB_PER_GB
         ), fam.name
 
 
