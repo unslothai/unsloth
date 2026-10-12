@@ -238,6 +238,15 @@ class VideoFamily:
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
+    # Diffusers class serving a first-frame request over the loaded pipeline's components (video_i2v).
+    i2v_pipeline_class: Optional[str] = None
+    i2v_pipeline_config: tuple[tuple[str, object], ...] = field(default_factory = tuple)
+    # (identifier regex, ((kwarg, value), ...)); first matching row applies.
+    i2v_call_kwargs: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = field(
+        default_factory = tuple
+    )
+    # (identifier regex, refusal) for checkpoints the name tokens claim but this family cannot run.
+    unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
     # Guidance-distilled families expose neither CFG nor a negative prompt.
@@ -253,6 +262,25 @@ def _h3_480p_presets() -> tuple[tuple[int, int], ...]:
     if flag in ("0", "false", "no", "off"):
         return ()
     return ((864, 480), (480, 864))  # fastest
+
+
+# LTX-Video 0.9.x matches ltx-2's "ltx-video"/"ltxv" tokens but is another architecture; names of LTX-2 itself pass.
+_LTX_VIDEO_09_RE = (
+    r"^(?!.*(?<![a-z0-9])ltx[-_ ]?2(?:$|[-_ /.]))"
+    r"(?=.*(?<![a-z0-9])ltx(?:[-_ ]?video|v)(?:$|[-_ /.](?!2(?:$|[-_ /.]|\.\d))))"
+)
+_LTX_VIDEO_09_REFUSAL = (
+    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Studio does not "
+    "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
+)
+# Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+_HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
+_HV15_I2V_REFUSAL = (
+    "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
+    "transformer and SigLIP image encoder, which Studio does not load yet. Load a HunyuanVideo-1.5 "
+    "text-to-video checkpoint (hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v or "
+    "720p_t2v) instead."
+)
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
@@ -376,6 +404,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         # Block RMSNorm (hidden 4096) R0_BLOCK 4096 vs 2048 tie on B200: 3 of 6 cold servers rendered another clip.
         filter_reduction_configs = True,
+        i2v_pipeline_class = "LTX2ImageToVideoPipeline",
+        # LTX-2.3's reference workflow re-compresses the frame at CRF 18; LTX-2.0 keeps diffusers' 33.
+        i2v_call_kwargs = ((r"ltx[-_ ]?2[-_.]?3(?![0-9])", (("image_crf", 18),)),),
+        unsupported_checkpoints = ((_LTX_VIDEO_09_RE, _LTX_VIDEO_09_REFUSAL),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
@@ -416,6 +448,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
+        # expand_timesteps on the loaded config keeps the first-frame latent clean.
+        i2v_pipeline_class = "WanImageToVideoPipeline",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are
     # WanTransformer3DModel with boundary_ratio 0.875; high-noise steps route through transformer, low-noise through
@@ -515,6 +549,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
@@ -548,6 +583,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
@@ -958,8 +994,81 @@ def validate_video_request_shape(
             )
 
 
+def video_family_accepts_first_frame(fam: VideoFamily) -> bool:
+    return bool(
+        getattr(fam, "supports_keyframes", False) or getattr(fam, "i2v_pipeline_class", None)
+    )
+
+
+def video_family_accepts_last_frame(fam: VideoFamily) -> bool:
+    return bool(getattr(fam, "supports_keyframes", False))
+
+
+def video_family_uses_i2v_pipeline(fam: VideoFamily) -> bool:
+    return bool(getattr(fam, "i2v_pipeline_class", None)) and not getattr(
+        fam, "supports_keyframes", False
+    )
+
+
+def _identifier_blob(identifiers: tuple[Optional[str], ...]) -> list[str]:
+    return [str(i).strip().lower() for i in identifiers if i and str(i).strip()]
+
+
+def video_checkpoint_refusal(fam: VideoFamily, *identifiers: Optional[str]) -> Optional[str]:
+    """Identifiers are joined into one line so an LTX-2.3 filename excuses an ``ltx-video`` folder; the last segment
+    of the most specific identifier is also judged alone, so an LTX-2 folder cannot excuse an LTX-Video 0.9 file."""
+    names = _identifier_blob(identifiers)
+    joined = " | ".join(names)
+    pick = os.path.basename(names[-1].replace("\\", "/").rstrip("/")) if names else ""
+    for entry in getattr(fam, "unsupported_checkpoints", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        pattern, message = entry
+        try:
+            if any(text and re.search(pattern, text) for text in (pick, joined)):
+                return str(message)
+        except re.error:
+            continue
+    return None
+
+
+def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict[str, object]:
+    names = _identifier_blob(identifiers)
+    for entry in getattr(fam, "i2v_call_kwargs", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        pattern, pairs = entry
+        try:
+            if any(re.search(pattern, name) for name in names):
+                return {str(k): v for k, v in pairs}
+        except (re.error, TypeError, ValueError):
+            continue
+    return {}
+
+
+def first_frame_canvas(
+    fam: VideoFamily, aspect_width: float, aspect_height: float
+) -> tuple[int, int]:
+    """Nearest-aspect preset in log space; ties keep table order so the family default wins."""
+    import math
+
+    if aspect_width <= 0 or aspect_height <= 0:
+        raise ValueError(
+            f"The first frame has no usable aspect ratio ({aspect_width}x{aspect_height})."
+        )
+    presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
+    if not presets:
+        return snap_video_size(fam, int(aspect_width), int(aspect_height))
+    target = math.log(aspect_width / aspect_height)
+    return min(presets, key = lambda wh: abs(math.log(wh[0] / wh[1]) - target))
+
+
 def validate_video_keyframe_conditioning(
-    fam: VideoFamily, h3_task: Optional[str], *, has_keyframes: bool
+    fam: VideoFamily,
+    h3_task: Optional[str],
+    *,
+    has_keyframes: bool,
+    has_last_frame: bool = False,
 ) -> None:
     """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
 
@@ -968,14 +1077,16 @@ def validate_video_keyframe_conditioning(
     one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
     target for a request that was already known to be unservable.
     """
-    if not has_keyframes:
+    if not (has_keyframes or has_last_frame):
         return
     from .video_minimax_h3 import H3_TASK_REFERENCES
 
-    if not fam.supports_keyframes:
+    if not video_family_accepts_first_frame(fam):
         raise ValueError(
             f"{fam.name} generates from the prompt alone; it takes no first or last frame."
         )
+    if has_last_frame and not video_family_accepts_last_frame(fam):
+        raise ValueError(f"{fam.name} animates from a first frame only; it takes no last frame.")
     if h3_task == H3_TASK_REFERENCES:
         raise ValueError(
             "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "

@@ -552,7 +552,13 @@ _FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
 # gemma2 measured slower under flex. gemma4 shares one _attn_implementation across all layers, so
 # flex would also pull its 25 sliding layers off unsloth_zoo's faster gemma4_flash_sliding router,
 # which is registered under "sdpa".
-_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = ("gemma2", "gemma4", "gemma4_text")
+_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = (
+    "gemma2",
+    "gemma4",
+    "gemma4_text",
+    "gemma4_unified",
+    "gemma4_unified_text",
+)
 # Interface dispatch, and a BlockMask from create_causal_mask rather than a hand-built 4D mask.
 _FLEX_INTERFACE_MARKERS = ("ALL_ATTENTION_FUNCTIONS", "create_causal_mask")
 _FLEX_SUPPORT_FORCED = set()
@@ -3834,7 +3840,7 @@ try:
             "Then confirm if it's correctly installed by running:\n"
             "python -m xformers.info\n\n"
             "Longer error message:\n" + str(error)
-        )
+        ) from error
     import xformers.ops.fmha as xformers
 
     xformers_attention = xformers.memory_efficient_attention
@@ -3846,6 +3852,20 @@ except Exception as e:
     if UNSLOTH_ENABLE_LOGGING:
         print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
         print(str(e))
+    elif DEVICE_TYPE == "cuda" and str(e).startswith("Unsloth:") and e.__cause__ is None:
+        # The version guards above (e.g. Blackwell FA3 dispatch) carry their own fix; install-kernels would not apply it.
+        print(str(e))
+    elif DEVICE_TYPE == "cuda":
+        # xformers' own warning is silenced above; usually PyPI's cu128 wheel beside a cu130 torch (#4381).
+        _built_for = re.search(r"PyTorch (\S+) with CUDA \S+ \(you have", str(e))
+        print(
+            "Unsloth: xformers is installed but cannot load with torch "
+            f"{torch_version}{f' (it was built for {_built_for.group(1)})' if _built_for else ''}, "
+            "so PyTorch attention is used instead.\n"
+            "To install a matching xformers, run `unsloth install-kernels xformers`, "
+            "or `pip uninstall xformers` to hide this. UNSLOTH_ENABLE_LOGGING=1 shows the full error."
+        )
+        del _built_for
     xformers = None
     xformers_attention = None
     xformers_version = None
