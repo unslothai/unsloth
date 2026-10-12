@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { toast } from "@/lib/toast";
 
@@ -11,6 +11,7 @@ import {
   scopedDownloadInventoryKind,
   scopedVariant,
 } from "./download-manager-types";
+import { publishStagedQueue } from "./staged-download-queue";
 import { useRepoDownload } from "./use-repo-download";
 
 export interface StagedDownloadProgress {
@@ -25,10 +26,6 @@ export interface StagedDownloadEntry {
   bytes: number;
   ggufFilename?: string | null;
   checkpoint?: boolean;
-  fileBytes?: Record<string, number>;
-  cachedCheckpointBytes?: number;
-  earlierBytes?: Record<string, number>;
-  laterBytes?: Record<string, number>;
   /** A GGUF quant fetched as the standard variant download, as Chat does: the backend's variant
    *  plan brings its companion files, and the row reads "<repo> · <quant>". `files` is unused. */
   ggufVariant?: string | null;
@@ -45,8 +42,11 @@ export function useStagedDownload({
   scopeId,
   onReady,
   onCancelled,
+  publishQueue = true,
 }: {
   scopeId: string;
+  /** The Hub publishes its full queue, including plans not started yet. */
+  publishQueue?: boolean;
   onReady: () => void;
   /** Clears a pending auto-load when the plan ends incomplete, so a later completion cannot load it. */
   onCancelled?: () => void;
@@ -54,6 +54,12 @@ export function useStagedDownload({
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
   const [staged, setStaged] = useState({ bytes: 0, plan: 0 });
   const current = queue?.[0] ?? null;
+  const queueOwner = useId();
+  useEffect(() => {
+    if (!publishQueue) return;
+    publishStagedQueue(queueOwner, queue ? { scopeId, entries: queue } : null);
+    return () => publishStagedQueue(queueOwner, null);
+  }, [queueOwner, queue, scopeId, publishQueue]);
 
   // Every other entry is scoped: the Hub snapshot ignore list drops *.gguf.
   const activeVariant = current
@@ -134,16 +140,6 @@ export function useStagedDownload({
               scopeId,
               files: current.files,
               checkpoint: current.checkpoint,
-              ...(current.fileBytes && Object.keys(current.fileBytes).length > 0
-                ? {
-                    breakdown: {
-                      fileBytes: current.fileBytes,
-                      cachedCheckpointBytes: current.cachedCheckpointBytes,
-                      earlierBytes: current.earlierBytes,
-                      laterBytes: current.laterBytes,
-                    },
-                  }
-                : {}),
               skipXetNotice: laterEntry,
             },
       );

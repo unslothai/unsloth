@@ -36,7 +36,6 @@ export interface ManagedDownload {
   scopedFiles?: string[];
   /** True for the picked model, false for companions; only the stager can tell them apart. */
   checkpoint?: boolean;
-  breakdown?: DownloadBreakdown;
   transport?: ResolvedTransport;
   /** A Xet run that fell back to HTTP keeps its cancel marker, which decides the stop control. */
   cancelTransport?: ResolvedTransport;
@@ -55,18 +54,8 @@ export interface DownloadRequest {
   scopeId?: string | null;
   files?: string[];
   checkpoint?: boolean;
-  breakdown?: DownloadBreakdown;
   callerToast?: CallerToast;
   skipXetNotice?: boolean;
-}
-
-export interface DownloadBreakdown {
-  fileBytes: Record<string, number>;
-  /** The picked checkpoint, already on disk, shown as a full segment. */
-  cachedCheckpointBytes?: number;
-  /** The plan's other jobs: fetched before this one (full) and after it (empty). */
-  earlierBytes?: Record<string, number>;
-  laterBytes?: Record<string, number>;
 }
 
 export interface DownloadPresentation {

@@ -41,7 +41,6 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
-  Refresh01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
@@ -168,13 +167,6 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
     <>
       <Item icon={Edit03Icon} onSelect={menu.rename} shortcut="renameChat">
         {t("common.rename")}
-      </Item>
-      <Item
-        icon={Refresh01Icon}
-        onSelect={menu.regenerateTitle}
-        disabled={!menu.canRegenerateTitle}
-      >
-        {t("library.menu.regenerateTitle")}
       </Item>
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}

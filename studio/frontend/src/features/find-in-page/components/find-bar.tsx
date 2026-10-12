@@ -189,7 +189,7 @@ export default function FindBar({
       if (!origin?.isConnected || typeof origin.focus !== "function") return;
       const focused = document.activeElement;
       if (focused !== null && focused !== document.body) return;
-      origin.focus();
+      origin.focus({ preventScroll: true });
     };
   }, []);
 

@@ -16,9 +16,6 @@ export interface ActiveChatMenu {
   project: Place | null;
   section: Place | null;
   rename: () => void;
-  /** Off while generating: the reply is still changing the topic. */
-  canRegenerateTitle: boolean;
-  regenerateTitle: () => void;
   togglePin: () => void;
   toggleUnread: () => void;
   fork: () => void;

@@ -4073,7 +4073,6 @@ export const ar = {
       chatAboutThis: "الدردشة حول هذا",
       chatWithModel: "الدردشة مع هذا النموذج",
       addToFavorites: "إضافة إلى المفضلة",
-      regenerateTitle: "إعادة إنشاء العنوان",
       removeFromFavorites: "إزالة من المفضلة",
       download: "تنزيل",
       addToFolder: "إضافة إلى مجلد",

@@ -2525,8 +2525,8 @@ test("closing the bar hands focus back to where it came from", async () => {
   const capture = FIND_BAR.indexOf("const active = document.activeElement");
   const takeFocus = FIND_BAR.indexOf("input.select();");
   assert.ok(capture > 0 && capture < takeFocus);
-  assert.match(FIND_BAR, /origin\.focus\(\);/);
-  // StrictMode replays the effect, and by the second run the field has focus.
+  assert.match(FIND_BAR, /origin\.focus\(\{ preventScroll: true \}\);/);
+  // First answer only: StrictMode replays the effect, and by the second run the field has focus.
   assert.match(FIND_BAR, /originRef\.current === null &&/);
   assert.match(FIND_BAR, /barRef\.current\?\.contains\(active\) !== true/);
   assert.equal(FIND_BAR.includes("closest(`[${FIND_SKIP_ATTRIBUTE}]`)"), false);

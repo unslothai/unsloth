@@ -35,6 +35,9 @@ export interface VideoGenerationDefaults {
   resolution_presets: Array<[number, number]>;
   canvas_short_edge?: number | null;
   canvas_max_pixels?: number | null;
+  // Image-to-video families without that rule take the preset nearest the first frame's aspect.
+  canvas_from_presets?: boolean;
+  // Released schedule shifts, or null when unsupported.
   flow_shift?: number | null;
   audio_flow_shift?: number | null;
   supports_audio_flow_shift?: boolean;
@@ -76,6 +79,10 @@ export interface VideoStatus {
   has_audio: boolean;
   supports_cfg: boolean;
   supports_keyframes?: boolean;
+  // Per keyframe: every image-to-video family takes a first frame; only MiniMax-H3 a last one.
+  // Absent on older backends, which read supports_keyframes for both.
+  supports_first_frame?: boolean;
+  supports_last_frame?: boolean;
   supports_references?: boolean;
   h3_task?: string | null;
   defaults?: VideoGenerationDefaults | null;

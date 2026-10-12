@@ -102,7 +102,11 @@ export function useRagDocuments(
     documentsRef.current = documents;
   }, [documents]);
   const sigByDocId = useRef<Map<string, string>>(new Map());
-  // A 0-chunk doc stays re-ingestable (e.g. a scan attached before a vision model loaded).
+  // Row id -> source File for retry. Files only: a native drop's path token is spent on first use.
+  const retryItems = useRef<Map<string, RagUploadItem>>(new Map());
+  // Skip a re-selected file only if a matching doc is healthy or still indexing. A doc
+  // that completed with 0 chunks is re-ingestable (e.g. a scan attached before a vision
+  // model loaded); the backend re-ingests on the same hash, so let it through.
   const sigBlocksReupload = useCallback((sig: string) => {
     const ids = new Set<string>();
     for (const [id, s] of sigByDocId.current) if (s === sig) ids.add(id);
@@ -172,12 +176,17 @@ export function useRagDocuments(
         numChunks?: number | null,
       ) => {
         if (stale()) return forget();
+        if (status !== "failed") retryItems.current.delete(documentId);
         if (status === "cancelled") {
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
         } else if (status === "failed") {
           sigByDocId.current.delete(documentId);
-          setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+          patchDoc(documentId, {
+            status: "failed",
+            error: error ?? "Indexing failed",
+            progress: null,
+          });
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",
           });
@@ -267,8 +276,11 @@ export function useRagDocuments(
       refreshInFlight.current = true;
       if (!opts?.quiet) setLoading(true);
       try {
-        // Merge server rows with local progress so a refresh mid-index keeps live progress.
-        const rows = (await lister()).filter((row) => row.status !== "failed");
+        // Merge server truth with local progress so a refresh mid-index keeps a
+        // live "running %" chip. Failed docs hidden, except ones this session can retry.
+        const rows = (await lister()).filter(
+          (row) => row.status !== "failed" || retryItems.current.has(row.id),
+        );
         if (refreshSeq.current !== requestId) return true;
         setDocuments((prev) => {
           const merged = rows.map((row) => {
@@ -279,10 +291,14 @@ export function useRagDocuments(
               ? { ...row, progress: tracked.progress, stage: tracked.stage }
               : row;
           });
-          // Keep optimistic chips so a refresh racing an upload cannot make them vanish.
+          // Keep optimistic chips (not yet listed) so a refresh racing an upload
+          // can't make them vanish, and failed rows this session can still retry.
           const serverIds = new Set(rows.map((row) => row.id));
           const pendingLocal = prev.filter(
-            (row) => row.id.startsWith("pending_") && !serverIds.has(row.id),
+            (row) =>
+              !serverIds.has(row.id) &&
+              (row.id.startsWith("pending_") ||
+                (row.status === "failed" && retryItems.current.has(row.id))),
           );
           return [...merged, ...pendingLocal];
         });
@@ -355,6 +371,7 @@ export function useRagDocuments(
       uploadGenerationRef.current += 1;
       activeUploadsRef.current.clear();
       uploadInFlightRef.current = false;
+      retryItems.current.clear();
       setUploading(false);
       // Keep synchronous so StrictMode's setup/cleanup replay cannot cancel the only refresh.
       setDocuments([]);
@@ -485,6 +502,7 @@ export function useRagDocuments(
                 );
         if (generation !== uploadGenerationRef.current) return;
         sigByDocId.current.set(result.documentId, itemSignature(item));
+        if (item.kind === "file") retryItems.current.set(result.documentId, item);
         setDocuments((rows) =>
           rows.some((row) => row.id === result.documentId)
             ? rows.filter((row) => row.id !== tempId)
@@ -503,11 +521,16 @@ export function useRagDocuments(
       } catch (err) {
         if (generation !== uploadGenerationRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
-        setDocuments((rows) => rows.filter((row) => row.id !== tempId));
+        if (item.kind === "file") {
+          retryItems.current.set(tempId, item);
+          patchDoc(tempId, { status: "failed", error: message, progress: null });
+        } else {
+          setDocuments((rows) => rows.filter((row) => row.id !== tempId));
+        }
         toast.error(`Couldn't upload ${name}`, { description: message });
       }
     },
-    [trackJob],
+    [trackJob, patchDoc],
   );
 
   // `overrideScope`: the thread bar's id is still null on the first click.
@@ -622,9 +645,13 @@ export function useRagDocuments(
   );
 
   const remove = useCallback(
-    async (documentId: string) => {
+    async (documentId: string): Promise<boolean> => {
       const prev = documents;
       setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+      const prevRetry = retryItems.current.get(documentId);
+      retryItems.current.delete(documentId);
+      if (documentId.startsWith("pending_")) return true;
+      // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
       // The source remains until the DELETE returns, so a send in between can still retrieve it.
@@ -638,12 +665,15 @@ export function useRagDocuments(
           documentId,
           scope?.type === "project" ? scope.projectId : undefined,
         );
+        return true;
       } catch (err) {
         setDocuments(prev);
         if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
+        if (prevRetry !== undefined) retryItems.current.set(documentId, prevRetry);
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),
         });
+        return false;
       } finally {
         if (removingProjectId) {
           noteProjectWork(removingProjectId, -1);
@@ -651,6 +681,21 @@ export function useRagDocuments(
       }
     },
     [documents, scope],
+  );
+
+  const canRetry = useCallback(
+    (documentId: string) => retryItems.current.has(documentId),
+    [],
+  );
+
+  const retry = useCallback(
+    async (documentId: string) => {
+      const item = retryItems.current.get(documentId);
+      if (!item) return;
+      if (!(await remove(documentId))) return;
+      await upload([item]);
+    },
+    [remove, upload],
   );
 
   return {
@@ -661,5 +706,7 @@ export function useRagDocuments(
     refresh,
     upload,
     remove,
+    retry,
+    canRetry,
   };
 }

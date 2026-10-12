@@ -1043,7 +1043,11 @@ def test_base_companions_come_from_the_repo_the_plan_staged(monkeypatch):
     assert fetched == [("unsloth/Z-Image-Turbo", f, "abc") for f in files]
 
 
-def _companion_snapshot(root, complete = True, tokenizer_config = True):
+def _companion_snapshot(
+    root,
+    complete = True,
+    tokenizer_config = True,
+):
     root.mkdir(parents = True, exist_ok = True)
     for sub in ("text_encoder", "tokenizer", "vae"):
         (root / sub).mkdir(exist_ok = True)
@@ -1120,14 +1124,23 @@ def test_cache_only_companions_skip_an_incomplete_upstream_for_the_staged_mirror
         "unsloth/Z-Image-Turbo": _companion_snapshot(tmp_path / "mirror"),
     }
 
-    def _snapshot(repo, *, cache_dir = None, local_files_only = False, **_k):
+    def _snapshot(
+        repo,
+        *,
+        cache_dir = None,
+        local_files_only = False,
+        **_k,
+    ):
         assert local_files_only
         if cache_dir != live or repo not in snapshots:
             raise LocalEntryNotFoundError("not cached")
         return snapshots[repo]
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot)
-    assert mb.fetch_base_snapshot(BASE, None, local_files_only = True) == snapshots["unsloth/Z-Image-Turbo"]
+    assert (
+        mb.fetch_base_snapshot(BASE, None, local_files_only = True)
+        == snapshots["unsloth/Z-Image-Turbo"]
+    )
     del snapshots["unsloth/Z-Image-Turbo"]
     with pytest.raises(LocalEntryNotFoundError, match = "complete"):
         mb.fetch_base_snapshot(BASE, None, local_files_only = True)
@@ -1326,13 +1339,22 @@ def test_cache_only_companions_skip_a_snapshot_without_tokenizer_config(monkeypa
         "unsloth/Z-Image-Turbo": _companion_snapshot(tmp_path / "mirror"),
     }
 
-    def _snapshot(repo, *, cache_dir = None, local_files_only = False, **_k):
+    def _snapshot(
+        repo,
+        *,
+        cache_dir = None,
+        local_files_only = False,
+        **_k,
+    ):
         if cache_dir != live or repo not in snapshots:
             raise LocalEntryNotFoundError("not cached")
         return snapshots[repo]
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot)
-    assert mb.fetch_base_snapshot(BASE, None, local_files_only = True) == snapshots["unsloth/Z-Image-Turbo"]
+    assert (
+        mb.fetch_base_snapshot(BASE, None, local_files_only = True)
+        == snapshots["unsloth/Z-Image-Turbo"]
+    )
 
 
 def test_a_cancelled_load_keeps_the_companion_mirror_guarded(env, monkeypatch):
@@ -1362,7 +1384,9 @@ def test_a_cancelled_load_keeps_the_companion_mirror_guarded(env, monkeypatch):
         time.sleep(0.01)
     try:
         assert "unsloth/Z-Image-Turbo" in backend.draining_repo_ids()
-        assert "still releasing" in (deletion._diffusion_blocks_delete("unsloth/Z-Image-Turbo") or "")
+        assert "still releasing" in (
+            deletion._diffusion_blocks_delete("unsloth/Z-Image-Turbo") or ""
+        )
     finally:
         gate.set()
         unloader.join(5)

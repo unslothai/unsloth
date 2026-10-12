@@ -31,7 +31,6 @@ import {
   downloadInventoryHintKind,
   scopedDownloadInventoryKind,
 } from "./download-manager-types";
-import { breakdownOfPersisted } from "./download-breakdown";
 import { presentationForExpectedBytesUpdate } from "./download-presentation";
 import {
   clearRuntimeTimer,
@@ -151,7 +150,6 @@ function sanitizePersistedJob(
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
-    ...breakdownOfPersisted(value.breakdown),
     ...inventoryKindOfPersisted(value, variant),
     // A held reading must survive reload or the stale bytes read as measured ("0 B left").
     // A legacy record already carrying counters is read as held.
@@ -213,7 +211,6 @@ function toPersistedJob(
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
-    ...(job.breakdown !== undefined ? { breakdown: job.breakdown } : {}),
     ...(job.inventoryKind !== undefined
       ? { inventoryKind: job.inventoryKind }
       : {}),

@@ -4342,7 +4342,6 @@ export const sv = {
       chatAboutThis: "Chatta om detta",
       chatWithModel: "Chatta med den här modellen",
       addToFavorites: "Lägg till i Favoriter",
-      regenerateTitle: "Generera om titel",
       removeFromFavorites: "Ta bort från Favoriter",
       download: "Hämta",
       addToFolder: "Lägg till i mapp",

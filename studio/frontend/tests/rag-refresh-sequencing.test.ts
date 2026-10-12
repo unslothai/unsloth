@@ -628,7 +628,7 @@ test("a failed project lookup leaves the scope unresolved", () => {
     "a failed read records nothing and retries",
   );
   assert.match(THREAD_DOCUMENTS_BAR, /const projectUnresolved = threadProjectId === undefined;/);
-  assert.match(THREAD_DOCUMENTS_BAR, /uploading \|\| projectUploading \|\| projectUnresolved/);
+  assert.match(THREAD_DOCUMENTS_BAR, /const busy = projectUnresolved;/);
 });
 
 // Answering null on a failed read would dispatch the queued prompt and skip the retry.
