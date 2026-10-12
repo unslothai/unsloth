@@ -30886,6 +30886,7 @@ async def _proxy_to_external_provider(
                     auto_heal = payload.auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
                     deduplicate_tool_calls = payload.deduplicate_tool_calls,
+                    parallel_tool_calls = payload.parallel_tool_calls,
                     # Matches the strip below: only a headerless caller has its calls
                     # withheld, so only it needs a healed one the wire never carried flagged.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
