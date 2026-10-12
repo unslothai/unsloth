@@ -1021,7 +1021,7 @@ class TestTheStreamActuallyReportsGrowth:
 
         source = Path(inference.__file__).read_text()
         assert "on_tokens = _gguf_observe_tokens," in source
-        assert ".observe(completion_id, generated)" in source
+        assert ".observe(completion_id, generated, plan = not contended)" in source
 
 
 class TestResumingDoesNotThrash:
