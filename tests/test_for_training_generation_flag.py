@@ -167,3 +167,31 @@ def test_a_custom_train_on_the_wrapper_chain_has_the_final_say(module, class_nam
     _for_training(module, class_name)(model, use_gradient_checkpointing = False)
     assert model.training is False
     assert model.model.training is True
+
+
+@pytest.mark.parametrize("module, class_name", SITES)
+def test_layers_flagged_by_arming_get_the_requested_mode(module, class_name):
+    torch = pytest.importorskip("torch")
+
+    class _Layer(torch.nn.Module):
+        def forward(self, x):
+            return self._gradient_checkpointing_func(x)
+
+    class _Unarmed(_Layer):
+        gradient_checkpointing = False
+
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = _Unarmed()
+            self.late = _Layer()
+
+        def gradient_checkpointing_enable(self):
+            # A remote enabler that also flags a layer which had no attribute before.
+            for layer in (self.model, self.late):
+                layer.gradient_checkpointing = True
+                layer._gradient_checkpointing_func = lambda f, *a: f(*a)
+
+    model = _Model()
+    _for_training(module, class_name)(model, use_gradient_checkpointing = "unsloth")
+    assert model.late.gradient_checkpointing == "unsloth"
