@@ -92,3 +92,42 @@ def test_system_gpu_devices_never_take_telemetry_from_another_backend(monkeypatc
     (device,) = gpu["devices"]
     assert "temperature_c" not in device
     assert "power_draw_w" not in device
+
+
+def test_cuda_inference_inventory_carries_the_same_telemetry(monkeypatch):
+    """No-torch / CPU-torch host with a CUDA llama.cpp: the monitor shows inference_gpu."""
+    import utils.hardware.hardware as hw
+    import utils.hardware.nvidia as nvidia
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "_visible_devices_mask", staticmethod(lambda _name: None))
+    monkeypatch.setattr(
+        nvidia,
+        "get_physical_gpu_inventory",
+        lambda: {"devices": [{"index": 0, "name": "RTX 4090", "memory_total_gb": 24.0}]},
+    )
+    monkeypatch.setattr(
+        nvidia,
+        "get_visible_gpu_utilization",
+        lambda _ids: {
+            "devices": [
+                {
+                    "index": 0,
+                    "vram_used_gb": 2.0,
+                    "gpu_utilization_pct": 7.0,
+                    "temperature_c": 44.0,
+                    "power_draw_w": 35.0,
+                    "power_limit_w": 450.0,
+                }
+            ]
+        },
+    )
+
+    (device,) = hw._nvidia_inference_devices()
+
+    assert device["vram_used_gb"] == 2.0
+    assert device["gpu_utilization_pct"] == 7.0
+    assert device["temperature_c"] == 44.0
+    assert device["power_draw_w"] == 35.0
+    assert device["power_limit_w"] == 450.0

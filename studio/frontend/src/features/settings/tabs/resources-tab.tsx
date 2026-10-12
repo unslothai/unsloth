@@ -714,7 +714,7 @@ export function ResourcesTab() {
               ]
                 .filter(Boolean)
                 .join(" · ")}
-              showUsage={detailMetrics.has("gpuLoad")}
+              showUsage={row.loadPct !== null}
               percent={hostUnread ? null : row.loadPct}
             />
           ))}
