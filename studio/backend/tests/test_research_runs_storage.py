@@ -1575,6 +1575,17 @@ def test_retry_takes_the_new_time_budget_and_keeps_finished_steps(research_home)
     assert [source["url"] for source in retried["sources"]] == ["https://saved.example"]
 
 
+def test_retry_drops_failed_steps_so_failed_searches_run_again(research_home):
+    _shared_setup_2()
+    research_db.upsert_execution_step("run-1", 0, "Kept", "kept", "completed")
+    research_db.upsert_source("run-1", 0, "https://kept.example", "Kept", "Kept evidence")
+    research_db.upsert_execution_step("run-1", 1, "Search failed", "flaky", "failed")
+    research_db.finish("run-1", "worker-1", "failed", "No research evidence was gathered")
+
+    assert research_db.retry("run-1") == "queued"
+    assert [step["title"] for step in research_db.get_run("run-1")["steps"]] == ["Kept"]
+
+
 def test_retry_with_changed_website_access_starts_over(research_home):
     _failed_run_with_saved_step()
     policy = {"allowedDomains": [], "blockedDomains": ["saved.example"]}

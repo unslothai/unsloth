@@ -861,10 +861,11 @@ def retry(
             "lease_expires_at = NULL, config_json = ?, updated_at = ? WHERE id = ?",
             (status, json.dumps(config, ensure_ascii = False), now_ms(), run_id),
         )
-        # Only a failed run keeps finished steps: a stopped one, or new website access, may not want or allow them.
+        # Only a failed run keeps completed steps: a stopped one, or new website access, may not want or allow
+        # them. Failed steps go so a search that failed transiently is tried again.
         keep_evidence = row["status"] == "failed" and status == "queued" and not policy_changed
         if keep_evidence:
-            _drop_unfinished_steps_locked(conn, run_id)
+            _drop_unfinished_steps_locked(conn, run_id, ("completed",))
         else:
             if status != "awaiting_approval":
                 conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
@@ -1130,11 +1131,15 @@ def prepare_execution_resume(run_id: str, worker_id: str) -> bool:
         conn.close()
 
 
-def _drop_unfinished_steps_locked(conn: sqlite3.Connection, run_id: str) -> None:
+def _drop_unfinished_steps_locked(
+    conn: sqlite3.Connection,
+    run_id: str,
+    keep: tuple[str, ...] = ("completed", "failed"),
+) -> None:
+    marks = ",".join("?" for _ in keep)
     interrupted = conn.execute(
-        "SELECT position FROM research_plan_steps WHERE run_id = ? "
-        "AND status NOT IN ('completed','failed')",
-        (run_id,),
+        f"SELECT position FROM research_plan_steps WHERE run_id = ? AND status NOT IN ({marks})",
+        (run_id, *keep),
     ).fetchall()
     conn.executemany(
         "DELETE FROM research_sources WHERE run_id = ? AND step_position = ?",
@@ -1145,9 +1150,8 @@ def _drop_unfinished_steps_locked(conn: sqlite3.Connection, run_id: str) -> None
         [(run_id, int(row["position"])) for row in interrupted],
     )
     conn.execute(
-        "DELETE FROM research_plan_steps WHERE run_id = ? "
-        "AND status NOT IN ('completed','failed')",
-        (run_id,),
+        f"DELETE FROM research_plan_steps WHERE run_id = ? AND status NOT IN ({marks})",
+        (run_id, *keep),
     )
 
 
