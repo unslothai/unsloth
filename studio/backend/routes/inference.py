@@ -3319,8 +3319,13 @@ def _plan_for_unpausable_holder(controller, gen_id: str) -> None:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            # A worker thread (a caption or OCR call): wait here, nothing else is on it.
-            _openai_llama_wait_for_victims(controller, gen_id)
+            # A worker thread (a caption or OCR call): wait here, nothing else is on it, and
+            # refuse it as the loop's callers are when the victims stay wedged.
+            if not _openai_llama_wait_for_victims(controller, gen_id):
+                raise LlamaAdmissionTimeout(
+                    "Timed out waiting for the local llama-server cache to free room for this "
+                    "request"
+                )
 
 
 # How long an unpausable holder waits for the chats its plan paused to let go. A pause lands
@@ -3414,8 +3419,15 @@ def _openai_llama_count_direct_holder(llama_backend, tokens: int, prefix: str) -
             tokens = max(1, int(tokens)),
             state = ParticipantState.STREAMING_RAW,
         )
-        _plan_for_unpausable_holder(controller, gen_id)
+        try:
+            _plan_for_unpausable_holder(controller, gen_id)
+        except LlamaAdmissionTimeout:
+            # Refused: nothing goes upstream, so nothing is left registered either.
+            controller.unregister(gen_id)
+            raise
         return gen_id
+    except LlamaAdmissionTimeout:
+        raise
     except Exception:
         logger.debug("could not count the direct holder", exc_info = True)
         return None

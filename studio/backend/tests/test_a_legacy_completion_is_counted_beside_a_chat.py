@@ -3,6 +3,7 @@
 
 """/v1/completions takes no admission lease, but it fills the same unified cache as the chats."""
 
+import asyncio
 import inspect
 from types import SimpleNamespace
 
@@ -63,7 +64,12 @@ def test_an_unpausable_holder_plans_before_its_request_goes_out(backend, monkeyp
         inference, "_refresh_residency_before_planning", lambda c: c.note_resident(16000)
     )
     controller.register("chat", tokens = 4000)
-    holder = inference._openai_llama_count_completions_holder(fake, "x" * 16000)
+
+    async def route():
+        # On the loop, as the route registers it: the wait for the victim is the route's own.
+        return inference._openai_llama_count_completions_holder(fake, "x" * 16000)
+
+    holder = asyncio.run(route())
     assert controller.participant("chat").state == ParticipantState.PREEMPTING
     assert controller.participant(holder).state == ParticipantState.STREAMING_RAW
     inference._openai_llama_release_completions_holder(fake, holder)
