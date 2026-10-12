@@ -4125,6 +4125,38 @@ def test_a_pass_through_device_restriction_is_not_pooled(
     assert _ubatch_values(cmd) == expect_ub, cmd
 
 
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        ([], {}, []),
+        (["--parallel", "8"], {}, ["2048"]),
+        (["-np=8"], {}, ["2048"]),
+        (["--parallel", "1"], {}, []),
+        ([], {"LLAMA_ARG_N_PARALLEL": "8"}, []),
+    ],
+    ids = [
+        "managed_slots",
+        "argv_more_slots",
+        "argv_inline_more_slots",
+        "argv_same_slots",
+        "env_slots",
+    ],
+)
+def test_a_larger_pass_through_parallel_is_not_certified_resident(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    """A later --parallel wins over Unsloth's and grows terms priced at its slot count;
+    the env twin loses to the emitted --parallel."""
+    monkeypatch.delenv("LLAMA_ARG_N_PARALLEL", raising = False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
 @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
 def test_an_inherited_projector_keeps_a_fit_on_moe_counted_as_spilled(
     tmp_path, _discrete_linux_host, monkeypatch, name

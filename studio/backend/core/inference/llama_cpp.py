@@ -27907,6 +27907,11 @@ class LlamaCppBackend:
                             gpu_indices = gpu_indices,
                         ):
                             return False
+                        # The terms below are priced at Unsloth's --parallel; a larger
+                        # pass-through one is appended after it and wins (argv beats env).
+                        _np_override = _extra_args_n_parallel(_child_extras, {})
+                        if _np_override is not None and _np_override > n_parallel:
+                            return False
                         # A GPU projector Studio never sized; Vision off keeps only audio-only.
                         _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
                         if _resolved_mmproj_offload(_child_extras, _child_env) is False:
