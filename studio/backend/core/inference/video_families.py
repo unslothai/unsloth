@@ -478,12 +478,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 
 
 # Wan2.1 / FastWan names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan spellings so no other
-# family's name can match. I2V and conditioning markers count only in the last path segment (an owner or folder named
-# "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun release puts it.
+# family's name can match. FastWan, I2V and conditioning markers count only in the last path segment (an owner or folder
+# named "fastwan", "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun
+# release puts it.
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
 _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
     (
-        r"(?<![a-z0-9])fastwan",
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
         "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
         "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
         "ship), so Studio cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
@@ -956,7 +957,10 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
     ("wan2.1-t2v-14b", 20, 6.0),
     ("wan2.1-14b", 20, 6.0),
+    ("wan21-t2v-14b", 20, 6.0),
+    ("wan21-14b", 20, 6.0),
     ("wan2.1", 30, 6.0),
+    ("wan21", 30, 6.0),
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
 )

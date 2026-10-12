@@ -137,6 +137,8 @@ def test_supported_names_carry_no_refusal(identifier, expected):
         ("i2v-lab/Wan2.1-T2V-14B-Diffusers", "wan2.1-t2v-14b"),
         ("/home/i2v/models/Wan2.1-T2V-14B-Diffusers", "wan2.1-t2v-14b"),
         ("/data/flf2v/Wan2.1-T2V-1.3B-Diffusers/", "wan2.1-t2v-1.3b"),
+        ("/home/fastwan/models/Wan2.1-T2V-1.3B-Diffusers", "wan2.1-t2v-1.3b"),
+        ("fastwanderers/Wan2.1-T2V-14B-Diffusers", "wan2.1-t2v-14b"),
     ],
 )
 def test_conditioning_markers_outside_the_model_name_do_not_refuse(identifier, expected):
@@ -175,6 +177,9 @@ def test_comfyui_template_defaults():
         (("wan2.1_t2v_14B_fp8_scaled.safetensors",), (20, 6.0)),
         ((None, "Wan-AI/Wan2.1-T2V-14B-Diffusers"), (20, 6.0)),
         (("Wan2_1-T2V-1_3B_bf16.safetensors",), (30, 6.0)),
+        (("wan21-t2v-1.3b-Q8_0.gguf",), (30, 6.0)),
+        (("Wan21_T2V_14B_fp8.safetensors",), (20, 6.0)),
+        (("someone/wan21-14b-gguf",), (20, 6.0)),
         ((None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers"), (20, 5.0)),
         ((None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers"), (20, 3.5)),
         (("wan2.2-ti2v-5b-Q4_K_M.gguf",), (20, 5.0)),

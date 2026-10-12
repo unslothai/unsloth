@@ -45,6 +45,7 @@ test("every Wan2.1 14B spelling seeds the 14B recipe, every 1.3B spelling the 1.
     "Kijai/WanVideo_comfy/Wan2_1-T2V-14B_fp8_e4m3fn.safetensors",
     "wan2.1_t2v_14B_bf16.safetensors",
     "city96/Wan2.1-T2V-14B-gguf/wan2.1-t2v-14b-Q4_K_M.gguf",
+    "Wan21_T2V_14B_fp8.safetensors",
   ]) {
     assert.deepEqual(defaultsFor(id), { steps: 20, guidance: 6 }, id);
   }
@@ -52,6 +53,7 @@ test("every Wan2.1 14B spelling seeds the 14B recipe, every 1.3B spelling the 1.
     "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
     "wan2.1_t2v_1.3B_fp16.safetensors",
     "Kijai/WanVideo_comfy/Wan2_1-T2V-1_3B_fp8_e4m3fn.safetensors",
+    "wan21-t2v-1.3b-Q8_0.gguf",
   ]) {
     assert.deepEqual(defaultsFor(id), { steps: 30, guidance: 6 }, id);
   }

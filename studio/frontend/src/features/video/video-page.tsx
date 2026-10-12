@@ -261,7 +261,10 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
   { match: "wan2-1-t2v-14b-", steps: 20, guidance: 6 },
   { match: "wan2-1-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-14b-", steps: 20, guidance: 6 },
   { match: "wan2-1-", steps: 30, guidance: 6 },
+  { match: "wan21-", steps: 30, guidance: 6 },
   // The backend supplies the fps per family.
   { match: "wan", steps: 20, guidance: 5 },
   { match: "hunyuanvideo", steps: 20, guidance: 6 },
