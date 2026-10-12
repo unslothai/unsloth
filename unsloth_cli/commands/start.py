@@ -6152,6 +6152,7 @@ def _vscode_models_text(
     key: str,
     entry: dict,
     max_tokens: Optional[int] = None,
+    tool_calling: bool = True,
 ) -> Optional[str]:
     groups = _vscode_groups(path, text)
     window = int(
@@ -6168,8 +6169,8 @@ def _vscode_models_text(
                 "id": entry["id"],
                 "name": entry["id"],
                 "url": f"{base}/v1/chat/completions",
-                # Agent mode lists only tool-calling models.
-                "toolCalling": True,
+                # Agent mode lists only tool-calling models; Studio rejects tools for the rest.
+                "toolCalling": tool_calling,
                 "vision": False,
                 "contextWindow": window,
                 "maxInputTokens": window - output,
@@ -6189,11 +6190,23 @@ def _vscode_models_text(
     return json.dumps(updated, indent = 2, ensure_ascii = False) + "\n"
 
 
+def _vscode_tool_calling(base: str, key: str, entry: dict) -> bool:
+    status = _inference_status(base, key)
+    resident = any(
+        _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
+        for status_id in (status.get("active_model"), status.get("model_identifier"))
+        if status_id
+    )
+    # Only a status about this model can rule tools out; an older server reports nothing.
+    return not (resident and status.get("supports_tools") is False)
+
+
 def _add_vscode_provider(
     base: str,
     explicit_key: Optional[str],
     entry: dict,
     max_tokens: Optional[int] = None,
+    tool_calling: bool = True,
 ) -> None:
     target = _AppTarget("vscode", "VS Code", _vscode_models_path())
     state, key_id = {}, None
@@ -6201,7 +6214,9 @@ def _add_vscode_provider(
         state_path, state, text, key, key_id = _open_app_config(
             target, base, explicit_key, _vscode_groups
         )
-        new_text = _vscode_models_text(text, target.path, base, key, entry, max_tokens)
+        new_text = _vscode_models_text(
+            text, target.path, base, key, entry, max_tokens, tool_calling
+        )
         new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
         _save_app_config(target, state_path, state, new_state, text, new_text)
     except BaseException:
@@ -6214,6 +6229,11 @@ def _add_vscode_provider(
         "Developer: Reload Window if VS Code is open). Needs the GitHub Copilot Chat "
         "extension; no Copilot plan is required."
     )
+    if not tool_calling:
+        typer.echo(
+            f"{entry['id']} has no tool-calling chat template, so it is offered in Ask mode, "
+            "not Agent mode."
+        )
     if key_id is not None:
         typer.echo(
             f"It uses its own API key, '{target.label}', which you can revoke in "
@@ -7183,7 +7203,7 @@ def vscode(
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
     )
-    base, _key, entry = _connect(
+    base, key, entry = _connect(
         api_key,
         model,
         _load_options(
@@ -7193,4 +7213,4 @@ def vscode(
         launch = launch,
         server_options = server_options,
     )
-    _add_vscode_provider(base, api_key, entry, max_tokens)
+    _add_vscode_provider(base, api_key, entry, max_tokens, _vscode_tool_calling(base, key, entry))

@@ -698,3 +698,24 @@ def test_vscode_uses_insiders_only_without_stable(monkeypatch, tmp_path):
 
     (tmp_path / "Code").mkdir()
     assert start._vscode_models_path() == tmp_path / "Code" / "User" / "chatLanguageModels.json"
+
+
+@pytest.mark.parametrize(
+    "status, tools",
+    [
+        ({"model_identifier": MODEL["id"], "supports_tools": False}, False),
+        ({"model_identifier": MODEL["id"], "supports_tools": True}, True),
+        ({"model_identifier": "unsloth/other-GGUF", "supports_tools": False}, True),
+        ({}, True),
+    ],
+)
+def test_vscode_offers_agent_mode_only_to_tool_capable_models(studio, monkeypatch, status, tools):
+    config = _vscode_config(studio, monkeypatch)
+    monkeypatch.setattr(start, "_inference_status", lambda base, key: status)
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    (model,) = json.loads(config.read_text())[0]["models"]
+    assert model["toolCalling"] is tools
+    assert ("Ask mode" in result.output) is not tools
