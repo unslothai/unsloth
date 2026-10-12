@@ -36565,20 +36565,16 @@ async def _openai_catalog_objects(quant_pins: bool = False) -> list[dict]:
 
 
 def _with_quant_pin_rows(objects: list[dict], pins: dict[str, tuple[str, ...]]) -> list[dict]:
-    """*objects* plus a ``<id>:<quant>`` row per on-disk quant after each multi-quant repo's bare row.
-
-    Dropdown-only clients cannot type the pin chat completions accepts (#9340). The bare row
-    stays first and keeps serving its preferred quant, and each pin row is exactly what
-    ``GET /v1/models/<id>:<quant>`` returns for it."""
+    """*objects* plus, after each multi-quant repo's bare row, one ``<id>:<quant>`` row per on-disk
+    quant, as ``GET /v1/models/<id>:<quant>`` returns it: dropdown clients cannot type a pin (#9340)."""
     from core.inference.local_model_resolver import (
         index_is_built,
         local_gguf_pinned_variant,
         warm_index_soon,
     )
 
-    # Build the index once if it never was (a client reading the list once at connect would
-    # otherwise never see a pin), then only read it: rebuilding each time its 5 s TTL lapses is
-    # the multi-root scan the catalog caches exist to avoid.
+    # Never rebuild per listing (5 s TTL, multi-root scan); build only if it never was, or a
+    # client that lists once at connect sees no pins.
     allow_scan = not index_is_built()
     warm_index_soon()
     listed = {obj["id"] for obj in objects}
@@ -36592,7 +36588,6 @@ def _with_quant_pin_rows(objects: list[dict], pins: dict[str, tuple[str, ...]]) 
             _quant_pin_object(obj, quant, resident_quants)
             for quant in pins.get(obj["id"], ())
             if f"{obj['id']}:{quant}" not in listed
-            # Only a pin the resolver honours, or chat completions would 404 a listed id.
             and local_gguf_pinned_variant(f"{obj['id']}:{quant}", allow_scan = allow_scan) == quant
         )
     return out
