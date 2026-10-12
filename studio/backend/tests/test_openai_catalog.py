@@ -746,8 +746,9 @@ def test_list_names_every_on_disk_quant_of_a_multi_quant_repo(monkeypatch):
         "quant": "Q4_K_M",
     }
     # Every listed pin retrieves as the same object, so validating clients accept it.
+    # Less "created": each call stamps its own second.
     for mid in ("publisher/Qwen3:Q8_0", "publisher/Qwen3:Q4_K_M"):
-        assert _retrieve(mid) == rows[mid]
+        assert {**_retrieve(mid), "created": 0} == {**rows[mid], "created": 0}
     # Internal callers (404 messages, retrieve) keep the bare catalog.
     assert "publisher/Qwen3:Q8_0" not in {
         m["id"] for m in asyncio.run(inf._openai_catalog_objects())
