@@ -4355,7 +4355,8 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
 
 # Not a CUDA/HIP FlashAttention KV type (ggml_cuda_fattn_kv_type_supported), so attention runs
 # on the CPU. q4_1 / q5_0 / q5_1 did too until ggml-org/llama.cpp#28079 added an f16 fallback.
-_GPU_UNACCELERATED_CACHE_TYPES = frozenset({"iq4_nl"})
+# Mapped to a same-size type that has the kernel, so the KV budget is unchanged (#10336).
+_GPU_UNACCELERATED_CACHE_TYPES = {"iq4_nl": "q4_0"}
 
 
 def _kv_cache_gpu_fallback_warning(
@@ -4373,8 +4374,8 @@ def _kv_cache_gpu_fallback_warning(
         return None
     return (
         f"KV cache type {cache_type_kv} has no CUDA/HIP flash-attention kernel, so attention "
-        "falls back to CPU, causing high CPU load and slow generation. "
-        "q8_0 or q4_0 is a GPU-accelerated quantized option."
+        "would fall back to CPU, causing high CPU load and slow generation. Using "
+        f"{_GPU_UNACCELERATED_CACHE_TYPES[cache_type_kv]} instead, the same size on the GPU."
     )
 
 
@@ -29092,15 +29093,12 @@ class LlamaCppBackend:
                     and cache_type_kv in _valid_cache_types
                     and not _cache_type_from_env
                 ):
-                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_K_FLAGS):
-                        cmd.extend(["--cache-type-k", cache_type_kv])
-                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_V_FLAGS):
-                        cmd.extend(["--cache-type-v", cache_type_kv])
-                    self._cache_type_kv = cache_type_kv
-                    logger.info(f"KV cache type: {cache_type_kv}")
                     gpu_fallback_warning = (
                         None
-                        if intent.cpu_fallback or _extras_cache is not None
+                        if intent.cpu_fallback
+                        or _arch_gate_forced_cpu
+                        or not _detected_gpus
+                        or _extras_cache is not None
                         else _kv_cache_gpu_fallback_warning(
                             cache_type_kv,
                             gpu_memory_mode,
@@ -29110,6 +29108,13 @@ class LlamaCppBackend:
                     )
                     if gpu_fallback_warning:
                         logger.warning(gpu_fallback_warning)
+                        cache_type_kv = _GPU_UNACCELERATED_CACHE_TYPES[cache_type_kv]
+                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_K_FLAGS):
+                        cmd.extend(["--cache-type-k", cache_type_kv])
+                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_V_FLAGS):
+                        cmd.extend(["--cache-type-v", cache_type_kv])
+                    self._cache_type_kv = cache_type_kv
+                    logger.info(f"KV cache type: {cache_type_kv}")
                 else:
                     # An env-only type is left inherited (untouched) so an
                     # asymmetric K/V env reaches the child as set.
