@@ -43,12 +43,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 RL_REPLACEMENTS = REPO_ROOT / "unsloth" / "models" / "rl_replacements.py"
+RL_PY = REPO_ROOT / "unsloth" / "models" / "rl.py"
 SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
 # ---- the premise ---------------------------------------------------------
 #
-# Every check drives torch.amp.autocast(device_type = "cuda"), and on a CPU runner torch hands back a no-op instead.
+# Every check drives torch.amp.autocast(device_type = DEVICE_TYPE_TORCH), pinned to "cuda" in the namespaces below,
+# and on a CPU runner torch hands back a no-op instead.
 # Claiming the device is present is what lets these run anywhere; only torch's dispatch decisions are needed.
 class _pretend_cuda:
     """torch.cuda answering as a card without bfloat16, or with it."""
@@ -116,6 +118,8 @@ def _namespace(env):
         "nullcontext": nullcontext,
         "self": type("Trainer", (), {})(),
         "seen": [],
+        # The generated trainer gets this from rl.py's preamble, so the header resolves it there too.
+        "DEVICE_TYPE_TORCH": "cuda",
     }
     namespace["os"].environ = env
     exec(_autocast_helper_source(), namespace)
@@ -152,6 +156,25 @@ def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, exp
             namespace,
         )
     assert namespace["seen"] == [expect_enabled]
+
+
+def test_the_generated_trainer_imports_the_device_type_it_autocasts_with():
+    """getsource inlines these bodies but not this file's imports, so the name has
+    to come from the template rl.py splices in, or the generated cache raises."""
+    preamble = "from unsloth_zoo.device_type import DEVICE_TYPE, DEVICE_TYPE_TORCH"
+    assert preamble in RL_PY.read_text(encoding = "utf-8"), "rl.py's trainer template must import it"
+
+
+def test_no_autocast_call_pins_the_device_type_to_cuda():
+    """A device_type that does not match the accelerator is inert, not loud
+    (pytorch#165730): a literal "cuda" drops autocast on every other one, so GRPO
+    ran its forward in float32 against the dtype _unsloth_grpo_autocast latched.
+    DEVICE_TYPE_TORCH is "npu" on Ascend, "xpu" on Intel, "cuda" on CUDA and ROCm."""
+    calls = re.findall(r"torch\.amp\.autocast\((?:[^()]|\([^()]*\))*\)", SRC)
+    pinning = [c for c in calls if re.search(r"device_type\s*=\s*[\"']cuda[\"']", c)]
+    assert pinning == [], pinning
+    typed = [c for c in calls if "device_type" in c]
+    assert typed, "expected the autocast call sites to still choose a device_type"
 
 
 # ---- _get_per_token_logps and friends, which run as ordinary code --------

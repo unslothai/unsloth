@@ -1558,9 +1558,8 @@ def test_flash_disabled_v_padding_reaches_the_layer_weights():
     layer's V is padded to hparams.n_embd_v_gqa_max() over the whole model, which
     is what _estimate_kv_cache_bytes charges via _max_kv_value_width. V goes
     constant while K stays per-layer, so an unpadded vector prices a ratio the
-    total does not have. Not an edge case: load_model pins planned_flash_attn =
-    False unconditionally (llama_cpp.py:16690), so the padded branch is the one
-    every spill plan's total is built from."""
+    total does not have. Reached whenever the resolved launch runs without flash
+    attention (_planned_flash_attn_state), which is exactly when llama.cpp pads."""
     b = _swa_backend()
     # SWA layers wider than global ones, so the model-wide max is the SWA width
     # and the padding actually moves: n_embd_v_gqa_max = 8 * 256.
@@ -1836,6 +1835,13 @@ def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
     monkeypatch.setattr(
         llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
     )
+    # The affinity above has to read as UNRESTRICTED, which means it must match the
+    # host's logical count, and _spilled_decode_threads takes that from psutil. Left
+    # real it is whatever the CI box has: on anything wider than 16 threads the 16-CPU
+    # affinity looks like a taskset, the pricing declines for that reason instead, and
+    # the oversubscription this test is about is never reached. _SmtHost is the 16/8
+    # host the surrounding affinity tests already pin for the same reason.
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
     assert _plan(_Stub(), free_mib = 14 * 1024, extra_args = ["--threads", "16"]) is None
     plan = _plan(
         _Stub(),
@@ -2165,3 +2171,20 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
     assert llama_mod._spilled_decode_threads() == 12
+
+
+def test_a_larger_micro_batch_compute_buffer_spills_more_experts():
+    """The expert-spill raise (ubatch 512 -> 2048) adds ~0.5-0.9 GiB of compute
+    buffer. Priced into compute_buffer_flat, it comes out of the experts kept on the
+    GPU instead of becoming a graph_reserve OOM."""
+    stub = _Stub(moe = 40)
+    at_512 = _plan(
+        stub, model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, compute_flat = 300 * MIB
+    )
+    at_2048 = _plan(
+        stub, model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, compute_flat = 1100 * MIB
+    )
+
+    assert at_512.spills_anything and at_2048.spills_anything
+    assert len(at_2048.spilled_blocks) > len(at_512.spilled_blocks)
+    assert at_2048.vram_bytes < at_512.vram_bytes

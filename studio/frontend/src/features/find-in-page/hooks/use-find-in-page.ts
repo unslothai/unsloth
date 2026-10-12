@@ -277,6 +277,26 @@ export function useFindInPage(
       search(false, reindex());
     });
 
+    let scrolledAt = Number.NEGATIVE_INFINITY;
+    let reindexBy = Number.POSITIVE_INFINITY;
+    const noteScroll = () => {
+      scrolledAt = performance.now();
+    };
+    const flush = () => {
+      const now = performance.now();
+      const wait = Math.min(
+        REINDEX_INTERVAL_MS - (now - scrolledAt),
+        reindexBy - now,
+      );
+      if (wait > 0) {
+        timerRef.current = setTimeout(flush, wait);
+        return;
+      }
+      timerRef.current = null;
+      if (!staleRef.current) return;
+      search(false, reindex());
+    };
+
     // Mark the index stale and schedule one rebuild. No reveal: something moved under the reader,
     // they did not ask to go anywhere.
     const invalidate = () => {
@@ -285,16 +305,18 @@ export function useFindInPage(
       if (queryRef.current.length === 0) return;
       // Already scheduled: the interval is the floor, so a burst costs one rebuild, not one each.
       if (timerRef.current !== null) return;
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        if (!staleRef.current) return;
-        search(false, reindex());
-      }, REINDEX_INTERVAL_MS);
+      reindexBy = performance.now() + 4 * REINDEX_INTERVAL_MS;
+      timerRef.current = setTimeout(flush, REINDEX_INTERVAL_MS);
     };
 
     // A media query is not a mutation: crossing a breakpoint hides or reveals whole columns with
     // nothing in the DOM to observe, so without this the bar searches the layout that has gone.
     window.addEventListener("resize", invalidate);
+    window.addEventListener("wheel", noteScroll, { capture: true, passive: true });
+    window.addEventListener("touchmove", noteScroll, {
+      capture: true,
+      passive: true,
+    });
 
     // And a container query does not even need the window to change. Images is an `@container` with
     // labels on `@[50rem]`, so pinning or collapsing the sidebar crosses that breakpoint on its own.
@@ -352,6 +374,8 @@ export function useFindInPage(
       // The bar is going away; any queued reveal would scroll the reader after it is gone.
       cancelRevealPasses();
       window.removeEventListener("resize", invalidate);
+      window.removeEventListener("wheel", noteScroll, { capture: true });
+      window.removeEventListener("touchmove", noteScroll, { capture: true });
       sized?.disconnect();
       observer?.disconnect();
       if (timerRef.current !== null) {
@@ -389,13 +413,23 @@ export function useFindInPage(
 
   const step = useCallback(
     (delta: number) => {
-      const count = matchesRef.current.length;
+      const matches = matchesRef.current;
+      const count = matches.length;
       if (count === 0) return;
       // Wraps, so the walk never dead-ends.
       activeRef.current = (activeRef.current + delta + count) % count;
+      const target = matches[activeRef.current];
+      if (staleRef.current) {
+        const range = rangeForMatch(indexRef.current, target);
+        if (!(range?.startContainer.isConnected && range.endContainer.isConnected)) {
+          activeStartRef.current = target.start;
+          search(true, reindex());
+          return;
+        }
+      }
       apply(true);
     },
-    [apply],
+    [apply, reindex, search],
   );
 
   const next = useCallback(() => step(1), [step]);

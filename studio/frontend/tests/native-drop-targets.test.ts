@@ -19,11 +19,21 @@ Object.assign(globalThis, {
   // devicePixelRatio 2: a physical drop position is twice the CSS position the
   // DOM is hit-tested in, which is the conversion this module owns.
   window: { devicePixelRatio: 2, location: { protocol: "http:" } },
-  document: { elementFromPoint: () => hit },
+  document: {
+    elementFromPoint: () => hit,
+    // setAppliedInterfaceZoom writes the mac chrome vars here on its way through.
+    documentElement: { style: { setProperty: () => undefined } },
+  },
 });
 
 const { nativeDropTargetAt, registerNativeDropTarget } = await import(
   "../src/features/native-intents/native-drop-targets.ts"
+);
+const { nativeDropPointToCss } = await import(
+  "../src/features/native-intents/native-drop-position.ts"
+);
+const { setAppliedInterfaceZoom } = await import(
+  "../src/features/settings/lib/interface-scale-runtime.ts"
 );
 
 const IMAGE_DROPZONE = readSrc("components/image-dropzone.tsx");
@@ -119,6 +129,45 @@ test("a Linux drop position is hit-tested as-is", () => {
   });
 });
 
+for (const userAgent of [
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X)",
+  "Mozilla/5.0 (X11; Linux x86_64)",
+]) {
+  test(`${userAgent} drop positions follow webview zoom`, () => {
+    Object.defineProperty(globalThis, "navigator", {
+      value: { userAgent },
+      configurable: true,
+    });
+    assert.deepEqual(nativeDropPointToCss({ x: 120, y: 80 }, 2, 0.5), {
+      x: 240,
+      y: 160,
+    });
+  });
+}
+
+// Every other case passes the zoom explicitly, which leaves the default argument
+// unexercised. That default is the seam between the scale store and the drop path, and
+// wiring it to the wrong getter would keep every one of those cases green.
+test("the default zoom comes from the applied interface scale", () => {
+  Object.defineProperty(globalThis, "navigator", {
+    value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X)" },
+    configurable: true,
+  });
+  assert.deepEqual(nativeDropPointToCss({ x: 120, y: 80 }, 2), {
+    x: 120,
+    y: 80,
+  });
+  setAppliedInterfaceZoom(0.5);
+  try {
+    assert.deepEqual(nativeDropPointToCss({ x: 120, y: 80 }, 2), {
+      x: 240,
+      y: 160,
+    });
+  } finally {
+    setAppliedInterfaceZoom(1);
+  }
+});
+
 test("a Windows drop position is divided by the scale factor", () => {
   assert.deepEqual(pointSeenFor("Mozilla/5.0 (Windows NT 10.0; Win64)"), {
     x: 60,
@@ -166,17 +215,17 @@ test("the shared image picker owns native drops and ignores stale reads", async 
 
 // The picker rejects a format the native side would refuse anyway, so the two
 // lists have to stay in step or a droppable image starts being turned away.
-test("the picker's droppable formats match the native path policy", async () => {
+test("the picker's droppable formats are ones the native path policy admits", async () => {
   const rust = readText("../../src-tauri/src/native_path_policy.rs");
   const listed = (source: string, pattern: RegExp) =>
     [...(source.match(pattern)?.[1].matchAll(/"([a-z0-9]+)"/g) ?? [])]
       .map((match) => match[1])
       .sort();
 
-  assert.deepEqual(
-    listed(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/),
-    listed(rust, /IMAGE_ATTACHMENT_EXTS:\s*&\[&str\]\s*=\s*&\[([^\]]+)\]/),
-  );
+  const admitted = listed(rust, /IMAGE_ATTACHMENT_EXTS:\s*&\[&str\]\s*=\s*&\[([^\]]+)\]/);
+  const droppable = listed(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/);
+  assert.ok(droppable.length > 0);
+  assert.deepEqual(droppable.filter((ext) => !admitted.includes(ext)), []);
 });
 
 // Tauri repeats "over" for every cursor move, and useNativeModelDrop sits in

@@ -31,7 +31,7 @@ VIDEO_TASK = "text-to-video"
 # the scan walks several roots and reads gguf headers, and this runs per request
 _INDEX_TTL_S = 5.0
 _index_lock = threading.Lock()
-_index: dict[str, tuple[float, dict[str, "MediaModelPick"]]] = {}
+_index: dict[tuple[str, str], tuple[float, dict[str, "MediaModelPick"]]] = {}
 
 # the video family whose partitions are a load-time choice, not a property of the files
 _H3_FAMILY = "minimax-h3"
@@ -277,6 +277,16 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             load_dir = _resolve_load_dir(on_disk)
             if _add_gguf_picks(index, info, keys, on_disk, load_dir):
                 continue
+            if load_dir.is_file():
+                if load_dir.suffix.lower() == ".safetensors" and _loader_can_open(
+                    str(load_dir.parent), load_dir.name
+                ):
+                    _register(
+                        index,
+                        keys,
+                        MediaModelPick(keys[0], str(load_dir.parent), load_dir.name, "single_file"),
+                    )
+                continue
             if not _loadable_directory(load_dir):
                 continue
             _register(index, keys, MediaModelPick(keys[0], str(load_dir)))
@@ -332,15 +342,18 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
 
 
 def _cached_index(task: str) -> dict[str, MediaModelPick]:
+    from utils.account_context import current_account_id
+
+    key = (current_account_id(), task)
     now = time.monotonic()
     with _index_lock:
-        hit = _index.get(task)
+        hit = _index.get(key)
         if hit is not None and now - hit[0] < _INDEX_TTL_S:
             return hit[1]
     built = _mark_ambiguous_builds(_build_index(task))
     with _index_lock:
         # stamped after the scan, so one slower than the ttl is not already expired
-        _index[task] = (time.monotonic(), built)
+        _index[key] = (time.monotonic(), built)
     return built
 
 
@@ -426,6 +439,11 @@ def resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) ->
         return False
     if not partition_matches(status, pick):
         return False
+    if pick.model_kind == "single_file" and not resident_is_gguf(status):
+        # loose checkpoints in one folder share it as model_path: only the file tells them apart
+        return os.path.normcase(str(status.get("gguf_filename") or "")) == os.path.normcase(
+            pick.gguf_filename or ""
+        )
     if pick.model_kind != "gguf" and not resident_is_gguf(status):
         return True
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()

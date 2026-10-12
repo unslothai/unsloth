@@ -50,9 +50,10 @@ function resetHttp(settings: Record<string, unknown>): void {
 
 /** The store as it stands with the legacy Qwen3.8 snapshot loaded and active. */
 function seedActiveQwen(overrides: Record<string, unknown> = {}): void {
+  const hydratedSnapshot = { ...LEGACY_SNAPSHOT, minPMode: "custom" as const };
   useChatRuntimeStore.setState((state) => ({
-    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
-    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    params: { ...state.params, ...hydratedSnapshot, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: hydratedSnapshot },
     activePreset: "Default",
     activePresetSource: "builtin-default",
     rememberParamsPerModel: true,
@@ -1033,4 +1034,36 @@ test("a custom preset chosen mid-write keeps its own legacy-valued fields", asyn
   const after = useChatRuntimeStore.getState().params;
   assert.equal(after.presencePenalty, 0);
   assert.equal(after.minP, 0.01);
+});
+
+// #10671: a remembered "Max" is a marker, never a live cap; adopting a migrated
+// row that carries it must leave the load's window on screen.
+test("adopting a migrated row never puts the Max marker on screen", async () => {
+  const { REMEMBERED_MAX_TOKENS_MAX } = await import(
+    "../src/features/chat/lib/per-model-params.ts"
+  );
+  const alias = QWEN38.toLowerCase();
+  const legacyMax = { ...LEGACY_SNAPSHOT, maxTokens: REMEMBERED_MAX_TOKENS_MAX };
+  resetHttp({
+    ...BUILTIN_DEFAULT,
+    inferenceParamsByModel: { [alias]: legacyMax },
+  });
+  settingsHttp.beforeConditionalApply = () => {
+    useChatRuntimeStore.getState().setActivePresetSource("modified");
+  };
+  seedActiveQwen({
+    paramsByModel: { [alias]: { ...legacyMax, minPMode: "custom" } },
+  });
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await sleep(60);
+
+  assert.notEqual(
+    useChatRuntimeStore.getState().params.maxTokens,
+    REMEMBERED_MAX_TOKENS_MAX,
+  );
 });

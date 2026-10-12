@@ -13,6 +13,7 @@ import os
 import re
 import json
 import csv
+import unicodedata
 from typing import List, Dict, Any, Union, Optional
 from datasets import Dataset
 from pathlib import Path
@@ -162,55 +163,61 @@ class RawTextDataLoader:
             # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
 
-        if len(tokens) <= chunk_size:
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        eos_token = getattr(self.tokenizer, "eos_token", None) or ""
+        has_eos = eos_token_id is not None if return_tokenized else bool(eos_token)
+        # The final EOS counts toward chunk_size; chunk_size 1 cannot hold a token plus EOS.
+        reserve_eos = has_eos and chunk_size > 1
+        num_tokens = len(tokens) + int(reserve_eos)
+
+        if num_tokens <= chunk_size:
             # Fits in a single chunk
             if return_tokenized:
                 tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
-                eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                 if eos_token_id is not None:
                     tokens.append(eos_token_id)
 
                 attention_mask = [1] * len(tokens)
                 return [{"input_ids": tokens, "attention_mask": attention_mask}]
             else:
-                eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                 return [text + eos_token]
 
-        chunks = []
+        bounds = []
         start_idx = 0
+        while True:
+            end_idx = min(start_idx + chunk_size, num_tokens)
+            bounds.append([start_idx, end_idx])
+            if end_idx == num_tokens:
+                break
+            start_idx += chunk_size - stride
 
-        while start_idx < len(tokens):
-            end_idx = min(start_idx + chunk_size, len(tokens))
+        # Stride 0 + exact multiple leaves a lone-EOS chunk: end a full window at the EOS instead, so the
+        # EOS keeps its context (a [token, EOS] row spikes loss) and no content token loses its label.
+        if reserve_eos and len(bounds) > 1 and bounds[-1][0] == len(tokens):
+            bounds[-1][0] = num_tokens - chunk_size
+
+        chunks = []
+        for i, (start_idx, end_idx) in enumerate(bounds):
             chunk_tokens = tokens[start_idx:end_idx]
+            # EOS only at the true end: a full chunk mid-stride continues in the next chunk.
+            is_last = i == len(bounds) - 1
 
             if return_tokenized:
                 chunk_tokens_list = (
                     chunk_tokens.tolist() if hasattr(chunk_tokens, "tolist") else list(chunk_tokens)
                 )
-
-                # Append EOS on the last or a full chunk.
-                if end_idx == len(tokens) or len(chunk_tokens_list) == chunk_size:
-                    eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
-                    if eos_token_id is not None:
-                        chunk_tokens_list.append(eos_token_id)
+                if is_last and eos_token_id is not None:
+                    chunk_tokens_list.append(eos_token_id)
 
                 attention_mask = [1] * len(chunk_tokens_list)
 
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
                 chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
-
-                # Append EOS on the last or a full chunk.
-                if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
-                    eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
+                if is_last:
                     chunk_text += eos_token
 
                 chunks.append(chunk_text)
-
-            # Advance with stride overlap
-            if end_idx == len(tokens):
-                break
-            start_idx += chunk_size - stride
 
         return chunks
 
@@ -301,9 +308,54 @@ def _iter_column(dataset, column):
         yield from dataset[column]
 
 
+class _TextCharTable(dict):
+    """str.translate table for clean_text, filled in the first time each character is seen."""
+
+    # Drop only the invisible: control, private-use and surrogate code points, noncharacters, and the
+    # format characters below. Every other format character (ZWJ, ZWNJ, ayah signs, emoji tags) is text,
+    # and Cn just means newer than this interpreter's Unicode database.
+    _DROP_CATEGORIES = frozenset(("Cc", "Co", "Cs"))
+    _JUNK_CHARS = frozenset(
+        chr(codepoint)
+        for first, last in (
+            (0x00AD, 0x00AD),  # soft hyphen
+            (0x061C, 0x061C),  # Arabic letter mark
+            (0x200B, 0x200B),  # zero-width space
+            (0x200E, 0x200F),  # left-to-right and right-to-left marks
+            (0x202A, 0x202E),  # bidi embeddings and overrides
+            (0x2060, 0x2060),  # word joiner
+            (0x2066, 0x206F),  # bidi isolates and deprecated format controls
+            (0xFEFF, 0xFEFF),  # byte order mark
+            (0xFFF9, 0xFFFB),  # interlinear annotation
+            (0xFFFD, 0xFFFD),  # replacement character left by a bad decode
+            (0xE0001, 0xE0001),  # deprecated language tag
+        )
+        for codepoint in range(first, last + 1)
+    )
+
+    def __missing__(self, codepoint):
+        char = chr(codepoint)
+        if char == "\n":
+            keep = True
+        elif (
+            char in self._JUNK_CHARS
+            or 0xFDD0 <= codepoint <= 0xFDEF
+            or (codepoint & 0xFFFE) == 0xFFFE
+        ):
+            keep = False
+        else:
+            keep = unicodedata.category(char) not in self._DROP_CATEGORIES
+        self[codepoint] = codepoint if keep else None
+        return self[codepoint]
+
+    def __reduce__(self):
+        # Pickle empty: the MLX path pickles TextPreprocessor by value, and datasets would hash the cache.
+        return type(self), ()
+
+
 class TextPreprocessor:
     _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
-    _INVALID_CHARS_PATTERN = re.compile(r"[^\x20-\x7E\n]")
+    _TEXT_CHARS = _TextCharTable()
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n{3,}")
@@ -316,7 +368,7 @@ class TextPreprocessor:
         """Remove unwanted characters, normalize whitespace"""
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         text = self._WHITESPACE_PATTERN.sub(" ", text)
-        text = self._INVALID_CHARS_PATTERN.sub("", text)
+        text = text.translate(self._TEXT_CHARS)
         text = self._MULTIPLE_SPACES_PATTERN.sub(" ", text)
         text = self._NEWLINE_SPACES_PATTERN.sub("\n", text)
         text = self._MULTIPLE_NEWLINES_PATTERN.sub("\n\n", text)

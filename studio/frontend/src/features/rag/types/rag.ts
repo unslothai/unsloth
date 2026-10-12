@@ -182,14 +182,6 @@ export interface PreviewTarget {
 
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
 
-const ACCEPTED_UPLOAD_EXTS = new Set(
-  RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
-);
-
-// `accept` only filters the picker, so a drop can carry anything, including an
-// extension-less folder entry the backend would reject.
-export function isSupportedSourceName(name: string): boolean {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return false;
-  return ACCEPTED_UPLOAD_EXTS.has(name.slice(dot).toLowerCase());
-}
+/** Mirrors backend `DOCUMENT_UPLOAD_EXTS`. */
+export const RAG_DOCUMENT_UPLOAD_ACCEPT =
+  ".doc,.docm,.dotx,.dotm,.xls,.xlsx,.xlsm,.xltx,.xltm,.ppt,.pptx,.pptm,.potx,.potm,.ppsx,.ppsm,.odt,.ods,.odp,.ott,.ots,.otp,.msg,.eml,.mht,.mhtml,.rtf,.epub,.xhtml,.xht";

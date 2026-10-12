@@ -19,3 +19,20 @@ export const Tick02Icon: IconSvgElement = [
     },
   ],
 ];
+
+// The same tick moved right inside its box, so its ink ends as far from the box's right edge
+// as a leading icon's ink starts from its left (x=2 less half a stroke). A trailing tick set
+// flush on a row's right padding then sits as far in as the row's icon, at any size.
+export const MenuTickIcon: IconSvgElement = [
+  [
+    "path",
+    {
+      d: "M7.227 13.299L11.758 17.829L21.873 7.714",
+      stroke: "currentColor",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      strokeWidth: "1.5",
+      key: "0",
+    },
+  ],
+];

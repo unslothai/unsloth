@@ -95,6 +95,7 @@ _stub_unless_installed(
     types.SimpleNamespace(
         BaseModel = _BaseModel,
         Field = _field,
+        PrivateAttr = _field,
         model_validator = _model_validator,
     ),
 )
@@ -147,7 +148,7 @@ def _isolate_studio_home(_hub_studio_home_root, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
-            monkeypatch.setattr(module, "_schema_ready", False)
+            monkeypatch.setattr(module, "_schema_ready", set())
 
 
 @pytest.fixture(autouse = True)

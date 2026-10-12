@@ -106,6 +106,33 @@ class GaLoreProjector:
         self.ortho_matrix_zeros = None
         self.ortho_matrix_shape = None
 
+    def state_dict(self) -> dict:
+        """Plain dict of tensors and primitives, loadable with ``torch.load(weights_only = True)``."""
+        state = {
+            name: getattr(self, name) for name in self.__slots__ if name != "_ortho_float_cache"
+        }
+        state["queue"] = list(self.queue)
+        if self.ortho_matrix_shape is not None:
+            state["ortho_matrix_shape"] = tuple(self.ortho_matrix_shape)
+        return state
+
+    @classmethod
+    def from_state_dict(
+        cls,
+        state: dict,
+        device = None,
+    ) -> "GaLoreProjector":
+        # Checkpoints load on CPU; tensors go back to the parameter's device with their dtype kept.
+        projector = cls.__new__(cls)
+        for name in cls.__slots__:
+            value = state.get(name)
+            if device is not None and isinstance(value, torch.Tensor):
+                value = value.to(device)
+            setattr(projector, name, value)
+        projector.queue = deque(state.get("queue") or (), maxlen = projector.queue_size)
+        projector._ortho_float_cache = None
+        return projector
+
     def project(self, full_rank_grad: torch.Tensor, step: int) -> torch.Tensor:
         """Project a full-rank gradient into the low-rank subspace.
 
@@ -217,7 +244,8 @@ class GaLoreProjector:
             current_vector = float_ortho[:, :1].flatten()
 
         if self.past_ortho_vector is not None:
-            cos_sim = torch.dot(self.past_ortho_vector, current_vector).item()
+            # Singular vectors are sign-ambiguous: a negated basis is the same subspace.
+            cos_sim = abs(torch.dot(self.past_ortho_vector, current_vector).item())
 
             self.queue.append(cos_sim)
 
@@ -275,8 +303,8 @@ def _quantize(
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
 
-    max_val = w.amax(dim = 1, keepdim = True)
-    min_val = w.amin(dim = 1, keepdim = True)
+    max_val = w.amax(dim = 1, keepdim = True).clamp(min = 0)
+    min_val = w.amin(dim = 1, keepdim = True).clamp(max = 0)
     max_int = 2**n_bit - 1
     min_int = 0
     scales = (max_val - min_val).clamp(min = 1e-5) / max_int
@@ -324,8 +352,8 @@ def _quantize_stochastic(
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
 
-    max_val = w.amax(dim = 1, keepdim = True)
-    min_val = w.amin(dim = 1, keepdim = True)
+    max_val = w.amax(dim = 1, keepdim = True).clamp(min = 0)
+    min_val = w.amin(dim = 1, keepdim = True).clamp(max = 0)
     max_int = 2**n_bit - 1
     min_int = 0
     scales = (max_val - min_val).clamp(min = 1e-5) / max_int

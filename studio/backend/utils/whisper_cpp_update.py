@@ -17,6 +17,7 @@ import structlog
 
 from utils.prebuilt import update_flow as _flow
 from utils.prebuilt.whisper_layout import canonical_install_root
+from utils.update_status import update_checks_disabled
 from utils.whisper_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
@@ -190,16 +191,17 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     if _active_install_is_local_link(binary):
         return _local_link_status()
     marker = read_install_marker(binary)
+    checks_disabled = update_checks_disabled()
 
     # No marker = source build / custom path. Offer the official prebuilt if one exists for this host.
-    if marker is None and binary is not None:
+    if marker is None and binary is not None and not checks_disabled:
         src = _source_build_status(binary, force_refresh = force_refresh)
         if src is not None:
             return src
 
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
 
-    if force_refresh and repo:
+    if force_refresh and repo and not checks_disabled:
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive
@@ -209,7 +211,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
     compatible_override = False
-    if sys.platform == "darwin" and marker is not None:
+    if sys.platform == "darwin" and marker is not None and not checks_disabled:
         resolved = _resolve_prebuilt_for_host(
             force_refresh = force_refresh,
             backend = marker.get("backend") if isinstance(marker.get("backend"), str) else None,

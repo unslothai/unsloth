@@ -71,6 +71,8 @@ class _Backend:
         self.context_length = 262144
         self.chat_template = "{{ messages }}"
         self._props = props
+        self._port = 52345
+        self._auth_headers = {"Authorization": "Bearer child-key"}
 
     def _query_server_props(self):
         return self._props
@@ -188,7 +190,7 @@ def test_the_html_fallback_is_what_used_to_answer_these():
 def test_engine_endpoints_studio_does_not_serve_are_404_not_html():
     mod = _load()
     with _client(mod) as c:
-        for path in ("/slots", "/completion", "/metrics", "/tokenize", "/health"):
+        for path in ("/completion", "/tokenize", "/detokenize", "/health"):
             r = c.get(path)
             assert r.status_code == 404, path
             assert "text/html" not in r.headers.get("content-type", ""), path
@@ -339,9 +341,9 @@ def test_the_version_lookup_is_resolved_once(monkeypatch):
 
 
 def test_a_real_asset_wins_over_the_probe_deny_list(tmp_path):
-    """The guard runs after the static lookup, so a shipped file named `metrics` wins."""
+    """The guard runs after the static lookup, so a shipped file named `health` wins."""
     mod = _load()
-    (tmp_path / "metrics").write_text("asset-body")
+    (tmp_path / "health").write_text("asset-body")
     app = FastAPI()
     app.include_router(mod.router)
 
@@ -356,8 +358,30 @@ def test_a_real_asset_wins_over_the_probe_deny_list(tmp_path):
 
     app.dependency_overrides[mod.get_current_subject] = lambda: "test"
     with TestClient(app) as c:
-        assert c.get("/metrics").text == "asset-body"
-        assert c.get("/slots").status_code == 404
+        assert c.get("/health").text == "asset-body"
+        assert c.get("/completion").status_code == 404
+
+
+def test_no_ui_route_or_public_asset_takes_a_forwarded_get_path():
+    """These GET routes sit ahead of the SPA catch-all, so a page or asset by that name would be shadowed."""
+    frontend = _BACKEND.parent / "frontend"
+    if not frontend.is_dir():
+        pytest.skip("frontend sources not present in this checkout")
+    mod = _load()
+    forwarded = {path for method, path in mod._PASSTHROUGH_ROUTES if method == "GET"}
+    public = (
+        {p.name.lower() for p in (frontend / "public").iterdir()}
+        if (frontend / "public").is_dir()
+        else set()
+    )
+    declared = set()
+    for path in (frontend / "src" / "app" / "routes").glob("*.tsx"):
+        for line in path.read_text(encoding = "utf-8").splitlines():
+            line = line.strip()
+            if line.startswith('path: "') and line.endswith('",'):
+                declared.add(line[len('path: "') : -2].strip("/").lower())
+    assert not forwarded & public, forwarded & public
+    assert not forwarded & declared, forwarded & declared
 
 
 def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
@@ -400,8 +424,6 @@ def test_the_ollama_surface_is_not_advertised():
     "path",
     [
         "/completion",
-        "/tokenize",
-        "/detokenize",
         "/rerank",
         "/infill",
         "/embedding",
@@ -453,6 +475,10 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
         assert ("GET", path) in _INFERENCE_ROUTES, path
     # Not the Ollama paths: they are not served at all.
     for path in ("/api/tags", "/api/show", "/api/version"):
+        assert ("GET", path) not in _INFERENCE_ROUTES, path
+    for path in ("/tokenize", "/detokenize"):
+        assert ("POST", path) in _INFERENCE_ROUTES, path
+    for path in ("/slots", "/metrics"):
         assert ("GET", path) not in _INFERENCE_ROUTES, path
 
 
@@ -546,9 +572,7 @@ def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
                 assert "text/html" not in r.headers.get("content-type", ""), (method, path)
 
 
-def test_props_does_not_advertise_child_endpoints_studio_denies():
-    """tools/server/server-context.cpp puts all three flags in the payload, and Studio
-    launches with --metrics, so endpoint_metrics arrived true while /metrics 404s here."""
+def test_props_advertises_only_the_child_endpoints_studio_forwards():
     upstream = {
         "endpoint_slots": True,
         "endpoint_props": True,
@@ -561,23 +585,216 @@ def test_props_does_not_advertise_child_endpoints_studio_denies():
     mod = _load(backend = _Backend(props = upstream))
     with _client(mod) as c:
         body = c.get("/props").json()
-    assert body["endpoint_slots"] is False
+    assert body["endpoint_slots"] is True
     assert body["endpoint_props"] is False
-    assert body["endpoint_metrics"] is False
+    assert body["endpoint_metrics"] is True
     for child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         assert child_only not in body, child_only
     # The fields that do describe the model still come through untouched.
     assert body["total_slots"] == 4
 
 
-def test_the_denied_endpoints_props_advertises_really_are_denied():
-    """Every flag set False above names a path that really 404s."""
+def test_props_does_not_advertise_endpoints_the_child_has_off():
+    upstream = {"endpoint_slots": False, "endpoint_metrics": False}
+    mod = _load(backend = _Backend(props = upstream))
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["endpoint_slots"] is False
+    assert body["endpoint_metrics"] is False
+
+
+def test_props_does_not_advertise_forwarded_endpoints_with_nothing_loaded():
+    mod = _load(backend = _Backend(loaded = False, props = {"endpoint_metrics": True}))
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["endpoint_slots"] is False
+    assert body["endpoint_metrics"] is False
+
+
+def test_props_does_not_advertise_forwarded_endpoints_to_a_managed_account(monkeypatch):
+    mod = _load(backend = _Backend(props = {"endpoint_slots": True, "endpoint_metrics": True}))
+    monkeypatch.setattr(mod, "_caller_is_managed_account", lambda: True)
+    monkeypatch.setattr(mod, "_resident_hidden_from_caller", lambda: False)
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["endpoint_slots"] is False
+    assert body["endpoint_metrics"] is False
+
+
+def test_post_props_is_still_not_served():
     mod = _load()
     with _client(mod) as c:
-        for path in ("/slots", "/metrics"):
-            assert c.get(path).status_code == 404, path
-        # POST /props is llama-server's props-change endpoint; Studio serves GET only.
         assert c.post("/props", json = {}).status_code in (404, 405)
+
+
+class _Upstream:
+    def __init__(self, *, fail = False):
+        self.calls = []
+        self.fail = fail
+
+    def handler(self, request):
+        import httpx
+
+        self.calls.append(request)
+        if self.fail:
+            raise httpx.ConnectError("connection refused", request = request)
+        path = request.url.path
+        if path == "/metrics":
+            return httpx.Response(
+                200,
+                content = b"llamacpp:prompt_tokens_total 12\n",
+                headers = {"content-type": "text/plain; version=0.0.4"},
+            )
+        if path == "/slots":
+            return httpx.Response(200, json = [{"id": 0, "is_processing": False}])
+        if path == "/tokenize":
+            return httpx.Response(200, json = {"tokens": [9906, 1917]})
+        if path == "/detokenize":
+            return httpx.Response(200, json = {"content": "Hello world"})
+        return httpx.Response(404, json = {"error": "not found"})
+
+
+def _with_upstream(monkeypatch, mod, upstream):
+    import httpx
+    monkeypatch.setattr(
+        mod,
+        "_upstream_client",
+        lambda: httpx.AsyncClient(transport = httpx.MockTransport(upstream.handler)),
+    )
+
+
+@pytest.mark.parametrize(
+    "method, path, expect",
+    [
+        ("GET", "/slots", [{"id": 0, "is_processing": False}]),
+        ("POST", "/tokenize", {"tokens": [9906, 1917]}),
+        ("POST", "/detokenize", {"content": "Hello world"}),
+    ],
+)
+def test_the_forwarded_endpoints_reach_the_child_with_its_key(monkeypatch, method, path, expect):
+    import json
+
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.request(method, path, json = {"content": "Hello world"} if method == "POST" else None)
+    assert r.status_code == 200, r.text
+    assert r.json() == expect
+    (sent,) = upstream.calls
+    assert sent.method == method
+    assert str(sent.url) == "http://127.0.0.1:52345" + path
+    assert sent.headers["authorization"] == "Bearer child-key"
+    if method == "POST":
+        assert json.loads(sent.content) == {"content": "Hello world"}
+        assert sent.headers["content-type"].startswith("application/json")
+
+
+def test_metrics_reaches_the_child_and_keeps_the_prometheus_content_type(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.get("/metrics")
+    assert r.status_code == 200
+    assert r.content == b"llamacpp:prompt_tokens_total 12\n"
+    assert r.headers["content-type"].startswith("text/plain"), r.headers["content-type"]
+    assert upstream.calls[0].headers["authorization"] == "Bearer child-key"
+
+
+def test_the_slash_form_is_forwarded_too(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        assert c.post("/tokenize/", json = {"content": "x"}).status_code == 200
+        assert c.get("/metrics/").status_code == 200
+    assert [r.url.path for r in upstream.calls] == ["/tokenize", "/metrics"]
+
+
+def test_the_query_string_is_forwarded(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        c.get("/slots?fail_on_no_slot=1")
+    assert upstream.calls[0].url.params["fail_on_no_slot"] == "1"
+
+
+def test_nothing_loaded_is_503_in_llama_servers_error_shape(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False))
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.post("/tokenize", json = {"content": "x"})
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == 503
+    assert upstream.calls == []
+
+
+def test_an_unload_racing_the_request_is_503_not_500(monkeypatch):
+    """unload_model flips is_loaded before it clears _port."""
+    backend = _Backend()
+    backend._port = None
+    mod = _load(backend = backend)
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.get("/slots")
+    assert r.status_code == 503
+    assert upstream.calls == []
+
+
+def test_an_unreachable_child_is_503_not_500(monkeypatch):
+    mod = _load()
+    _with_upstream(monkeypatch, mod, _Upstream(fail = True))
+    with _client(mod) as c:
+        r = c.get("/metrics")
+    assert r.status_code == 503
+    assert "text/html" not in r.headers.get("content-type", "")
+
+
+def test_a_managed_account_gets_the_404_and_the_child_is_never_asked(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    monkeypatch.setattr(mod, "_caller_is_managed_account", lambda: True)
+    with _client(mod) as c:
+        for method, path in (("GET", "/metrics"), ("GET", "/slots"), ("POST", "/tokenize")):
+            r = c.request(method, path, json = {} if method == "POST" else None)
+            assert r.status_code == 404, (method, path, r.status_code)
+    assert upstream.calls == []
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("POST", "/slots"),
+        ("POST", "/slots/0"),
+        ("DELETE", "/slots/0"),
+        ("POST", "/metrics"),
+        ("GET", "/tokenize"),
+        ("PUT", "/detokenize"),
+    ],
+)
+def test_only_the_read_only_methods_are_forwarded(monkeypatch, method, path):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.request(method, path, json = {} if method in ("POST", "PUT") else None)
+    assert r.status_code == 404, (method, path, r.status_code)
+    assert upstream.calls == []
+
+
+def test_the_forwarded_gets_survive_api_only_mode(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _api_only_client(mod) as c:
+        assert c.get("/metrics").status_code == 200
+        assert c.get("/slots").status_code == 200
+        assert c.get("/health").status_code == 404
 
 
 # ── round three ───────────────────────────────────────────────────────────────
@@ -787,7 +1004,7 @@ def test_the_slash_form_of_a_denied_path_404s_rather_than_405(method, path):
 
 @pytest.mark.parametrize(
     "path",
-    ["/completion", "/completion/", "/health", "/metrics", "/slots", "/v1/health", "/slots/3"],
+    ["/completion", "/completion/", "/health", "/tokenize", "/v1/health", "/slots/3"],
 )
 def test_a_get_probe_404s_in_api_only_mode(path):
     """--api-only mounts no frontend, so the catch-all that supplies the GET 404 is not
@@ -834,3 +1051,30 @@ def test_the_version_lookup_leaves_the_event_loop():
 
     src = inspect.getsource(_load().studio_version)
     assert "to_thread" in src, "the version handler must resolve off the event loop"
+
+
+def test_props_hides_a_resident_that_belongs_to_another_account(monkeypatch):
+    from hub.services.models import account_access
+
+    upstream = {"model_path": "/media/models/alice-private.gguf", "chat_template": "ALICE_TEMPLATE"}
+    mod = _load(backend = _Backend(props = upstream))
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "resident_hidden", lambda modality, reference = None: True)
+    with _client(mod) as c:
+        for path in ("/props", "/props/", "/v1/props", "/v1/props/"):
+            raw = c.get(path)
+            assert raw.status_code == 200
+            assert raw.json() == {"loaded": True, "yours": False}
+            assert "ALICE_TEMPLATE" not in raw.text and "Qwen" not in raw.text
+
+    monkeypatch.setattr(account_access, "resident_hidden", lambda modality, reference = None: False)
+    with _client(mod) as c:
+        assert c.get("/props").json()["chat_template"] == "ALICE_TEMPLATE"
+    monkeypatch.setattr(account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(
+        account_access,
+        "resident_hidden",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("owner path consulted policy")),
+    )
+    with _client(mod) as c:
+        assert c.get("/props").json()["model_path"] == "unsloth/Qwen3.8-27B-GGUF"

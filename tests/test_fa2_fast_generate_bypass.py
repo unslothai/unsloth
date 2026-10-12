@@ -211,6 +211,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "FastBaseModel": FakeFastBaseModel,
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
+        "_get_inference_mode_context_manager": lambda model: nullcontext(),
         "_unsloth_generate_accepts_kwarg": lambda model, name: False,
         "NUM_LOGITS_TO_KEEP": {architecture: None},
         "DEVICE_TYPE_TORCH": "cuda",
@@ -218,6 +219,8 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "transformers_version": TRANSFORMERS_VERSION,
         "_uses_flash_attention_for_generation": uses_flash_attention,
         "_clear_generation_caches": clear_generation_caches,
+        # Qwen3-VL is multimodal, so the real helper answers False for it too.
+        "_is_text_seq2seq_config": lambda config: False,
     }
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)
 
@@ -296,6 +299,7 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
         "FastBaseModel": SimpleNamespace(for_inference = lambda model: None),
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
+        "_get_inference_mode_context_manager": lambda model: nullcontext(),
         "_unsloth_generate_accepts_kwarg": lambda model, name: False,
         "NUM_LOGITS_TO_KEEP": {"Qwen3VLForConditionalGeneration": None},
         "DEVICE_TYPE_TORCH": "cuda",
@@ -303,6 +307,8 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
         "transformers_version": TRANSFORMERS_VERSION,
         "_uses_flash_attention_for_generation": uses_flash_attention,
         "_clear_generation_caches": clear_generation_caches,
+        # Qwen3-VL is multimodal, so the real helper answers False for it too.
+        "_is_text_seq2seq_config": lambda config: False,
     }
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)
 

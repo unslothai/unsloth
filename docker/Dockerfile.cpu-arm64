@@ -1,6 +1,5 @@
-# Dockerfile for Unsloth Studio on ARM64 CPU (non-GPU)
-# This image provides a lightweight, CUDA-free environment for CPU-based
-# inference (GGUF) and Studio tools on aarch64 Linux hosts.
+# Unsloth Studio without CUDA or PyTorch (UNSLOTH_NO_TORCH=1): GGUF chat and Data
+# Recipes on ARM64 hosts with no NVIDIA GPU. Published as unsloth/unsloth:cpu-arm64.
 
 FROM ubuntu:24.04
 

@@ -15,7 +15,7 @@ def _shared_setup_1(monkeypatch, tmp_path):
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.create_run(
         id = "r",
@@ -33,7 +33,7 @@ def _shared_setup_2(monkeypatch, tmp_path):
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     return studio_db
 
 

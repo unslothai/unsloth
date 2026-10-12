@@ -1931,6 +1931,12 @@ def test_cli_and_backend_agree_on_which_hosts_are_exposed(monkeypatch, host):
 # ── a backgrounded shell job is not a usable terminal ─────────────────
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     """`unsloth studio -H 0.0.0.0 &` must still launch.
 
@@ -2165,13 +2171,11 @@ def test_the_cli_deadline_sentence_tracks_the_configured_timeout(monkeypatch):
         assert "shuts down after" not in sentence, disabled
 
 
-def test_a_raw_bind_ctrl_c_does_not_abort_the_launch(monkeypatch, tmp_path):
-    """Ctrl+C on `unsloth studio -H 0.0.0.0` must leave it starting.
+def test_a_raw_bind_ctrl_c_aborts_the_launch(monkeypatch, tmp_path):
+    """Ctrl+C on `unsloth studio -H 0.0.0.0` is an explicit refusal."""
+    import os as _os
+    import typer
 
-    The CLI mirror is the gate that actually runs for that command, so exiting
-    here makes run.py's warn-and-proceed unreachable and leaves the
-    `docker run -it` case unprotected.
-    """
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
@@ -2181,12 +2185,49 @@ def test_a_raw_bind_ctrl_c_does_not_abort_the_launch(monkeypatch, tmp_path):
 
     monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
 
-    # Returns rather than raising typer.Exit: the launch continues.
-    studio_mod._enforce_password_change_before_exposure(
-        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
-    )
+    with pytest.raises(typer.Exit):
+        studio_mod._enforce_password_change_before_exposure(
+            cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+        )
     assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert _os.environ.get(studio_mod._UNATTENDED_PROMPT_DONE_ENV) is None
     del events
+
+
+@pytest.mark.parametrize(
+    "args,present,absent",
+    [
+        # A raw bind passed neither flag; -H 127.0.0.1 is its way off the network.
+        (dict(cloudflare = None, host = "0.0.0.0", secure = False), "-H 127.0.0.1", "--cloudflare"),
+        (
+            dict(cloudflare = None, host = "127.0.0.1", secure = True),
+            "--secure/--cloudflare",
+            "-H 127.0.0.1",
+        ),
+    ],
+)
+def test_the_abort_names_a_remedy_this_launch_actually_has(
+    monkeypatch, tmp_path, capsys, args, present, absent
+):
+    """An abort that leaves no way forward just gets retried the same way."""
+    import typer
+
+    studio_mod = _studio()
+    _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    def _abort(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
+
+    with pytest.raises(typer.Exit):
+        studio_mod._enforce_password_change_before_exposure(api_only = False, **args)
+
+    err = capsys.readouterr().err
+    assert "UNSLOTH_STUDIO_PASSWORD" in err, err
+    assert present in err, err
+    assert absent not in err, err
 
 
 def test_a_tunnel_ctrl_c_still_aborts(monkeypatch, tmp_path):
@@ -2270,8 +2311,8 @@ def test_the_mark_never_lets_a_tunnel_skip_its_prompt(monkeypatch, tmp_path):
 def _banner(monkeypatch, tmp_path, args):
     """Run the gate far enough to capture the banner it prints, then bail out.
 
-    Clears the unattended mark first: bailing out with an interrupt SETS it on a
-    raw bind, so a second call in the same test would capture no banner.
+    Clears the unattended mark first so one banner assertion cannot inherit the
+    marker from another.
     """
     import os as _os
 
@@ -2293,17 +2334,10 @@ def _banner(monkeypatch, tmp_path, args):
     return (result.output or "") + (getattr(result, "stderr", "") or "")
 
 
-def test_the_banner_does_not_promise_an_abort_a_raw_bind_will_not_perform(monkeypatch, tmp_path):
-    """`Ctrl+C to abort` is true for a tunnel and false for a raw bind.
-
-    On a raw bind the interrupt declines the prompt and the launch continues by
-    design, because it worked before this gate existed. An operator who reads
-    "abort", presses Ctrl+C and walks away would be leaving a server up on the
-    network with the auto-generated password.
-    """
+def test_the_banner_promises_abort_for_every_exposed_bind(monkeypatch, tmp_path):
     raw = _banner(monkeypatch, tmp_path, ["-H", "0.0.0.0"])
-    assert "Ctrl+C to abort" not in raw
-    assert "Ctrl+C to skip" in raw
+    assert "Ctrl+C to abort" in raw
+    assert "Ctrl+C to skip" not in raw
 
     tunnel = _banner(monkeypatch, tmp_path, ["--secure"])
     assert "Ctrl+C to abort" in tunnel

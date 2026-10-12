@@ -90,9 +90,15 @@ def is_anthropic_path(path: str) -> bool:
     return path.startswith("/v1/messages")
 
 
+# Jev-compatible, not OpenAI: its clients expect FastAPI's own 422 and {"detail": ...} bodies.
+_NATIVE_ERROR_PATHS = frozenset({"/v1/systemone"})
+
+
 def wants_api_error_envelope(path: str) -> bool:
     """True for the OpenAI/Anthropic-compatible surfaces: the ``/v1/*`` mount and
     the preview ``/p/<run>[/<ckpt>]/v1/*`` mount."""
+    if path in _NATIVE_ERROR_PATHS:
+        return False
     return path.startswith("/v1/") or (path.startswith("/p/") and "/v1/" in path)
 
 

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import sys
 import urllib.error
 from email.message import Message
-from types import SimpleNamespace
 
 import pytest
 
@@ -132,6 +130,7 @@ def test_web_search_filters_results_before_model_exposure(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             queries.append((query, max_results))
             return [
@@ -140,7 +139,7 @@ def test_web_search_filters_results_before_model_exposure(monkeypatch):
                 {"title": "Deceptive", "href": "https://arxiv.org.evil.test", "body": "Blocked"},
             ]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     result = tools._web_search("latest paper", website_policy = ARXIV_ONLY)
 
     # A policy filters after the search, so a deeper candidate pool is requested.
@@ -167,10 +166,11 @@ def test_web_search_refills_past_disallowed_results(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return blocked_then_allowed[:max_results]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     result = tools._web_search("q", website_policy = {"blockedDomains": ["example.com"]})
 
     assert "arxiv.org/abs/0" in result
@@ -190,11 +190,12 @@ def test_web_search_without_a_policy_does_not_overfetch(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             queries.append((query, max_results))
             return [{"title": "T", "href": "https://a.example/1", "body": "B"}]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     tools._web_search("q", website_policy = None)
     # A run always stores a normalized policy, so the unrestricted case is an object with empty
     # lists, not None. Neither may pay the deeper-pool latency.
@@ -231,6 +232,7 @@ def test_web_search_flattens_source_framing_in_untrusted_metadata(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [
                 {
@@ -243,7 +245,7 @@ def test_web_search_flattens_source_framing_in_untrusted_metadata(monkeypatch):
                 }
             ]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     result = tools._web_search("paper", website_policy = ARXIV_ONLY)
     assert result.count("\nURL:") == 1
     assert "URL: https://arxiv.org/abs/real" in result
@@ -288,6 +290,8 @@ def test_direct_fetch_rechecks_every_redirect_before_dns(monkeypatch):
 
 
 def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
+    monkeypatch.setattr(tools, "_wikipedia_search", lambda *args: [])
+
     class FakeDDGS:
         def __init__(self, **_kwargs):
             pass
@@ -296,10 +300,11 @@ def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             raise exc
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     return tools._web_search("q", timeout = 7)
 
 
@@ -329,3 +334,115 @@ def test_empty_sweep_is_reported_as_no_results_not_as_a_failure(monkeypatch):
     result = _search_with_raising_ddgs(monkeypatch, DDGSException("No results found."))
     assert result == tools.EMPTY_SEARCH_RESULTS[0]
     assert not is_tool_error(result)
+
+
+def _raise_if_search_backend(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("web_search backend must not run without query or url")
+
+    monkeypatch.setattr(tools, "_fetch_page_text", boom)
+    monkeypatch.setattr("ddgs.DDGS", boom)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"query": ""},
+        {"url": ""},
+        {"query": "   ", "url": "\n"},
+        {"query": None, "url": None},
+    ],
+)
+def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, arguments):
+    _raise_if_search_backend(monkeypatch)
+    result = tools.execute_tool("web_search", arguments)
+    assert result == "No query provided."
+    assert is_tool_error(result) is True
+
+
+@pytest.mark.parametrize("key", ["query", "url"])
+@pytest.mark.parametrize("value", [False, 0, [], {}, 123, {"a": 1}])
+def test_web_search_rejects_non_string_arguments(monkeypatch, key, value):
+    _raise_if_search_backend(monkeypatch)
+    result = tools.execute_tool("web_search", {key: value})
+    assert result == "No query provided."
+
+
+def test_web_search_heals_query_aliases(monkeypatch):
+    queries = []
+
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+            **kwargs,
+        ):
+            queries.append(query)
+            return [{"title": "T", "href": "https://example.com/1", "body": "B"}]
+
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
+    for arguments in (
+        {"q": "unsloth studio"},
+        {"search_query": "unsloth studio"},
+        {"search": "unsloth studio"},
+        {"text": "unsloth studio"},
+        {"query": {}, "q": "unsloth studio"},
+    ):
+        queries.clear()
+        result = tools.execute_tool("web_search", arguments)
+        assert queries == ["unsloth studio"]
+        assert "https://example.com/1" in result
+
+
+def test_web_search_heals_url_aliases(monkeypatch):
+    fetched = []
+
+    def fake_fetch(url, **_kwargs):
+        fetched.append(url)
+        return f"PAGE:{url}"
+
+    monkeypatch.setattr(tools, "_fetch_page_text", fake_fetch)
+    for arguments in (
+        {"uri": "https://example.com/a"},
+        {"href": "https://example.com/b"},
+        {"link": "https://example.com/c"},
+        {"url": [], "href": "https://example.com/d"},
+    ):
+        fetched.clear()
+        result = tools.execute_tool("web_search", arguments)
+        assert fetched == [next(value for value in arguments.values() if isinstance(value, str))]
+        assert result.startswith("PAGE:")
+
+
+def test_web_search_query_mode_still_searches(monkeypatch):
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+            **kwargs,
+        ):
+            return [{"title": "Hit", "href": "https://arxiv.org/abs/1", "body": "Ok"}]
+
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
+    result = tools.execute_tool("web_search", {"query": "latest paper"})
+    assert "https://arxiv.org/abs/1" in result
+    assert not is_tool_error(result)
+
+
+def test_web_search_url_mode_still_fetches(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_fetch_page_text",
+        lambda url, **_kwargs: f"fetched {url}",
+    )
+    result = tools.execute_tool("web_search", {"url": "https://arxiv.org/abs/1"})
+    assert result == "fetched https://arxiv.org/abs/1"

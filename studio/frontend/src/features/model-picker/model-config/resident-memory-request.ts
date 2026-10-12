@@ -65,15 +65,17 @@ export function selectResidentEstimateSettings(state: ResidentState) {
   };
 }
 
-/** Copy only source identity from the pending request. */
+/** Copy only source identity from the pending request. `mlx`: the resident is an MLX load,
+ *  which reads its window from maxSeqLength and its cache width from mlxKvQuant, not nCtx. */
 export function resolveResidentEstimateRequest(
   source: MemoryEstimateRequest | null,
   settings: ReturnType<typeof selectResidentEstimateSettings>,
   context: number | null,
+  mlx?: { kvQuant: string | null },
 ): MemoryEstimateRequest | null {
   if (
     !source ||
-    !settings ||
+    (!settings && !mlx) ||
     context == null ||
     !Number.isFinite(context) ||
     context <= 0
@@ -84,7 +86,11 @@ export function resolveResidentEstimateRequest(
     ggufVariant: source.ggufVariant,
     hfToken: source.hfToken,
     nativePathToken: source.nativePathToken,
-    ...settings,
+    // An MLX load records none of the llama.cpp settings the selector requires.
+    ...(settings ?? {}),
     nCtx: Math.floor(context),
+    ...(mlx
+      ? { maxSeqLength: Math.floor(context), mlxKvQuant: mlx.kvQuant }
+      : {}),
   };
 }

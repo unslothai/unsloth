@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from utils.account_context import current_account, run_as
 import asyncio
 import json
 import re
@@ -21,9 +22,10 @@ from auth.authentication import get_current_subject
 from core.inference.message_content import message_text_with_pastes
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
-from core.inference.providers import provider_runs_local_tools
+from core.inference.providers import answers_decisions_only, provider_runs_local_tools
 from models.providers import MAX_JSON_SAFE_INTEGER
-from storage import providers_db
+from state.tool_policy import get_tool_policy
+from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
 
@@ -49,8 +51,7 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
-# Zero is the unlimited sentinel, so a finite value only has to cover the longest run anyone
-# would set: a year reads back in the 400, unlike a float-max ceiling.
+# 0 means unlimited; a one-year finite ceiling keeps 400 errors readable.
 _MIN_FINITE_MODEL_TIMEOUT_SECONDS = 10
 _MAX_FINITE_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600
 _DELTA_ONLY_EVENTS = {
@@ -60,8 +61,14 @@ _DELTA_ONLY_EVENTS = {
     "phase.started",
     "phase.ended",
 }
-# Dedicated to the blocking event wait so open streams cannot exhaust the default executor.
+# blocking event waits use a dedicated executor so open streams cannot exhaust the default.
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "research-events")
+
+
+class ResearchMcpSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    serverId: str = Field(min_length = 1, max_length = 200)
+    tool: str = Field(min_length = 1, max_length = 500)
 
 
 class CreateResearchRun(BaseModel):
@@ -74,6 +81,7 @@ class CreateResearchRun(BaseModel):
     )
     inferenceRequest: dict[str, Any] = Field(default_factory = dict)
     ragScope: dict[str, Any] | None = None
+    mcpSources: list[ResearchMcpSource] = Field(default_factory = list, max_length = 20)
     budgets: dict[str, int] | None = None
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
@@ -82,8 +90,7 @@ class CreateResearchRun(BaseModel):
     @field_validator("budgets", mode = "before")
     @classmethod
     def _reject_boolean_budgets(cls, value: Any) -> Any:
-        # bool is an int subclass, so False would coerce to the 0 "unlimited" sentinel and
-        # silently drop a deadline. Reject it here: by the time the field is typed it is 0.
+        # reject bool before int coercion turns False into 0 and silently disables the deadline.
         if isinstance(value, dict):
             for key, item in value.items():
                 if isinstance(item, bool):
@@ -113,6 +120,19 @@ class ApprovePlan(BaseModel):
     model_config = ConfigDict(extra = "forbid")
     planRevision: int = Field(ge = 1)
     planHash: str = Field(min_length = 64, max_length = 64)
+
+
+class RetryResearchRun(BaseModel):
+    # Extra fields are ignored, not refused: a newer client must never lose Retry on an older server.
+    budgets: dict[str, int] | None = None
+    websitePolicy: dict[str, list[str]] | None = None
+
+    @field_validator("budgets", mode = "before")
+    @classmethod
+    def _reject_boolean_budgets(cls, value: Any) -> Any:
+        if isinstance(value, dict) and isinstance(value.get("modelTimeoutSeconds"), bool):
+            raise ValueError("modelTimeoutSeconds must be an integer, not a boolean")
+        return value
 
 
 def _require_run(run_id: str) -> dict:
@@ -221,6 +241,8 @@ def _sanitize_config(
         "maxOutputTokensPublished",
         "enableThinking",
         "reasoningEffort",
+        "supportsReasoning",
+        "supportsReasoningOff",
     }
     unknown = set(request) - allowed
     if unknown:
@@ -255,7 +277,11 @@ def _sanitize_config(
         # sent: a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
         # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path serves.
         saved_provider_type = provider["provider_type"]
-        if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
+        if (
+            not provider_runs_local_tools(saved_provider_type)
+            or not provider["is_enabled"]
+            or answers_decisions_only(saved_provider_type, provider.get("api_type"))
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = "Durable research requires an enabled connection whose provider supports Unsloth tools",
@@ -296,6 +322,9 @@ def _sanitize_config(
             request["maxOutputTokensFromSavedCap"], bool
         ):
             raise ValueError
+        for flag in ("supportsReasoning", "supportsReasoningOff"):
+            if flag in request and not isinstance(request[flag], bool):
+                raise ValueError
         if "maxOutputTokensPublished" in request:
             published = request["maxOutputTokensPublished"]
             if isinstance(published, bool) or not isinstance(published, int):
@@ -331,12 +360,15 @@ def _sanitize_config(
             "whole_doc",
         }
         unknown_rag = set(rag_scope) - allowed_rag
-        # Every ragScope field is a scalar. A nested container evades the sensitive-key scan when its inner keys
-        # are unlisted (e.g. {"kb_id": {"auth": "sk-..."}}) and would reach retrieval code expecting a scalar scope
-        # id, so reject non-scalars outright.
+        # retrieval requires scalar ragScope fields; containers can evade the sensitive-key scan.
         non_scalar = any(isinstance(value, (dict, list, tuple)) for value in rag_scope.values())
         if unknown_rag or non_scalar or _contains_sensitive_key(rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
+    mcp_sources = []
+    for source in payload.mcpSources:
+        server = mcp_servers_db.get_server(source.serverId)
+        if server and server.get("is_enabled") and source.model_dump() not in mcp_sources:
+            mcp_sources.append(source.model_dump())
     budgets = {
         "maxSteps": 12,
         "maxSources": 40,
@@ -351,7 +383,7 @@ def _sanitize_config(
     limits = {
         "maxSteps": (1, _MAX_PLAN_STEPS),
         "maxSources": (1, 100),
-        # Zero disables the total wall-clock deadline. Per-output stall deadlines still apply.
+        # 0 disables the total wall-clock deadline; per-output stall deadlines still apply.
         "modelTimeoutSeconds": (
             _MIN_FINITE_MODEL_TIMEOUT_SECONDS,
             _MAX_FINITE_MODEL_TIMEOUT_SECONDS,
@@ -369,8 +401,7 @@ def _sanitize_config(
             if key == "modelTimeoutSeconds":
                 allowed = f"0 (unlimited) or {allowed}"
             raise HTTPException(status_code = 400, detail = f"{key} must be {allowed}")
-    # Server-controlled, not client tunable. OFF unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1, and
-    # injected only when enabled, so a default run's budgets stay byte-identical to legacy.
+    # server-only UNSLOTH_RESEARCH_AUTO_SCRAPE=1 adds maxAutoScrape; defaults match legacy.
     from core.research_runs import _auto_scrape_default
 
     _auto_scrape = _auto_scrape_default()
@@ -384,6 +415,7 @@ def _sanitize_config(
         "model": model,
         "inferenceRequest": request,
         "ragScope": rag_scope,
+        **({"mcpSources": mcp_sources} if mcp_sources and get_tool_policy() is not False else {}),
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),
@@ -528,10 +560,31 @@ def retry_research_run(
     run_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    payload: RetryResearchRun | None = None,
 ):
     _require_run(run_id)
+    model_timeout = None
+    website_policy = None
+    if payload is not None:
+        if payload.budgets and "modelTimeoutSeconds" in payload.budgets:
+            model_timeout = int(payload.budgets["modelTimeoutSeconds"])
+            if model_timeout != 0 and not (
+                _MIN_FINITE_MODEL_TIMEOUT_SECONDS
+                <= model_timeout
+                <= _MAX_FINITE_MODEL_TIMEOUT_SECONDS
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "modelTimeoutSeconds must be 0 (unlimited) or between "
+                    f"{_MIN_FINITE_MODEL_TIMEOUT_SECONDS} and {_MAX_FINITE_MODEL_TIMEOUT_SECONDS}",
+                )
+        if payload.websitePolicy is not None:
+            try:
+                website_policy = normalize_website_policy(payload.websitePolicy)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
     try:
-        db.retry(run_id)
+        db.retry(run_id, model_timeout_seconds = model_timeout, website_policy = website_policy)
     except (db.ResearchConflictError, KeyError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     supervisor = getattr(request.app.state, "research_supervisor", None)
@@ -565,6 +618,8 @@ async def research_events(
             # off the default executor: parked followers there starved the run's own db writes.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
+                run_as,
+                current_account(),
                 db.wait_for_events,
                 run_id,
                 cursor,

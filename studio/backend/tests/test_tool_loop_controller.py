@@ -24,6 +24,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.tool_loop_controller import (
+    UNPARSED_ARGUMENTS_KEY,
     ToolLoopController,
     append_deferred_nudges,
     canonical_tool_call_key,
@@ -32,10 +33,21 @@ from core.inference.tool_loop_controller import (
     is_tool_error,
     status_for_tool,
     strip_result_for_model,
+    tool_call_limit_nudge,
     tool_event_provenance,
 )
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
-from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
+from core.inference.tools import (
+    ALL_TOOLS,
+    MAX_TOOL_TEXT_CHARS,
+    _mcp_specs_for_server,
+    _tool_text_notice_head,
+    cap_tool_text,
+    execute_tool,
+)
+
+
+_NOTICE = _tool_text_notice_head() + " the full output is not retained in model context.)"
 
 
 def test_append_deferred_nudges_merges_deduped_into_one_message():
@@ -178,6 +190,80 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     _shared_setup_1(controller)
 
 
+def test_reprepare_uses_normalized_arguments_for_replay_and_dedup():
+    tool_name = "mcp__srv1__lookup"
+    controller = ToolLoopController(tools = [_tool(tool_name)])
+    call = _call(tool_name, {}, "call_a")
+    call["card_id"] = "painted_a"
+    first = controller.prepare_call(call)
+    first.arguments["image"] = "attached_image"
+    first = controller.reprepare_call(first)
+
+    assert first.card_id == "painted_a"
+    assert first.as_assistant_tool_call()["function"]["arguments"] == ('{"image":"attached_image"}')
+    assert first.key == canonical_tool_call_key(tool_name, {"image": "attached_image"})
+    controller.record_result(first, "ok")
+
+    repeated = controller.prepare_call(_call(tool_name, {}, "call_b"))
+    repeated.arguments["image"] = "attached_image"
+    repeated = controller.reprepare_call(repeated)
+    assert repeated.action == "duplicate"
+    assert repeated.key == first.key
+
+
+def test_web_search_alias_args_share_the_duplicate_key():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    first = controller.prepare_call(_call("web_search", {"q": "unsloth"}, "call_a"))
+    assert first.should_execute
+    assert first.arguments == {"query": "unsloth"}
+    assert first.status_text == "Searching: unsloth"
+    controller.record_result(first, "ok")
+
+    duplicate = controller.prepare_call(_call("web_search", {"query": "unsloth"}, "call_b"))
+    assert duplicate.action == "duplicate"
+    assert duplicate.key == first.key
+    assert not duplicate.should_execute
+
+
+def test_truncated_web_search_args_keep_the_unparsed_sentinel():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    decision = controller.prepare_call(_call("web_search", '{"query":"weather in S'))
+    assert decision.arguments == {UNPARSED_ARGUMENTS_KEY: '{"query":"weather in S'}
+    assert "cut off" in execute_tool("web_search", decision.arguments)
+
+
+def test_web_search_url_mode_ignores_unused_args_for_duplicate_key():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    first = controller.prepare_call(
+        _call(
+            "web_search",
+            {
+                "url": "https://example.com/page",
+                "query": "unused",
+                "image_queries": ["unused"],
+            },
+            "call_a",
+        )
+    )
+    assert first.arguments == {"url": "https://example.com/page"}
+    controller.record_result(first, "page")
+
+    duplicate = controller.prepare_call(
+        _call(
+            "web_search",
+            {
+                "href": "https://example.com/page",
+                "query": "different",
+                "image_queries": ["different"],
+            },
+            "call_b",
+        )
+    )
+    assert duplicate.action == "duplicate"
+    assert duplicate.arguments == first.arguments
+    assert duplicate.key == first.key
+
+
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
@@ -197,6 +283,102 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert "already completed successfully" in completion_two.model_message()["content"]
     assert controller.force_final_answer
     assert controller.active_tools() == []
+
+
+def test_deduplication_can_be_disabled():
+    controller = ToolLoopController(
+        tools = [_tool("web_search"), _tool("python")],
+        deduplicate_tool_calls = False,
+    )
+    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
+    controller.record_result(first, "ok")
+
+    repeat = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_b"))
+    assert repeat.action == "execute"
+    assert repeat.should_execute
+    controller.record_result(repeat, "ok")
+    assert not controller.force_final_answer
+    _shared_setup_1(controller)
+
+
+def test_command_can_run_again_after_a_file_edit():
+    controller = ToolLoopController(
+        tools = [_tool("terminal"), _tool("edit_file"), _tool("web_search")]
+    )
+    run = _call("terminal", {"command": "python calc.py"})
+    edit = _call(
+        "edit_file", {"path": "calc.py", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+    search = _call("web_search", {"query": "gpu prices"})
+
+    controller.record_result(controller.prepare_call(search), "ok")
+    controller.record_result(controller.prepare_call(run), "3")
+    assert controller.prepare_call(run).action == "duplicate"
+    controller.record_noop(controller.prepare_call(run))
+
+    controller.record_result(controller.prepare_call(edit), "Edited calc.py")
+    rerun = controller.prepare_call(run)
+    assert rerun.action == "execute"
+    controller.record_result(rerun, "-1")
+
+    controller.record_noop(controller.prepare_call(run))
+    assert not controller.force_final_answer
+    # The edit does NOT come back. Nothing new has run since it did -- only `run`, which was
+    # already spent -- so re-applying the identical edit is a repeating block replaying
+    # itself, and a non-idempotent one (an appending python/terminal call) would land twice.
+    assert controller.prepare_call(edit).action == "duplicate"
+    assert controller.prepare_call(search).action == "duplicate"
+
+
+def test_each_independent_edit_buys_back_its_own_verification():
+    """A rerun is worth one piece of new work, not one per call, so B's check is not lost."""
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+    test = _call("terminal", {"command": "pytest -q"})
+    edit_a = _call("edit_file", {"path": "a.py", "edits": [{"old_string": "a", "new_string": "b"}]})
+    edit_b = _call("edit_file", {"path": "b.py", "edits": [{"old_string": "c", "new_string": "d"}]})
+
+    controller.record_result(controller.prepare_call(test), "1 failed")
+    controller.record_result(controller.prepare_call(edit_a), "Edited a.py")
+    after_a = controller.prepare_call(test)
+    assert after_a.action == "execute"
+    controller.record_result(after_a, "1 failed")
+
+    controller.record_result(controller.prepare_call(edit_b), "Edited b.py")
+    after_b = controller.prepare_call(test)
+    assert after_b.action == "execute"
+
+
+def test_a_repeating_workspace_block_stops_replaying_itself():
+    """read, edit, read, edit: the second edit is the block repeating, not new work."""
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    edit = _call(
+        "edit_file", {"path": "notes.txt", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+
+    controller.record_result(controller.prepare_call(read), "version one")
+    controller.record_result(controller.prepare_call(edit), "Edited notes.txt")
+    reread = controller.prepare_call(read)
+    assert reread.action == "execute"
+    controller.record_result(reread, "version two")
+    assert controller.prepare_call(edit).action == "duplicate"
+
+
+def test_mcp_call_can_run_again_after_another_mcp_call_changed_state():
+    """#10348: `list, create, list` on an MCP server must re-list, not answer from a stale duplicate."""
+    name = "mcp__docs__unified_document_manager"
+    controller = ToolLoopController(tools = [_tool(name)])
+    listing = _call(name, {"action": "list"})
+    create = _call(name, {"action": "create", "name": "a.md"})
+
+    controller.record_result(controller.prepare_call(listing), "[]")
+    assert controller.prepare_call(listing).action == "duplicate"
+    controller.record_result(controller.prepare_call(create), "created a.md")
+    relist = controller.prepare_call(listing)
+    assert relist.action == "execute"
+    controller.record_result(relist, '["a.md"]')
+    assert controller.prepare_call(listing).action == "duplicate"
+    assert controller.prepare_call(create).action == "duplicate"
 
 
 def test_failed_call_does_not_block_retry():
@@ -545,7 +727,58 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
     }
     # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
-        '{"depth":null,"fuzzy":false,"limit":25,"query":"ship dates","tags":["a","b"]}'
+        '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
+    )
+
+
+def test_replayed_arguments_keep_the_order_the_model_generated():
+    """The replay is the text the model is told it wrote, so its key order must survive (#10791)."""
+    edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
+    arguments = {
+        "path": "calc.py",
+        "edits": [{"new_string": "def subtract", "old_string": "def add"}],
+    }
+    controller = ToolLoopController(tools = [edit_file])
+    decision = controller.prepare_call(
+        {"function": {"name": "edit_file", "arguments": json.dumps(arguments)}}
+    )
+
+    replayed = decision.as_assistant_tool_call()["function"]["arguments"]
+    assert (
+        replayed
+        == '{"path":"calc.py","edits":[{"new_string":"def subtract","old_string":"def add"}]}'
+    )
+    assert decision.tool_start_payload()["arguments_text"] == replayed
+    flipped = {
+        "path": "calc.py",
+        "edits": [{"old_string": "def add", "new_string": "def subtract"}],
+    }
+    assert canonical_tool_call_key("edit_file", decision.arguments) == (
+        canonical_tool_call_key("edit_file", flipped)
+    )
+
+
+def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
+    """Each call's own order, not one fixed order that happens to look unsorted.
+
+    No fixed order satisfies both, so on the sorted encoder both replay as the same string.
+    """
+
+    def replay(*parameters):
+        content = (
+            "<function=mcp__notes__search>"
+            + "".join(f"<parameter={key}>{value}</parameter>" for key, value in parameters)
+            + "</function>"
+        )
+        calls = parse_tool_calls_from_text(content)
+        decision = ToolLoopController(tools = _mcp_tool_schemas()).prepare_call(calls[0])
+        return decision.as_assistant_tool_call()["function"]["arguments"]
+
+    assert replay(("query", "ship dates"), ("limit", 25), ("fuzzy", "false")) == (
+        '{"query":"ship dates","limit":25,"fuzzy":false}'
+    )
+    assert replay(("fuzzy", "false"), ("query", "ship dates"), ("limit", 25)) == (
+        '{"fuzzy":false,"query":"ship dates","limit":25}'
     )
 
 
@@ -594,3 +827,209 @@ def test_a_success_that_opens_with_error_is_not_nudged_as_a_failure():
 
     assert not completion.is_error
     assert TOOL_ERROR_NUDGE not in completion.model_message()["content"]
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal", "edit_file"])
+def test_failed_workspace_execution_invalidates_previous_reads(tool_name):
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool(tool_name)])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    controller.record_result(controller.prepare_call(read), "before")
+    write = _call(tool_name, {"code": "write_then_fail", "command": "write_then_fail"})
+    controller.record_result(controller.prepare_call(write), "Error: failed after writing")
+    assert controller.prepare_call(read).action == "execute"
+    assert controller.prepare_call(write).action == "execute"
+
+
+def test_tool_call_limit_nudge_keeps_long_arguments_whole():
+    code = "print(1)\n" * 60
+    notice = tool_call_limit_nudge(
+        [{"function": {"name": "python", "arguments": json.dumps({"code": code})}}], 8
+    )
+    assert json.dumps({"code": code}) in notice["content"]
+
+
+def test_cap_tool_text_passes_results_at_or_under_the_floor_through_unchanged():
+    assert cap_tool_text("short result") == "short result"
+    exact = "x" * MAX_TOOL_TEXT_CHARS
+    assert cap_tool_text(exact) is exact
+
+
+def test_cap_tool_text_cuts_oversized_text_at_a_nearby_line_break_and_appends_notice():
+    line = "x" * 100 + "\n"
+    big = line * (MAX_TOOL_TEXT_CHARS // len(line) + 100)
+    out = cap_tool_text(big)
+
+    assert out.endswith(_NOTICE)
+    body = out[: -len(_NOTICE)]
+    assert big.startswith(body)
+    assert len(body) < MAX_TOOL_TEXT_CHARS
+    assert big[len(body)] == "\n"
+    assert len(out) <= MAX_TOOL_TEXT_CHARS + len(_NOTICE)
+
+
+def test_cap_tool_text_cuts_a_single_line_mid_line_when_no_break_is_near():
+    big = "y" * (MAX_TOOL_TEXT_CHARS + 500)
+    out = cap_tool_text(big)
+
+    assert out.endswith(_NOTICE)
+    body = out[: -len(_NOTICE)]
+    assert body == big[:MAX_TOOL_TEXT_CHARS]
+
+
+def test_text_that_merely_quotes_the_notice_is_still_capped():
+    big = "x" * (MAX_TOOL_TEXT_CHARS + 50_000) + _NOTICE
+    assert cap_tool_text(big) == "x" * MAX_TOOL_TEXT_CHARS + _NOTICE
+
+
+def test_an_oversized_result_is_capped_for_the_card_and_the_model_alike():
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    decision = controller.prepare_call(_call("terminal", {"command": "cat big.log"}))
+    huge = "line of output\n" * 400_000
+    completion = controller.record_result(decision, huge)
+
+    content = completion.tool_message()["content"]
+    assert completion.tool_end_payload()["result"] == content
+    assert content.endswith(_NOTICE)
+    body = content[: -len(_NOTICE)]
+    assert len(body) <= MAX_TOOL_TEXT_CHARS
+    assert huge.startswith(body)
+    assert huge[len(body)] == "\n"
+
+
+def test_the_cap_keeps_the_card_envelope_whole_and_off_the_model():
+    envelope = '\n__WEB_IMAGES__:[{"id": "a1b2c3d4e5f6", "title": "A chart", "domain": "example.com", "source": "https://example.com/a.png"}]'
+    huge = ("z" * (MAX_TOOL_TEXT_CHARS + 2000)) + envelope
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("web_search", {"url": "https://example.com/a"})), huge
+    )
+
+    capped = "z" * MAX_TOOL_TEXT_CHARS + _NOTICE
+    assert completion.tool_end_payload()["result"] == capped + envelope
+    assert completion.tool_message()["content"] == capped
+
+
+@pytest.fixture
+def _sandbox(tmp_path, monkeypatch):
+    import core.inference.tools as tools
+
+    records = tmp_path / "records"
+    records.mkdir()
+    workdir = tmp_path / "sandbox"
+    workdir.mkdir()
+    monkeypatch.setattr(tools, "_spill_records_dir", lambda: str(records))
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    return workdir
+
+
+def _spilled(
+    names,
+    result,
+    session_id = "chat-1",
+):
+    controller = ToolLoopController(
+        tools = [_tool(name) for name in names], session_id = session_id, thread_id = "t1"
+    )
+    return controller.record_result(
+        controller.prepare_call(_call(names[0], {"server": "x", "q": "y"})), result
+    )
+
+
+def test_an_oversized_result_is_spilled_and_the_model_is_told_how_to_search_it(_sandbox):
+    huge = "".join(f"row {i}\n" for i in range(60_000))
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+
+    notice = content[content.index(_tool_text_notice_head()) :]
+    path = notice.split("saved to ")[1].split(" ")[0]
+    assert (_sandbox / path).read_text() == huge
+    assert f"grep -n 'pattern' {path}" in notice
+    assert f"sed -n '1,200p' {path}" in notice
+    assert "open(" not in notice
+
+
+def test_the_hint_names_only_the_reader_the_model_has(_sandbox):
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    content = _spilled(["mcp__docs__dump", "python"], huge).tool_message()["content"]
+    assert "open('.unsloth_tool_output/" in content
+    assert "grep" not in content
+
+
+def test_a_cmd_only_windows_host_gets_findstr_with_a_backslash_path(_sandbox, monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setattr(tools, "_posix_tools_available", lambda: False)
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+    assert 'findstr /n "pattern" .unsloth_tool_output\\' in content
+    assert "grep" not in content
+
+
+def test_no_reader_tool_or_a_shared_sandbox_gets_the_plain_notice(_sandbox):
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    plain = "q" * MAX_TOOL_TEXT_CHARS + _NOTICE
+    assert _spilled(["mcp__docs__dump"], huge).tool_message()["content"] == plain
+    assert (
+        _spilled(["mcp__docs__dump", "terminal"], huge, session_id = None).tool_message()["content"]
+        == plain
+    )
+    assert not (_sandbox / ".unsloth_tool_output").exists()
+
+
+def test_model_message_leaves_an_already_capped_result_alone():
+    big = "a" * (MAX_TOOL_TEXT_CHARS + 10_000)
+    already = cap_tool_text(big)
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "ls"})), already
+    )
+
+    assert completion.tool_message()["content"] == already
+
+
+def test_model_message_keeps_the_error_nudge_on_an_oversized_error_result():
+    huge = "Error: " + "e" * (MAX_TOOL_TEXT_CHARS + 10_000)
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "ls"})), huge
+    )
+
+    assert completion.is_error
+    assert completion.tool_message()["content"] == cap_tool_text(huge) + TOOL_ERROR_NUDGE
+
+
+def test_the_hard_cap_is_tunable(monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setenv("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", "1000")
+    assert tools._env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000) == 1000
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 50_000)
+    completion = _spilled(["mcp__docs__dump"], "w" * 60_000)
+    content = completion.tool_message()["content"]
+    assert content == "w" * 50_000 + _tool_text_notice_head() + (
+        " the full output is not retained in model context.)"
+    )
+    assert "truncated to 50,000 chars" in content
+
+
+def test_the_spill_masks_studio_credentials_like_the_model_copy(_sandbox):
+    key = "sk-unsloth-" + "ab12" * 8
+    huge = f"token {key}\n" + "r\n" * (MAX_TOOL_TEXT_CHARS // 2 + 10)
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+
+    path = content.split("saved to ")[1].split(" ")[0]
+    spilled = (_sandbox / path).read_text()
+    assert key not in spilled and key not in content
+    assert spilled.startswith("token [redacted]")
+
+
+def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 1000)
+    already = tools._truncate("t\n" * 50_000, workdir = None)
+    assert len(already) > 1000
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "yes t"})), already
+    )
+    assert completion.tool_message()["content"] == already

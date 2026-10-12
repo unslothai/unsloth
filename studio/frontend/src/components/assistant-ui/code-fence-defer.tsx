@@ -3,19 +3,45 @@
 
 "use client";
 
+import type { HighlightResult } from "@streamdown/code";
 import {
   memo,
   type RefObject,
+  startTransition,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { flushSync } from "react-dom";
 
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
+import { FENCE_HEIGHT_PROPERTY } from "./code-block-containment-mode";
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
-import { normalizeLanguage } from "./code-plugin";
+import {
+  EMPTY_LINE_WINDOW,
+  HYSTERESIS_VIEWPORTS,
+  isBlankLine,
+  type LineWindow,
+  type LinePins,
+  lineRendered,
+  pinBoundaryLines,
+  samePins,
+  OVERSCAN_VIEWPORTS,
+  plainLineText,
+  selectLineWindow,
+  WINDOW_CAP_LINES,
+} from "./code-fence-window";
+import { planPrintTokenization } from "./code-fence-print";
+import { createFenceSpeculator } from "./fence-speculation";
+import { highlightWorkerState, streamActive } from "./use-reasoning-highlight";
+import { inputQuietIn, scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
+import {
+  MAX_CACHED_CHARACTERS,
+  MAX_FENCES,
+  normalizeLanguage,
+} from "./code-plugin";
 
 /*
  * MONOTONIC fence highlighting: a fence renders as a plain shell until the first time it comes near
@@ -88,19 +114,30 @@ const shellBody = (source: string): string => {
   return trimmed === "" ? "\n" : trimmed;
 };
 
+const shellLines = (source: string): string[] => {
+  const nodes: string[] = [];
+  for (const [index, line] of shellBody(source).split("\n").entries()) {
+    if (index > 0) nodes.push("\n");
+    if (line !== "") nodes.push(line);
+  }
+  return nodes;
+};
+
 function FenceShell({
   language,
   source,
+  plain = false,
 }: {
   language: string | null;
   source: string;
+  plain?: boolean;
 }) {
   return (
     <div
       className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
       data-language={language ?? undefined}
       data-streamdown="code-block"
-      data-unsloth-fence-deferred="true"
+      data-unsloth-fence-deferred={plain ? undefined : "true"}
     >
       <div
         className="flex h-8 items-center text-muted-foreground text-xs"
@@ -115,7 +152,7 @@ function FenceShell({
         data-streamdown="code-block-body"
       >
         <pre>
-          <code>{shellBody(source)}</code>
+          <code>{plain ? shellLines(source) : shellBody(source)}</code>
         </pre>
       </div>
     </div>
@@ -155,6 +192,7 @@ type FenceGate = {
   chars: number;
   /** `true` tokenizes this fence's source now; `false` only loads its grammar. */
   warm: (tokens: boolean) => void;
+  speculate: (settle: (seeded: boolean) => void) => (() => void) | null;
   latch: () => void;
   /** A state write that changes nothing, whose only job is to give React sync work to do. */
   poke: () => void;
@@ -189,6 +227,7 @@ const latchNow = (arrived: readonly FenceGate[]): void => {
   if (arrived.length === 0) return;
   for (const gate of arrived) {
     unreached.delete(gate);
+    fenceSpeculator.remove(gate);
     gate.warm(true);
   }
   flushSync(() => {
@@ -237,6 +276,7 @@ const onScroll = (event: Event): void => {
     if (gateOpen(gate)) arrived.push(gate);
   }
   latchNow(arrived);
+  fenceSpeculator.rerank();
 };
 
 const watchScrolling = (): void => {
@@ -258,7 +298,7 @@ const unwatchScrolling = (): void => {
  * printed window match the reader's: a print lays out at PAPER width while the scroll offset
  * carries across as raw pixels, so the page lands several fences away (matching paper to window
  * removes the difference, which is why chasing the window is the wrong fix). The whole document is
- * on the page, so the whole document has to be highlighted.
+ * on the page, so every fence is revealed (highlighting capped by PRINT_TOKENIZE_CHARS).
  * An earlier attempt latched every fence from `beforeprint` with `flushSync` and 53 of 56 still
  * printed on streamdown's raw fallback, because the swap alone renders UNHIGHLIGHTED while the
  * passive effect waits on a grammar. `latchNow` closes both halves and `warmGrammars` keeps a
@@ -306,9 +346,16 @@ const grammarsWarmed = new Set<string>();
 const grammarsLoaded = new Set<string>();
 let warmScheduled = false;
 
+export const grammarWarmed = (language: string | null): boolean =>
+  grammarsWarmed.has(normalizeLanguage(language ?? "text"));
+
 // Keyed the way `highlight` keys it, or `py` and `Python` are two keys for one grammar.
 const grammarOf = (gate: FenceGate): string =>
   normalizeLanguage(gate.language ?? "text");
+
+const warmMustWait = (): boolean =>
+  typeof (globalThis as Record<string, unknown>).requestIdleCallback !== "function"
+  && (streamActive() || inputQuietIn() > 0);
 
 const warmGrammars = (): void => {
   warmScheduled = false;
@@ -327,6 +374,10 @@ const warmGrammars = (): void => {
     // ours to tokenize speculatively. Neither marks the grammar warmed, so a later fence in the
     // same language still gets its real warm.
     if (gate.chars === 0 || gate.chars > MAX_HIGHLIGHT_CHARS) continue;
+    if (warmMustWait()) {
+      scheduleGrammarWarm();
+      return;
+    }
     grammarsWarmed.add(language);
     // TRUE, not false: real text is what takes the one-off tokenizer cost off the scroll.
     gate.warm(true);
@@ -347,10 +398,55 @@ const scheduleGrammarWarm = (): void => {
   else setTimeout(warmGrammars, 500);
 };
 
+const rankGates = (gates: readonly FenceGate[]): number[] => {
+  const boxes = new Map<HTMLElement | null, DOMRect>();
+  return gates.map((gate) => {
+    let box = boxes.get(gate.outer);
+    if (box === undefined) {
+      box = gate.outer
+        ? gate.outer.getBoundingClientRect()
+        : new DOMRect(0, 0, window.innerWidth, window.innerHeight);
+      boxes.set(gate.outer, box);
+    }
+    const rect = gate.node.getBoundingClientRect();
+    if (rect.bottom < box.top) return box.top - rect.bottom;
+    if (rect.top > box.bottom) return rect.top - box.bottom;
+    return 0;
+  });
+};
+
+const SPECULATION_IN_FLIGHT = 3;
+
+const fenceSpeculator = createFenceSpeculator<FenceGate>({
+  idle: (callback, timeout) => scheduleQuietIdleTask(callback, timeout),
+  wait: (callback, ms) => {
+    const timer = setTimeout(callback, ms);
+    return () => clearTimeout(timer);
+  },
+  enabled: () =>
+    fenceMode() !== "off" && highlightWorkerState() !== "unavailable",
+  busy: () => streamActive() || highlightWorkerState() === "stalled",
+  eligible: (gate) => grammarsWarmed.has(grammarOf(gate)),
+  rank: rankGates,
+  maxChars: MAX_HIGHLIGHT_CHARS,
+  budgetChars: MAX_CACHED_CHARACTERS / 2,
+  budgetFences: MAX_FENCES / 2,
+  maxInFlight: SPECULATION_IN_FLIGHT,
+});
+
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("beforeprint", upgradeEverythingForPrint);
+  window.addEventListener("beforeprint", () => {
+    upgradeEverythingForPrint();
+    setPrinting(true);
+  });
+  window.addEventListener("afterprint", () => setPrinting(false));
   window.matchMedia?.("print")?.addEventListener?.("change", (event) => {
-    if (event.matches) upgradeEverythingForPrint();
+    if (event.matches) {
+      upgradeEverythingForPrint();
+      setPrinting(true);
+    } else {
+      setPrinting(false);
+    }
   });
 }
 
@@ -370,12 +466,25 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
  * ancestor really is clipped by the document viewport, but assuming that when a scroller exists is
  * the bug the review caught.
  */
+let scrollableNow: WeakMap<Element, boolean> | null = null;
+
+const forgetScrollable = (): void => {
+  scrollableNow = null;
+};
+
 const isScrollable = (el: HTMLElement): boolean => {
+  if (scrollableNow === null) {
+    scrollableNow = new WeakMap();
+    queueMicrotask(forgetScrollable);
+  }
+  const known = scrollableNow.get(el);
+  if (known !== undefined) return known;
   const overflowY = getComputedStyle(el).overflowY;
-  return (
+  const scrollable =
     (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay")
-    && el.scrollHeight > el.clientHeight
-  );
+    && el.scrollHeight > el.clientHeight;
+  scrollableNow.set(el, scrollable);
+  return scrollable;
 };
 
 const scrollerOf = (node: HTMLElement): HTMLElement | null => {
@@ -439,15 +548,59 @@ const inBand = (node: HTMLElement, scroller: HTMLElement | null): boolean => {
  *                 alone. Held in a ref, not an effect dependency, so an unmemoized caller cannot
  *                 rebuild every observer in the thread on every render.
  */
+const FENCE_HEAD_CHARS = 64;
+const JUST_STREAMED_MS = 2000;
+
+let lastStreamingFence: {
+  language: string | null;
+  head: string;
+  chars: number;
+  at: number;
+} | null = null;
+
+export const noteStreamingFence = (
+  language: string | null,
+  source: string,
+): void => {
+  lastStreamingFence = {
+    language,
+    head: source.slice(0, FENCE_HEAD_CHARS),
+    chars: trimmedLength(source),
+    at: performance.now(),
+  };
+};
+
+const justStreamed = (
+  language: string | null,
+  head: string,
+  chars: number,
+): boolean =>
+  lastStreamingFence !== null &&
+  lastStreamingFence.language === language &&
+  lastStreamingFence.head === head &&
+  chars >= lastStreamingFence.chars &&
+  chars - lastStreamingFence.chars < 512 &&
+  performance.now() - lastStreamingFence.at < JUST_STREAMED_MS;
+
 export function useFenceReached(
   host: RefObject<HTMLElement | null>,
   enabled: boolean,
   streaming: boolean,
   language: string | null,
   chars: number,
+  source: string,
   warm: (tokens: boolean) => void,
+  speculate: (settle: (seeded: boolean) => void) => (() => void) | null,
 ): boolean {
-  const [latched, setLatched] = useState(false);
+  const speculateRef = useRef(speculate);
+  useEffect(() => {
+    speculateRef.current = speculate;
+  }, [speculate]);
+  const [latched, setLatched] = useState(
+    () =>
+      streaming ||
+      justStreamed(language, source.slice(0, FENCE_HEAD_CHARS), chars),
+  );
   // Bumped when the resolved scrolling ancestor stops being one, which rebuilds the gates below
   // against the element that clips this fence now. Never read for anything else.
   const [generation, setGeneration] = useState(0);
@@ -540,6 +693,7 @@ export function useFenceReached(
       language,
       chars,
       warm: (tokens) => warmRef.current(tokens),
+      speculate: (settle) => speculateRef.current(settle),
       latch: () => setLatched(true),
       // Reuses `generation`: this fence has just latched, so every effect keyed on it
       // early-returns and the bump costs one render. See `latchNow` for why React needs the work.
@@ -548,6 +702,7 @@ export function useFenceReached(
     unreached.add(registered);
     watchScrolling();
     scheduleGrammarWarm();
+    fenceSpeculator.add(registered);
 
     // `reasoning.tsx` drops `max-h-64` when a stream ends and keeps `overflow-y-auto`, so the pane
     // stops being a scroller and its box becomes the whole trace. Watch for that and rebuild.
@@ -562,6 +717,7 @@ export function useFenceReached(
     return () => {
       for (const observer of observers) observer.disconnect();
       resize?.disconnect();
+      fenceSpeculator.remove(registered);
       unreached.delete(registered);
       unwatchScrolling();
     };
@@ -571,3 +727,798 @@ export function useFenceReached(
 }
 
 export const DeferredFenceShell = memo(FenceShell);
+
+export const PlainFenceShell = memo(function PlainFenceShell({
+  language,
+  source,
+}: {
+  language: string | null;
+  source: string;
+}) {
+  return <FenceShell language={language} plain source={source} />;
+});
+
+/*
+ * The highlighted body, rendered here rather than by streamdown.
+ *
+ * Streamdown's `CodeBlockBody` maps the whole token array every render and memoizes on
+ * `prev.result === next.result`, reference equality, while `code-plugin.ts` returns a fresh object
+ * every call, so the memo never hits and every line and token rebuilds each frame. The spans are
+ * the cost, not the tokenizer: #10779 kept calling the highlighter, stopped rendering the tokens
+ * and still doubled the frame rate, and `scripts/coal-span-census.mjs` shows Shiki's tokens are
+ * already maximally coalesced, so merging cannot help.
+ *
+ * So: one memoized component per line (a committed line's identity is stable, so `memo` bails),
+ * plus a line window past `WINDOW_CAP_LINES` (see `code-fence-window.ts`).
+ *
+ * The DOM is streamdown's element for element and class for class, because
+ * `playwright_code_block_flicker.py` reads computed styles off this subtree and a perf change that
+ * also moved the rendering could not be attributed.
+ */
+
+export type FenceTokens = HighlightResult;
+type TokenLine = HighlightResult["tokens"][number];
+type FenceToken = TokenLine[number];
+
+/* Streamdown's own class lists, copied verbatim. The `bg-[var(--sdm-bg,inherit]` spellings are
+ * unbalanced in streamdown 2.5's build and therefore generate no rule at all; they are reproduced
+ * as they are because the goal is the same DOM, not a tidier one. */
+/*
+ * The one deliberate difference from streamdown's line class: it writes a raw pixel text utility,
+ * which `tests/studio/test_ui_font_scale_contract.py` forbids anywhere in frontend source, comments
+ * included, because a fixed size ignores the UI font preference. `text-ui-13` scales with it.
+ * Moot in the thread either way: `index.css` gives that pseudo-element `display: none`.
+ */
+const LINE_CLASS =
+  "block before:content-[counter(line)] before:inline-block before:[counter-increment:line] before:w-6 before:mr-4 before:text-ui-13 before:text-right before:text-muted-foreground/50 before:font-mono before:select-none";
+const CODE_CLASS = "[counter-increment:line_0] [counter-reset:line]";
+const PRE_CLASS =
+  "bg-[var(--sdm-bg,inherit] dark:bg-[var(--shiki-dark-bg,var(--sdm-bg,inherit)]";
+const TOKEN_CLASS =
+  "text-[var(--sdm-c,inherit)] dark:text-[var(--shiki-dark,var(--sdm-c,inherit))]";
+const TOKEN_BG_CLASS =
+  "bg-[var(--sdm-tbg)] dark:bg-[var(--shiki-dark-bg,var(--sdm-tbg))]";
+
+/*
+ * THE `language-x` CLASS, WHICH IS NOT DECORATION. `remark-rehype` puts `language-<info>` on the
+ * `<code>` of a fenced block, streamdown passes that `className` straight through to BOTH the body
+ * div and the `<pre>`, and dropping it was measured as the only DOM difference between this body
+ * and the one it replaces. Nothing in the tree selects on it today, which is exactly why it would
+ * have gone unnoticed: it is a published rendering contract, user stylesheets and future probes
+ * reach for it, and `math-block-marker.ts` already relies on the same `language-` convention one
+ * layer up. The token is the FIRST word of the info string, so ```python startLine=10 is
+ * `language-python`, which is what `languageToken` already holds.
+ */
+const joinClasses = (...parts: (string | null)[]): string =>
+  parts.filter((part): part is string => Boolean(part)).join(" ");
+
+/* `rootStyle` arrives as a CSS declaration string. Parsed the way streamdown parses it, splitting
+ * on the FIRST colon only, so a `url(data:...)` value survives. */
+const parseDeclarations = (text: string): Record<string, string> => {
+  const style: Record<string, string> = {};
+  for (const declaration of text.split(";")) {
+    const colon = declaration.indexOf(":");
+    if (colon <= 0) continue;
+    const property = declaration.slice(0, colon).trim();
+    const value = declaration.slice(colon + 1).trim();
+    if (property && value) style[property] = value;
+  }
+  return style;
+};
+
+const tokenStyle = (
+  token: FenceToken,
+): { style: Record<string, string>; hasBackground: boolean } => {
+  const style: Record<string, string> = {};
+  let hasBackground = Boolean(token.bgColor);
+  if (token.color) style["--sdm-c"] = token.color;
+  if (token.bgColor) style["--sdm-tbg"] = token.bgColor;
+  if (token.htmlStyle) {
+    for (const [property, value] of Object.entries(token.htmlStyle)) {
+      if (property === "color") style["--sdm-c"] = value;
+      else if (property === "background-color") {
+        style["--sdm-tbg"] = value;
+        hasBackground = true;
+      } else style[property] = value;
+    }
+  }
+  return { style, hasBackground };
+};
+
+/**
+ * One line of a fence.
+ *
+ * Memoized on the default shallow comparison, which is all it needs: `line` is the array
+ * `code-plugin.ts` committed and never touches again, and `windowed` only changes when the reader
+ * moves far enough for the window to move. A fence growing by a character re-renders its last line
+ * and nothing else.
+ */
+export const FenceLine = memo(function FenceLine({
+  line,
+  windowed,
+  inline = false,
+}: {
+  line: TokenLine;
+  windowed: boolean;
+  inline?: boolean;
+}) {
+  if (!inline && isBlankLine(line)) {
+    return <span className={LINE_CLASS}>{"\n"}</span>;
+  }
+  if (!windowed) {
+    // One text node for the whole line. Same characters, same block box, same height: the only
+    // thing this line has given up is its colour, and it is off screen.
+    return (
+      <span className={inline ? "inline" : LINE_CLASS}>
+        {plainLineText(line)}
+      </span>
+    );
+  }
+  return (
+    <span className={inline ? "inline" : LINE_CLASS}>
+      {line.map((token, index) => {
+        const { style, hasBackground } = tokenStyle(token);
+        return (
+          <span
+            className={
+              hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS
+            }
+            key={index}
+            style={style}
+            {...token.htmlAttrs}
+          >
+            {token.content}
+          </span>
+        );
+      })}
+    </span>
+  );
+});
+
+// One scroll listener and one frame for every windowed fence: each measurement reads layout, so a
+// listener per fence makes scrolling cost more than the rendering the window avoids. Same shape
+// `watchScrolling` uses for the reach latch, coalesced into a frame.
+const windowedFences = new Set<() => void>();
+let windowFrame = 0;
+let windowWatched = false;
+let findBarObserver: MutationObserver | null = null;
+let frameRects: Map<Element, DOMRect> | null = null;
+let frameFlying: Map<Element | null, boolean> | null = null;
+let frameSettle = false;
+let pointerHeld: Node | null = null;
+let heldLastFrame = false;
+let frameSelection: { read: boolean; value: Selection | null } | null = null;
+const scrollerMotion = new WeakMap<Element, { top: number; at: number }>();
+const windowMotion = { top: 0, at: 0 };
+const FLYING_VIEWPORTS_PER_SECOND = 10;
+
+const rectDuringFrame = (element: Element): DOMRect => {
+  if (frameRects === null) return element.getBoundingClientRect();
+  const known = frameRects.get(element);
+  if (known !== undefined) return known;
+  const rect = element.getBoundingClientRect();
+  frameRects.set(element, rect);
+  return rect;
+};
+
+const liveSelection = (): Selection | null => {
+  const selection = document.getSelection();
+  return selection !== null && selection.rangeCount > 0 && !selection.isCollapsed
+    ? selection
+    : null;
+};
+
+const selectionDuringFrame = (): Selection | null => {
+  if (frameSelection === null) return liveSelection();
+  if (!frameSelection.read) {
+    frameSelection.read = true;
+    frameSelection.value = liveSelection();
+  }
+  return frameSelection.value;
+};
+
+const draggingDuringFrame = (body: HTMLElement): boolean => {
+  const held = pointerHeld !== null && body.contains(pointerHeld);
+  if (held) heldLastFrame = true;
+  return held;
+};
+
+const selectionBoundaryLines = (codeNode: HTMLElement, body: HTMLElement): number[] => {
+  const selection = selectionDuringFrame();
+  const lines: number[] = [];
+  for (let index = 0; selection !== null && index < selection.rangeCount; index += 1) {
+    const range = selection.getRangeAt(index);
+    for (const boundary of [range.startContainer, range.endContainer]) {
+      if (!body.contains(boundary)) continue;
+      let line: Node | null = boundary;
+      while (line !== null && line.parentNode !== codeNode) line = line.parentNode;
+      if (line === null) continue;
+      const at = Array.prototype.indexOf.call(codeNode.children, line);
+      if (at >= 0) lines.push(at);
+    }
+  }
+  if (lines.length > 0) heldLastFrame = true;
+  return lines;
+};
+
+const flyingDuringFrame = (
+  scroller: HTMLElement | null,
+  viewportHeight: number,
+): boolean => {
+  if (frameFlying === null) return false;
+  const known = frameFlying.get(scroller);
+  if (known !== undefined) return known;
+  const top = scroller === null ? window.scrollY : scroller.scrollTop;
+  const at = performance.now();
+  const before = scroller === null ? windowMotion : scrollerMotion.get(scroller);
+  const elapsed = before === undefined ? 0 : at - before.at;
+  const flying =
+    before !== undefined
+    && elapsed > 0
+    && viewportHeight > 0
+    && (Math.abs(top - before.top) / elapsed) * 1000
+      > viewportHeight * FLYING_VIEWPORTS_PER_SECOND;
+  if (scroller === null) {
+    windowMotion.top = top;
+    windowMotion.at = at;
+  } else {
+    scrollerMotion.set(scroller, { top, at });
+  }
+  frameFlying.set(scroller, flying);
+  if (flying) frameSettle = true;
+  return flying;
+};
+
+/*
+ * A print puts every line on the page.
+ * `upgradeEverythingForPrint` makes the same argument for a deferred fence.
+ *
+ * This one REVERTS where the latch does not: the tokens are already in `fence.lines`, so
+ * re-windowing costs element creation only, and not reverting would let one Ctrl+P un-window every
+ * huge fence for the life of the tab. Both doors, as above: `beforeprint` for Ctrl+P, the media
+ * query for `page.pdf()` and devtools emulation, which do not fire it.
+ */
+let printing = false;
+
+type PrintTokenizer = { chars: number; tokenizeNow: () => boolean };
+const awaitingWorker = new Set<PrintTokenizer>();
+const PRINT_TOKENIZE_CHARS = 10 * MAX_HIGHLIGHT_CHARS;
+
+export const awaitWorker = (
+  chars: number,
+  tokenizeNow: () => boolean,
+): (() => void) => {
+  const entry: PrintTokenizer = { chars, tokenizeNow };
+  awaitingWorker.add(entry);
+  return () => {
+    awaitingWorker.delete(entry);
+  };
+};
+
+const tokenizeForPrint = (): void => {
+  if (awaitingWorker.size === 0) return;
+  const pending = [...awaitingWorker];
+  const order = planPrintTokenization(
+    pending.map((entry) => entry.chars),
+    PRINT_TOKENIZE_CHARS,
+  );
+  flushSync(() => {
+    for (const index of order) pending[index].tokenizeNow();
+  });
+};
+
+const remeasureWindows = (): void => {
+  windowFrame = 0;
+  forgetScrollable();
+  frameRects = new Map();
+  frameFlying = new Map();
+  frameSelection = { read: false, value: null };
+  frameSettle = false;
+  heldLastFrame = false;
+  try {
+    for (const measure of windowedFences) measure();
+  } finally {
+    frameRects = null;
+    frameFlying = null;
+    frameSelection = null;
+  }
+  if (frameSettle && windowedFences.size > 0 && !printing) {
+    windowFrame = requestAnimationFrame(remeasureWindows);
+  }
+};
+
+export const fencePrinting = (): boolean => printing;
+
+const FIND_BAR_FLAG = "data-find-bar-open";
+
+const findBarOpen = (): boolean =>
+  typeof document !== "undefined"
+  && document.documentElement.hasAttribute(FIND_BAR_FLAG);
+
+/*
+ * Synchronous, and inside `flushSync`, for the same reason `latchNow` is: a normally scheduled
+ * update lands after the next paint, and there is no next paint before the print snapshot.
+ */
+const setPrinting = (value: boolean): void => {
+  // BEFORE the window check: a print that starts while a fence still shows its shell has no window
+  // to remeasure, but the state must still be recorded or the tokens arrive mid-preview and window
+  // it. Only the flush is skipped when there is nothing to remeasure.
+  if (printing === value) return;
+  printing = value;
+  if (windowFrame !== 0) {
+    cancelAnimationFrame(windowFrame);
+    windowFrame = 0;
+  }
+  if (value) tokenizeForPrint();
+  if (windowedFences.size === 0) return;
+  flushSync(remeasureWindows);
+};
+
+const scheduleRemeasure = (): void => {
+  if (windowFrame !== 0 || windowedFences.size === 0) return;
+  windowFrame = requestAnimationFrame(remeasureWindows);
+};
+
+const onPointerDown = (event: PointerEvent): void => {
+  if (event.pointerType === "touch" || event.button !== 0) return;
+  pointerHeld = event.target instanceof Node ? event.target : null;
+};
+
+const releasePointer = (): void => {
+  if (pointerHeld === null) return;
+  pointerHeld = null;
+  if (heldLastFrame) scheduleRemeasure();
+};
+
+const onPointerMove = (event: PointerEvent): void => {
+  if (pointerHeld !== null && event.buttons === 0) releasePointer();
+};
+
+const onSelectionChange = (): void => {
+  if (heldLastFrame) scheduleRemeasure();
+};
+
+const watchWindows = (): void => {
+  if (windowWatched || typeof document === "undefined") return;
+  windowWatched = true;
+  // Capturing, because scroll does not bubble but does capture, so this one listener sees the
+  // thread scroller AND the nested reasoning pane.
+  document.addEventListener("scroll", scheduleRemeasure, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("resize", scheduleRemeasure, { passive: true });
+  document.addEventListener("pointerdown", onPointerDown, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("pointerup", releasePointer, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("pointercancel", releasePointer, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("dragend", releasePointer, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("drop", releasePointer, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("pointermove", onPointerMove, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("blur", releasePointer);
+  document.addEventListener("selectionchange", onSelectionChange, {
+    passive: true,
+  });
+  findBarObserver = new MutationObserver(scheduleRemeasure);
+  findBarObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: [FIND_BAR_FLAG],
+  });
+};
+
+const unwatchWindows = (): void => {
+  if (!windowWatched || windowedFences.size > 0 || typeof document === "undefined") {
+    return;
+  }
+  windowWatched = false;
+  document.removeEventListener("scroll", scheduleRemeasure, { capture: true });
+  window.removeEventListener("resize", scheduleRemeasure);
+  document.removeEventListener("pointerdown", onPointerDown, { capture: true });
+  window.removeEventListener("pointerup", releasePointer, { capture: true });
+  window.removeEventListener("pointercancel", releasePointer, { capture: true });
+  window.removeEventListener("dragend", releasePointer, { capture: true });
+  window.removeEventListener("drop", releasePointer, { capture: true });
+  window.removeEventListener("pointermove", onPointerMove, { capture: true });
+  window.removeEventListener("blur", releasePointer);
+  document.removeEventListener("selectionchange", onSelectionChange);
+  findBarObserver?.disconnect();
+  findBarObserver = null;
+  pointerHeld = null;
+  heldLastFrame = false;
+  if (windowFrame !== 0) {
+    cancelAnimationFrame(windowFrame);
+    windowFrame = 0;
+  }
+};
+
+/**
+ * Which lines of this fence carry token spans, or `null` for all of them.
+ *
+ * The geometry is read here and the decision is made in `code-fence-window.ts`, which is a
+ * JSX-free module so that a test can RUN the arithmetic rather than regex this file.
+ */
+type LineWindowState =
+  | { measured: false }
+  | { measured: true; window: LineWindow | null; pins: LinePins | null };
+
+const UNMEASURED: LineWindowState = { measured: false };
+
+type FenceMetrics = {
+  lineHeight: number;
+  contentInset: number;
+  insets: number;
+};
+
+type FenceGeometry = FenceMetrics & {
+  scroller: HTMLElement | null;
+};
+
+const linePitches = new Map<string, number>();
+const PITCH_PROBE_LINES = 64;
+let intrinsicScale = 0;
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", () => {
+    intrinsicScale = 0;
+  });
+}
+const intrinsicSizeSupported =
+  typeof CSS !== "undefined"
+  && typeof CSS.supports === "function"
+  && CSS.supports("contain-intrinsic-size", "0 1000px");
+
+const measureIntrinsicScale = (beside: HTMLElement): number => {
+  if (!intrinsicSizeSupported) return 1;
+  if (intrinsicScale > 0) return intrinsicScale;
+  const probe = document.createElement("div");
+  probe.setAttribute("aria-hidden", "true");
+  probe.style.cssText =
+    "position:absolute;visibility:hidden;pointer-events:none;top:0;left:0;width:0;contain:size;contain-intrinsic-size:0 1000px";
+  beside.before(probe);
+  const height = probe.getBoundingClientRect().height;
+  probe.remove();
+  if (!(height > 0)) return 1;
+  intrinsicScale = Math.round(1000000 / height) / 1000;
+  return intrinsicScale;
+};
+
+const measureLinePitch = (beside: HTMLElement): number => {
+  const parent = beside.parentElement;
+  if (!parent) return 0;
+  const context = getComputedStyle(parent);
+  const key = [
+    context.fontSize,
+    context.lineHeight,
+    getComputedStyle(document.documentElement).getPropertyValue("--custom-code-font-size"),
+    window.devicePixelRatio,
+    measureIntrinsicScale(beside),
+  ].join("|");
+  const known = linePitches.get(key);
+  if (known !== undefined) return known;
+  const probe = document.createElement("pre");
+  probe.setAttribute("aria-hidden", "true");
+  probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;top:0;left:0";
+  const code = document.createElement("code");
+  const lines: HTMLElement[] = [];
+  for (let index = 0; index < PITCH_PROBE_LINES; index += 1) {
+    const line = document.createElement("span");
+    line.className = LINE_CLASS;
+    line.textContent = "x";
+    lines.push(line);
+  }
+  code.append(...lines);
+  probe.append(code);
+  beside.before(probe);
+  const pitch =
+    (lines[PITCH_PROBE_LINES - 1].getBoundingClientRect().top - lines[0].getBoundingClientRect().top)
+    / (PITCH_PROBE_LINES - 1);
+  probe.remove();
+  if (pitch > 0) linePitches.set(key, pitch);
+  return pitch;
+};
+
+const readFenceMetrics = (
+  node: HTMLElement,
+  surface: HTMLElement,
+  region: HTMLElement,
+  lineCount: number,
+  previous: FenceMetrics | null,
+): FenceMetrics => {
+  const style = getComputedStyle(surface);
+  const pitch = measureLinePitch(region);
+  const declared = Number.parseFloat(style.lineHeight);
+  const lineHeight =
+    pitch > 0
+      ? pitch
+      : declared > 0
+        ? style.lineHeight.endsWith("px")
+          ? declared
+          : declared * (Number.parseFloat(style.fontSize) || 0)
+        : previous?.lineHeight
+          ?? (lineCount > 0 ? node.getBoundingClientRect().height / lineCount : 0);
+  return {
+    lineHeight,
+    contentInset:
+      (Number.parseFloat(style.borderTopWidth) || 0)
+      + (Number.parseFloat(style.paddingTop) || 0),
+    insets: Math.max(0, surface.getBoundingClientRect().height - lineCount * lineHeight),
+  };
+};
+
+const readFenceGeometry = (
+  node: HTMLElement,
+  surface: HTMLElement,
+  region: HTMLElement,
+  outer: HTMLElement,
+  lineCount: number,
+): FenceGeometry => {
+  const scroller = scrollerOf(outer);
+  return { scroller, ...readFenceMetrics(node, surface, region, lineCount, null) };
+};
+
+const skippedByContainment = (element: HTMLElement): boolean =>
+  typeof element.checkVisibility === "function"
+  && !element.checkVisibility({ contentVisibilityAuto: true });
+
+const FAR_VIEWPORTS = OVERSCAN_VIEWPORTS + HYSTERESIS_VIEWPORTS + 1;
+const RESIZE_SETTLE_MS = 300;
+
+function useLineWindow(
+  code: RefObject<HTMLElement | null>,
+  surface: RefObject<HTMLElement | null>,
+  wrapper: RefObject<HTMLElement | null>,
+  frame: RefObject<HTMLElement | null>,
+  lineCount: number,
+  enabled: boolean,
+  deferShifts: boolean,
+): { window: LineWindow | null; pins: LinePins | null; measured: boolean } {
+  const [state, setState] = useState<LineWindowState>(UNMEASURED);
+  const viewportSize = useRef("");
+  const resizedAt = useRef(Number.NEGATIVE_INFINITY);
+  const current = useRef<LineWindow | null>(null);
+  const pinned = useRef<LinePins | null>(null);
+  const geometry = useRef<FenceGeometry | null>(null);
+  const metricsStale = useRef(false);
+  const lines = useRef(lineCount);
+  lines.current = lineCount;
+  const hasBody = lineCount > 0;
+  const overCap = lineCount > WINDOW_CAP_LINES;
+  const measure = useRef<() => void>(() => {});
+
+  measure.current = () => {
+    const node = code.current;
+    const outer = frame.current;
+    const body = surface.current;
+    const region = wrapper.current;
+    if (!node || !outer || !body || !region) return;
+    if (lines.current <= WINDOW_CAP_LINES && current.current === null) return;
+    if (printing || findBarOpen()) {
+      if (current.current === null && pinned.current === null) return;
+      current.current = null;
+      pinned.current = null;
+      setState({ measured: true, window: null, pins: null });
+      return;
+    }
+    let known = geometry.current;
+    if (
+      known === null
+      || (known.scroller !== null && !isScrollable(known.scroller))
+    ) {
+      if (skippedByContainment(body)) return;
+      known = readFenceGeometry(node, body, region, outer, lines.current);
+      metricsStale.current = false;
+    } else if (metricsStale.current && !skippedByContainment(body)) {
+      known = {
+        scroller: known.scroller,
+        ...readFenceMetrics(node, body, region, lines.current, known),
+      };
+      metricsStale.current = false;
+    }
+    geometry.current = known;
+    const height =
+      Math.round(
+        (lines.current * known.lineHeight + known.insets) * measureIntrinsicScale(region) * 1000,
+      ) / 1000;
+    const declared = `${height}px`;
+    if (region.style.getPropertyValue(FENCE_HEIGHT_PROPERTY) !== declared) {
+      region.style.setProperty(FENCE_HEIGHT_PROPERTY, declared);
+      forgetScrollable();
+    }
+    const bounds = known.scroller === null ? null : rectDuringFrame(known.scroller);
+    const viewportTop = bounds ? bounds.top : 0;
+    const viewportHeight = bounds ? bounds.height : window.innerHeight;
+    const size = `${bounds ? bounds.width : window.innerWidth}x${viewportHeight}`;
+    if (size !== viewportSize.current) resizedAt.current = performance.now();
+    viewportSize.current = size;
+    const resized = performance.now() - resizedAt.current < RESIZE_SETTLE_MS;
+    const box = rectDuringFrame(region);
+    const reach = viewportHeight * FAR_VIEWPORTS;
+    if (
+      current.current !== null
+      && (box.bottom < viewportTop - reach || box.top > viewportTop + viewportHeight + reach)
+    ) {
+      return;
+    }
+    if (current.current !== null && flyingDuringFrame(known.scroller, viewportHeight)) return;
+    if (current.current !== null && draggingDuringFrame(body)) return;
+    const next = selectLineWindow({
+      lineCount: lines.current,
+      lineHeight: known.lineHeight,
+      contentTop: box.top + known.contentInset,
+      viewportTop,
+      viewportHeight,
+      previous: current.current,
+    });
+    const pins = pinBoundaryLines(
+      selectionBoundaryLines(node, body),
+      current.current,
+      pinned.current,
+    );
+    if (next === current.current && samePins(pins, pinned.current)) return;
+    const shifting =
+      deferShifts && current.current !== null && frameRects !== null && !resized;
+    current.current = next;
+    pinned.current = pins;
+    const update = { measured: true, window: next, pins };
+    if (shifting) startTransition(() => setState(update));
+    else setState(update);
+  };
+
+  useLayoutEffect(() => {
+    if (!enabled) {
+      current.current = null;
+      geometry.current = null;
+      return;
+    }
+    const run = () => measure.current();
+    windowedFences.add(run);
+    watchWindows();
+    run();
+    let resize: ResizeObserver | undefined;
+    const box = frame.current;
+    if (box && typeof ResizeObserver !== "undefined") {
+      resize = new ResizeObserver(() => {
+        metricsStale.current = true;
+        scheduleRemeasure();
+      });
+      resize.observe(box);
+    }
+    return () => {
+      resize?.disconnect();
+      windowedFences.delete(run);
+      unwatchWindows();
+    };
+  }, [enabled, hasBody, code, surface, wrapper, frame]);
+
+  useLayoutEffect(() => {
+    if (!enabled || !overCap || state.measured) return;
+    measure.current();
+  }, [enabled, overCap, state.measured]);
+
+  if (!enabled) return NO_WINDOW;
+  if (state.measured) return state;
+  return overCap && !printing && !findBarOpen() ? EMPTY_WINDOW : NO_WINDOW;
+}
+
+const NO_WINDOW = { window: null, pins: null, measured: false } as const;
+const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } as const;
+
+/**
+ * A fence's body, highlighted, with the spans bounded to what is on screen.
+ *
+ * Falls back to the plain shell whenever there are no tokens to render, which is the window
+ * between a fence appearing and its grammar chunk arriving. That is the same markup the deferred
+ * shell uses and the same markup streamdown's own unhighlighted fallback uses, so the fence does
+ * not change shape when the colours land.
+ */
+export const FenceBody = memo(function FenceBody({
+  isIncomplete,
+  language,
+  result,
+  source,
+  windowing,
+}: {
+  /** Streamdown's unclosed-fence flag, reproduced as `data-incomplete` on the wrapper. */
+  isIncomplete: boolean | undefined;
+  language: string | null;
+  result: FenceTokens | null;
+  source: string;
+  /** False keeps every line highlighted however long the fence is, which is what main does. */
+  windowing: boolean;
+}) {
+  const code = useRef<HTMLElement | null>(null);
+  const surface = useRef<HTMLDivElement | null>(null);
+  const wrapper = useRef<HTMLDivElement | null>(null);
+  const frame = useRef<HTMLDivElement | null>(null);
+  const tokens = result?.tokens ?? null;
+  const { window: lineWindow, pins, measured } = useLineWindow(
+    code,
+    surface,
+    wrapper,
+    frame,
+    tokens?.length ?? 0,
+    windowing,
+    !isIncomplete,
+  );
+  const languageClass = language === null ? null : `language-${language}`;
+
+  const rootStyle = useMemo(() => {
+    const style: Record<string, string> = {};
+    if (!result) return style;
+    if (result.bg) style["--sdm-bg"] = result.bg;
+    if (result.fg) style["--sdm-fg"] = result.fg;
+    if (result.rootStyle) Object.assign(style, parseDeclarations(result.rootStyle));
+    return style;
+  }, [result]);
+
+  // No tokens yet, or a result carrying no lines at all. Both fall back to the plain shell, which
+  // is one line tall for an empty body where a `<code>` with no children is nothing at all.
+  if (!tokens || tokens.length === 0) {
+    return <FenceShell language={language} source={source} />;
+  }
+
+  return (
+    <div
+      className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
+      data-incomplete={isIncomplete || undefined}
+      data-language={language ?? undefined}
+      data-streamdown="code-block"
+      ref={frame}
+      // Streamdown declares both inline. `index.css` then forces `content-visibility: visible`
+      // back on for code blocks, because WebKit before Safari 26 cannot find-in-page skipped
+      // content, but the declaration is reproduced so the computed cascade is identical to the one
+      // `playwright_code_block_flicker.py` reads.
+      style={{ containIntrinsicSize: "auto 200px", contentVisibility: "auto" }}
+    >
+      <div
+        className="flex h-8 items-center text-muted-foreground text-xs"
+        data-language={language ?? undefined}
+        data-streamdown="code-block-header"
+      >
+        <span className="ml-1 font-mono lowercase">{language}</span>
+      </div>
+      <div
+        data-unsloth-fence-windowed={lineWindow === null || !measured ? undefined : "true"}
+        ref={wrapper}
+      >
+        <div
+          className={joinClasses(
+            languageClass,
+            "overflow-x-auto rounded-md border border-border bg-background p-4 text-sm",
+          )}
+          data-language={language ?? undefined}
+          data-streamdown="code-block-body"
+          ref={surface}
+        >
+          <pre className={joinClasses(languageClass, PRE_CLASS)} style={rootStyle}>
+            <code className={CODE_CLASS} ref={code}>
+              {tokens.map((line, index) => (
+                <FenceLine
+                  key={index}
+                  line={line}
+                  windowed={lineRendered(lineWindow, pins, index)}
+                />
+              ))}
+            </code>
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+});

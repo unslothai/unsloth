@@ -334,7 +334,7 @@ export function LlmGeneralTab({
         />
         <Textarea
           id={promptId}
-          className="corner-squircle nodrag max-h-[450px] overflow-auto"
+          className="corner-squircle nodrag max-h-[calc(450px*var(--ui-space-scale,1))] overflow-auto"
           aria-invalid={invalidPromptRefs.length > 0}
           value={config.prompt}
           onChange={(event) => onUpdate({ prompt: event.target.value })}
@@ -448,7 +448,7 @@ export function LlmGeneralTab({
             />
             <Textarea
               id={systemPromptId}
-              className="corner-squircle nodrag max-h-[450px] overflow-auto"
+              className="corner-squircle nodrag max-h-[calc(450px*var(--ui-space-scale,1))] overflow-auto"
               aria-invalid={invalidSystemRefs.length > 0}
               value={config.system_prompt}
               onChange={(event) =>

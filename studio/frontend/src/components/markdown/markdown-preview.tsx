@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withLiteralUnknownTags } from "@/lib/markdown-data-images";
 import { markdownPluginNeeds } from "@/lib/markdown-plugins";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
-import { code } from "@streamdown/code";
+import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import {
@@ -18,11 +19,13 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { INERT_MARKDOWN_COMPONENTS } from "./inert-components";
 import "katex/dist/katex.min.css";
 
 type MarkdownPlugins = NonNullable<
   ComponentProps<typeof Streamdown>["plugins"]
 >;
+const REHYPE_PLUGINS = withLiteralUnknownTags();
 const MARKDOWN_COMPONENTS = {
   a: ({ href, children, ...props }: ComponentProps<"a">) => (
     <a
@@ -45,6 +48,8 @@ type MarkdownPreviewProps = {
   markdown: string;
   className?: string;
   plain?: boolean;
+  /** No links or checkboxes, for a preview nested in another control. */
+  inert?: boolean;
   /**
    * Parse on the next idle callback so the surrounding UI paints first. For a document that
    * arrives whole and is big enough to stall - a finished research report - the wait is the same
@@ -57,6 +62,7 @@ function MarkdownPreviewImpl({
   markdown,
   className,
   plain = false,
+  inert = false,
   defer = false,
 }: MarkdownPreviewProps): ReactElement {
   // Math and mermaid over a document with neither still cost a pass per node, and shiki over a
@@ -64,7 +70,7 @@ function MarkdownPreviewImpl({
   const plugins = useMemo<MarkdownPlugins>(() => {
     const needs = markdownPluginNeeds(markdown);
     const next: MarkdownPlugins = {};
-    if (needs.code) next.code = code;
+    if (needs.code) next.code = codePlugin;
     if (needs.math) next.math = math;
     if (needs.mermaid) next.mermaid = mermaid;
     return next;
@@ -88,7 +94,7 @@ function MarkdownPreviewImpl({
       className={cn(
         plain
           ? "h-full w-full min-w-0 overflow-auto p-2 text-xs leading-relaxed pointer-events-none select-none"
-          : "nodrag max-h-56 w-full min-w-0 overflow-auto rounded-md border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
+          : "nodrag max-h-56 w-full min-w-0 overflow-auto scroll-rounded rounded-md border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
         className,
       )}
     >
@@ -96,7 +102,8 @@ function MarkdownPreviewImpl({
         <Streamdown
           mode="static"
           plugins={plugins}
-          components={MARKDOWN_COMPONENTS}
+          rehypePlugins={REHYPE_PLUGINS}
+          components={inert ? INERT_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS}
           urlTransform={safeMarkdownUrl}
           controls={false}
           className={markdownClassName}

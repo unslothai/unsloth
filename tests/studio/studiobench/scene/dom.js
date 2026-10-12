@@ -307,6 +307,58 @@
       const menu = D.openMenu();
       return menu ? qa(".aui-action-bar-more-item", menu).length : 0;
     },
+    // An item of the open More menu, by its text. Delete lives here, last and in red, since #12735
+    // took it off the reply's action bar; a prompt's More menu carries it too.
+    menuItem(name) {
+      const menu = D.openMenu();
+      return menu ? byName(".aui-action-bar-more-item", name, menu) : null;
+    },
+    // Open a More menu from its trigger and wait, bounded, for `name` in it. pointerdown/up, not
+    // click(): the Radix trigger opens on pointerdown, so click() leaves the menu shut.
+    //
+    // NO DOCUMENT-WIDE LOOKUP PER PAINT. The menu is portaled to the end of document.body, so
+    // finding it is a whole-document query, and repeating it every paint inside the action's
+    // window is the harness cost MENU_JS avoids with the same MutationObserver. The portal is
+    // looked for only when body's children changed; once it is there, the item is looked for
+    // inside it, which is O(the menu).
+    async openMenuAndFind(trigger, name, waitMs) {
+      const pointer = { bubbles: true, cancelable: true, composed: true, button: 0,
+                        pointerId: 1, pointerType: "mouse", isPrimary: true };
+      const budget = Math.max(0, Number(waitMs) || 0);
+      const nextPaint = () =>
+        window.__sbNextPaint ? window.__sbNextPaint() : new Promise((r) => setTimeout(r, 16));
+      let bodyChanged = true;
+      const watcher = new MutationObserver(() => { bodyChanged = true; });
+      watcher.observe(document.body, { childList: true, subtree: false });
+      let menu = null;
+      let item = null;
+      const look = () => {
+        if (!menu || !menu.isConnected) {
+          if (!bodyChanged) return;
+          bodyChanged = false;
+          menu = D.openMenu();
+        }
+        if (menu) item = byName(".aui-action-bar-more-item", name, menu);
+      };
+      const started = performance.now();
+      try {
+        trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
+        trigger.dispatchEvent(new PointerEvent("pointerup", { ...pointer, buttons: 0 }));
+        look();
+        while (!item && performance.now() - started < budget) {
+          await nextPaint();
+          look();
+        }
+      } finally {
+        watcher.disconnect();
+      }
+      return {
+        item,
+        opened: Boolean(menu),
+        items: menu ? qa(".aui-action-bar-more-item", menu).length : 0,
+        openMs: Math.round((performance.now() - started) * 10) / 10,
+      };
+    },
 
     settingsTrigger() {
       return q('button[aria-label="Settings"]');
@@ -331,9 +383,7 @@
     },
     modelOptions() {
       const menu = D.modelMenu();
-      // No role="option", no data-model-id: the rows are plain buttons with utility classes, so
-      // this is the only available handle and it is recorded as the weak point it is.
-      return menu ? qa("button", menu) : [];
+      return menu ? qa("button[data-model-picker-option]", menu) : [];
     },
     currentModelLabel() {
       const t = D.modelTrigger();

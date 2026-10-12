@@ -951,12 +951,25 @@ class TestWorkflowOrdering:
             "after one, and `needs:` already gates it correctly"
         )
 
-        # Nor may the individual steps be skipped, except the summary, which is `if: always()` precisely so the evidence
-        # survives a failed scan.
+        # Nor may the individual steps be skipped, with one narrow exception: the steps whose whole purpose is to keep
+        # the evidence, which are `if: always()` precisely so it survives a failed scan. Named individually rather than
+        # allowed by shape, so a future step cannot inherit the exception by looking similar.
+        #
+        # Both are evidence, not measurement. The summary carries the false-positive submission packet
+        # submission_packet_lines() builds, and the upload keeps it past the run: a job summary is ephemeral, so
+        # without it the one document written for the purpose of disputing a detection is discarded along with the
+        # detection it describes. Skipping either on a failed scan loses exactly the run worth keeping.
+        evidence_steps = {
+            "Publish VirusTotal summary",
+            "Preserve the VirusTotal summary and submission packet",
+        }
         for step in job["steps"]:
             condition = step.get("if")
-            if step.get("name") == "Publish VirusTotal summary":
-                assert condition == "always()"
+            if step.get("name") in evidence_steps:
+                assert condition == "always()", (
+                    f"{step.get('name')!r} must be `if: always()`: it exists to keep the evidence, and a "
+                    f"failed scan is the run whose evidence matters most"
+                )
             else:
                 assert condition is None, step.get("name")
 

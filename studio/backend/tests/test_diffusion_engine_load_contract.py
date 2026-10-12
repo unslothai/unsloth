@@ -200,6 +200,7 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
         token,
         cancel_event = None,
         local_files_only = False,
+        vision_optional = True,
     ):
         fetched.append(local_files_only)
         raise RuntimeError("stop here; the Hub calls under test all precede the fetch")
@@ -271,6 +272,38 @@ def test_an_uncached_asset_fails_with_a_local_error_naming_it(monkeypatch):
     # The FETCH repo, which is where the bytes were looked for: the gated vendor base is swapped
     # to its ungated mirror before the lookup, so naming the upstream id would misdirect.
     assert "unsloth/FLUX.1-dev" in message
+
+
+def test_an_uncached_vision_projector_does_not_fail_an_offline_load(monkeypatch, tmp_path):
+    """Text-to-image never reads --llm_vision, so a Qwen-Image-2.1 GGUF cached before the projector
+    was listed must still restore offline. Only the projector is optional: the encoder it sits
+    beside still fails loudly."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    import utils.hf_xet_fallback as xet
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend as Native
+
+    cached = tmp_path / "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf"
+    cached.write_bytes(b"")
+
+    def _download(repo_id, filename, token, **kwargs):
+        if filename == "mmproj-F16.gguf":
+            raise LocalEntryNotFoundError("Cannot find the requested files in the disk cache")
+        return str(cached)
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+    repo = "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+    paths = Native(engine = None)._fetch_assets(
+        [(repo, cached.name, "llm"), (repo, "mmproj-F16.gguf", "llm_vision")],
+        None,
+        local_files_only = True,
+    )
+    assert paths == {"llm": str(cached)}
+
+    with pytest.raises(RuntimeError, match = "mmproj-F16.gguf"):
+        Native(engine = None)._fetch_assets(
+            [(repo, "mmproj-F16.gguf", "llm")], None, local_files_only = True
+        )
 
 
 def test_the_default_still_takes_the_xet_fallback_ladder(monkeypatch, tmp_path):

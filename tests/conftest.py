@@ -49,6 +49,9 @@ import types
 
 import pytest
 
+# A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
+os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+
 
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
@@ -62,21 +65,17 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 
 def _has_real_accelerator() -> bool:
-    try:
-        import torch
-    except Exception:
-        return False
-    for probe in (
-        lambda: hasattr(torch, "cuda") and torch.cuda.is_available(),
-        lambda: hasattr(torch, "xpu") and torch.xpu.is_available(),
-        lambda: hasattr(torch, "accelerator") and torch.accelerator.is_available(),
-    ):
-        try:
-            if probe():
-                return True
-        except Exception:
-            pass
-    return False
+    """Mechanism: tests/_shared/real_accelerator.py.
+
+    The probe moved there so test modules can ask the same question, and so the
+    answer is recorded once. Calling it here, before the pre-load window below and
+    long before any test module imports the aggressive spoof, is what makes the
+    recorded answer the pre-spoof one for everybody. Kept as a function of this
+    name because tests/python/test_conftest_bitsandbytes_preimport.py reads the
+    `if not _has_real_accelerator():` block out of this file's AST.
+    """
+    from real_accelerator import has_real_accelerator
+    return has_real_accelerator()
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
@@ -167,6 +166,12 @@ def _install_device_type_stub(name: str) -> None:
     stub.arch_lacks_bf16 = lambda arch: (
         str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
     )
+    # #11615: gfx101x (RDNA1) only; gfx103x (RDNA2) must not match.
+    stub.arch_lacks_buffer_ops = lambda arch: (
+        str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx101")
+    )
+    stub.apply_gfx101x_triton_workaround = lambda *a, **k: False
+    stub.gfx101x_triton_workaround_applied = lambda: False
     stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 

@@ -71,10 +71,16 @@ $otherNames = @(
     @{ N = "AMD Radeon RX 6900 XT";        A = "gfx1030" },
     @{ N = "AMD Radeon RX 6600 XT";        A = "gfx1032" },
     @{ N = "AMD Radeon RX 6500 XT";        A = "gfx1034" },
+    # RDNA 2 refresh numbers, not covered by the arms above (#10468).
+    @{ N = "AMD Radeon RX 6950 XT";        A = "gfx1030" },
+    @{ N = "AMD Radeon RX 6850M XT";       A = "gfx1030" },
+    @{ N = "AMD Radeon RX 6550M";          A = "gfx1034" },
+    @{ N = "AMD Radeon RX 6450M";          A = "gfx1034" },
+    @{ N = "AMD Radeon PRO W6300";         A = "gfx1034" },
     @{ N = "ATI Radeon 9700 PRO";          A = $null },
     @{ N = "ATI Radeon 9800 PRO";          A = $null },
     @{ N = "AMD Radeon R9 Fury X";         A = $null },
-    @{ N = "AMD Radeon RX 5700 XT";        A = $null },
+    @{ N = "AMD Radeon RX 5700 XT";        A = "gfx1010" },  # RDNA 1 routes on Windows since unslothai#11614
     @{ N = "AMD Radeon Pro WX 9100";       A = $null },
     @{ N = "AMD Instinct MI300X";          A = $null },
     @{ N = "NVIDIA GeForce RTX 4090";      A = $null },

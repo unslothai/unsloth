@@ -17,6 +17,7 @@ tests that never think about credentials at all.
 
 from __future__ import annotations
 
+import signal
 import sys
 from pathlib import Path
 
@@ -41,3 +42,33 @@ _OTHER_CREDENTIAL_ENVS = ("KAGGLE_KEY", "KAGGLE_USERNAME", "KAGGLE_ACCESS_TOKEN_
 def _no_ambient_kaggle_credentials(monkeypatch):
     for name in (*DEFAULT_ACCOUNT_ENVS, *_OTHER_CREDENTIAL_ENVS):
         monkeypatch.delenv(name, raising = False)
+
+
+_RELEASE_SIGNALS = tuple(
+    sig
+    for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None))
+    if sig is not None
+)
+
+
+@pytest.fixture(autouse = True)
+def _no_process_wide_release_handlers(monkeypatch):
+    """`launch.main()` installs SIGINT/SIGTERM/SIGHUP handlers and an atexit hook for its whole process.
+
+    In a pytest worker those outlive the test: the next test that sends itself SIGTERM
+    (tests/test_decision_gguf.py) reached `_release_and_die` instead of its own handler, which
+    re-raised the signal and killed the xdist worker. The handlers have their own tests, which run
+    them in a subprocess (test_launch_cleanup.py). Any other test here that leaves a disposition
+    changed fails, with the disposition put back.
+    """
+    launch = sys.modules.get("launch")
+    if launch is not None and hasattr(launch, "_install_release_handlers"):
+        monkeypatch.setattr(launch, "_install_release_handlers", lambda release: None)
+    before = {sig: signal.getsignal(sig) for sig in _RELEASE_SIGNALS}
+    yield
+    changed = [sig.name for sig in _RELEASE_SIGNALS if signal.getsignal(sig) is not before[sig]]
+    for sig in _RELEASE_SIGNALS:
+        # None: a handler not set from Python, which signal.signal cannot reinstall.
+        if before[sig] is not None:
+            signal.signal(sig, before[sig])
+    assert not changed, f"the test left process-wide handlers installed for {changed}"
