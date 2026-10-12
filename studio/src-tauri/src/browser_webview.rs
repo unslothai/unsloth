@@ -1652,6 +1652,71 @@ pub async fn browser_view_annotate<R: Runtime>(
     serde_json::from_str(&inner).map_err(|error| error.to_string())
 }
 
+// The panel's browser agent (frontend agent/page-agent.ts): installed on first use per page, then
+// each call runs one command and returns `{ installed, result }`.
+const AGENT_SCRIPT: &str = r#"(() => {
+  const key = Symbol.for("unsloth.agent");
+  const command = __COMMAND__;
+  if (!window[key] && command.install) {
+    try {
+__CODE__
+    } catch (error) {}
+  }
+  const agent = window[key];
+  if (!agent) return JSON.stringify({ installed: false, result: null });
+  return JSON.stringify({ installed: true, result: agent.run(command.op) });
+})()"#;
+const MAX_AGENT_OP: usize = 65_536;
+
+#[derive(Debug, Deserialize)]
+pub struct AgentCommand {
+    op: serde_json::Map<String, serde_json::Value>,
+    code: Option<String>,
+}
+
+fn agent_script(command: &AgentCommand) -> Result<String, String> {
+    let code = command.code.as_deref().unwrap_or("");
+    if code.len() > MAX_ANNOTATE_CODE {
+        return Err("agent code too large".into());
+    }
+    let args = serde_json::json!({ "install": !code.is_empty(), "op": command.op }).to_string();
+    if args.len() > MAX_AGENT_OP {
+        return Err("agent command too large".into());
+    }
+    let (head, rest) = AGENT_SCRIPT
+        .split_once("__COMMAND__")
+        .ok_or("bad agent script")?;
+    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad agent script")?;
+    Ok(format!("{head}{args}{middle}{code}{tail}"))
+}
+
+/// Runs a browser agent command in a tab's page. The panel checks the result, since the page
+/// shares the agent's world and can write to it.
+#[tauri::command]
+pub async fn browser_view_agent<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    command: AgentCommand,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = agent_script(&command)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    page.eval_with_callback(script, move |result| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(result);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "page did not answer".to_string())?
+        .map_err(|error| error.to_string())?;
+    let inner = serde_json::from_str::<String>(&result).map_err(|error| error.to_string())?;
+    serde_json::from_str(&inner).map_err(|error| error.to_string())
+}
+
 /// Mute or unmute a tab's page. Windows mutes the whole view (Web Audio too) and keeps it muted
 /// across loads; macOS mutes the page's media, and each page it loads after (see `MUTE_SCRIPT`).
 #[tauri::command]
@@ -2237,6 +2302,29 @@ mod tests {
         assert!(start.contains(r#""color":"__CODE__""#));
         assert!(annotate_script(&AnnotateCommand::Install {
             code: "x".repeat(MAX_ANNOTATE_CODE + 1)
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn agent_code_and_command_are_spliced_once() {
+        let mut op = serde_json::Map::new();
+        op.insert("op".into(), "find".into());
+        op.insert("query".into(), "__CODE__".into());
+        let script = agent_script(&AgentCommand {
+            op: op.clone(),
+            code: Some("window.x = '__COMMAND__';".into()),
+        })
+        .unwrap();
+        assert!(script.contains(
+            r#"const command = {"install":true,"op":{"op":"find","query":"__CODE__"}};"#
+        ));
+        assert!(script.contains("window.x = '__COMMAND__';"));
+        let bare = agent_script(&AgentCommand { op, code: None }).unwrap();
+        assert!(bare.contains(r#""install":false"#));
+        assert!(agent_script(&AgentCommand {
+            op: serde_json::Map::new(),
+            code: Some("x".repeat(MAX_ANNOTATE_CODE + 1)),
         })
         .is_err());
     }

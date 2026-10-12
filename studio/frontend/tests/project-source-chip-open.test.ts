@@ -99,6 +99,20 @@ test("sources still indexing, failed, optimistic or unviewable stay inert", () =
   }
 });
 
+test("remove and retry pass through to the chip unchanged", () => {
+  const onRemove = () => undefined;
+  const onRetry = () => undefined;
+  const element = ProjectSourceChip({
+    doc: { id: "doc-4", filename: "notes.md", status: "failed" } as unknown as Parameters<
+      typeof ProjectSourceChip
+    >[0]["doc"],
+    onRemove,
+    onRetry,
+  }) as unknown as StubElement;
+  assert.equal(element.props.onRemove, onRemove);
+  assert.equal(element.props.onRetry, onRetry);
+});
+
 test("the chip name is a button only when the source can be opened", () => {
   const render = (props: Record<string, unknown>) =>
     renderToStaticMarkup(
@@ -125,6 +139,6 @@ test("the project Sources tab renders openable chips", () => {
     new URL("../src/features/rag/components/project-sources-panel.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(panel, /<ProjectSourceChip\s+key=\{doc\.id\}\s+doc=\{doc\}/);
-  assert.doesNotMatch(panel, /<DocumentStatusChip/);
+  // Each file is openable; a linked folder stays one summary chip.
+  assert.match(panel, /groups\.loose\.map\(\(doc\) => \(\s*<ProjectSourceChip\s+key=\{doc\.id\}\s+doc=\{doc\}/);
 });

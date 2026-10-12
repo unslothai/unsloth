@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """Packed rows on the transformers modeling path run a varlen flash kernel (torch's, else xformers /
-flash-attn) instead of SDPA over a dense block-causal mask; anything else reaches the wrapped "sdpa"."""
+flash-attn) instead of SDPA over a dense block-causal mask; heads past flash's 256 (Gemma-4 global
+layers, 512) and shapes an FA4 / FA3 impl refuses run SDPA's memory-efficient kernel over the same
+cu_seqlens. Anything else reaches the wrapped "sdpa"."""
 
 import inspect
 import logging
@@ -15,7 +17,8 @@ __all__ = ["enable_hf_packed_attention", "HF_PACKED_ATTENTION_STATS"]
 _FLAG = "_unsloth_hf_packed_varlen"
 _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
-HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0}
+# efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens.
+HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0, "efficient": 0}
 # Layers of one window share a mask object: window -> [weakref, (cu_seqlens, versions), verdict].
 _MASK_CHECK = {}
 _MASK_CHECK_ROWS = 1024
@@ -149,6 +152,136 @@ def _torch_varlen(device):
     return fn if ok else None
 
 
+_EFFICIENT_ENV = "UNSLOTH_HF_PACKED_EFFICIENT"
+# Above flash's 256 cap (Gemma-4 global layers are 512); wider heads are untested.
+_EFFICIENT_MAX_HEAD_DIM = 512
+_EFFICIENT_VARLEN = []
+_ACCELERATOR_ERROR = getattr(torch, "AcceleratorError", None)  # torch 2.8+
+_EFFICIENT_DEVICES = {}
+
+
+def _efficient_varlen_takes(query, window) -> bool:
+    """SDPA's memory-efficient kernel over cu_seqlens: no T x T bias. Off under any policy asking for SDPA."""
+    if os.environ.get(_EFFICIENT_ENV, "1").lower() in ("0", "false", "no", "off"):
+        return False
+    if not _EFFICIENT_VARLEN:
+        ok = True
+        try:
+            schema = torch.ops.aten._efficient_attention_forward.default._schema
+            names = {argument.name for argument in schema.arguments}
+            ok = ok and {"cu_seqlens_q", "scale", "window_size"} <= names
+            schema = torch.ops.aten._efficient_attention_backward.default._schema
+            ok = ok and "window_size" in {argument.name for argument in schema.arguments}
+        except Exception:
+            ok = False
+        _EFFICIENT_VARLEN.append(ok)
+    head_dim = query.shape[-1]
+    if (
+        not _EFFICIENT_VARLEN[0]
+        or torch.version.hip is not None
+        or head_dim > _EFFICIENT_MAX_HEAD_DIM
+        or head_dim % 8 != 0
+        # Its backward is nondeterministic.
+        or torch.are_deterministic_algorithms_enabled()
+        or not torch.backends.cuda.mem_efficient_sdp_enabled()
+    ):
+        return False
+    ok = _EFFICIENT_DEVICES.get(query.device.index)
+    if ok is None:
+        ok = torch.cuda.get_device_capability(query.device)[0] >= 8
+        _EFFICIENT_DEVICES[query.device.index] = ok
+    if not ok:
+        return False
+    from torch.nn.attention import SDPBackend
+    from .attention_dispatch import _sdpa_backend_state
+
+    # A math-first priority (or a disabled efficient backend) for these shapes keeps SDPA.
+    n_heads = query.shape[1]
+    _, choice = _sdpa_backend_state(
+        str(query.device), query.dtype, head_dim, n_heads, n_heads, True, False
+    )
+    return choice not in (int(SDPBackend.MATH), -1)
+
+
+class _EfficientVarlenAttention(torch.autograd.Function):
+    """(1, T, H, D) Q / K / V over cu_seqlens, causal (and windowed) inside each segment."""
+
+    @staticmethod
+    def forward(ctx, query, key, value, cu_seqlens, max_seqlen, scale, window):
+        out, logsumexp, seed, offset, _, _ = torch.ops.aten._efficient_attention_forward(
+            query,
+            key,
+            value,
+            None,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            0.0,
+            1,  # causal from the top left of each segment
+            any(ctx.needs_input_grad[:3]),
+            scale = scale,
+            window_size = window,
+        )
+        ctx.save_for_backward(query, key, value, out, logsumexp, cu_seqlens, seed, offset)
+        ctx.max_seqlen, ctx.scale, ctx.window = max_seqlen, scale, window
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        query, key, value, out, logsumexp, cu_seqlens, seed, offset = ctx.saved_tensors
+        grad_q, grad_k, grad_v, _ = torch.ops.aten._efficient_attention_backward(
+            grad_out.contiguous(),
+            query,
+            key,
+            value,
+            None,
+            out,
+            cu_seqlens,
+            cu_seqlens,
+            ctx.max_seqlen,
+            ctx.max_seqlen,
+            logsumexp,
+            0.0,
+            seed,
+            offset,
+            1,
+            False,
+            scale = ctx.scale,
+            window_size = ctx.window,
+        )
+        return grad_q, grad_k, grad_v, None, None, None, None
+
+
+def _efficient_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
+    """Q (1, H, T, D), K / V (1, H_kv, T, D) -> (1, T, H, D)."""
+    _, n_heads, total, head_dim = query.shape
+    n_kv_heads = key.shape[1]
+
+    def heads_last(x):
+        x = x[0].transpose(0, 1).unsqueeze(0)
+        # The kernel needs a unit stride on the head dim; a refusal would turn the route off for good.
+        return x if x.stride(-1) == 1 else x.contiguous()
+
+    q, k, v = heads_last(query), heads_last(key), heads_last(value)
+    if n_kv_heads != n_heads:
+        # The kernel has no GQA: repeat K / V heads as transformers' sdpa path does (autograd sums back).
+        groups = n_heads // n_kv_heads
+        k = (
+            k.unsqueeze(3)
+            .expand(1, total, n_kv_heads, groups, head_dim)
+            .reshape(1, total, n_heads, head_dim)
+        )
+        v = (
+            v.unsqueeze(3)
+            .expand(1, total, n_kv_heads, groups, head_dim)
+            .reshape(1, total, n_heads, head_dim)
+        )
+    return _EfficientVarlenAttention.apply(
+        q, k, v, cu_seqlens.to(torch.int32), int(max_seqlen), float(scale), window
+    )
+
+
 _SDPA_MATH = []
 
 
@@ -221,6 +354,7 @@ def _sdpa_packed_varlen(
 
     bsz, n_heads, q_len, head_dim = query.shape
     seq_info = torch_varlen = backend = None
+    efficient = False
     window = _sliding_window(module, kwargs)
     if (
         bsz == 1
@@ -230,9 +364,8 @@ def _sdpa_packed_varlen(
         and key.shape[0] == value.shape[0] == 1
         and key.shape[1] == value.shape[1]
         and key.shape[2] == value.shape[2] == q_len
-        # Not MLA (192 / 128) nor Gemma-4 global (512).
+        # Not MLA (192 / 128).
         and key.shape[-1] == value.shape[-1] == head_dim
-        and head_dim <= 256
         and head_dim % 8 == 0
         and query.dtype in (torch.float16, torch.bfloat16)
         and query.dtype == key.dtype == value.dtype
@@ -246,27 +379,35 @@ def _sdpa_packed_varlen(
         and n_heads % key.shape[1] == 0
         and window is not _NO_WINDOW
         and not _softcapped(module, kwargs)
-        and not _sdpa_requested(query, key)
     ):
-        torch_varlen = _torch_varlen(query.device)
-        # An FA4 / FA3 impl behind torch's flash op lacks some shapes (sm100: hd 136-248, hd256 + window).
-        if torch_varlen is not None and not flash_impl_allows(head_dim, window, query.device):
-            torch_varlen = None
-        backend = select_attention_backend(use_varlen = True)
-        # flash-attn's ROCm backend lists sliding windows as work in progress: windowed rows keep sdpa there.
-        if window is not None and torch.version.hip is not None:
-            backend = None
-        # Flash-2 varlen backward faults past int32 indexing. Keyed on training / grad mode, not
-        # requires_grad, so a reentrant checkpoint's no_grad forward and its recompute agree.
-        if (
-            not _VARLEN_INT32_GUARD_DISABLED
-            and (getattr(module, "training", False) or torch.is_grad_enabled())
-            and _varlen_backward_overflows_int32(
-                kwargs["packed_seq_lengths"].numel(), q_len, n_heads, head_dim
+        if head_dim > 256:
+            # Past every flash kernel (Gemma-4 global layers are 512): the efficient kernel, per segment.
+            efficient = _efficient_varlen_takes(query, window)
+        elif not _sdpa_requested(query, key):
+            torch_varlen = _torch_varlen(query.device)
+            # An FA4 / FA3 impl behind torch's flash op lacks some shapes (sm100: hd 136-248, hd256 + window).
+            refused = torch_varlen is not None and not flash_impl_allows(
+                head_dim, window, query.device
             )
-        ):
-            torch_varlen, backend = None, None
-        if torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
+            if refused:
+                torch_varlen = None
+            backend = select_attention_backend(use_varlen = True)
+            # flash-attn's ROCm backend lists sliding windows as work in progress: windowed rows keep sdpa there.
+            if window is not None and torch.version.hip is not None:
+                backend = None
+            # Flash-2 varlen backward faults past int32; keyed on grad mode so checkpoint recompute agrees.
+            if (
+                not _VARLEN_INT32_GUARD_DISABLED
+                and (getattr(module, "training", False) or torch.is_grad_enabled())
+                and _varlen_backward_overflows_int32(
+                    kwargs["packed_seq_lengths"].numel(), q_len, n_heads, head_dim
+                )
+            ):
+                torch_varlen, backend, refused = None, None, False
+            # Refused shape and no flash-attn / xformers: the efficient kernel.
+            if refused and backend not in (FLASH_VARLEN, XFORMERS):
+                efficient = _efficient_varlen_takes(query, window)
+        if efficient or torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
             seq_info = get_packed_info_from_kwargs(kwargs, query.device)
     if seq_info is None or not _mask_is_block_causal(attention_mask, seq_info[1], q_len, window):
         HF_PACKED_ATTENTION_STATS["fallback"] += 1
@@ -285,6 +426,35 @@ def _sdpa_packed_varlen(
     scale = head_dim**-0.5 if scaling is None else scaling
     n_kv_heads = key.shape[1]
     _, cu_seqlens, max_seqlen = seq_info
+    if efficient:
+        try:
+            out = _efficient_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window)
+        except torch.OutOfMemoryError:
+            raise
+        except RuntimeError as exc:
+            # A CUDA fault is not a refusal: let it surface.
+            if _ACCELERATOR_ERROR is not None and isinstance(exc, _ACCELERATOR_ERROR):
+                raise
+            # A build without this kernel shape refuses at forward: stop using it, this call goes to sdpa.
+            _EFFICIENT_VARLEN[:] = [False]
+            logging.getLogger(__name__).warning(
+                f"Unsloth: efficient varlen attention unavailable, packed rows past head dim 256 use sdpa ({exc})"
+            )
+            HF_PACKED_ATTENTION_STATS["fast"] -= 1
+            HF_PACKED_ATTENTION_STATS["fallback"] += 1
+            return orig(
+                module,
+                query,
+                key,
+                value,
+                attention_mask,
+                dropout = dropout,
+                scaling = scaling,
+                is_causal = is_causal,
+                **kwargs,
+            )
+        HF_PACKED_ATTENTION_STATS["efficient"] += 1
+        return out, None
     if torch_varlen is not None:
         gqa, k_in, v_in = {}, key, value
         if n_kv_heads != n_heads:
@@ -310,6 +480,8 @@ def _sdpa_packed_varlen(
         except torch.OutOfMemoryError:
             raise
         except RuntimeError as exc:
+            if _ACCELERATOR_ERROR is not None and isinstance(exc, _ACCELERATOR_ERROR):
+                raise
             # A build whose varlen picks a backend without causal GQA (cuDNN) refuses at forward: stop
             # using it and give this call to the wrapped sdpa.
             _TORCH_VARLEN[:] = [None]

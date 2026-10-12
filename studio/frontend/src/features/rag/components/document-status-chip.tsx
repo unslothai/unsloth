@@ -28,6 +28,7 @@ export function DocumentStatusChip({
   onRemove,
   onOpen,
   openTrigger,
+  onRetry,
   shared = false,
 }: {
   filename: string;
@@ -40,6 +41,7 @@ export function DocumentStatusChip({
   onOpen?: () => void;
   /** Hands that button to a viewer that owns its own open state (e.g. a dialog trigger). */
   openTrigger?: (trigger: ReactElement) => ReactNode;
+  onRetry?: () => void;
   /** Indexed for the whole project rather than this one chat: swap the file
    * glyph for a folder so the two scopes are told apart at a glance. */
   shared?: boolean;
@@ -88,6 +90,16 @@ export function DocumentStatusChip({
       ) : (
         <span className="truncate">{filename}</span>
       )}
+      {status === "failed" && onRetry ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          aria-label={`Retry ${filename}`}
+          className="shrink-0 text-ui-10 font-medium underline-offset-2 hover:underline"
+        >
+          Retry
+        </button>
+      ) : null}
       {/* spinner while indexing, else close button */}
       {processing ? (
         <span className="flex shrink-0 items-center gap-1 text-ui-10 text-muted-foreground">

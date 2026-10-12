@@ -14,9 +14,11 @@ import type { TrackedDocument } from "./use-rag-documents";
 export function ProjectSourceChip({
   doc,
   onRemove,
+  onRetry,
 }: {
   doc: TrackedDocument;
   onRemove?: () => void;
+  onRetry?: () => void;
 }) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);
   const ready = doc.status === "completed" && !doc.id.startsWith("pending_");
@@ -39,6 +41,7 @@ export function ProjectSourceChip({
       stage={doc.stage}
       error={doc.error}
       onRemove={onRemove}
+      onRetry={onRetry}
       onOpen={
         ready && isPdf
           ? () => openPreview({ documentId: doc.id, filename: doc.filename })

@@ -218,6 +218,12 @@ from .video_families import (
     video_family_prequant_repo,
     video_family_prequant_resident_gb,
     video_family_prequant_schemes,
+    first_frame_canvas,
+    video_checkpoint_refusal,
+    video_family_accepts_first_frame,
+    video_family_accepts_last_frame,
+    video_family_uses_i2v_pipeline,
+    video_i2v_call_kwargs,
 )
 from .video_frames import uint8_video_frames
 from .video_minimax_h3 import (
@@ -1049,6 +1055,39 @@ def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) 
     assert_local_pick_is_dit(repo_id, gguf_filename, page)
 
 
+def _i2v_pipeline_available(name: Optional[str]) -> bool:
+    from .video_i2v import i2v_pipeline_available
+    return i2v_pipeline_available(name)
+
+
+def _i2v_state_call_kwargs(fam: VideoFamily, state: Any) -> dict[str, Any]:
+    return video_i2v_call_kwargs(
+        fam,
+        state.variant_id,
+        state.gguf_filename,
+        state.display_repo_id,
+        state.repo_id,
+        state.base_repo,
+    )
+
+
+def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
+    if not i2v:
+        bg.note_eager_generation()
+        bg.kick()
+    elif not bg.kick():
+        # An image-to-video render records nothing; without this an i2v-only session never leaves eager.
+        bg.abandon("an image-to-video render records no compile sample")
+
+
+def assert_first_frame_pipeline_available(fam: VideoFamily) -> None:
+    if video_family_uses_i2v_pipeline(fam) and not _i2v_pipeline_available(fam.i2v_pipeline_class):
+        raise ValueError(
+            f"{fam.name} needs diffusers' {fam.i2v_pipeline_class} for a first frame, which this "
+            "install does not have. Update Unsloth to get a newer diffusers."
+        )
+
+
 def _refuse_local_ltx25_pipeline(repo_id: str, gguf_filename: Optional[str]) -> None:
     if not gguf_filename:
         assert_local_pipeline_not_ltx25(repo_id)
@@ -1100,11 +1139,15 @@ def _resolve_load_family(
     # Wan2.2 A14B repo, or the reverse), local or remote.
     if fam is not None and gguf_filename:
         named = detect_video_family(os.path.basename(gguf_filename))
-        if named is not None and named.name != fam.name and (
-            named.name in SAME_ARCH_VARIANTS.get(fam.name, ())
-            or fam.name in SAME_ARCH_VARIANTS.get(named.name, ())
-            # A remote pick has no header pass, so a file naming another Wan model picks the base config.
-            or (named.name.startswith("wan") and fam.name.startswith("wan"))
+        if (
+            named is not None
+            and named.name != fam.name
+            and (
+                named.name in SAME_ARCH_VARIANTS.get(fam.name, ())
+                or fam.name in SAME_ARCH_VARIANTS.get(named.name, ())
+                # A remote pick has no header pass, so a file naming another Wan model picks the base config.
+                or (named.name.startswith("wan") and fam.name.startswith("wan"))
+            )
         ):
             fam = named
     # A local file's header outranks its name (the name still picks 480p vs 720p).
@@ -1112,7 +1155,10 @@ def _resolve_load_family(
     if path:
         file_fam = detect_video_family(os.path.basename(path))
         name, _ = resolve_family_with_content(
-            fam.name if fam else None, path, "video", file_family = file_fam.name if file_fam else None
+            fam.name if fam else None,
+            path,
+            "video",
+            file_family = file_fam.name if file_fam else None,
         )
         if name is None:
             return None
@@ -2728,11 +2774,14 @@ class VideoBackend:
         # Every pick name is judged, not just an unresolved one: a T2V repo id can hold an I2V / VACE file.
         # A family override names the family for an opaque pick; it cannot make refused weights runnable.
         from .video_families import unsupported_video_checkpoint_reason
+
         reason = unsupported_video_checkpoint_reason(
             display_repo_id,
             repo_id,
             gguf_filename,
-            wan21_checkpoint = (gguf_filename or repo_id) if fam and fam.name.startswith("wan2.1") else None,
+            wan21_checkpoint = (gguf_filename or repo_id)
+            if fam and fam.name.startswith("wan2.1")
+            else None,
         )
         if reason:
             raise ValueError(reason)
@@ -2742,6 +2791,10 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
+        # Network-free, so refused before any eviction.
+        refusal = video_checkpoint_refusal(fam, repo_id, display_repo_id, gguf_filename)
+        if refusal:
+            raise ValueError(refusal)
         # ── modular-workflow refusals, before anything heavier. Deliberately the FIRST thing after the family resolves:
         # everything below reaches into diffusers (assert_pipeline_class_available, the transformer_class probe), so a
         # refusal placed after them would be unreachable on any install whose diffusers cannot even be imported -- and
@@ -5363,7 +5416,6 @@ class VideoBackend:
                 "repo_id": repo,
                 "files": names,
                 "bytes": sum(size for _name, size in staged),
-                "file_bytes": {name: int(size) for name, size in staged},
                 "gguf_filename": gguf,
                 # Describes the ENTRY, not the pick: a 2.3 repo whose checkpoint is already cached stages companion
                 # files only, and calling that "Model file" misdescribes what is downloading. A pipeline pick has no
@@ -9153,6 +9205,8 @@ class VideoBackend:
             bg = getattr(state, "bg_compile", None)
             bg_eager = bg is not None and bg.pending()
             bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
+            # Closed in the finally so the pipeline is text-to-video again on return, cancel or failure.
+            i2v_swap = contextlib.ExitStack()
             try:
                 # FIRST, before any device object exists. begin_generate runs this on a fresh daemon thread, so until it
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
@@ -9426,6 +9480,23 @@ class VideoBackend:
                 self._last_request_shape = request_shape
 
                 pipe = state.pipe
+                i2v_extra: dict[str, Any] = {}
+                i2v_active = first_pil is not None and video_family_uses_i2v_pipeline(fam)
+                if i2v_active:
+                    from .video_i2v import first_frame_pipeline
+
+                    pipe = i2v_swap.enter_context(
+                        first_frame_pipeline(
+                            pipe,
+                            fam.i2v_pipeline_class,
+                            config_overrides = dict(getattr(fam, "i2v_pipeline_config", ()) or ()),
+                        )
+                    )
+                    i2v_extra = _i2v_state_call_kwargs(fam, state)
+                    request_shape["pipeline"] = type(pipe).__name__
+                    if bg_eager:
+                        # LTX-2 i2v passes a per-token timestep (t2v: per sample), so it must not seed the compile.
+                        i2v_swap.enter_context(bg_compile.no_record())
                 call_params = inspect.signature(pipe.__call__).parameters
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,
@@ -9485,6 +9556,9 @@ class VideoBackend:
                 # Auto-blocks distinguish omitted conditioning from empty conditioning.
                 if first_pil is not None:
                     kwargs["image"] = first_pil
+                    for key, value in i2v_extra.items():
+                        if key in call_params:
+                            kwargs[key] = value
                 if last_pil is not None:
                     kwargs["last_image"] = last_pil
                 if references:
@@ -9792,8 +9866,7 @@ class VideoBackend:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
                 if bg_eager:
-                    bg.note_eager_generation()
-                    bg.kick()
+                    _settle_bg_compile(bg, i2v = i2v_active)
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
@@ -9841,6 +9914,7 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
+                i2v_swap.close()
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:
@@ -9861,15 +9935,24 @@ class VideoBackend:
         Unsupported keyframes are rejected. Omitting both dimensions matches the source aspect.
         """
         validate_video_keyframe_conditioning(
-            fam, h3_task, has_keyframes = bool(first_frame or last_frame)
+            fam,
+            h3_task,
+            has_keyframes = bool(first_frame or last_frame),
+            has_last_frame = bool(last_frame),
         )
         first = last = None
         if first_frame or last_frame:
             from .diffusion import decode_b64_image
             first = decode_b64_image(first_frame, mode = "RGB") if first_frame else None
             last = decode_b64_image(last_frame, mode = "RGB") if last_frame else None
+        # i2v pipelines centre-crop onto the nearest-aspect preset, as the reference workflow does.
+        i2v_pipeline = video_family_uses_i2v_pipeline(fam)
+        if first is not None:
+            assert_first_frame_pipeline_available(fam)
 
-        if (width is None or height is None) and (first is not None or last is not None):
+        if (width is None or height is None) and first is not None and i2v_pipeline:
+            width, height = first_frame_canvas(fam, *first.size)
+        elif (width is None or height is None) and (first is not None or last is not None):
             width, height = h3_canvas_for_aspect(*(first if first is not None else last).size)
         else:
             # begin_generate runs this for EVERY family, keyframes or not, so it cannot assume a family declares
@@ -9885,7 +9968,9 @@ class VideoBackend:
                 height or default_h,
             )
         # Fit once so both engines condition on identical pixels.
-        if first is not None:
+        if first is not None and i2v_pipeline:
+            first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_LAST)
+        elif first is not None:
             first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_FIRST)
         if last is not None:
             last = fit_h3_keyframe(last, width, height, anchor = H3_ANCHOR_LAST)
@@ -10591,6 +10676,8 @@ class VideoBackend:
                 "has_audio": False,
                 "supports_cfg": True,
                 "supports_keyframes": False,
+                "supports_first_frame": False,
+                "supports_last_frame": False,
                 "supports_references": False,
                 "h3_task": None,
                 "defaults": None,
@@ -10655,6 +10742,15 @@ class VideoBackend:
             "supports_cfg": fam.supports_cfg,
             # Expose only conditioning supported by the resident partition.
             "supports_keyframes": fam.supports_keyframes and state.h3_task != H3_TASK_REFERENCES,
+            # supports_keyframes above stays MiniMax-H3's contract for older frontends.
+            "supports_first_frame": video_family_accepts_first_frame(fam)
+            and state.h3_task != H3_TASK_REFERENCES
+            and (
+                not video_family_uses_i2v_pipeline(fam)
+                or _i2v_pipeline_available(fam.i2v_pipeline_class)
+            ),
+            "supports_last_frame": video_family_accepts_last_frame(fam)
+            and state.h3_task != H3_TASK_REFERENCES,
             "supports_references": fam.supports_references and state.h3_task == H3_TASK_REFERENCES,
             "h3_task": state.h3_task,
             "defaults": {
@@ -10670,6 +10766,7 @@ class VideoBackend:
                 # Let the frontend preview the backend-owned "match source" rule.
                 "canvas_short_edge": H3_CANVAS_SHORT_EDGE if fam.supports_keyframes else None,
                 "canvas_max_pixels": H3_CANVAS_MAX_PIXELS if fam.supports_keyframes else None,
+                "canvas_from_presets": video_family_uses_i2v_pipeline(fam),
                 "flow_shift": fam.default_flow_shift,
                 "audio_flow_shift": fam.default_audio_flow_shift,
                 # sd.cpp has no flag for the audio shift, so the control is only real on Diffusers.
