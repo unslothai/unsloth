@@ -48,6 +48,17 @@ TRAINING = {
     "error": None,
     "details": {"step": 25, "total_steps": 100, "loss": 1.25, "output_dir": "/srv/outputs/run"},
 }
+DIFFUSION_TRAINING = {
+    "active": True,
+    "job_id": "diff-1",
+    "status": "training",
+    "message": "Step 12/500",
+    "step": 12,
+    "total_steps": 500,
+    "loss": 0.5,
+    "output_dir": "/srv/outputs/diff",
+    "lora_path": "/srv/outputs/diff/lora.safetensors",
+}
 EXPORT = {
     "is_export_active": False,
     "active_op_kind": None,
@@ -76,6 +87,7 @@ PAYLOADS = {
     ("GET", "/api/inference/audio/stt/status"): STT,
     ("GET", "/api/settings/embedding-model"): EMBEDDER,
     ("GET", "/api/train/status"): TRAINING,
+    ("GET", "/api/train/diffusion/status"): DIFFUSION_TRAINING,
     ("GET", "/api/export/status"): EXPORT,
     ("GET", "/api/train/hardware"): HARDWARE,
 }
@@ -124,6 +136,19 @@ def test_every_slot_is_reported(monkeypatch):
         "total_steps": 100,
         "loss": 1.25,
         "progress_percent": 25.0,
+        "eta_seconds": None,
+    }
+    # Image LoRA training runs on its own trainer: start_training(kind="diffusion") is followed here.
+    assert status["diffusion_training"] == {
+        "job_id": "diff-1",
+        "phase": "training",
+        "is_training_running": True,
+        "message": "Step 12/500",
+        "error": None,
+        "step": 12,
+        "total_steps": 500,
+        "loss": 0.5,
+        "progress_percent": 2.4,
         "eta_seconds": None,
     }
     assert status["export"] == {

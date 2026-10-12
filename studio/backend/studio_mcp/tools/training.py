@@ -60,7 +60,7 @@ async def start_training(
 
     kind "diffusion": an image LoRA; ``config`` is the image training request, and ``data_dir`` names an image dataset already in Unsloth Studio (there is no upload tool).
 
-    Unsloth Studio refuses while another training run or an API inference request is active. The result's ``start_request_id`` cancels a start that has not begun (cancel kind "training_start"); ``job_id`` stops a running job (cancel kind "training")."""
+    Unsloth Studio refuses while another training run or an API inference request is active. The result's ``start_request_id`` cancels a start that has not begun (cancel kind "training_start"); ``job_id`` stops a running job (cancel kind "training", or "diffusion_training" for kind "diffusion", whose progress is studio_status's ``diffusion_training``)."""
     config = dict(config)
     if kind == "llm" and not config.get("start_request_id"):
         config["start_request_id"] = f"mcp-{secrets.token_hex(8)}"

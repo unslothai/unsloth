@@ -145,6 +145,7 @@ class StudioStatus(ToolOutput):
     stt: SttSlot = SttSlot()
     embedder: EmbedderSlot = EmbedderSlot()
     training: TrainingSlot = TrainingSlot()
+    diffusion_training: TrainingSlot = TrainingSlot()
     export: ExportSlot = ExportSlot()
     hardware: HardwareSlot = HardwareSlot()
     # Slots whose route failed, with the reason; the other slots are still reported.

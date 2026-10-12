@@ -37,6 +37,7 @@ SLOT_ROUTES = {
     "stt": "/api/inference/audio/stt/status",
     "embedder": "/api/settings/embedding-model",
     "training": "/api/train/status",
+    "diffusion_training": "/api/train/diffusion/status",
     "export": "/api/export/status",
     # The route reads the GPUs off the event loop; never call get_gpu_utilization from a tool.
     "hardware": "/api/train/hardware",
@@ -109,6 +110,16 @@ def _training(payload: dict) -> TrainingSlot:
     )
 
 
+def _diffusion_training(payload: dict) -> TrainingSlot:
+    step, total = integer(payload.get("step")), integer(payload.get("total_steps"))
+    return TrainingSlot.from_route(
+        payload,
+        phase = opt_text(payload.get("status")) or "idle",
+        is_training_running = payload.get("active") is True,
+        progress_percent = round(100.0 * step / total, 1) if step is not None and total else None,
+    )
+
+
 def _export(payload: dict) -> ExportSlot:
     path = opt_text(payload.get("last_op_output_path"))
     return ExportSlot.from_route(
@@ -135,6 +146,7 @@ BUILDERS: dict[str, Callable[[dict], Any]] = {
     "stt": _stt,
     "embedder": _embedder,
     "training": _training,
+    "diffusion_training": _diffusion_training,
     "export": _export,
     "hardware": _hardware,
 }
@@ -164,7 +176,7 @@ async def _generating(caller: Caller, slot: str) -> bool:
 
 
 async def studio_status() -> StudioStatus:
-    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, whether an image or video is generating, the training job, the export job and GPU use. Call this before loading a model or starting GPU work. The embedding model is managed by Unsloth Studio and unload_model does not unload it. A slot that could not be read is listed under ``unavailable`` with the reason."""
+    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, whether an image or video is generating, the LLM and image (diffusion) training jobs, the export job and GPU use. Call this before loading a model or starting GPU work. The embedding model is managed by Unsloth Studio and unload_model does not unload it. A slot that could not be read is listed under ``unavailable`` with the reason."""
     caller = current_caller()
     slots = list(SLOT_ROUTES)
     results, generating = await asyncio.gather(
