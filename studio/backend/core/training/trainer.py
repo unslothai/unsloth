@@ -4708,6 +4708,15 @@ class UnslothTrainer:
                     ):
                         # Unpatched TRL (CPU runs) only knows max_length: keep the chosen context length.
                         diffusion_args.setdefault("max_length", config_args["max_seq_length"])
+                    embedding_lr = training_args.get("embedding_learning_rate") if is_cpt else None
+                    if embedding_lr is not None:
+                        if "embedding_learning_rate" not in fields:
+                            raise RuntimeError(
+                                "Continued pretraining of a text-diffusion model with an embedding "
+                                "learning rate needs a newer Unsloth. Upgrade with: "
+                                "`pip install -U unsloth unsloth_zoo`."
+                            )
+                        diffusion_args["embedding_learning_rate"] = embedding_lr
                     skipped = sorted(set(config_args) - set(diffusion_args))
                     if skipped:
                         logger.info(f"DiffusionConfig has no {skipped}; not passed\n")

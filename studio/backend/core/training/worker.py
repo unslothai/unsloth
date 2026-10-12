@@ -451,6 +451,26 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
     return True
 
 
+def _mlx_diffusion_lm_error(config: dict, model_load_target: str) -> str | None:
+    """MLXTrainer only has next-token loss, so it would train a text-diffusion LM with the wrong objective."""
+    from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+
+    try:
+        profile = diffusion_lm_profile_for_model(
+            model_load_target,
+            hf_token = _worker_hf_token(config),
+            revision = config.get("model_revision"),
+        )
+    except Exception:
+        return None
+    if not profile:
+        return None
+    return (
+        f"Text-diffusion models ({profile}) cannot be trained with the MLX backend on Apple Silicon yet: "
+        "it has no denoising objective. Train this model on an NVIDIA or AMD GPU."
+    )
+
+
 def _validate_training_worker_config(config: dict, event_queue: Any) -> bool:
     if not _verify_config_pins(config, event_queue):
         return False
@@ -3776,6 +3796,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _hw.detect_hardware()
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
+        diffusion_error = _mlx_diffusion_lm_error(config, model_load_target)
+        if diffusion_error:
+            event_queue.put(
+                {"type": "error", "error": diffusion_error, "stack": "", "ts": time.time()}
+            )
+            return
         run_mlx_training_process(
             event_queue = event_queue,
             stop_queue = stop_queue,

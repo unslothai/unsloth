@@ -357,6 +357,7 @@ _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     # (Nemotron-Labs-Diffusion needs transformers.utils.generic.check_model_inputs). Matched by architecture,
     # since Nemotron-Labs-Diffusion shares model_type "nemotron" with the autoregressive Nemotron models.
     "LLaDAModelLM",
+    "LLaDAMoEModel",
     "LLaDAMoEModelLM",
     "DreamModel",
     "NemotronLabsDiffusionModel",

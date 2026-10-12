@@ -322,6 +322,29 @@ def test_unpicklable_remote_tokenizer_runs_the_map_in_process():
     assert "or _tokenizer_blocks_map_workers(self.tokenizer)" in src
 
 
+def test_diffusion_cpt_passes_the_embedding_learning_rate():
+    from core.training import trainer as trainer_mod
+
+    src = inspect.getsource(trainer_mod.UnslothTrainer)
+    branch = src[src.index('require_diffusion_api("DiffusionConfig")') : src.index("elif is_cpt:")]
+    assert 'diffusion_args["embedding_learning_rate"] = embedding_lr' in branch
+    assert 'training_args.get("embedding_learning_rate") if is_cpt else None' in branch
+
+
+def test_mlx_refuses_text_diffusion_before_its_trainer(monkeypatch):
+    from core.training import worker
+    from utils.models import diffusion_lm
+
+    profiles = {"diffusion/llada": "llada", "org/llama": None}
+    monkeypatch.setattr(
+        diffusion_lm, "diffusion_lm_profile_for_model", lambda name, **kwargs: profiles[name]
+    )
+    assert "llada" in worker._mlx_diffusion_lm_error({}, "diffusion/llada")
+    assert worker._mlx_diffusion_lm_error({}, "org/llama") is None
+    src = inspect.getsource(worker.run_training_process)
+    assert src.index("_mlx_diffusion_lm_error(") < src.index("run_mlx_training_process(")
+
+
 def test_pre_detect_applies_the_overrides_before_the_row_bound():
     from core.training import worker
     src = inspect.getsource(worker._pre_detect_training_model)
@@ -521,6 +544,7 @@ def test_text_path_load_still_catches_a_diffusion_model():
     "architecture",
     [
         "LLaDAModelLM",
+        "LLaDAMoEModel",
         "LLaDAMoEModelLM",
         "DreamModel",
         "NemotronLabsDiffusionModel",
@@ -538,6 +562,17 @@ def test_text_diffusion_checkpoints_use_the_550_transformers_tier(tmp_path, arch
         json.dumps({"architectures": [architecture], "model_type": "x"})
     )
     assert get_transformers_tier(str(folder), probe = False) == "550"
+
+
+def test_every_remote_code_family_architecture_is_in_the_550_tier():
+    from utils.models.diffusion_lm import DIFFUSION_LM_PROFILES
+    from utils.transformers_version import _TRANSFORMERS_550_ARCHITECTURES
+
+    # DiffusionGemma is native transformers code, offered through the latest-transformers prompt instead.
+    remote = {
+        a for name, _, archs in DIFFUSION_LM_PROFILES if name != "diffusion_gemma" for a in archs
+    }
+    assert remote <= _TRANSFORMERS_550_ARCHITECTURES, remote - _TRANSFORMERS_550_ARCHITECTURES
 
 
 def test_autoregressive_nemotron_keeps_its_tier(tmp_path):
