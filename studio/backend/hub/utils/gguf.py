@@ -426,11 +426,25 @@ def gguf_checkpoint_family(filename: str) -> Optional[str]:
     return family.strip("-_. /\t\r\n") or None
 
 
+def _fold_name(text: str, *, drop_quant: bool) -> str:
+    token = quant_token_with_bpw(text) if drop_quant else None
+    if token is not None:
+        text = re.sub(re.escape(token), "", text, count = 1, flags = re.IGNORECASE)
+    return re.sub(r"[-_.\s]+", "-", text).strip("-").casefold()
+
+
 def _checkpoint_identity(filename: str) -> Optional[str]:
-    family = gguf_checkpoint_family(filename)
-    if family is None:
-        return None
-    return re.sub(r"[-_.\s]+", "-", family).strip("-").casefold() or None
+    """keep a quant directory's other words (``alpha-Q4_K_M/``) unless they repeat the file's name."""
+    parts = gguf_variant_family(filename.replace("\\", "/")).split("/")
+    stem = _fold_name(parts.pop(), drop_quant = True)
+    segments = []
+    for segment in filter(None, parts):
+        quant_dir = _is_quant_directory(segment)
+        folded = _fold_name(segment, drop_quant = quant_dir)
+        if quant_dir and folded in ("", stem):
+            continue
+        segments.append(folded)
+    return "/".join((*segments, stem)).strip("/") or None
 
 
 def _paths_by_variant_key(paths: Iterable[str]) -> dict[str, list[str]]:

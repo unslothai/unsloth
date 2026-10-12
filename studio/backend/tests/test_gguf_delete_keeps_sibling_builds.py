@@ -29,6 +29,7 @@ def _cache_repo(tmp_path: Path, names: list[str]):
         blob = blobs / f"sha{index}"
         blob.write_bytes(b"x" * 64)
         link = snap / name
+        link.parent.mkdir(parents = True, exist_ok = True)
         link.symlink_to(blob)
         files.append(
             SimpleNamespace(
@@ -311,3 +312,25 @@ def test_reclaiming_an_update_keeps_a_build_alone_in_an_older_snapshot(monkeypat
     assert (repo_path / "snapshots" / ("c" * 40) / SWIFT).exists()
     assert (repo_path / "blobs" / "SWIFTsha").exists()
     assert (repo_path / "blobs" / "NEWsha").exists()
+
+
+def test_builds_under_quant_named_directories_stay_apart(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    keys = gguf_variant_keys_by_checkpoint(
+        [
+            "alpha-Q4_K_M/model.gguf",
+            "beta-Q4_K_M/model.gguf",
+            "Q6_K/model-Q6_K-00001-of-00002.gguf",
+            "model-Q6_K/model-Q6_K-00001-of-00002.gguf",
+        ]
+    )
+    assert keys["alpha-Q4_K_M/model.gguf"] == "Q4_K_M"
+    assert keys["beta-Q4_K_M/model.gguf"] == "beta-Q4_K_M/model"
+    # a directory repeating the file's own name is still a copy of the build.
+    assert keys["model-Q6_K/model-Q6_K-00001-of-00002.gguf"] == "Q6_K"
+
+    repo, snap = _cache_repo(tmp_path, ["alpha-Q4_K_M/model.gguf", "beta-Q4_K_M/model.gguf"])
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snap / "alpha-Q4_K_M/model.gguf").is_symlink()
+    assert (snap / "beta-Q4_K_M/model.gguf").is_symlink()
