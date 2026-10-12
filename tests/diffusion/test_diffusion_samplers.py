@@ -329,7 +329,8 @@ _TINY_SCRIPT = r"""
 import os, sys
 import torch
 from unsloth import FastLanguageModel
-from unsloth.models.diffusion import DiffusionGenerationCancelled, FastDiffusionModel, is_diffusion_model
+from unsloth.models.diffusion import FastDiffusionModel, is_diffusion_model
+from unsloth.models.diffusion_samplers import DiffusionGenerationCancelled
 
 path = sys.argv[1]
 device = os.environ.get("TINY_DEVICE", "cpu")

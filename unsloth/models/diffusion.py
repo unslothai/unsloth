@@ -30,7 +30,6 @@ from .diffusion_profiles import (
     restore_rotary_buffers,
     unwrap_diffusion_model,
 )
-from .diffusion_samplers import DiffusionGenerationCancelled
 from .llama import logger
 from .loader_utils import (
     planner_config_overrides,
@@ -44,7 +43,6 @@ from .loader_utils import (
 __all__ = [
     "FastDiffusionModel",
     "DIFFUSION_MODEL_TYPES",
-    "DiffusionGenerationCancelled",
     "is_diffusion_model",
     "is_diffusion_model_type",
 ]
