@@ -6958,7 +6958,7 @@ def unsloth_save_pretrained_torchao(
 
     if torchao_config is not None:
         if has_qat_config:
-            # The QAT notebook passes its scheme's config here; the 16-bit save below must see plain modules, not fake-quantized ones.
+            # The 16-bit save below must see plain modules, not fake-quantized ones.
             _strip_torchao_fake_quantization(self)
         _unsloth_save_torchao_with_given_config(
             model = self,

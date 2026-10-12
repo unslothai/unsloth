@@ -7237,8 +7237,7 @@ def _merged_torchao_config_for_peft_qat(model):
 
     configs = model._torchao_config.base_config_and_filter_fns
     if len(configs) == 1:
-        # One plain config plus an explicit skip list, as for PTQ: transformers applies a module-name
-        # FqnToConfig entry to every parameter of the module, so a Linear bias would be quantized too.
+        # Plain config + skip list, not FqnToConfig: transformers 5 applies a module entry to its bias too.
         base_config, filter_fn = configs[0]
         filter_fn = filter_fn or _is_linear
         skip = [
@@ -7293,7 +7292,7 @@ def _convert_torchao_model(model):
     module_to_fqn_dict = {}
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
-        # A manual quantize_(model, QATConfig(step = "convert")) (the QAT notebook) already swapped the fake-quantized modules back to plain ones without quantizing them.
+        # The QAT notebook's manual QATConfig(step = "convert") leaves plain, unquantized modules.
         quantize_(model, base_config, filter_fn = _unquantized_filter(filter_fn))
 
         if filter_fn is None:
