@@ -869,6 +869,11 @@ test("the agent's Downloads rule covers its tab only while a chat run is using i
   // Another run ending leaves this one alone; this one ending hands the tab back to the user.
   endBrowserAgentRun("run0");
   assert.equal(agentDownloadRule("t1", "https://example.com/", "https://example.com/f.pdf"), "block");
+  // A blob: download is the rule of the site that made it.
+  useBrowserAgentStore.setState({
+    permissions: { defaults: { ...blocked, downloads: "allow" }, sites: { "site.example": blocked } },
+  });
+  assert.equal(agentDownloadRule("t1", "blob:https://site.example/3f2a", "blob:https://site.example/3f2a"), "block");
   endBrowserAgentRun("run1");
   assert.equal(agentDownloadRule("t1", "https://example.com/", "https://example.com/f.pdf"), null);
 });

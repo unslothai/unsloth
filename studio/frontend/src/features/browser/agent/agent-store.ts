@@ -120,6 +120,16 @@ export function answerQuestion(id: number, allow: boolean): void {
 
 const DOWNLOAD_STRICTNESS: Record<DownloadsRule, number> = { allow: 0, ask: 1, block: 2 };
 
+/** A blob: URL has no host of its own; the site that made it is its origin. */
+function creator(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "blob:" ? parsed.origin : url;
+  } catch {
+    return url;
+  }
+}
+
 /** The Downloads permission for a download from `tabId`, or null when that isn't the agent's tab.
  *  The site that started it decides, so a blocked site can't hand its files to an allowed CDN; the
  *  file's own host only when it has a rule of its own, and then the stricter one wins. */
@@ -127,8 +137,8 @@ export function agentDownloadRule(tabId: string, site: string, fileUrl: string):
   const state = useBrowserAgentStore.getState();
   // Between runs the tab is the user's again, under their own download settings.
   if (state.tabId !== tabId || !state.runKey) return null;
-  const rule = ruleFor(site || fileUrl, state.permissions).rule.downloads;
-  const file = ruleFor(fileUrl, state.permissions);
+  const rule = ruleFor(creator(site || fileUrl), state.permissions).rule.downloads;
+  const file = ruleFor(creator(fileUrl), state.permissions);
   if (!file.site) return rule;
   return DOWNLOAD_STRICTNESS[file.rule.downloads] > DOWNLOAD_STRICTNESS[rule] ? file.rule.downloads : rule;
 }

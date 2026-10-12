@@ -27,6 +27,8 @@ export type ElementInfo = {
   formMethod: string;
   formAction: string;
   formHasPassword: boolean;
+  /** For a dropdown described with a value: the label of the option that value selects. */
+  option?: string;
   submits: boolean;
 };
 
@@ -239,8 +241,11 @@ export function installPageAgent(): PageAgent {
     }
     masked.clear();
     if (!on) return { ok: true };
-    for (const el of Array.from(document.querySelectorAll<HTMLInputElement>("input, textarea"))) {
-      if (!el.value || !isSecret(el, roleOf(el))) continue;
+    for (const el of Array.from(document.querySelectorAll<HTMLInputElement>("input, textarea, [contenteditable]"))) {
+      const secret = el.isContentEditable
+        ? Boolean(el.innerText.trim()) && (SECRET.test(el.getAttribute("autocomplete") ?? "") || SECRET_NAME.test(nameOf(el)))
+        : Boolean(el.value) && isSecret(el, roleOf(el));
+      if (!secret) continue;
       masked.set(el, el.getAttribute("style"));
       el.style.setProperty("color", "transparent", "important");
       el.style.setProperty("-webkit-text-fill-color", "transparent", "important");
@@ -454,16 +459,17 @@ export function installPageAgent(): PageAgent {
     return { ok: true, text: hits.length ? hits.join("\n") : `Nothing on this page matches ${quoted(query)}.`, links };
   };
 
-  const isSubmitter = (node: Element) => {
-    const kind = (node.getAttribute("type") ?? "").toLowerCase();
-    return node.tagName === "BUTTON" ? kind === "" || kind === "submit" : node.tagName === "INPUT" && (kind === "submit" || kind === "image");
-  };
+  // The normalized type: a button with an invalid type attribute is a submit button.
+  const isSubmitter = (node: Element) =>
+    node instanceof HTMLButtonElement
+      ? node.type === "submit"
+      : node instanceof HTMLInputElement && (node.type === "submit" || node.type === "image");
   /** The button Enter in a field submits with, as a browser picks it: the form's first submit button. */
   const defaultButton = (form: HTMLFormElement | null) =>
     Array.from(form?.elements ?? []).find(isSubmitter) as HTMLButtonElement | HTMLInputElement | undefined;
 
   /** No ref: the focused element, which a key press would act on. */
-  const describe = (ref: string): Record<string, unknown> => {
+  const describe = (ref: string, value?: unknown): Record<string, unknown> => {
     const found = ref ? lookup(ref) : (document.activeElement ?? document.body);
     // Clicking a label clicks its control, which may be a submit button.
     const el = found instanceof HTMLLabelElement && found.control ? found.control : found;
@@ -492,6 +498,10 @@ export function installPageAgent(): PageAgent {
       // form.elements, not descendants: a field joins a form from anywhere with form="id".
       formHasPassword: Array.from(form?.elements ?? []).some((node) => (node as HTMLInputElement).type === "password"),
       submits,
+      // What choose() will pick, so the panel gates that option's label, not the model's words.
+      ...(el instanceof HTMLSelectElement && typeof value === "string"
+        ? { option: clean(findOption(el, value)?.text ?? "", 200) }
+        : {}),
     };
     return { ok: true, info };
   };
@@ -648,13 +658,19 @@ export function installPageAgent(): PageAgent {
     return submit ? press("Enter", el) : { ok: true };
   };
 
+  const findOption = (select: HTMLSelectElement, value: string): HTMLOptionElement | undefined => {
+    const wanted = value.trim().toLowerCase();
+    return (
+      Array.from(select.options).find(
+        (candidate) => candidate.text.trim().toLowerCase() === wanted || candidate.value.toLowerCase() === wanted,
+      ) ?? Array.from(select.options).find((candidate) => candidate.text.toLowerCase().includes(wanted))
+    );
+  };
+
   const choose = (ref: string, value: string): Record<string, unknown> => {
     const el = lookup(ref);
-    const wanted = value.trim().toLowerCase();
     if (el instanceof HTMLSelectElement) {
-      const option = Array.from(el.options).find(
-        (candidate) => candidate.text.trim().toLowerCase() === wanted || candidate.value.toLowerCase() === wanted,
-      ) ?? Array.from(el.options).find((candidate) => candidate.text.toLowerCase().includes(wanted));
+      const option = findOption(el, value);
       if (!option) return { ok: false, error: `${ref} has no such option; snapshot it to see its options.` };
       el.value = option.value;
       el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -663,7 +679,7 @@ export function installPageAgent(): PageAgent {
     }
     const role = roleOf(el);
     if (role === "checkbox" || role === "radio" || role === "switch") {
-      const on = ["true", "on", "yes", "checked", "1", "check"].includes(wanted);
+      const on = ["true", "on", "yes", "checked", "1", "check"].includes(value.trim().toLowerCase());
       const current = el instanceof HTMLInputElement ? el.checked : el.getAttribute("aria-checked") === "true";
       if (current !== on) return click(ref, false);
       return { ok: true, note: `Already ${on ? "checked" : "unchecked"}.` };
@@ -713,7 +729,7 @@ export function installPageAgent(): PageAgent {
         case "find":
           return find(String(command.query ?? ""));
         case "describe":
-          return describe(ref);
+          return describe(ref, command.value);
         case "click":
           return click(ref, command.directLinks === true);
         case "type":

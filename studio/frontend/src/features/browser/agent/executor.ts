@@ -250,6 +250,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
           formAction: String(info.formAction ?? "").slice(0, 8192),
           formHasPassword: info.formHasPassword === true,
           submits: info.submits === true,
+          ...(typeof info.option === "string" ? { option: info.option.slice(0, 200) } : {}),
         }
       : undefined,
   };
@@ -464,13 +465,14 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   // Acting on an element: what it is decides whether the user is asked first.
   const ref = action.ref ?? "";
-  const described = await pageCall(ready, { op: "describe", ref });
+  const described = await pageCall(ready, { op: "describe", ref, ...(action.op === "select" ? { value: action.value ?? "" } : {}) });
   if (!described.ok || !described.info) return { ok: false, error: described.error ?? `${ref} could not be found.` };
   const info: ElementInfo = described.info;
   const gates: Gate[] = [];
   if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, before, action.policy, permissions()));
   if (action.op === "select") {
-    const chosen = info.role === "combobox" ? { ...info, name: action.value ?? "" } : info;
+    // The option the page will select: its value can differ from the label the user sees.
+    const chosen = info.role === "combobox" ? { ...info, name: info.option || action.value || "" } : info;
     gates.push(gateElement("select", chosen, before, action.policy, permissions()));
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
