@@ -43,9 +43,9 @@ def _parked_then_recharged():
 def test_the_published_round_announces_the_whole_prompt():
     controller = _parked_then_recharged()
     controller.note_tokens("chat", 6400, 6400)
-    assert controller.snapshot().prefilling == 6400, (
-        "the erase took every cell, so the round prefills its whole prompt, not its growth"
-    )
+    assert (
+        controller.snapshot().prefilling == 6400
+    ), "the erase took every cell, so the round prefills its whole prompt, not its growth"
     assert controller.participant("chat").measured is False
 
 
