@@ -103,9 +103,12 @@ test("buying, posting, signing in and POST forms ask; ordinary clicks and search
   // A link that only opens the sign-in page is just navigation.
   assert.equal(gateElement("click", element({ role: "link", tag: "a", name: "Sign in", href: "https://shop.example/login" }), page, open, NONE).kind, "allow");
   assert.equal(gateElement("click", element({ role: "link", tag: "a", name: "Buy now", href: "https://shop.example/buy" }), page, open, NONE).kind, "ask");
-  // Ticking a box is a click on it; picking a dropdown option is not.
+  // Ticking a box is a click on it; a dropdown is judged by the option chosen (executor passes it as the name).
   assert.equal(gateElement("select", element({ role: "checkbox", tag: "input", type: "checkbox", name: "Subscribe" }), page, open, NONE).kind, "ask");
-  assert.equal(gateElement("select", element({ role: "combobox", tag: "select", name: "Cancel reason" }), page, open, NONE).kind, "allow");
+  assert.equal(gateElement("select", element({ role: "combobox", tag: "select", name: "Large" }), page, open, NONE).kind, "allow");
+  assert.equal(gateElement("select", element({ role: "combobox", tag: "select", name: "Delete my account" }), page, open, NONE).kind, "ask");
+  // The executor's name for Delete pressed outside a text field.
+  assert.equal(gateElement("click", element({ role: "row", name: "delete key on Invoice 42" }), page, open, NONE).kind, "ask");
 });
 
 test("the durable gate keeps every browser tool on the live-tab stream", async () => {
