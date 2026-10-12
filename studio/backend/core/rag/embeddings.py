@@ -611,7 +611,21 @@ def _get(model_name: str | None = None):
                 # Re-emit in finally: a load that raises after transformers wrote its report is exactly when a
                 # MISSING or MISMATCH line matters.
                 try:
-                    _model = SentenceTransformer(load_target, **st_kwargs)
+                    try:
+                        _model = SentenceTransformer(load_target, **st_kwargs)
+                    except Exception as exc:  # noqa: BLE001 - e.g. CUDA OOM beside a resident chat model
+                        # Retry on CPU before encode()'s llama-server fallback, which changes the embedding space.
+                        if device == "cpu" or config.embed_device_requires_gpu():
+                            raise
+                        logger.warning(
+                            "loading embedding model %s on %s failed (%s); retrying on CPU",
+                            name,
+                            device,
+                            exc,
+                        )
+                        st_kwargs["device"] = "cpu"
+                        st_kwargs["model_kwargs"] = dtype_kwargs(_load_dtype("cpu", name))
+                        _model = SentenceTransformer(load_target, **st_kwargs)
                 finally:
                     _emit_load_reports(report)
             _name = name

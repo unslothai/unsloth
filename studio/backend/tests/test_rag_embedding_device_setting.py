@@ -138,3 +138,41 @@ def test_a_read_overlapping_a_save_does_not_cache_the_old_device(monkeypatch, re
     monkeypatch.setattr(ems, "time", SimpleNamespace(monotonic = lambda: 1000.0))
     assert ems.get_stored_embedding_device() == "auto"
     assert config.embed_device_preference() == "gpu"
+
+
+@pytest.mark.parametrize("env, retried", [("auto", True), ("gpu", False)])
+def test_a_failed_gpu_load_retries_on_cpu_unless_the_environment_insists(
+    monkeypatch, tmp_path, released, env, retried
+):
+    """Out of VRAM beside a chat model: Settings' GPU falls back to CPU in the same embedding space."""
+    attempts = []
+
+    class FakeSentenceTransformer:
+        def __init__(self, name, **kwargs):
+            attempts.append(kwargs["device"])
+            if kwargs["device"] != "cpu":
+                raise RuntimeError("CUDA out of memory")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cuda")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache", lambda: str(tmp_path / "hub")
+    )
+    monkeypatch.setattr(embeddings, "_model", None)
+    monkeypatch.setattr(embeddings, "_name", None)
+    _put("gpu")
+    monkeypatch.setattr(config, "EMBED_DEVICE", env)
+
+    if retried:
+        embeddings._get("Org/Embedder")
+        assert attempts == ["cuda", "cpu"]
+    else:
+        with pytest.raises(RuntimeError, match = "out of memory"):
+            embeddings._get("Org/Embedder")
+        assert attempts == ["cuda"]
