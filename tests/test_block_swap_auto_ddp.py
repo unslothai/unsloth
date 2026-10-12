@@ -532,10 +532,39 @@ def test_ignore_list_is_applied_when_from_pretrained_loads_an_adapter():
 
 
 def test_full_finetuning_never_ignores_a_trainable_weight(monkeypatch):
-    """Every weight trainable: nothing to keep out of DDP (zoo's BlockSwap only swaps frozen weights,
-    and the loaders refuse offload_layers with full_finetuning)."""
+    """Trainable decoder weights are never put on the ignore list: the helper refuses instead (the
+    loaders already refuse offload_layers with full_finetuning, so only PEFT extras reach this)."""
     ns = _ignore_helpers(monkeypatch)
     model = _tiny_peft_model()
     for p in model.parameters():
         p.requires_grad_(True)
-    assert ns["_ignore_block_swap_params_for_ddp"](model) == []
+    with pytest.raises(ValueError, match = "decoder weights are trainable"):
+        ns["_ignore_block_swap_params_for_ddp"](model)
+    assert model._ddp_params_and_buffers_to_ignore == ["model.rotary_emb.inv_freq"]
+
+
+@pytest.mark.parametrize("bias, refused", [("none", False), ("lora_only", True), ("all", True)])
+def test_trainable_decoder_biases_are_refused_on_every_rank(monkeypatch, bias, refused):
+    """PEFT bias = "all" / "lora_only" unfreezes biases the swap may already hold as placeholders on
+    some ranks only. The refusal reads the PEFT config, so a rank that swapped nothing refuses too."""
+    ns = _ignore_helpers(monkeypatch)
+    transformers = pytest.importorskip("transformers")
+    peft = pytest.importorskip("peft")
+    config = transformers.LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        attention_bias = True,
+    )
+    model = transformers.LlamaForCausalLM(config)
+    model._unsloth_offload_layers_auto_ddp = True
+    lora = peft.LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"], bias = bias)
+    model = peft.get_peft_model(model, lora)
+    if refused:
+        with pytest.raises(ValueError, match = "bias = 'none'"):
+            ns["_ignore_block_swap_params_for_ddp"](model)
+    else:
+        assert ns["_ignore_block_swap_params_for_ddp"](model)

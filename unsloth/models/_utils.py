@@ -7701,6 +7701,20 @@ def _ignore_block_swap_params_for_ddp(model):
         layer_params = {id(p) for p in find_decoder_layers(model).parameters()}
     except Exception:
         return []
+    # A decoder weight PEFT made trainable after the swap captured it (bias = "all" / "lora_only",
+    # modules_to_save inside a layer) can be a placeholder on one rank and full on another, and DDP
+    # must sync its gradient. Decided from the PEFT config alone, so every rank refuses alike.
+    trainable = [
+        name
+        for name, p in model.named_parameters()
+        if id(p) in layer_params and p.requires_grad and "lora_" not in name
+    ]
+    if trainable:
+        raise ValueError(
+            "Unsloth: offload_layers = 'auto' under DDP keeps the frozen decoder weights out of DDP, "
+            f"but {len(trainable)} decoder weights are trainable (e.g. {trainable[0]}). Use "
+            "bias = 'none' and no modules_to_save inside the decoder layers, or offload_layers = 0."
+        )
     names = [
         name
         for name, p in model.named_parameters()
