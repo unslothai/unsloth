@@ -21,10 +21,23 @@ test("an upward scroll that arrives with a shorter page is content leaving, not 
   assert.match(body, /const scrollHeight = el\.scrollHeight;/);
   assert.match(
     body,
-    /const keyed =\s*performance\.now\(\) - scrollKeyAt < SCROLL_KEY_WINDOW_MS;\s*if \(\s*distanceDelta > 0 &&\s*\(keyed \|\| scrollHeight >= lastScrollHeight\)\s*\) \{\s*upwardAccumulator \+= distanceDelta;/,
+    /if \(\s*distanceDelta > 0 &&\s*!clamped &&\s*\(keyed \|\| scrollHeight >= lastScrollHeight\)\s*\) \{\s*upwardAccumulator \+= distanceDelta;/,
     "a removal clamps scrollTop and content regrown before the scroll event lands must not read as the reader scrolling up, unless a scroll-up key was just pressed",
   );
   assert.match(body, /lastScrollHeight = scrollHeight;\s*requestTick\(\);/, "the height baseline advances with every scroll event");
+});
+
+test("leaving a pinned bottom as the page changes height, with no key or pointer behind it, is a clamp", () => {
+  const body = between("const onScroll = () => {", "\n      };");
+  assert.match(
+    body,
+    /const clamped =\s*lastDistanceFromBottom <= AT_BOTTOM_THRESHOLD_PX &&\s*scrollHeight !== lastScrollHeight &&\s*!keyed &&\s*!pointerHeld;/,
+    "a row below shrinking as the next one lands pulls scrollTop up in the same event; detaching there stops the stream following",
+  );
+  assert.match(HOOK, /el\.addEventListener\("pointerdown", onPointerDown, \{ passive: true \}\);/, "a scrollbar drag starts with a pointerdown on the viewport");
+  assert.match(HOOK, /el\.ownerDocument\.addEventListener\("pointerup", onPointerUp, true\);/);
+  assert.match(HOOK, /el\.removeEventListener\("pointerdown", onPointerDown\);/);
+  assert.match(HOOK, /el\.ownerDocument\.removeEventListener\("pointerup", onPointerUp, true\);/);
 });
 
 test("the correction resyncs the height baseline with the others", () => {

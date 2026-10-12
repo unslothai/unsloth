@@ -220,6 +220,7 @@ export function useIntentAwareAutoScroll(): {
       let upwardAccumulator = 0;
       let touchStartY = 0;
       let scrollKeyAt = Number.NEGATIVE_INFINITY;
+      let pointerHeld = false;
 
       const distanceFromBottom = (): number => {
         if (el.scrollHeight <= el.clientHeight) {
@@ -517,6 +518,13 @@ export function useIntentAwareAutoScroll(): {
         scrollKeyAt = performance.now();
       };
 
+      const onPointerDown = () => {
+        pointerHeld = true;
+      };
+      const onPointerUp = () => {
+        pointerHeld = false;
+      };
+
       const onTouchStart = (e: TouchEvent) => {
         touchStartY = e.touches[0]?.clientY ?? 0;
       };
@@ -570,8 +578,16 @@ export function useIntentAwareAutoScroll(): {
           const distanceDelta = distanceNow - lastDistanceFromBottom;
           const keyed =
             performance.now() - scrollKeyAt < SCROLL_KEY_WINDOW_MS;
+          // Leaving a pinned bottom in the same event the content changed, with no key or pointer
+          // behind it, is a clamp (something below shrank as a new row landed), not the user.
+          const clamped =
+            lastDistanceFromBottom <= AT_BOTTOM_THRESHOLD_PX &&
+            scrollHeight !== lastScrollHeight &&
+            !keyed &&
+            !pointerHeld;
           if (
             distanceDelta > 0 &&
+            !clamped &&
             (keyed || scrollHeight >= lastScrollHeight)
           ) {
             upwardAccumulator += distanceDelta;
@@ -729,6 +745,9 @@ export function useIntentAwareAutoScroll(): {
       el.ownerDocument.addEventListener("keydown", onKeyDown, {
         passive: true,
       });
+      el.addEventListener("pointerdown", onPointerDown, { passive: true });
+      el.ownerDocument.addEventListener("pointerup", onPointerUp, true);
+      el.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
       // ResizeObserver covers window resizes. visualViewport.resize is the
       // only signal for iOS software-keyboard changes, where the visual
       // viewport shrinks without the element's clientHeight changing.
@@ -766,6 +785,9 @@ export function useIntentAwareAutoScroll(): {
         el.removeEventListener("touchmove", onTouchMove);
         el.removeEventListener("scroll", onScroll);
         el.ownerDocument.removeEventListener("keydown", onKeyDown);
+        el.removeEventListener("pointerdown", onPointerDown);
+        el.ownerDocument.removeEventListener("pointerup", onPointerUp, true);
+        el.ownerDocument.removeEventListener("pointercancel", onPointerUp, true);
         window.visualViewport?.removeEventListener("resize", onViewportResize);
         scrollImplRef.current = () => {
           /* no viewport mounted */
