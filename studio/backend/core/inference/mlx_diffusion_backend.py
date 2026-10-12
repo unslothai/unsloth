@@ -25,6 +25,7 @@ from core.inference.diffusion_families import (
     DiffusionFamily,
     DiffusionModelReplacedError,
     LoadIdentity,
+    _is_local_path,
     canonical_base,
     detect_family_for_pick,
     family_mlx_supported,
@@ -614,7 +615,8 @@ class MlxDiffusionBackend:
         if loras:
             raise ValueError("LoRA adapters are not supported on the MLX engine yet.")
         base = resolve_base_repo(fam, base_repo)
-        model_config = mlx_model_config_for(fam, base)
+        named = _named_mlx_base(fam, base) if _is_local_path(base) else None
+        model_config = mlx_model_config_for(fam, named or base)
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")

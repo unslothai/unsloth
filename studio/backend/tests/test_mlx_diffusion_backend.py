@@ -694,6 +694,19 @@ def test_an_undistilled_base_tag_selects_the_base_config_and_companions(env, mon
     assert backend.status()["base_repo"] == "Tongyi-MAI/Z-Image"
 
 
+@pytest.mark.parametrize(
+    "folder, expected", [("Z-Image", "z-image"), ("Z-Image-Turbo", "z-image-turbo")]
+)
+def test_an_explicit_local_base_selects_the_config_its_name_spells(env, tmp_path, folder, expected):
+    backend, runtime, calls = env
+    local_base = tmp_path / "models" / folder
+    local_base.mkdir(parents = True)
+    _load(backend, base_repo = str(local_base))
+    assert calls["fetch_base"][-1][0] == str(local_base)
+    assert runtime.builds[-1]["model_config"] == expected
+    assert backend.status()["base_repo"] == str(local_base)
+
+
 def test_base_fetch_is_cancellable_between_files(monkeypatch):
     import huggingface_hub
     import utils.hf_xet_fallback as xet
