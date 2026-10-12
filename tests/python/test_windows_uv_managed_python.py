@@ -396,30 +396,42 @@ def test_the_resolution(shell, arch, ok_arches, opt_out, expected):
     assert _site(shell, arch, ok_arches, opt_out) == expected
 
 
-# ── A legacy environment is reused only when uv's own store holds its base ──
+# ── A legacy environment is reused only on the uv-managed Python this install resolved ──
+
+STORE_HOME = "store/cpython-3.13.12-windows-x86_64-none"
 
 
 @needs_pwsh
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize(
-    "home, expected",
+    "home, version, exact, expected",
     [
-        ("store/cpython-3.13.12-windows-x86_64-none", "True"),
-        ("Python312", "False"),
-        (None, "False"),
+        (STORE_HOME, "3.13.12", False, "True"),
+        (STORE_HOME, "3.13.9", False, "True"),  # same minor, another patch
+        (STORE_HOME, "3.13.9", True, "False"),  # --python 3.13.12 asked for exactly
+        ("store/cpython-3.12.13-windows-x86_64-none", "3.12.13", False, "False"),
+        ("Python312", "3.13.12", False, "False"),  # the user's own Python
+        (STORE_HOME, None, False, "False"),
+        (None, None, False, "False"),
     ],
 )
-def test_a_legacy_environment_on_the_users_python_is_not_reused(shell, tmp_path, home, expected):
+def test_a_legacy_environment_is_reused_only_on_the_resolved_python(
+    shell, tmp_path, home, version, exact, expected
+):
     (tmp_path / "uv.ps1").write_text(FAKE_UV, encoding = "utf-8")
     venv = tmp_path / "legacy"
     venv.mkdir()
     if home is not None:
-        (venv / "pyvenv.cfg").write_text(f"home = {tmp_path / home}\n", encoding = "utf-8")
+        cfg = f"home = {tmp_path / home}\n"
+        if version:
+            cfg += f"version_info = {version}\n"
+        (venv / "pyvenv.cfg").write_text(cfg, encoding = "utf-8")
     script = f"""
 $ErrorActionPreference = "Stop"
 $script:UvExe = $env:FAKE_UV_EXE
-{_function("Test-VenvBaseIsUvManaged")}
-Test-VenvBaseIsUvManaged -VenvDir $env:FAKE_VENV
+{_function("Test-LegacyVenvReusable")}
+$py = @{{ Version = "3.13"; Full = "3.13.12"; Path = "p"; Arch = "x86_64" }}
+Test-LegacyVenvReusable -VenvDir $env:FAKE_VENV -Python $py -Exact ${str(exact).lower()}
 """
     out = _pwsh(
         shell,

@@ -7141,16 +7141,24 @@ exit 0
     }
 
     # A legacy environment is only moved in and reused when its base (pyvenv.cfg home) lies in
-    # uv's own Python store; anything else is rebuilt rather than kept on the user's Python.
-    function Test-VenvBaseIsUvManaged {
-        param([Parameter(Mandatory = $true)][string]$VenvDir)
+    # uv's own Python store and it runs the Python this install resolved (the exact patch when
+    # one was requested); anything else is rebuilt rather than kept.
+    function Test-LegacyVenvReusable {
+        param([Parameter(Mandatory = $true)][string]$VenvDir, $Python, [bool]$Exact = $false)
         $cfg = Join-Path $VenvDir "pyvenv.cfg"
-        if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $false }
+        if (-not $Python -or -not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $false }
         $venvHome = $null
+        $venvVersion = $null
         foreach ($line in @(Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue)) {
             if ($line -match '^\s*home\s*=\s*(.+?)\s*$') { $venvHome = $Matches[1] }
+            elseif ($line -match '^\s*version(_info)?\s*=\s*(\d+\.\d+\.\d+)') { $venvVersion = $Matches[2] }
         }
-        if (-not $venvHome) { return $false }
+        if (-not $venvHome -or -not $venvVersion) { return $false }
+        if ($Exact) {
+            if ($venvVersion -ne $Python.Full) { return $false }
+        } elseif ($venvVersion -notlike "$($Python.Version).*") {
+            return $false
+        }
         $store = ""
         try { $store = (& $script:UvExe python dir 2>$null | Select-Object -First 1) } catch {}
         $store = "$store".Trim()
@@ -7781,8 +7789,8 @@ exit 0
             $legacyOk = ($LASTEXITCODE -eq 0)
         } catch { $legacyOk = $false }
         $ErrorActionPreference = $prevEAP2
-        if ($legacyOk -and -not (Test-VenvBaseIsUvManaged -VenvDir $OldVenv)) {
-            substep "legacy environment runs on a Python uv did not install -- creating a fresh environment; the old one stays at $OldVenv" "Yellow"
+        if ($legacyOk -and -not (Test-LegacyVenvReusable -VenvDir $OldVenv -Python $DetectedPython -Exact ([bool]$PythonPatchRequest))) {
+            substep "legacy environment is not on the uv-managed Python $($DetectedPython.Full) -- creating a fresh environment; the old one stays at $OldVenv" "Yellow"
         } elseif ($legacyOk) {
             substep "legacy environment is healthy -- migrating..."
             try {
@@ -7806,8 +7814,8 @@ exit 0
         # CWD-relative venv from old install.ps1 -> migrate to absolute path.
         # Skip custom-root env-mode so it is not relocated into a workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
-        if (-not (Test-VenvBaseIsUvManaged -VenvDir $CwdVenv)) {
-            substep "found a CWD-relative Unsloth environment on a Python uv did not install -- creating a fresh environment; the old one stays at $CwdVenv" "Yellow"
+        if (-not (Test-LegacyVenvReusable -VenvDir $CwdVenv -Python $DetectedPython -Exact ([bool]$PythonPatchRequest))) {
+            substep "found a CWD-relative Unsloth environment not on the uv-managed Python $($DetectedPython.Full) -- creating a fresh environment; the old one stays at $CwdVenv" "Yellow"
         } else {
             substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
             try {
