@@ -178,6 +178,7 @@ def test_sh_custom_home_keeps_uv_and_python(tmp_path):
     found = _sh(tmp_path / "home", studio)
     assert (found["keeps"], found["uvdir"]) == ("true", f"{studio}/uv")
     assert found["pydir"] == f"{studio}/python"
+    assert (studio / "python").is_dir()
     assert not found["path"].startswith(f"{studio}/uv")
 
     _uv_stub(studio / "uv")
@@ -191,6 +192,7 @@ def test_sh_explicit_settings_and_the_default_root_win(tmp_path):
     legacy.mkdir(parents = True)
     for found in (_sh(home, legacy), _sh(home, legacy, redirect = "default")):
         assert (found["keeps"], found["uvdir"], found["pydir"]) == ("false", "", "")
+    assert not (legacy / "python").exists()
 
     studio = tmp_path / "studio"
     studio.mkdir()
@@ -240,8 +242,15 @@ def test_backend_points_on_demand_installs_at_the_home(tmp_path, monkeypatch):
     assert os.environ["PATH"] == str(mine)
     assert "UV_PYTHON_INSTALL_DIR" not in os.environ
 
+    # A custom root the opt-in installer never touched (UNSLOTH_HOME alone, say) is left alone.
     studio = tmp_path / "drive" / "studio"
+    studio.mkdir(parents = True)
     monkeypatch.setattr(storage_roots, "studio_root", lambda: studio)
+    storage_roots._use_studio_uv_tools()
+    assert os.environ["PATH"] == str(mine)
+    assert "UV_PYTHON_INSTALL_DIR" not in os.environ
+
+    (studio / "python").mkdir()
     storage_roots._use_studio_uv_tools()
     assert os.environ["PATH"] == str(mine)
     assert os.environ["UV_PYTHON_INSTALL_DIR"] == str(studio / "python")
@@ -283,6 +292,8 @@ def test_cli_update_hands_setup_the_private_uv(tmp_path, monkeypatch):
     mine = str(tmp_path / "mine")
     env = {"PATH": mine}
 
+    assert studio_cli._with_studio_uv(env) == env
+    (home / "python").mkdir(parents = True)
     assert studio_cli._with_studio_uv(env) == {
         "PATH": mine,
         "UV_PYTHON_INSTALL_DIR": str(home / "python"),

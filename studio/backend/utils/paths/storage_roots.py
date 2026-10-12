@@ -1286,16 +1286,17 @@ def parseable_cache_fallback(key: str, intended: str) -> str | None:
 
 
 def _use_studio_uv_tools() -> None:
-    """A custom-home install keeps its own uv in <studio>/uv, off the user PATH, and its
-    uv-managed Python in <studio>/python. Point on-demand installs at both. The installer only
-    places a uv there when PATH had none or one below its minimum, so it goes first."""
+    """An install with a custom UNSLOTH_STUDIO_HOME keeps its own uv in <studio>/uv, off the user
+    PATH, and its uv-managed Python in <studio>/python. Keyed on those directories, which only
+    that installer creates, so nothing else opts in. Its uv goes first: the installer only places
+    one there when PATH had none or one below its minimum."""
     root = studio_root()
     try:
         if root.resolve() == (Path.home() / ".unsloth" / "studio").resolve():
             return
     except (OSError, RuntimeError, ValueError):
         return
-    if not (os.environ.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+    if (root / "python").is_dir() and not (os.environ.get("UV_PYTHON_INSTALL_DIR") or "").strip():
         os.environ["UV_PYTHON_INSTALL_DIR"] = str(root / "python")
     uv_dir = root / "uv"
     if (uv_dir / ("uv.exe" if os.name == "nt" else "uv")).is_file():

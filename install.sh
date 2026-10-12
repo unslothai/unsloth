@@ -1066,6 +1066,8 @@ _resolve_studio_destinations
 _STUDIO_KEEPS_TOOLS=false
 if [ "$_STUDIO_HOME_REDIRECT" = "env" ] && [ "$STUDIO_HOME" != "$(CDPATH= cd -P -- "$HOME/.unsloth/studio" 2>/dev/null && pwd -P)" ]; then
     _STUDIO_KEEPS_TOOLS=true
+    # Created even when unused: Studio reads it as this choice at runtime.
+    mkdir -p "$STUDIO_HOME/python" 2>/dev/null || true
     [ -n "${UV_PYTHON_INSTALL_DIR:-}" ] || export UV_PYTHON_INSTALL_DIR="$STUDIO_HOME/python"
 fi
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it several times (uv bootstrap, venv), so testing $PATH there answers yes for a shell that would answer no and the profile entry never gets written. astral's installer used to write that line for us; the pinned path does not.
