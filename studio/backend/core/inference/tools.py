@@ -1405,6 +1405,12 @@ def _blocked_program_path(word: str, relative: bool = False) -> str:
         return ""
     base = ntpath.basename(word).lower()
     stem, ext = ntpath.splitext(base)
+    if any(char.isspace() for char in word) and (
+        ext not in {".exe", ".com", ".bat", ".cmd"}
+        or any(_WIN_PROGRAM_PATH_RE.match(piece) for piece in word.split()[1:])
+    ):
+        # A rooted command line (`\Windows\System32\where.exe \src\rm`), not one path holding spaces.
+        return ""
     if ext in {".exe", ".com", ".bat", ".cmd"}:
         base = stem
     return base if base in _BLOCKED_COMMANDS else ""
@@ -2099,7 +2105,8 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
         # approximation under-approximated.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j], posix = posix)
-            blocked |= {_blocked_program_path(tokens[j], relative = True)} - {""}
+            if not _is_start_title(tokens[j]):
+                blocked |= {_blocked_program_path(tokens[j], relative = True)} - {""}
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.

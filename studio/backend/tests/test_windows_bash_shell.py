@@ -516,6 +516,8 @@ def test_cmd_strips_the_outer_quotes_of_a_doubled_quote_payload(monkeypatch, _wi
         r'cmd /c "dir C:\src\curl"',
         r'cmd /c "git -C C:\src\ssh status"',
         r'start "" "tools dir\notepad.exe" readme.txt',
+        # A rooted command line whose last argument names a blocked program.
+        r'cmd /c "\Windows\System32\where.exe \src\rm"',
         r'cmd /c type "C:\Users\me\My Documents\rm.txt"',
     ],
 )
@@ -523,3 +525,12 @@ def test_a_quoted_program_path_that_is_not_blocked_stays_runnable(
     monkeypatch, bash, command, _windows_blocklist
 ):
     assert not _screen_on_windows(monkeypatch, bash, command)
+
+
+def test_a_quoted_start_title_is_not_screened_as_the_program(monkeypatch, _windows_blocklist):
+    # cmd keeps the quotes, so START reads this as the title and runs notepad. Git Bash hands START the
+    # path unquoted, which it then runs, so that reading stays blocked.
+    assert not _screen_on_windows(monkeypatch, None, r'start "C:\x\rm.exe" notepad')
+    assert "rm" in _screen_on_windows(
+        monkeypatch, _WINDOWS_SHELLS[0], r'start "C:\x\rm.exe" notepad'
+    )
