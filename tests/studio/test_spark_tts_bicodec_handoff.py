@@ -21,7 +21,7 @@ def _repo_root():
 
 
 def _method(namespace):
-    source = (_repo_root() / "studio/backend/core/training/trainer.py").read_text(encoding="utf-8")
+    source = (_repo_root() / "studio/backend/core/training/trainer.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     trainer = next(
         node
@@ -35,7 +35,7 @@ def _method(namespace):
     )
     # The constructor sentinel stops before any encoding or nested tensor functions.
     exec(
-        compile(ast.Module(body=[method], type_ignores=[]), "<bicodec-handoff>", "exec"), namespace
+        compile(ast.Module(body = [method], type_ignores = []), "<bicodec-handoff>", "exec"), namespace
     )
     return namespace[method.name]
 
@@ -48,7 +48,7 @@ class _UnresolvedCodecRoot(AssertionError):
     pass
 
 
-def _probe(repo_dir, *, missing_column=None):
+def _probe(repo_dir, *, missing_column = None):
     calls = []
 
     def codec(root, device):
@@ -58,40 +58,40 @@ def _probe(repo_dir, *, missing_column=None):
     def import_module(name, source):
         assert source == "<mock-source>"
         if name == "sparktts.models.audio_tokenizer":
-            return SimpleNamespace(BiCodecTokenizer=codec)
+            return SimpleNamespace(BiCodecTokenizer = codec)
         if name == "sparktts.utils.audio":
-            return SimpleNamespace(audio_volume_normalize=lambda value: value)
+            return SimpleNamespace(audio_volume_normalize = lambda value: value)
         raise AssertionError(f"Unexpected Spark-TTS import: {name}")
 
     namespace = {
         "ensure_spark_tts_source": lambda root: "<mock-source>",
         "import_sparktts_module": import_module,
-        "logger": SimpleNamespace(info=lambda *args: None),
+        "logger": SimpleNamespace(info = lambda *args: None),
     }
     method = _method(namespace)
     owner = SimpleNamespace(
-        _spark_tts_repo_dir=repo_dir,
-        _update_progress=lambda **kwargs: None,
-        _resolve_audio_columns=lambda *args: {
+        _spark_tts_repo_dir = repo_dir,
+        _update_progress = lambda **kwargs: None,
+        _resolve_audio_columns = lambda *args: {
             "audio_col": None if missing_column == "audio" else "audio",
             "text_col": None if missing_column == "text" else "text",
             "speaker_col": None,
         },
     )
-    dataset = SimpleNamespace(column_names=["audio", "text"])
+    dataset = SimpleNamespace(column_names = ["audio", "text"])
     dataset.cast_column = lambda *args: dataset
     audio = ModuleType("torchaudio")
     audio.transforms = ModuleType("torchaudio.transforms")
     modules = {
-        "torch": SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+        "torch": SimpleNamespace(cuda = SimpleNamespace(is_available = lambda: False)),
         "numpy": ModuleType("numpy"),
         "torchaudio": audio,
         "torchaudio.transforms": audio.transforms,
-        "datasets": SimpleNamespace(Audio=lambda: object()),
+        "datasets": SimpleNamespace(Audio = lambda: object()),
     }
     with patch.dict("sys.modules", modules):
         if missing_column:
-            with pytest.raises(ValueError, match="needs 'audio' and 'text'"):
+            with pytest.raises(ValueError, match = "needs 'audio' and 'text'"):
                 method(owner, dataset)
         else:
             with pytest.raises(_CodecReached):
@@ -106,13 +106,13 @@ def test_resolved_root_reaches_codec_unchanged(repo_dir):
 
 @pytest.mark.parametrize("column", ["audio", "text"])
 def test_missing_required_column_stops_before_codec(column):
-    assert _probe(None, missing_column=column) == []
+    assert _probe(None, missing_column = column) == []
 
 
 @pytest.mark.xfail(
-    strict=True,
-    raises=_UnresolvedCodecRoot,
-    reason="Issue #13458: preprocessing can run before load_model sets the codec repo root",
+    strict = True,
+    raises = _UnresolvedCodecRoot,
+    reason = "Issue #13458: preprocessing can run before load_model sets the codec repo root",
 )
 def test_dataset_before_model_does_not_pass_an_unresolved_root():
     calls = _probe(None)
