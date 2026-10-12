@@ -30015,6 +30015,7 @@ async def _proxy_to_external_provider(
                     rag_scope = payload.rag_scope,
                     nudge_tool_calls = payload.nudge_tool_calls,
                     deduplicate_tool_calls = payload.deduplicate_tool_calls,
+                    parallel_tool_calls = payload.parallel_tool_calls,
                 )
                 if studio_tool_payloads
                 else None
