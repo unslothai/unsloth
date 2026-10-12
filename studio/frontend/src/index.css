@@ -3112,21 +3112,6 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
 	}
 
-	/* At the editor's top right; with attachment cards above, at the surface's instead. */
-	.unsloth-composer-expand {
-		top: 0;
-		right: calc(var(--spacing) * -1);
-	}
-
-	.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-editor {
-		position: static;
-	}
-
-	.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-expand {
-		top: calc(var(--spacing) * 2.5);
-		right: calc(var(--spacing) * 2.5);
-	}
-
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
 	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
 	/* Either composer root: the thread's form or compare's wrapper. */
@@ -3178,11 +3163,6 @@ html[data-chat-font] .aui-root {
 			padding-left: 0;
 			padding-right: 0;
 			--composer-tight-gap: calc(0.125rem * var(--ui-space-scale, 1));
-		}
-
-		/* The line's gutter is gone here, so the pinned toggle sits that much closer to the edge. */
-		.unsloth-composer-surface:has(.aui-composer-attachment-cards > *) .unsloth-composer-expand {
-			right: calc(var(--spacing) * 1.5);
 		}
 
 		.unsloth-composer-left,
@@ -3772,6 +3752,60 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	/* Transform-only so it stays on the compositor (a background-clip: text sweep restyles every
+	   frame); lighten/darken with the page colour are no-ops over the background. */
+	.generating-glint {
+		position: relative;
+		display: inline-block;
+		overflow: hidden;
+		vertical-align: bottom;
+		white-space: nowrap;
+	}
+
+	.generating-glint::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		/* Cosine falloff; straight ramps leave visible edges. */
+		background: linear-gradient(
+			105deg,
+			transparent 20%,
+			color-mix(in oklab, var(--background) 8%, transparent) 27.5%,
+			color-mix(in oklab, var(--background) 27%, transparent) 35%,
+			color-mix(in oklab, var(--background) 46%, transparent) 42.5%,
+			color-mix(in oklab, var(--background) 54%, transparent) 50%,
+			color-mix(in oklab, var(--background) 46%, transparent) 57.5%,
+			color-mix(in oklab, var(--background) 27%, transparent) 65%,
+			color-mix(in oklab, var(--background) 8%, transparent) 72.5%,
+			transparent 80%
+		);
+		mix-blend-mode: lighten;
+		transform: translateX(-100%);
+		animation: generating-glint 3s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+	}
+
+	.dark .generating-glint::after {
+		mix-blend-mode: darken;
+	}
+
+	@keyframes generating-glint {
+		0% {
+			transform: translateX(-100%);
+		}
+		60%,
+		100% {
+			transform: translateX(100%);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		html:not(.force-motion) .generating-glint::after {
+			display: none;
+		}
+	}
+
+	/* Indeterminate loading bar: a 1/3-width segment sweeping the track. */
 	.loading-bar-slide {
 		animation: loading-bar-slide 1.3s ease-in-out infinite;
 	}
@@ -4467,18 +4501,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	padding-inline: 1rem;
 	scroll-padding-inline: 1rem;
 	clip-path: inset(-0.625rem 0 0 0 round 28px 28px 0 0);
-}
-
-/* Keep attachment cards clear of the expand toggle in the top right corner. */
-.aui-composer-root[data-writing-toggle="true"] .unsloth-composer-surface .aui-composer-attachment-cards {
-	padding-right: calc(var(--spacing) * 9);
-}
-
-/* A scrolling strip paints cards through its padding, so end the scrollport before the toggle. */
-.aui-composer-root[data-writing-toggle="true"] .unsloth-composer-surface .aui-composer-attachment-cards[data-layout="strip"] {
-	width: calc(100% - var(--spacing) * 9 + 0.625rem);
-	padding-right: 1rem;
-	clip-path: inset(-0.625rem 0 0 0 round 28px 0 0 0);
 }
 
 /* Avoid iOS Safari focus zoom. Important in the base layer, because an important

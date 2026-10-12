@@ -138,7 +138,7 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
 });
 
 test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
-  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 18);
+  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 28);
   for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
     assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
     assert.match(folder, /-GGUF$/);
