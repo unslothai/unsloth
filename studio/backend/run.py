@@ -590,7 +590,8 @@ def _direct_server_url(host: str, port: int) -> "Optional[str]":
     frontend prefers any non-null server_url over the origin the client reached, so publishing
     ``http://0.0.0.0:<port>`` (a wildcard bind with no LAN address: WSL behind NAT, loopback-only) would
     put an unroutable address in the API examples, the desktop agent command and a copied preview link."""
-    if not port or port <= 0:
+    # A TLS certificate usually names a DNS host, not the LAN IP; the frontend then falls back to its own origin.
+    if not port or port <= 0 or _url_scheme == "https":
         return None
     share_host = _network_share_host_for_bind(host)
     if is_wildcard_host(share_host):

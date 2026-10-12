@@ -140,8 +140,11 @@ _SERVE = textwrap.dedent(
     else:
         config = uvicorn.Config(app, ssl_certfile = crt, ssl_keyfile = key, **kwargs)
     server = uvicorn.Server(config)
-    threading.Thread(target = server.run, kwargs = {"sockets": [sock]}, daemon = True).start()
+    thread = threading.Thread(target = server.run, kwargs = {"sockets": [sock]}, daemon = True)
+    thread.start()
     while not server.started:
+        if not thread.is_alive():
+            sys.exit(1)
         time.sleep(0.05)
     print(sock.getsockname()[1], flush = True)
     sys.stdin.read()
@@ -158,7 +161,9 @@ def _handshake(tmp_path, mode: str) -> "bytes | Exception":
         text = True,
     )
     try:
-        port = int(proc.stdout.readline())
+        line = proc.stdout.readline()
+        assert line.strip(), f"TLS test server exited during startup (rc={proc.poll()})"
+        port = int(line)
         client = ssl.create_default_context(cafile = str(crt))
         try:
             with socket.create_connection(("127.0.0.1", port), timeout = 10) as raw:
@@ -232,3 +237,14 @@ def test_self_calls_use_the_loopback_listener():
     assert loopback_http_port(types.SimpleNamespace()) is None
     assert loopback_http_port(types.SimpleNamespace(loopback_http_port = None)) is None
     assert loopback_http_port(types.SimpleNamespace(loopback_http_port = 41234)) == 41234
+
+
+def test_tls_launch_publishes_no_ip_server_url(monkeypatch):
+    """A Tailscale / Let's Encrypt cert names a DNS host, so an https://<LAN IP> base would fail verification."""
+    import run
+
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda host: "192.168.1.5")
+    monkeypatch.setattr(run, "_url_scheme", "http")
+    assert run._direct_server_url("0.0.0.0", 8888) == "http://192.168.1.5:8888"
+    monkeypatch.setattr(run, "_url_scheme", "https")
+    assert run._direct_server_url("0.0.0.0", 8888) is None
