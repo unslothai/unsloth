@@ -36,9 +36,9 @@ def test_a_decoder_is_chosen_too_while_the_parked_cells_are_still_resident():
     controller = _over_with_a_parked_holder()
     chosen = [p.gen_id for p in controller.plan_preemptions(needed = 0)]
     assert chosen[0] == "parked", "the erase still has to target the parked slot"
-    assert "new" in chosen, (
-        "the parked holder was counted freed though nothing has erased it, so no decoder stopped"
-    )
+    assert (
+        "new" in chosen
+    ), "the parked holder was counted freed though nothing has erased it, so no decoder stopped"
 
 
 def test_a_later_plan_still_counts_the_unerased_parked_cells():
@@ -57,6 +57,8 @@ def test_an_erased_parked_holder_frees_its_room():
     controller.plan_preemptions(needed = 0)
     controller.unregister("new")
     # The erase landed: the parked holder no longer holds cells.
-    assert controller.note_cells_reclaimed({"parked": controller.participant("parked").park_seq}) == 1
+    assert (
+        controller.note_cells_reclaimed({"parked": controller.participant("parked").park_seq}) == 1
+    )
     controller.register("next", lease = _Lease(), tokens = 5000)
     assert controller.plan_preemptions(needed = 0) == []
