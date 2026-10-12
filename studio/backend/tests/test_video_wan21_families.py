@@ -287,6 +287,22 @@ def test_file_name_outranks_the_folder_for_a_14b_header(tmp_path):
     assert _detect_load_family(str(folder), "model-fp8.safetensors", None).name == "wan2.1-t2v-14b"
 
 
+@pytest.mark.parametrize(
+    "repo, filename, expected",
+    [
+        ("someorg/Wan2.2-T2V-A14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", "wan2.1-t2v-14b"),
+        ("someorg/Wan2.1-T2V-14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", "wan2.2-t2v-a14b"),
+        ("someorg/Wan2.1-T2V-14B-GGUF", "model-Q4_K_M.gguf", "wan2.1-t2v-14b"),
+        ("city96/Wan2.1-T2V-14B-gguf", "wan2.1-t2v-14b-Q4_K_M.gguf", "wan2.1-t2v-14b"),
+    ],
+)
+def test_remote_file_name_outranks_the_repo_for_same_layout_wan(repo, filename, expected, monkeypatch):
+    import core.inference.video as video
+
+    monkeypatch.setattr(video, "_picked_gguf_arch", lambda *a, **k: None)
+    assert video._detect_load_family(repo, filename, None).name == expected
+
+
 def test_renamed_wan21_1_3b_gguf_resolves_by_header(tmp_path):
     from core.inference.video import _detect_load_family
 

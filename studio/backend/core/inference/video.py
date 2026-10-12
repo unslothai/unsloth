@@ -1071,9 +1071,18 @@ def _detect_load_family(
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
-    # A local file's header outranks its name (the name still picks 480p vs 720p).
-    from .diffusion_content import local_pick_file, resolve_family_with_content
+    from .diffusion_content import SAME_ARCH_VARIANTS, local_pick_file, resolve_family_with_content
 
+    # Same layout, different model: the picked file's own name outranks its repo or folder (a Wan2.1 14B GGUF in a
+    # Wan2.2 A14B repo, or the reverse), local or remote.
+    if fam is not None and gguf_filename:
+        named = detect_video_family(os.path.basename(gguf_filename))
+        if named is not None and named.name != fam.name and (
+            named.name in SAME_ARCH_VARIANTS.get(fam.name, ())
+            or fam.name in SAME_ARCH_VARIANTS.get(named.name, ())
+        ):
+            fam = named
+    # A local file's header outranks its name (the name still picks 480p vs 720p).
     path = local_pick_file(repo_id, gguf_filename)
     if path:
         file_fam = detect_video_family(os.path.basename(path))
