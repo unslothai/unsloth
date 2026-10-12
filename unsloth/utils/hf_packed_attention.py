@@ -156,6 +156,7 @@ _EFFICIENT_ENV = "UNSLOTH_HF_PACKED_EFFICIENT"
 # Above flash's 256 cap (Gemma-4 global layers are 512); wider heads are untested.
 _EFFICIENT_MAX_HEAD_DIM = 512
 _EFFICIENT_VARLEN = []
+_ACCELERATOR_ERROR = getattr(torch, "AcceleratorError", None)  # torch 2.8+
 _EFFICIENT_DEVICES = {}
 
 
@@ -419,9 +420,14 @@ def _sdpa_packed_varlen(
         except torch.OutOfMemoryError:
             raise
         except RuntimeError as exc:
+            # A CUDA fault is not a refusal: let it surface.
+            if _ACCELERATOR_ERROR is not None and isinstance(exc, _ACCELERATOR_ERROR):
+                raise
             # A build without this kernel shape refuses at forward: stop using it, this call goes to sdpa.
             _EFFICIENT_VARLEN[:] = [False]
-            logging.getLogger(__name__).info(f"Unsloth: efficient varlen attention unavailable ({exc})")
+            logging.getLogger(__name__).warning(
+                f"Unsloth: efficient varlen attention unavailable, packed rows past head dim 256 use sdpa ({exc})"
+            )
             HF_PACKED_ATTENTION_STATS["fast"] -= 1
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
             return orig(

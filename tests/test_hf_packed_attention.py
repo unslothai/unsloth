@@ -872,6 +872,32 @@ def test_a_refusing_efficient_kernel_hands_the_call_back(_efficient_fresh, monke
 
 @_CUDA
 @_EFFICIENT_HOST
+def test_a_cuda_fault_in_the_efficient_kernel_is_not_a_refusal(_efficient_fresh, monkeypatch):
+    if hpa._ACCELERATOR_ERROR is None:
+        pytest.skip("this torch has no AcceleratorError")
+    seen, orig = _calls()
+    hpa._ORIG_SDPA[0] = orig
+
+    def fault(*args, **kwargs):
+        raise hpa._ACCELERATOR_ERROR("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(hpa._EfficientVarlenAttention, "apply", fault)
+    lengths = [3, 3]
+    q = torch.randn(1, 4, 6, 512, device = "cuda", dtype = torch.bfloat16)
+    with pytest.raises(hpa._ACCELERATOR_ERROR):
+        hpa._sdpa_packed_varlen(
+            types.SimpleNamespace(is_causal = True),
+            q,
+            q,
+            q,
+            _block_causal(lengths, "cuda"),
+            packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32),
+        )
+    assert seen == [] and hpa._EFFICIENT_VARLEN != [False]
+
+
+@_CUDA
+@_EFFICIENT_HOST
 @pytest.mark.parametrize("backend", ["sdpa", "flash_varlen"])
 def test_a_shape_the_flash_impl_refuses_takes_the_efficient_kernel(_efficient_fresh, monkeypatch, backend):
     """FA4 on sm100 lacks head_dim 256 + window: without flash-attn / xformers that row ran SDPA over
