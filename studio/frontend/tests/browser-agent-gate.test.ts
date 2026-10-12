@@ -42,7 +42,14 @@ const element = (overrides: Partial<ElementInfo> = {}): ElementInfo => ({
 });
 
 test("a site the user named, already reached, or linked from the page opens without asking", () => {
-  assert.equal(gateNavigation("https://en.wikipedia.org/wiki/GGUF", navigation({ userText: "look up GGUF on wikipedia" })).kind, "allow");
+  assert.equal(gateNavigation("https://wikipedia.org/wiki/GGUF", navigation({ userText: "look up GGUF on wikipedia" })).kind, "allow");
+  assert.equal(gateNavigation("https://www.example.com/", navigation({ userText: "open www.example.com" })).kind, "allow");
+  // A brand's name approves the site, not its subdomains: some take anyone's data.
+  assert.equal(gateNavigation("https://en.wikipedia.org/wiki/GGUF", navigation({ userText: "look up GGUF on wikipedia" })).kind, "ask");
+  assert.equal(
+    gateNavigation("https://docs.google.com/forms/d/e/X/formResponse?entry.1=secret", navigation({ userText: "search google for unsloth" })).kind,
+    "ask",
+  );
   assert.equal(gateNavigation("https://huggingface.co/unsloth", navigation({ userText: "check huggingface.co" })).kind, "allow");
   assert.equal(gateNavigation("https://huggingface.co/", navigation({ userText: "Open huggingface.co." })).kind, "allow");
   // A longer name that starts with it is another host.

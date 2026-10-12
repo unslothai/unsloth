@@ -99,12 +99,16 @@ function mentioned(host: string, text: string): boolean {
   // example.com in "look at example.com", as a whole name (not e.com inside it).
   const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // A dot after it only as the sentence's end: example.com.evil.test names another host.
-  if (new RegExp(`(^|[^a-z0-9.-])${escaped}($|[^a-z0-9.-]|\\.(?![a-z0-9-]))`).test(lower)) return true;
-  // The site's name ("search wikipedia" for en.wikipedia.org), but not on a shared host, where each
+  if (new RegExp(`(^|[^a-z0-9.-])(www\\.)?${escaped}($|[^a-z0-9.-]|\\.(?![a-z0-9-]))`).test(lower)) return true;
+  // The site's name ("search wikipedia" for wikipedia.org), but not on a shared host, where each
   // subdomain is someone else's: "github" must not approve collector.github.io.
   // Only on the big generic TLDs: "wikipedia" must not approve a made-up wikipedia.xyz.
   if (SHARED_HOSTS.some((suffix) => host.endsWith(`.${suffix}`))) return false;
-  const [name, tld] = host.split(".").slice(-2);
+  const labels = host.split(".");
+  // Only the site itself: a brand's subdomains can carry anyone's data (docs.google.com/forms,
+  // script.google.com), so "google" approves google.com and nothing under it.
+  if (labels.length !== 2) return false;
+  const [name, tld] = labels;
   if (!NAMED_TLDS.has(tld ?? "")) return false;
   // A word of its own, not a label inside some other hostname.
   const word = name?.replace(/[^a-z0-9-]/g, "");
