@@ -599,6 +599,29 @@ export function installPageAgent(): PageAgent {
     return down;
   };
 
+  // The agent works only in its own tab: a form aimed at a new tab (target or formtarget) would be
+  // dropped by the panel, which opens tabs only on a real user click, while the model hears it sent.
+  // The target is read after the submit event, so pointing it here for the action is enough.
+  const inOwnTab = <T>(act: () => T): T => {
+    const restore: Array<() => void> = [];
+    const retarget = (event: Event) => {
+      const submitter = (event as SubmitEvent).submitter;
+      for (const [el, name] of [[submitter, "formtarget"], [event.target, "target"]] as const) {
+        if (!(el instanceof Element) || !el.hasAttribute(name)) continue;
+        const old = el.getAttribute(name) ?? "";
+        el.setAttribute(name, "_self");
+        restore.push(() => el.setAttribute(name, old));
+      }
+    };
+    window.addEventListener("submit", retarget, true);
+    try {
+      return act();
+    } finally {
+      window.removeEventListener("submit", retarget, true);
+      for (const undo of restore) undo();
+    }
+  };
+
   const press = (name: string, on?: Element): Record<string, unknown> => {
     const active = on ?? (document.activeElement && document.activeElement !== document.body ? document.activeElement : null);
     const target = active ?? document.body ?? document.documentElement;
@@ -776,15 +799,15 @@ export function installPageAgent(): PageAgent {
         case "describe":
           return describe(ref, command.value);
         case "click":
-          return click(ref, command.directLinks === true);
+          return inOwnTab(() => click(ref, command.directLinks === true));
         case "type":
-          return type(ref, String(command.text ?? ""), command.submit === true);
+          return inOwnTab(() => type(ref, String(command.text ?? ""), command.submit === true));
         case "select":
-          return choose(ref, String(command.value ?? ""));
+          return inOwnTab(() => choose(ref, String(command.value ?? "")));
         case "scroll":
           return scrollPage(String(command.direction ?? "down"), ref || undefined);
         case "press":
-          return press(String(command.key ?? ""));
+          return inOwnTab(() => press(String(command.key ?? "")));
         case "mask":
           return mask(command.on === true);
         default:
