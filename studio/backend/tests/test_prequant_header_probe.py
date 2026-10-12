@@ -11,6 +11,7 @@ only the two huggingface_hub URL / HEAD helpers are pointed at it.
 
 from __future__ import annotations
 
+from pathlib import Path
 import http.server
 import json
 import os
@@ -956,7 +957,7 @@ def test_a_huge_memo_index_checkpoint_is_unknown_with_bounded_memory(tmp_path):
         f"""
         import resource, sys, time, tracemalloc
         resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
-        sys.path.insert(0, {os.getcwd()!r})
+        sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
         from core.inference import prequant_header_probe as probe
         tracemalloc.start()
         started = time.monotonic()
