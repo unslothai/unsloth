@@ -217,6 +217,10 @@ async def compile_react_preview_async(source: str, lang: str) -> dict[str, Any]:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
             # The thread keeps its Node child until it exits; hold the slot until then
-            # so the cap counts compilers, not requests.
-            await asyncio.wait({task})
+            # so the cap counts compilers, not requests. anyio re-cancels at every await.
+            while not task.done():
+                try:
+                    await asyncio.wait({task})
+                except asyncio.CancelledError:
+                    pass
             raise

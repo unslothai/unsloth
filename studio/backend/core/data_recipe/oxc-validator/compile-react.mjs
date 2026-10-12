@@ -8,6 +8,12 @@
 const DYNAMIC_IMPORT_MESSAGE =
   "Dynamic import() isn't supported in previews; import the module at the top of the file.";
 const MAX_DIAGNOSTICS = 20;
+// Linking rewrites every use of an imported binding to its imported name, so a long name
+// under a short alias made 256 KB of source into 480 MB of output. Real exports are short.
+const MAX_IMPORT_NAME_CHARS = 64;
+// Under the backend's 4 MB stdout cap, so an oversized component reads as a compile error.
+const MAX_CODE_CHARS = 3 * 1024 * 1024;
+const TOO_LARGE_MESSAGE = "This component compiles to too much code to preview.";
 const LINE_BREAK_RE = /\r\n|[\n\r\u2028\u2029]/;
 
 function readStdin() {
@@ -58,7 +64,20 @@ function errorResult(errors, bytes) {
   };
 }
 
-function compile(oxc, source, lang) {
+function errorMessage(message) {
+  return { status: "error", diagnostics: [{ message, line: 0, column: 0 }] };
+}
+
+function longImportName(parser, code) {
+  const parsed = parser.parseSync("App.js", code, { sourceType: "module" });
+  for (const entry of parsed.module.staticImports.flatMap((item) => item.entries)) {
+    const name = entry.importName?.name;
+    if (typeof name === "string" && name.length > MAX_IMPORT_NAME_CHARS) return name;
+  }
+  return null;
+}
+
+function compile(oxc, parser, source, lang) {
   const transformed = oxc.transformSync(`App.${lang}`, source, {
     lang,
     sourceType: "module",
@@ -69,6 +88,13 @@ function compile(oxc, source, lang) {
     return errorResult(transformErrors, Buffer.from(source, "utf8"));
   }
 
+  const longName = longImportName(parser, transformed.code);
+  if (longName !== null) {
+    return errorMessage(
+      `Imported name "${longName.slice(0, 40)}..." is longer than ${MAX_IMPORT_NAME_CHARS} characters.`,
+    );
+  }
+
   // Offsets here point into the transformed code, not the user's source.
   const linked = oxc.moduleRunnerTransformSync("App.js", transformed.code);
   const linkErrors = (linked.errors || []).filter(isFatal);
@@ -76,10 +102,10 @@ function compile(oxc, source, lang) {
     return errorResult(linkErrors, null);
   }
   if (Array.isArray(linked.dynamicDeps) && linked.dynamicDeps.length > 0) {
-    return {
-      status: "error",
-      diagnostics: [{ message: DYNAMIC_IMPORT_MESSAGE, line: 0, column: 0 }],
-    };
+    return errorMessage(DYNAMIC_IMPORT_MESSAGE);
+  }
+  if (linked.code.length > MAX_CODE_CHARS) {
+    return errorMessage(TOO_LARGE_MESSAGE);
   }
   return { status: "ok", code: linked.code, deps: linked.deps || [] };
 }
@@ -93,13 +119,15 @@ async function main() {
   const lang = payload?.lang === "jsx" ? "jsx" : "tsx";
 
   let oxc;
+  let parser;
   try {
     oxc = await import("oxc-transform");
+    parser = await import("oxc-parser");
   } catch {
     write({ status: "unavailable", reason: "transform_missing" });
     return;
   }
-  write(compile(oxc, source, lang));
+  write(compile(oxc, parser, source, lang));
 }
 
 main().catch((error) => {

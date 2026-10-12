@@ -91,6 +91,41 @@ def test_dynamic_import_is_rejected_at_compile_time():
 
 
 @real_compiler
+def test_a_long_import_name_cannot_amplify_the_output():
+    # Linking spells the imported name at every use of its alias: 11 KB of this source
+    # printed 12 MB, and 130 KB printed 480 MB through a 2.3 GB Node process.
+    source = (
+        f'import {{ {"X" * 8000} as a }} from "react";\n'
+        + "a;" * 1500
+        + "\nexport default function App() { return null; }\n"
+    )
+    result = rp.compile_react_preview(source, "tsx")
+    assert result["status"] == "error", result
+    assert "longer than 64 characters" in result["diagnostics"][0]["message"]
+
+
+@real_compiler
+def test_an_oversized_compile_is_an_error_not_a_failure():
+    source = (
+        'import { useState as a } from "react";\n'
+        + "a;" * (120 * 1024)
+        + "\nexport default function App() { return null; }\n"
+    )
+    assert len(source.encode()) <= rp.MAX_SOURCE_BYTES
+    result = rp.compile_react_preview(source, "tsx")
+    assert result == {
+        "status": "error",
+        "diagnostics": [
+            {
+                "message": "This component compiles to too much code to preview.",
+                "line": 0,
+                "column": 0,
+            }
+        ],
+    }
+
+
+@real_compiler
 def test_a_missing_oxc_transform_reads_as_unavailable(monkeypatch, tmp_path):
     # The script resolves oxc-transform next to itself, so a copy outside the tool
     # directory exercises the guarded import, not the Python pre-check.
@@ -353,6 +388,37 @@ def test_a_cancelled_request_keeps_its_slot_until_node_exits(monkeypatch):
         while not started:
             await asyncio.sleep(0.01)
         first.cancel()
+        second = asyncio.create_task(rp.compile_react_preview_async("b", "tsx"))
+        await asyncio.sleep(0.2)
+        assert started == ["a"]
+        release.set()
+        assert (await second)["code"] == "b"
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+    asyncio.run(main())
+
+
+def test_a_slot_survives_repeated_cancellation(monkeypatch):
+    # anyio cancel scopes (Starlette on disconnect) re-deliver cancellation at every await.
+    release = threading.Event()
+    started = []
+
+    def blocking(source, lang):
+        started.append(source)
+        release.wait(10)
+        return {"status": "ok", "code": source, "deps": []}
+
+    monkeypatch.setattr(rp, "compile_react_preview", blocking)
+    monkeypatch.setattr(rp, "MAX_CONCURRENT", 1)
+
+    async def main():
+        first = asyncio.create_task(rp.compile_react_preview_async("a", "tsx"))
+        while not started:
+            await asyncio.sleep(0.01)
+        for _ in range(3):
+            first.cancel()
+            await asyncio.sleep(0.05)
         second = asyncio.create_task(rp.compile_react_preview_async("b", "tsx"))
         await asyncio.sleep(0.2)
         assert started == ["a"]
