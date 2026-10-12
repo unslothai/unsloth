@@ -478,6 +478,7 @@ from core.inference.mcp_images import (
 )
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
+    BROWSER_TOOL_NAMES,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -39740,7 +39741,8 @@ class LlamaCppBackend:
                                 _novel_kept += 1
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
-                        elif _key in _seen_keys:
+                        # A browser call acts on the page as it is then: two scrolls are two scrolls.
+                        elif _key in _seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
