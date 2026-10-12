@@ -3520,6 +3520,7 @@ class FastLlamaModel:
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
+        mark_auto_offload_for_ddp(model, _offload_layers_requested)
         attach_offload_layers(
             model,
             _block_swap_saved,

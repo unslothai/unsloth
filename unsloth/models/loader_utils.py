@@ -758,6 +758,60 @@ def resolve_unsloth_device_map(
     return plan.device_map
 
 
+def _sharded_data_parallel_launch():
+    """"FSDP" / "DeepSpeed" when this process will hand the model to one, else None."""
+    try:
+        from accelerate.state import AcceleratorState
+        distributed_type = str(AcceleratorState._shared_state.get("distributed_type", "")).upper()
+    except Exception:
+        distributed_type = ""
+    if "FSDP" in distributed_type:
+        return "FSDP"
+    if "DEEPSPEED" in distributed_type:
+        return "DeepSpeed"
+    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY or str(
+        os.environ.get("FSDP_VERSION", "")
+    ).strip() not in ("", "0"):
+        return "FSDP"
+    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in _TRUTHY:
+        return "DeepSpeed"
+    return None
+
+
+def _single_card_device_map(device_map):
+    """True for a map placing the whole model on one CUDA card, as a distributed launch gives each rank."""
+    if isinstance(device_map, dict):
+        if set(device_map) != {""}:
+            return False
+        device_map = device_map[""]
+    if isinstance(device_map, int) and not isinstance(device_map, bool):
+        return True
+    if isinstance(device_map, torch.device):
+        return device_map.type == "cuda"
+    return isinstance(device_map, str) and (device_map == "cuda" or device_map.startswith("cuda:"))
+
+
+def _agree_block_swap_layers(layers, device):
+    """The most layers any rank planned, when a process group already exists, so every rank swaps the
+    same blocks (the swapped set is a function of the count). Without one each rank keeps its own plan;
+    the trainer keeps the swapped weights out of DDP's init-time broadcast (`_ignore_block_swap_params_for_ddp`)."""
+    layers = int(layers or 0)
+    try:
+        import torch.distributed as dist
+        if not (dist.is_available() and dist.is_initialized()):
+            print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
+            return layers
+        on_cuda = "nccl" in str(dist.get_backend()).lower()
+        count = torch.tensor(
+            [layers], dtype = torch.int64, device = f"cuda:{device}" if on_cuda else "cpu"
+        )
+        dist.all_reduce(count, op = dist.ReduceOp.MAX)
+        return int(count.item())
+    except Exception as error:
+        print(f"Unsloth: offload_layers = 'auto' could not compare plans across ranks ({error}).")
+        return layers
+
+
 _BLOCK_SWAP_PLANNER_KEYS = (
     "batch_size",
     "lora_rank",
@@ -798,8 +852,16 @@ def resolve_auto_block_swap(
         return _none(skip_reason)
     if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
         return _none("block swap needs a CUDA or ROCm GPU")
-    if is_distributed():
-        return _none("each rank of a distributed launch owns its own device")
+    distributed = is_distributed()
+    if distributed:
+        # DDP only: one whole model per rank on its own card. FSDP / DeepSpeed shard the weights themselves.
+        sharded = _sharded_data_parallel_launch()
+        if sharded is not None:
+            return _none(f"{sharded} shards the weights across the ranks itself")
+        if not _single_card_device_map(device_map):
+            return _none("each rank of a distributed launch owns its own device")
+        # A host-RAM embedding puts a CPU parameter inside the module DDP wraps, which it refuses.
+        offload_embedding = False
     try:
         from unsloth_zoo.device_map_planner import plan_block_swap
     except ImportError:
@@ -873,6 +935,11 @@ def resolve_auto_block_swap(
         + plan.describe().splitlines()[0].replace("block swap:", "offload_layers = 'auto':")
     )
     embedding = bool(getattr(plan, "offload_embedding", False))
+    if distributed:
+        layers = _agree_block_swap_layers(plan.layers, target)
+        if layers != plan.layers:
+            print(f"Unsloth: offload_layers = 'auto' swaps {layers} layers to match the other ranks.")
+        return layers, ({"": target} if layers else device_map), False
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:

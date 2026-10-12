@@ -4337,6 +4337,7 @@ class FastBaseModel:
         finish_block_swap_load(
             model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
         )
+        mark_auto_offload_for_ddp(model, _offload_layers_requested)
 
         # LAST, like the llama loader: patch_model_and_tokenizer below REPLACES the embedding and lm_head with fresh modules carrying the weights but not the _hf_hook, so a model split across cards would still meet the original cross-device index_select. Idempotent.
         # Embeddings offloaded later sit on the host on purpose: a dispatch hook would pull them back.

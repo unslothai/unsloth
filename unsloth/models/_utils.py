@@ -108,6 +108,7 @@ __all__ = [
     "planned_prefetch_depth",
     "trim_config_for_block_swap",
     "attach_offload_layers",
+    "mark_auto_offload_for_ddp",
     "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
@@ -5244,6 +5245,11 @@ def patch_gradient_accumulation_fix(Trainer):
                 from .llama import _decline_fused_lora_for_fsdp
                 _decline_fused_lora_for_fsdp(getattr(self, "model", None))
             _replan_auto_offload_safely(self)
+            if not (
+                getattr(self, "is_fsdp_enabled", False)
+                or getattr(self, "is_deepspeed_enabled", False)
+            ):
+                _ignore_block_swap_params_for_ddp(getattr(self, "model", None))
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -7663,6 +7669,52 @@ def _replan_auto_offload_safely(trainer):
                 "keeping the current plan."
             )
         return None
+
+
+def mark_auto_offload_for_ddp(model, requested):
+    """Record from_pretrained(offload_layers = "auto") under a distributed launch on every rank, also
+    ranks whose plan swapped nothing, so each builds the same DDP ignore list at trainer init."""
+    from .loader_utils import is_distributed
+
+    if requested == "auto" and model is not None and is_distributed():
+        model._unsloth_offload_layers_auto_ddp = True
+    return model
+
+
+def _ignore_block_swap_params_for_ddp(model):
+    """offload_layers = "auto" plans each rank on its own free memory, so under DDP ranks can swap
+    different layers, and a swapped weight is a 0-element tensor between uses. DDP broadcasts every
+    parameter it does not ignore from rank 0 when it wraps the model, which needs equal shapes on
+    every rank: keep the frozen decoder weights out of it (they load identically on every rank and
+    DDP never syncs frozen weights afterwards). The list must be the same on every rank, so it
+    follows the request and the architecture, never this rank's plan. Names are relative to the
+    model the Trainer wraps (the PeftModel). Returns the names added."""
+    from .loader_utils import is_distributed
+
+    if model is None or find_decoder_layers is None or not is_distributed():
+        return []
+    if not getattr(model, "_unsloth_offload_layers_auto_ddp", False) and (
+        getattr(model, "_unsloth_offload_layers_auto", None) is None
+    ):
+        return []
+    try:
+        layer_params = {id(p) for p in find_decoder_layers(model).parameters()}
+    except Exception:
+        return []
+    names = [
+        name
+        for name, p in model.named_parameters()
+        if id(p) in layer_params and not p.requires_grad
+    ]
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    seen = set(ignored)
+    added = [name for name in names if name not in seen]
+    if not added:
+        return []
+    from torch.nn.parallel import DistributedDataParallel
+
+    DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored + added)
+    return added
 
 
 def _trainer_offload_replan_skip(trainer):
