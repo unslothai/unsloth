@@ -36521,11 +36521,12 @@ def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
         return []
 
 
-async def _openai_catalog_objects() -> list[dict]:
+async def _openai_catalog_objects(quant_pins: bool = False) -> list[dict]:
     """Every model the server knows about for ``GET /v1/models``: the loaded
     model(s) plus locally available (downloaded/cached) models discovered by
     scanning. Loaded entries keep their context fields and are marked
-    ``loaded: true``. All ids are clean public ids (never absolute paths)."""
+    ``loaded: true``. All ids are clean public ids (never absolute paths). ``quant_pins``
+    adds a ``<id>:<quant>`` row per on-disk quant of a multi-quant GGUF repo."""
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
@@ -36544,11 +36545,16 @@ async def _openai_catalog_objects() -> list[dict]:
         catalog = await asyncio.to_thread(account_access.filter_model_rows, catalog)
         visible = {id(info) for info in catalog}
         rows = [row for row in rows if id(row[0]) in visible]
+    pins: dict[str, tuple[str, ...]] = {}
     for info, is_gguf, quants, loaded in rows:
         if account_access.resident_hidden("chat"):
             loaded = False
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
-        if not cid or cid in by_id:
+        if not cid:
+            continue
+        if is_gguf and len(quants) > 1:
+            pins.setdefault(cid, quants)
+        if cid in by_id:
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -36583,7 +36589,39 @@ async def _openai_catalog_objects() -> list[dict]:
     for obj in media:
         by_id.setdefault(obj["id"], obj)
 
-    return list(by_id.values())
+    if not quant_pins or not pins:
+        return list(by_id.values())
+    # Off-loop: a loaded row on a cold index reads residency from every slot.
+    return await asyncio.to_thread(_with_quant_pin_rows, list(by_id.values()), pins)
+
+
+def _with_quant_pin_rows(objects: list[dict], pins: dict[str, tuple[str, ...]]) -> list[dict]:
+    """*objects* plus, after each multi-quant repo's bare row, one ``<id>:<quant>`` row per on-disk
+    quant, as ``GET /v1/models/<id>:<quant>`` returns it: dropdown clients cannot type a pin (#9340)."""
+    from core.inference.local_model_resolver import (
+        index_is_built,
+        local_gguf_pinned_variant,
+        warm_index_soon,
+    )
+
+    # Never rebuild per listing (5 s TTL, multi-root scan); build only if it never was, or a
+    # client that lists once at connect sees no pins.
+    allow_scan = not index_is_built()
+    warm_index_soon()
+    listed = {obj["id"] for obj in objects}
+    resident_quants = functools.lru_cache(maxsize = 1)(_resident_gguf_quants)
+    out: list[dict] = []
+    for obj in objects:
+        out.append(obj)
+        if obj.get("task"):
+            continue
+        out.extend(
+            _quant_pin_object(obj, quant, resident_quants)
+            for quant in pins.get(obj["id"], ())
+            if f"{obj['id']}:{quant}" not in listed
+            and local_gguf_pinned_variant(f"{obj['id']}:{quant}", allow_scan = allow_scan) == quant
+        )
+    return out
 
 
 @studio_router.get("/loaded-models")
@@ -36617,10 +36655,10 @@ async def openai_list_models(
     """
     wanted = {m.strip() for m in (output_modalities or "").split(",")}
     if not wanted & {"all", "decisions"}:
-        return {"object": "list", "data": await _openai_catalog_objects()}
+        return {"object": "list", "data": await _openai_catalog_objects(quant_pins = True)}
     from routes.systemone import decision_model_objects
 
-    data = [] if wanted == {"decisions"} else await _openai_catalog_objects()
+    data = [] if wanted == {"decisions"} else await _openai_catalog_objects(quant_pins = True)
     data += await asyncio.to_thread(decision_model_objects)
     return {"object": "list", "data": data}
 
@@ -36658,10 +36696,15 @@ def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
     variant = local_gguf_pinned_variant(f"{listed['id']}:{model_id[len(base) + 1:]}")
     if not variant:
         return None
+    return _quant_pin_object(listed, variant, _resident_gguf_quants)
+
+
+def _quant_pin_object(listed: dict, variant: str, resident_quants) -> dict:
+    """*listed* pinned to its on-disk *variant*: the loaded row when that quant is resident."""
     pinned_id = f"{listed['id']}:{variant}"
     if listed.get("loaded"):
         # A cold index leaves "quant" off the loaded row until it can prove the pin.
-        resident = listed.get("quant") or _resident_gguf_quants().get(listed["id"].lower())
+        resident = listed.get("quant") or resident_quants().get(listed["id"].lower())
         if str(resident or "").lower() == variant.lower():
             return {**listed, "id": pinned_id, "quant": variant}
     # The listed row's context fields describe the resident quant, not this one.
