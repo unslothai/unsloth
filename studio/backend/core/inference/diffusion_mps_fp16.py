@@ -229,7 +229,7 @@ def unsupported_reason(root: Any, target: Any) -> Optional[str]:
 
 
 def install_mps_fp16(root: Any, target: Any, logger: Any = None) -> int:
-    # All or nothing: one mismatched block keeps the whole model bf16 (no mixed-precision half-patched model).
+    # All or nothing: one mismatched block keeps the whole model bf16.
     reason = unsupported_reason(root, target)
     if reason is not None:
         if logger is not None and mps_fp16_requested():
