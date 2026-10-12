@@ -847,8 +847,6 @@ def retry(
             if row["plan_json"]
             else "planning"
         )
-        # Retry takes the user's current time budget and website access, so a run that ran out of time
-        # can be given more without starting a new chat.
         config = _loads(row["config_json"], {})
         policy_changed = website_policy is not None and website_policy != normalize_website_policy(
             config.get("websitePolicy")
@@ -863,8 +861,7 @@ def retry(
             "lease_expires_at = NULL, config_json = ?, updated_at = ? WHERE id = ?",
             (status, json.dumps(config, ensure_ascii = False), now_ms(), run_id),
         )
-        # A failed run keeps its finished steps so Retry continues from them. A stopped run, or one whose
-        # website access changed, starts over: its evidence may no longer be wanted or allowed.
+        # Only a failed run keeps finished steps: a stopped one, or new website access, may not want or allow them.
         keep_evidence = row["status"] == "failed" and status == "queued" and not policy_changed
         if keep_evidence:
             _drop_unfinished_steps_locked(conn, run_id)

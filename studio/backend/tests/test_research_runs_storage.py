@@ -1542,7 +1542,6 @@ def test_retry_is_bounded_and_resumes_from_saved_plan(research_home):
     retried = research_db.get_run("run-1")
     assert retried["retryCount"] == 1
     assert retried["report"] is None
-    # The failed attempt's finished step and its evidence carry over; the unstarted plan step does not.
     assert [step["title"] for step in retried["steps"]] == ["Old step"]
     assert [source["url"] for source in retried["sources"]] == ["https://old.example"]
     assert research_db.get_reasoning_text("run-1") == ""
@@ -1652,8 +1651,7 @@ def test_retry_route_validates_and_applies_the_sent_settings(research_home):
 def test_retry_after_a_timed_out_report_continues_without_redoing_research(
     research_home, monkeypatch
 ):
-    """#11837: the report stage runs out of time. Retry with a bigger budget must reuse the gathered
-    evidence and only redo what failed, not search again from scratch."""
+    """#11837: Retry with a bigger budget reuses the gathered evidence instead of searching again."""
     from core import research_runs as worker
 
     _patch_web_rank(monkeypatch)

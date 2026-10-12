@@ -125,7 +125,6 @@ export const approveResearchRun = (
   planHash: string,
 ) => mutate(id, "approve", { planRevision, planHash });
 export const cancelResearchRun = (id: string) => mutate(id, "cancel");
-// Retry carries the current time budget and website access, so a timed-out run can be given more.
 export const retryResearchRun = (
   id: string,
   settings?: {
