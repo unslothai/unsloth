@@ -325,7 +325,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         i2v_pipeline_class = "LTX2ImageToVideoPipeline",
         # The conditioning frame is re-compressed as H.264 to look like a video frame. ComfyUI's LTX-2.3 i2v template
         # runs LTXVPreprocess at 18; LTX-2.0's template uses 33, which is also diffusers' default for Gemma3 encoders.
-        i2v_call_kwargs = ((r"ltx[-_ ]?2[-_.]3(?![0-9])", (("image_crf", 18),)),),
+        i2v_call_kwargs = ((r"ltx[-_ ]?2[-_.]?3(?![0-9])", (("image_crf", 18),)),),
         unsupported_checkpoints = ((_LTX_VIDEO_09_RE, _LTX_VIDEO_09_REFUSAL),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's

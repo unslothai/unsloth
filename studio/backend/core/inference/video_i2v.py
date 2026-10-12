@@ -55,6 +55,30 @@ def resolve_i2v_pipeline_class(name: str) -> type:
     return cls
 
 
+def i2v_pipeline_available(name: Optional[str]) -> bool:
+    """Whether this install's diffusers exports ``name``. Never raises: status and request
+    validation ask it, and a missing class must read as "no first frame", not as a 500."""
+    if not name:
+        return False
+    try:
+        import diffusers
+    except Exception:  # noqa: BLE001
+        return False
+    key = (id(diffusers), name)
+    cached = _AVAILABLE.get(key)
+    if cached is None:
+        try:
+            resolve_i2v_pipeline_class(name)
+            cached = True
+        except Exception:  # noqa: BLE001 -- an absent or unimportable class is simply unavailable
+            cached = False
+        _AVAILABLE[key] = cached
+    return cached
+
+
+_AVAILABLE: dict[tuple[int, str], bool] = {}
+
+
 def _init_kwargs(pipe: Any, cls: type, config_overrides: dict[str, Any]) -> dict[str, Any]:
     """Constructor kwargs for ``cls`` from ``pipe``'s registered components and config values."""
     params = inspect.signature(cls.__init__).parameters
@@ -124,7 +148,30 @@ def first_frame_pipeline(
             yield pipe
         finally:
             pipe.__class__ = original_cls
+            _carry_component_registrations(pipe, overlay, saved)
             _restore(pipe, saved)
+
+
+def _carry_component_registrations(pipe: Any, overlay: dict[str, Any], saved: dict[str, Any]) -> None:
+    """A component assigned during the render (``pipe.vae = ...``) re-registers itself in the
+    pipeline config through ``DiffusionPipeline.__setattr__``, which, mid-swap, is the overlaid
+    config. Copy such entries back onto the config being restored so it keeps naming the
+    components the pipeline actually holds."""
+    live = pipe.__dict__.get("_internal_dict")
+    template = overlay.get("_internal_dict")
+    original = saved.get("_internal_dict", _MISSING)
+    if live is None or live is template or original is _MISSING or original is None:
+        return
+    try:
+        changed = {
+            k: v
+            for k, v in dict(live).items()
+            if k in original and (template is None or template.get(k, _MISSING) != v) and original[k] != v
+        }
+        if changed:
+            saved["_internal_dict"] = type(original)({**dict(original), **changed})
+    except Exception:  # noqa: BLE001 -- bookkeeping only; never fail the render over it
+        logger.debug("video_i2v: could not carry component registrations back", exc_info = True)
 
 
 def _restore(pipe: Any, saved: dict[str, Any]) -> None:

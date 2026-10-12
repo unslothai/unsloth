@@ -1051,6 +1051,11 @@ def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) 
     assert_local_pick_is_dit(repo_id, gguf_filename, page)
 
 
+def _i2v_pipeline_available(name: Optional[str]) -> bool:
+    from .video_i2v import i2v_pipeline_available
+    return i2v_pipeline_available(name)
+
+
 def _detect_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -9322,7 +9327,8 @@ class VideoBackend:
 
                 pipe = state.pipe
                 i2v_extra: dict[str, Any] = {}
-                if first_pil is not None and video_family_uses_i2v_pipeline(fam):
+                i2v_active = first_pil is not None and video_family_uses_i2v_pipeline(fam)
+                if i2v_active:
                     # Same object, same components, image-to-video __call__ (video_i2v): nothing loads or moves.
                     from .video_i2v import first_frame_pipeline
 
@@ -9341,6 +9347,11 @@ class VideoBackend:
                         state.repo_id,
                     )
                     request_shape["pipeline"] = type(pipe).__name__
+                    if bg_eager:
+                        # A pending background compile traces the shapes its recorded render fed the denoiser. LTX-2's
+                        # image-to-video passes a per-token timestep where text-to-video passes one per sample, so an
+                        # image-to-video render must not be the one it learns from: it runs eager, unrecorded.
+                        i2v_swap.enter_context(bg_compile.no_record())
                 call_params = inspect.signature(pipe.__call__).parameters
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,
@@ -9709,7 +9720,7 @@ class VideoBackend:
                         raise RuntimeError(VIDEO_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
-                if bg_eager:
+                if bg_eager and not i2v_active:
                     bg.note_eager_generation()
                     bg.kick()
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
@@ -9794,6 +9805,12 @@ class VideoBackend:
         # picture's aspect, and the picture is centre-cropped onto it, as ComfyUI's i2v templates resize it (Wan22Image-
         # ToVideoLatent / LTX ResizeImageMaskNode, "center"). MiniMax-H3 keeps its own canvas and fit rules below.
         i2v_pipeline = video_family_uses_i2v_pipeline(fam)
+        if first is not None and i2v_pipeline and not _i2v_pipeline_available(fam.i2v_pipeline_class):
+            # Refused here, on the request, rather than after it reserved the backend and reached the render.
+            raise ValueError(
+                f"{fam.name} needs diffusers' {fam.i2v_pipeline_class} for a first frame, which this "
+                "install does not have. Update Unsloth to get a newer diffusers."
+            )
 
         if (width is None or height is None) and first is not None and i2v_pipeline:
             width, height = first_frame_canvas(fam, *first.size)
@@ -10590,7 +10607,11 @@ class VideoBackend:
             # Per keyframe, for every family: a declared image-to-video pipeline takes a first frame only, while
             # supports_keyframes above stays MiniMax-H3's first-and/or-last contract for older frontends.
             "supports_first_frame": video_family_accepts_first_frame(fam)
-            and state.h3_task != H3_TASK_REFERENCES,
+            and state.h3_task != H3_TASK_REFERENCES
+            and (
+                not video_family_uses_i2v_pipeline(fam)
+                or _i2v_pipeline_available(fam.i2v_pipeline_class)
+            ),
             "supports_last_frame": video_family_accepts_last_frame(fam)
             and state.h3_task != H3_TASK_REFERENCES,
             "supports_references": fam.supports_references and state.h3_task == H3_TASK_REFERENCES,

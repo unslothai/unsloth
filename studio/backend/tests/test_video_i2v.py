@@ -366,3 +366,33 @@ def test_request_last_frame_route_check_names_first_frame_only():
     fam = _fam("wan2.2-ti2v-5b")
     with pytest.raises(ValueError, match = "first frame only"):
         validate_video_keyframe_conditioning(fam, None, has_keyframes = True, has_last_frame = True)
+
+
+def test_an_unrecorded_render_never_seeds_the_background_compile():
+    from core.inference import diffusion_bg_compile as bgc
+
+    bg = bgc.BackgroundCompile(object())
+    with bgc.force_eager(), bgc.no_record():
+        assert bg._record(None, (), {}) is None
+    assert bg.samples == [] and bg.state == "recording"
+
+
+def test_a_component_assigned_mid_swap_stays_registered_after_it():
+    import diffusers
+
+    from core.inference.video_i2v import first_frame_pipeline
+
+    _torch, pipe = _tiny_wan_pipe()
+    with first_frame_pipeline(pipe, "WanImageToVideoPipeline"):
+        pipe.scheduler = diffusers.UniPCMultistepScheduler()
+    assert type(pipe).__name__ == "WanPipeline"
+    assert tuple(pipe.config["scheduler"])[1] == "UniPCMultistepScheduler"
+    assert isinstance(pipe.scheduler, diffusers.UniPCMultistepScheduler)
+    assert "image_encoder" not in pipe.config
+
+
+def test_availability_probe_never_raises():
+    from core.inference.video_i2v import i2v_pipeline_available
+
+    assert i2v_pipeline_available(None) is False
+    assert i2v_pipeline_available("NoSuchPipelineAnywhere") is False

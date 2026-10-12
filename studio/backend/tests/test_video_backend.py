@@ -13291,3 +13291,14 @@ def test_untrusted_a14b_pair_checks_the_partner_files_header_too(
             base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
             family_override = "wan2.2-t2v-a14b",
         )
+
+
+def test_a_diffusers_without_the_i2v_class_reports_no_first_frame(fake_runtime):
+    # The fake diffusers has WanPipeline but no WanImageToVideoPipeline: the picker must not offer
+    # a start frame, and a request carrying one is refused before it reserves the backend.
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["supports_first_frame"] is False
+    with pytest.raises(ValueError, match = "WanImageToVideoPipeline"):
+        backend.begin_generate(prompt = "p", first_frame = _data_url(64, 64))
+    assert backend.generate_progress()["active"] is False
