@@ -385,6 +385,41 @@ def _openable_host_for_bind(run_mod, host: str) -> str:
     return share_host
 
 
+def _require_valid_tls_flags(
+    ssl_certfile: Optional[Path],
+    ssl_keyfile: Optional[Path],
+    *,
+    secure: bool,
+    cloudflare: Optional[bool],
+) -> None:
+    """Fail on a bad --ssl-certfile/--ssl-keyfile launch before the password gate can change or strip credentials.
+    run_server re-checks the same rules (utils/studio_tls.py) for direct `run.py` callers."""
+    if ssl_certfile is None and ssl_keyfile is None:
+        return
+    if ssl_certfile is None or ssl_keyfile is None:
+        typer.echo("Error: --ssl-certfile and --ssl-keyfile must be passed together.", err = True)
+        raise typer.Exit(2)
+    if secure or cloudflare:
+        typer.echo(
+            "Error: --ssl-certfile/--ssl-keyfile serve HTTPS directly; do not combine them "
+            "with --secure or --cloudflare.",
+            err = True,
+        )
+        raise typer.Exit(2)
+    import ssl
+
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(
+            str(ssl_certfile.expanduser()), str(ssl_keyfile.expanduser())
+        )
+    except (OSError, ssl.SSLError) as exc:
+        typer.echo(
+            f"Error: could not load the TLS certificate and key ({ssl_certfile}, {ssl_keyfile}): {exc}",
+            err = True,
+        )
+        raise typer.Exit(2)
+
+
 def _require_bind_host(host: str) -> None:
     if isinstance(host, str) and host.strip():
         return
@@ -1989,6 +2024,7 @@ def studio_default(
         return
 
     _require_bind_host(host)
+    _require_valid_tls_flags(ssl_certfile, ssl_keyfile, secure = secure, cloudflare = cloudflare)
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
