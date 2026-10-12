@@ -18,7 +18,7 @@ from fastapi import HTTPException
 
 from utils.paths import recipe_datasets_root
 
-from .jsonable import to_jsonable
+from .jsonable import _is_pandas_missing, to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
@@ -253,11 +253,17 @@ def _apply_data_designer_expression_blank_patch() -> None:
 
 
 def _is_missing_cell(value: Any) -> bool:
-    return value is None or (isinstance(value, float) and math.isnan(value))
+    return (
+        value is None
+        or (isinstance(value, float) and math.isnan(value))
+        or _is_pandas_missing(value)
+    )
 
 
 def _as_json_text(value: Any) -> Any:
-    if _is_missing_cell(value) or isinstance(value, str):
+    if _is_missing_cell(value):
+        return None
+    if isinstance(value, str):
         return value
     value = to_jsonable(value)
     return None if value is None else json.dumps(value, ensure_ascii = False, default = str)

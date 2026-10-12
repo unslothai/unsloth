@@ -229,34 +229,46 @@ def _unify_batch_schemas(base_dataset_path: Path) -> None:
 
     staged = [path.with_name(path.name + ".unifying") for path in parquet_files]
     try:
-        tables = [pyarrow_parquet.read_table(path) for path in parquet_files]
-        names = list(dict.fromkeys(name for table in tables for name in table.column_names))
-        columns = {}
+        names = list(dict.fromkeys(name for schema in schemas for name in schema.names))
+        # Only columns that differ are rebuilt, one column at a time; the rest stay as written.
+        rebuilt: dict[str, list[Any]] = {}
         for name in names:
-            chunks = [table.column(name) for table in tables if name in table.column_names]
-            if len(chunks) == len(tables) and all(c.type == chunks[0].type for c in chunks):
-                columns[name] = pyarrow.chunked_array(
-                    [chunk for column in chunks for chunk in column.chunks], chunks[0].type
-                )
+            fields = [schema.field(name) for schema in schemas if name in schema.names]
+            if len(fields) == len(schemas) and all(f.type == fields[0].type for f in fields):
                 continue
-            values = [
-                value
-                for table in tables
-                for value in (
-                    table.column(name).to_pylist()
-                    if name in table.column_names
-                    else [None] * table.num_rows
-                )
+            columns = [
+                pyarrow_parquet.read_table(path, columns = [name]).column(name)
+                if name in schema.names
+                else pyarrow.nulls(pyarrow_parquet.read_metadata(path).num_rows)
+                for path, schema in zip(parquet_files, schemas)
             ]
             try:
-                columns[name] = pyarrow.array(values, from_pandas = True)
-            except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError):
-                columns[name] = pyarrow.array(_unify_cell_types(values), from_pandas = True)
-        unified = pyarrow.table(columns)
-        offset = 0
-        for table, path in zip(tables, staged):
-            pyarrow_parquet.write_table(unified.slice(offset, table.num_rows), path)
-            offset += table.num_rows
+                target = (
+                    pyarrow.unify_schemas(
+                        [pyarrow.schema([field]) for field in fields],
+                        promote_options = "permissive",
+                    )
+                    .field(name)
+                    .type
+                )
+                rebuilt[name] = [column.cast(target) for column in columns]
+            except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError, pyarrow.ArrowNotImplementedError):
+                values = _unify_cell_types([v for column in columns for v in column.to_pylist()])
+                merged = pyarrow.array(values, from_pandas = True)
+                rebuilt[name], offset = [], 0
+                for column in columns:
+                    rebuilt[name].append(merged.slice(offset, len(column)))
+                    offset += len(column)
+        for index, (path, target_path) in enumerate(zip(parquet_files, staged)):
+            table = pyarrow_parquet.read_table(path)
+            for name, parts in rebuilt.items():
+                if name in table.column_names:
+                    table = table.set_column(table.column_names.index(name), name, parts[index])
+                else:
+                    table = table.append_column(name, parts[index])
+            pyarrow_parquet.write_table(
+                table.select(names).replace_schema_metadata(None), target_path
+            )
     except Exception as exc:
         for path in staged:
             path.unlink(missing_ok = True)

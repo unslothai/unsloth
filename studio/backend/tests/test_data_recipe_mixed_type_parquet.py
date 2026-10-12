@@ -243,3 +243,37 @@ def test_batches_that_already_agree_are_not_rewritten(tmp_path: Path) -> None:
     _unify_batch_schemas(tmp_path)
 
     assert {p.name: p.read_bytes() for p in parquet_dir.iterdir()} == before
+
+
+def test_pandas_missing_values_do_not_flatten_the_struct() -> None:
+    from core.data_recipe.service import _unify_cell_types
+
+    unified = _unify_cell_types([{"o": {"d": True}}, {"o": "x"}, pd.NA])
+    pyarrow.array(unified, from_pandas = True)
+    assert unified[:2] == [{"o": '{"d": true}'}, {"o": "x"}]
+
+
+def test_batch_unify_leaves_agreeing_columns_and_promotes_with_arrow(tmp_path: Path) -> None:
+    from core.data_recipe.jobs.worker import _unify_batch_schemas
+
+    parquet_dir = tmp_path / "parquet-files"
+    parquet_dir.mkdir()
+    stamp = pd.Timestamp("2026-01-01 12:34:56.123456789")
+    for index, (row, when) in enumerate([({"o": {"d": True}}, None), ({"o": "x"}, stamp)]):
+        table = pyarrow.table(
+            {
+                "r": pyarrow.array([row]),
+                "ts": pyarrow.array([stamp], pyarrow.timestamp("ns")),
+                "maybe": pyarrow.array([when], pyarrow.timestamp("ns") if when else pyarrow.null()),
+            }
+        )
+        pq.write_table(table, parquet_dir / f"batch_{index:05d}.parquet")
+
+    _unify_batch_schemas(tmp_path)
+
+    table = pq.read_table(parquet_dir)
+    assert table.schema.field("ts").type == pyarrow.timestamp("ns")
+    assert table.schema.field("maybe").type == pyarrow.timestamp("ns")
+    assert table.column("ts").to_pylist() == [stamp, stamp]
+    assert table.column("maybe").to_pylist() == [None, stamp]
+    assert table.column("r").to_pylist() == [{"o": '{"d": true}'}, {"o": "x"}]
