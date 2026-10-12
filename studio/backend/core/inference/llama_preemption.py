@@ -668,6 +668,9 @@ class Participant:
     # True once an idle-slot reclaim erased this holder's cells while it was parked. Counting
     # them anyway kept two waiting chats out of an EMPTY cache for three minutes.
     cells_reclaimed: bool = False
+    # Erased but re-charged before the release ran, so it counts again: the next round
+    # boundary still replays the whole prompt, and must announce it so.
+    replay_pending: bool = False
     # Bumped every time this holder stops on a tool. A reclaim is planned from a `/slots`
     # reading and released after the erases, so the release has to tell the holder that
     # reading saw parked from one that parked (or parked again) while the erases were in
@@ -1133,11 +1136,12 @@ class PreemptionController:
                 participant.generated_seen = reported
                 self._progress_tokens += (reported - previous) if reported >= previous else reported
                 participant.tokens = participant.resident_tokens(reported)
-                participant.measured = True
-                participant.cells_reclaimed = False
                 if reported > 0:
-                    # Guarded on `generated`: the round-boundary sweep calls this with zero
-                    # right after `note_tokens` announced the growth.
+                    # Only a decoded token says the prompt is in: the round boundary's zero
+                    # follows `note_tokens`, and would undo a replay it just announced.
+                    participant.measured = True
+                    participant.cells_reclaimed = False
+                    participant.replay_pending = False
                     participant.prefill_done()
                 # A generated token is proof of decoding, whatever the route last reported: a round
                 # streaming only tool-call deltas left a chat unpreemptable past the ceiling.
@@ -1274,7 +1278,7 @@ class PreemptionController:
                     participant.prompt_tokens if participant.prompt_tokens > 0 else charge
                 )
                 growth = participant.tokens - previous
-                replayed = participant.cells_reclaimed
+                replayed = participant.cells_reclaimed or participant.replay_pending
                 if replayed:
                     # A reclaim erased every cell: the whole prompt goes in again, not the
                     # round's growth. This runs before `note_state` sees DECODING.
@@ -1295,6 +1299,7 @@ class PreemptionController:
                 participant.measured = not replayed
                 participant.measured_at_seq = None
                 participant.cells_reclaimed = False
+                participant.replay_pending = False
 
     # PAUSED, PREEMPTING, QUEUED and the raw surfaces are owned by other transitions.
     _LIVE_STATES = frozenset(
@@ -1411,6 +1416,9 @@ class PreemptionController:
                     if participant.cells_reclaimed and participant.park_seq == park_seq:
                         participant.cells_reclaimed = False
                         participant.announce_prefill(participant.tokens)
+                        # The round publishing that charge has not run yet, and would read
+                        # this as a prefix kept: its whole prompt is still to go in.
+                        participant.replay_pending = True
         return len(released)
 
     def restart(self, gen_id: str) -> None:
@@ -1427,6 +1435,7 @@ class PreemptionController:
             participant.measured = False
             participant.measured_at_seq = None
             participant.cells_reclaimed = False
+            participant.replay_pending = False
             participant.consecutive_preemptions = 0
             participant.state = ParticipantState.DECODING
             participant.preempt_event.clear()
