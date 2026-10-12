@@ -861,8 +861,7 @@ def retry(
             "lease_expires_at = NULL, config_json = ?, updated_at = ? WHERE id = ?",
             (status, json.dumps(config, ensure_ascii = False), now_ms(), run_id),
         )
-        # Only a failed run keeps completed steps: a stopped one, or new website access, may not want or allow
-        # them. Failed steps go so a search that failed transiently is tried again.
+        # Only a failed run keeps evidence, and only completed steps, so a transiently failed search runs again.
         keep_evidence = row["status"] == "failed" and status == "queued" and not policy_changed
         if keep_evidence:
             _drop_unfinished_steps_locked(conn, run_id, ("completed",))

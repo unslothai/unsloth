@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #11837: Retry sends the current time budget and website access, so a run that ran out of
-// time can be given more without starting a new chat.
+// #11837: Retry sends the current time budget and website access.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
