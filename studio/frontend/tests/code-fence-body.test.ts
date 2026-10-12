@@ -102,10 +102,15 @@ test("a streaming open fence is highlighted rather than shown plain", () => {
   );
 });
 
-test("a fence in the thinking box is plain while it grows and coloured once it closes", () => {
+test("a fence in the thinking box is coloured off the main thread, while it grows only on screen", () => {
   assert.match(readSrc("components/assistant-ui/code-highlight-context.ts"), /export const CodeHighlightModeContext = createContext<CodeHighlightMode>\("all"\);/);
   assert.match(MARKDOWN_TEXT, /\{highlightCode \|\| highlightMode === "settled" \? \(\s*<FenceBlock[\s\S]{0,300}isIncomplete=\{highlightCode \? props\.isIncomplete : false\}/, "a closed fence in a trace takes the deferred, worker-routed block, never the growing fence's tokenizer");
-  assert.equal((MARKDOWN_TEXT.match(/\) : \(\s*<PlainFenceBlock/g) ?? []).length, 3, "every fence route has a plain twin");
+  assert.equal((MARKDOWN_TEXT.match(/\) : \(\s*<PlainFenceBlock/g) ?? []).length, 2, "the closed fence routes keep a plain twin");
+  assert.match(MARKDOWN_TEXT, /<StreamingFenceBlock\s*language=\{openFence\.language\}\s*source=\{openFence\.text\}\s*\/>\s*\) : \(\s*<LiveThinkingFence/, "a growing thinking fence takes the viewport-gated worker route");
+  const live = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("function LiveThinkingFence("), MARKDOWN_TEXT.indexOf("function FenceBlock("));
+  assert.match(live, /useThinkingCodeColour\(host, source, languageToken, false\)/);
+  assert.equal(/useFenceTokens|code\.highlight|noteStreamingFence/.test(live), false, "no main-thread tokenizer for a growing thinking fence");
+  assert.match(live, /result === null \? \(\s*<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/, "plain until the worker answers");
   assert.match(MARKDOWN_TEXT, /const STREAMDOWN_PLAIN_CODE_PLUGINS = \{ math, mermaid \}/);
   assert.match(MARKDOWN_TEXT, /plugins=\{\s*highlightCode \? STREAMDOWN_PLUGINS : STREAMDOWN_PLAIN_CODE_PLUGINS\s*\}/, "a fence nested in a list or a quote is plain too");
   const start = MARKDOWN_TEXT.indexOf("function PlainFenceBlock(");

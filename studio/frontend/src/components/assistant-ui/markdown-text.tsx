@@ -96,6 +96,8 @@ import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
 import { CodeHighlightModeContext } from "./code-highlight-context";
+import { spellLines } from "./reasoning-code-colour";
+import { useThinkingCodeColour } from "./use-thinking-code-colour";
 import { withMathBlockMarker } from "./math-block-marker";
 import {
   MarkdownBlockBoundary,
@@ -925,7 +927,7 @@ function StreamdownBlockContent(props: BlockProps) {
           source={openFence.text}
         />
       ) : (
-        <PlainFenceBlock
+        <LiveThinkingFence
           language={openFence.language}
           source={openFence.text}
         />
@@ -1154,6 +1156,45 @@ function PlainFenceBlock({
         language={language}
         source={source}
       />
+    </div>
+  );
+}
+
+/**
+ * A thinking fence still being written: plain until the worker colours it, re-coloured only while
+ * it is on screen (see `useThinkingCodeColour`). Same wrapper as the closed fence's `FenceBlock`,
+ * so the block keeps its shape when the delimiter lands.
+ */
+function LiveThinkingFence({
+  language,
+  source,
+}: {
+  language: string | null;
+  source: string;
+}) {
+  const languageToken = language?.trim().split(/\s+/)[0] || null;
+  const host = useRef<HTMLDivElement | null>(null);
+  const colour = useThinkingCodeColour(host, source, languageToken, false);
+  const result = useMemo(
+    () =>
+      colour === null
+        ? null
+        : spellLines(colour, trimTrailingNewlines(source).split("\n")),
+    [colour, source],
+  );
+  return (
+    <div className="relative isolate" ref={host}>
+      {result === null ? (
+        <PlainFenceShell language={languageToken} source={source} />
+      ) : (
+        <FenceBody
+          isIncomplete
+          language={languageToken}
+          result={result}
+          source={source}
+          windowing={fenceMode() === "window"}
+        />
+      )}
     </div>
   );
 }

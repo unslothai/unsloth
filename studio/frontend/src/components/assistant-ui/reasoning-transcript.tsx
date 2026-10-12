@@ -13,7 +13,6 @@ import {
   useRef,
   useState,
 } from "react";
-import type { HighlightResult } from "@streamdown/code";
 import { flushSync } from "react-dom";
 import {
   CodeBlockActions,
@@ -22,13 +21,8 @@ import {
 } from "./markdown-text";
 import { CodeHighlightModeContext } from "./code-highlight-context";
 import { FenceLine } from "./code-fence-defer";
-import {
-  cachedSettledColour,
-  clipLineTokens,
-  rememberSettledColour,
-  type TokenLine,
-} from "./reasoning-code-colour";
-import { requestFullHighlight } from "./use-reasoning-highlight";
+import { clipLineTokens, type TokenLine } from "./reasoning-code-colour";
+import { useThinkingCodeColour } from "./use-thinking-code-colour";
 import {
   cachedReasoningTranscriptIndex,
   resolveReasoningAnchor,
@@ -302,63 +296,6 @@ const CodeRow = memo(function CodeRow({
   );
 });
 
-/**
- * Worker colours for a thinking code block, or null. Asked for only once the fence has closed and
- * the block nears the viewport, so a growing block, and every block the reader never reaches,
- * costs no grammar work at all. No main-thread fallback: without the worker the block stays plain.
- */
-function useSettledCodeColour(
-  surface: React.RefObject<HTMLElement | null>,
-  source: string,
-  language: string | null,
-  settled: boolean,
-): HighlightResult | null {
-  const [colour, setColour] = useState<{
-    source: string;
-    result: HighlightResult;
-  } | null>(null);
-  const [reached, setReached] = useState(
-    () => typeof IntersectionObserver === "undefined",
-  );
-  const held = colour !== null && colour.source === source ? colour.result : null;
-  const result =
-    held ?? (settled ? cachedSettledColour(language, source) : null);
-  const coloured = result !== null;
-  useEffect(() => {
-    const element = surface.current;
-    if (!settled || reached || coloured || !element) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return;
-        observer.disconnect();
-        setReached(true);
-      },
-      { root: element.closest(".aui-thread-viewport"), rootMargin: "100% 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [surface, settled, reached, coloured]);
-  useEffect(() => {
-    if (!settled || !reached || coloured) return;
-    let live = true;
-    const cancel = requestFullHighlight(
-      source,
-      language,
-      (late) => {
-        if (!live || late === null) return;
-        rememberSettledColour(language, source, late);
-        setColour({ source, result: late });
-      },
-      true,
-    );
-    return () => {
-      live = false;
-      cancel?.();
-    };
-  }, [settled, reached, coloured, source, language]);
-  return settled ? result : null;
-}
-
 function Row({
   index,
   fragment,
@@ -393,7 +330,7 @@ function CodeGroup({
   const first = fragments[indices[0]];
   const last = fragments[indices[indices.length - 1]];
   const surface = useRef<HTMLDivElement>(null);
-  const colour = useSettledCodeColour(
+  const colour = useThinkingCodeColour(
     surface,
     code.source,
     code.language,

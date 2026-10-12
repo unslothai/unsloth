@@ -8,13 +8,16 @@ import { readSrc } from "./helpers/kit.ts";
 
 const TRANSCRIPT = readSrc("components/assistant-ui/reasoning-transcript.tsx");
 
-test("thinking code is plain while it grows and asks the worker once it has closed and nears the screen", () => {
+test("thinking code is coloured by the worker: once settled near the screen, and while growing only on screen", () => {
   assert.match(TRANSCRIPT, /\{tokens === null\s*\? codeRowText\(fragment, leading\)\s*: colouredRow\(fragment, leading, tokens\)\}/);
   assert.match(TRANSCRIPT, /if \(column === 0 && line > 0 && !\(leading && at === 0\)\) nodes\.push\("\\n"\);\s*if \(text !== ""\) nodes\.push\(text\);/, "one text node per line and per line break: a streamed append rewrites only the growing line, and a reading anchor never spans a row's line break");
-  assert.match(TRANSCRIPT, /useSettledCodeColour\(\s*surface,\s*code\.source,\s*code\.language,[\s\S]{0,120}!code\.incomplete \|\| !streaming,\s*\)/, "a growing fence is never coloured");
-  const hook = TRANSCRIPT.slice(TRANSCRIPT.indexOf("function useSettledCodeColour("), TRANSCRIPT.indexOf("const CodeGroup") === -1 ? undefined : TRANSCRIPT.indexOf("function CodeGroup("));
-  assert.match(hook, /new IntersectionObserver\([\s\S]*rootMargin: "100% 0px"/, "only a block near the viewport is asked for");
-  assert.match(hook, /requestFullHighlight\(\s*source,\s*language,[\s\S]*?,\s*true,\s*\)/, "thinking colour is speculative, behind the answer's own fences");
+  assert.match(TRANSCRIPT, /useThinkingCodeColour\(\s*surface,\s*code\.source,\s*code\.language,[\s\S]{0,120}!code\.incomplete \|\| !streaming,\s*\)/);
+  const hook = readSrc("components/assistant-ui/use-thinking-code-colour.ts");
+  assert.match(hook, /export const LIVE_COLOUR_MS = 250;/, "a growing fence is re-coloured a few times a second at most");
+  assert.match(hook, /new IntersectionObserver\([\s\S]*rootMargin: "100% 0px"/, "a settled block is asked for once it nears the viewport");
+  assert.match(hook, /if \(settled \|\| !visible \|\| caughtUp \|\| state\.busy \|\| state\.off\) return;/, "a growing block off screen, or with a request in flight, asks for nothing");
+  assert.match(hook, /if \(source\.length > MAX_HIGHLIGHT_CHARS\) return;/, "a growing block past the highlight cap waits for its close");
+  assert.equal((hook.match(/requestFullHighlight\([\s\S]*?,\s*true,\s*\)/g) ?? []).length, 2, "thinking colour is speculative, behind the answer's own fences");
   assert.equal(/highlightFenceSource|code\.highlight|useReasoningHighlight/.test(TRANSCRIPT), false, "no main-thread tokenizer for thinking code");
   assert.match(TRANSCRIPT, /<CodeHighlightModeContext\.Provider value="settled">/, "a fence inside a prose row of the trace follows the same rule");
   assert.match(
