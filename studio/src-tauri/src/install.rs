@@ -706,6 +706,8 @@ fn spawn_script(
         cmd.env_remove(name);
     }
     if let Some(root) = crate::studio_home::chosen_root() {
+        // Re-checked here, not only when chosen: files may have landed in the folder since.
+        crate::studio_home::validate_root(&root)?;
         cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
         cmd.env(crate::studio_home::DESKTOP_CHOSEN_HOME_ENV, "1");
         cmd.env("UNSLOTH_ISOLATE_UV_CACHE", "1");
