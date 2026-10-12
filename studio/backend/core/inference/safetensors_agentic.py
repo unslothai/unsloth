@@ -786,6 +786,10 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # A browser task is many steps, each a chance to announce the next one and stop: there one
+    # nudge per tool turn, as in the GGUF and external loops; other requests never nudge after a tool.
+    browser_turns = any(name in BROWSER_TOOL_NAMES for name in _active_tool_names(tools or []))
+    post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
     # A denied tool confirmation must not be answered with a plan-without-action
@@ -813,7 +817,11 @@ def run_safetensors_tool_loop(
     _state_draining = 2
 
     # Reserve re-prompt slots so they don't eat the caller's tool budget.
-    _extra_iters = MAX_ACT_REPROMPTS if max_tool_iterations > 0 else 0
+    _extra_iters = (
+        MAX_ACT_REPROMPTS + (max_tool_iterations if browser_turns else 0)
+        if max_tool_iterations > 0
+        else 0
+    )
     for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
@@ -1283,14 +1291,19 @@ def run_safetensors_tool_loop(
                     content_accum,
                     reasoning_prefilled = reasoning_prefilled,
                 )
+                already_acted = any(record.executed for record in tool_controller.history)
                 if (
                     auto_heal_tool_calls
                     and nudge_enabled(nudge_tool_calls)
                     and active_tools
-                    and reprompt_count < MAX_ACT_REPROMPTS
+                    and (
+                        post_tool_reprompts < 1
+                        if already_acted
+                        else reprompt_count < MAX_ACT_REPROMPTS
+                    )
                     and not rag_autoinjected
                     and not tool_denied
-                    and not any(record.executed for record in tool_controller.history)
+                    and (browser_turns or not already_acted)
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
                     # Markup stripped first: a call fenced inside <tool_call> is not an answer.
@@ -1306,13 +1319,16 @@ def run_safetensors_tool_loop(
                         )
                     )
                 ):
-                    reprompt_count += 1
+                    if already_acted:
+                        post_tool_reprompts += 1
+                    else:
+                        reprompt_count += 1
                     last_reprompt_text = intent_text
                     logger.info(
                         "Safetensors re-prompt %d/%d: model responded without "
                         "calling tools (%d chars)",
-                        reprompt_count,
-                        MAX_ACT_REPROMPTS,
+                        post_tool_reprompts if already_acted else reprompt_count,
+                        1 if already_acted else MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
                     # Merges into a resumed partial: the nudge that follows is a user
@@ -1854,6 +1870,7 @@ def run_safetensors_tool_loop(
         # consume budget so the model gets its nudge and another tool-enabled turn (GGUF parity).
         if _turn_executed_real_tool:
             _executed_tool_iters += 1
+            post_tool_reprompts = 0
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
             if over_cap:

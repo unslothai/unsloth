@@ -5895,3 +5895,61 @@ def test_every_independent_edit_gets_its_own_verification_rerun():
         "edit_file",
         "terminal",
     ]
+
+
+def _post_tool_stall(
+    tool_name,
+    arguments,
+    replies,
+    also = (),
+):
+    """One tool call, then the scripted replies, recording every prompt the model saw."""
+    captured: list[list] = []
+    call = '<tool_call>{"name":"%s","arguments":%s}</tool_call>' % (tool_name, arguments)
+    script = [call, *replies]
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        yield script[len(captured) - 1] if len(captured) <= len(script) else "Done."
+
+    exec_fn = FakeExecuteTool([])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": name}} for name in (tool_name, *also)],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = True,
+            max_tool_iterations = 5,
+        )
+    )
+    return captured, exec_fn
+
+
+def test_browser_turns_get_a_post_tool_nudge():
+    # A browser step announced and not taken would end the task: GGUF and external parity.
+    call = '<tool_call>{"name":"browser_click","arguments":{"ref":"r2"}}</tool_call>'
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot",
+        "{}",
+        ["I'll click the first result.", call, "The title is X."],
+        also = ("browser_click",),
+    )
+    assert [name for name, _ in exec_fn.calls] == ["browser_snapshot", "browser_click"]
+    assert captured[2][-1]["role"] == "user"
+
+
+def test_other_tools_still_never_nudge_after_a_tool():
+    captured, exec_fn = _post_tool_stall("web_search", '{"query":"x"}', ["I'll search again."])
+    assert [name for name, _ in exec_fn.calls] == ["web_search"]
+    assert len(captured) == 2, captured
+
+
+def test_a_browser_tool_turn_allows_one_nudge():
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot", "{}", ["I'll click the first result.", "Let me click it now."]
+    )
+    assert [name for name, _ in exec_fn.calls] == ["browser_snapshot"]
+    # The call, the stall, one nudged retry: the second stall in the same tool turn is the answer.
+    assert len(captured) == 3, captured
