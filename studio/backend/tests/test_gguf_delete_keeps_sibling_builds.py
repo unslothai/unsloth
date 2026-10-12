@@ -228,6 +228,40 @@ def test_each_rows_build_is_selected_independently_across_snapshots(tmp_path):
     assert (snapshots / "old/model-Q6_K.gguf").is_symlink()
 
 
+def test_readiness_ranking_selects_the_healthy_rows_build(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils import download_manifest
+    from hub.utils.gguf_sources import cached_gguf_manifest_complete
+
+    alpha = "alpha-Q4_K_M.gguf"
+    beta = "beta-Q4_K_M.gguf"
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    repo, snapshots = _revisioned_repo(
+        tmp_path, ((old_revision, [alpha]), (new_revision, [beta]))
+    )
+    assert download_manifest.write_manifest(
+        "model",
+        repo.repo_id,
+        "Q4_K_M",
+        [
+            download_manifest.ExpectedFile(beta, 64),
+            download_manifest.ExpectedFile("mmproj-F16.gguf", 128),
+        ],
+        hub_cache = tmp_path,
+        commit_hash = new_revision,
+        metadata_derived = True,
+    )
+    assert not cached_gguf_manifest_complete(
+        repo.repo_id, "Q4_K_M", snapshots / new_revision
+    )
+    assert cached_gguf_manifest_complete(repo.repo_id, "Q4_K_M", snapshots / old_revision)
+
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snapshots / old_revision / alpha).is_symlink()
+    assert (snapshots / new_revision / beta).is_symlink()
+
+
 def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
     from hub.services.models.companion_cleanup import (
         _remaining_main_gguf_variants,

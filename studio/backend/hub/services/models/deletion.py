@@ -258,6 +258,30 @@ def _revision_selection_key(revision) -> tuple[float, str]:
     return snapshot_selection_key(Path(snapshot)) if snapshot else (0.0, "")
 
 
+def _rank_complete_snapshots(
+    repo_id: str, revisions: list, complete: list[set[str]]
+) -> list[set[str]]:
+    from hub.utils.gguf_sources import _prefer_duplicate
+
+    selected: dict[str, tuple[int, Path]] = {}
+    for index, (revision, variants) in enumerate(zip(revisions, complete)):
+        snapshot_path = getattr(revision, "snapshot_path", None)
+        if not snapshot_path:
+            continue
+        snapshot = Path(snapshot_path)
+        for variant in variants:
+            key = variant.lower()
+            previous = selected.get(key)
+            if previous is None or _prefer_duplicate(
+                repo_id, variant, previous[1], snapshot
+            ):
+                selected[key] = (index, snapshot)
+    return [
+        {variant for variant in variants if selected[variant.lower()][0] == index}
+        for index, variants in enumerate(complete)
+    ]
+
+
 def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
     """use the lister's cross-snapshot keys so unlisted builds cannot claim the row."""
     revisions = sorted(
@@ -271,6 +295,9 @@ def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
         complete.append(
             hf_cache_scan.complete_snapshot_variants(str(snapshot)) if snapshot else set()
         )
+    repo_id = str(getattr(target_repo, "repo_id", ""))
+    if repo_id:
+        complete = _rank_complete_snapshots(repo_id, revisions, complete)
     listed = gguf_listed_checkpoints(names, complete)
     keys: dict[Path, str] = {}
     for revision, revision_names in zip(matches, names):
