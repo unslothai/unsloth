@@ -3833,7 +3833,7 @@ try:
             "Then confirm if it's correctly installed by running:\n"
             "python -m xformers.info\n\n"
             "Longer error message:\n" + str(error)
-        )
+        ) from error
     import xformers.ops.fmha as xformers
 
     xformers_attention = xformers.memory_efficient_attention
@@ -3844,6 +3844,9 @@ except ModuleNotFoundError:
 except Exception as e:
     if UNSLOTH_ENABLE_LOGGING:
         print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
+        print(str(e))
+    elif DEVICE_TYPE == "cuda" and str(e).startswith("Unsloth:") and e.__cause__ is None:
+        # The version guards above (e.g. Blackwell FA3 dispatch) carry their own fix; install-kernels would not apply it.
         print(str(e))
     elif DEVICE_TYPE == "cuda":
         # xformers' own warning is silenced above, so without this the banner's "Xformers = None" is the only trace. Usually a wheel built for another CUDA, e.g. PyPI's cu128 Windows wheel beside a cu130 torch (#4381).

@@ -53,6 +53,20 @@ def test_broken_xformers_is_reported():
     assert "unsloth install-kernels xformers" in out
 
 
+def test_version_guard_keeps_its_own_fix():
+    # Blackwell + xformers <= 0.0.32.post2 is refused on purpose; install-kernels maps torch 2.8 back to that same
+    # release, so pointing there would leave xformers off.
+    old_blackwell_xformers = (
+        "import torch, xformers\n"
+        "xformers.__version__ = '0.0.32.post2'\n"
+        "torch.cuda.get_device_capability = lambda *args, **kwargs: (12, 0)\n"
+    )
+    out = _run(old_blackwell_xformers + _IMPORT_UNSLOTH)
+    assert "XFORMERS_IS_NONE True" in out
+    assert "has a broken FA3 dispatch" in out
+    assert "unsloth install-kernels xformers" not in out
+
+
 def test_working_xformers_prints_nothing():
     import xformers._cpp_lib as c
 
