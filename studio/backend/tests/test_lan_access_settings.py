@@ -159,6 +159,7 @@ def test_address_persistence_defaults_to_automatic_and_validates(stored_settings
         ["224.0.0.1"],
         ["240.0.0.1"],
         [f"10.0.{n // 256}.{n % 256}" for n in range(65)],
+        ["10.0.0.7"] * 65,
     ):
         with pytest.raises(ValueError):
             lan_settings.set_lan_access_addresses(invalid)

@@ -242,6 +242,9 @@ def normalize_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
         return None
     if not isinstance(addresses, (list, tuple)):
         raise ValueError("LAN access addresses must be a list of IPv4 addresses.")
+    # counted before de-duplicating, so a padded list cannot make validation quadratic
+    if len(addresses) > _MAX_LAN_ACCESS_ADDRESSES:
+        raise ValueError(f"At most {_MAX_LAN_ACCESS_ADDRESSES} LAN access addresses can be chosen.")
     normalized: list[str] = []
     for value in addresses:
         if not isinstance(value, str):
@@ -262,8 +265,6 @@ def normalize_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
             normalized.append(str(parsed))
     if not normalized:
         raise ValueError("Choose at least one LAN access address, or Automatic.")
-    if len(normalized) > _MAX_LAN_ACCESS_ADDRESSES:
-        raise ValueError(f"At most {_MAX_LAN_ACCESS_ADDRESSES} LAN access addresses can be chosen.")
     return tuple(normalized)
 
 
