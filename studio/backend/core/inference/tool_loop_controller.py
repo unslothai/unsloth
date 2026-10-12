@@ -1212,6 +1212,11 @@ class ToolLoopController:
             active.append(copy.deepcopy(tool))
         return active
 
+    def healed_arguments(self, tool_call: Mapping[str, Any]) -> tuple[str, Any]:
+        """The name and arguments `prepare_call` classifies, after healing. Reads no state."""
+        tool_name, _coerced, arguments = self._keyed_arguments(tool_call)
+        return tool_name, arguments
+
     def prepare_call(
         self,
         tool_call: Mapping[str, Any],

@@ -59,7 +59,7 @@ class TestThePostEraseReadingLands:
             lambda scrape: {"idle": [(1, 3000)], "resident": 9000, "idle_tokens": 3000},
         )
         monkeypatch.setattr(
-            inference, "reclaim_idle_slots", lambda occupancy, erase, *, needed = 0: 3000
+            inference, "reclaim_idle_slots", lambda occupancy, erase, *, needed = 0, **_kwargs: 3000
         )
         refresh, _observe, _note = inference._openai_llama_residency_observer(
             llama_backend = _Backend(), completion_id = "live"

@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import llama_preemption as preemption
+from core.inference.llama_admission import LlamaAdmissionTimeout
 from core.inference.llama_preemption import ParticipantState, get_preemption_controller
 import routes.inference as inference
 
@@ -82,10 +83,12 @@ def test_a_stuck_victim_is_waited_on_only_so_long(backend, monkeypatch):
     monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_WAIT_S", 0.2)
     monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 0.5, raising = False)
     started = time.monotonic()
-    holder = inference._openai_llama_count_direct_holder(fake, 9000, "direct-holder")
+    # Refused at the bound rather than sent into the cells the victim still holds.
+    with pytest.raises(LlamaAdmissionTimeout):
+        inference._openai_llama_count_direct_holder(fake, 9000, "direct-holder")
     assert 0.15 <= time.monotonic() - started < 2.0
     assert controller.participant("chat").state == ParticipantState.PREEMPTING
-    inference._openai_llama_release_completions_holder(fake, holder)
+    assert set(controller._participants) == {"chat"}, "the refused holder stayed registered"
 
 
 def test_every_unpausable_route_waits_before_it_sends():

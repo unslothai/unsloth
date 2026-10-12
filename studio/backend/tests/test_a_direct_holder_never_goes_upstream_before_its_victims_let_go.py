@@ -51,7 +51,11 @@ def _later(after_s, action):
     threading.Thread(target = run, daemon = True).start()
 
 
-def _route(fake, controller, then = None):
+def _route(
+    fake,
+    controller,
+    then = None,
+):
     async def route():
         holder = inference._openai_llama_count_completions_holder(fake, "x" * 16000)
         assert controller.participant("chat").state == ParticipantState.PREEMPTING

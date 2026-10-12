@@ -1948,6 +1948,7 @@ async def stream_with_studio_tools(
             sandbox_level = sandbox_level,
             is_high_risk = is_high_risk_tool_call,
             never_needs = never_needs_approval,
+            healed = getattr(controller, "healed_arguments", None),
         )
         # And only when the calls cannot depend on each other's RESULTS. `prepare_call` has
         # exactly two such dependencies, both written by `record_result`. Keyed as the ledger

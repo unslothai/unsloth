@@ -55,6 +55,7 @@ def _setup(monkeypatch):
         erase,
         *,
         needed = 0,
+        **_kwargs,
     ):
         if not occupancy.get("idle"):
             return 0

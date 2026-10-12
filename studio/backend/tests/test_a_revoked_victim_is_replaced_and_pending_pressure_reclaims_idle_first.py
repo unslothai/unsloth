@@ -104,6 +104,7 @@ def test_a_pending_prompt_reclaims_idle_residue_before_the_plan(monkeypatch):
         erase,
         *,
         needed = 0,
+        **_kwargs,
     ):
         erased.append(needed)
         return 6000

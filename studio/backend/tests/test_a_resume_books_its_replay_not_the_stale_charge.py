@@ -33,9 +33,9 @@ def test_the_grant_books_the_replay():
     assert want == 2000
     assert controller.try_grant_resume("chat", want) is True
     assert chat.tokens == 2000, chat.tokens
-    assert controller.snapshot().committed == 2000, (
-        "the resumed prefill was counted with the output allowance the lease no longer holds"
-    )
+    assert (
+        controller.snapshot().committed == 2000
+    ), "the resumed prefill was counted with the output allowance the lease no longer holds"
 
 
 def test_a_restart_still_gets_the_original_charge_back():
