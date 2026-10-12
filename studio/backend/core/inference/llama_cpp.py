@@ -34906,6 +34906,9 @@ class LlamaCppBackend:
                         int(_exact_budget),
                     )
                     self._kill_process()
+                    # An ordinary server now, as the published state says: exact kernels would
+                    # cost their decode overhead for a guarantee the bounded budget cannot keep.
+                    _exact.apply_child_env(env, on = False)
                     # No label: the same placement, which a labelled retry would re-plan.
                     if not _spawn_and_wait(_bounded_cmd):
                         if _finish_cancelled_health_wait(

@@ -85,7 +85,7 @@ def _relaunch(
     namespace.update(
         self = backend,
         cmd = argv,
-        env = {},
+        env = {llama_mod._exact.CHILD_ENV: "1"},
         _last_spawn_cmd = list(argv),
         _exact_budget = 8192,
         _exact_wanted = wanted,
@@ -108,6 +108,8 @@ def test_the_child_is_launched_again_on_the_bounded_budget(host):
     assert launched[0][-2:] == ["--preempt-ram", str(bounded)]
     assert backend._launched_parking_mib == bounded
     assert backend._parking_reserving_mib is None
+    # Published as unavailable, so the replacement runs as an ordinary server.
+    assert llama_mod._exact.CHILD_ENV not in namespace["env"], namespace["env"]
 
 
 def test_nothing_is_relaunched_without_a_shortfall_or_for_a_bounded_launch(host):
