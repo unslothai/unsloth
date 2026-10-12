@@ -3464,6 +3464,9 @@ def _openai_llama_preemption_arm(
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
             markup = _openai_llama_admission_markup(llama_backend),
+            # The tokenizer's count where admission had one: a character estimate
+            # undercounts dense text, and every report after this builds on it.
+            counted_prompt_tokens = getattr(reservation, "counted_prompt_tokens", None),
         )
     except Exception:
         prompt_tokens = None
@@ -3822,6 +3825,9 @@ def _openai_llama_admission_reserve(
         budget = budget,
         tokens = tokens,
     )
+    # Kept for arming: the preemptor's prompt term should be the count admission priced.
+    if counted_prompt_tokens is not None:
+        reservation.counted_prompt_tokens = counted_prompt_tokens
     return reservation, config
 
 

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Arming a chat takes the gate every other holder takes.
+"""Arming a chat takes the gate every other holder takes, and the prompt admission counted.
 
 With admission or its KV accounting switched off every lease is free, so a chat armed on the
 preemption switch alone was ledgered at nothing and could be chosen; raw and direct holders
-already stood down there.
+already stood down there. And where admission had the tokenizer's count, arming re-estimated
+the prompt from characters, which undercounts dense text and is what every report builds on.
 """
 
 from __future__ import annotations
@@ -88,3 +89,31 @@ class TestTheAccountingGate:
         url = "http://127.0.0.1:65083/"
         assert _arm(url) is not None
         assert get_preemption_controller(url).participant("chat") is not None
+
+
+class TestTheCountedPrompt:
+    async def test_arming_takes_the_count_admission_priced(self):
+        url = "http://127.0.0.1:65084/"
+        assert _arm(url, counted = 9000) is not None
+        participant = get_preemption_controller(url).participant("chat")
+        assert (
+            participant.prompt_tokens == 9000
+        ), f"re-estimated from characters: {participant.prompt_tokens}"
+
+    async def test_without_a_count_the_estimate_stands(self):
+        url = "http://127.0.0.1:65085/"
+        assert _arm(url) is not None
+        participant = get_preemption_controller(url).participant("chat")
+        assert 0 < participant.prompt_tokens < 9000
+
+    async def test_the_reservation_carries_the_count(self):
+        reservation, _config = inference._openai_llama_admission_reserve(
+            request = None,
+            llama_backend = _backend("http://127.0.0.1:65086/"),
+            payload = _payload(),
+            counted_prompt_tokens = 9000,
+        )
+        try:
+            assert reservation.counted_prompt_tokens == 9000
+        finally:
+            reservation.cancel()
