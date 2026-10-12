@@ -22,6 +22,8 @@ type Settings = {
   isCustom: boolean;
   loaded: boolean;
   backendLoaded: boolean;
+  embeddingDevice: "auto" | "cpu" | "gpu";
+  embeddingDeviceLocked: boolean;
 };
 
 function settings(model: string): Settings {
@@ -33,6 +35,8 @@ function settings(model: string): Settings {
     isCustom: model !== "unsloth/bge-small-en-v1.5",
     loaded: false,
     backendLoaded: false,
+    embeddingDevice: "auto",
+    embeddingDeviceLocked: false,
   };
 }
 

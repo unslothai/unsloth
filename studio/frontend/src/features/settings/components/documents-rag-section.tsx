@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes, listCachedGguf, listCachedModels } from "@/features/hub";
 import { Spinner } from "@/components/ui/spinner";
@@ -21,10 +28,12 @@ import { toast } from "@/lib/toast";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import {
   EmbeddingModelBlockedError,
+  type EmbeddingDevice,
   type EmbeddingModelResolution,
   EmbeddingModelVerificationError,
   resolveEmbeddingModel,
   unloadEmbeddingModel,
+  updateEmbeddingDevice,
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
@@ -372,6 +381,21 @@ export function DocumentsRagSection(): ReactElement {
     }
   };
 
+  const changeDevice = async (device: EmbeddingDevice) => {
+    if (device === embeddingModel?.embeddingDevice) return;
+    setIsSavingEmbeddingModel(true);
+    try {
+      // Residency, not selection: the model stays, only where it loads next changes.
+      await applyResidency(() => updateEmbeddingDevice(device));
+    } catch (error) {
+      toast.error(t("settings.general.rag.deviceSaveError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsSavingEmbeddingModel(false);
+    }
+  };
+
   return (
     <SettingsSection ref={sectionRef} title={t("settings.general.rag.sectionTitle")}>
       <SettingsRow
@@ -468,6 +492,33 @@ export function DocumentsRagSection(): ReactElement {
             ) : null}
           </div>
         </div>
+      </SettingsRow>
+      <SettingsRow
+        label={t("settings.general.rag.device")}
+        description={
+          embeddingModel?.embeddingDeviceLocked
+            ? t("settings.general.rag.deviceLocked", { name: "RAG_EMBED_DEVICE" })
+            : t("settings.general.rag.deviceDescription")
+        }
+      >
+        <Select
+          value={embeddingModel?.embeddingDevice ?? "auto"}
+          disabled={
+            !embeddingModel ||
+            embeddingModel.embeddingDeviceLocked ||
+            isSavingEmbeddingModel
+          }
+          onValueChange={(device) => void changeDevice(device as EmbeddingDevice)}
+        >
+          <SelectTrigger className="w-36" aria-label={t("settings.general.rag.device")}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">{t("settings.general.rag.deviceAuto")}</SelectItem>
+            <SelectItem value="cpu">{t("settings.general.rag.deviceCpu")}</SelectItem>
+            <SelectItem value="gpu">{t("settings.general.rag.deviceGpu")}</SelectItem>
+          </SelectContent>
+        </Select>
       </SettingsRow>
     </SettingsSection>
   );

@@ -880,6 +880,13 @@ export const he = {
       loginHint:
         "התחבר בתור {username} עם קוד זה כסיסמה, ולאחר מכן בחר סיסמה חדשה.",
       privateAccount: "חשבון פרטי",
+      modelAccess: "גישה למודלים",
+      modelAccessTitle: "גישה למודלים עבור {username}",
+      modelAccessDescription: "בחרו אילו מודלים של Hugging Face החשבון הזה יכול לראות, להוריד, לטעון ולהשתמש בהם דרך מפתחות ה-API שלו.",
+      modelAccessLabel: "מודלים מותרים",
+      modelAccessHint: "מודל אחד בכל שורה, למשל unsloth/Qwen3-4B-GGUF, או unsloth/* לארגון שלם. השאירו ריק כדי לאפשר את כל המודלים.",
+      modelAccessSave: "שמירה",
+      modelAccessLimited: "גישה מוגבלת למודלים",
       empty: "אין עדיין חשבונות נוספים",
       setupCode: "קוד הגדרה",
       setupFor: "קוד הגדרה עבור {username}",
@@ -1886,6 +1893,14 @@ export const he = {
         switchFailed: "לא ניתן להחליף את מודל ההטמעה",
         back: "חזרה למקורות",
         menuSubtitle: "מפעיל את חיפוש הקבצים",
+        device: "התקן הטמעה",
+        deviceDescription:
+          "היכן רץ מודל ההטמעה, לכל המודלים. GPU מאנדקס אוספי מסמכים גדולים מהר יותר, אבל משאיר חלק מה-VRAM בשימוש עד ש-Studio מופעל מחדש.",
+        deviceAuto: "אוטומטי",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "מוגדר על ידי {name}.",
+        deviceSaveError: "לא ניתן היה לשנות את התקן ההטמעה",
       },
       storage: {
         sectionTitle: "אחסון",
@@ -2180,6 +2195,13 @@ export const he = {
         noGpu: "לא זוהה GPU",
         gpuUnusable: "GPU אינו שמיש",
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
+        detailedView: "תצוגה מפורטת",
+        detailedViewDescription:
+          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף וכאן.",
+        cpuLoad: "עומס מעבד",
+        gpuLoad: "עומס GPU",
+        temperature: "טמפרטורה",
+        power: "הספק",
       },
       gpu: {
         title: "התקני GPU",

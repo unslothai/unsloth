@@ -6,6 +6,7 @@ import {
   Add01Icon,
   Search01Icon,
   Copy01Icon,
+  CubeIcon,
   Delete02Icon,
   Key01Icon,
   MoreHorizontalIcon,
@@ -28,6 +29,7 @@ import { UserAvatar } from "@/features/profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,6 +56,7 @@ import {
   fetchAccounts,
   regenerateSetupCode,
   setAccountActive,
+  setAccountModelAllowlist,
   type AccountSetupCode,
   type StudioAccount,
 } from "../api/accounts";
@@ -78,6 +81,8 @@ function OwnerAccountsTab() {
   const [copied, setCopied] = useState(false);
   const [resetting, setResetting] = useState<StudioAccount | null>(null);
   const [retiring, setRetiring] = useState<StudioAccount | null>(null);
+  const [modelAccess, setModelAccess] = useState<StudioAccount | null>(null);
+  const [allowlistText, setAllowlistText] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -216,7 +221,7 @@ function OwnerAccountsTab() {
         </Button>
       </div>
 
-      {error && !confirming && !editorOpen && (
+      {error && !confirming && !editorOpen && !modelAccess && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
           <p
             role="alert"
@@ -294,6 +299,12 @@ function OwnerAccountsTab() {
                             ? t("settings.accounts.owner")
                             : t("settings.accounts.privateAccount")}
                         </p>
+                        {account.role !== "owner" &&
+                          account.model_allowlist?.length ? (
+                            <p className="text-xs text-muted-foreground">
+                              {t("settings.accounts.modelAccessLimited")}
+                            </p>
+                          ) : null}
                         <p className="text-xs text-muted-foreground sm:hidden">
                           {createdDate(account)}
                         </p>
@@ -361,6 +372,23 @@ function OwnerAccountsTab() {
                             if (confirming) event.preventDefault();
                           }}
                         >
+                          <DropdownMenuItem
+                            disabled={busy}
+                            onSelect={() => {
+                              setError(null);
+                              setAllowlistText(
+                                (account.model_allowlist ?? []).join("\n"),
+                              );
+                              setModelAccess(account);
+                            }}
+                          >
+                            <HugeiconsIcon
+                              icon={CubeIcon}
+                              className="size-4"
+                              aria-hidden="true"
+                            />
+                            {t("settings.accounts.modelAccess")}
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             disabled={busy}
                             onSelect={() => {
@@ -562,6 +590,100 @@ function OwnerAccountsTab() {
               {error}
             </p>
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={modelAccess !== null}
+        onOpenChange={(open) => {
+          if (open || busy) return;
+          setModelAccess(null);
+          setError(null);
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)]"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const trigger = actionTrigger.current;
+            (trigger?.isConnected && !trigger.disabled
+              ? trigger
+              : createTrigger.current
+            )?.focus({ preventScroll: true });
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="break-words">
+              {t("settings.accounts.modelAccessTitle", {
+                username: modelAccess?.username ?? "",
+              })}
+            </DialogTitle>
+            <DialogDescription>
+              {t("settings.accounts.modelAccessDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-6"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const target = modelAccess;
+              if (busy || !target) return;
+              const entries = allowlistText
+                .split(/[\s,]+/)
+                .map((entry) => entry.trim())
+                .filter(Boolean);
+              void perform(async () => {
+                await setAccountModelAllowlist(
+                  target.account_id,
+                  entries.length ? entries : null,
+                );
+                setModelAccess(null);
+              });
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="account-model-allowlist" className="text-xs">
+                {t("settings.accounts.modelAccessLabel")}
+              </Label>
+              <Textarea
+                id="account-model-allowlist"
+                value={allowlistText}
+                onChange={(event) => setAllowlistText(event.target.value)}
+                placeholder={"unsloth/Qwen3-4B-GGUF\nunsloth/*"}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                readOnly={busy}
+                rows={6}
+                fieldSizing="fixed"
+                className="font-mono text-xs md:text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("settings.accounts.modelAccessHint")}
+              </p>
+            </div>
+            {error && (
+              <p role="alert" className="break-words text-xs text-destructive">
+                {error}
+              </p>
+            )}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => {
+                  setModelAccess(null);
+                  setError(null);
+                }}
+              >
+                {t("settings.accounts.cancel")}
+              </Button>
+              <Button type="submit" variant="dark" disabled={busy}>
+                {busy && <Spinner label={t("common.loading")} />}
+                {t("settings.accounts.modelAccessSave")}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
       <AlertDialog

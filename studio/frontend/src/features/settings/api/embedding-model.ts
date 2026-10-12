@@ -16,7 +16,13 @@ export type EmbeddingModelSettings = {
   loaded: boolean;
   /** ANY embedder is resident; saving a new model does not release the old one. */
   backendLoaded: boolean;
+  /** Where the embedder runs, for every embedding model. */
+  embeddingDevice: EmbeddingDevice;
+  /** RAG_EMBED_DEVICE names a device, so the choice is read-only here. */
+  embeddingDeviceLocked: boolean;
 };
+
+export type EmbeddingDevice = "auto" | "cpu" | "gpu";
 
 type ApiEmbeddingModelSettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -32,6 +38,10 @@ type ApiEmbeddingModelSettings = {
   loaded?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   backend_loaded?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  embedding_device?: EmbeddingDevice;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  embedding_device_locked?: boolean;
 };
 
 /** 409: not verifiable as an embedding model; retry with force to save anyway. */
@@ -50,6 +60,8 @@ function fromApi(settings: ApiEmbeddingModelSettings): EmbeddingModelSettings {
     loaded: settings.loaded ?? false,
     // Older backends only report the selected model.
     backendLoaded: settings.backend_loaded ?? settings.loaded ?? false,
+    embeddingDevice: settings.embedding_device ?? "auto",
+    embeddingDeviceLocked: settings.embedding_device_locked ?? false,
   };
 }
 
@@ -106,6 +118,24 @@ export async function updateEmbeddingModelSettings(
   return settings;
 }
 
+/** Moves the embedder to another device; the next index or search reloads it there. */
+export async function updateEmbeddingDevice(
+  device: EmbeddingDevice,
+): Promise<EmbeddingModelSettings> {
+  const res = await authFetch("/api/settings/embedding-model/device", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to save the embedding device"),
+    );
+  }
+  return fromApi(await res.json());
+}
+
+/** What saving a model would need fetched, and whether it is already on disk. */
 export type EmbeddingModelResolution = {
   embeddingModel: string;
   backend: "llama" | "sentence-transformers";
