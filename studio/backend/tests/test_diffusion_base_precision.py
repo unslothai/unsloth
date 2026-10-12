@@ -818,7 +818,11 @@ def test_fp8_quantizes_each_frozen_base_weight_once():
     from core.training.diffusion_frozen_fp8 import FrozenFp8Linear
 
     m = _block_model(bias = True).requires_grad_(False)
-    ref = {fqn: mod.weight.float().clone() for fqn, mod in m.named_modules() if isinstance(mod, nn.Linear)}
+    ref = {
+        fqn: mod.weight.float().clone()
+        for fqn, mod in m.named_modules()
+        if isinstance(mod, nn.Linear)
+    }
     assert dit._convert_fp8(m, "flux.1") is True
     swapped = {fqn: mod for fqn, mod in m.named_modules() if isinstance(mod, FrozenFp8Linear)}
     # Only the repeated blocks' big linears; the AdaLN rows stay bf16 like the int8 / MX paths.
@@ -858,7 +862,10 @@ def test_fp8_chunked_quantization_matches_one_shot():
 
     from core.training.diffusion_frozen_fp8 import _quantize_weight, _rowwise_quant
 
-    w = torch.randn(300, 64, dtype = torch.bfloat16) * torch.logspace(-3, 3, 300).unsqueeze(1).bfloat16()
+    w = (
+        torch.randn(300, 64, dtype = torch.bfloat16)
+        * torch.logspace(-3, 3, 300).unsqueeze(1).bfloat16()
+    )
     q1, s1 = _rowwise_quant(w)
     q2, s2 = _quantize_weight(w, rows = 64)
     assert torch.equal(q1.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(s1, s2)

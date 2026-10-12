@@ -39,7 +39,9 @@ def _quantize_weight(w, rows = 2048):
 
 
 def _unit_scaled_mm(a, b):
-    one = torch.ones((), device = a.device, dtype = torch.float32)  # a fresh scalar: a buffer view fails to lower
+    one = torch.ones(
+        (), device = a.device, dtype = torch.float32
+    )  # a fresh scalar: a buffer view fails to lower
     out = torch._scaled_mm(a, b, scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
     return out[0] if isinstance(out, tuple) else out  # torch < 2.5 also returned amax
 
@@ -78,7 +80,9 @@ class FrozenFp8Linear(nn.Module):
         # Buffers: never trainable, never in an optimizer or PEFT's trainable scans.
         self.register_buffer("weight", q)
         self.register_buffer("weight_scale", s.reshape(1, out_f).contiguous())
-        self.bias = None if linear.bias is None else nn.Parameter(linear.bias.detach(), requires_grad = False)
+        self.bias = (
+            None if linear.bias is None else nn.Parameter(linear.bias.detach(), requires_grad = False)
+        )
 
     def forward(self, x):
         if torch.is_autocast_enabled(x.device.type):
