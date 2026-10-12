@@ -419,3 +419,15 @@ def test_runtime_requirements_match_the_installer():
     assert ast.literal_eval(literals["_MLX_DIFFUSION_PINS"]) == (f"mflux=={MFLUX_VERSION}",)
     deps = set(ast.literal_eval(literals["_MLX_DIFFUSION_DEPS"]))
     assert deps == {s for s in r._MLX_RUNTIME_REQUIREMENTS if not s.startswith("mlx")}
+
+
+def test_auto_switch_planner_judges_mlx_with_the_picks_gguf(monkeypatch):
+    from core.inference import media_locality
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_model_index import MediaModelPick
+
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    monkeypatch.setattr(r, "engine_for", lambda name: name)
+    pick = MediaModelPick("unsloth/Z-Image-Turbo-GGUF", "unsloth/Z-Image-Turbo-GGUF", _Q4, "gguf")
+    assert media_locality.planners_for(DIFFUSION, pick) == [ENGINE_MLX]

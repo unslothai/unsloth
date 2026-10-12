@@ -406,6 +406,21 @@ def fetch_base_snapshot(
         info, wanted = _listing(fetch_repo)
     if not wanted:
         raise FileNotFoundError(f"'{fetch_repo}' has no text_encoder / tokenizer / vae files")
+    from huggingface_hub import constants, try_to_load_from_cache
+    from utils.hf_cache_settings import active_hf_hub_cache
+
+    def _holds_all(root: str) -> bool:
+        return all(
+            isinstance(
+                try_to_load_from_cache(fetch_repo, f, revision = info.sha, cache_dir = root), str
+            )
+            for f in wanted
+        )
+
+    # One root for every file: mflux reads the three directories out of a single snapshot.
+    cache_dir = active_hf_hub_cache()
+    if not _holds_all(cache_dir) and _holds_all(constants.HF_HUB_CACHE):
+        cache_dir = constants.HF_HUB_CACHE
     snapshot_dir: Optional[str] = None
     for filename in wanted:
         if cancel_event is not None and cancel_event.is_set():
@@ -416,7 +431,7 @@ def fetch_base_snapshot(
             hf_token,
             cancel_event = cancel_event,
             revision = info.sha,
-            reuse_other_cache_root = True,
+            cache_dir = cache_dir,
         )
         if snapshot_dir is None:
             snapshot_dir = str(Path(path).parents[len(Path(filename).parts) - 1])
@@ -553,6 +568,8 @@ class MlxDiffusionBackend:
         self._gen: Optional[_MlxGen] = None
         self._load_thread: Optional[threading.Thread] = None
         self._unloading = 0
+        self._teardown_lock = threading.Lock()
+        self._free_pending = False
         self.last_timings: dict[str, Any] = {}
 
     def _rt(self) -> Any:
@@ -1098,24 +1115,31 @@ class MlxDiffusionBackend:
             self._cancel_event.set()
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-            had_model = self._state is not None
+            if self._state is not None:
+                self._free_pending = True
             self._state = None
             self._load_token += 1
             self._loading = None
+            # Left visible until joined: a concurrent unload must wait for the same worker.
             worker = self._load_thread
-            self._load_thread = None
             # Held until the join and free below: a load started meanwhile would build beside the superseded one.
             self._unloading += 1
         try:
-            # Barrier: on return the cancelled generation has released the model.
-            with self._generate_lock:
-                pass
-            # And a superseded load has stopped: a build in progress cannot be interrupted, and the
-            # caller treats this return as "memory is free" before activating another engine or load.
-            if worker is not None and worker is not threading.current_thread():
-                worker.join()
-            if had_model and self._runtime is not None:
-                self._runtime.free()
+            # Serialized so every unload returns only after the whole teardown, whichever caller runs it.
+            with self._teardown_lock:
+                # Barrier: on return the cancelled generation has released the model.
+                with self._generate_lock:
+                    pass
+                # And a superseded load has stopped: a build in progress cannot be interrupted, and the
+                # caller treats this return as "memory is free" before activating another engine or load.
+                if worker is not None and worker is not threading.current_thread():
+                    worker.join()
+                with self._lock:
+                    if self._load_thread is worker:
+                        self._load_thread = None
+                    free, self._free_pending = self._free_pending, False
+                if free and self._runtime is not None:
+                    self._runtime.free()
         finally:
             with self._lock:
                 self._unloading -= 1

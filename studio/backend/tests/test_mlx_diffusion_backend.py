@@ -1100,3 +1100,69 @@ def test_the_download_plan_refuses_mlx_loras_before_planning(monkeypatch):
     assert err.value.status_code == 400
     assert "LoRA" in err.value.detail
     assert "plan" not in touched
+
+
+def test_a_concurrent_unload_waits_for_the_active_teardown(env):
+    backend, runtime, _calls = env
+    gate = threading.Event()
+    started = threading.Event()
+    real_build = runtime.build
+
+    def _slow_build(*a, **k):
+        started.set()
+        gate.wait(10)
+        return real_build(*a, **k)
+
+    runtime.build = _slow_build
+    backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
+    assert started.wait(5)
+    first = threading.Thread(target = backend.unload)
+    first.start()
+    deadline = time.time() + 5
+    while not backend._unloading and time.time() < deadline:
+        time.sleep(0.01)
+    done = threading.Event()
+    second = threading.Thread(target = lambda: (backend.unload(), done.set()))
+    second.start()
+    try:
+        assert not done.wait(0.5), "a second unload returned while the first was still joining the build"
+    finally:
+        gate.set()
+        first.join(5)
+        second.join(5)
+    assert done.is_set()
+    assert runtime.freed == 1
+
+
+def test_online_companions_land_under_one_cache_root(monkeypatch, tmp_path):
+    import huggingface_hub
+    from huggingface_hub import constants
+
+    import utils.hf_cache_settings as cache_settings
+    import utils.hf_xet_fallback as xet
+
+    files = ["text_encoder/a.safetensors", "tokenizer/b.json", "vae/c.safetensors"]
+    _hub_listing(monkeypatch, files)
+    monkeypatch.setattr(mb, "prefer_ungated_mirror", lambda base, tok = None, **k: base)
+    live, old = str(tmp_path / "live"), str(tmp_path / "old")
+    monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: live)
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", old)
+    # Only the first file survives under the import-time root; the rest are cached nowhere.
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo, fn, *, cache_dir = None, **k: (
+            f"{old}/snapshots/abc/{fn}" if cache_dir in (None, old) and fn == files[0] else None
+        ),
+    )
+    roots = []
+
+    def _download(repo, fn, tok, *, cache_dir = None, reuse_other_cache_root = False, **k):
+        root = old if reuse_other_cache_root and fn == files[0] else (cache_dir or live)
+        roots.append(root)
+        return f"{root}/snapshots/abc/{fn}"
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+    out = mb.fetch_base_snapshot(BASE, None, local_files_only = False)
+    assert roots == [live] * len(files)
+    assert out == f"{live}/snapshots/abc"
