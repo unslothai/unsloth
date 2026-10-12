@@ -211,7 +211,7 @@ export const ContextUsageBar: FC<
           )}
           {(input.compactionCount ?? 0) > 0 && (
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Automatic compactions</span>
+              <span className="text-muted-foreground">Compactions</span>
               <span className="font-mono tabular-nums">
                 {input.compactionCount}
               </span>

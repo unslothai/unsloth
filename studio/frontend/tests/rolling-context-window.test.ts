@@ -277,7 +277,7 @@ test("the context meter counts exactly the compaction notices the thread renders
   assert.match(CHAT_PAGE, /compactionCount=\{compactionCount\}/);
   // A chat that never compacted keeps the tooltip it had.
   assert.match(CONTEXT_USAGE_BAR, /\(input\.compactionCount \?\? 0\) > 0 && \(/);
-  assert.match(CONTEXT_USAGE_BAR, /Automatic compactions/);
+  assert.match(CONTEXT_USAGE_BAR, />Compactions</);
 });
 
 /** The source of one function, by brace matching from its declaration. */
