@@ -15,6 +15,13 @@ pytestmark = pytest.mark.gpu
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("inplace", [False, True])
 def test_lora_backward_gradient_layout(kernel, layout, dtype, inplace):
+    # Triton rejects bf16 kernels below sm_80 (`.bf16 requires .target sm_80`), e.g. T4.
+    if (
+        dtype is torch.bfloat16
+        and not torch.version.hip
+        and torch.cuda.get_device_capability()[0] < 8
+    ):
+        pytest.skip("bf16 Triton kernels need sm_80+")
     from unsloth.kernels.fast_lora import LoRA_MLP, LoRA_QKV
     from unsloth.kernels.geglu import (
         geglu_approx_backward_kernel,
