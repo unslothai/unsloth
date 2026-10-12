@@ -806,7 +806,6 @@ def test_vscode_under_wsl_writes_the_windows_vscode_config(monkeypatch, tmp_path
     windows = tmp_path / "win" / "AppData" / "Roaming" / "Code" / "User" / "chatLanguageModels.json"
     assert start._vscode_models_path() == windows
 
-    # A VS Code installed inside the distro keeps its own user dir.
     (tmp_path / "linux" / "Code" / "User").mkdir(parents = True)
     linux = tmp_path / "linux" / "Code" / "User" / "chatLanguageModels.json"
     assert start._vscode_models_path() == linux
@@ -830,7 +829,6 @@ def test_vscode_over_ssh_prints_the_group_instead_of_writing_a_dead_file(studio,
     assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
     assert studio["minted"] == 1
 
-    # An SSH session on a machine that does run VS Code keeps writing the file.
     user_dir.mkdir(parents = True)
     assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
     assert (user_dir / "chatLanguageModels.json").exists()

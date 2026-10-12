@@ -6110,7 +6110,6 @@ _VSCODE_DEFAULT_CONTEXT = 32768
 
 
 def _vscode_models_path() -> Path:
-    # Copilot Chat's BYOK groups live in the VS Code user dir (Chat: Manage Language Models).
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", "").strip()
         root = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
@@ -6225,7 +6224,6 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
 
 
 def _vscode_over_ssh(path: Path) -> bool:
-    # VS Code reads this file on the machine it runs on; a Remote-SSH host has no VS Code user dir.
     if sys.platform in ("win32", "darwin") or path.parent.is_dir():
         return False
     remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
@@ -7290,7 +7288,6 @@ def vscode(
         server_options = server_options,
     )
     tool_calling, vision, thinking = _vscode_capabilities(base, key, entry)
-    # A remote server keeps the key _connect accepted (maybe a remembered one); locally, an
-    # explicit key _connect rejected for a server it just started must not be saved.
+    # Remote: the key _connect accepted. Local: never an explicit key it rejected for a fresh server.
     explicit = key if not is_loopback_url(base) else api_key if key == api_key else None
     _add_vscode_provider(base, explicit, entry, max_tokens, tool_calling, vision, thinking)
