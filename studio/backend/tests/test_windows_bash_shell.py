@@ -446,6 +446,10 @@ def _windows_backstop(monkeypatch, _windows_blocklist):
         r"C:\Python312\python.exe -m pip list",
         "c:/tools/node.exe -v",
         r"cd C:\src && D:\sdk\dart.exe --version",
+        r"C:\Users\me\.venv\Scripts\python.exe -m pip list",
+        r"C:\Users\me\.cargo\bin\cargo.exe build",
+        ".venv/bin/python -m pip list",
+        "ls; /home/me/.local/bin/tool",
     ],
 )
 def test_an_absolute_windows_program_path_stays_runnable(
@@ -468,3 +472,8 @@ def test_a_blocked_program_behind_a_drive_path_is_still_screened(
     monkeypatch, bash, command, expected, _windows_backstop
 ):
     assert expected in _screen_on_windows(monkeypatch, bash, command)
+
+
+@pytest.mark.parametrize("command", ["echo hi; . script.sh", "x=$(. script.sh)", ". ./env.sh"])
+def test_dot_as_a_command_is_still_screened(monkeypatch, command, _windows_backstop):
+    assert "." in _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], command)

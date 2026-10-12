@@ -1412,15 +1412,20 @@ def _blocked_word_re(assignment_prefixes: bool):
     """
     if not _BLOCKED_COMMANDS:
         return None
+    # `.` (source) is left to the token walk: here `\b` let it match only a dot glued to a word, never `source`, so
+    # `.venv/bin/python` and `C:/x/app.exe` were refused as `.` (#12054).
+    words = sorted(w for w in _BLOCKED_COMMANDS if w[:1].isalnum() or w[:1] == "_")
+    if not words:
+        return None
     return re.compile(
         # No `coproc` alternative here, deliberately: with no quoting or command-position context this pass refused
         # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
         + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
-        # Ends at a separator: open-ended, `C:/x/app.exe` stopped at its dot and matched `.` (#12054).
+        # Both prefixes end at a separator, so the name is a whole path segment.
         + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\](?:[\w./\\-]*[/\\])?)?"
         + r"("
-        + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        + "|".join(re.escape(w) for w in words)
         + r")"
         + r"(?:\.(?:exe|com|bat|cmd))?\b"
     )
