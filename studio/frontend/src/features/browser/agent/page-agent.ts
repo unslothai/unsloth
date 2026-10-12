@@ -77,7 +77,14 @@ export function installPageAgent(): PageAgent {
   // Mirrors gate.ts, which can't be imported here (this function ships as source).
   const SECRET = /\b(current-password|new-password|one-time-code|cc-[a-z-]+)\b/i;
   const SECRET_NAME = /\b(password|passcode|card ?number|cvc|cvv|security code|ssn|social security)\b/i;
-  const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "number", "password", ""]);
+  // Date and time fields are textboxes to the model too; they take their ISO-like value as typed.
+  const TEXT_INPUTS = new Set([
+    "text", "search", "email", "url", "tel", "number", "password", "",
+    "date", "time", "datetime-local", "month", "week",
+  ]);
+  const DATE_FORMATS: Record<string, string> = {
+    date: "2026-03-14", time: "09:30", "datetime-local": "2026-03-14T09:30", month: "2026-03", week: "2026-W11",
+  };
   const BUTTON_INPUTS = new Set(["button", "submit", "reset", "image"]);
   const NOT_TEXT = new Set([...BUTTON_INPUTS, "checkbox", "radio", "range", "file", "color", "hidden"]);
   const EDITABLE_TAGS = new Set(["input", "textarea"]);
@@ -717,6 +724,9 @@ export function installPageAgent(): PageAgent {
     }
     if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has(field.type.toLowerCase()))) {
       setValue(field, text);
+      // A date or time field drops a value it can't parse: say so, not "typed".
+      const format = DATE_FORMATS[field.type.toLowerCase()];
+      if (format && text && !field.value) return { ok: false, error: `${ref} takes a value like ${format}.` };
     } else if ((el as HTMLElement).isContentEditable) {
       const selection = window.getSelection();
       const range = document.createRange();
@@ -743,6 +753,7 @@ export function installPageAgent(): PageAgent {
   const choose = (ref: string, value: string): Record<string, unknown> => {
     const el = lookup(ref);
     if (el instanceof HTMLSelectElement) {
+      if (el.disabled) return { ok: false, error: `${ref} is disabled or read-only.` };
       const option = findOption(el, value);
       if (!option) return { ok: false, error: `${ref} has no such option; snapshot it to see its options.` };
       el.value = option.value;
