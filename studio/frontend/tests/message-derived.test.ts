@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  compactionDividers,
+  compactionDividerRows,
   compactionNoticeMessageIds,
   memoOnArray,
   memoOnArrayByKey,
@@ -197,45 +197,42 @@ test("compaction notice ids match the per-message walk", () => {
   assert.notEqual(compactionNoticeMessageIds([...messages]), ids);
 });
 
-test("each compaction draws one divider, between rows when its row is known", () => {
-  const compacted = (boundary: number, row?: string) => ({
+test("each compaction draws one divider, above the prompt whose request compacted", () => {
+  const compacted = (boundary: number) => ({
     custom: {
       contextTruncation: {
         dropped_messages: boundary,
         boundary_messages: boundary,
         fits: true,
       },
-      ...(row ? { compactionBoundaryMessageId: row } : {}),
     },
   });
   const messages = [
-    { id: "u0", role: "user" },
-    { id: "a0", role: "assistant" },
+    // A reply with no prompt above it draws the divider above itself.
+    { id: "a0", role: "assistant", metadata: compacted(1) },
     { id: "u1", role: "user" },
-    { id: "a1", role: "assistant", metadata: compacted(2, "u1") },
+    { id: "a1", role: "assistant", metadata: compacted(2) },
     { id: "u2", role: "user" },
-    // Saved before the row was recorded: stays inside the reply.
-    { id: "a2", role: "assistant", metadata: compacted(3) },
+    // A replayed boundary is not a new compaction: no divider.
+    { id: "a2", role: "assistant", metadata: compacted(2) },
     { id: "u3", role: "user" },
-    // Its row is not on this branch (an edited turn): stays inside the reply.
-    { id: "a3", role: "assistant", metadata: compacted(4, "elsewhere") },
-    { id: "u4", role: "user" },
-    // Never drawn below the reply it belongs to.
-    { id: "a4", role: "assistant", metadata: compacted(5, "u5") },
-    { id: "u5", role: "user" },
-    { id: "a5", role: "assistant", metadata: compacted(6, "u5") },
+    { id: "a3", role: "assistant" },
+    // A reply that follows another reply (a continuation round) marks itself.
+    { id: "a4", role: "assistant", metadata: compacted(5) },
   ];
-  const dividers = compactionDividers(messages);
-  assert.deepEqual([...dividers.aboveRow.keys()], ["u1", "u5"]);
-  assert.deepEqual([...dividers.inside], ["a2", "a3", "a4"]);
+  const rows = compactionDividerRows(messages);
+  assert.deepEqual([...rows.keys()], ["a0", "u1", "a4"]);
   assert.equal(
-    dividers.aboveRow.get("u1"),
-    (messages[3].metadata as { custom: { contextTruncation: unknown } }).custom
+    rows.get("u1"),
+    (messages[2].metadata as { custom: { contextTruncation: unknown } }).custom
       .contextTruncation,
   );
-  // One divider per compaction, wherever it is drawn, so the meter's count does not move.
-  assert.equal(compactionNoticeMessageIds(messages).size, 5);
-  assert.equal(compactionDividers(messages), dividers);
+  // One divider per compaction, so the meter's count is the number of dividers on screen.
+  assert.equal(compactionNoticeMessageIds(messages).size, rows.size);
+  assert.equal(compactionDividerRows(messages), rows);
+  // A thread that never compacted shares one empty result rather than building one per token.
+  const plain = [{ id: "u", role: "user" }, { id: "a", role: "assistant" }];
+  assert.equal(compactionDividerRows(plain), compactionDividerRows([...plain]));
 });
 
 test("memoOnArrayByKey caches per array and per key", () => {

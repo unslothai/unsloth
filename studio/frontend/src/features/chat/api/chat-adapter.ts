@@ -328,7 +328,6 @@ import {
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
 import {
-  compactionBoundaryRowId,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -5292,9 +5291,6 @@ export function createOpenAIStreamAdapter(
         externalProvider?.providerType,
         externalSelection?.modelId,
       );
-      // Which row each sent message came from, so a compaction boundary reported as a position in
-      // the request can be drawn between transcript rows.
-      const outboundRowIds = new WeakMap<object, string>();
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
       const { messages: renderedMessages, sandboxAttachments } =
         supportsStudioToolsForThisTurn &&
@@ -5310,7 +5306,7 @@ export function createOpenAIStreamAdapter(
             replayReasoning,
             externalProvider?.providerType === "gemini",
           );
-          const sent = isExternalRequest
+          return isExternalRequest
             ? withProviderCompaction(message, serialized, {
                 providerType: toExternalBackendProviderType(
                   externalProvider?.providerType,
@@ -5319,10 +5315,6 @@ export function createOpenAIStreamAdapter(
                 connectionKey: providerCompactionTargetConnectionKey,
               })
             : serialized;
-          for (const entry of sent) {
-            if (entry) outboundRowIds.set(entry, message.id);
-          }
-          return sent;
         })
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
@@ -5914,8 +5906,6 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
-      // The row the latest recorded boundary sits above; the transcript draws its divider there.
-      let compactionBoundaryMessageId: string | undefined;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -5947,7 +5937,6 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
-        compactionBoundaryMessageId,
         providerCompaction,
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
@@ -7311,20 +7300,6 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
-                // Resolved here, while the sent messages still map to rows: a reload has the
-                // position but not the request it indexes. Same fit as the boundary it describes.
-                if (chunk.context_truncated.boundary_messages !== undefined) {
-                  compactionBoundaryMessageId =
-                    compactionBoundaryRowId(
-                      chunk.context_truncated,
-                      outboundMessages
-                        .filter((message) => message.role !== "system")
-                        .map((message) => ({
-                          role: message.role,
-                          rowId: outboundRowIds.get(message),
-                        })),
-                    ) ?? undefined;
-                }
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
                 // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
@@ -8888,7 +8863,6 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
-              compactionBoundaryMessageId,
               providerCompaction,
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,
@@ -9068,7 +9042,6 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
-                compactionBoundaryMessageId,
                 providerCompaction,
                 providerCompactionAfterToolCalls,
                 providerCompactionProviderType,

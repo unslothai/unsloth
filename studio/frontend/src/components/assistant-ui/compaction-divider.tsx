@@ -13,7 +13,6 @@ import {
   type ContextTruncation,
   promptWasShortened,
 } from "@/features/chat/utils/context-truncation";
-import { cn } from "@/lib/utils";
 
 const DetailRow: FC<{ label: string; value: ReactNode }> = ({
   label,
@@ -30,20 +29,15 @@ const DetailRow: FC<{ label: string; value: ReactNode }> = ({
  *
  * Deliberately NOT a message: it renders from `metadata.custom.contextTruncation`, so it is
  * never sent to the model, editable, or exported as content, yet unlike a toast it survives a
- * reload.
- *
- * `between` sits in the row slot above the first row the model still saw after the compaction,
- * in the same column as the messages. `inside` opens the reply that compacted, for a compaction
- * with no gap between rows to mark: a tool loop evicting its own exchanges, or a turn saved
- * before its row was recorded.
+ * reload. Drawn in the row slot above the prompt whose request compacted (see
+ * `compactionDividerRows`), in the same column as the messages it sits between.
  *
  * Rendered once per COMPACTION, gated by the caller, not once per compacted turn: a thread past
  * its window refits on every request, so per-turn would mean a divider on every reply forever.
  */
-export const CompactionDivider: FC<{
-  truncation: ContextTruncation;
-  placement: "between" | "inside";
-}> = ({ truncation, placement }) => {
+export const CompactionDivider: FC<{ truncation: ContextTruncation }> = ({
+  truncation,
+}) => {
   if (!promptWasShortened(truncation)) return null;
 
   const summarized = truncation.summarized === true;
@@ -55,26 +49,18 @@ export const CompactionDivider: FC<{
 
   return (
     <div
-      data-testid="compaction-notice"
-      data-placement={placement}
-      data-dropped={dropped}
-      data-archived={archived}
-      data-recalled={recalled}
-      className={cn(
-        "flex w-full items-center gap-3 text-muted-foreground text-sm",
-        placement === "between"
-          ? // Same column as the messages it sits between: it is their sibling, not their child.
-            "mx-auto mb-6 max-w-(--thread-content-max-width)"
-          : "mb-3",
-      )}
+      data-testid="compaction-divider"
+      className="mx-auto mb-6 flex w-full max-w-(--thread-content-max-width) items-center gap-3 text-muted-foreground text-sm"
     >
       <span aria-hidden={true} className="h-px flex-1 bg-border" />
       <Tooltip>
         <TooltipTrigger asChild>
           <button
             type="button"
-            data-slot="compaction-notice-label"
-            className="inline-flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-sm leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
+            data-slot="compaction-divider-label"
+            // Padding cancelled by negative margin: a finger-sized target without moving the rule.
+            // Positioned, or the reply above (itself positioned) takes the top of the target.
+            className="relative -mx-2 -my-2.5 inline-flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2.5 leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
           >
             <ArchiveIcon className="size-3.5" aria-hidden={true} />
             Context compacted

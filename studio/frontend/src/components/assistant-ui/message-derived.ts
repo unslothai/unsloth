@@ -128,57 +128,40 @@ export const compactionNoticeMessageIds = memoOnArray(
   },
 );
 
-export type CompactionDividers = {
-  /** Row id to the compaction whose divider is drawn above that row. */
-  readonly aboveRow: ReadonlyMap<string, ContextTruncation>;
-  /** Notice replies with no row to mark, which draw their divider inside themselves. */
-  readonly inside: ReadonlySet<string>;
-};
-
-const NO_COMPACTION_DIVIDERS: CompactionDividers = {
-  aboveRow: new Map(),
-  inside: new Set(),
-};
+const NO_COMPACTION_DIVIDERS: ReadonlyMap<string, ContextTruncation> =
+  new Map();
 
 /**
- * Where each compaction in `compactionNoticeMessageIds` draws its divider. One set, two
- * placements: between rows when the reply recorded the row its boundary sits above and that
- * row is still earlier on this branch, otherwise inside the reply, as before. The meter's
- * count stays the size of the notice set either way.
+ * Row id to the compaction whose divider is drawn above that row.
+ *
+ * Placed where the compaction HAPPENED: above the prompt whose request compacted, or above the reply itself when no prompt precedes it. Under the
+ * checkpoint policy that is also where the kept context begins, since a reset evicts everything
+ * ahead of the newest user turn. One entry per `compactionNoticeMessageIds` member, so the
+ * meter's count is the number of dividers on screen.
  */
-export const compactionDividers = memoOnArray(
-  (messages: readonly MessageLike[]): CompactionDividers => {
+export const compactionDividerRows = memoOnArray(
+  (
+    messages: readonly MessageLike[],
+  ): ReadonlyMap<string, ContextTruncation> => {
     const notices = compactionNoticeMessageIds(messages);
     // Every streamed token is a new array; a thread that never compacted pays nothing for it.
     if (notices.size === 0) return NO_COMPACTION_DIVIDERS;
-    const aboveRow = new Map<string, ContextTruncation>();
-    const inside = new Set<string>();
-    const earlier = new Set<string>();
+    const rows = new Map<string, ContextTruncation>();
+    let previous: MessageLike | undefined;
     for (const message of messages) {
       if (notices.has(message.id)) {
-        const custom = (
-          message.metadata as
-            | {
-                custom?: {
-                  contextTruncation?: unknown;
-                  compactionBoundaryMessageId?: unknown;
-                };
-              }
-            | undefined
-        )?.custom;
-        const rowId = custom?.compactionBoundaryMessageId;
-        if (
-          typeof rowId === "string" &&
-          earlier.has(rowId) &&
-          !aboveRow.has(rowId)
-        ) {
-          aboveRow.set(rowId, custom?.contextTruncation as ContextTruncation);
-        } else {
-          inside.add(message.id);
-        }
+        const row = previous?.role === "user" ? previous.id : message.id;
+        rows.set(
+          row,
+          (
+            message.metadata as {
+              custom: { contextTruncation: ContextTruncation };
+            }
+          ).custom.contextTruncation,
+        );
       }
-      earlier.add(message.id);
+      previous = message;
     }
-    return { aboveRow, inside };
+    return rows;
   },
 );

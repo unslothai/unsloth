@@ -28312,9 +28312,6 @@ def _provider_compaction_truncation(messages: list[dict]) -> dict:
     return {
         "dropped_messages": summarized,
         "boundary_messages": summarized,
-        # Everything ahead of the newest user turn was summarized, so the gap sits right above it.
-        "boundary_position": summarized,
-        "boundary_branch_messages": summarized,
         "fits": True,
         "summarized": True,
     }

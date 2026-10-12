@@ -24,7 +24,7 @@ import {
 import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
 import {
-  compactionDividers,
+  compactionDividerRows,
   memoOnArrayByKey,
 } from "@/components/assistant-ui/message-derived";
 import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
@@ -1855,16 +1855,15 @@ const ThreadMessage: FC = () => {
   );
 };
 
-// Drawn above the first row the model still saw after a compaction. The selector returns the
-// compaction record itself, which keeps its identity between renders, so a row re-renders only
-// when a divider arrives or leaves above it.
+// The selector returns the persisted record, which keeps its identity between renders, so a
+// row re-renders only when a divider arrives or leaves above it.
 const CompactionRowDivider: FC = () => {
   const truncation = useAuiState(
     ({ thread, message }) =>
-      compactionDividers(thread.messages).aboveRow.get(message.id) ?? null,
+      compactionDividerRows(thread.messages).get(message.id) ?? null,
   );
   if (!truncation) return null;
-  return <CompactionDivider truncation={truncation} placement="between" />;
+  return <CompactionDivider truncation={truncation} />;
 };
 
 /**
@@ -8062,27 +8061,6 @@ const AssistantMessage: FC = () => {
     researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)
       ? metadataResearchRunId
       : null;
-  // Persisted on the assistant turn that compacted, so the notice survives a reload.
-  const contextTruncation = useAuiState(({ message }) => {
-    const custom = (
-      message.metadata as
-        | { custom?: { contextTruncation?: unknown } }
-        | undefined
-    )?.custom;
-    const value = custom?.contextTruncation;
-    return value && typeof value === "object"
-      ? (value as ContextTruncation)
-      : null;
-  });
-  // Once a thread outgrows the window every request runs the fit, so "this turn
-  // compacted" is true of every later reply and would put a notice on all of them. What
-  // matters is when MORE of the conversation fell out of view: the eviction boundary
-  // rising above the last turn that reported one, or a checkpoint starting inside a tool
-  // loop (which evicts without moving the boundary). Sticky replays stay quiet. A divider
-  // already drawn between rows (CompactionRowDivider) is not repeated inside the reply.
-  const showsNotice = useAuiState(({ thread }) =>
-    compactionDividers(thread.messages).inside.has(messageId),
-  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -8158,9 +8136,6 @@ const AssistantMessage: FC = () => {
       onBlur={focusReveal.onBlur}
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
-        {contextTruncation && showsNotice && !isEditing && (
-          <CompactionDivider truncation={contextTruncation} placement="inside" />
-        )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
             {/* Borderless textarea, so auto-grow fits with no scrollbar; the wrapper keeps corners round. */}

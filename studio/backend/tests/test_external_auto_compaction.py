@@ -222,8 +222,6 @@ def test_a_provider_compaction_is_reported_as_a_summarized_compaction():
     assert truncation == {
         "dropped_messages": 4,
         "boundary_messages": 4,
-        "boundary_position": 4,
-        "boundary_branch_messages": 4,
         "fits": True,
         "summarized": True,
     }

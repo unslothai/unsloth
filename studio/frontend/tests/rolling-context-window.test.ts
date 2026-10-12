@@ -6,7 +6,6 @@ import test from "node:test";
 import {
   type ContextTruncation,
   compactionBoundary,
-  compactionBoundaryRowId,
   shouldShowCompactionNotice,
   mergeContextTruncation,
   promptWasShortened,
@@ -218,19 +217,14 @@ test("compaction counts accumulate and stay absent on a plain rolling window", (
 
 test("the compaction notice renders from persisted metadata, not from a message", () => {
   // Read off metadata.custom so it can never become part of the conversation.
-  assert.match(THREAD, /custom\?\.contextTruncation/);
-  assert.match(
-    THREAD,
-    /<CompactionDivider truncation=\{contextTruncation\} placement="inside"/,
-  );
+  assert.match(DERIVED, /\.custom\.contextTruncation/);
+  assert.match(THREAD, /<CompactionDivider truncation=\{truncation\} \/>/);
   assert.match(COMPACTION_DIVIDER, /Context compacted/);
 });
 
 test("the compaction notice uses the shared boundary/checkpoint predicate", () => {
   // Replayed fits stay quiet; a new boundary or checkpoint is a new compaction.
-  assert.match(THREAD, /const showsNotice = useAuiState/);
-  assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
-  assert.match(THREAD, /compactionDividers\(thread\.messages\)\.inside\.has\(messageId\)/);
+  assert.match(THREAD, /compactionDividerRows\(thread\.messages\)\.get\(message\.id\)/);
   assert.match(DERIVED, /const notices = compactionNoticeMessageIds\(messages\)/);
   assert.match(DERIVED, /shouldShowCompactionNotice\(value, previousDropped\)/);
   // Walked in order, not against the preceding message: turns between two moves report
@@ -304,17 +298,7 @@ const functionBody = (source: string, name: string): string => {
 test("the notice is a NOTICE, never part of the conversation", () => {
   const exporter = readSrc("features/chat/utils/conversation-markdown-export.ts");
 
-  // 1. A sibling of the rendered content parts, not one of them: inside
-  //    MessagePrimitive.Parts everything that walks parts would pick it up.
-  const noticeAt = THREAD.indexOf('<CompactionDivider truncation={contextTruncation}');
-  const partsAt = THREAD.indexOf("<MessagePrimitive.Parts", noticeAt);
-  assert.ok(noticeAt > 0 && partsAt > noticeAt);
-  assert.ok(
-    !/<MessagePrimitive\.Parts[^>]*>[\s\S]*<CompactionDivider/.test(THREAD),
-    "the notice must not be rendered inside the message's content parts",
-  );
-
-  // 2. Nothing that builds a request may read the key it renders from. Bounded to the
+  // 1. Nothing that builds a request may read the key it renders from. Bounded to the
   //    function bodies: slicing to end-of-file also catches the streaming handler,
   //    which reads contextTruncation legitimately on the way IN.
   for (const name of ["toOpenAIMessages", "serializeAssistantReplayMessages"]) {
@@ -324,18 +308,15 @@ test("the notice is a NOTICE, never part of the conversation", () => {
       !body.includes("contextTruncation"),
       `${name} must never read contextTruncation`,
     );
-    assert.ok(
-      !body.includes("compactionBoundaryMessageId"),
-      `${name} must never read compactionBoundaryMessageId`,
-    );
   }
 
-  // 3. Nor may the user-facing export, which is the other way text leaves a thread.
+  // 2. Nor may the user-facing export, which is the other way text leaves a thread.
   assert.ok(!exporter.includes("contextTruncation"));
   assert.ok(!exporter.includes("compacted"));
 
-  // 4. Suppressed while editing, so it cannot be saved back as message text.
-  assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
+  // 3. Drawn in the row slot, beside the message rather than inside it, so an edit cannot
+  //    save it back as message text.
+  assert.match(THREAD, /<CompactionRowDivider \/>\s*\{body\}/);
 });
 
 test("an irreducible fit reports a diagnosis, and it is dropped once something fits", () => {
@@ -436,65 +417,4 @@ test("later tool-loop fits cannot erase a checkpoint started earlier in the same
   assert.equal(merged.checkpoint_started, true);
   assert.equal(shouldShowCompactionNotice(merged, 0), true);
   assert.equal(shouldShowCompactionNotice({ ...merged, checkpoint_started: false }, 0), false);
-});
-
-test("the compaction divider lands on the row the boundary sits above", () => {
-  // u0 a0 u1 a1(call, tool result, reply) u2: seven sent messages, six ahead of the newest user turn.
-  const sent = [
-    { role: "user", rowId: "u0" },
-    { role: "assistant", rowId: "a0" },
-    { role: "user", rowId: "u1" },
-    { role: "assistant", rowId: "a1" },
-    { role: "tool", rowId: "a1" },
-    { role: "assistant", rowId: "a1" },
-    { role: "user", rowId: "u2" },
-  ];
-  const at = (boundary_position: number, boundary_branch_messages = 6) =>
-    compactionBoundaryRowId(
-      { dropped_messages: 1, fits: true, boundary_position, boundary_branch_messages },
-      sent,
-    );
-  assert.equal(at(2), "u1");
-  assert.equal(at(3), "a1");
-  // Every evictable message gone: the gap is right above the newest user turn.
-  assert.equal(at(6), "u2");
-  // Evicted from the middle of one reply: there is no gap there, so the next row takes it.
-  assert.equal(at(4), "u2");
-  // Nothing evicted ahead of the newest user turn: no gap between rows to mark.
-  assert.equal(at(0), null);
-  // The route coalesced or dropped a turn, so the backend counted a different list.
-  assert.equal(at(2, 5), null);
-  // An older backend reports no position.
-  assert.equal(
-    compactionBoundaryRowId({ dropped_messages: 1, fits: true, boundary_messages: 2 }, sent),
-    null,
-  );
-  // A message the transcript has no row for is never guessed past.
-  const synthetic = sent.map((entry, index) =>
-    index === 2 ? { role: entry.role } : entry,
-  );
-  assert.equal(
-    compactionBoundaryRowId(
-      { dropped_messages: 1, fits: true, boundary_position: 2, boundary_branch_messages: 6 },
-      synthetic,
-    ),
-    null,
-  );
-});
-
-test("the compaction row is resolved from the request that was sent", () => {
-  // Resolved in the stream handler from the same fit's chunk, and persisted beside the record.
-  assert.match(CHAT_ADAPTER, /outboundRowIds\.set\(entry, message\.id\)/);
-  assert.match(CHAT_ADAPTER, /compactionBoundaryRowId\(\s*chunk\.context_truncated,/);
-  assert.equal(
-    CHAT_ADAPTER.match(/^\s+compactionBoundaryMessageId,$/gm)?.length,
-    3,
-    "every metadata write that carries contextTruncation carries the row too",
-  );
-  // Run recovery merges a newer fit without the request it indexed, so it drops the stale row
-  // rather than pairing it with the new boundary.
-  assert.match(
-    RUNTIME_PROVIDER,
-    /boundary_messages !== undefined\) \{\s*delete currentMetadata\.compactionBoundaryMessageId;/,
-  );
 });
