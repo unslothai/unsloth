@@ -21,15 +21,16 @@ _REPO = "mlx-community/Qwen3-ASR-0.6B-8bit"
 _QWEN3_ASR_CONFIG = {"model_type": "qwen3_asr", "quantization": {"group_size": 64, "bits": 8}}
 
 _FAKE_MLX_AUDIO = """
+from pathlib import Path
 from types import SimpleNamespace
 
 
 class _Model:
     def __init__(self, path):
-        self.path = path
+        self.repo_dir = Path(path).parts[-3]
 
     def generate(self, audio):
-        return SimpleNamespace(text = f"heard {len(audio)} samples from {self.path.rsplit('/', 3)[-3]}")
+        return SimpleNamespace(text = f"heard {len(audio)} samples from {self.repo_dir}")
 
 def load(path):
     if "broken" in str(path):
@@ -288,3 +289,39 @@ def test_the_inventory_leaves_the_checkpoint_alone_off_a_mac(monkeypatch, tmp_pa
     metadata = _cached_model_local_metadata(snapshot.parent.parent, snapshot)
     assert "_hidden_stt" not in metadata
     assert "_mlx_stt" not in metadata
+
+
+@pytest.mark.parametrize("on_mac", [True, False])
+def test_the_cache_scan_row_is_speech_to_text_only_on_a_mac(monkeypatch, tmp_path, on_mac):
+    from hub.services.models import cache_inventory
+
+    monkeypatch.setattr(stt_mlx, "mlx_stt_available", lambda: on_mac)
+    snapshot = _write_snapshot(tmp_path / "hub", _REPO, _QWEN3_ASR_CONFIG)
+    (snapshot / "README.md").write_text("---\nlibrary_name: mlx-audio\n---\n", encoding = "utf-8")
+    repo_path = snapshot.parent.parent
+    files = [
+        SimpleNamespace(file_name = name, size_on_disk = size, blob_path = None)
+        for name, size in (("config.json", 12), ("model.safetensors", 90_000_000))
+    ]
+    repo = SimpleNamespace(
+        repo_id = _REPO,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [SimpleNamespace(files = files)],
+    )
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_model_snapshot_path", lambda _path: snapshot)
+
+    (row,) = cache_inventory._scan_cached_models(active_hub_cache = repo_path.parent)
+
+    if on_mac:
+        assert row["task"] == "automatic-speech-recognition"
+        assert row["library_name"] == "mlx-audio"
+        assert row["capabilities"]["can_chat"] is False
+    else:
+        assert row["task"] != "automatic-speech-recognition"
