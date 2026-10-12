@@ -2589,9 +2589,11 @@ def _host_bounded_parking_mib(need_mib: int, backend = None) -> int:
     A park past the budget drops its cells and is re-prefilled, which costs about what the copy
     would, so a short budget is safe; pinning past the host's headroom is not, nor into what the
     other parking servers may still take, since each budget is only allocated when it parks.
-    ``backend`` is the one launching, left out of its neighbours. An unlimited neighbour is the
-    user's say and reserves nothing here."""
-    commitments, _unlimited = _neighbour_parking_commitments(backend)
+    ``backend`` is the one launching, left out of its neighbours. A neighbour on an unlimited
+    budget may take all of it, so no reserve can be promised beside it: this one does not park."""
+    commitments, unlimited = _neighbour_parking_commitments(backend)
+    if unlimited:
+        return 0
     available = _free_less_commitments_mib(commitments)
     if available is None:
         return 0

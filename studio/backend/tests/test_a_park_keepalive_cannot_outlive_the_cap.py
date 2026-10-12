@@ -100,6 +100,37 @@ class TestARawRelayParkedAfterItsFirstToken:
         seen = asyncio.run(self._relay(items, monkeypatch, cap = 5.0))
         assert seen[-1].endswith('"b"}}]}')
 
+    def test_the_cap_holds_with_the_park_aware_read_installed(self, monkeypatch):
+        # Production relays pass `response`, which installs the wrapper and widens the pump's
+        # backstop by a cap; the keepalives keep the read returning, so only the pump ends it.
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", 1.0)
+        monkeypatch.setattr(inference, "_install_park_aware_read", lambda response, grace: True)
+        monkeypatch.setattr(inference, "_set_stream_response_read_timeout", lambda *a, **k: None)
+        items = ['data: {"choices":[{"delta":{"content":"a"}}]}', ": preempted"]
+        items += [": preempt-keepalive"] * 400
+
+        async def relay():
+            async def upstream():
+                for item in items:
+                    await asyncio.sleep(0.01)
+                    yield item
+
+            async for _ in inference._aiter_llama_stream_items(
+                upstream(),
+                first_token_deadline = time.monotonic() + 30.0,
+                post_first_item_read_timeout_s = 0.1,
+                response = object(),
+                stall_grace = lambda: True,
+            ):
+                pass
+
+        started = time.monotonic()
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(relay())
+        assert time.monotonic() - started < 1.7, "the relay stayed open a second park cap"
+
 
 class TestARawRelayParkedBeforeItsFirstToken:
     """Keepalives before any token renew the first-token window, never past the park cap."""

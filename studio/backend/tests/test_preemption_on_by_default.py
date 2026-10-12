@@ -420,6 +420,9 @@ class TestExactParksAreCountedAcrossModels:
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, unlimited])
         monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         assert llama_mod._exact_host_free_mib(me) == 0
+        # Nor can an ordinary budget keep its reserve beside it, so this one does not park.
+        monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 10_000)
+        assert llama_mod._host_bounded_parking_mib(10**9, me) == 0
 
     def test_the_host_readings_are_the_containers(self, monkeypatch):
         # A cgroup limit below the host's RAM: parking may only plan against what it can charge.

@@ -5237,6 +5237,10 @@ async def _aiter_llama_stream_items(
                     park_since = now
                 if now - park_since < _RAW_PARK_STALL_CAP_S:
                     last_item_at = now
+                elif (stall := _post_first_timeout_s()) is not None and now >= last_item_at + stall:
+                    # Here, not at the deadline below: the keepalives keep the read returning,
+                    # so the wrapper never times out, and the pump's backstop is a cap later.
+                    raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
             else:
                 last_item_at = now
                 park_since = None

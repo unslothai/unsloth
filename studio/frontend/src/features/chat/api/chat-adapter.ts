@@ -5933,6 +5933,8 @@ export function createOpenAIStreamAdapter(
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
         preemptRecomputed: sawPreemptRecompute || undefined,
+        // Live yields carry no response details, and an interrupted answer persists from here.
+        preemptRecomputedModelId: sawPreemptRecompute ? params.checkpoint : undefined,
         providerCompaction,
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
@@ -8829,6 +8831,7 @@ export function createOpenAIStreamAdapter(
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
               preemptRecomputed: sawPreemptRecompute || undefined,
+              preemptRecomputedModelId: sawPreemptRecompute ? params.checkpoint : undefined,
               providerCompaction,
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,

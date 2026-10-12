@@ -221,6 +221,15 @@ test("the recompute note is persisted with the answer and read from the answer o
   // An answer with no usage record still names its model in its details.
   assert.match(PROVIDER, /custom\?\.responseDetails as \{ modelId\?: unknown \}/);
   assert.match(PROVIDER, /: typeof details\?\.modelId === "string" && details\.modelId\s+\? details\.modelId/);
+  // An interrupted answer persists from a live yield, which carries no details, so the
+  // recompute records the model it happened on itself.
+  assert.equal(
+    ADAPTER.match(/preemptRecomputedModelId: sawPreemptRecompute \? params\.checkpoint : undefined,/g)
+      ?.length,
+    2,
+    "the live and the final metadata both name the recompute's model",
+  );
+  assert.match(PROVIDER, /: typeof recomputedOn === "string" && recomputedOn\s+\? recomputedOn/);
   // The selector hands back the message itself, never a fresh object: a new object on every
   // store read re-renders without end (React error 185, seen in the Windows UI lane).
   assert.doesNotMatch(PROVIDER, /useAuiState\(\(\{ thread \}\) => \{[\s\S]{0,400}return \{/);
