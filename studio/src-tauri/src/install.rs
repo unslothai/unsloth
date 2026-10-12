@@ -697,13 +697,20 @@ fn spawn_script(
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // Tauri only does default-root installs; install.sh / install.ps1 reject
-    // these under --tauri. Scrub so an inherited value can't trip the guard.
+    // install.sh / install.ps1 reject inherited custom roots under --tauri. Scrub
+    // so an inherited value can't trip the guard, then pass the folder chosen at
+    // first install (Windows), flagged so install.ps1 knows the desktop chose it.
     // Applied by hand here, the one managed spawn outside
     // apply_managed_cli_context: the Python setup.sh starts reads whatever is
     // exported, even though setup.sh assigns UNSLOTH_HOME itself.
     for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
+    }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+        cmd.env(crate::studio_home::DESKTOP_CHOSEN_HOME_ENV, "1");
+        // The torch wheels are most of the download; keep their cache on the chosen drive too.
+        cmd.env("UNSLOTH_ISOLATE_UV_CACHE", "1");
     }
     cmd.env(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",

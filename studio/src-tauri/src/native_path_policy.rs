@@ -944,7 +944,7 @@ fn ensure_artifact_root(kind: NativeArtifactKind, canonical_path: &Path) -> Resu
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory.".to_string());
     };
-    let studio = home.join(".unsloth").join("studio");
+    let studio = crate::studio_home::studio_root_for_home(&home);
     let allowed_root = match kind {
         NativeArtifactKind::TrainingOutput => studio.join("outputs"),
         NativeArtifactKind::Export => studio.join("exports"),
@@ -1047,6 +1047,9 @@ pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String
         }
         for relative in [".unsloth"] {
             sensitive_roots.push(home.join(relative));
+        }
+        if let Some(chosen) = crate::studio_home::chosen_root_for_home(&home) {
+            sensitive_roots.push(chosen);
         }
     }
     if let Some(config) = dirs::config_dir() {

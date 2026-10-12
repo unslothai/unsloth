@@ -3138,8 +3138,12 @@ function Install-UnslothStudio {
     }
 
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
-    # the Windows profile folder). Pass through if the override is that same root.
-    if ($TauriMode -and $envOverride) {
+    # the Windows profile folder). Pass through if the override is that same root,
+    # or the folder the desktop itself chose at first install: it scrubs inherited
+    # values and sets UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME=1 only beside its own.
+    $tauriChosenRoot = ($TauriMode -and $envOverrideVar -eq "UNSLOTH_STUDIO_HOME" -and
+        $env:UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME -eq "1")
+    if ($TauriMode -and $envOverride -and -not $tauriChosenRoot) {
         $_tauriOverride = $envOverride
         if ($_tauriOverride -eq "~" -or $_tauriOverride -like "~/*" -or $_tauriOverride -like "~\*") {
             $_tauriOverride = (Join-Path $env:USERPROFILE $_tauriOverride.Substring(1).TrimStart('/','\'))
