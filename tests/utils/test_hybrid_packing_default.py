@@ -212,7 +212,6 @@ def test_kill_switch_keeps_padded_path(monkeypatch, value):
 @pytest.mark.parametrize("mode", [None, "1"])
 @pytest.mark.parametrize("conv,scan", [(conv_leaky, scan_exact), (conv_exact, scan_leaky)])
 def test_probe_rejects_a_leaky_kernel_and_rolls_back(monkeypatch, caplog, mode, conv, scan):
-    # Flip test for the probe: kernels that name the boundary argument but ignore it.
     if mode is None:
         monkeypatch.delenv(ENV, raising = False)
     else:
@@ -508,8 +507,7 @@ def test_default_on_is_cuda_only(monkeypatch, caplog):
 
 
 def test_default_on_is_cuda_only_for_kwargs_mixers(monkeypatch, caplog):
-    # transformers 5.16+ Qwen mixers are kwargs-mode, so they leave gated_delta_modules: the
-    # CUDA-only default must still cover them.
+    # transformers 5.16+ kwargs-mode Qwen mixers leave gated_delta_modules; the default must still cover them.
     monkeypatch.undo()
     monkeypatch.delenv(ENV, raising = False)
     name = "fake_modeling_kwargs_cpu_gdn"

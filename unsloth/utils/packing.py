@@ -1195,8 +1195,7 @@ def _probe_target(modules):
 
 
 def _hybrid_exactness_probe(module) -> Optional[str]:
-    """Compare packed vs per-document mixer output; None if exact and dispatched, else the reason.
-    Eval mode (LoRA dropout masks would differ) under a forked RNG; restores the mixer."""
+    """Packed vs per-document mixer output: None if exact, else the reason. Eval mode, forked RNG."""
     weight = module.conv1d.weight
     dtype, device = weight.dtype, weight.device
     lengths = torch.tensor(_HYBRID_PROBE_LENGTHS, dtype = torch.int32)
