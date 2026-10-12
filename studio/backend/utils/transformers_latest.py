@@ -448,8 +448,7 @@ def _hardcoded_model_types() -> frozenset[str]:
     )
 
 
-# Routed to a pinned tier for another reason (5.5: DiffusionGemma's mlx-vlm processor) though that release
-# has no model for the type. Known up front, so a fresh install prompts before the sidecar exists.
+# Pinned to 5.5 for its mlx-vlm processor, which has no model for the type: prompt even before the sidecar exists.
 _TIER_ROUTED_WITHOUT_MODEL = frozenset({"diffusion_gemma"})
 
 

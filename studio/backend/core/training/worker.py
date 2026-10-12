@@ -832,8 +832,7 @@ def _pre_detect_training_model(
 
 
 _LORA_DEFAULT_LR = 2e-4
-# Their output-head rows for <|im_end|>, <tool_call>, <|fim_pad|> ... are near-duplicates (cosine 0.97): at 2e-4
-# a LoRA run swaps them, so chat replies end in <tool_call> or come back empty. Clean at 5e-5.
+# Near-duplicate head rows for <|im_end|> / <tool_call> / ... (cosine 0.97): a 2e-4 LoRA swaps them in chat.
 _DIFFUSION_LM_LORA_LR = {"dream": 5e-5, "sdar": 5e-5}
 
 

@@ -52,8 +52,7 @@ AUTOREGRESSIVE_CONFIGS = [
     {"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]},
 ]
 
-# These import Studio's training / inference modules or core Unsloth, which need torch and unsloth_zoo;
-# the cross-platform and backend CI legs run some tests without them.
+# Need torch and unsloth_zoo, which the cross-platform and backend CI legs run some tests without.
 _needs_torch = pytest.mark.skipif(
     any(importlib.util.find_spec(name) is None for name in ("torch", "unsloth_zoo")),
     reason = "needs torch and unsloth_zoo",
@@ -239,7 +238,6 @@ def test_cpt_embedding_names_resolve_to_the_models_own_modules(captured_peft):
     import torch.nn as nn
 
     class LLaDALike(nn.Module):
-        # LLaDA: transformer.wte / transformer.ff_out, and every block has its own ff_out projection too.
         def __init__(self):
             super().__init__()
             self.transformer = nn.Module()
@@ -785,8 +783,7 @@ def test_diffusion_gemma_gets_the_latest_transformers_prompt_when_5_5_lacks_it(m
     monkeypatch.setattr(tl, "_config_model_types", lambda tier: shipped.get(tier, frozenset()))
     assert not tl._hardcoded_tier_ships("diffusion_gemma")
     assert tl._hardcoded_tier_ships("gemma4")
-    # Sidecar not provisioned yet (fresh install): DiffusionGemma still prompts, other pinned types keep
-    # their routing.
+    # Fresh install, sidecar not provisioned: DiffusionGemma still prompts, other pinned types keep their routing.
     monkeypatch.setattr(tl, "_config_model_types", lambda tier: frozenset())
     assert not tl._hardcoded_tier_ships("diffusion_gemma")
     assert tl._hardcoded_tier_ships("gemma4")

@@ -904,8 +904,7 @@ class InferenceBackend:
                 load_path, hf_token = _hf_token_for_loader(hf_token)
             )
             if not diffusion_lm_profile and config.is_lora and config.base_model:
-                # A Hub LoRA has no config.json: classify its base, before the vision branch claims
-                # DiffusionGemma for its vision tower.
+                # A Hub LoRA has no config.json: classify its base before the vision branch claims DiffusionGemma.
                 diffusion_lm_profile = diffusion_lm_profile_for_model(
                     config.base_model, hf_token = _hf_token_for_loader(hf_token)
                 )
