@@ -2476,6 +2476,12 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      selfNote: "压缩后保留模型笔记",
+      selfNoteDescription: "模型可以给自己留一条在压缩后保留的简短笔记。",
+      selfNoteHint: "启用工具的本地 GGUF 聊天：模型可以在回复末尾为自己写一条隐藏笔记，例如已排除的方案。压缩后，最新笔记会与你的长期指令一起提供给模型，指令优先。笔记由模型撰写，可能有误。",
+      selfNoteKeywords: "笔记 记忆 压缩 self note remember",
+      selfNoteReserve: "笔记大小",
+      selfNoteReserveTokens: "{count} 个 token",
       toolResultLimit: "工具输出长度",
       toolResultLimitDescription: "模型读取的单个 Python 或终端结果的字符数。默认值为 {count}。",
       toolResultLimitHint: "更长的输出会保存到文件中，模型可以分段读取。更高的上限适用于在 Unsloth 中运行的模型，上下文窗口较小时仍会获得更少的内容。API 模型保持默认值，除非你将其调低。",

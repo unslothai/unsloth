@@ -2499,6 +2499,12 @@ export const ja = {
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
+      selfNote: "圧縮後もモデルのメモを保持",
+      selfNoteDescription: "モデルは圧縮後も残る短いメモを自分用に残せます。",
+      selfNoteHint: "ツールを有効にしたローカル GGUF チャット: モデルは返信の最後に、除外したアプローチなど自分向けの非表示メモを書けます。圧縮後、最新のメモがあなたの常設指示と一緒にモデルに渡され、指示が優先されます。メモはモデルが書いたもので、誤っている可能性があります。",
+      selfNoteKeywords: "メモ 記憶 圧縮 self note remember",
+      selfNoteReserve: "メモのサイズ",
+      selfNoteReserveTokens: "{count} トークン",
       toolResultLimit: "ツール出力の長さ",
       toolResultLimitDescription: "Python またはターミナルの結果 1 件のうち、モデルが読む文字数です。既定値は {count} です。",
       toolResultLimitHint: "これより長い出力はファイルに保存され、モデルは分割して読めます。上限を上げると Unsloth で動作するモデルに適用され、コンテキストウィンドウが小さい場合は引き続き少なくなります。API モデルは、下げない限り既定値のままです。",

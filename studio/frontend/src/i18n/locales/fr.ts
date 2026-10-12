@@ -2551,6 +2551,12 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      selfNote: "Conserver une note du modèle après compactage",
+      selfNoteDescription: "Le modèle peut se laisser une courte note qui survit à un compactage.",
+      selfNoteHint: "Chats GGUF locaux avec outils activés : le modèle peut terminer une réponse par une note masquée pour lui-même, par exemple une approche écartée. Après un compactage, la note la plus récente lui est présentée avec vos instructions permanentes, qui priment. La note est rédigée par le modèle et peut être erronée.",
+      selfNoteKeywords: "note mémoire souvenir compactage self note remember",
+      selfNoteReserve: "Taille de la note",
+      selfNoteReserveTokens: "{count} jetons",
       toolResultLimit: "Longueur de la sortie des outils",
       toolResultLimitDescription: "Caractères d'un résultat Python ou Terminal que le modèle lit. Par défaut : {count}.",
       toolResultLimitHint: "Une sortie plus longue est enregistrée dans un fichier que le modèle peut lire par parties. Une limite plus élevée s'applique aux modèles exécutés dans Unsloth, et les petites fenêtres de contexte reçoivent toujours moins. Les modèles d'API gardent la valeur par défaut sauf si vous la baissez.",

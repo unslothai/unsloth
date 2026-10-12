@@ -2554,6 +2554,12 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      selfNote: "Modellnotiz über Komprimierung behalten",
+      selfNoteDescription: "Das Modell kann sich eine kurze Notiz hinterlassen, die eine Komprimierung übersteht.",
+      selfNoteHint: "Lokale GGUF-Chats mit aktivierten Tools: Das Modell kann eine Antwort mit einer verborgenen Notiz für sich selbst beenden, etwa zu einem verworfenen Ansatz. Nach einer Komprimierung wird ihm die neueste Notiz zusammen mit deinen dauerhaften Anweisungen gezeigt, die Vorrang haben. Die Notiz stammt vom Modell und kann falsch sein.",
+      selfNoteKeywords: "notiz merken gedächtnis komprimierung self note remember",
+      selfNoteReserve: "Notizgröße",
+      selfNoteReserveTokens: "{count} Tokens",
       toolResultLimit: "Länge der Tool-Ausgabe",
       toolResultLimitDescription: "Zeichen eines Python- oder Terminal-Ergebnisses, die das Modell liest. Standard ist {count}.",
       toolResultLimitHint: "Längere Ausgaben werden in einer Datei gespeichert, die das Modell in Teilen lesen kann. Ein höheres Limit gilt für Modelle, die in Unsloth laufen, und kleine Kontextfenster erhalten weiterhin weniger. API-Modelle behalten den Standard, außer du senkst ihn.",

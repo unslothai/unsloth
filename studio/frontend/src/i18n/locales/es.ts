@@ -2545,6 +2545,12 @@ export const es = {
         "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
+      selfNote: "Conservar una nota del modelo tras la compactación",
+      selfNoteDescription: "El modelo puede dejarse una nota breve que sobrevive a una compactación.",
+      selfNoteHint: "Chats GGUF locales con herramientas activadas: el modelo puede terminar una respuesta con una nota oculta para sí mismo, como un enfoque que descartó. Tras una compactación se le muestra la nota más reciente junto con tus instrucciones permanentes, que tienen prioridad. La nota la escribe el modelo y puede ser incorrecta.",
+      selfNoteKeywords: "nota recordar memoria compactación self note remember",
+      selfNoteReserve: "Tamaño de la nota",
+      selfNoteReserveTokens: "{count} tokens",
       toolResultLimit: "Longitud de la salida de herramientas",
       toolResultLimitDescription: "Caracteres de un resultado de Python o Terminal que lee el modelo. El valor predeterminado es {count}.",
       toolResultLimitHint: "La salida más larga se guarda en un archivo que el modelo puede leer por partes. Un límite mayor se aplica a los modelos que se ejecutan en Unsloth, y las ventanas de contexto pequeñas siguen recibiendo menos. Los modelos de API mantienen el valor predeterminado salvo que lo bajes.",

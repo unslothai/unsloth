@@ -2512,6 +2512,12 @@ export const it = {
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      selfNote: "Conserva una nota del modello dopo la compattazione",
+      selfNoteDescription: "Il modello può lasciarsi una breve nota che sopravvive a una compattazione.",
+      selfNoteHint: "Chat GGUF locali con strumenti attivi: il modello può terminare una risposta con una nota nascosta per sé, ad esempio un approccio scartato. Dopo una compattazione gli viene mostrata la nota più recente insieme alle tue istruzioni permanenti, che hanno la precedenza. La nota è scritta dal modello e può essere errata.",
+      selfNoteKeywords: "nota ricorda memoria compattazione self note remember",
+      selfNoteReserve: "Dimensione nota",
+      selfNoteReserveTokens: "{count} token",
       toolResultLimit: "Lunghezza dell'output degli strumenti",
       toolResultLimitDescription: "Caratteri di un risultato Python o Terminale che il modello legge. Il valore predefinito è {count}.",
       toolResultLimitHint: "L'output più lungo viene salvato in un file che il modello può leggere a parti. Un limite più alto si applica ai modelli eseguiti in Unsloth, e le finestre di contesto piccole ricevono comunque meno. I modelli API mantengono il valore predefinito a meno che tu non lo abbassi.",

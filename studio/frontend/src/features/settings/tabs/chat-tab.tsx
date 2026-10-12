@@ -22,6 +22,7 @@ import {
   usePlusMenuPrefsStore,
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
+import { SELF_NOTE_RESERVE_CHOICES } from "@/features/chat/utils/auto-compaction";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useIsAccountOwner } from "@/features/auth";
@@ -277,6 +278,16 @@ export function ChatTab() {
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
   );
+  const selfNoteEnabled = useChatRuntimeStore((state) => state.selfNoteEnabled);
+  const setSelfNoteEnabled = useChatRuntimeStore(
+    (state) => state.setSelfNoteEnabled,
+  );
+  const selfNoteReserveTokens = useChatRuntimeStore(
+    (state) => state.selfNoteReserveTokens,
+  );
+  const setSelfNoteReserveTokens = useChatRuntimeStore(
+    (state) => state.setSelfNoteReserveTokens,
+  );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
@@ -492,6 +503,45 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
+        {autoCompactEnabled ? (
+          <SettingsRow
+            label={t("settings.chat.selfNote")}
+            description={t("settings.chat.selfNoteDescription")}
+            hint={t("settings.chat.selfNoteHint")}
+          >
+            <div className="flex items-center gap-2">
+              {selfNoteEnabled ? (
+                <Select
+                  value={String(selfNoteReserveTokens)}
+                  onValueChange={(value) =>
+                    setSelfNoteReserveTokens(Number(value))
+                  }
+                >
+                  <SelectTrigger
+                    className="w-32"
+                    aria-label={t("settings.chat.selfNoteReserve")}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SELF_NOTE_RESERVE_CHOICES.map((choice) => (
+                      <SelectItem key={choice} value={String(choice)}>
+                        {t("settings.chat.selfNoteReserveTokens", {
+                          count: choice.toLocaleString(),
+                        })}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
+              <Switch
+                aria-label={t("settings.chat.selfNote")}
+                checked={selfNoteEnabled}
+                onCheckedChange={setSelfNoteEnabled}
+              />
+            </div>
+          </SettingsRow>
+        ) : null}
         {isOwner ? <ToolResultLimitRow /> : null}
         <SettingsRow
           label={t("settings.chat.autoScroll")}

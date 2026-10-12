@@ -2509,6 +2509,12 @@ export const ko = {
         "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       autoCompactKeywords:
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
+      selfNote: "압축 후에도 모델 메모 유지",
+      selfNoteDescription: "모델이 압축 후에도 남는 짧은 메모를 스스로 남길 수 있습니다.",
+      selfNoteHint: "도구가 켜진 로컬 GGUF 채팅: 모델은 배제한 접근 방식 등 자신을 위한 숨겨진 메모로 답변을 끝낼 수 있습니다. 압축 후 최신 메모가 상시 지시와 함께 모델에 제공되며, 지시가 우선합니다. 메모는 모델이 작성한 것이므로 틀릴 수 있습니다.",
+      selfNoteKeywords: "메모 기억 압축 self note remember",
+      selfNoteReserve: "메모 크기",
+      selfNoteReserveTokens: "{count} 토큰",
       toolResultLimit: "도구 출력 길이",
       toolResultLimitDescription: "모델이 읽는 Python 또는 터미널 결과 하나의 문자 수입니다. 기본값은 {count}입니다.",
       toolResultLimitHint: "더 긴 출력은 모델이 나눠서 읽을 수 있는 파일에 저장됩니다. 더 높은 제한은 Unsloth에서 실행되는 모델에 적용되며, 컨텍스트 창이 작으면 여전히 더 적게 받습니다. API 모델은 낮추지 않는 한 기본값을 유지합니다.",

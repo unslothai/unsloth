@@ -2701,6 +2701,12 @@ export const sv = {
         "Äldre turer flyttas till ett sökbart arkiv när en chatt fyller sin kontext.",
       autoCompactKeywords:
         "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall search",
+      selfNote: "Behåll en modellanteckning efter komprimering",
+      selfNoteDescription: "Modellen kan lämna en kort anteckning till sig själv som överlever en komprimering.",
+      selfNoteHint: "Lokala GGUF-chattar med verktyg på: modellen kan avsluta ett svar med en dold anteckning till sig själv, till exempel ett angreppssätt den uteslutit. Efter en komprimering visas den senaste anteckningen för den tillsammans med dina stående instruktioner, som har företräde. Anteckningen skrivs av modellen och kan vara fel.",
+      selfNoteKeywords: "anteckning minne komprimering self note remember",
+      selfNoteReserve: "Anteckningsstorlek",
+      selfNoteReserveTokens: "{count} tokens",
       toolResultLimit: "Längd på verktygsutdata",
       toolResultLimitDescription: "Tecken i ett Python- eller Terminal-resultat som modellen läser. Standard är {count}.",
       toolResultLimitHint: "Längre utdata sparas i en fil som modellen kan läsa i delar. En högre gräns gäller modeller som körs i Unsloth, och små kontextfönster får fortfarande mindre. API-modeller behåller standardvärdet om du inte sänker det.",

@@ -2552,6 +2552,12 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      selfNote: "Keep a model note across compaction",
+      selfNoteDescription: "The model can leave itself a short note that survives a compaction.",
+      selfNoteHint: "Local GGUF chats with tools on: the model may end a reply with a hidden note for its future self, such as an approach it ruled out. After a compaction the latest note is shown to it alongside your standing instructions, which take priority. The note is model-written and may be wrong.",
+      selfNoteKeywords: "self note remember memory carry compaction notes",
+      selfNoteReserve: "Note size",
+      selfNoteReserveTokens: "{count} tokens",
       toolResultLimit: "Tool output length",
       toolResultLimitDescription: "Characters of one Python or Terminal result the model reads. Default is {count}.",
       toolResultLimitHint: "Longer output is saved to a file the model can read in parts. A higher limit applies to models running in Unsloth, and small context windows still get less. API models keep the default unless you lower it.",

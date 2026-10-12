@@ -2620,6 +2620,12 @@ export const he = {
         "סבבים ישנים יותר עוברים לארכיון הניתן לחיפוש כאשר צ'אט ממלא את ההקשר שלו.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
+      selfNote: "לשמור הערת מודל אחרי דחיסה",
+      selfNoteDescription: "המודל יכול להשאיר לעצמו הערה קצרה ששורדת דחיסה.",
+      selfNoteHint: "צ'אטים מקומיים של GGUF עם כלים מופעלים: המודל יכול לסיים תשובה בהערה מוסתרת לעצמו, למשל גישה שפסל. אחרי דחיסה ההערה האחרונה מוצגת לו יחד עם ההוראות הקבועות שלך, שקודמות לה. ההערה נכתבה על ידי המודל ועלולה להיות שגויה.",
+      selfNoteKeywords: "הערה זכירה זיכרון דחיסה self note remember",
+      selfNoteReserve: "גודל ההערה",
+      selfNoteReserveTokens: "{count} טוקנים",
       toolResultLimit: "אורך פלט הכלים",
       toolResultLimitDescription: "מספר התווים מתוצאה אחת של Python או Terminal שהמודל קורא. ברירת המחדל היא {count}.",
       toolResultLimitHint: "פלט ארוך יותר נשמר בקובץ שהמודל יכול לקרוא בחלקים. מגבלה גבוהה יותר חלה על מודלים שרצים ב-Unsloth, וחלונות הקשר קטנים עדיין מקבלים פחות. מודלי API נשארים בברירת המחדל אלא אם תוריד אותה.",
