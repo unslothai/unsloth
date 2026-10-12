@@ -28,6 +28,7 @@ export function sidebarRowQueryKey(query: SidebarRowQuery): string {
 interface QueryRow {
   id: string;
   projectId?: string | null;
+  threadIds?: string[];
 }
 
 /** The server's filter and order on the client, for a server without the paged route. */
@@ -38,7 +39,9 @@ export function applySidebarRowQuery<T extends QueryRow>(
   const include = query.includeIds ? new Set(query.includeIds) : null;
   const exclude = new Set(query.excludeIds);
   const out = rows.filter((row) => {
-    if (include && !include.has(row.id)) return false;
+    if (include && !include.has(row.id) && !row.threadIds?.some((id) => include.has(id))) {
+      return false;
+    }
     if (exclude.has(row.id)) return false;
     if (
       query.projectId !== null &&

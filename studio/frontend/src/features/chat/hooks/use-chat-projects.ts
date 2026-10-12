@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { CHAT_PROJECTS_UPDATED_EVENT } from "../api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  CHAT_PROJECTS_UPDATED_EVENT,
+} from "../api/chat-api";
 import type { ProjectRecord } from "../types";
 import {
   createStoredChatProject,
@@ -21,6 +24,18 @@ let projectsRequest: Promise<ProjectRecord[]> | null = null;
 let projectsRefreshPending = false;
 let lastProjectsUpdateEvent: Event | null = null;
 const projectSubscribers = new Set<() => void>();
+// lastActivityAt moves with chat activity, which fires only the history event; trailing, so a
+// streamed reply costs one re-read once it goes quiet
+const ACTIVITY_REFRESH_DEBOUNCE_MS = 2000;
+let activityRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onChatActivity(): void {
+  if (activityRefreshTimer !== null) clearTimeout(activityRefreshTimer);
+  activityRefreshTimer = setTimeout(() => {
+    activityRefreshTimer = null;
+    void loadProjects(true, true).catch(() => undefined);
+  }, ACTIVITY_REFRESH_DEBOUNCE_MS);
+}
 
 function subscribeToProjects(onStoreChange: () => void): () => void {
   projectSubscribers.add(onStoreChange);
@@ -110,9 +125,11 @@ export function useChatProjects(): {
     // browser tab or API client.
     void refresh(projectsLoaded);
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onChatActivity);
     return () => {
       cancelled = true;
       window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onChatActivity);
     };
   }, []);
 

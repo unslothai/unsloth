@@ -291,6 +291,7 @@ function loadRowPages(options: {
   legacyDone?: boolean;
 }) {
   const requests: unknown[] = [];
+  const repaired: { id: string; title: string }[][] = [];
   let fullReads = 0;
   const threads = Array.from({ length: 45 }, (_, i) => ({
     id: `t${i}`,
@@ -355,6 +356,12 @@ function loadRowPages(options: {
         },
         settleLegacyChatImport: async () => options.legacyDone ?? true,
       },
+      "../utils/repair-legacy-chat-titles": {
+        repairLegacyChatTitles: async (list: { id: string; title: string }[]) => {
+          repaired.push(list);
+          return 0;
+        },
+      },
       "../utils/chat-thread-tombstones": {
         isChatThreadDeleted: (id: string) => id === "gone",
       },
@@ -363,7 +370,7 @@ function loadRowPages(options: {
       "./use-chat-sidebar-items": { groupThreads },
     },
   );
-  return { mod, requests, fullReads: () => fullReads };
+  return { mod, requests, repaired, fullReads: () => fullReads };
 }
 
 test("an old server is answered from the full list, sliced in pages, read once", async () => {
@@ -403,6 +410,17 @@ test("a paged server's rows pass through, minus chats already deleted here", asy
   assert.equal(page.hasMore, true);
   assert.equal(page.nextCursor, "20");
   assert.equal(page.total, 99);
+});
+
+test("legacy titles are repaired from the rows a page loads, and from the fallback's full list", async () => {
+  const paged = loadRowPages({ server: "paged" });
+  await paged.mod.fetchSidebarRowPage(sidebarRowQuery({}), 20, null);
+  assert.deepEqual(paged.repaired, [[{ id: "gone", title: "" }]]);
+  const old = loadRowPages({ server: "old" });
+  await old.mod.fetchSidebarRowPage(sidebarRowQuery({}), 20, null);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(old.repaired.length, 1);
+  assert.equal(old.repaired[0].length, 45);
 });
 
 const { ProgressiveRows } = loadWithStubs<typeof ProgressiveRowsModule>(
@@ -502,4 +520,50 @@ test("the thread-row lookup reads the key and the per-request cap the route defi
   const clientCap = client.match(/const SIDEBAR_THREAD_ROWS_MAX = (\d+)/)?.[1];
   assert.ok(serverCap && clientCap, "both caps are declared");
   assert.ok(Number(clientCap) <= Number(serverCap), "client chunks within the route's cap");
+});
+
+test("a drag in a partly loaded list shows its order at once and saves it once every id is known", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  const body = src.slice(
+    src.indexOf("const writeManualOrder = useCallback("),
+    src.indexOf("// Escape leaves a selection"),
+  );
+  const partial = body.slice(body.indexOf("const saved ="));
+  // nothing is saved before the full read: the loaded ids alone leave unloaded rows unranked
+  assert.ok(
+    partial.indexOf("setPendingManualOrder(") < partial.indexOf("readAllSidebarRowIds("),
+  );
+  assert.equal(partial.slice(0, partial.indexOf("readAllSidebarRowIds(")).match(/setManualOrder\(scope/g)?.length ?? 0, 1);
+  assert.match(partial, /\.catch\(\(\) => settle\(shown\)\)/);
+  // the displayed sort reads the pending order
+  assert.match(src, /applyManualOrder\(items, displayManualOrder\[scope\]/);
+});
+
+test("the full-list fallback finds a compare row through one of its pane threads", () => {
+  const rows = [
+    { id: "pair", threadIds: ["pane-a", "pane-b"], updatedAt: 2 },
+    { id: "solo", threadIds: ["solo"], updatedAt: 1 },
+  ];
+  const found = applySidebarRowQuery(rows, sidebarRowQuery({ includeIds: ["pane-b"] }));
+  assert.deepEqual(found.map((row) => row.id), ["pair"]);
+});
+
+test("the open and running chats load their rows, so row lookups never miss them", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /active: lookupIds\.length \? \{ query: sidebarRowQuery\(\{ includeIds: lookupIds \}\) \} : null,/);
+  assert.match(src, /\.\.\.new Set\(\[slotActiveId, \.\.\.runningThreadKey\.split\("\\n"\)\]/);
+});
+
+test("follow-ups that main got from the full list still happen with paged lists", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  // a chord at the last loaded row of any paged list reads its next page
+  assert.match(src, /if \(list\.rows\[list\.rows\.length - 1\]\?\.id === activeThreadId\) void list\.loadMore\(\);/);
+  // "No chats yet" re-asks about archived chats on every history change
+  assert.match(src, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, probe\);/);
+  // every manual-order write supersedes an older one still reading ids
+  const write = src.slice(src.indexOf("const writeManualOrder = useCallback("));
+  assert.ok(write.indexOf("writes.set(scope, generation);") < write.indexOf("const slot ="));
+  // project activity follows chat activity, not only project edits
+  const projects = readSrc("features/chat/hooks/use-chat-projects.ts");
+  assert.match(projects, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, onChatActivity\);/);
 });

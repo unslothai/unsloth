@@ -13,6 +13,7 @@ import {
   settleLegacyChatImport,
 } from "../utils/chat-history-storage";
 import { isChatThreadDeleted } from "../utils/chat-thread-tombstones";
+import { repairLegacyChatTitles } from "../utils/repair-legacy-chat-titles";
 import { type RowPageResult, RowPager } from "../utils/sidebar-row-pager";
 import {
   SIDEBAR_PAGE_SIZE,
@@ -20,6 +21,7 @@ import {
   applySidebarRowQuery,
   sidebarRowQueryKey,
 } from "../utils/sidebar-row-query";
+import type { ThreadRecord } from "../types";
 import { type SidebarItem, groupThreads } from "./use-chat-sidebar-items";
 
 const SIDEBAR_REFRESH_DEBOUNCE_MS = 300;
@@ -64,6 +66,7 @@ function readFullList() {
   ) {
     const promise = listStoredChatThreads({ includeArchived: true });
     fullList = { epoch: fullListEpoch, session, promise };
+    void promise.then(repairLegacyChatTitles).catch(() => undefined);
     promise.catch(() => {
       if (fullList?.promise === promise) fullList = null;
     });
@@ -107,6 +110,11 @@ export async function fetchSidebarRowPage(
     const page = await fetchSidebarRows({ ...query, limit, cursor });
     if (page) {
       serverPages = true;
+      // pre-cut legacy titles are repaired as their rows load, as the full listing did for all
+      const shown = page.rows.flatMap((row) =>
+        (row.threadIds?.length ? row.threadIds : [row.id]).map((id) => ({ id, title: row.title })),
+      );
+      void repairLegacyChatTitles(shown as ThreadRecord[]).catch(() => undefined);
       return {
         rows: page.rows
           .map(toSidebarItem)
@@ -259,12 +267,32 @@ export function useSidebarRowPages(
       registerPager(pager);
       void pager.start();
     }
+    // one sidebar render per frame however many lists answer in it: each render rebuilds every
+    // derived list, and startup alone lands one response per list
+    let frame: ReturnType<typeof setTimeout> | number | null = null;
+    const schedule = () => {
+      if (frame !== null) return;
+      const flush = () => {
+        frame = null;
+        bump();
+      };
+      frame =
+        typeof requestAnimationFrame === "function"
+          ? requestAnimationFrame(flush)
+          : setTimeout(flush, 16);
+    };
     const unsubscribes = [...pagers.values()].map((pager) =>
-      pager.subscribe(bump),
+      pager.subscribe(schedule),
     );
     bump();
     return () => {
       for (const unsubscribe of unsubscribes) unsubscribe();
+      if (frame === null) return;
+      if (typeof cancelAnimationFrame === "function" && typeof frame === "number") {
+        cancelAnimationFrame(frame);
+      } else {
+        clearTimeout(frame as ReturnType<typeof setTimeout>);
+      }
     };
   }, [slotKey, enabled]);
 

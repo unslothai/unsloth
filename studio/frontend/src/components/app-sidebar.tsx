@@ -178,6 +178,7 @@ import {
   useChatSearchStore,
   useSidebarRowPages,
   fetchSidebarRowPage,
+  CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
   readAllSidebarRowIds,
   type SidebarRowSlot,
@@ -1442,6 +1443,15 @@ export function AppSidebar() {
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
   const pinnedSort = useSidebarOrganizationStore((s) => s.pinnedSort);
   const manualOrder = useSidebarOrganizationStore((s) => s.manualOrder);
+  // a drag in a partly loaded list shows here until its full order is saved (see writeManualOrder)
+  const [pendingManualOrder, setPendingManualOrder] = useState<Record<string, string[]>>({});
+  const displayManualOrder = useMemo(
+    () =>
+      Object.keys(pendingManualOrder).length > 0
+        ? { ...manualOrder, ...pendingManualOrder }
+        : manualOrder,
+    [manualOrder, pendingManualOrder],
+  );
   const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const setChatSort = useSidebarOrganizationStore((s) => s.setChatSort);
   const setPinnedSort = useSidebarOrganizationStore((s) => s.setPinnedSort);
@@ -1464,8 +1474,26 @@ export function AppSidebar() {
   // `allChatItems` is only what the paged lists have loaded, not the whole history.
   const sectionFiledChatIds = useMemo(() => Object.keys(sectionByChatId), [sectionByChatId]);
   const [openFolderIds, setOpenFolderIds] = useState<readonly string[]>([]);
+  // The open chat and the running ones are looked up by row (header actions, shortcuts, unread
+  // and running counts), so their rows load even when no list has paged that far.
+  const slotStoreThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const runningThreadKey = useChatRuntimeStore((s) =>
+    Object.keys(s.runningByThreadId)
+      .filter((id) => s.runningByThreadId[id])
+      .sort()
+      .join("\n"),
+  );
+  const slotActiveId = isChatRoute
+    ? ((search.thread as string | undefined) ??
+      (search.compare as string | undefined) ??
+      slotStoreThreadId ??
+      undefined)
+    : undefined;
   const chatRowSlots = useMemo(() => {
     const excludeIds = [...pinnedIds, ...sectionFiledChatIds];
+    const lookupIds = [
+      ...new Set([slotActiveId, ...runningThreadKey.split("\n")].filter((id): id is string => Boolean(id))),
+    ];
     const slots: Record<string, SidebarRowSlot | null> = {
       recents: {
         query: sidebarRowQuery({
@@ -1488,6 +1516,7 @@ export function AppSidebar() {
             }),
           }
         : null,
+      active: lookupIds.length ? { query: sidebarRowQuery({ includeIds: lookupIds }) } : null,
     };
     for (const section of customSections) {
       if (hiddenSectionSet.has(section.id)) continue;
@@ -1528,6 +1557,8 @@ export function AppSidebar() {
     customSections,
     hiddenSectionSet,
     openFolderIds,
+    slotActiveId,
+    runningThreadKey,
   ]);
   const { lists: chatRowLists, items: allChatItems } = useSidebarRowPages(
     chatRowSlots,
@@ -1545,13 +1576,19 @@ export function AppSidebar() {
   useEffect(() => {
     if (!sidebarLooksEmpty) return;
     let cancelled = false;
-    void fetchSidebarRowPage(sidebarRowQuery({ archived: true }), 1, null)
-      .then((page) => {
-        if (!cancelled) setHasArchivedChats(page.rows.length > 0);
-      })
-      .catch(() => undefined);
+    // re-asked on every history change: archiving or deleting can flip it while the list stays empty
+    const probe = () => {
+      void fetchSidebarRowPage(sidebarRowQuery({ archived: true }), 1, null)
+        .then((page) => {
+          if (!cancelled) setHasArchivedChats(page.rows.length > 0);
+        })
+        .catch(() => undefined);
+    };
+    probe();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, probe);
     return () => {
       cancelled = true;
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, probe);
     };
   }, [sidebarLooksEmpty]);
   // Which row every thread belongs to, listed or not. The published lists carry
@@ -1861,11 +1898,11 @@ export function AppSidebar() {
       if (mode === "manual") {
         // Incoming order is the list's own rule, so undragged rows keep it:
         // newest first in Recents, pin order in Pinned.
-        return applyManualOrder(items, manualOrder[scope], (item) => item.id);
+        return applyManualOrder(items, displayManualOrder[scope], (item) => item.id);
       }
       return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
     },
-    [manualOrder],
+    [displayManualOrder],
   );
   const sortedRecentChatItems = useMemo(
     () => sortChatItems(recentChatItems, RECENTS_ORDER_SCOPE, chatSort),
@@ -1945,9 +1982,9 @@ export function AppSidebar() {
       if (!sectionByPageId[page.id]) rows.push({ kind: "page", id: page.id, page });
     }
     return pinnedSort === "manual"
-      ? applyManualOrder(rows, manualOrder[PINNED_ORDER_SCOPE], (row) => row.id)
+      ? applyManualOrder(rows, displayManualOrder[PINNED_ORDER_SCOPE], (row) => row.id)
       : rows;
-  }, [pinnedProjectBase, sortedPinnedChatItems, pinnedPages, sectionByPageId, pinnedSort, manualOrder]);
+  }, [pinnedProjectBase, sortedPinnedChatItems, pinnedPages, sectionByPageId, pinnedSort, displayManualOrder]);
   const pinnedRowIds = useMemo(() => pinnedRows.map((row) => row.id), [pinnedRows]);
   // Each custom section is one list of folders and chats, as Pinned is: folders lead until a drop
   // says otherwise. A pinned row stays in Pinned and keeps its section for when it is unpinned.
@@ -1987,7 +2024,7 @@ export function AppSidebar() {
       rows.set(
         section.id,
         section.sort === "manual"
-          ? applyManualOrder(list, manualOrder[scope], (row) => row.id)
+          ? applyManualOrder(list, displayManualOrder[scope], (row) => row.id)
           : list,
       );
     }
@@ -2003,7 +2040,7 @@ export function AppSidebar() {
     pinnedProjectIdSet,
     pinnedIdSet,
     sortChatItems,
-    manualOrder,
+    displayManualOrder,
   ]);
   const visibleCustomSections = useMemo(
     () => customSections.filter((section) => !hiddenSectionSet.has(section.id)),
@@ -2262,6 +2299,14 @@ export function AppSidebar() {
   useEffect(() => {
     if (activeThreadId && activeThreadId === lastRecentId) void loadMoreRecents?.();
   }, [activeThreadId, lastRecentId, loadMoreRecents]);
+  // the same for Pinned, sections and folders, so a chord can walk past their first page too
+  useEffect(() => {
+    if (!activeThreadId) return;
+    for (const [name, list] of Object.entries(chatRowLists)) {
+      if (name === "recents" || !list.hasMore) continue;
+      if (list.rows[list.rows.length - 1]?.id === activeThreadId) void list.loadMore();
+    }
+  }, [activeThreadId, chatRowLists]);
 
   const projectRowIds = useMemo(
     () => sidebarProjectRecords.map((project) => project.id),
@@ -2408,6 +2453,10 @@ export function AppSidebar() {
   const manualOrderWritesRef = useRef(new Map<string, number>());
   const writeManualOrder = useCallback(
     (scope: string, ids: string[]) => {
+      // every write supersedes an older one still reading its list's ids
+      const writes = manualOrderWritesRef.current;
+      const generation = (writes.get(scope) ?? 0) + 1;
+      writes.set(scope, generation);
       const slot =
         scope === RECENTS_ORDER_SCOPE
           ? "recents"
@@ -2421,20 +2470,25 @@ export function AppSidebar() {
       const query = slot ? chatRowSlots[slot]?.query : undefined;
       if (!slot || !query || !chatRowLists[slot]?.hasMore) {
         setManualOrder(scope, ids);
+        setPendingManualOrder(({ [scope]: _superseded, ...rest }) => rest);
         return;
       }
+      // Saving the loaded ids alone would leave every unloaded row unranked, and unranked rows sort
+      // first, so the list would jump; show the order now, save it once every id is known.
       const saved = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
-      setManualOrder(scope, mergeManualOrderTail(ids, saved));
-      const writes = manualOrderWritesRef.current;
-      const generation = (writes.get(scope) ?? 0) + 1;
-      writes.set(scope, generation);
+      const shown = mergeManualOrderTail(ids, saved);
+      setPendingManualOrder((pending) => ({ ...pending, [scope]: shown }));
+      const settle = (order: string[]) => {
+        if (writes.get(scope) !== generation) return;
+        setManualOrder(scope, order);
+        setPendingManualOrder(({ [scope]: _settled, ...rest }) => rest);
+      };
       void readAllSidebarRowIds(query)
         .then((all) => {
-          if (writes.get(scope) !== generation) return;
           const current = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
-          setManualOrder(scope, mergeManualOrderTail(mergeManualOrderTail(ids, all), current));
+          settle(mergeManualOrderTail(mergeManualOrderTail(ids, all), current));
         })
-        .catch(() => undefined);
+        .catch(() => settle(shown));
     },
     [setManualOrder, chatRowSlots, chatRowLists],
   );
