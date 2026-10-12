@@ -355,6 +355,51 @@ def test_deleting_selected_build_preserves_sibling_partial_state(tmp_path, monke
     assert download_manifest.has_cancel_marker("model", repo.repo_id, "Q4_K_M", hub_cache = tmp_path)
 
 
+def test_deleting_quant_only_build_preserves_named_sibling_partial(tmp_path, monkeypatch):
+    from hub.services.models import gguf_variants
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils import download_manifest
+    from utils import hf_cache_settings
+
+    selected = "Q4_K_M.gguf"
+    sibling = "alpha-Q4_K_M.gguf"
+    repo, snapshots = _revisioned_repo(tmp_path, (("healthy", [selected]),))
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    monkeypatch.setattr(gguf_variants, "_fetch_gguf_variant_requirements", lambda *a, **k: {})
+    partial_hash = "f" * 64
+    incomplete = repo.repo_path / "blobs" / f"{partial_hash}.incomplete"
+    incomplete.write_bytes(b"partial")
+    empty_sibling_dir = snapshots / "healthy" / "Q4_K_M"
+    empty_sibling_dir.mkdir()
+    assert download_manifest.write_manifest(
+        "model",
+        repo.repo_id,
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(sibling, 128, partial_hash)],
+        hub_cache = tmp_path,
+        commit_hash = "healthy",
+        metadata_derived = True,
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", repo.repo_id, "Q4_K_M", "http", hub_cache = tmp_path
+    )
+
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snapshots / "healthy" / selected).is_symlink()
+    assert incomplete.exists()
+    assert empty_sibling_dir.is_dir()
+    assert (
+        download_manifest.read_manifest("model", repo.repo_id, "Q4_K_M", hub_cache = tmp_path)
+        is not None
+    )
+    assert download_manifest.has_cancel_marker("model", repo.repo_id, "Q4_K_M", hub_cache = tmp_path)
+
+
 def test_deleting_selected_build_preserves_unmanifested_sibling_partial(tmp_path, monkeypatch):
     from hub.services.models import gguf_variants
     from hub.services.models.deletion import _delete_gguf_variant_from_repos

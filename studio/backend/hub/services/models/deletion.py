@@ -469,7 +469,10 @@ def _delete_gguf_variant_from_repos(
     if selected_families and not (
         manifest_families and manifest_families.issubset(selected_families)
     ):
-        cleanup_variant = next(iter(selected_families)) if len(selected_families) == 1 else None
+        exact_family = next(iter(selected_families)) if len(selected_families) == 1 else None
+        cleanup_variant = (
+            exact_family if exact_family is not None and exact_family != variant.lower() else None
+        )
         if manifest is not None and manifest.commit_hash:
             protected_revisions.add(manifest.commit_hash)
 
