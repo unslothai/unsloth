@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""A user's UNSLOTH_RETURN_LOGITS=1 must survive trainer.train() (#3071): for_training() may only undo
-for_inference()'s forced "1". Methods are lifted out with ``ast`` so this runs without ``import unsloth``.
+"""A user's UNSLOTH_RETURN_LOGITS=1 must survive trainer.train() (#3071): mode switches never write the flag
+beyond defaulting it to "0". Methods are lifted out with ``ast`` so this runs without ``import unsloth``.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ import pytest
 
 MODELS = Path(__file__).resolve().parents[1] / "unsloth" / "models"
 FLAG = "UNSLOTH_RETURN_LOGITS"
-MARK = "_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"
 
 
 class _Namespace(dict):
@@ -98,89 +97,61 @@ def fbm(monkeypatch):
     monkeypatch.setitem(sys.modules, "unsloth_zoo", zoo)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.training_utils", utils)
     monkeypatch.delenv(FLAG, raising = False)
-    monkeypatch.delenv(MARK, raising = False)
     return _fast_base_model()
 
 
-def test_for_training_keeps_a_user_set_flag(fbm, monkeypatch):
-    monkeypatch.setenv(FLAG, "1")
-    fbm.for_training(_Model())
-    assert os.environ[FLAG] == "1"
+def _cycle(fbm, model):
     # The trainer's own cycle: for_training in __init__, for_inference, for_training in train().
-    model = _Model()
     fbm.for_training(model)
     fbm.for_inference(model)
     fbm.for_training(model)
-    assert os.environ[FLAG] == "1"
-    assert MARK not in os.environ
 
 
-@pytest.mark.parametrize("before", [None, "0"])
-def test_for_training_undoes_the_flag_for_inference_forced(fbm, monkeypatch, before):
-    # Default training must go back to the fused CE path after generation / GRPO rollouts.
-    if before is not None:
-        monkeypatch.setenv(FLAG, before)
+@pytest.mark.parametrize("user_flag", ["0", "1"])
+def test_mode_switches_keep_a_user_set_flag(fbm, monkeypatch, user_flag):
+    monkeypatch.setenv(FLAG, user_flag)
+    model = _Model()
+    _cycle(fbm, model)
+    fbm.for_inference(model)
+    assert os.environ[FLAG] == user_flag
+
+
+def test_flag_set_after_for_inference_is_kept(fbm):
+    # model.generate() / for_inference() first, then the flag, then train(): the residual #3071 path.
     model = _Model()
     fbm.for_inference(model)
-    assert os.environ[FLAG] == "1"
-    fbm.for_inference(model)  # repeated calls (every GRPO step) keep the first saved value
-    fbm.for_training(model)
-    assert os.environ[FLAG] == "0"
-    assert MARK not in os.environ
-    fbm.for_training(model)
-    assert os.environ[FLAG] == "0"
-
-
-def test_for_training_still_defaults_an_unset_flag_to_zero(fbm):
-    fbm.for_training(_Model())
-    assert os.environ[FLAG] == "0"
-
-
-def _trailing_for_inference_block():
-    tree = ast.parse((MODELS / "rl.py").read_text(encoding = "utf-8"))
-    template = next(
-        n.value.value
-        for n in tree.body
-        if isinstance(n, ast.Assign)
-        and any(getattr(t, "id", None) == "RLTrainer_replacement" for t in n.targets)
-    )
-    lines = template.splitlines()
-    start = next(i for i, line in enumerate(lines) if 'hasattr(model, "for_inference")' in line)
-    block = [lines[start]]
-    indent = len(lines[start]) - len(lines[start].lstrip())
-    for line in lines[start + 1 :]:
-        if line.strip() and len(line) - len(line.lstrip()) <= indent:
-            break
-        block.append(line)
-    # The template is filled with str.format: a literal brace in the block breaks every trainer.
-    return textwrap.dedent("\n".join(block)).format()
-
-
-def test_trainer_init_leaves_the_flag_for_train(fbm, monkeypatch):
-    model = _Model()
-    model.for_inference = lambda: fbm.for_inference(model)
-    monkeypatch.setenv(FLAG, "0")
-    exec(_trailing_for_inference_block(), {"os": os, "model": model})
-    assert model.training is False
-    assert os.environ[FLAG] == "0"
-    assert MARK not in os.environ
+    assert FLAG not in os.environ
     os.environ[FLAG] = "1"
     fbm.for_training(model)
     assert os.environ[FLAG] == "1"
 
 
-def _prepare_for_training_mode():
+def test_unset_flag_defaults_to_zero_for_training(fbm):
+    # Default training keeps the fused CE path after generation / GRPO rollouts.
+    model = _Model()
+    fbm.for_inference(model)
+    fbm.for_training(model)
+    assert os.environ[FLAG] == "0"
+    fbm.for_inference(model)
+    assert os.environ[FLAG] == "0"
+
+
+def _template():
     tree = ast.parse((MODELS / "rl.py").read_text(encoding = "utf-8"))
-    template = next(
+    return next(
         n.value.value
         for n in tree.body
         if isinstance(n, ast.Assign)
         and any(getattr(t, "id", None) == "RLTrainer_replacement" for t in n.targets)
     )
-    lines = template.splitlines()
+
+
+def _prepare_for_training_mode():
+    lines = _template().splitlines()
     start = lines.index("def prepare_for_training_mode(f):")
     end = lines.index("    return wrapper", start)
-    namespace = _Namespace(os = os, functools = __import__("functools"))
+    namespace = _Namespace(os = os, functools = functools)
+    # The template is filled with str.format: a literal brace in the block breaks every trainer.
     exec("\n".join(lines[start : end + 1]).format(), namespace)
     return namespace["prepare_for_training_mode"]
 
@@ -208,23 +179,14 @@ def test_flag_set_between_two_train_calls_is_kept(fbm):
     assert seen == ["0", "1"]
 
 
-def _logits_check():
+def test_generated_trainer_init_never_writes_the_flag():
+    # compute_metrics used to force "1" here, leaking into training and the next trainer; the eval
+    # prediction_step forces it per call instead.
     tree = ast.parse((MODELS / "rl.py").read_text(encoding = "utf-8"))
-    return next(
-        n.value.value
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Assign)
-        and any(getattr(t, "id", None) == "logits_check" for t in n.targets)
+    patcher = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_patch_trl_rl_trainers_impl"
     )
-
-
-@pytest.mark.parametrize("user_flag", [None, "1"])
-def test_compute_metrics_auto_flag_does_not_outlive_the_trainer_init(fbm, monkeypatch, user_flag):
-    # compute_metrics forces "1" while building the trainer; training (and the next trainer's
-    # padding-free gate) must see the user's value, not a leaked "1".
-    if user_flag is not None:
-        monkeypatch.setenv(FLAG, user_flag)
-    exec(_logits_check(), {"os": os, "compute_metrics": object()})
-    assert os.environ[FLAG] == "1"
-    fbm.for_training(_Model())
-    assert os.environ[FLAG] == (user_flag or "0")
+    assert FLAG not in ast.unparse(patcher)
+    assert FLAG not in _template()
