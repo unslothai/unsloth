@@ -3339,7 +3339,9 @@ def _openai_llama_wait_for_victims(controller, gen_id: str) -> bool:
     _llama_preemption_log(
         "raw-holder-victims-late", level = "debug", gen_id = gen_id, victims = ",".join(victims)
     )
-    deadline = time.monotonic() + max(0.0, _UNPAUSABLE_VICTIM_HARD_WAIT_S - _UNPAUSABLE_VICTIM_WAIT_S)
+    deadline = time.monotonic() + max(
+        0.0, _UNPAUSABLE_VICTIM_HARD_WAIT_S - _UNPAUSABLE_VICTIM_WAIT_S
+    )
     while True:
         holder = controller.participant(gen_id)
         # Released by its route (a disconnect), or room freed some other way: nothing to wait on.
