@@ -116,3 +116,32 @@ class TestAPaddedNameIsGatedAsItsTool:
             is_high_risk = lambda name, arguments: name == "terminal",
             never_needs = lambda name: False,
         ) is True
+
+
+class TestAChoiceThatLandsAsAToolStartsIsUndone:
+    def test_the_tool_is_recorded_and_the_signal_cleared(self):
+        controller = _controller()
+        controller.register("old", lease = _RechargedLease(), tokens = 9000)
+        chat = controller.register("chat", lease = _RechargedLease(), tokens = 9000)
+        chosen = [p.gen_id for p in controller.plan_preemptions(needed = 4000)]
+        assert chosen == ["chat"]
+        assert chat.state == ParticipantState.PREEMPTING and chat.preempt_event.is_set()
+        # The stream had already emitted its tool call; the loop starts the tool.
+        assert controller.note_state("chat", ParticipantState.TOOLS_RUNNING) is True
+        assert chat.state == ParticipantState.TOOLS_RUNNING
+        assert not chat.preempt_event.is_set()
+        assert chat.consecutive_preemptions == 0
+
+
+class TestTheFirstPrefillIsThePromptOnly:
+    def test_registration_announces_the_prompt_not_the_allowance(self):
+        controller = _controller()
+        controller.register("chat", lease = _RechargedLease(), tokens = 9000, prompt_tokens = 500)
+        assert controller.snapshot().prefilling == 500
+        controller.restart("chat")
+        assert controller.snapshot().prefilling == 500
+
+    def test_an_unknown_split_still_announces_the_charge(self):
+        controller = _controller()
+        controller.register("chat", lease = _RechargedLease(), tokens = 9000)
+        assert controller.snapshot().prefilling == 9000

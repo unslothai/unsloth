@@ -769,8 +769,9 @@ class PreemptionController:
             participant.charged_tokens = participant.tokens
             participant.charged_prompt_tokens = participant.prompt_tokens
             # Its whole prompt is about to be prefilled. Announced HERE rather than by the
-            # caller, so a sweep firing in between plans against the raised buffer.
-            participant.announce_prefill(participant.tokens)
+            # caller, so a sweep firing in between plans against the raised buffer. The prompt,
+            # not the charge: the output allowance is decoded, never prefilled.
+            participant.announce_prefill(participant.prompt_tokens or participant.tokens)
             self._participants[gen_id] = participant
             return participant
 
@@ -1195,6 +1196,19 @@ class PreemptionController:
             return False
         with self._lock:
             participant = self._participants.get(gen_id)
+            if (
+                participant is not None
+                and participant.state == ParticipantState.PREEMPTING
+                and state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING)
+            ):
+                # Chosen as its stream finished a tool call: nothing reads the signal while the
+                # tool runs, so the choice is undone as `note_declined` undoes one. A tool holder
+                # is the cheapest room anyway: its idle cells are reclaimed, and the next sweep
+                # can choose it again.
+                participant.preempt_chosen_at = 0.0
+                participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
+                participant.preempt_event.clear()
+                participant.state = ParticipantState.DECODING
             if participant is None or participant.state not in self._LIVE_STATES:
                 return False
             if participant.state == state:
@@ -1300,7 +1314,7 @@ class PreemptionController:
             participant.consecutive_preemptions = 0
             participant.state = ParticipantState.DECODING
             participant.preempt_event.clear()
-            participant.announce_prefill(participant.tokens)
+            participant.announce_prefill(participant.prompt_tokens or participant.tokens)
 
     def note_replayed(self, gen_id: str, tokens: int) -> None:
         """Tokens a paused attempt decoded that the NEXT attempt sends back as prompt.
