@@ -2,7 +2,6 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """LoRA_MLP.backward must take down_proj's grad through the dequantized FP8 weight in bf16, like gate / up.
 
-It used to call matmul_lora(dY, downW.t(), ...), which routes a float8 weight to fp8_linear and quantizes dY to FP8.
 Runs on CPU: the triton dequant is replaced by its torch twin and fp8_linear by a recording stand-in.
 """
 
@@ -98,14 +97,12 @@ def _backward(downW, downW_quant):
 def test_fp8_down_proj_backward_is_dequant_matmul(fp8_calls):
     downW, down_q = _fp8_weight(HIDDEN, INTER, 4)
     DW, dY, downA, downB = _backward(downW, down_q)
-    # No FP8 matmul in the backward: neither down (this fix) nor gate / up (already dequantized).
     assert fp8_calls == []
     expected = dY @ _dequant(downW, down_q) + 2.0 * (dY @ downB) @ downA
     torch.testing.assert_close(DW, expected, rtol = 1.6e-2, atol = 1e-3)
 
 
 def test_bf16_down_proj_backward_unchanged(fp8_calls):
-    # A non-FP8 base keeps the exact old call: matmul_lora(dY, downW.t(), None, ...).
     downW = torch.randn(HIDDEN, INTER, generator = torch.Generator().manual_seed(5))
     DW, dY, downA, downB = _backward(downW, None)
     assert fp8_calls == []
