@@ -5049,9 +5049,8 @@ class FastBaseModel:
         except ImportError:
             pass
 
-        # Returning hidden states must be disabled for GRPO. UNSLOTH_RETURN_LOGITS stays the user's: forwards
-        # without labels (generate, GRPO, DPO) return logits regardless, and eval forces it per prediction_step;
-        # a value forced here could not be told apart from a user's "1" set after it (#3071).
+        # Returning hidden states must be disabled for GRPO. UNSLOTH_RETURN_LOGITS is left alone: label-free forwards
+        # return logits anyway, and a "1" forced here is indistinguishable from a user's later "1" (#3071).
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
