@@ -3052,7 +3052,7 @@ export const he = {
         recommended: "מומלץ",
         device: "הרץ על",
         deviceDescription:
-          "GPU עונה מהר יותר, אך שומר את הזיכרון שלו שמור עד להפעלה מחדש.",
+          "GPU עונה מהר יותר ומשחרר את הזיכרון שלו כשהמודל נפרק.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "סביבת ריצה",

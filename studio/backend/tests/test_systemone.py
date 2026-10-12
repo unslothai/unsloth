@@ -380,7 +380,10 @@ def test_env_kill_switch_beats_the_setting(client, monkeypatch, runtime):
     assert runtime == []
 
 
-def test_settings_report_choices_and_residency(client):
+def test_settings_report_choices_and_residency(client, monkeypatch):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CPU)
     settings = client.get("/api/settings/systemone").json()
     assert settings["enabled"] is True
     assert settings["model"] == "laya-multilingual"
@@ -703,8 +706,85 @@ def test_hub_checkpoint_downloads_only_its_subfolder_into_studio_cache(monkeypat
     assert all(p.startswith("multilingual/") for p in seen["allow_patterns"])
 
 
-def test_device_defaults_to_cpu():
+@pytest.mark.parametrize(
+    "kind, device", [("CUDA", "gpu"), ("XPU", "gpu"), ("MLX", "gpu"), ("CPU", "cpu")]
+)
+def test_device_defaults_to_the_gpu_where_laya_runs_in_its_own_process(
+    client, monkeypatch, kind, device
+):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: getattr(hardware.DeviceType, kind))
+    assert client.get("/api/settings/systemone").json()["device"] == device
+    assert client.put("/api/settings/systemone", json = {"device": "cpu"}).status_code == 200
+    assert client.get("/api/settings/systemone").json()["device"] == "cpu"
     assert laya_runtime._device() == "cpu"
+
+
+def _tiny_laya_checkpoint(tmp_path):
+    import json
+
+    from safetensors.torch import save_file
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    words = ["[PAD]", "[SEP]", "[CLS]", "[UNK]", "[MASK]"] + [f"w{i}" for i in range(295)]
+    backend = Tokenizer(models.WordLevel({w: i for i, w in enumerate(words)}, unk_token = "[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    PreTrainedTokenizerFast(
+        tokenizer_object = backend,
+        pad_token = "[PAD]",
+        sep_token = "[SEP]",
+        cls_token = "[CLS]",
+        unk_token = "[UNK]",
+        mask_token = "[MASK]",
+    ).save_pretrained(tmp_path / "tokenizer")
+    model = laya_runtime._laya().common.build_model(cfg, encoder_dir = encoder_dir)
+    save_file(
+        {k: v.clone().contiguous() for k, v in model.state_dict().items()},
+        str(tmp_path / "model.safetensors"),
+    )
+    (tmp_path / "rl_agent_config.json").write_text(json.dumps(cfg))
+    return tmp_path
+
+
+def test_laya_worker_answers_like_laya_in_process(tmp_path):
+    pytest.importorskip("torch")
+    from core.systemone.laya_worker import LayaWorker
+
+    folder = _tiny_laya_checkpoint(tmp_path)
+    checkpoint = catalog.Checkpoint(catalog.LOCAL_NAME, str(folder), None, "")
+    questions = {name: laya_runtime._to_laya(q) for name, q in QUESTIONS.items()}
+    expected = _REAL_PREDICT(
+        laya_runtime._build_laya(folder, checkpoint, "cpu")[0], "w1 w2 w3", questions
+    )
+    worker = LayaWorker(folder, checkpoint, "cpu", cancelled = lambda: False)
+    try:
+        assert worker.predict("w1 w2 w3", questions) == expected
+    finally:
+        worker.close()
+    assert not worker._process.is_alive()
+
+
+def test_gpu_laya_answers_from_its_own_process_that_unload_ends(client, monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA or ROCm GPU")
+    initialized = torch.cuda.is_initialized()
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_predict", _REAL_PREDICT)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 600.0)
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(_tiny_laya_checkpoint(tmp_path)))
+    response = _post(client, state = "w1 w2 w3")
+    assert response.status_code == 200, response.text
+    settings = client.get("/api/settings/systemone").json()
+    assert (settings["device"], settings["loaded_device"]) == ("gpu", "cuda")
+    assert torch.cuda.is_initialized() == initialized
+    process = laya_runtime._agent._process
+    assert process.is_alive()
+    assert client.post("/api/settings/systemone/unload").status_code == 200
+    assert not process.is_alive()
 
 
 def test_gpu_on_apple_silicon_runs_mlx_and_falls_back_to_mps(monkeypatch):

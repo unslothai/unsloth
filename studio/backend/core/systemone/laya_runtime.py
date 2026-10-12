@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import CHECKPOINTS, GGUF_COMPANIONS, LOCAL_NAME, MLX_COMPANIONS, Checkpoint
+from .laya_worker import LayaWorker, LayaWorkerError
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,6 @@ class Unavailable(Exception):
 def _device() -> str:
     from utils.systemone_settings import get_device as preferred_device
 
-    # CPU unless asked: a CUDA context opened in the backend process is never returned (see core.rag.embeddings._device).
     if preferred_device() != "gpu":
         return "cpu"
     from utils.hardware.hardware import DeviceType, get_device
@@ -1038,6 +1038,23 @@ def _load_checkpoint(checkpoint: Checkpoint):
     # While training holds the GPU, a GPU model loads on CPU, as dictation does; see _misplaced.
     for_training = _training_active() and preferred_device() == "gpu"
     device = "cpu" if for_training else _device()
+    if device in ("cuda", "xpu"):
+        try:
+            agent = LayaWorker(root, checkpoint, device, cancelled = _training_active)
+            return agent, agent.device
+        except LayaWorkerError:
+            if not _training_active():
+                raise
+        device, for_training = "cpu", True
+    return _build_laya(root, checkpoint, device, for_training)
+
+
+def _build_laya(
+    root: Path,
+    checkpoint: Checkpoint,
+    device: str,
+    for_training: bool = False,
+):
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
     fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
     if device == "mlx":
@@ -1051,9 +1068,6 @@ def _load_checkpoint(checkpoint: Checkpoint):
     agent = _load_laya(
         str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
     )
-    # Training may have started while this built.
-    if device != "cpu" and _training_active():
-        device, for_training = "cpu", True
     _place(agent, torch.device(device), fp16_checkpoint)
     agent.__dict__["_unsloth_for_training"] = for_training
     return agent, str(agent.device.type)
@@ -2190,9 +2204,15 @@ def _decide(
             return _decide_clef(checkpoint, agent, state, questions)
         laya_questions = {name: _to_laya(q) for name, q in questions.items()}
         try:
-            result, truncated = _predict(agent, state, laya_questions)
+            if isinstance(agent, LayaWorker):
+                result, truncated = agent.predict(state, laya_questions)
+            else:
+                result, truncated = _predict(agent, state, laya_questions)
         except ValueError as exc:
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
+        except LayaWorkerError as exc:
+            threading.Thread(target = _evict_agent, args = (agent,), daemon = True).start()
+            raise Unavailable(503, "model_unavailable", str(exc), retry_after = 5) from None
     finally:
         _run_lock.release()
     return {

@@ -2959,7 +2959,7 @@ export const ptBR = {
         modelClef: "Clef",
         recommended: "Recomendado",
         device: "Executar em",
-        deviceDescription: "A GPU responde mais rápido, mas mantém a memória reservada até reiniciar.",
+        deviceDescription: "A GPU responde mais rápido e libera a memória quando o modelo é descarregado.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "Runtime",

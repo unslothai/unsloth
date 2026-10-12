@@ -2913,7 +2913,7 @@ export const ja = {
         modelClef: "Clef",
         recommended: "推奨",
         device: "実行先",
-        deviceDescription: "GPU の方が高速ですが、再起動するまでメモリを確保し続けます。",
+        deviceDescription: "GPU の方が高速で、モデルをアンロードするとメモリを解放します。",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "ランタイム",

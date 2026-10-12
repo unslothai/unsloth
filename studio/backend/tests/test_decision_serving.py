@@ -159,7 +159,22 @@ def gpu(home, monkeypatch):
         state.placed.append(device.type)
         agent.device = device
 
+    class Worker:
+        def __init__(self, root, checkpoint, device, cancelled):
+            build(root)
+            if cancelled():
+                raise laya_runtime.LayaWorkerError("A training run took the GPU while Laya loaded.")
+            state.placed.append(device)
+            self.device = device
+
+        def predict(self, state, questions):
+            return _answer(self, state, questions)
+
+        def close(self):
+            pass
+
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "LayaWorker", Worker)
     monkeypatch.setattr(laya_runtime, "_load_laya", build)
     monkeypatch.setattr(laya_runtime, "_place", place)
     monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)

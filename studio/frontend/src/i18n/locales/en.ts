@@ -2978,7 +2978,7 @@ export const en = {
         modelClef: "Clef",
         recommended: "Recommended",
         device: "Run on",
-        deviceDescription: "GPU answers faster, but keeps its memory reserved until restart.",
+        deviceDescription: "GPU answers faster and frees its memory when the model unloads.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "Runtime",
