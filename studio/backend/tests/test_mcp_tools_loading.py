@@ -184,11 +184,13 @@ def _media_studio(
     statuses = ({"loaded": False},),
     load_answer = None,
     plan = None,
+    chat_statuses = None,
 ):
     """``progress`` and ``statuses`` are consumed in order; the last one repeats."""
     prefix = "/api/inference/images" if kind == "image" else "/api/inference/video"
     return fake_studio(
         {
+            **({STATUS_ROUTE: sequence(*chat_statuses)} if chat_statuses else {}),
             ("GET", "/api/hub/gguf-variants"): {
                 "repo_id": FLUX_GGUF,
                 "default_variant": "Q4_K_S",
@@ -287,6 +289,19 @@ def test_a_previous_model_answer_then_the_new_one_loads(monkeypatch, fast_polls)
         monkeypatch, studio, "load_model", {"model": "new/model", "kind": "image"}
     )
     assert result["structuredContent"]["model"] == "new/model"
+
+
+@pytest.mark.parametrize("kind,model", [("image", FLUX_GGUF), ("video", LTX)])
+def test_a_media_load_reports_the_chat_model_the_gpu_arbiter_unloaded(
+    monkeypatch, fast_polls, kind, model
+):
+    studio = _media_studio(
+        kind,
+        statuses = [{"loaded": True, "repo_id": model}],
+        chat_statuses = [STATUS, EMPTY_STATUS],
+    )
+    result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": model, "kind": kind})
+    assert result["structuredContent"]["evicted"] == [LLM]
 
 
 def test_video_progress_uses_its_own_field_names(monkeypatch, fast_polls):

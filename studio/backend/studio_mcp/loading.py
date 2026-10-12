@@ -227,6 +227,8 @@ async def load_media(
                 ):
                     body["gguf_filename"] = entry["gguf_filename"]
                     break
+    # The GPU arbiter may unload chat models to make room; diffed after the load like an LLM load.
+    before = await _serving_or_empty(caller)
     # Starts the load in the background; its answer describes whatever was resident before.
     await route_json("POST", routes["load"], caller = caller, json_body = body)
     idle = 0
@@ -259,9 +261,11 @@ async def load_media(
     status = await route_json("GET", routes["status"], caller = caller)
     if not _resident_matches(status, model):
         raise ToolError(f"Unsloth Studio did not finish loading {model} as the {kind} model")
+    after = set(await _serving_or_empty(caller)) if before else set()
     return LoadResult(
         kind = kind,
         model = opt_text(status.get("display_repo_id")) or opt_text(status.get("repo_id")) or model,
+        evicted = [name for name in before if name not in after],
     )
 
 
