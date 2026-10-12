@@ -108,6 +108,7 @@ __all__ = [
     "planned_prefetch_depth",
     "trim_config_for_block_swap",
     "attach_offload_layers",
+    "mark_auto_offload_for_ddp",
     "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
@@ -5127,6 +5128,8 @@ def patch_gradient_accumulation_fix(Trainer):
                 from .llama import _decline_fused_lora_for_fsdp
                 _decline_fused_lora_for_fsdp(getattr(self, "model", None))
             _replan_auto_offload_safely(self)
+            _block_swap_for_trainer_backend(self)
+            _enable_ddp_batched_grad_copy(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -7691,6 +7694,114 @@ def _attach_block_swap(model, offload_layers, prefetch_depth):
     return swapper
 
 
+_DDP_BGC_KWARG = "batched_grad_copy"
+_DDP_BGC_HANDLER_CLASSES = {}
+_DDP_BGC_PRINTED = False
+
+
+def _ddp_batched_grad_copy_reason(accelerator):
+    """Why DDP must not get batched_grad_copy = True, or None. Opt-in: UNSLOTH_DDP_BATCHED_GRAD_COPY=1."""
+    if os.environ.get("UNSLOTH_DDP_BATCHED_GRAD_COPY", "0") != "1":
+        return "off"
+    if accelerator is None:
+        return "no accelerator"
+    # Plain DDP only: FSDP / DeepSpeed / Megatron / XLA never build torch DDP from ddp_handler.
+    distributed_type = str(getattr(getattr(accelerator, "distributed_type", None), "value", ""))
+    if not distributed_type.startswith("MULTI_"):
+        return f"distributed type {distributed_type or None}"
+    state = getattr(accelerator, "state", None)
+    for plugin in ("fsdp_plugin", "deepspeed_plugin", "megatron_lm_plugin"):
+        if (
+            getattr(state, plugin, None) is not None
+            or getattr(accelerator, plugin, None) is not None
+        ):
+            return plugin
+    try:
+        parameters = inspect.signature(
+            torch.nn.parallel.DistributedDataParallel.__init__
+        ).parameters
+    except (TypeError, ValueError):
+        return "torch DDP signature unavailable"
+    if _DDP_BGC_KWARG not in parameters:
+        return f"torch {torch.__version__} DDP has no {_DDP_BGC_KWARG}"
+    return None
+
+
+def _ddp_batched_grad_copy_handler(handler):
+    """The DDP kwargs handler with batched_grad_copy = True, never an instance attribute (to_kwargs diffs __dict__ against a fresh default)."""
+    from accelerate.utils import DistributedDataParallelKwargs
+
+    if handler is None:
+        handler = DistributedDataParallelKwargs()
+    if not isinstance(handler, DistributedDataParallelKwargs):
+        return handler
+    if _DDP_BGC_KWARG in getattr(type(handler), "__dataclass_fields__", {}):
+        setattr(handler, _DDP_BGC_KWARG, True)
+        return handler
+    cls = type(handler)
+    if getattr(cls, "_unsloth_batched_grad_copy", False):
+        return handler
+    subclass = _DDP_BGC_HANDLER_CLASSES.get(cls)
+    if subclass is None:
+
+        def to_kwargs(self):
+            kwargs = super(subclass, self).to_kwargs()
+            kwargs[_DDP_BGC_KWARG] = True
+            return kwargs
+
+        subclass = type(
+            cls.__name__,
+            (cls,),
+            {
+                "to_kwargs": to_kwargs,
+                "_unsloth_batched_grad_copy": True,
+                "__module__": cls.__module__,
+            },
+        )
+        _DDP_BGC_HANDLER_CLASSES[cls] = subclass
+    handler.__class__ = subclass
+    return handler
+
+
+def _enable_ddp_batched_grad_copy(trainer):
+    """Pass batched_grad_copy = True (torch >= 2.13) to the DDP accelerate builds in prepare, when opted in."""
+    global _DDP_BGC_PRINTED
+    accelerator = getattr(trainer, "accelerator", None)
+    try:
+        reason = _ddp_batched_grad_copy_reason(accelerator)
+        if reason is not None:
+            if reason != "off" and not _DDP_BGC_PRINTED:
+                _DDP_BGC_PRINTED = True
+                print(f"Unsloth: DDP batched_grad_copy = False ({reason}).")
+            return False
+        accelerator.ddp_handler = _ddp_batched_grad_copy_handler(accelerator.ddp_handler)
+        # transformers 4.x replaces ddp_handler in _wrap_model, after __init__ and before prepare: re-apply there.
+        prepare_model = accelerator.prepare_model
+        if not getattr(prepare_model, "_unsloth_batched_grad_copy", False):
+
+            @functools.wraps(prepare_model)
+            def _prepare_model_batched_grad_copy(*args, **kwargs):
+                try:
+                    accelerator.ddp_handler = _ddp_batched_grad_copy_handler(
+                        accelerator.ddp_handler
+                    )
+                except Exception:
+                    pass
+                return prepare_model(*args, **kwargs)
+
+            _prepare_model_batched_grad_copy._unsloth_batched_grad_copy = True
+            accelerator.prepare_model = _prepare_model_batched_grad_copy
+        if not _DDP_BGC_PRINTED:
+            _DDP_BGC_PRINTED = True
+            print("Unsloth: DDP batched_grad_copy = True (UNSLOTH_DDP_BATCHED_GRAD_COPY=1).")
+        return True
+    except Exception as e:
+        if not _DDP_BGC_PRINTED:
+            _DDP_BGC_PRINTED = True
+            print(f"Unsloth: DDP batched_grad_copy = False ({e}).")
+        return False
+
+
 _REPLAN_FAILED_PRINTED = False
 _PAIRED_FORWARD_TRAINERS = ("DPOTrainer", "ORPOTrainer", "CPOTrainer")
 
@@ -7707,6 +7818,90 @@ def _replan_auto_offload_safely(trainer):
                 "keeping the current plan."
             )
         return None
+
+
+def mark_auto_offload_for_ddp(model, ddp_auto):
+    """Mark an "auto" DDP plan on every rank, even zero-swap ones, so all build the same ignore list."""
+    if ddp_auto and model is not None:
+        model._unsloth_offload_layers_auto_ddp = True
+    return model
+
+
+def _ignore_block_swap_params_for_ddp(model):
+    """Keep frozen decoder weights out of DDP's init broadcast: ranks may swap different layers to
+    0-element placeholders. The list must match on every rank, so it follows the request and
+    architecture, never this rank's plan. Returns the names added."""
+    from .loader_utils import is_distributed
+
+    if model is None or find_decoder_layers is None or not is_distributed():
+        return []
+    if not getattr(model, "_unsloth_offload_layers_auto_ddp", False) and (
+        getattr(model, "_unsloth_offload_layers_auto", None) is None
+    ):
+        return []
+    # Before PEFT froze the base only swapped layers are frozen, so the list would differ per rank.
+    if getattr(model, "peft_config", None) is None:
+        return []
+    try:
+        layer_params = {id(p) for p in find_decoder_layers(model).parameters()}
+    except Exception:
+        return []
+    # Trainable decoder weights (bias, modules_to_save) need DDP sync; refuse on every rank alike.
+    trainable = [
+        name
+        for name, p in model.named_parameters()
+        if id(p) in layer_params and p.requires_grad and "lora_" not in name
+    ]
+    if trainable:
+        raise ValueError(
+            "Unsloth: offload_layers = 'auto' under DDP keeps the frozen decoder weights out of DDP, "
+            f"but {len(trainable)} decoder weights are trainable (e.g. {trainable[0]}). Use "
+            "bias = 'none' and no modules_to_save inside the decoder layers, or offload_layers = 0."
+        )
+    names = [
+        name
+        for name, p in model.named_parameters()
+        if id(p) in layer_params and not p.requires_grad
+    ]
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    seen = set(ignored)
+    added = [name for name in names if name not in seen]
+    if not added:
+        return []
+    from torch.nn.parallel import DistributedDataParallel
+
+    DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored + added)
+    return added
+
+
+def _block_swap_for_trainer_backend(trainer):
+    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load, so "auto" planned for DDP):
+    refuse, since sharding would flatten the 0-element placeholders."""
+    model = getattr(trainer, "model", None)
+    backend = (
+        "FSDP"
+        if getattr(trainer, "is_fsdp_enabled", False)
+        else "DeepSpeed"
+        if getattr(trainer, "is_deepspeed_enabled", False)
+        else None
+    )
+    if backend is None:
+        return _ignore_block_swap_params_for_ddp(model)
+    swapper = getattr(model, "_unsloth_block_swap", None) if model is not None else None
+    swapped = len(getattr(swapper, "indices", None) or ())
+    # Every auto rank refuses, even zero-swap ones: a one-sided refusal would hang the peers.
+    auto = model is not None and (
+        getattr(model, "_unsloth_offload_layers_auto_ddp", False)
+        or getattr(model, "_unsloth_offload_layers_auto", None) is not None
+    )
+    if auto:
+        raise ValueError(
+            f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
+            f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "
+            "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
+            f"or launch without {backend}."
+        )
+    return []
 
 
 def _trainer_offload_replan_skip(trainer):
