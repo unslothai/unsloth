@@ -3503,7 +3503,8 @@ class FastLlamaModel:
                         load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
                 pass
 
-                llm = load_vllm(**load_vllm_kwargs)
+                with hf_token_env(token):
+                    llm = load_vllm(**load_vllm_kwargs)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,

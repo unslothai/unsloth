@@ -92,6 +92,7 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "hf_token_env",
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "install_block_swap",
@@ -7479,6 +7480,8 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
 
 
 def hf_login(token: Optional[str] = None) -> Optional[str]:
+    if token is False:
+        return token
     try:
         from huggingface_hub import get_token
         saved_token = get_token()
@@ -7493,6 +7496,23 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
         except Exception as e:
             logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
+
+
+@contextlib.contextmanager
+def hf_token_env(token):
+    # For Hub reads that cannot take a token (vLLM), without touching the saved login.
+    if not isinstance(token, str) or not token:
+        yield
+        return
+    old = os.environ.get("HF_TOKEN")
+    os.environ["HF_TOKEN"] = token
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("HF_TOKEN", None)
+        else:
+            os.environ["HF_TOKEN"] = old
 
 
 def _check_block_swap(model_or_config):

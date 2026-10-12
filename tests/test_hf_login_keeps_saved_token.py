@@ -2,7 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import ast
+import contextlib
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -13,12 +15,16 @@ from huggingface_hub import constants, hf_api
 UTILS_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
 
-def _load_hf_login():
+def _load(name = "hf_login"):
     tree = ast.parse(UTILS_PATH.read_text(encoding = "utf-8"))
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "hf_login")
-    namespace = {"Optional": Optional, "logger": logging.getLogger(__name__)}
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    namespace = {"Optional": Optional, "logger": logging.getLogger(__name__), "contextlib": contextlib, "os": os}
     exec(compile(ast.Module([node], []), str(UTILS_PATH), "exec"), namespace)
-    return namespace["hf_login"]
+    return namespace[name]
+
+
+def _load_hf_login():
+    return _load()
 
 
 @pytest.fixture
@@ -63,5 +69,22 @@ def test_a_token_on_a_machine_with_no_login_is_saved(hub):
     assert huggingface_hub.get_token() == "hf_passed"
 
 
-def test_false_means_no_token(hub):
+def test_false_means_no_token(hub, monkeypatch):
+    lookups = []
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: lookups.append(1))
+
     assert _load_hf_login()(False) is False
+    assert lookups == []
+
+
+def test_passed_token_is_active_only_inside_hf_token_env(hub):
+    huggingface_hub.login(token = "hf_saved_write")
+    hf_token_env = _load("hf_token_env")
+
+    with hf_token_env("hf_passed_read"):
+        assert huggingface_hub.get_token() == "hf_passed_read"
+    assert huggingface_hub.get_token() == "hf_saved_write"
+    assert "HF_TOKEN" not in os.environ
+
+    with hf_token_env(False):
+        assert huggingface_hub.get_token() == "hf_saved_write"
