@@ -7,6 +7,8 @@ from core.training.account_jobs import account_path, managed_account, validate_r
 import base64
 import functools
 import io
+import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -16,7 +18,7 @@ from fastapi import HTTPException
 
 from utils.paths import recipe_datasets_root
 
-from .jsonable import to_jsonable
+from .jsonable import _is_pandas_missing, to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
@@ -248,6 +250,151 @@ def _apply_data_designer_expression_blank_patch() -> None:
 
     ExpressionColumnGenerator.prepare_jinja2_template_renderer = _patched_prepare
     setattr(ExpressionColumnGenerator, "_unsloth_expression_blank_patch_applied", True)
+
+
+def _is_missing_cell(value: Any) -> bool:
+    return (
+        value is None
+        or (isinstance(value, float) and math.isnan(value))
+        or _is_pandas_missing(value)
+    )
+
+
+def _as_json_text(value: Any) -> Any:
+    if _is_missing_cell(value):
+        return None
+    if isinstance(value, str):
+        return value
+    value = to_jsonable(value)
+    if value is None or isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii = False, default = str)
+
+
+def _unify_cell_types(values: list[Any]) -> list[Any]:
+    """Make one path of a column Arrow-writable: dicts and lists recurse, and a path whose rows disagree
+    (text in one row, an object in another) is stored as JSON text instead of failing the batch."""
+    import pyarrow
+
+    present = [value for value in values if not _is_missing_cell(value)]
+    if not present:
+        return values
+    if all(isinstance(value, dict) for value in present):
+        keys = list(dict.fromkeys(key for value in present for key in value))
+        if keys and all(isinstance(key, str) for key in keys):
+            fields = {
+                key: _unify_cell_types(
+                    [value.get(key) if isinstance(value, dict) else None for value in values]
+                )
+                for key in keys
+            }
+            return [
+                {key: fields[key][index] for key in value} if isinstance(value, dict) else value
+                for index, value in enumerate(values)
+            ]
+    elif all(isinstance(value, (list, tuple)) for value in present):
+        flat = _unify_cell_types([item for value in present for item in value])
+        result, offset = [], 0
+        for value in values:
+            if isinstance(value, (list, tuple)):
+                result.append(flat[offset : offset + len(value)])
+                offset += len(value)
+            else:
+                result.append(value)
+        return result
+    elif not any(isinstance(value, (dict, list, tuple)) for value in present):
+        kinds = {type(value) for value in present}
+        # Arrow infers a mixed path from its first value (a date then a datetime drops the time); int/float is safe.
+        if len(kinds) > 1 and not kinds <= {int, float}:
+            return [_as_json_text(value) for value in values]
+        try:
+            pyarrow.array(present, from_pandas = True)
+            return values
+        except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError):
+            pass
+    return [_as_json_text(value) for value in values]
+
+
+def _unify_dataframe_cell_types(dataframe: Any) -> tuple[Any, list[str]]:
+    import pyarrow
+
+    unified = dataframe.copy()
+    changed: list[str] = []
+    for column in unified.columns:
+        if unified[column].dtype != object:
+            continue
+        values = unified[column].tolist()
+        try:
+            pyarrow.array(values, from_pandas = True)
+            continue
+        except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError):
+            pass
+        unified[column] = _unify_cell_types(values)
+        changed.append(str(column))
+    return unified, changed
+
+
+_MIXED_TYPE_WARNED: set[tuple[str, ...]] = set()
+
+
+def write_parquet_with_unified_types(dataframe: Any, path: Any, write: Any) -> Any:
+    """Run ``write(dataframe)``; if Arrow refuses a column whose rows hold different types at the same path
+    (unslothai/unsloth#5848: an LLM Structured field returned as text in one row and an object in another),
+    store those paths as JSON text and write again."""
+    import pyarrow
+    try:
+        return write(dataframe)
+    except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError) as exc:
+        unified, changed = _unify_dataframe_cell_types(dataframe)
+        if not changed:
+            raise
+        try:
+            result = write(unified)
+        except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError):
+            raise exc from None
+        # data-designer rewrites a batch once per column stage; say it once.
+        key = (str(path), *changed)
+        if key not in _MIXED_TYPE_WARNED:
+            _MIXED_TYPE_WARNED.add(key)
+            logging.getLogger("data_designer.unsloth").warning(
+                "Column(s) %s returned different value types across rows; mismatched fields were "
+                "saved as JSON text.",
+                ", ".join(repr(name) for name in changed),
+            )
+        return result
+
+
+def _apply_data_designer_mixed_type_parquet_patch() -> None:
+    try:
+        from data_designer.engine.storage.artifact_storage import (  # pyright: ignore[reportMissingImports]
+            ArtifactStorage,
+        )
+    except ImportError:
+        return
+
+    if getattr(ArtifactStorage, "_unsloth_mixed_type_parquet_patch_applied", False):
+        return
+
+    original_write = ArtifactStorage.write_parquet_file
+
+    @functools.wraps(original_write)
+    def _patched_write(
+        self: Any,
+        parquet_file_name: str,
+        dataframe: Any,
+        batch_stage: Any,
+        subfolder: str | None = None,
+    ) -> Any:
+        return write_parquet_with_unified_types(
+            dataframe,
+            Path(str(getattr(self, "base_dataset_path", ""))) / parquet_file_name,
+            lambda frame: original_write(
+                self, parquet_file_name, frame, batch_stage, subfolder = subfolder
+            ),
+        )
+
+    ArtifactStorage.write_parquet_file = _patched_write
+    setattr(ArtifactStorage, "_unsloth_mixed_type_parquet_patch_applied", True)
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
@@ -522,6 +669,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_image_context_patch()
     _apply_data_designer_prompt_blank_patch()
     _apply_data_designer_expression_blank_patch()
+    _apply_data_designer_mixed_type_parquet_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
