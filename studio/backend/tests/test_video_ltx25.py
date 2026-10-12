@@ -473,6 +473,8 @@ _PACK = [
     ("vae/diffusion_pytorch_model.safetensors", 1452233194),
     ("vocoder/config.json", 1478),
     ("vocoder/diffusion_pytorch_model.safetensors", 258305056),
+    # The real pack also ships a modular index (MiniMax-H3's marker elsewhere in the plan).
+    ("modular_model_index.json", 3093),
 ]
 
 
@@ -501,6 +503,9 @@ def test_pack_download_keeps_only_what_a_load_reads():
     assert len(transformer) == 8 and all("-of-00008" in n for n in transformer)
     for kept in (
         "model_index.json",
+        "connectors/config.json",
+        "vocoder/diffusion_pytorch_model.safetensors",
+        "audio_vae/diffusion_pytorch_model.safetensors",
         "latent_upsampler/diffusion_pytorch_model.safetensors",
         "text_encoder/model-00005-of-00005.safetensors",
         "tokenizer/tokenizer.json",
@@ -547,7 +552,11 @@ def test_single_file_pick_skips_the_pack_dit():
 def test_other_packs_are_untouched():
     from core.inference.video import VideoBackend
 
-    ltx2 = [(n, s) for n, s in _PACK if not n.startswith(("duration_head/", "diffusion_decoder/"))]
+    ltx2 = [
+        (n, s)
+        for n, s in _PACK
+        if not n.startswith(("duration_head/", "diffusion_decoder/")) and n != "modular_model_index.json"
+    ]
     assert not v25.is_ltx25_pack(n for n, _ in ltx2)
     names = {n for n, _ in VideoBackend._base_download_files(_info(ltx2), "pipeline")}
     assert "transformer_full/config.json" in names

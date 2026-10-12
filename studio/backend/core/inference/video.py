@@ -5040,8 +5040,17 @@ class VideoBackend:
         from .diffusion_te_prequant import is_prequant_covered_weight
         from .video_minimax_h3 import H3_TASK_REFERENCES
 
+        from .video_ltx25 import (
+            is_ltx25_pack,
+            is_ltx25_single_file_listing,
+            ltx25_pack_files,
+            ltx25_single_file_companions,
+        )
+
         siblings = list(info.siblings or [])
-        is_h3_modular = any(s.rfilename == "modular_model_index.json" for s in siblings)
+        ltx25_pack = is_ltx25_pack(s.rfilename for s in siblings)
+        # The LTX-2.5 pack ships a modular_model_index.json beside its model_index.json; it is not H3's layout.
+        is_h3_modular = not ltx25_pack and any(s.rfilename == "modular_model_index.json" for s in siblings)
         h3_is_references = is_h3_modular and (h3_task or "").strip().lower() == H3_TASK_REFERENCES
         h3_denoiser_prefix = "transformer_ref/" if h3_is_references else "transformer/"
         # Which component's dense weight shards ``skip_transformer_weights`` drops. It has to be the partition this load
@@ -5098,17 +5107,10 @@ class VideoBackend:
             if skip_te_components and is_prequant_covered_weight(name, skip_te_components):
                 continue
             files.append((name, int(size)))
-        from .video_ltx25 import (
-            is_ltx25_pack,
-            is_ltx25_single_file_listing,
-            ltx25_pack_files,
-            ltx25_single_file_companions,
-        )
-
         if is_ltx25_single_file_listing(s.rfilename for s in siblings):
             # The split single-file release as a base: only the companion files beside the picked DiT.
             return ltx25_single_file_companions(files)
-        if is_ltx25_pack(s.rfilename for s in siblings):
+        if ltx25_pack:
             # Unused components and the duplicate shard sets the LTX-2.5 pack ships (see ltx25_pack_files).
             files = ltx25_pack_files(files, ltx25_shards)
         return files
