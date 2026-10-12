@@ -202,6 +202,7 @@ from utils.embedding_model_settings import (
     get_rag_embedding_model,
     get_stored_embedding_model,
     reset_rag_embedding_model,
+    set_embedding_device,
     set_rag_embedding_model,
     validate_embedding_model,
 )
@@ -2839,10 +2840,26 @@ class EmbeddingModelResponse(BaseModel):
     loaded: bool = False
     # Whether ANY embedder is resident.
     backend_loaded: bool = False
+    embedding_device: Literal["auto", "cpu", "gpu"] = "auto"
+    # RAG_EMBED_DEVICE names a device, so Settings shows it read-only.
+    embedding_device_locked: bool = False
+
+
+class EmbeddingDevicePayload(BaseModel):
+    device: Literal["auto", "cpu", "gpu"]
+
+
+def _embedding_device_state() -> tuple[str, bool]:
+    from core.rag import config as rag_config
+    try:
+        return rag_config.embed_device_preference(), rag_config.embed_device_locked()
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return "auto", False
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
     model = get_rag_embedding_model()
+    device, device_locked = _embedding_device_state()
     return EmbeddingModelResponse(
         embedding_model = model,
         embedding_gguf_repo = effective_gguf_repo_for_embedding_model(model),
@@ -2851,6 +2868,8 @@ def _embedding_model_response() -> EmbeddingModelResponse:
         is_custom = get_stored_embedding_model() is not None,
         loaded = _embedder_is_loaded(model),
         backend_loaded = _any_embedder_is_loaded(),
+        embedding_device = device,
+        embedding_device_locked = device_locked,
     )
 
 
@@ -3813,6 +3832,29 @@ def unload_embedding_model(
     released = embeddings.release_backend()
     logger.info(
         "settings.embedding_model_unloaded subject=%s released=%s", current_subject, released
+    )
+    return _embedding_model_response()
+
+
+@_owner_settings_router.put("/embedding-model/device", response_model = EmbeddingModelResponse)
+def update_embedding_device(
+    payload: EmbeddingDevicePayload, current_subject: str = Depends(get_current_subject)
+) -> EmbeddingModelResponse:
+    """Run the embedder on the CPU, the GPU, or the hardware default, for every embedding model. The vectors
+    keep their embedding space, so indexed documents stay searchable. A failed GPU start falls back to CPU."""
+    from core.rag import config as rag_config
+
+    if rag_config.embed_device_locked():
+        raise HTTPException(
+            status_code = 409, detail = "The embedding device is set by RAG_EMBED_DEVICE."
+        )
+    if set_embedding_device(payload.device):
+        from core.rag import embeddings
+
+        # The resident embedder stays on its old device until rebuilt; the next index or search rebuilds it.
+        embeddings.release_backend()
+    logger.info(
+        "settings.embedding_device_updated subject=%s device=%s", current_subject, payload.device
     )
     return _embedding_model_response()
 

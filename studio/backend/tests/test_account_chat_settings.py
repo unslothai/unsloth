@@ -372,6 +372,7 @@ OWNER_PATHS = [
         "/embedding-model": ("GET", "PUT", "DELETE"),
         "/embedding-model/resolve": ("GET",),
         "/embedding-model/unload": ("POST",),
+        "/embedding-model/device": ("PUT",),
         "/preview-links/rotate": ("POST",),
         "/remote-access": ("GET",),
         "/remote-access/start": ("POST",),

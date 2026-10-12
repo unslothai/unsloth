@@ -1769,6 +1769,14 @@ export const zhCN = {
         switchFailed: "无法切换嵌入模型",
         back: "返回来源",
         menuSubtitle: "用于文件搜索",
+        device: "嵌入设备",
+        deviceDescription:
+          "嵌入模型的运行位置，适用于所有模型。GPU 索引大量文档更快，但在 Studio 重启前会占用部分显存。",
+        deviceAuto: "自动",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "由 {name} 设置。",
+        deviceSaveError: "无法更改嵌入设备",
       },
       storage: {
         sectionTitle: "存储",

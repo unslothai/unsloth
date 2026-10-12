@@ -1796,6 +1796,14 @@ export const ru = {
         switchFailed: "Не удалось сменить модель эмбеддингов",
         back: "Назад к источникам",
         menuSubtitle: "Для поиска по файлам",
+        device: "Устройство для эмбеддингов",
+        deviceDescription:
+          "Где работает модель эмбеддингов, для любой модели. GPU быстрее индексирует большие наборы документов, но занимает часть VRAM до перезапуска Studio.",
+        deviceAuto: "Автоматически",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "Задано через {name}.",
+        deviceSaveError: "Не удалось изменить устройство для эмбеддингов",
       },
       storage: {
         sectionTitle: "Хранилище",

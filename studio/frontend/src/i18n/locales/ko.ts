@@ -1787,6 +1787,14 @@ export const ko = {
         switchFailed: "임베딩 모델을 전환하지 못했습니다",
         back: "소스로 돌아가기",
         menuSubtitle: "파일 검색에 사용",
+        device: "임베딩 장치",
+        deviceDescription:
+          "모든 모델에서 임베딩 모델이 실행되는 위치입니다. GPU는 대량의 문서를 더 빠르게 색인하지만 Studio를 다시 시작할 때까지 일부 VRAM을 계속 사용합니다.",
+        deviceAuto: "자동",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "{name}(으)로 설정됨.",
+        deviceSaveError: "임베딩 장치를 변경할 수 없습니다",
       },
       storage: {
         sectionTitle: "저장소",

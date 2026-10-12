@@ -1962,6 +1962,14 @@ export const sv = {
         switchFailed: "Kunde inte byta inbäddningsmodell",
         back: "Tillbaka till källor",
         menuSubtitle: "Används för filsökning",
+        device: "Enhet för inbäddning",
+        deviceDescription:
+          "Var inbäddningsmodellen körs, för alla modeller. GPU indexerar stora dokumentmängder snabbare men håller en del VRAM upptaget tills Studio startas om.",
+        deviceAuto: "Automatiskt",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "Anges av {name}.",
+        deviceSaveError: "Det gick inte att ändra enheten för inbäddning",
       },
       storage: {
         sectionTitle: "Lagring",
