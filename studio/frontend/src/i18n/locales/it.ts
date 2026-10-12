@@ -4317,8 +4317,6 @@ export const it = {
     done: "{model} convertito",
     failed: "Conversione di {model} non riuscita",
     startFailed: "Impossibile avviare la conversione",
-    intelRecommended: "Consigliato per la tua GPU Intel:",
-    intelRecommendedHint: "(più veloce dei pesi non convertiti)",
   },
   exportDecision: {
     title: "Modello decisionale",

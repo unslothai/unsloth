@@ -4290,8 +4290,6 @@ export const en = {
     done: "Converted {model}",
     failed: "Conversion of {model} failed",
     startFailed: "Failed to start conversion",
-    intelRecommended: "Recommended for your Intel GPU:",
-    intelRecommendedHint: "(faster than the unconverted weights)",
   },
   exportDecision: {
     title: "Decision model",

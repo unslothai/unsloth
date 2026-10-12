@@ -4192,8 +4192,6 @@ export const ja = {
     done: "{model} を変換しました",
     failed: "{model} の変換に失敗しました",
     startFailed: "変換を開始できませんでした",
-    intelRecommended: "Intel GPU におすすめ:",
-    intelRecommendedHint: "(未変換の重みより高速)",
   },
   exportDecision: {
     title: "意思決定モデル",

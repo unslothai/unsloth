@@ -4244,8 +4244,6 @@ export const ar = {
     done: "تم تحويل {model}",
     failed: "فشل تحويل {model}",
     startFailed: "تعذّر بدء التحويل",
-    intelRecommended: "موصى به لوحدة Intel GPU لديك:",
-    intelRecommendedHint: "(أسرع من الأوزان غير المحوّلة)",
   },
   exportDecision: {
     title: "نموذج القرار",

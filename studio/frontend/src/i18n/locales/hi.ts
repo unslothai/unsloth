@@ -4252,8 +4252,6 @@ export const hi = {
     done: "{model} कन्वर्ट हो गया",
     failed: "{model} का कन्वर्ज़न विफल रहा",
     startFailed: "कन्वर्ज़न शुरू नहीं हो सका",
-    intelRecommended: "आपके Intel GPU के लिए अनुशंसित:",
-    intelRecommendedHint: "(बिना कन्वर्ट किए वेट्स से तेज़)",
   },
   exportDecision: {
     title: "निर्णय मॉडल",

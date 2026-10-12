@@ -4508,8 +4508,6 @@ export const sv = {
     done: "{model} konverterad",
     failed: "Konverteringen av {model} misslyckades",
     startFailed: "Det gick inte att starta konverteringen",
-    intelRecommended: "Rekommenderas för din Intel-GPU:",
-    intelRecommendedHint: "(snabbare än de okonverterade vikterna)",
   },
   exportDecision: {
     title: "Beslutsmodell",

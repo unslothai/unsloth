@@ -4235,8 +4235,6 @@ export const ko = {
     done: "{model} 변환 완료",
     failed: "{model} 변환 실패",
     startFailed: "변환을 시작하지 못했습니다",
-    intelRecommended: "Intel GPU 권장:",
-    intelRecommendedHint: "(변환하지 않은 가중치보다 빠름)",
   },
   exportDecision: {
     title: "의사결정 모델",

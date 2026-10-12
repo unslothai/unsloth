@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useT } from "@/i18n";
 import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
@@ -238,7 +237,6 @@ import {
   recommendedEmptyState,
   searchRowFitsDevice,
   searchableRecommendedIds,
-  intelIntRecommendations,
   isOpenVinoId,
 } from "./recommended-fit";
 import {
@@ -3040,7 +3038,7 @@ export function HubModelPicker({
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
-  section?: "downloaded" | "recommended" | "connected" | "converted";
+  section?: "downloaded" | "recommended" | "connected";
   sectionToggle?: ReactNode;
   onEject?: (modelId?: string) => void;
   onEjectAll?: () => void;
@@ -3056,7 +3054,6 @@ export function HubModelPicker({
   rowFilter?: ModelPickerRowFilter;
 }) {
   const gpu = useGpuInfo();
-  const tr = useT();
   const inferenceGpu = useInferenceGpuInfo();
   // The saved VRAM Budget, threaded into every fit call here. Passing it to the quant rows alone
   // left the parent rows and the "Fits on device" filter on the 0.97 default.
@@ -4708,21 +4705,11 @@ export function HubModelPicker({
 
   // Non-GGUF cached rows are hidden in chat-only mode, so the empty-state logic must use this or the
   // picker can go blank. A task-scoped picker is exempt: the image backend loads local pipelines.
-  const visibleCachedModelRows = chatOnly && !task ? visibleCachedModels.filter((c) => isOpenVinoId(c.repo_id)) : visibleCachedModels;
-
-  // Intel GPU with a model on disk both raw and OpenVINO-converted: point at the INT variant.
-  const intelIntRecs = useMemo(
-    () => intelIntRecommendations(sortedCachedModels.map((c) => c.repo_id), gpu.backend),
-    [sortedCachedModels, gpu.backend],
-  );
-  const intelIntBanner =
-    !showHfSection && (section === "downloaded" || section === "converted") && intelIntRecs.size > 0 ? (
-      <div className="mx-3 my-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-foreground">
-        <span className="font-medium">{tr("convert.intelRecommended")} </span>
-        {[...intelIntRecs.keys()].join(", ")}
-        <span className="text-muted-foreground"> {tr("convert.intelRecommendedHint")}</span>
-      </div>
-    ) : null;
+  // OpenVINO IRs stay: chat-only installs serve them through the sidecar.
+  const visibleCachedModelRows =
+    chatOnly && !task
+      ? visibleCachedModels.filter((c) => isOpenVinoId(c.repo_id))
+      : visibleCachedModels;
 
   const visibleAdditionalOnDeviceModels = useMemo(() => {
     const alreadyListed = new Set(
@@ -7168,7 +7155,6 @@ export function HubModelPicker({
               )
             ) : (
               <>
-                {intelIntBanner}
                 {/* First-load spinner only when nothing cached is shown yet. */}
                 {showDownloaded &&
                 !cachedReady &&
@@ -8065,25 +8051,6 @@ export function HubModelPicker({
                           </div>
                         );
                       })}
-                  </>
-                ) : null}
-
-                {(!showHfSection && section === "converted") ? (
-                  <>
-                    {(() => {
-                      // An OpenVINO IR is never a GGUF; and not a bare "int4", which GPTQ/AWQ repos say too.
-                      const convertedModels = visibleCachedModelRows.filter((c) => isOpenVinoId(c.repo_id));
-                      // Intel-recommended INT variants first.
-                      convertedModels.sort((a, b) => Number(intelIntRecs.has(b.repo_id)) - Number(intelIntRecs.has(a.repo_id)));
-                      if (convertedModels.length === 0) {
-                        return (
-                          <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-                            No converted models found. <br/>Use the Convert tool in the sidebar to compress your models.
-                          </div>
-                        );
-                      }
-                      return convertedModels.map((c) => renderDownloadedModelRow(c));
-                    })()}
                   </>
                 ) : null}
 

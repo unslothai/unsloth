@@ -4271,8 +4271,6 @@ export const ru = {
     done: "Модель {model} сконвертирована",
     failed: "Не удалось сконвертировать {model}",
     startFailed: "Не удалось запустить конвертацию",
-    intelRecommended: "Рекомендуется для вашего GPU Intel:",
-    intelRecommendedHint: "(быстрее несконвертированных весов)",
   },
   exportDecision: {
     title: "Модель принятия решений",

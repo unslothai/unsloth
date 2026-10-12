@@ -4149,8 +4149,6 @@ export const zhCN = {
     done: "已转换 {model}",
     failed: "{model} 转换失败",
     startFailed: "无法启动转换",
-    intelRecommended: "推荐用于你的 Intel GPU:",
-    intelRecommendedHint: "(比未转换的权重更快)",
   },
   exportDecision: {
     title: "决策模型",

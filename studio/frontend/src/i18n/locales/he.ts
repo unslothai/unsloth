@@ -4364,8 +4364,6 @@ export const he = {
     done: "{model} הומר",
     failed: "ההמרה של {model} נכשלה",
     startFailed: "לא ניתן להתחיל את ההמרה",
-    intelRecommended: "מומלץ עבור כרטיס ה-Intel שלכם:",
-    intelRecommendedHint: "(מהיר יותר מהמשקלים שלא הומרו)",
   },
   exportDecision: {
     title: "מודל החלטות",

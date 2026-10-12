@@ -4275,8 +4275,6 @@ export const ptBR = {
     done: "{model} convertido",
     failed: "Falha ao converter {model}",
     startFailed: "Não foi possível iniciar a conversão",
-    intelRecommended: "Recomendado para sua GPU Intel:",
-    intelRecommendedHint: "(mais rápido que os pesos não convertidos)",
   },
   exportDecision: {
     title: "Modelo de decisão",
