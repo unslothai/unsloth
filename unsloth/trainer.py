@@ -66,7 +66,7 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     of silently training on empty video tensors (issue #5085).
     """
 
-    __slots__ = ("_checked_video_paths", "_padding_free")
+    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check")
 
     def __init__(
         self,
@@ -88,11 +88,27 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     def __call__(self, examples):
         if getattr(self, "_padding_free", False):
             from unsloth.utils.mm_packing import pack_multimodal_documents
-            return pack_multimodal_documents(
-                [self._collate_unpacked([example]) for example in examples],
-                ignore_index = self.ignore_index,
-            )
+
+            # Collate one document at a time, but judge supervision over the whole batch as the base does.
+            self._deferring_check = True
+            try:
+                docs = [self._collate_unpacked([example]) for example in examples]
+            finally:
+                self._deferring_check = False
+            if self.train_on_responses_only and hasattr(
+                _UnslothVisionDataCollatorBase, "_check_supervised"
+            ):
+                self._check_supervised(*_stack_rows(docs))
+            return pack_multimodal_documents(docs, ignore_index = self.ignore_index)
         return self._collate_unpacked(examples)
+
+    def _check_supervised(
+        self,
+        labels,
+        attention_mask = None,
+    ):
+        if not getattr(self, "_deferring_check", False):
+            return super()._check_supervised(labels, attention_mask)
 
     def _collate_unpacked(self, examples):
         formatting_func = self.formatting_func
@@ -112,6 +128,31 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         view = copy.copy(self)
         view.formatting_func = None
         return super(UnslothVisionDataCollator, view).__call__(examples)
+
+
+def _stack_rows(docs):
+    """Per-document labels / attention masks as one right-padded batch."""
+    import torch
+
+    width = max(doc["labels"].shape[-1] for doc in docs)
+    labels = torch.full((len(docs), width), -100, dtype = docs[0]["labels"].dtype)
+    attention_mask = torch.zeros((len(docs), width), dtype = torch.long)
+    for row, doc in enumerate(docs):
+        n = doc["labels"].shape[-1]
+        labels[row, :n] = doc["labels"][0].cpu()
+        mask = doc.get("attention_mask")
+        attention_mask[row, :n] = mask[0].cpu() if torch.is_tensor(mask) else 1
+    return labels, attention_mask
+
+
+def _collator_packing_conflict(trainer, wants_eval_logits):
+    """Why a packing collator must fall back to padded rows, else None (the args-level gates miss it)."""
+    if wants_eval_logits:
+        return "evaluation needs one prediction row per example"
+    parallelism_config = getattr(getattr(trainer, "accelerator", None), "parallelism_config", None)
+    if getattr(parallelism_config, "cp_enabled", False):
+        return "context parallelism drops the per-document attention mask"
+    return None
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
@@ -1781,6 +1822,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
+        # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
+        eval_logits_wanted = os.environ.get(
+            "UNSLOTH_RETURN_LOGITS", "0"
+        ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         blocked = (
             (data_collator is not None)
             or (is_processor and not processor_text_only)
@@ -1789,8 +1834,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_unsupported_model
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
-            or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
-            or _wants_eval_logits(original_init, args, kwargs)
+            or eval_logits_wanted
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
@@ -1918,6 +1962,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
             # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
+
+        collator = getattr(self, "data_collator", None)
+        if getattr(collator, "padding_free", False):
+            reason = _collator_packing_conflict(self, eval_logits_wanted)
+            if reason is not None:
+                collator._padding_free = False
+                logger.warning(
+                    f"Unsloth: UnslothVisionDataCollator(padding_free=True) ignored ({reason})."
+                )
 
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)

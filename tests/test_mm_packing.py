@@ -93,3 +93,61 @@ def test_unsupported_models_are_refused():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def _collator(padding_free = True, **slots):
+    from unsloth.trainer import UnslothVisionDataCollator
+
+    collator = object.__new__(UnslothVisionDataCollator)
+    collator._padding_free = padding_free
+    collator._deferring_check = False
+    collator._checked_video_paths = set()
+    for name, value in slots.items():
+        setattr(collator, name, value)
+    return collator
+
+
+def test_supervision_is_judged_over_the_batch_not_per_document(monkeypatch):
+    from unsloth.trainer import UnslothVisionDataCollator, _UnslothVisionDataCollatorBase
+
+    if not hasattr(_UnslothVisionDataCollatorBase, "_check_supervised"):
+        pytest.skip("this unsloth_zoo has no supervision check")
+    empty, trained = _text([1, 2, 3]), _text([4, 5])
+    empty["labels"][:] = -100
+    docs = iter([empty, trained])
+    seen = []
+
+    def collate(self, examples):
+        doc = next(docs)
+        self._check_supervised(doc["labels"], doc["attention_mask"])
+        return doc
+
+    monkeypatch.setattr(UnslothVisionDataCollator, "_collate_unpacked", collate)
+    monkeypatch.setattr(
+        _UnslothVisionDataCollatorBase,
+        "_check_supervised",
+        lambda self, labels, attention_mask = None: seen.append(labels.clone()),
+    )
+    collator = _collator(ignore_index = -100, train_on_responses_only = lambda batch: batch)
+    out = collator([{}, {}])
+    # One check, over both documents: the empty first one alone would read as an unsupervised batch.
+    assert len(seen) == 1 and seen[0].shape == (2, 3)
+    assert seen[0][0].eq(-100).all() and seen[0][1, :2].tolist() == [4, 5]
+    assert out["packed_seq_lengths"].tolist() == [3, 2]
+
+
+def _trainer(cp_enabled = False):
+    return SimpleNamespace(
+        accelerator = SimpleNamespace(parallelism_config = SimpleNamespace(cp_enabled = cp_enabled))
+    )
+
+
+def test_packed_collation_yields_to_eval_logits_and_context_parallelism(monkeypatch):
+    from unsloth.trainer import _collator_packing_conflict
+
+    # The trainer's own for_inference() leaves this set after __init__; only the pre-init read counts.
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    assert _collator_packing_conflict(_trainer(), False) is None
+    assert "prediction row" in _collator_packing_conflict(_trainer(), True)
+    assert "context parallelism" in _collator_packing_conflict(_trainer(cp_enabled = True), False)
+    assert _collator_packing_conflict(SimpleNamespace(), False) is None
