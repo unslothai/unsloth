@@ -466,6 +466,46 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
         # (video_moe_pair)
     ),
+    # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
+    VideoFamily(
+        name = "wan2.1-t2v-1.3b",
+        comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
+        pipeline_class = "WanPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b"),
+        has_audio = False,
+        default_steps = 30,
+        default_guidance = 6.0,
+        default_num_frames = 33,
+        default_fps = 16,
+        frame_step = 4,
+        resolution_multiple = 16,
+        resolution_presets = ((832, 480), (480, 832)),
+        bf16_components_gb = (2.8, 11.4, 0.5),
+        vae_force_fp32 = True,
+        cudnn_benchmark = False,
+    ),
+    # Wan2.1-T2V-14B: same keys as one Wan2.2 A14B expert, run as a single denoiser.
+    VideoFamily(
+        name = "wan2.1-t2v-14b",
+        comfy_flow_shift = 5.0,  # reference 14B workflow shift (the 1.3B uses 8); replaces the repo's flow_shift 3.0
+        pipeline_class = "WanPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+        aliases = ("wan2.1-14b", "wan21-t2v-14b", "wan21-14b"),
+        has_audio = False,
+        default_steps = 20,
+        default_guidance = 6.0,
+        default_num_frames = 33,
+        default_fps = 16,
+        frame_step = 4,
+        resolution_multiple = 16,
+        resolution_presets = ((832, 480), (1280, 720), (480, 832), (720, 1280)),
+        bf16_components_gb = (28.6, 11.4, 0.5),
+        vae_force_fp32 = True,
+        cudnn_benchmark = False,
+    ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG
     # on the ``guider``), no callback_on_step_end (generate() wraps scheduler.step), and no upstream model_index.json,
     # so only the community repacks load.
@@ -530,6 +570,69 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 )
 
 
+# Wan2.1 / FastWan / AnyFlow names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan / AnyFlow
+# spellings so no other family's name can match. FastWan, AnyFlow, I2V and conditioning markers count only in the last path segment (an owner or folder
+# named "fastwan", "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun
+# release puts it.
+_WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
+_UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
+    (
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
+        "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
+        "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
+        "ship), so Studio cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
+        "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
+    ),
+    (
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
+        "This is an NVIDIA AnyFlow checkpoint. AnyFlow is a flow-map distillation of Wan2.1 whose "
+        "transformer takes a second (delta) timestep and samples through AnyFlowPipeline with "
+        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Studio loads cannot run it "
+        "faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
+    ),
+    (
+        r"(?:^|[/\\])(?=[^/\\]*" + _WAN21_TOKEN + r")(?=[^/\\]*(?<![a-z0-9])(?:i2v|flf2v)(?![a-z0-9]))"
+        r"[^/\\]*[/\\]*$",
+        "This is a Wan2.1 image-to-video checkpoint (I2V-14B 480P / 720P or FLF2V). It generates "
+        "from a start frame through its own image-conditioned transformer and a CLIP vision "
+        "encoder, which Studio does not load yet; image-to-video support is coming. Load a Wan2.1 "
+        "text-to-video checkpoint (Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
+        "Wan-AI/Wan2.1-T2V-14B-Diffusers) instead.",
+    ),
+    (
+        r"(?:^|[/\\])(?=[^/\\]*" + _WAN21_TOKEN + r")(?=[^/\\]*(?:(?<![a-z0-9])"
+        r"(?:vace|magref|phantom|multitalk|infinitetalk|controlnet|recammaster)|" + _WAN21_TOKEN + r"-fun)"
+        r"(?![a-z0-9]))[^/\\]*[/\\]*$",
+        "This is a Wan2.1 conditioning variant (VACE, Fun, MAGREF, Phantom, talking-head, "
+        "ControlNet or ReCamMaster). Its transformer takes extra control inputs the text-to-video "
+        "pipeline does not provide, so Studio cannot run it. Load a plain Wan2.1 text-to-video "
+        "checkpoint instead.",
+    ),
+)
+
+
+def unsupported_video_checkpoint_reason(
+    *identifiers: Optional[str], wan21_checkpoint: Optional[str] = None
+) -> Optional[str]:
+    """Why a Wan 2.1 / FastWan / AnyFlow pick cannot load, or None. ``wan21_checkpoint``: the selected checkpoint of a
+    pick that already resolved to a Wan2.1 family, whose last segment may omit the Wan2.1 token
+    (``i2v-14b-480p-Q4_K_M.gguf``) and is judged as if it carried it; containers never are."""
+    needles = [normalize_family_name(str(identifier)) for identifier in identifiers if identifier]
+    if wan21_checkpoint:
+        needle = normalize_family_name(str(wan21_checkpoint))
+        needles.append(needle)
+        name = re.split(r"[/\\]", needle.rstrip("/\\"))[-1]
+        # A leading "fun" is too generic to mark a Fun release unless it names one (version, size, InP, Control); the
+        # other markers are still judged.
+        generic_fun = re.match(r"fun(?![a-z0-9])", name) and not re.match(r"fun-(?:v\d|1-3b|14b|inp|control)", name)
+        needles.append(("wan2-1-t2v-" if generic_fun else "wan2-1-") + name)
+    for needle in needles:
+        for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
+            if re.search(pattern, needle):
+                return message
+    return None
+
+
 def _token_in_needle(token: str, needle: str) -> bool:
     """Whole path/name segment match, as in diffusion_families (a short alias like
     'ltx' must not match inside an unrelated word)."""
@@ -552,6 +655,9 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
         for fam in _FAMILIES:
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
+        return None
+    # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
+    if unsupported_video_checkpoint_reason(repo_id):
         return None
     needle = repo_id.lower()
     best: Optional[tuple[VideoFamily, int]] = None
@@ -954,12 +1060,26 @@ def validate_video_reference_conditioning(
 # first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
+    # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
+    ("fusionx", 8, 1.0),
     ("ltx", 40, 4.0),
     # T2V-A14B before the generic Wan key.
     ("a14b", 20, 3.5),
     ("wan2.2-14b", 20, 3.5),
+    # Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
+    ("wan2.1-t2v-14b", 20, 6.0),
+    ("wan2.1-14b", 20, 6.0),
+    ("wan21-t2v-14b", 20, 6.0),
+    ("wan21-14b", 20, 6.0),
+    ("wan2.1", 30, 6.0),
+    ("wan21", 30, 6.0),
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
+)
+# The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
+# checkpoint itself names.
+_NAME_SEGMENT_DEFAULT_KEYS = frozenset(
+    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx"))
 )
 
 
@@ -982,8 +1102,10 @@ def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
     """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
     ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
     for identifier in identifiers:
-        needle = (identifier or "").lower()
+        whole = (identifier or "").lower()
+        name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
+            needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
             if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(
