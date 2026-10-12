@@ -51,9 +51,19 @@ def test_a_probe_in_flight_does_not_confirm_it():
     assert controller.snapshot().committed == 15000
 
 
-def test_a_reading_started_after_the_round_folds_it_in():
+def test_a_probe_before_the_round_is_sent_does_not_confirm_it():
     controller = _measured_holder_beside_residue()
     controller.note_tokens("chat", 9000, 9000)
+    # Started after the publication, but the request has not been dispatched yet.
+    controller.note_resident(10000, started_at_seq = controller.residency_epoch())
+    assert controller.snapshot().committed == 15000
+    assert controller.participant("chat").unconfirmed_growth == 5000
+
+
+def test_a_reading_started_after_its_first_token_folds_it_in():
+    controller = _measured_holder_beside_residue()
+    controller.note_tokens("chat", 9000, 9000)
+    controller.observe("chat", 1, plan = False)
     controller.note_resident(15000, started_at_seq = controller.residency_epoch())
     assert controller.snapshot().committed == 15000
     assert controller.participant("chat").unconfirmed_growth == 0

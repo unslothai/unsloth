@@ -527,7 +527,8 @@ class Participant:
     # returns later while describing a cache from before the prefill.
     measured_at_seq: Optional[int] = None
     # A measured holder's round growth no reading holds yet: on top of the resident figure,
-    # its prefix inside it, until a sample STARTED after `growth_at_seq` lands.
+    # its prefix inside it. Stamped at the round's first decoded token, so only a sample
+    # STARTED after `growth_at_seq` lands can hold it; a probe before dispatch cannot.
     unconfirmed_growth: int = 0
     growth_at_seq: Optional[int] = None
     # What admission charged and the prompt part of it, kept so a request that starts over
@@ -925,7 +926,11 @@ class PreemptionController:
                 if participant.prompt_tokens > 0:
                     # `want` is the whole replayed prompt, which is what becomes resident.
                     participant.prompt_tokens = max(participant.prompt_tokens, need)
+                # The replay is not in yet, so no stamp or growth from the paused attempt holds.
                 participant.measured = False
+                participant.measured_at_seq = None
+                participant.unconfirmed_growth = 0
+                participant.growth_at_seq = None
                 participant.state = ParticipantState.RESUMING
                 # Announced under the same lock that booked the room, so no participant
                 # can see the booking without also seeing the batch it needs.
@@ -1038,6 +1043,9 @@ class PreemptionController:
                     if not participant.measured and participant.measured_at_seq is None:
                         self._resident_seq += 1
                         participant.measured_at_seq = self._resident_seq
+                    if participant.unconfirmed_growth > 0 and participant.growth_at_seq is None:
+                        self._resident_seq += 1
+                        participant.growth_at_seq = self._resident_seq
                     participant.cells_reclaimed = False
                     participant.replay_pending = False
                     # A generated token can only follow a finished prefill. Guarded on
@@ -1235,8 +1243,8 @@ class PreemptionController:
                     # The prefix is in the cache, the growth is not: a reading from before this
                     # round, larger than the ledger, would otherwise fold the growth into it.
                     participant.unconfirmed_growth += growth
-                    self._resident_seq += 1
-                    participant.growth_at_seq = self._resident_seq
+                    # Unstamped until a token shows the prefill ran.
+                    participant.growth_at_seq = None
                 if replayed:
                     participant.measured = False
                     participant.measured_at_seq = None
