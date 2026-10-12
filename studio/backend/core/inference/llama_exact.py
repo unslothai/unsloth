@@ -173,6 +173,7 @@ _OPTION_FAMILY = {
     "--no-kv-unified": "--kv-unified",
     "-cmoe": "--cpu-moe",
     "-ncmoe": "--n-cpu-moe",
+    "-ncffn": "--n-cpu-ffn",
     "-ot": "--override-tensor",
 }
 
@@ -202,9 +203,14 @@ def _flag_value(token: str, following: Optional[str]) -> Optional[str]:
     return following
 
 
-# The env twins llama.cpp reads for the CPU expert placements, which reach the child however
-# the argv was stripped.
-_CPU_PLACEMENT_ENV = ("LLAMA_ARG_CPU_MOE", "LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_OVERRIDE_TENSOR")
+# The env twins llama.cpp reads for the CPU expert and FFN placements, which reach the child
+# however the argv was stripped.
+_CPU_PLACEMENT_ENV = (
+    "LLAMA_ARG_CPU_MOE",
+    "LLAMA_ARG_N_CPU_MOE",
+    "LLAMA_ARG_N_CPU_FFN",
+    "LLAMA_ARG_OVERRIDE_TENSOR",
+)
 
 
 def _positive_count(value: Optional[str]) -> bool:
@@ -222,7 +228,7 @@ def contradicting_env(env: Optional[Mapping[str, str]]) -> list[str]:
             continue
         if name == "LLAMA_ARG_CPU_MOE":
             hit = value.lower() in ("1", "on", "true", "yes")
-        elif name == "LLAMA_ARG_N_CPU_MOE":
+        elif name in ("LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_N_CPU_FFN"):
             hit = _positive_count(value)
         else:
             hit = _places_tensors_on_cpu(value)
@@ -250,7 +256,8 @@ def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
         elif name in ("--flash-attn", "-fa"):
             value = (_flag_value(token, following) or "").strip().lower()
             contradicts = value in ("off", "0", "false", "disabled")
-        elif name in ("--n-cpu-moe", "-ncmoe"):
+        elif name in ("--n-cpu-moe", "-ncmoe", "--n-cpu-ffn", "-ncffn"):
+            # The dense twin places the first N layers' FFN weights on the CPU the same way.
             contradicts = _positive_count(_flag_value(token, following))
         elif name in ("--override-tensor", "-ot"):
             contradicts = _places_tensors_on_cpu(_flag_value(token, following))

@@ -24,6 +24,15 @@ class TestExactModeSeesTheUnderscoreSpelling:
     def test_a_default_spelling_is_still_not_a_contradiction(self):
         assert not exact.contradicting_args(["--n_cpu_moe", "0"])
 
+    def test_cpu_ffn_layers_contradict_as_cpu_experts_do(self):
+        # The dense twin of --n-cpu-moe: the first N layers' FFN weights run on CPU kernels.
+        for args in (["--n-cpu-ffn", "4"], ["-ncffn", "4"], ["--n_cpu_ffn=4"]):
+            assert exact.contradicting_args(args), args
+        assert not exact.contradicting_args(["--n-cpu-ffn", "0"])
+        assert not exact.contradicting_args(["-ncffn", "4", "--n-cpu-ffn", "0"])
+        assert exact.contradicting_env({"LLAMA_ARG_N_CPU_FFN": "8"}) == ["LLAMA_ARG_N_CPU_FFN=8"]
+        assert exact.contradicting_env({"LLAMA_ARG_N_CPU_FFN": "0"}) == []
+
 
 class TestTheParkingBudgetIsReadHoweverSpelled:
     def test_a_named_budget(self):
