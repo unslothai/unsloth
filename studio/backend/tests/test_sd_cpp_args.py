@@ -191,6 +191,30 @@ def test_paravirtual_probe_is_darwin_only_and_survives_a_missing_probe(monkeypat
 # ── offload policy -> sd-cli flags ──────────────────────────────────────────
 
 
+def test_native_speed_on_apple_metal_drops_direct_conv(monkeypatch):
+    # ggml-metal's direct CONV_2D: SD1.5 512 UNet hit the GPU watchdog (3/3 failed) and the VAE decode was 5.5x slower
+    # on GitHub macos-15; flash attention stays (SD1.5 sampling 53.4 -> 16.9 s there).
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    assert native_speed_flags("default") == ["--diffusion-fa"]
+    assert native_speed_flags("max") == ["--diffusion-fa"]
+    assert native_speed_flags("off") == []
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    server = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, native_speed = "default"
+    )
+    assert "--diffusion-fa" in server and "--diffusion-conv-direct" not in server
+    # A paravirtual Mac runs on the CPU backend, where direct conv is the win it was measured to be.
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
+    # Intel Macs ship a CPU-only build.
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
+
+
 def test_native_speed_flags():
     assert native_speed_flags(None) == []
     assert native_speed_flags("off") == []

@@ -137,8 +137,8 @@ class SdCppUpscaleParams:
 
 
 # Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa +
-# --diffusion-conv-direct (numerically exact; direct conv took z-image Q8_0 sampling 56.1 -> 51.3 s). max keeps it
-# (profiles chain).
+# --diffusion-conv-direct (numerically exact; direct conv took z-image Q8_0 sampling 56.1 -> 51.3 s on CPU), except on
+# Apple Metal, which keeps only --diffusion-fa (see _runs_on_apple_metal). max keeps it (profiles chain).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -152,8 +152,26 @@ def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
+        if _runs_on_apple_metal():
+            return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+def _runs_on_apple_metal() -> bool:
+    """True when sd.cpp will run its graphs on Apple Metal: the darwin arm64 prebuilt is the Metal build, and only a
+    paravirtual GPU is moved to the CPU backend (``metal_text_encoder_flags``).
+
+    ``--diffusion-conv-direct`` is a CPU / CUDA win but not a Metal one: ggml-metal's direct CONV_2D kernel is far
+    slower than im2col + mul_mm. On GitHub macos-15 (M1 GPU, simdgroup features enabled) an SD1.5 512 px UNet with it
+    exceeded the GPU watchdog (``kIOGPUCommandBufferCallbackErrorTimeout``, 3/3 generations failed) and the VAE
+    equivalent made decode 5.5x slower (12.6 s -> 69.7 s); Z-Image sampling was unchanged with or without it."""
+    import platform
+    import sys
+
+    if sys.platform != "darwin" or platform.machine().lower() not in ("arm64", "aarch64"):
+        return False
+    return not metal_is_paravirtual()
 
 
 # Kill switch for the Metal text-encoder placement below (1/true keeps the encoder on Metal).
