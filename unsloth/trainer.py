@@ -162,9 +162,8 @@ def _collator_packing_conflict(
 
 
 def _unpacked_for_evaluation(trainer, collator):
-    """Pack only training batches: evaluate() / predict() count examples (and weight eval_loss) by
-    input_ids.shape[0], and predict() returns one row per example. A DataLoader captures its collate_fn
-    when built, so build the eval / test ones from an unpacked copy of the collator."""
+    """Pack training batches only: evaluation counts examples (and weights eval_loss) by input_ids.shape[0].
+    A DataLoader captures its collate_fn when built, so build eval / test ones from an unpacked copy."""
     unpacked = copy.copy(collator)
     unpacked._padding_free = False
 

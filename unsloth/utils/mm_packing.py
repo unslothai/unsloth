@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Padding-free (packed) rows for multimodal documents (images, audio).
-
-Each document is collated alone, then concatenated; ``position_ids`` restart per document, from
-which transformers builds a mask so image blocks never cross a document boundary. Qwen2-VL style
-models (4-row multimodal RoPE position ids) are refused.
-"""
+"""Packed rows of multimodal documents: each collated alone, then concatenated with per-document
+``position_ids``, from which transformers masks image blocks to their own document."""
 
 from __future__ import annotations
 
