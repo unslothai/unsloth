@@ -1494,6 +1494,8 @@ export const ptBR = {
         sectionTitle: "Leitura em voz alta",
         buttonLabel: "Botão de leitura em voz alta",
         buttonDescription: "Exibe o botão nas respostas do assistente",
+        autoLabel: "Ler respostas automaticamente",
+        autoDescription: "Lê cada resposta em voz alta assim que ela termina",
         engineLabel: "Mecanismo de TTS",
         engineSystemDescription: "Vozes nativas do dispositivo",
         engineStudioDescription: "Usa o modelo de fala carregado em Áudio",

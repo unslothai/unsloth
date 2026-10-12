@@ -1534,6 +1534,8 @@ export const en = {
         sectionTitle: "Read aloud",
         buttonLabel: "Read aloud button",
         buttonDescription: "Show on assistant responses",
+        autoLabel: "Read replies automatically",
+        autoDescription: "Read each reply aloud as soon as it finishes",
         engineLabel: "TTS engine",
         engineSystemDescription: "Built-in device voices",
         engineStudioDescription: "Uses the speech model loaded in Audio",

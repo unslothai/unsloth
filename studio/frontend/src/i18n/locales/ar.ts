@@ -1487,6 +1487,8 @@ export const ar = {
         sectionTitle: "القراءة بصوت عالٍ",
         buttonLabel: "زر القراءة بصوت عالٍ",
         buttonDescription: "إظهاره في ردود المساعد",
+        autoLabel: "قراءة الردود تلقائيًا",
+        autoDescription: "قراءة كل رد بصوت عالٍ فور اكتماله",
         engineLabel: "محرك TTS",
         engineSystemDescription: "الأصوات المدمجة في الجهاز",
         engineStudioDescription: "يستخدم النموذج الصوتي المُحمَّل في قسم الصوت",
