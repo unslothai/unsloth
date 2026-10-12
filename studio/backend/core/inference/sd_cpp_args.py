@@ -167,19 +167,43 @@ def _backend_spec_is_cpu(spec: str) -> bool:
 
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
-    """True when sd.cpp runs on Apple Metal (darwin arm64; an explicit ``--backend`` decides, else not a paravirtual GPU).
+    """True when sd.cpp runs on Apple Metal (macOS; an explicit ``--backend`` decides, else an Apple Silicon
+    machine whose GPU is not paravirtual).
 
     Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
-    import platform
     import sys
 
-    if sys.platform != "darwin" or platform.machine().lower() not in ("arm64", "aarch64"):
+    if sys.platform != "darwin":
         return False
     args = list(backend_args)
     specs = [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
     if specs:
         return not all(_backend_spec_is_cpu(spec) for spec in specs)
-    return not metal_is_paravirtual()
+    return apple_silicon_machine() and not metal_is_paravirtual()
+
+
+@functools.lru_cache(maxsize = 1)
+def apple_silicon_machine() -> bool:
+    """True on an Apple Silicon Mac, including an x86_64 Python under Rosetta (``hw.optional.arm64``, as install.sh)."""
+    import platform
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        return True
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        value = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if libc.sysctlbyname(b"hw.optional.arm64", ctypes.byref(value), ctypes.byref(size), None, 0) == 0:
+            return value.value == 1
+    except Exception:  # noqa: BLE001 -- no answer means an Intel Mac
+        pass
+    return False
 
 
 def forces_cpu_backend(device: Optional[str]) -> bool:

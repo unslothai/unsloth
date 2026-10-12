@@ -70,6 +70,12 @@ def _physical_metal(monkeypatch):
     import core.inference.sd_cpp_args as sd_cpp_args
 
     monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    # The real probe is cached and reads sysctl; follow the patched platform.machine() instead.
+    import platform
+
+    monkeypatch.setattr(
+        sd_cpp_args, "apple_silicon_machine", lambda: platform.machine().lower() in ("arm64", "aarch64")
+    )
 
 
 def test_metal_keeps_the_text_encoder_off_the_gpu(monkeypatch):
@@ -275,6 +281,31 @@ def test_native_speed_honours_an_explicit_metal_pin_on_a_paravirtual_gpu(monkeyp
     assert "--diffusion-conv-direct" in unpinned
 
 
+def test_metal_detection_does_not_trust_the_python_architecture(monkeypatch):
+    # An x86_64 Python under Rosetta on Apple Silicon still drives the Metal GPU.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(sd_cpp_args, "apple_silicon_machine", lambda: True)
+    assert native_speed_flags("default") == ["--diffusion-fa"]
+    # An explicit Metal pin is Metal whatever the machine reports.
+    monkeypatch.setattr(sd_cpp_args, "apple_silicon_machine", lambda: False)
+    assert native_speed_flags("default", ["--backend", "diffusion=MTL0"]) == ["--diffusion-fa"]
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
+
+
+def test_video_load_route_skips_the_video_claim_for_a_forced_cpu_h3_load():
+    import inspect
+
+    import routes.video as video_routes
+
+    source = inspect.getsource(video_routes)
+    guard = source.index("await asyncio.to_thread(forces_cpu_backend, device)")
+    assert 'device = "cpu"' in source[guard : guard + 200]
+    assert guard < source.index("return acquire_for_request(VIDEO, _begin_load)")
+
+
 def test_forces_cpu_backend_only_for_a_paravirtual_mps_device(monkeypatch):
     import core.inference.sd_cpp_args as sd_cpp_args
 
@@ -293,9 +324,10 @@ def test_image_load_route_skips_the_diffusion_claim_for_a_forced_cpu_native_load
     source = inspect.getsource(inference_routes)
     start = source.index("off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)")
     window = source[start : start + 25000]
-    guard = window.index("if activated == ENGINE_SD_CPP and forces_cpu_backend(device):")
+    # Off the event loop: the paravirtual probe can shell out to sysctl / system_profiler.
+    guard = window.index("await asyncio.to_thread(forces_cpu_backend, device)")
     assert window.index("activated = active_engine_name()") < guard < window.index("if needs_gpu:")
-    assert "needs_gpu = False" in window[guard : guard + 120]
+    assert "needs_gpu = False" in window[guard : guard + 200]
 
 
 def test_upscale_on_paravirtual_metal_runs_on_the_cpu_backend(monkeypatch):

@@ -46646,7 +46646,7 @@ async def load_diffusion_model_gated(
             else:
                 _guard_diffusion_load_against_training()
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
-        if activated == ENGINE_SD_CPP and forces_cpu_backend(device):
+        if activated == ENGINE_SD_CPP and device == "mps" and await asyncio.to_thread(forces_cpu_backend, device):
             needs_gpu = False
 
         def _start_engine_load():
