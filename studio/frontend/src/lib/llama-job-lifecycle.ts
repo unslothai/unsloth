@@ -193,6 +193,7 @@ export function llamaReleaseChanged(
  * A migration runs at the release already installed and can end on the backend already
  * installed, so "updated to <tag>" describes neither -- and the tag is llama's even when
  * a pending whisper update named the toast. The job's own message is accurate.
+ * A `null` tag is for a toast naming several components, where no one tag fits.
  */
 export function llamaUpdateToastMessage({
   component,
@@ -204,13 +205,14 @@ export function llamaUpdateToastMessage({
   component: string;
   migrating: boolean;
   jobMessage: string | null | undefined;
-  updatedTag: string;
+  updatedTag: string | null;
   reloadRequired: boolean | null | undefined;
 }): string {
   const reloadHint = reloadRequired ? " Reload your model to use it." : "";
   const migrationMessage = migrating ? (jobMessage ?? "").trim() : "";
   if (!migrationMessage) {
-    return `${component} updated to ${updatedTag}.${reloadHint}`;
+    const toTag = updatedTag === null ? "" : ` to ${updatedTag}`;
+    return `${component} updated${toTag}.${reloadHint}`;
   }
   // The phase appends its own reload hint when it has one to give.
   return migrationMessage.includes("Reload")

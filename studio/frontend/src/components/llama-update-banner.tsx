@@ -30,7 +30,13 @@ import {
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Download } from "lucide-react";
-import { type ReactElement, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactElement,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 // Creep toward this cap between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
@@ -214,12 +220,13 @@ export function LlamaUpdateBanner({
     const offerTag = primary?.latestTag ?? null;
     const result = await apply();
     if (result?.ok) {
-      const updatedTag =
-        updateToastTag(
-          primary?.component ?? "llama.cpp",
-          result.tag,
-          offerTag,
-        ) ?? "the latest build";
+      const updatedTag = bundled
+        ? null
+        : (updateToastTag(
+            primary?.component ?? "llama.cpp",
+            result.tag,
+            offerTag,
+          ) ?? "the latest build");
       toast.success(
         llamaUpdateToastMessage({
           component: label,
@@ -327,12 +334,18 @@ export function LlamaUpdateBanner({
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
               "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
-              // Only an open changelog needs a shrinkable height floor.
+              // Only an open changelog needs a shrinkable height floor. Each extra
+              // bundled row adds one text-xs line to the header above it.
               changelogPanelOpen
-                ? "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+                ? "min-h-[calc(117px+(93px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(224px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
                 : "shrink-0",
             ),
       )}
+      style={
+        {
+          "--llama-update-extra-rows": Math.max(rows.length - 1, 0),
+        } as CSSProperties
+      }
       data-testid="llama-update-banner"
     >
       {/* Paint the full floor even when the changelog content is short. */}
@@ -382,10 +395,20 @@ export function LlamaUpdateBanner({
                     ]
                   : [row.installedTag ?? "unknown", row.latestTag ?? ""];
               const rowSize = bundled ? sizeLabelOf(row.sizeBytes) : null;
+              const sizeSuffix = rowSize ? ` · ${rowSize}` : "";
               return (
                 <p
                   key={row.component}
-                  className="mt-0.5 text-xs text-muted-foreground"
+                  // One line each, so the changelog floor can count them.
+                  className={cn(
+                    "mt-0.5 text-xs text-muted-foreground",
+                    bundled && "truncate",
+                  )}
+                  title={
+                    bundled
+                      ? `${row.component} ${from} \u2192 ${to}${sizeSuffix}`
+                      : undefined
+                  }
                   data-testid="llama-update-version-line"
                 >
                   {bundled ? (
@@ -393,7 +416,7 @@ export function LlamaUpdateBanner({
                   ) : null}
                   {from} &rarr;{" "}
                   <span className="font-medium text-foreground">{to}</span>
-                  {rowSize ? ` · ${rowSize}` : ""}
+                  {sizeSuffix}
                 </p>
               );
             })}

@@ -206,6 +206,20 @@ test("an ordinary update still reports the release it moved to", () => {
   );
 });
 
+// The job's tag is llama.cpp's, so it must not be pinned on every component a bundle names.
+test("a bundle with nothing from the job names no single release", () => {
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp, whisper.cpp and audio.cpp",
+      migrating: true,
+      jobMessage: "",
+      updatedTag: null,
+      reloadRequired: true,
+    }),
+    "llama.cpp, whisper.cpp and audio.cpp updated. Reload your model to use it.",
+  );
+});
+
 // The card is muted per component, and a chained apply drops llama.cpp from the
 // status when its phase lands and the whisper.cpp phase starts. Reading the live
 // switch there hid a running update for the whole second phase.

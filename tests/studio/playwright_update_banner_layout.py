@@ -226,6 +226,18 @@ WHISPER_STATUS = dict(
         "skip_reason": None,
     },
 )
+# All three behind at once share that card with a row each, so it is the tallest runtime card there is.
+BUNDLE_STATUS = dict(
+    LLAMA_STATUS,
+    whisper = WHISPER_STATUS["whisper"],
+    audio = {
+        "update_available": True,
+        "installed_tag": "v0.9.0-unsloth.1",
+        "latest_tag": "v0.9.1-unsloth.1",
+        "update_size_bytes": None,
+        "skip_reason": None,
+    },
+)
 
 # 921x534 and 768x500 are where the report reproduces; the taller ones prove the fix costs nothing when there is room.
 VIEWPORTS = [
@@ -1245,12 +1257,26 @@ def main() -> int:
             llama_payload[0] = WHISPER_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat whisper")
+            rows = page.locator('[data-testid="llama-update-version-line"]').count()
             check(
                 f"{width}x{height}: whisper.cpp reuses the one runtime card",
                 page.locator('[data-testid="llama-update-banner"]').count() <= 1
-                and "whisper.cpp" in facts["llamaText"],
-                f"text={facts['llamaText']!r}",
+                and "whisper.cpp" in facts["llamaText"]
+                and rows == 1,
+                f"rows={rows} text={facts['llamaText']!r}",
             )
+
+            # Three pending runtimes are still one card, now with three rows under the app card.
+            llama_payload[0] = BUNDLE_STATUS
+            boot(page, "/")
+            facts = measure(page, f"{width}x{height} new chat bundle")
+            rows = page.locator('[data-testid="llama-update-version-line"]').count()
+            check(
+                f"{width}x{height}: three pending runtimes share the one card, a row each",
+                page.locator('[data-testid="llama-update-banner"]').count() == 1 and rows == 3,
+                f"rows={rows} text={facts['llamaText']!r}",
+            )
+            exercise_llama_changelog(page, f"{width}x{height} bundle")
             llama_payload[0] = LLAMA_STATUS
             context.close()
 
