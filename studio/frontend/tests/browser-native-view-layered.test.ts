@@ -130,6 +130,17 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     assert.equal(placeholder.vars.get("--native-hole-y"), "100px");
     assert.equal(wrapper.vars.has("--native-hole-x"), false);
 
+    // under the app's interface zoom the rect is divided by it: WebKit scales a fixed background's
+    // lengths by the zoom on top of the layout they came from
+    const zoomChanged = (globalThis as { nativeViewZoomChanged?: () => void }).nativeViewZoomChanged;
+    (globalThis as { nativeViewZoom?: number }).nativeViewZoom = 0.8;
+    zoomChanged?.();
+    assert.equal(html.vars.get("--native-hole-x"), "625px");
+    assert.equal(placeholder.vars.get("--native-hole-h"), "750px");
+    (globalThis as { nativeViewZoom?: number }).nativeViewZoom = 1;
+    zoomChanged?.();
+    assert.equal(html.vars.get("--native-hole-x"), "500px");
+
     // a theme switch recolors them, though the page didn't move; read mid-switch, it tries again
     html.className = "html dark";
     for (const element of [html, section, placeholder]) element.background = "rgba(0, 0, 0, 0)";

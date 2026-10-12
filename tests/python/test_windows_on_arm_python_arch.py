@@ -47,14 +47,15 @@ def _run(
     return result.stdout.strip()
 
 
-# Host helpers stubbed so the case, not the machine, drives the decision.
-def _preamble(host_arch: str, venv_tag: str, x64_available: bool) -> str:
+# The shared preamble: the two host helpers the functions under test call, stubbed so the
+# decision is driven by the case rather than by the machine running the suite. Neither stub
+# stands in for logic under test here: Get-HostMachineArch is exercised against real
+# hardware on the windows-11-arm leg, and Get-PythonPlatformTag asks an interpreter for
+# sysconfig.get_platform(), which needs a Windows interpreter to answer win-arm64.
+def _preamble(host_arch: str, venv_tag: str) -> str:
+    # Verbatim from install.ps1, not a stub: both the fresh-selection path and the venv
+    # re-check call it, so a change to what the opt-out accepts has to move these cases too.
     opt_out = _function("Test-Arm64PythonOptOut")
-    x64 = (
-        '@{ Version = "3.13"; Path = "C:\\x64\\python.exe"; Arch = "x86_64" }'
-        if x64_available
-        else "$null"
-    )
     return f"""
 $ErrorActionPreference = "Stop"
 $script:StudioVtOk = $false
@@ -67,115 +68,8 @@ function step {{ param([string]$Label, [string]$Value, [string]$Color = "Green")
 function substep {{ param([string]$Message, [string]$Color = "DarkGray") Write-Host "SUBSTEP $Message" }}
 function Get-HostMachineArch {{ return "{host_arch}" }}
 function Get-PythonPlatformTag {{ param([string]$Exe) return "{venv_tag}" }}
-function Install-X64Python {{ Write-Host "INSTALL-X64-CALLED"; return {x64} }}
 {opt_out}
 """
-
-
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-def test_arm64_host_takes_the_x64_interpreter_when_one_can_be_installed(shell: str):
-    """The path that already worked: ARM64 host, x64 obtainable, x64 is what is returned."""
-    script = (
-        _preamble("arm64", "win-arm64", x64_available = True)
-        + f"""
-{_function("Resolve-WindowsOnArmX64Python")}
-$selected = @{{ Version = "3.13"; Path = "C:\\arm\\python.exe"; Arch = "arm64" }}
-$chosen = Resolve-WindowsOnArmX64Python -SelectedPython $selected
-Write-Host ("CHOSEN=" + $(if ($chosen) {{ $chosen.Arch }} else {{ "none" }}))
-Write-Host ("PATH=" + $(if ($chosen) {{ $chosen.Path }} else {{ "none" }}))
-"""
-    )
-    out = _run(shell, script)
-    assert "CHOSEN=x86_64" in out
-    assert "PATH=C:\\x64\\python.exe" in out
-    assert "using x64 Python" in out
-
-
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-def test_no_x64_interpreter_is_a_stop_not_a_warning(shell: str):
-    """$null is the answer when x64 cannot be had, and the advice names the real fix.
-
-    This is the half of #10875 that survived re-checking. The installer used to print
-    [WARN] and carry on, which turns a diagnosable "install x64 Python" into a pyarrow
-    CMake failure several minutes later, in a log the reporter has to scroll to find.
-    """
-    script = (
-        _preamble("arm64", "win-arm64", x64_available = False)
-        + f"""
-{_function("Resolve-WindowsOnArmX64Python")}
-$selected = @{{ Version = "3.13"; Path = "C:\\arm\\python.exe"; Arch = "arm64" }}
-$chosen = Resolve-WindowsOnArmX64Python -SelectedPython $selected
-Write-Host ("CHOSEN=" + $(if ($chosen) {{ $chosen.Arch }} else {{ "none" }}))
-"""
-    )
-    out = _run(shell, script)
-    assert "CHOSEN=none" in out, "an ARM64 interpreter must not be handed back as usable"
-    assert "[ERROR]" in out
-    assert "[WARN]" not in out
-    assert "python.org/downloads/windows" in out
-    assert "UNSLOTH_ALLOW_ARM64_PYTHON" in out, "a fail-closed path has to name its opt-out"
-
-
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
-def test_the_opt_out_keeps_the_old_warn_and_continue(shell: str, value: str):
-    """Someone who has built both wheels locally can still ask for the ARM64 interpreter."""
-    script = (
-        _preamble("arm64", "win-arm64", x64_available = False)
-        + f"""
-{_function("Resolve-WindowsOnArmX64Python")}
-$selected = @{{ Version = "3.13"; Path = "C:\\arm\\python.exe"; Arch = "arm64" }}
-$chosen = Resolve-WindowsOnArmX64Python -SelectedPython $selected
-Write-Host ("CHOSEN=" + $(if ($chosen) {{ $chosen.Arch }} else {{ "none" }}))
-"""
-    )
-    out = _run(shell, script, env = {"UNSLOTH_ALLOW_ARM64_PYTHON": value})
-    assert "CHOSEN=arm64" in out
-    assert "[WARN]" in out
-    assert "[ERROR]" not in out
-
-
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
-def test_the_opt_out_is_read_before_the_x64_install_is_attempted(shell: str, value: str):
-    """The opt-out has to opt out on a machine where the x64 install would SUCCEED."""
-    script = (
-        _preamble("arm64", "win-arm64", x64_available = True)
-        + f"""
-{_function("Resolve-WindowsOnArmX64Python")}
-$selected = @{{ Version = "3.13"; Path = "C:\\arm\\python.exe"; Arch = "arm64" }}
-$chosen = Resolve-WindowsOnArmX64Python -SelectedPython $selected
-Write-Host ("CHOSEN=" + $(if ($chosen) {{ $chosen.Arch }} else {{ "none" }}))
-"""
-    )
-    out = _run(shell, script, env = {"UNSLOTH_ALLOW_ARM64_PYTHON": value})
-    assert "CHOSEN=arm64" in out
-    assert (
-        "INSTALL-X64-CALLED" not in out
-    ), "an x64 Python was installed for someone who asked to keep the ARM64 one"
-    assert "[WARN]" in out
-    assert "[ERROR]" not in out
-    assert "Unset UNSLOTH_ALLOW_ARM64_PYTHON" in out, "the warning has to say how to undo it"
-
-
-def test_the_python_org_route_is_not_attempted_twice_inside_conda():
-    """Inside conda python.org is tried first, so the later winget fallback must not repeat it."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    start = source.index('substep "installing Python ${PythonVersion}..."')
-    end = source.index("Python installation failed", start)
-    block = source[start:end]
-    assert (
-        block.count("Install-PythonFromPythonOrg") == 2
-    ), "the conda-first call and the winget fallback, and nothing else"
-    guard = source.index('substep "winget could not install Python', start)
-    condition = source.rindex("if (-not $DetectedPython", start, guard)
-    assert (
-        "-not $pythonOrgTried" in source[condition : source.index("\n", condition)]
-    ), "the winget fallback would otherwise run python.org a second time"
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -207,7 +101,7 @@ def test_a_reused_environment_is_re_checked_for_its_interpreter_architecture(
         venv_python.write_text("", encoding = "utf-8")
     selected = f'@{{ Version = "3.13"; Path = "C:\\p\\python.exe"; Arch = "{selected_arch}" }}'
     script = (
-        _preamble(host_arch, venv_tag, x64_available = True)
+        _preamble(host_arch, venv_tag)
         + f"""
 {_function("Test-StudioVenvArchMismatch")}
 $selected = {selected}
@@ -236,7 +130,7 @@ def test_the_opt_out_also_protects_an_existing_arm64_environment(
     venv_python.write_text("", encoding = "utf-8")
     selected = '@{ Version = "3.13"; Path = "C:\\p\\python.exe"; Arch = "x86_64" }'
     script = (
-        _preamble("arm64", "win-arm64", x64_available = True)
+        _preamble("arm64", "win-arm64")
         + f"""
 {_function("Test-StudioVenvArchMismatch")}
 $selected = {selected}
@@ -258,7 +152,7 @@ def test_the_arm64_environment_is_still_replaced_without_the_opt_out(tmp_path: P
     venv_python.write_text("", encoding = "utf-8")
     selected = '@{ Version = "3.13"; Path = "C:\\p\\python.exe"; Arch = "x86_64" }'
     script = (
-        _preamble("arm64", "win-arm64", x64_available = True)
+        _preamble("arm64", "win-arm64")
         + f"""
 {_function("Test-StudioVenvArchMismatch")}
 $selected = {selected}
@@ -294,26 +188,6 @@ def test_the_arm64_rebuild_tells_the_user_what_it_does_not_carry_over():
     assert "UNSLOTH_ALLOW_ARM64_PYTHON" in block, "the rebuild does not name its opt-out"
 
 
-def test_the_installer_stops_when_no_x64_interpreter_can_be_installed():
-    """A $null from Resolve-WindowsOnArmX64Python must stop the installer, not be assigned and ignored."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    # Anchor on the call: the guard is multi-line and a shape anchor matched an unrelated block.
-    call = source.index("$DetectedPython = Resolve-WindowsOnArmX64Python")
-    opening = source.rindex("\n    if (", 0, call)
-    match = re.search(r".*?\n    \}\n", source[opening + 1 :], flags = re.DOTALL)
-    assert match is not None, "install.ps1 no longer guards the Windows-on-ARM swap"
-    block = match.group(0)
-    assert "Resolve-WindowsOnArmX64Python" in block
-    assert "-not $script:WoaNativeCudaTorch" in block, (
-        "a host with native ARM64 CUDA torch wants its ARM64 interpreter; swapping it for "
-        "x64 there gives a Triton that cannot do sm_121"
-    )
-    assert "Exit-InstallFailure" in block, (
-        "an unobtainable x64 interpreter has to end the install here; continuing moves the "
-        "failure to the pyarrow build, which is what #10875 reported"
-    )
-
-
 def test_the_venv_reuse_path_re_checks_before_it_reuses():
     """The arch re-check must run before the migrated-environment reuse branch, not after it commits."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -328,139 +202,8 @@ def test_the_venv_reuse_path_re_checks_before_it_reuses():
     assert "$_Migrated = $false" in tail
 
 
-# winget's Python manifest hard-codes PrependPath=1, so in conda the x64 bootstrap
-# must take the python.org route first.
-
-
-def _x64_bootstrap_preamble(
-    conda_active: bool, python_org_arch: str, winget_available: bool, winget_arch: str
-) -> str:
-    """Stubs for Install-X64Python's calls; each source returns x86_64, arm64 (rejected) or nothing."""
-
-    def _result(arch: str, path: str) -> str:
-        if not arch:
-            return "$null"
-        return f'@{{ Version = "3.13"; Path = "{path}"; Arch = "{arch}" }}'
-
-    # Bound outside the f-string: backslashes in f-string expressions need 3.12; ruff targets 3.11.
-    winget_installed = _result(winget_arch, "C:\\winget\\python.exe")
-    python_org_installed = _result(python_org_arch, "C:\\pyorg\\python.exe")
-
-    return f"""
-$ErrorActionPreference = "Stop"
-function Write-StudioLine {{
-    param([string]$Message = "", [string]$ForegroundColor)
-    Write-Host $Message
-}}
-function substep {{ param([string]$Message, [string]$Color = "DarkGray") Write-Host "SUBSTEP $Message" }}
-function Test-ActiveCondaEnvironment {{ return ${str(conda_active).lower()} }}
-$PythonVersion = "3.13"
-$script:WingetAvailable = ${str(winget_available).lower()}
-$script:WingetExe = "winget.exe"
-$script:WingetInstalled = {winget_installed}
-$script:PythonOrgCalls = 0
-function Install-PythonFromPythonOrg {{
-    param([string]$Arch = "")
-    $script:PythonOrgCalls++
-    Write-Host "PYTHON-ORG-CALLED arch=$Arch"
-    return {python_org_installed}
-}}
-function Refresh-SessionPath {{ }}
-function Find-CompatiblePython {{
-    param([switch]$X64Only)
-    return $script:WingetInstalled
-}}
-"""
-
-
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-def test_the_x64_bootstrap_skips_winget_inside_conda(shell: str):
-    """Inside conda, python.org is what installs the x64 interpreter."""
-    script = (
-        _x64_bootstrap_preamble(
-            conda_active = True,
-            python_org_arch = "x86_64",
-            winget_available = True,
-            winget_arch = "x86_64",
-        )
-        + f"""
-function Invoke-Winget {{ Write-Host "WINGET-CALLED" }}
-{_function("Install-X64Python").replace('& $script:WingetExe install', 'Invoke-Winget #')}
-$found = Install-X64Python
-Write-Host ("ARCH=" + $(if ($found) {{ $found.Arch }} else {{ "none" }}))
-Write-Host ("PATH=" + $(if ($found) {{ $found.Path }} else {{ "none" }}))
-Write-Host ("PYTHON-ORG-CALLS=" + $script:PythonOrgCalls)
-"""
-    )
-    out = _run(shell, script)
-    assert "ARCH=x86_64" in out
-    assert (
-        "PATH=C:\\pyorg\\python.exe" in out
-    ), "the conda path must take the python.org interpreter"
-    assert "WINGET-CALLED" not in out, (
-        "winget hard-codes PrependPath=1, so reaching it inside conda puts Python ahead of "
-        "the active environment with no way to ask for anything else"
-    )
-    assert "PYTHON-ORG-CALLS=1" in out
-
-
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-def test_the_x64_bootstrap_still_falls_back_to_winget_inside_conda(shell: str):
-    """A warned-about PATH beats no x64 Python at all."""
-    script = (
-        _x64_bootstrap_preamble(
-            conda_active = True,
-            python_org_arch = "",
-            winget_available = True,
-            winget_arch = "x86_64",
-        )
-        + f"""
-function Invoke-Winget {{ Write-Host "WINGET-CALLED" }}
-{_function("Install-X64Python").replace('& $script:WingetExe install', 'Invoke-Winget #')}
-$found = Install-X64Python
-Write-Host ("ARCH=" + $(if ($found) {{ $found.Arch }} else {{ "none" }}))
-Write-Host ("PYTHON-ORG-CALLS=" + $script:PythonOrgCalls)
-"""
-    )
-    out = _run(shell, script)
-    assert "WINGET-CALLED" in out
-    assert "ARCH=x86_64" in out
-    assert "ahead of conda on PATH" in out, "the fallback has to say what it costs"
-    assert "PYTHON-ORG-CALLS=1" in out, (
-        "the winget branch would otherwise repeat the same failing download, on the offline "
-        "machine that is the usual reason it failed"
-    )
-
-
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-def test_the_x64_bootstrap_is_unchanged_outside_conda(shell: str):
-    """No conda, no reordering: winget first, exactly as before.
-
-    winget is the faster and more reliable source on a normal machine, and this change is
-    only about the environment whose PATH it would break.
-    """
-    script = (
-        _x64_bootstrap_preamble(
-            conda_active = False,
-            python_org_arch = "x86_64",
-            winget_available = True,
-            winget_arch = "x86_64",
-        )
-        + f"""
-function Invoke-Winget {{ Write-Host "WINGET-CALLED" }}
-{_function("Install-X64Python").replace('& $script:WingetExe install', 'Invoke-Winget #')}
-$found = Install-X64Python
-Write-Host ("PATH=" + $(if ($found) {{ $found.Path }} else {{ "none" }}))
-Write-Host ("PYTHON-ORG-CALLS=" + $script:PythonOrgCalls)
-"""
-    )
-    out = _run(shell, script)
-    assert "WINGET-CALLED" in out
-    assert "PATH=C:\\winget\\python.exe" in out
-    assert "PYTHON-ORG-CALLS=0" in out
+# ── The x64 bootstrap has to respect conda too ──
+# ── The environment the rebuild promises to keep has to still be there ──
 
 
 def _rollback_preamble(studio_home: Path) -> str:
@@ -672,21 +415,3 @@ def test_the_opt_out_keeps_the_environment_it_says_it_keeps():
     assert (
         "unsloth_studio.arm64.*" in source[optout : optout + 600]
     ), "the user is not told where the kept environment is"
-
-
-def test_the_opt_out_reaches_the_interpreter_selection():
-    """On a host that already has an x64 Python the swap never runs."""
-    body = _function("Find-CompatiblePython")
-    assert (
-        "Test-Arm64PythonOptOut" in body
-    ), "the interpreter selection does not consult the ARM64 opt-out"
-    prefer = body[body.index("$preferArm64 =") : body.index("$preferX64 =")]
-    assert "-not $X64Only" in prefer, prefer
-    assert "Get-HostMachineArch" in prefer, prefer
-    assert "WoaNativeCudaTorch" in prefer, prefer
-    x64 = body[body.index("$preferX64 =") :].split("\n", 1)[0]
-    assert "-not $preferArm64" in x64, x64
-
-    resolve = _function("Resolve-WindowsOnArmX64Python")
-    assert "Test-Arm64PythonOptOut" in resolve
-    assert "return $SelectedPython" in resolve

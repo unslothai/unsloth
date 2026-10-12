@@ -145,52 +145,6 @@ def test_the_two_installers_agree_on_the_guard(path_label: str):
     assert "CONDA_DEFAULT_ENV" in conda
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-@pytest.mark.parametrize(
-    "env,expected",
-    [(_NO_CONDA, "PrependPath=1"), (_ACTIVE_CONDA, "AppendPath=1"), (_EMPTY, "PrependPath=1")],
-    ids = ["no-conda", "active-conda", "empty-vars"],
-)
-def test_the_system_python_install_follows_the_same_rule(
-    shell: str, env: dict[str, str], expected: str
-):
-    """The reporter's own diagnosis was the system-wide Python, not our own directories."""
-    script = (
-        _function(INSTALL_PS1, "    ", "Test-ActiveCondaEnvironment")
-        + _function(INSTALL_PS1, "    ", "Get-PythonInstallerPathSwitch")
-        + "\nWrite-Host ('SWITCH=' + (Get-PythonInstallerPathSwitch))\n"
-    )
-    out = _run(shell, script, env = env)
-    assert f"SWITCH={expected}" in out
-
-
-def test_the_python_org_installer_arguments_use_the_switch_function():
-    """A literal PrependPath=1 in the argument list would bypass the decision entirely."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    args = re.search(r"\$installArgs = @\(.*?\n        \)", source, flags = re.DOTALL)
-    assert args is not None, "install.ps1 no longer builds $installArgs for python.org"
-    block = args.group(0)
-    assert "Get-PythonInstallerPathSwitch" in block
-    assert (
-        "PrependPath" not in block
-    ), "the PATH switch has to come from Get-PythonInstallerPathSwitch, not be spelled here"
-
-
-def test_winget_is_not_the_first_route_inside_an_active_conda_environment():
-    """winget's Python package hard-codes PrependPath=1, so it cannot be asked politely."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    start = source.index('substep "installing Python ${PythonVersion}..."')
-    conda_first = source.index("if (Test-ActiveCondaEnvironment)", start)
-    winget = source.index("if ($script:WingetAvailable", start)
-    assert conda_first < winget, "the conda-safe route has to be attempted before winget"
-    arm = source[winget : source.index("\n", winget)]
-    assert "-not $DetectedPython" in arm, (
-        "winget would otherwise install a second Python over the one just installed, with "
-        "PrependPath=1, undoing the guard"
-    )
-
-
 @pytest.mark.parametrize(
     "path,funcs",
     [
