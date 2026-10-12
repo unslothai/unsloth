@@ -348,11 +348,14 @@ export function MoveSubmenu({
   );
 }
 
-/** Off while the chat is generating: the reply is still changing the topic. */
+/** Off while any of the chat's threads is generating: the reply is still changing the topic. A
+ *  comparison's id is its pair's, so its panes are checked. */
 function RegenerateTitleItem({ chat }: { chat: SidebarItem }) {
   const t = useT();
   const actions = useChatsActions();
-  const generating = useChatRuntimeStore((s) => Boolean(s.runningByThreadId[chat.id]));
+  const generating = useChatRuntimeStore((s) =>
+    (chat.threadIds?.length ? chat.threadIds : [chat.id]).some((id) => Boolean(s.runningByThreadId[id])),
+  );
   return (
     <MenuItem
       icon={Refresh01Icon}

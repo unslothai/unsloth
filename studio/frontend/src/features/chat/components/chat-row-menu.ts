@@ -144,6 +144,8 @@ export type RegenerateTitleOutcome =
 const regeneratingTitles = new Set<string>();
 // Past this, the title is picked from the messages instead.
 const TITLE_MODEL_WAIT_MS = 15_000;
+// A stalled status check would otherwise hold the loading toast and the busy mark for good.
+const TITLE_STATUS_WAIT_MS = 5_000;
 
 async function titleFromModel(checkpoint: string, excerpt: string): Promise<string | null> {
   const controller = new AbortController();
@@ -165,7 +167,7 @@ async function titleModelServing(checkpoint: string): Promise<boolean> {
   if (parseExternalModelId(checkpoint) !== null) return true;
   try {
     // Scoped to the slot serving it, which need not be the primary one.
-    const status = await getInferenceStatus(undefined, checkpoint);
+    const status = await getInferenceStatus(AbortSignal.timeout(TITLE_STATUS_WAIT_MS), checkpoint);
     if (!status.active_model || status.is_audio || status.is_diffusion) return false;
     const want = normalizeModelIdentity(checkpoint);
     return [status.model_identifier, status.active_model, ...(status.serving_checkpoints ?? [])].some(

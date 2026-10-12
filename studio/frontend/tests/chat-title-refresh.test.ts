@@ -126,8 +126,9 @@ test("a refresh follows the connection that answered, and asks a local model onl
     source.indexOf("async function titleModelServing"),
     source.indexOf("export async function regenerateChatTitle"),
   );
-  // An idle-unloaded local model is reloaded by any completion naming it, so residency is read first.
-  assert.match(serving, /const status = await getInferenceStatus\(undefined, checkpoint\);/);
+  // An idle-unloaded local model is reloaded by any completion naming it, so residency is read first,
+  // bounded: a stalled status check must still reach the heuristic fallback.
+  assert.match(serving, /const status = await getInferenceStatus\(AbortSignal\.timeout\(TITLE_STATUS_WAIT_MS\), checkpoint\);/);
   assert.match(serving, /if \(!status\.active_model \|\| status\.is_audio \|\| status\.is_diffusion\) return false;/);
   const body = source.slice(
     source.indexOf("export async function regenerateChatTitle"),
@@ -230,4 +231,21 @@ test("without a model reasoning and tool output never pick the title", () => {
     ]);
   assert.equal(title, "Day trip to Kyoto in autumn");
   assert.doesNotMatch(title ?? "", /database|migration/i);
+});
+
+test("the Library's Regenerate title is off while any of the chat's panes is generating", () => {
+  const source = readFileSync(
+    new URL("../src/features/library/chats/chats-items.tsx", import.meta.url),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  const item = source.slice(
+    source.indexOf("function RegenerateTitleItem"),
+    source.indexOf("function ForkItem"),
+  );
+  // A comparison's id is its pair's; runningByThreadId is keyed by each pane's thread.
+  assert.match(
+    item,
+    /\(chat\.threadIds\?\.length \? chat\.threadIds : \[chat\.id\]\)\.some\(\(id\) => Boolean\(s\.runningByThreadId\[id\]\)\)/,
+  );
+  assert.match(item, /disabled=\{generating\}/);
 });
