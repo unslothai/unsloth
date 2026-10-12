@@ -28,6 +28,23 @@ for _up in _iso.parents:
         _spec.loader.exec_module(_mod)  # sets the env vars on import
         break
 
+# --- one CPU share per xdist worker -----------------------------------------------
+# Also before torch is imported. Each xdist worker otherwise starts a torch / OpenMP pool
+# as wide as the machine, so `-n 4` on a 4 vCPU runner runs 16 spinning threads on 4 cores
+# and CPU training tests slow down by an order of magnitude: test_decision_model's Clef
+# training took >330 s there against ~50 s alone. setdefault keeps an explicit setting.
+import os as _os  # noqa: E402
+
+_workers = int(_os.environ.get("PYTEST_XDIST_WORKER_COUNT") or 0)
+if _workers > 1:
+    try:
+        _cpus = len(_os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        _cpus = _os.cpu_count() or 1
+    _share = str(max(1, _cpus // _workers))
+    for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        _os.environ.setdefault(_var, _share)
+
 # --- shared test helpers on sys.path -----------------------------------------------
 # tests/_shared holds no package marker and pytest only puts a *test file's* own
 # directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
