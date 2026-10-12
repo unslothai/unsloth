@@ -190,8 +190,7 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   }
   const kind = documentKind(name, contentType);
   if (!loaded.blob || !kind) return <Spinner className="m-auto size-6" />;
-  // Same ceiling as the Library and browser views: past it the composer read the file on the server, and
-  // parsing it here would block the main thread.
+  // The Library's ceiling: a larger file was read on the server, and parsing it here blocks the main thread.
   if (loaded.blob.size > MAX_DOCUMENT_PREVIEW_BYTES) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }

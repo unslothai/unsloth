@@ -98,8 +98,7 @@ async function ragUpload(
   return json as DocumentUploadResult;
 }
 
-/** A document's text as the RAG parsers read it, without indexing it. Not gated on sqlite-vec,
- * so its status says nothing about RAG availability. */
+/** Not gated on sqlite-vec, so its status says nothing about RAG availability. */
 export async function extractDocumentText(
   file: File,
 ): Promise<{ text: string; truncated: boolean }> {

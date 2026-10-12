@@ -5,7 +5,6 @@ import { extractDocumentText } from "@/features/rag/api/rag-api";
 import { MAX_SERVER_DOCUMENT_BYTES } from "./open-document-accept";
 import { MAX_TEXT_ATTACHMENT_BYTES } from "./text-attachment-accept";
 
-/** Parsed fine, but nothing to inline: an image-only .epub or .odp. */
 export class NoDocumentTextError extends Error {}
 
 // Per File, so the chip's preview reuses the upload the adapter already made.
@@ -32,7 +31,6 @@ async function extract(file: File): Promise<string> {
     : result.text;
 }
 
-/** The backend parser's text for a document the browser readers cannot open. */
 export function extractServerDocumentText(file: File): Promise<string> {
   let pending = extracted.get(file);
   if (!pending) {

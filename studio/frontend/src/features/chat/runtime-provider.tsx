@@ -914,7 +914,6 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
     });
   }
 
-  // Read at add, like PDFAttachmentAdapter: a running chip parks Send until the backend answers.
   async *add({
     file,
   }: {
@@ -957,13 +956,11 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
     try {
       text = await pending;
     } catch (cause) {
-      // Thrown, not sent as text: PreStreamAwareAttachmentAdapter cancels the run, so a failed read
-      // never reaches the model in place of the document.
+      // Thrown, not sent as text: PreStreamAwareAttachmentAdapter then cancels the run.
       toast.error((cause as Error).message);
       throw cause;
     }
-    // Rechecked: without the python tool the original is not kept, so the placeholder would be all
-    // the model ever gets.
+    // Rechecked: without the python tool no original is kept, leaving the model only the placeholder.
     if (text === null && !pythonToolOpensAttachments()) {
       const error = `${attachment.name} has no text to read. Turn on Code so the python tool can open it.`;
       toast.error(error);
@@ -993,7 +990,6 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
-/** Hands a document past the browser readers' ceiling to the backend parser instead of refusing it. */
 class LargeDocumentFallbackAdapter implements AttachmentAdapter {
   private readonly browser: AttachmentAdapter;
   private readonly server: ServerDocumentAttachmentAdapter;
