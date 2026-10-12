@@ -111,18 +111,14 @@ def test_unsloth_cpu_threads_wins_over_the_default_and_the_quota(monkeypatch, va
 
 
 _TOPOLOGIES = {
-    # M1 Pro: 8 Performance + 2 Efficiency.
     "m1pro": {"hw.nperflevels": 2, "hw.perflevel0.name": "Performance", "hw.perflevel0.physicalcpu": 8,
               "hw.perflevel1.name": "Efficiency", "hw.perflevel1.physicalcpu": 2, "hw.physicalcpu": 10},
-    # M5 Max (ggml-org/llama.cpp#29782): 6 Super + 12 Performance, no efficiency tier.
+    # ggml-org/llama.cpp#29782
     "m5max": {"hw.nperflevels": 2, "hw.perflevel0.name": "Super", "hw.perflevel0.physicalcpu": 6,
               "hw.perflevel1.name": "Performance", "hw.perflevel1.physicalcpu": 12, "hw.physicalcpu": 18},
-    # Virtual M1 runner: one tier.
     "vm": {"hw.nperflevels": 1, "hw.perflevel0.name": "Performance", "hw.perflevel0.physicalcpu": 3,
            "hw.physicalcpu": 3},
-    # No perflevel sysctls (older macOS / Intel).
     "intel": {"hw.physicalcpu": 6},
-    # Levels without names: only level 0 is known to be fast.
     "unnamed": {"hw.nperflevels": 2, "hw.perflevel0.physicalcpu": 4, "hw.perflevel1.physicalcpu": 6,
                 "hw.physicalcpu": 10},
 }

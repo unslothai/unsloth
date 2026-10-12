@@ -300,8 +300,7 @@ def _sysctl(name: str, as_str: bool = False) -> Any:
 
 
 def _apple_performance_cores() -> Optional[int]:
-    """macOS physical cores outside the efficiency tier, else None. Apple Silicon has no SMT, so ``cpu_count() // 2``
-    undercounts, and level 0 alone misses chips with two fast tiers (M5 Max: 6 Super + 12 Performance)."""
+    """macOS non-efficiency cores (no SMT, so ``cpu_count() // 2`` undercounts; M5 Max: 6 Super + 12 Performance)."""
     if sys.platform != "darwin":
         return None
     levels = _sysctl("hw.nperflevels") or 0
@@ -309,7 +308,7 @@ def _apple_performance_cores() -> Optional[int]:
     for level in range(levels):
         name = _sysctl(f"hw.perflevel{level}.name", as_str = True)
         if name is None and level > 0:
-            break  # unnamed lower tiers may be efficiency cores: keep what is known to be fast
+            break  # unnamed lower tiers may be efficiency cores
         if name is not None and name.strip().lower() == "efficiency":
             continue
         total += _sysctl(f"hw.perflevel{level}.physicalcpu") or 0
