@@ -113,6 +113,8 @@ const UNSUPPORTED_QUANT_METHODS: Record<string, string> = {
   sinq: "SINQ quantization",
   torchao: "torchao quantization",
   quanto: "optimum-quanto quantization",
+  // transformers writes "auto-round"; the other spellings are older AutoRound exports.
+  "auto-round": "AutoRound quantization",
   auto_round: "AutoRound quantization",
   autoround: "AutoRound quantization",
   metal: "Metal-kernel quantization",
