@@ -149,28 +149,25 @@ def native_speed_flags(
 ) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
-    ``backend_args``: the other argv flags; a ``--backend cpu`` there keeps direct conv even on Metal hosts."""
+    ``backend_args``: the other argv flags, whose ``--backend`` decides whether the graph runs on Metal."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        if _runs_on_apple_metal() and not selects_cpu_backend(backend_args or ()):
+        if _runs_on_apple_metal(backend_args or ()):
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
 
 
-def selects_cpu_backend(args: Sequence[str]) -> bool:
-    """True if ``args`` holds a bare ``--backend cpu`` (the whole graph on the CPU backend)."""
-    args = list(args)
-    return any(
-        flag == "--backend" and i + 1 < len(args) and str(args[i + 1]).strip().lower() == "cpu"
-        for i, flag in enumerate(args)
-    )
+def _backend_spec_is_cpu(spec: str) -> bool:
+    """True for ``cpu`` or a per-module spec that maps every module to cpu."""
+    parts = [p for p in str(spec).split(",") if p.strip()]
+    return bool(parts) and all(p.split("=")[-1].strip().lower() == "cpu" for p in parts)
 
 
-def _runs_on_apple_metal() -> bool:
-    """True when sd.cpp runs on Apple Metal (darwin arm64, not a paravirtual GPU).
+def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
+    """True when sd.cpp runs on Apple Metal (darwin arm64; an explicit ``--backend`` decides, else not a paravirtual GPU).
 
     Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
     import platform
@@ -178,7 +175,16 @@ def _runs_on_apple_metal() -> bool:
 
     if sys.platform != "darwin" or platform.machine().lower() not in ("arm64", "aarch64"):
         return False
+    args = list(backend_args)
+    specs = [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
+    if specs:
+        return not all(_backend_spec_is_cpu(spec) for spec in specs)
     return not metal_is_paravirtual()
+
+
+def forces_cpu_backend(device: Optional[str]) -> bool:
+    """True when an sd.cpp run on resolved ``device`` is placed on the CPU backend (a paravirtual Mac GPU)."""
+    return device == "mps" and metal_is_paravirtual()
 
 
 # Kill switch for the Metal text-encoder placement below (1/true keeps the encoder on Metal).

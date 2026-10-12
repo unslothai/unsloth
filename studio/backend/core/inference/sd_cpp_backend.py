@@ -3047,7 +3047,7 @@ class SdCppDiffusionBackend:
                 else resolve_diffusion_device_target().device
             )
             # A paravirtual Mac GPU runs sd.cpp on the CPU backend (see metal_text_encoder_flags), so record that.
-            if device == "mps" and sd_cpp_args_mod.metal_is_paravirtual():
+            if sd_cpp_args_mod.forces_cpu_backend(device):
                 device = "cpu"
             spawn_env = off_torch.child_env() if off_torch is not None else None
             # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)

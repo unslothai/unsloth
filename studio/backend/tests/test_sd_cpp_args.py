@@ -251,6 +251,53 @@ def test_engine_generate_keeps_direct_conv_on_a_forced_cpu_backend(monkeypatch):
     assert "--diffusion-conv-direct" in captured["cmd"]
 
 
+def test_native_speed_honours_an_explicit_metal_pin_on_a_paravirtual_gpu(monkeypatch):
+    # An offload --backend pin suppresses the paravirtual CPU placement, so the graph is on Metal again.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    pin = ["--backend", "diffusion=MTL0,te=cpu,vae=MTL0"]
+    assert native_speed_flags("default", pin) == ["--diffusion-fa"]
+    assert native_speed_flags("default", ["--backend", "diffusion=cpu,te=cpu,vae=cpu"]) == [
+        "--diffusion-fa",
+        "--diffusion-conv-direct",
+    ]
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    server = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, offload = pin, native_speed = "default"
+    )
+    assert "--diffusion-conv-direct" not in server
+    unpinned = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, native_speed = "default"
+    )
+    assert "--diffusion-conv-direct" in unpinned
+
+
+def test_forces_cpu_backend_only_for_a_paravirtual_mps_device(monkeypatch):
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    assert sd_cpp_args.forces_cpu_backend("mps") is True
+    assert sd_cpp_args.forces_cpu_backend("cuda") is False
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    assert sd_cpp_args.forces_cpu_backend("mps") is False
+
+
+def test_image_load_route_skips_the_diffusion_claim_for_a_forced_cpu_native_load():
+    import inspect
+
+    import routes.inference as inference_routes
+
+    source = inspect.getsource(inference_routes)
+    start = source.index("off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)")
+    window = source[start : start + 25000]
+    guard = window.index("if activated == ENGINE_SD_CPP and forces_cpu_backend(device):")
+    assert window.index("activated = active_engine_name()") < guard < window.index("if needs_gpu:")
+    assert "needs_gpu = False" in window[guard : guard + 120]
+
+
 def test_upscale_on_paravirtual_metal_runs_on_the_cpu_backend(monkeypatch):
     import core.inference.sd_cpp_args as sd_cpp_args
 
