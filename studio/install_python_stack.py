@@ -12,10 +12,12 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import glob
 import importlib
 import importlib.util
+import io
 import json
 import locale
 import os
@@ -51,7 +53,7 @@ def _nvidia_library_inventory():
     return _nvidia_probe.probe() if _nvidia_probe is not None else None
 
 
-from backend.utils.kernel_install import install_prebuilt, uninstall_command
+from backend.utils.kernel_install import install_kernel, install_prebuilt, uninstall_command
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
@@ -8549,6 +8551,43 @@ def _ensure_flash_attn() -> None:
         _remove_stale_flash_attn()
 
 
+def _ssm_kernel_install_disabled() -> bool:
+    return os.getenv("UNSLOTH_STUDIO_SKIP_SSM_KERNELS_INSTALL") == "1"
+
+
+def _ensure_ssm_kernels() -> None:
+    """causal-conv1d and mamba-ssm prebuilt wheels for the installed torch, at setup.
+
+    The same wheel-only install `unsloth install-kernels` and the SSM runtime run, so a
+    Mamba / hybrid model does not wait on a download at load time. Never builds from source
+    and never changes torch; a cell with no published wheel is skipped.
+    """
+    if _ssm_kernel_install_disabled() or NO_TORCH or IS_MACOS:
+        return
+    env = probe_torch_wheel_env(
+        timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT if IS_WINDOWS else None,
+        include_windows = True,
+    )
+    if env is None:
+        return
+    for name in ("causal_conv1d", "mamba_ssm"):
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                status = install_kernel(name, env)
+        except Exception as exc:
+            status = 1
+            buffer.write(f"{type(exc).__name__}: {exc}")
+        if status:
+            _count_install_action()
+            _step("warning", f"Continuing without {name}", _cyan)
+        elif f"Unsloth: installed {name} " in buffer.getvalue():
+            _count_install_action()
+        for line in buffer.getvalue().splitlines():
+            if line.strip():
+                _note(line.removeprefix("Unsloth: "))
+
+
 # -- uv bootstrap ------------------------------------------------------
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
@@ -12243,6 +12282,7 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         base_total += 1  # flash-attn, Linux and Windows
+        base_total += 1  # causal-conv1d + mamba-ssm, same gate
         if not IS_WINDOWS:
             base_total += 1  # torch final repair (step 13), Linux
         else:
@@ -12650,6 +12690,8 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
+        _progress("mamba kernels")
+        _ensure_ssm_kernels()
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
@@ -12833,8 +12875,9 @@ def install_python_stack() -> int:
                 "flash-attn"
             )
             _install_torchao_for_torch(_torch_after_repair)
-            # resync flash-attn because the repair can invalidate the wheel selected earlier.
+            # resync the kernels because the repair can invalidate the wheels selected earlier.
             _ensure_flash_attn()
+            _ensure_ssm_kernels()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
@@ -12849,8 +12892,9 @@ def install_python_stack() -> int:
             return 1
         _torch_after_flavor = str(_probe_installed_torch_version() or "")
         if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
-            # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
+            # The kernels were chosen for the torch the invariant just replaced, as in step 13.
             _ensure_flash_attn()
+            _ensure_ssm_kernels()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
