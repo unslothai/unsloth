@@ -412,6 +412,9 @@ def test_trl_vllm_client_reads_this_server():
         from trl.experimental.async_grpo.vllm_client import VLLMClient
     except Exception:
         pytest.skip("TRL AsyncGRPO not installed")
+    if not hasattr(VLLMClient, "load_lora_adapter"):
+        # TRL 1.13's client syncs full weights only; fast_inference requires TRL >= 1.14 for this.
+        pytest.skip("TRL < 1.14: VLLMClient has no LoRA adapter calls")
     PartialState()  # TRL logs through accelerate's logger
     llm = _FakeLLM()
     server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)

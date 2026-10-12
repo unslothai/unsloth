@@ -899,6 +899,13 @@ export const sv = {
       loginHint:
         "Logga in som {username} med den här koden som lösenord och välj sedan ett nytt lösenord.",
       privateAccount: "Privat konto",
+      modelAccess: "Modellåtkomst",
+      modelAccessTitle: "Modellåtkomst för {username}",
+      modelAccessDescription: "Välj vilka Hugging Face-modeller det här kontot kan se, ladda ner, läsa in och använda via sina API-nycklar.",
+      modelAccessLabel: "Tillåtna modeller",
+      modelAccessHint: "En modell per rad, till exempel unsloth/Qwen3-4B-GGUF, eller unsloth/* för en hel organisation. Lämna tomt för att tillåta alla modeller.",
+      modelAccessSave: "Spara",
+      modelAccessLimited: "Begränsad modellåtkomst",
       empty: "Inga andra konton ännu",
       setupCode: "Konfigurationskod",
       setupFor: "Konfigurationskod för {username}",
@@ -1627,6 +1634,8 @@ export const sv = {
         sectionTitle: "Läs upp",
         buttonLabel: "Knapp för uppläsning",
         buttonDescription: "Visa på assistentsvar",
+        autoLabel: "Läs upp svar automatiskt",
+        autoDescription: "Läs upp varje svar så snart det är klart",
         engineLabel: "TTS-motor",
         engineSystemDescription: "Inbyggda enhetsröster",
         engineStudioDescription:
@@ -1955,6 +1964,14 @@ export const sv = {
         switchFailed: "Kunde inte byta inbäddningsmodell",
         back: "Tillbaka till källor",
         menuSubtitle: "Används för filsökning",
+        device: "Enhet för inbäddning",
+        deviceDescription:
+          "Var inbäddningsmodellen körs, för alla modeller. GPU indexerar stora dokumentmängder snabbare men håller en del VRAM upptaget tills Studio startas om.",
+        deviceAuto: "Automatiskt",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "Anges av {name}.",
+        deviceSaveError: "Det gick inte att ändra enheten för inbäddning",
       },
       storage: {
         sectionTitle: "Lagring",
@@ -2250,6 +2267,13 @@ export const sv = {
         noGpu: "Ingen synlig GPU",
         gpuUnusable: "GPU oanvändbar",
         gpuUnusableDetail: "Identifierad, men PyTorch kan inte använda den",
+        detailedView: "Detaljerad vy",
+        detailedViewDescription:
+          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret och här.",
+        cpuLoad: "CPU-belastning",
+        gpuLoad: "GPU-belastning",
+        temperature: "Temperatur",
+        power: "Effekt",
       },
       gpu: {
         title: "GPU-enheter",

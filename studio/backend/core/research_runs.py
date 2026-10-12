@@ -2393,7 +2393,10 @@ class ResearchSupervisor:
 
     # The structured inline card renders the plan; no second markdown copy below it.
     async def _research(self, run: dict) -> None:
-        resuming = run.get("claimedFromStatus") == "running"
+        # Completed steps on a queued run are ones a Retry kept (a fresh plan's steps are all pending).
+        resuming = run.get("claimedFromStatus") == "running" or any(
+            step.get("status") == "completed" for step in run.get("steps") or ()
+        )
         fresh = await asyncio.to_thread(db.get_run, run["id"])
         if not fresh or not fresh.get("plan"):
             raise ValueError("Approved plan is missing")
