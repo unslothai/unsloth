@@ -615,7 +615,7 @@ const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 // Matches the clipboard reader, so a dropped source file and a pasted one
 // accept the same sizes.
 const MAX_NATIVE_TEXT_BYTES: u64 = 20 * 1024 * 1024;
-// OpenDocument archives use the composer's larger archive limit.
+// Documents use the composer's larger archive and PDF limit.
 const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
@@ -640,6 +640,14 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
+        "txt" => Some("text/plain"),
+        "md" | "markdown" => Some("text/markdown"),
+        "html" | "htm" => Some("text/html"),
+        "pdf" => Some("application/pdf"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "xlsm" => Some("application/vnd.ms-excel.sheet.macroEnabled.12"),
+        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "png" => Some("image/png"),
         "webp" => Some("image/webp"),
@@ -770,13 +778,19 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     // reapplied below once the bytes say it is TypeScript.
     let max_bytes = if has_transport_stream_extension(path) {
         MAX_NATIVE_VIDEO_BYTES
-    } else if is_text_attachment {
+    } else if is_text_attachment || mime_type.starts_with("text/") {
         MAX_NATIVE_TEXT_BYTES
     } else if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
     } else if mime_type.starts_with("video/") {
         MAX_NATIVE_VIDEO_BYTES
-    } else if mime_type.starts_with("application/vnd.oasis.opendocument.") {
+    } else if mime_type.starts_with("application/vnd.oasis.opendocument.")
+        || mime_type.starts_with("application/vnd.openxmlformats-officedocument.")
+        || matches!(
+            mime_type,
+            "application/pdf" | "application/vnd.ms-excel.sheet.macroEnabled.12"
+        )
+    {
         MAX_NATIVE_OPEN_DOCUMENT_BYTES
     } else {
         MAX_NATIVE_ATTACHMENT_BYTES
@@ -1099,20 +1113,43 @@ mod tests {
     }
 
     #[test]
-    fn document_token_is_refused_by_the_image_reader() {
-        let path = temp_path("note").with_extension("pdf");
-        fs::write(&path, b"%PDF-1.4").unwrap();
-        let (_state, entry) = attachment_entry(&path);
-        let Err(err) = read_attachment_payload(&entry) else {
-            panic!("expected the read to be refused");
-        };
-        assert!(err.contains("Only chat attachments can be read inline"));
-        let _ = fs::remove_file(path);
+    fn composer_documents_read_inline_with_adapter_mime_types() {
+        for (ext, mime) in [
+            ("txt", "text/plain"),
+            ("md", "text/markdown"),
+            ("markdown", "text/markdown"),
+            ("html", "text/html"),
+            ("htm", "text/html"),
+            ("pdf", "application/pdf"),
+            (
+                "docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            (
+                "xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            ("xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"),
+            (
+                "pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+        ] {
+            let path = temp_path("composer-document").with_extension(ext);
+            fs::write(&path, b"document bytes").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry).unwrap();
+            assert_eq!(payload.mime_type, mime, "{ext}");
+            assert_eq!(BASE64.decode(payload.base64).unwrap(), b"document bytes");
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]
     fn text_attachments_read_inline_with_their_own_cap() {
         for (ext, mime) in [
+            ("txt", "text/plain"),
+            ("md", "text/markdown"),
             ("cs", "text/plain"),
             ("php", "text/plain"),
             ("js", "text/plain"),
@@ -1210,6 +1247,24 @@ mod tests {
             payload.mime_type,
             "application/vnd.oasis.opendocument.spreadsheet"
         );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn composer_documents_use_the_document_cap() {
+        let path = temp_path("document-cap").with_extension("pdf");
+        fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_ok());
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_NATIVE_OPEN_DOCUMENT_BYTES + 1)
+            .unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected the document cap to reject the read");
+        };
+        assert!(error.contains("too large"));
         let _ = fs::remove_file(path);
     }
 

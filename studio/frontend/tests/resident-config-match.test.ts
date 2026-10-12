@@ -1094,6 +1094,17 @@ test("a diffusion resident is not judged on the chat-only invocation fields", ()
   assert.equal(matches({ ...diffusion, cache_type_kv: "q8_0" }, BLANK), false);
 });
 
+test("a diffusion pick matches its lowest GPU or the GPUs it split over (#6347)", () => {
+  // Fits one card: the runner reports only the lowest picked GPU.
+  const single = { ...DEFAULTS, is_diffusion: true, requested_gpu_ids: [0], gpu_ids: [0] };
+  assert.equal(matches(single, { ...BLANK, selectedGpuIds: [1, 0] }), true);
+  // Too big for one card: it reports the whole sorted pick it split over.
+  const split = { ...DEFAULTS, is_diffusion: true, requested_gpu_ids: [0, 1], gpu_ids: [0, 1] };
+  assert.equal(matches(split, { ...BLANK, selectedGpuIds: [1, 0] }), true);
+  // Narrowing that pick to one card is a reload.
+  assert.equal(matches(split, { ...BLANK, selectedGpuIds: [0] }), false);
+});
+
 test("a dropped diffusion split is rechecked once the shim can apply it", () => {
   // diffusion_requested_ngl retains the request even when an older shim ignored it, so
   // once the installed shim gains --ngl support the same request must go through and
