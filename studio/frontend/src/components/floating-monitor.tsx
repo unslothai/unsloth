@@ -211,9 +211,7 @@ function FloatingMonitorPanel({
   );
   const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   const cpuPercent =
-    showDetails &&
-    detailMetrics.has("cpuLoad") &&
-    systemInfo.status === "ready"
+    showDetails && detailMetrics.has("cpuLoad") && systemInfo.status === "ready"
       ? clampPercent(systemInfo.cpu?.usage_percent ?? 0)
       : null;
   const telemetryRows =

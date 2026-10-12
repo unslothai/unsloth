@@ -18,12 +18,19 @@ const ALL = selectedDetailMetrics(undefined);
 
 test("stored metric selections survive and garbage falls back to every metric", () => {
   assert.deepEqual([...ALL], [...MONITOR_DETAIL_METRICS]);
-  assert.deepEqual([...selectedDetailMetrics("power")], [...MONITOR_DETAIL_METRICS]);
-  assert.deepEqual([...selectedDetailMetrics(["power", "bogus", "temperature"])], [
-    "temperature",
-    "power",
-  ]);
+  assert.deepEqual(
+    [...selectedDetailMetrics("power")],
+    [...MONITOR_DETAIL_METRICS],
+  );
+  assert.deepEqual(
+    [...selectedDetailMetrics(["power", "bogus", "temperature"])],
+    ["temperature", "power"],
+  );
   assert.deepEqual([...selectedDetailMetrics([])], []);
+  assert.deepEqual(
+    [...selectedDetailMetrics(["bogus", 1])],
+    [...MONITOR_DETAIL_METRICS],
+  );
 });
 
 test("rows carry only readings the backend reported", () => {
@@ -65,13 +72,24 @@ test("rows carry only readings the backend reported", () => {
 });
 
 test("a deselected metric is dropped, and a device left with nothing is skipped", () => {
-  const device = { index: 0, name: "RTX 4090", temperature_c: 70, gpu_utilization_pct: 10 };
-  const rows = gpuTelemetryRows([device], selectedDetailMetrics(["temperature"]));
+  const device = {
+    index: 0,
+    name: "RTX 4090",
+    temperature_c: 70,
+    gpu_utilization_pct: 10,
+  };
+  const rows = gpuTelemetryRows(
+    [device],
+    selectedDetailMetrics(["temperature"]),
+  );
   assert.equal(rows.length, 1);
   assert.equal(rows[0].name, "RTX 4090");
   assert.equal(rows[0].loadPct, null);
   assert.equal(rows[0].temperatureC, 70);
-  assert.deepEqual(gpuTelemetryRows([device], selectedDetailMetrics(["power"])), []);
+  assert.deepEqual(
+    gpuTelemetryRows([device], selectedDetailMetrics(["power"])),
+    [],
+  );
   assert.deepEqual(
     gpuTelemetryRows([{ index: 0, temperature_c: Number.NaN }], ALL),
     [],
@@ -89,7 +107,10 @@ test("temperature turns amber at 80 C and red at 90 C", () => {
 
 test("the detailed view is opt-in and adds no request of its own", () => {
   const store = readFileSync(
-    new URL("../src/features/settings/stores/monitor-overlay-store.ts", import.meta.url),
+    new URL(
+      "../src/features/settings/stores/monitor-overlay-store.ts",
+      import.meta.url,
+    ),
     "utf8",
   );
   assert.match(store, /showDetails: false,/);

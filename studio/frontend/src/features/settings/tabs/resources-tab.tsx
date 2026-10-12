@@ -595,6 +595,7 @@ export function ResourcesTab() {
                   : t("settings.resources.liveMonitor.currentLoad")
             }
             percent={hostUnread ? null : (systemInfo.cpu?.usage_percent ?? 0)}
+            showUsage={!showDetails || detailMetrics.has("cpuLoad")}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
@@ -702,7 +703,8 @@ export function ResourcesTab() {
                     : null,
                 ]
                   .filter(Boolean)
-                  .join(" · ") || "--"
+                  .join(" · ") ||
+                (row.loadPct !== null ? `${Math.round(row.loadPct)}%` : "--")
               }
               detail={[
                 row.temperatureC !== null &&

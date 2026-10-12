@@ -12,15 +12,17 @@ export const MONITOR_DETAIL_METRICS = [
 
 export type MonitorDetailMetric = (typeof MONITOR_DETAIL_METRICS)[number];
 
-/** A stored value that is not a list (older state, hand edits) falls back to all metrics. */
+/** An empty list is a choice; anything else with no known metric (older state, hand edits) means all. */
 export function selectedDetailMetrics(
   stored: unknown,
 ): ReadonlySet<MonitorDetailMetric> {
-  if (!Array.isArray(stored)) {
-    return new Set(MONITOR_DETAIL_METRICS);
-  }
+  const known = Array.isArray(stored)
+    ? MONITOR_DETAIL_METRICS.filter((metric) => stored.includes(metric))
+    : [];
   return new Set(
-    MONITOR_DETAIL_METRICS.filter((metric) => stored.includes(metric)),
+    known.length > 0 || (Array.isArray(stored) && stored.length === 0)
+      ? known
+      : MONITOR_DETAIL_METRICS,
   );
 }
 
