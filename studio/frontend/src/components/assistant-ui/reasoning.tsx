@@ -5,6 +5,7 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
+import { CodeHighlightModeContext } from "@/components/assistant-ui/code-highlight-context";
 import {
   MarkdownText,
   SearchImagesEnabledContext,
@@ -30,7 +31,7 @@ import {
 import {
   clearReasoningRound,
   foldIsActive,
-  isRenderableRenderHtmlToolPart,
+  reasoningTailCapped,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   setReasoningRoundOpen,
@@ -58,6 +59,7 @@ import { cn } from "@/lib/utils";
 import {
   type ReasoningGroupComponent,
   type ReasoningMessagePartComponent,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -79,7 +81,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { useShallow } from "zustand/react/shallow";
+import { shallow } from "zustand/shallow";
+import { partsHaveRenderableRenderHtmlTool } from "@/components/assistant-ui/message-derived";
+import { useMessageMemo } from "@/components/assistant-ui/use-message-memo";
 const ANIMATION_DURATION = 200;
 
 function selectionIntersectsElement(
@@ -354,7 +358,9 @@ function ReasoningText({
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => (
   <SearchImagesEnabledContext.Provider value={false}>
-    <MarkdownText />
+    <CodeHighlightModeContext.Provider value="settled">
+      <MarkdownText />
+    </CodeHighlightModeContext.Provider>
   </SearchImagesEnabledContext.Provider>
 );
 
@@ -367,21 +373,23 @@ function ReasoningCopyButton({
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const reasoningText = useAuiState(({ message }) => {
-    return message.parts
-      .slice(startIndex, endIndex + 1)
+  const aui = useAui();
+
+  // Read on click: as a selector it joined all the reasoning on every store write.
+  const handleCopy = useCallback(async () => {
+    const reasoningText = aui
+      .message()
+      .getState()
+      .parts.slice(startIndex, endIndex + 1)
       .filter((p) => p.type === "reasoning")
       .map((p) => ("text" in p ? (p as { text: string }).text : ""))
       .join("\n");
-  });
-
-  const handleCopy = useCallback(async () => {
     if (await copyToClipboard(reasoningText)) {
       setCopied(true);
       if (resetRef.current) clearTimeout(resetRef.current);
       resetRef.current = setTimeout(() => setCopied(false), COPY_RESET_MS);
     }
-  }, [reasoningText]);
+  }, [aui, startIndex, endIndex]);
 
   return (
     <IconActionButton
@@ -476,15 +484,19 @@ function useReasoningTranscriptMode({
 function ReasoningBody({
   transcript,
   messageId,
+  roundStart,
   messageHasRenderableRenderHtmlTool,
   isStreaming,
+  bounded = false,
   textClassName,
   children,
 }: {
   transcript: ReturnType<typeof useReasoningTranscriptMode>;
   messageId: string;
+  roundStart: number;
   messageHasRenderableRenderHtmlTool: boolean;
   isStreaming: boolean;
+  bounded?: boolean;
   textClassName?: string;
   children: ReactNode;
 }) {
@@ -499,16 +511,93 @@ function ReasoningBody({
           key={messageId}
           initialAnchor={transcript.anchor}
           documents={transcript.documents}
+          indexKey={`${messageId}:${roundStart}`}
           messageId={messageId}
           messageHasRenderableRenderHtmlTool={
             messageHasRenderableRenderHtmlTool
           }
           streaming={isStreaming}
+          bounded={bounded}
         />
       ) : (
         children
       )}
     </ReasoningText>
+  );
+}
+
+// The newest lines of a live trace in a fixed box (#11703), clipped at the top rather than an inner
+// scroller, which split the reading anchor across two containers and wrote its own scroll (#11704).
+function ReasoningTail({
+  capped,
+  onShowFull,
+  children,
+}: {
+  capped: boolean;
+  onShowFull: () => void;
+  children: ReactNode;
+}) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const content = box?.firstElementChild as HTMLElement | null | undefined;
+    if (!capped || !box || !content) {
+      setOverflowing(false);
+      return;
+    }
+    const check = () => setOverflowing(content.offsetHeight > box.clientHeight);
+    const observer = new ResizeObserver(check);
+    observer.observe(content);
+    observer.observe(box);
+    check();
+    return () => observer.disconnect();
+  }, [capped]);
+  const clipped = capped && overflowing;
+  return (
+    <>
+      <div
+        ref={boxRef}
+        data-slot="reasoning-tail"
+        data-capped={capped ? "" : undefined}
+        data-overflowing={clipped ? "" : undefined}
+        onFocus={(event) => {
+          // Clipped lines cannot scroll into view: a link focused up there shows the full trace.
+          if (
+            clipped &&
+            event.target.getBoundingClientRect().top <
+              event.currentTarget.getBoundingClientRect().top
+          )
+            onShowFull();
+        }}
+        className={cn(
+          capped &&
+            "flex max-h-[min(18rem,40vh)] flex-col justify-end overflow-hidden [&>*]:shrink-0",
+          clipped &&
+            "[mask-image:linear-gradient(to_bottom,transparent,black_3rem)]",
+        )}
+      >
+        {children}
+      </div>
+      {clipped && (
+        <button
+          type="button"
+          data-slot="reasoning-show-full"
+          onClick={(event) => {
+            // The button unmounts with the cap: keep keyboard focus on this block's header.
+            if (event.currentTarget === document.activeElement)
+              boxRef.current
+                ?.closest('[data-slot="reasoning-root"]')
+                ?.querySelector<HTMLElement>('[data-slot="reasoning-trigger"]')
+                ?.focus({ preventScroll: true });
+            onShowFull();
+          }}
+          className="mt-2 cursor-pointer font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          Show full thinking
+        </button>
+      )}
+    </>
   );
 }
 
@@ -519,10 +608,11 @@ const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
   const foldToolActivity = useChatPreferencesStore((state) =>
     foldIsActive(state.foldToolActivityIntoThinking, state.toolVisibility),
   );
-  const folded = useAuiState(
-    ({ message }) =>
+  const folded = useMessageMemo(
+    (message) =>
       foldToolActivity &&
       isFoldedReasoningGroup(message.parts, props.startIndex),
+    [foldToolActivity, props.startIndex],
   );
   if (folded) {
     return <FoldedReasoningRound {...props} />;
@@ -550,10 +640,13 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
   endIndex,
 }) => {
   const messageId = useAuiState(({ message }) => message.id);
-  const roundKey = useAuiState(({ message }) => {
-    const lead = leadReasoningEnd(message.parts, startIndex);
-    return lead === null ? null : reasoningRoundKey(message.id, lead);
-  });
+  const roundKey = useMessageMemo(
+    (message) => {
+      const lead = leadReasoningEnd(message.parts, startIndex);
+      return lead === null ? null : reasoningRoundKey(message.id, lead);
+    },
+    [startIndex],
+  );
   const open = useReasoningRoundStore(
     (state) => roundKey !== null && (state.open[roundKey] ?? false),
   );
@@ -567,24 +660,26 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
     return true;
   });
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+    partsHaveRenderableRenderHtmlTool(message.parts),
   );
   const reasoningContentRef = useRef<HTMLDivElement>(null);
-  const reasoningDocuments = useAuiState(
-    useShallow(({ message }) =>
+  const reasoningDocuments = useMessageMemo(
+    (message) =>
       message.parts
         .slice(startIndex, endIndex + 1)
         .filter((part) => part.type === "reasoning")
         .map((part) => ("text" in part ? (part as { text: string }).text : "")),
-    ),
+    [startIndex, endIndex],
+    shallow,
   );
   const transcript = useReasoningTranscriptMode({
     messageId,
     reasoningDocuments,
     reasoningContentRef,
   });
-  const closesTrace = useAuiState(({ message }) =>
-    endsFoldedSpan(message.parts, endIndex),
+  const closesTrace = useMessageMemo(
+    (message) => endsFoldedSpan(message.parts, endIndex),
+    [endIndex],
   );
   // Hidden, not unmounted, so the text keeps streaming in while the lead is closed.
   return (
@@ -596,6 +691,7 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
       <ReasoningBody
         transcript={transcript}
         messageId={messageId}
+        roundStart={startIndex}
         messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
         isStreaming={isStreaming}
         textClassName="pt-0"
@@ -614,9 +710,10 @@ const ReasoningGroupBlock = ({
   foldTurn,
 }: ComponentProps<ReasoningGroupComponent> & { foldTurn: boolean }) => {
   // The lead of a folded span: its first Thinking block.
-  const foldLead = useAuiState(
-    ({ message }) =>
+  const foldLead = useMessageMemo(
+    (message) =>
       foldTurn && leadReasoningEnd(message.parts, endIndex) === endIndex,
+    [foldTurn, endIndex],
   );
   const isReasoningStreaming = useAuiState(({ message }) => {
     if (message.status?.type !== "running") {
@@ -654,18 +751,19 @@ const ReasoningGroupBlock = ({
   const messageId = useAuiState(({ message }) => message.id);
 
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+    partsHaveRenderableRenderHtmlTool(message.parts),
   );
 
   const reasoningContentRef = useRef<HTMLDivElement>(null);
 
-  const reasoningDocuments = useAuiState(
-    useShallow(({ message }) =>
+  const reasoningDocuments = useMessageMemo(
+    (message) =>
       message.parts
         .slice(startIndex, endIndex + 1)
         .filter((part) => part.type === "reasoning")
         .map((part) => ("text" in part ? (part as { text: string }).text : "")),
-    ),
+    [startIndex, endIndex],
+    shallow,
   );
   const transcript = useReasoningTranscriptMode({
     messageId,
@@ -673,17 +771,20 @@ const ReasoningGroupBlock = ({
     reasoningContentRef,
   });
 
-  const persistedDuration = useAuiState(({ message }) => {
-    const custom = message.metadata?.custom as
-      | Record<string, unknown>
-      | undefined;
-    if (foldLead) {
-      return foldedTurnDuration(message.parts, endIndex, (parts, start) =>
-        resolveReasoningGroupDuration(parts, start, custom),
-      );
-    }
-    return resolveReasoningGroupDuration(message.parts, startIndex, custom);
-  });
+  const persistedDuration = useMessageMemo(
+    (message) => {
+      const custom = message.metadata?.custom as
+        | Record<string, unknown>
+        | undefined;
+      if (foldLead) {
+        return foldedTurnDuration(message.parts, endIndex, (parts, start) =>
+          resolveReasoningGroupDuration(parts, start, custom),
+        );
+      }
+      return resolveReasoningGroupDuration(message.parts, startIndex, custom);
+    },
+    [foldLead, startIndex, endIndex],
+  );
 
   const visibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
@@ -730,26 +831,40 @@ const ReasoningGroupBlock = ({
     override,
   });
 
+  // Fold mode keeps its rounds inline: the lead's box could not hold the rounds folded after it.
+  // A closing block keeps the cap it had while open: a hand close must not re-cap a full trace.
+  const cappedNow = !foldLead && reasoningTailCapped({ visibility, override });
+  const [closingCapped, setClosingCapped] = useState(cappedNow);
+  if (isOpen && closingCapped !== cappedNow) {
+    setClosingCapped(cappedNow);
+  }
+  const capped = isOpen ? cappedNow : closingCapped;
+
   // Publish the lead's open state for everything folded under it, and count the tool calls for
   // its header. A layout effect, so the folded parts settle before the frame the user sees.
   const roundKey = reasoningRoundKey(messageId, endIndex);
   const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
-  const foldedToolCount = useAuiState(({ message }) =>
-    foldLead
-      ? countFoldedToolParts(message.parts, endIndex, (start, end) =>
-          toolRunIsExempt(message.parts, start, end, toolConfirmations),
-        )
-      : 0,
+  const foldedToolCount = useMessageMemo(
+    (message) =>
+      foldLead
+        ? countFoldedToolParts(message.parts, endIndex, (start, end) =>
+            toolRunIsExempt(message.parts, start, end, toolConfirmations),
+          )
+        : 0,
+    [foldLead, endIndex, toolConfirmations],
   );
   // Copy reaches the rounds folded in here too: they have no Copy of their own.
-  const copyEndIndex = useAuiState(({ message }) =>
-    foldLead ? foldEnd(message.parts, endIndex) - 1 : endIndex,
+  const copyEndIndex = useMessageMemo(
+    (message) => (foldLead ? foldEnd(message.parts, endIndex) - 1 : endIndex),
+    [foldLead, endIndex],
   );
   // The answer follows this block directly, with nothing folded in between.
-  const closesTrace = useAuiState(({ message }) =>
-    foldLead
-      ? endsFoldedSpan(message.parts, endIndex)
-      : message.parts[endIndex + 1]?.type === "text",
+  const closesTrace = useMessageMemo(
+    (message) =>
+      foldLead
+        ? endsFoldedSpan(message.parts, endIndex)
+        : message.parts[endIndex + 1]?.type === "text",
+    [foldLead, endIndex],
   );
   useLayoutEffect(() => {
     if (!foldLead) return;
@@ -798,16 +913,23 @@ const ReasoningGroupBlock = ({
         streaming={isReasoningStreaming}
         ref={reasoningContentRef}
       >
-        <ReasoningBody
-          transcript={transcript}
-          messageId={messageId}
-          messageHasRenderableRenderHtmlTool={
-            messageHasRenderableRenderHtmlTool
-          }
-          isStreaming={isReasoningStreaming}
+        <ReasoningTail
+          capped={capped}
+          onShowFull={() => handleOpenChange(true)}
         >
-          {children}
-        </ReasoningBody>
+          <ReasoningBody
+            transcript={transcript}
+            messageId={messageId}
+            roundStart={startIndex}
+            messageHasRenderableRenderHtmlTool={
+              messageHasRenderableRenderHtmlTool
+            }
+            isStreaming={isReasoningStreaming}
+            bounded={capped}
+          >
+            {children}
+          </ReasoningBody>
+        </ReasoningTail>
         {closesTrace && <ReasoningEndRule />}
       </ReasoningContent>
     </ReasoningRoot>

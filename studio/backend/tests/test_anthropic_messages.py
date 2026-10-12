@@ -621,6 +621,29 @@ class TestToolActionNudge:
 
         assert "- guided: Guide this task." in nudge
         assert "create_skill" not in nudge
+        # without python or terminal, a skill's bundled scripts cannot run here.
+        assert "bundled scripts cannot run" in nudge
+        assert "Unsloth Studio's local Code tool" in nudge
+
+    @pytest.mark.parametrize("code_tool", ["python", "terminal"])
+    def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(self, monkeypatch, code_tool):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "read_skill"}},
+                {"type": "function", "function": {"name": code_tool}},
+            ],
+            model_name = "test",
+        )
+
+        assert "- guided: Guide this task." in nudge
+        assert "bundled scripts cannot run" not in nudge
 
 
 # =====================================================================
@@ -3761,6 +3784,35 @@ class TestAnthropicMessagesToolRouting:
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
         assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
+
+    def test_client_tool_non_streaming_expected_cancel_returns_anthropic_499(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def _cancelled(*_args, **_kwargs):
+            raise inf_mod._NonStreamingRequestCancelled("Request cancelled.")
+
+        _mock_backend(monkeypatch, base_url = "http://llama.test")
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _cancelled)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert exc.value.status_code == 499
+        assert exc.value.detail["type"] == "error"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
 
     def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod

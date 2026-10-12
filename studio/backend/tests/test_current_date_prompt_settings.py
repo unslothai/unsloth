@@ -400,274 +400,354 @@ class TestResearchSystemPrompt:
         assert _system_prompt_with_instructions("BASE", {"currentDate": ""}) == "BASE"
 
 
-class TestConversationStartDate:
-    @staticmethod
-    def _threads(monkeypatch, threads):
-        import storage.studio_db as studio_db
-        monkeypatch.setattr(studio_db, "get_chat_thread", lambda thread_id: threads.get(thread_id))
+_QWEN25_LIKE = (
+    "{% if messages[0]['role'] == 'system' %}{% set sys = messages[0]['content'] %}"
+    "{% set rest = messages[1:] %}{% else %}"
+    "{% set sys = 'You are Qwen, a helpful assistant.' %}{% set rest = messages %}{% endif %}"
+    "<|im_start|>system\n{{ sys }}<|im_end|>\n"
+    "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+)
+_CHATML = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n"
+    "{% endfor %}"
+)
+_GEMMA_LIKE = (
+    "{% if messages[0]['role'] == 'system' %}{% set first = messages[0]['content'] + '\n\n' %}"
+    "{% set rest = messages[1:] %}{% else %}{% set first = '' %}{% set rest = messages %}{% endif %}"
+    "{% for m in rest %}<start_of_turn>{{ m['role'] }}\n"
+    "{% if loop.first %}{{ first }}{% endif %}{{ m['content'] }}<end_of_turn>\n{% endfor %}"
+)
 
-    def test_start_date_is_the_creation_day_in_the_browser_zone(self, monkeypatch):
-        # 2026-08-15T02:00Z is still the 14th in New York.
-        created = int(datetime(2026, 8, 15, 2, tzinfo = timezone.utc).timestamp() * 1000)
-        self._threads(monkeypatch, {"t": {"createdAt": created}})
-        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "America/New_York"})
-        assert current_date_settings.conversation_start_date("t", request) == date(2026, 8, 14)
 
-    def test_a_fork_keeps_its_root_threads_start_date(self, monkeypatch):
-        day = lambda d: int(datetime(2026, 8, d, 12, tzinfo = timezone.utc).timestamp() * 1000)
-        self._threads(
-            monkeypatch,
-            {
-                "root": {"createdAt": day(1)},
-                "mid": {"createdAt": day(5), "forkedFromThreadId": "root"},
-                "leaf": {"createdAt": day(9), "forkedFromThreadId": "mid"},
-                "orphan": {"createdAt": day(9), "forkedFromThreadId": "gone"},
-                "loop": {"createdAt": day(9), "forkedFromThreadId": "loop"},
-            },
+_REFUSES_SYSTEM = (
+    "{% if messages[0]['role'] == 'system' %}{{ raise_exception('no system') }}{% endif %}"
+    + _CHATML
+)
+_DROPS_SYSTEM = "{% for m in messages if m['role'] != 'system' %}{{ m['content'] }}{% endfor %}"
+_DAY = date(2026, 10, 4)
+
+
+def _turn(
+    template,
+    tools = False,
+    controls = (),
+):
+    return current_date_settings.template_system_turn(template, _DAY, tools, controls)
+
+
+class TestTemplateSystemTurn:
+    def test_a_template_with_its_own_default_returns_it(self):
+        assert _turn(_QWEN25_LIKE) == (True, "You are Qwen, a helpful assistant.")
+
+    def test_a_template_with_generation_blocks_keeps_its_default(self):
+        template = _QWEN25_LIKE.replace(
+            "{{ m['content'] }}",
+            "{% if m['role'] == 'assistant' %}{% generation %}{{ m['content'] }}"
+            "{% endgeneration %}{% else %}{{ m['content'] }}{% endif %}",
         )
-        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "UTC"})
-        start = current_date_settings.conversation_start_date
-        assert start("leaf", request) == date(2026, 8, 1)
-        assert start("orphan", request) == date(2026, 8, 9)
-        assert start("loop", request) == date(2026, 8, 9)
+        assert _turn(template) == (True, "You are Qwen, a helpful assistant.")
 
-    def test_a_deep_fork_chain_still_reaches_the_root(self, monkeypatch):
-        root = int(datetime(2026, 8, 1, 12, tzinfo = timezone.utc).timestamp() * 1000)
-        later = int(datetime(2026, 8, 9, 12, tzinfo = timezone.utc).timestamp() * 1000)
-        threads = {"t0": {"createdAt": root}}
-        for i in range(1, 40):
-            threads[f"t{i}"] = {"createdAt": later, "forkedFromThreadId": f"t{i - 1}"}
-        self._threads(monkeypatch, threads)
-        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "UTC"})
-        assert current_date_settings.conversation_start_date("t39", request) == date(2026, 8, 1)
+    @pytest.mark.parametrize("template", [_CHATML, _GEMMA_LIKE, None, "", "{% if %}"])
+    def test_templates_without_a_default_return_nothing(self, template):
+        assert _turn(template) == (True, "")
 
-    @pytest.mark.parametrize("thread_id", [None, "", 7, "missing"])
-    def test_unknown_threads_have_no_start_date(self, monkeypatch, thread_id):
-        self._threads(monkeypatch, {})
-        assert current_date_settings.conversation_start_date(thread_id) is None
+    def test_a_default_that_dates_itself_is_dated_for_the_given_day(self):
+        dated = _QWEN25_LIKE.replace(
+            "You are Qwen, a helpful assistant.",
+            "Today is ' + strftime_now('%B %d, %Y') + ', yesterday was the '"
+            " + ((strftime_now('%d') | int) - 1) | string + 'th.",
+        )
+        assert _turn(dated) == (True, "Today is October 04, 2026, yesterday was the 3th.")
 
-    def test_a_lookup_failure_has_no_start_date(self, monkeypatch):
-        import storage.studio_db as studio_db
+    def test_a_template_that_reads_content_parts_returns_its_default(self):
+        parts = (
+            "{% for m in messages if m['role'] == 'system' %}{% else %}<|system|>\nBe helpful.\n"
+            "{% endfor %}{% for m in messages %}<|{{ m['role'] }}|>\n"
+            "{{ m['content'][0]['text'] }}\n{% endfor %}"
+        )
+        assert _turn(parts) == (True, "Be helpful.")
 
-        def _boom(_thread_id):
-            raise RuntimeError("db locked")
+    @pytest.mark.parametrize("template", [_REFUSES_SYSTEM, _DROPS_SYSTEM])
+    def test_a_template_without_a_system_turn_takes_none(self, template):
+        assert _turn(template) == (False, None)
 
-        monkeypatch.setattr(studio_db, "get_chat_thread", _boom)
-        assert current_date_settings.conversation_start_date("t") is None
+    def test_a_tool_request_is_probed_with_a_catalog(self):
+        tools_only = (
+            "{% if tools and messages[0]['role'] == 'system' %}{{ raise_exception('no') }}"
+            "{% endif %}" + _CHATML
+        )
+        assert _turn(tools_only) == (True, "")
+        assert _turn(tools_only, True) == (False, None)
+
+    def test_absent_tools_and_documents_are_passed_as_none_like_transformers(self):
+        template = (
+            "{% if messages[0]['role'] == 'system' %}{% set sys = messages[0]['content'] %}"
+            "{% set rest = messages[1:] %}{% else %}"
+            "{% if tools is none and documents is none %}"
+            "{% set sys = 'You are a helpful function-calling assistant.' %}"
+            "{% else %}{% set sys = '' %}{% endif %}{% set rest = messages %}{% endif %}"
+            "<system>{{ sys }}</system>"
+            "{% for m in rest %}<{{ m['role'] }}>{{ m['content'] }}</{{ m['role'] }}>"
+            "{% endfor %}"
+        )
+        assert _turn(template) == (True, "You are a helpful function-calling assistant.")
+
+    def test_a_template_is_probed_with_the_reasoning_controls(self):
+        thinking_only = (
+            "{% if enable_thinking and messages[0]['role'] == 'system' %}"
+            "{{ raise_exception('no') }}{% endif %}" + _CHATML
+        )
+        assert _turn(thinking_only) == (True, "")
+        assert _turn(thinking_only, controls = (("enable_thinking", True),)) == (False, None)
+
+    @pytest.mark.parametrize("token", ["bos_token", "eos_token", "pad_token", "sep_token"])
+    def test_a_default_carrying_a_control_token_is_not_replayed(self, token):
+        with_token = _QWEN25_LIKE.replace(
+            "{% set sys = 'You are Qwen, a helpful assistant.' %}",
+            "{% set sys = " + token + " + 'You are Qwen, a helpful assistant.' %}",
+        )
+        assert _turn(with_token) == (True, None)
+
+    def test_a_default_the_template_rewrites_is_not_replayed(self):
+        escaped = _QWEN25_LIKE.replace(
+            "'You are Qwen, a helpful assistant.'", "'Say \"hi\".'"
+        ).replace("{{ sys }}", "{{ sys | tojson }}")
+        assert _turn(escaped) == (True, None)
+        plain = _QWEN25_LIKE.replace("{{ sys }}", "{{ sys | tojson }}")
+        assert _turn(plain) == (True, "You are Qwen, a helpful assistant.")
+
+    def test_a_structurally_different_system_branch_is_not_treated_as_default_free(self):
+        structural = (
+            "{% if messages[0]['role'] == 'system' %}"
+            "{% set sys = 'Think deeply.\\n\\n' + messages[0]['content'] %}"
+            "{% set rest = messages[1:] %}{% else %}"
+            "{% set sys = 'You are helpful. Think deeply.' %}{% set rest = messages %}"
+            "{% endif %}[SYSTEM]{{ sys }}[/SYSTEM]"
+            "{% for m in rest %}{{ m['role'] }}:{{ m['content'] }}{% endfor %}"
+        )
+        assert _turn(structural) == (True, None)
+
+    def test_default_words_inside_a_different_system_branch_are_not_treated_as_absent(self):
+        structural = (
+            "{% if messages[0]['role'] == 'system' %}"
+            "{% set sys = 'Always follow policy. ' + messages[0]['content'] %}"
+            "{% set rest = messages[1:] %}{% else %}"
+            "{% set sys = 'A policy.' %}{% set rest = messages %}{% endif %}"
+            "<system>{{ sys }}</system>"
+            "{% for m in rest %}<{{ m['role'] }}>{{ m['content'] }}</{{ m['role'] }}>"
+            "{% endfor %}"
+        )
+        assert _turn(structural) == (True, None)
+
+    def test_transformers_tojson_does_not_html_escape_a_default(self):
+        html = _QWEN25_LIKE.replace(
+            "You are Qwen, a helpful assistant.", "Use <assistant> & answer questions."
+        ).replace("{{ sys }}", "{{ sys | tojson }}")
+        assert _turn(html) == (True, "Use <assistant> & answer questions.")
 
 
-class TestDateChangeNote:
+class TestDateStaysInTheSystemTurn:
     @pytest.fixture(autouse = True)
     def _clock(self, monkeypatch):
         import routes.inference as inference
 
-        self.today = "2026-08-15"
-        self.started = date(2026, 8, 15)
         monkeypatch.setattr(
             inference,
             "current_date_prompt_line",
-            lambda **_kwargs: f"The current date is {self.today}.",
-        )
-        monkeypatch.setattr(
-            inference,
-            "conversation_start_date",
-            lambda thread_id, _request = None: self.started if thread_id == "t" else None,
+            lambda **_kwargs: "The current date is 2026-10-04.",
         )
         monkeypatch.setattr(inference, "_request_has_api_key", lambda _request: False)
+        monkeypatch.setattr(inference, "_local_template_system_turn", lambda *_a: (True, ""))
         self.inference = inference
 
-    def _proxy(
-        self,
-        messages,
-        thread_id = "t",
-        **kwargs,
-    ):
-        return self.inference._prepend_current_date_to_messages(
-            messages, object(), thread_id = thread_id, **kwargs
+    def test_without_a_system_prompt_the_date_is_its_own_system_turn(self):
+        assert (
+            self.inference._apply_current_date_prompt("", object())
+            == "The current date is 2026-10-04."
         )
 
-    def test_same_day_is_byte_identical_to_a_threadless_request(self):
-        messages = [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}]
-        assert self._proxy(messages) == self._proxy(messages, thread_id = None)
-        assert self.inference._apply_current_date_prompt("Be terse.", object(), thread_id = "t") == (
-            "The current date is 2026-08-15.\n\nBe terse."
+    def test_a_template_default_system_prompt_is_kept_after_the_date(self, monkeypatch):
+        monkeypatch.setattr(
+            self.inference, "_local_template_system_turn", lambda *_a: (True, "You are Qwen.")
+        )
+        assert self.inference._apply_current_date_prompt("", object()) == (
+            "The current date is 2026-10-04.\n\nYou are Qwen."
+        )
+        assert self.inference._apply_current_date_prompt("Be terse.", object()) == (
+            "The current date is 2026-10-04.\n\nBe terse."
         )
 
-    def test_midnight_keeps_the_system_turn_and_notes_the_newest_user_turn(self):
-        history = [
-            {"role": "system", "content": "Be terse."},
-            {"role": "user", "content": "first"},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "second"},
-        ]
-        before = self._proxy(history)
-        self.today = "2026-08-16"
-        after = self._proxy(history)
-        assert after[0] == before[0]
-        assert after[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
-        assert after[1:3] == history[1:3]
-        assert after[3]["content"] == "[Current date: 2026-08-16]\n\nsecond"
-        assert history[3]["content"] == "second"
-
-    def test_next_request_after_midnight_restores_the_earlier_turn_to_its_own_text(self):
-        self.today = "2026-08-16"
-        turn1 = [{"role": "user", "content": "first"}]
-        sent1 = self._proxy(turn1)
-        turn2 = turn1 + [
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "second"},
-        ]
-        sent2 = self._proxy(turn2)
-        assert sent2[0] == sent1[0]
-        assert sent1[1]["content"] == "[Current date: 2026-08-16]\n\nfirst"
-        assert sent2[1]["content"] == "first"
-        assert sent2[3]["content"] == "[Current date: 2026-08-16]\n\nsecond"
-
-    def test_threadless_requests_still_refresh_to_today(self):
-        self.today = "2026-08-16"
-        out = self._proxy([{"role": "user", "content": "hi"}], thread_id = None)
-        assert out == [
-            {"role": "system", "content": "The current date is 2026-08-16."},
-            {"role": "user", "content": "hi"},
-        ]
-
-    def test_a_stated_system_date_is_refreshed_to_the_start_date(self):
-        self.today = "2026-08-16"
-        out = self._proxy(
-            [
-                {"role": "system", "content": "The current date is 2026-08-16."},
-                {"role": "user", "content": "hi"},
-            ]
+    def test_a_template_default_that_dates_itself_is_dated_for_the_user(self, monkeypatch):
+        monkeypatch.setattr(
+            self.inference,
+            "_local_template_system_turn",
+            lambda today, *_a: (True, f"Today's Date: {today:%B %d, %Y}.\nYou are Granite."),
         )
-        assert out[0]["content"] == "The current date is 2026-08-15."
-        assert out[1]["content"] == "[Current date: 2026-08-16]\n\nhi"
-
-    def test_note_leads_the_text_part_and_skips_tool_results(self):
-        self.today = "2026-08-16"
-        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}
-        messages = [
-            {"role": "user", "content": [image, {"type": "text", "text": "what is this"}]},
-            {"role": "assistant", "content": "a cat"},
-            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x"}]},
-        ]
-        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
-        assert out[2] is messages[2]
-        assert out[0]["content"] == [
-            image,
-            {"type": "text", "text": "[Current date: 2026-08-16]\n\nwhat is this"},
-        ]
-
-    def test_note_skips_a_tool_result_folded_into_a_user_turn(self):
-        from core.inference.anthropic_compat import fold_tool_results_into_user
-
-        self.today = "2026-08-16"
-        messages = fold_tool_results_into_user(
-            [
-                {"role": "user", "content": "list files"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{"id": "c1", "function": {"name": "ls", "arguments": "{}"}}],
-                },
-                {"role": "tool", "tool_call_id": "c1", "content": "a.txt"},
-            ]
+        # the system turn the tool nudge is appended to, so a tool request keeps the date too.
+        expected = (
+            "The current date is 2026-10-04.\n\nToday's Date: October 04, 2026.\nYou are Granite."
         )
-        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
-        assert out[2] is messages[2]
-        assert out[0]["content"] == "[Current date: 2026-08-16]\n\nlist files"
+        assert self.inference._apply_current_date_prompt("", object()) == expected
+        assert (
+            self.inference._apply_current_date_prompt("", object(), include_api_key = True)
+            == expected
+        )
+
+    def test_a_tool_turn_states_the_date_without_the_template_default(self, monkeypatch):
+        monkeypatch.setattr(
+            self.inference, "_local_template_system_turn", lambda *_a: (True, "You are Qwen.")
+        )
+        assert (
+            self.inference._apply_current_date_prompt(
+                "", object(), include_api_key = True, template_default = False
+            )
+            == "The current date is 2026-10-04."
+        )
+
+    def test_a_template_without_a_system_turn_gets_no_date(self, monkeypatch):
+        monkeypatch.setattr(
+            self.inference, "_local_template_system_turn", lambda *_a: (False, None)
+        )
+        assert self.inference._apply_current_date_prompt("", object()) == ""
+        # a system prompt the caller wrote is still theirs to send, dated.
+        assert self.inference._apply_current_date_prompt("Be terse.", object()) == (
+            "The current date is 2026-10-04.\n\nBe terse."
+        )
+
+    def test_an_audio_turn_keeps_its_transcription_instruction(self, monkeypatch):
+        instruction = self.inference._AUDIO_INPUT_SYSTEM_PROMPT
+        assert self.inference._audio_input_system_prompt("", object()) == (
+            f"The current date is 2026-10-04.\n\n{instruction}"
+        )
+        assert self.inference._audio_input_system_prompt("Be terse.", object()) == (
+            "The current date is 2026-10-04.\n\nBe terse."
+        )
+        monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
+        assert self.inference._audio_input_system_prompt("", object()) == instruction
+
+    def test_a_managed_engine_gets_no_unrequested_system_turn(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        info = {"engine": "vllm", "chat_template_info": {}}
+        backend = SimpleNamespace(active_model_name = "served", models = {"served": info})
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert self.inference._local_template_system_turn(_DAY) == (False, None)
+        assert self.inference._local_template_system_turn(_DAY, tools = True) == (False, None)
 
     @pytest.mark.parametrize(
-        "content",
-        ["", "  ", [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]],
+        "extra_args",
+        [["--chat-template-file", "/srv/chat.jinja"], ["--chat-template=chatml"], ["--no-jinja"]],
     )
-    def test_a_media_only_turn_keeps_its_transcribe_or_describe_default(self, content):
-        from core.inference.chat_template_helpers import last_user_text
+    def test_a_gguf_template_chosen_by_extra_args_gets_no_system_turn(
+        self, monkeypatch, extra_args
+    ):
+        from types import SimpleNamespace
 
-        self.today = "2026-08-16"
-        messages = [{"role": "user", "content": content}]
-        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
-        assert out is messages
-        assert last_user_text(out) == ""
-
-    def test_retrieval_queries_ignore_the_note(self):
-        from core.inference.tools import _last_user_text
-        self.today = "2026-08-16"
-        for content in ("refund policy", [{"type": "text", "text": "refund policy"}]):
-            noted = self.inference._append_current_date_note(
-                [{"role": "user", "content": content}], object(), thread_id = "t"
-            )
-            assert noted[0]["content"] != content
-            assert _last_user_text(noted) == "refund policy"
-
-    def test_a_follow_up_coalesced_onto_a_folded_tool_result_gets_the_note(self):
-        from core.inference.anthropic_compat import fold_tool_results_into_user
-
-        self.today = "2026-08-16"
-        messages = self.inference._coalesce_consecutive_user_turns(
-            fold_tool_results_into_user(
-                [
-                    {"role": "user", "content": "list files"},
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [{"id": "c1", "function": {"name": "ls", "arguments": "{}"}}],
-                    },
-                    {"role": "tool", "tool_call_id": "c1", "content": "a.txt"},
-                    {"role": "user", "content": "now read it"},
-                ]
-            )
+        monkeypatch.undo()
+        llama = SimpleNamespace(
+            is_loaded = True, chat_template = _CHATML, chat_template_override = None, extra_args = []
         )
-        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
-        assert out[0] is messages[0]
-        assert out[-1]["content"].startswith("[Current date: 2026-08-16]\n\n")
-        assert out[-1]["content"].endswith("now read it")
+        monkeypatch.setattr(self.inference, "get_llama_cpp_backend", lambda: llama)
+        assert self.inference._local_template_system_turn(_DAY) == (True, "")
+        llama.extra_args = extra_args
+        assert self.inference._local_template_system_turn(_DAY) == (False, None)
 
-    def test_a_future_creation_day_never_becomes_the_stated_start(self):
-        self.today = "2026-08-15"
-        self.started = date(2026, 8, 20)
-        out = self._proxy([{"role": "user", "content": "hi"}])
-        assert out == [
-            {"role": "system", "content": "The current date is 2026-08-15."},
-            {"role": "user", "content": "hi"},
+    def test_a_tool_request_probes_the_tool_use_template(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        named = [
+            {"name": "default", "template": _CHATML},
+            {"name": "tool_use", "template": _REFUSES_SYSTEM},
         ]
+        info = {"chat_template_info": {"template": named}}
+        backend = SimpleNamespace(active_model_name = "hermes", models = {"hermes": info})
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert self.inference._local_template_system_turn(_DAY) == (True, "")
+        assert self.inference._local_template_system_turn(_DAY, tools = True) == (False, None)
 
-    def test_without_a_system_prompt_the_first_turn_keeps_the_start_date(self):
-        self.today = "2026-08-16"
+    def test_a_text_request_probes_the_mapped_template(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        info = {"chat_template_info": {"template": _CHATML, "mapped_template": _QWEN25_LIKE}}
+        backend = SimpleNamespace(active_model_name = "mapped", models = {"mapped": info})
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert self.inference._local_template_system_turn(_DAY) == (
+            True,
+            "You are Qwen, a helpful assistant.",
+        )
+        # the mapper runs on the text path only; an image render keeps the loaded template.
+        assert self.inference._local_template_system_turn(_DAY, True) == (True, "")
+
+    def test_an_image_request_probes_the_processor_template(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        info = {"chat_template_info": {"template": _CHATML, "processor_template": _QWEN25_LIKE}}
+        backend = SimpleNamespace(active_model_name = "vlm", models = {"vlm": info})
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert self.inference._local_template_system_turn(_DAY) == (True, "")
+        assert self.inference._local_template_system_turn(_DAY, True) == (
+            True,
+            "You are Qwen, a helpful assistant.",
+        )
+        info["chat_template_info"]["processor_template"] = _REFUSES_SYSTEM
+        assert self.inference._local_template_system_turn(_DAY, True) == (False, None)
+
+    def test_a_named_template_list_is_probed_through_its_default(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        named = [
+            {"name": "default", "template": _QWEN25_LIKE},
+            {"name": "tool_use", "template": _CHATML},
+        ]
+        backend = SimpleNamespace(
+            active_model_name = "hermes",
+            models = {"hermes": {"chat_template_info": {"template": named}}},
+        )
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert self.inference._local_template_system_turn(_DAY) == (
+            True,
+            "You are Qwen, a helpful assistant.",
+        )
+
+    def test_a_chat_started_days_ago_keeps_every_user_turn_verbatim(self):
         history = [
-            {"role": "user", "content": "first"},
+            {"role": "user", "content": "Mike and Alexis are in bed."},
             {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "second"},
+            {"role": "user", "content": "Turn the story back to dinner."},
         ]
-        out = self.inference._append_current_date_note(
-            history, object(), thread_id = "t", system_prompt = ""
-        )
-        assert out[0]["content"] == "[Current date: 2026-08-15]\n\nfirst"
-        assert out[2]["content"] == "[Current date: 2026-08-16]\n\nsecond"
-        only = self.inference._append_current_date_note(
-            history[:1], object(), thread_id = "t", system_prompt = ""
-        )
-        assert only == [{"role": "user", "content": "[Current date: 2026-08-16]\n\nfirst"}]
+        out = self.inference._prepend_current_date_to_messages(history, object())
+        assert out == [{"role": "system", "content": "The current date is 2026-10-04."}, *history]
 
-    def test_note_is_not_added_twice(self):
-        self.today = "2026-08-16"
-        once = self.inference._append_current_date_note(
-            [{"role": "user", "content": "hi"}], object(), thread_id = "t"
-        )
-        assert self.inference._append_current_date_note(once, object(), thread_id = "t") is once
-
-    def test_api_key_callers_never_use_a_thread_start_date(self, monkeypatch):
-        monkeypatch.setattr(self.inference, "_request_has_api_key", lambda _request: True)
-        monkeypatch.setattr(self.inference, "_request_is_internal_workflow", lambda _r: False)
-        self.today = "2026-08-16"
-        out = self._proxy([{"role": "user", "content": "hi"}], include_api_key = True)
-        assert out == [
-            {"role": "system", "content": "The current date is 2026-08-16."},
-            {"role": "user", "content": "hi"},
-        ]
-
-    def test_disabled_setting_adds_no_note(self, monkeypatch):
+    def test_a_disabled_setting_adds_nothing(self, monkeypatch):
         monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
-        messages = [{"role": "user", "content": "hi"}]
-        assert (
-            self.inference._append_current_date_note(messages, object(), thread_id = "t") is messages
-        )
+        assert self.inference._apply_current_date_prompt("", object()) == ""

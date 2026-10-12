@@ -817,13 +817,7 @@ def _neutralize_argument_leaves(value, markup = None):
 
 
 def _neutralized_arguments(arguments, markup = None):
-    """Neutralize a replayed call's ``arguments``, or None when already clean. OpenAI ships
-    ``arguments`` as JSON *text*, and every consumer decodes it back to an object AFTER this runs
-    (``_normalize_tool_call_arguments`` re-renders through ``json.loads`` when a template rejects
-    a string, and llama.cpp does the same in ``workaround::func_args_not_string``), so rewriting
-    the raw text lets "\\u003ctool_call|\\u003e" through and the decoded marker forges a turn
-    (#7066). Parse first, rewrite the decoded leaves, re-serialize; a clean payload stays
-    byte-identical so the prefix cache still hits."""
+    """parse with ``json.loads`` before rewriting so decoded escapes cannot forge a turn; keep clean input byte-identical."""
     if isinstance(arguments, str):
         decoded = safe = _UNPARSED
         try:
@@ -2647,7 +2641,7 @@ def _normalize_tool_call_arguments(messages: list) -> list:
             if isinstance(args, str):
                 try:
                     parsed = json.loads(args)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, RecursionError):
                     parsed = None
                 if isinstance(parsed, dict):
                     call = {**call, "function": {**fn, "arguments": parsed}}
@@ -2711,6 +2705,50 @@ def _split_parallel_tool_calls(messages: list) -> list:
         out.extend(pending)
         i = j
     return out
+
+
+def _repair_orphan_tool_results(messages: list) -> list:
+    """Placeholder call before each tool result lacking one (gpt-oss refuses orphans). Fallback only:
+    the model reads it. A text turn takes the calls, since a second assistant turn breaks alternation."""
+    mutated = False
+    out: list = []
+    linked = False
+    repaired_at = None
+
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else None
+        if role != "tool":
+            linked = role == "assistant" and bool(message.get("tool_calls"))
+            repaired_at = None
+            out.append(message)
+            continue
+        if linked and repaired_at is None:
+            out.append(message)
+            continue
+
+        call_id = message.get("tool_call_id") or f"replayed_tool_{len(out)}"
+        call = {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": message.get("name") or "tool", "arguments": {}},
+        }
+        if repaired_at is not None:
+            calls = out[repaired_at]["tool_calls"]
+            if all(c.get("id") != call_id for c in calls):
+                out[repaired_at] = {**out[repaired_at], "tool_calls": [*calls, call]}
+        elif out and isinstance(out[-1], dict) and out[-1].get("role") == "assistant":
+            out[-1] = {**out[-1], "tool_calls": [call]}
+            repaired_at = len(out) - 1
+        else:
+            out.append({"role": "assistant", "content": "", "tool_calls": [call]})
+            repaired_at = len(out) - 1
+        if not message.get("tool_call_id"):
+            message = {**message, "tool_call_id": call_id}
+        out.append(message)
+        linked = True
+        mutated = True
+
+    return out if mutated else messages
 
 
 _MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
@@ -3275,7 +3313,11 @@ def apply_chat_template_for_generation(
         else {"add_generation_prompt": True}
     )
 
-    def _render(msgs: list, boundary: Optional[dict] = None) -> str:
+    def _render(
+        msgs: list,
+        boundary: Optional[dict] = None,
+        typeerror_fallback: Optional[list] = None,
+    ) -> str:
         boundary = _boundary_kwargs if boundary is None else boundary
         last_exc: Optional[Exception] = None
         for kwargs in attempts:
@@ -3288,6 +3330,16 @@ def apply_chat_template_for_generation(
                 )
             except TypeError as e:
                 last_exc = e
+                if typeerror_fallback is not None:
+                    try:
+                        return tokenizer.apply_chat_template(
+                            _swept_for(kwargs, typeerror_fallback),
+                            tokenize = False,
+                            **boundary,
+                            **kwargs,
+                        )
+                    except Exception:
+                        pass
                 continue
             except Exception as e:
                 last_exc = e
@@ -3296,7 +3348,7 @@ def apply_chat_template_for_generation(
             raise last_exc
         raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
 
-    def _render_continuation_manually(msgs: list) -> str:
+    def _render_continuation_manually(msgs: list, typeerror_fallback: Optional[list] = None) -> str:
         """For tokenizers predating ``continue_final_message`` (TypeError above). Prefix and partial
         come from the SAME swept copy: an attempt that drops the tools kwarg re-sweeps for the
         default template, whose markup would otherwise survive raw."""
@@ -3307,12 +3359,20 @@ def apply_chat_template_for_generation(
                     swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
                 )
             except TypeError:
-                continue
+                if typeerror_fallback is None:
+                    continue
+                swept = _swept_for(kwargs, typeerror_fallback)
+                try:
+                    prefix = tokenizer.apply_chat_template(
+                        swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
+                    )
+                except Exception:
+                    continue
             partial = trailing_assistant_text(swept) or _continue_text
             return f"{strip_open_reasoning_prefill(prefix)}{partial}"
         raise TypeError("no attempt rendered the continuation prefix")
 
-    def _render_thought_continuation(msgs: list) -> str:
+    def _render_thought_continuation(msgs: list, typeerror_fallback: Optional[list] = None) -> str:
         # Templates render a final thought closed, so there is no boundary to cut at.
         for kwargs in attempts:
             swept = _swept_for(kwargs, msgs)
@@ -3321,28 +3381,36 @@ def apply_chat_template_for_generation(
                     swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
                 )
             except TypeError:
-                continue
+                if typeerror_fallback is None:
+                    continue
+                swept = _swept_for(kwargs, typeerror_fallback)
+                try:
+                    prefix = tokenizer.apply_chat_template(
+                        swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
+                    )
+                except Exception:
+                    continue
             return splice_resumed_thought(prefix, swept[-1]["reasoning_content"])
         raise TypeError("no attempt rendered the thought continuation prefix")
 
-    def _render_with_fallback(msgs: list) -> str:
+    def _render_with_fallback(msgs: list, typeerror_fallback: Optional[list] = None) -> str:
         if _resumes_thought:
-            return _render_thought_continuation(msgs)
+            return _render_thought_continuation(msgs, typeerror_fallback)
         try:
-            return _render(msgs)
+            return _render(msgs, typeerror_fallback = typeerror_fallback)
         except TypeError:
             if not _continuing:
                 raise
-            return _render_continuation_manually(msgs)
+            return _render_continuation_manually(msgs, typeerror_fallback)
 
+    # mappings first because Qwen3.5 renders string arguments as an empty call instead of raising
+    normalized = _normalize_tool_call_arguments(messages)
     try:
-        return _render_with_fallback(messages)
+        return _render_with_fallback(normalized, messages if normalized is not messages else None)
     except Exception:
-        # Retry with repairs applied cumulatively. Originals render first, so working templates stay byte-identical.
         candidates: list = []
-        normalized = _normalize_tool_call_arguments(messages)
         if normalized is not messages:
-            candidates.append(normalized)
+            candidates.append(messages)
         split = _split_parallel_tool_calls(normalized)
         if split is not normalized:
             candidates.append(split)
@@ -3351,6 +3419,14 @@ def apply_chat_template_for_generation(
                 return _render_with_fallback(candidate)
             except Exception:
                 continue
+        # Last and lazy: a history an earlier candidate renders never pays for the scan.
+        repaired = _repair_orphan_tool_results(split)
+        if repaired is not split:
+            try:
+                # Split again: gpt-oss renders only tool_calls[0] and names every later result after it.
+                return _render_with_fallback(_split_parallel_tool_calls(repaired))
+            except Exception:
+                pass
         raise
 
 
@@ -3477,7 +3553,7 @@ def render_native_template(
             exc,
         )
         return None
-    if with_tools == no_tools:
+    if tools and with_tools == no_tools:
         return None
     if return_metadata:
         return ChatTemplateRenderResult(
@@ -3485,11 +3561,7 @@ def render_native_template(
             _detect_reasoning_channel_markers_from_templates(
                 _selected_template_strings_from_value(native_tpl, tools)
             ),
-            # The NATIVE profile decided this render's catalog: it can drop a tool the active profile kept, so callers
-            # must gate healing and tool execution on this list rather than on the one they sanitized themselves. With
-            # *tools*, matching the render above: a named native template selects "tool_use" for a tool-calling turn,
-            # and profiling it without them read "default" instead, so a tool the render dropped was reported as
-            # advertised (#7066).
+            # gate healing and execution on NATIVE: "default" can advertise tools dropped by "tool_use" (#7066).
             neutralize_tool_descriptions(
                 tools, None, markup_for_tokenizer(render_tokenizer, tools)
             ),

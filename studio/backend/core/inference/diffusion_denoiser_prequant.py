@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
-from .diffusion_krea2 import KREA2_FAMILY_NAME
 
 # The planner DECIDED against the seed, unlike never having asked: the pull kept the dense shards, so
 # the loader must not re-take the decision and fetch the artifact inline.
@@ -20,9 +19,8 @@ PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
 
-# Families assembled PER COMPONENT, plus ideogram's second denoiser: their assemblers never see
-# ``pipe_kwargs``, so a seed would be dropped after the plan had dropped their dense shards.
-_UNSEEDABLE_PIPELINE_FAMILIES = (KREA2_FAMILY_NAME, IDEOGRAM4_FAMILY_NAME)
+# Ideogram's assembler never sees ``pipe_kwargs``, so a seed would be dropped after the plan dropped its dense shards.
+_UNSEEDABLE_PIPELINE_FAMILIES = (IDEOGRAM4_FAMILY_NAME,)
 
 
 def pipeline_seed_supported(fam: Any) -> bool:
@@ -37,16 +35,28 @@ def denoiser_prequant_source(
     *,
     base_repo: Optional[str],
     path_override: Optional[str] = None,
+    local_files_only: bool = False,
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ) -> Optional[Any]:
     """The ``PrequantSource`` a pipeline pick would seed its denoiser from, or None.
     ``usable_prequant_source``, not ``resolve_prequant_source``: an override the loader would refuse
-    must read as no source here. Never raises."""
+    must read as no source here. ``local_files_only`` / ``hf_token`` / ``cache_dir`` reach its hosted
+    header probe. Never raises."""
     wanted = (scheme or "").strip().lower()
     if wanted in ("", "auto", "off", "none") or wanted == PIPELINE_SEED_DECLINED:
         return None
     try:
         from .diffusion_prequant import usable_prequant_source
-        return usable_prequant_source(fam, wanted, path_override = path_override, base_repo = base_repo)
+        return usable_prequant_source(
+            fam,
+            wanted,
+            path_override = path_override,
+            base_repo = base_repo,
+            local_files_only = local_files_only,
+            hf_token = hf_token,
+            cache_dir = cache_dir,
+        )
     except Exception:  # noqa: BLE001 -- an unanswerable registry keeps the released bf16 denoiser
         return None
 
@@ -62,7 +72,14 @@ def denoiser_prequant_cached(
     """Whether the artifact this seed would open is ALREADY on disk, answered without a Hub call.
     The offline twin of the ``model_info`` probe the online plan makes, so a load that may not
     download can still seed from the cache an earlier load built. Never raises."""
-    source = denoiser_prequant_source(fam, scheme, base_repo = base_repo, path_override = path_override)
+    source = denoiser_prequant_source(
+        fam,
+        scheme,
+        base_repo = base_repo,
+        path_override = path_override,
+        local_files_only = True,
+        cache_dir = cache_dir,
+    )
     if source is None:
         return False
     if getattr(source, "kind", None) != "repo":
@@ -70,7 +87,9 @@ def denoiser_prequant_cached(
         return True
     try:
         from .diffusion_prequant import prequant_checkpoint_cached
-        return prequant_checkpoint_cached(source, cache_dir = cache_dir)
+
+        # Offline: the load walks to the first cached name, so any cached readable name is what it opens.
+        return prequant_checkpoint_cached(source, cache_dir = cache_dir, online = False)
     except Exception:  # noqa: BLE001 -- an unreadable cache is not proof the artifact is there
         return False
 
@@ -98,7 +117,13 @@ def denoiser_prequant_pipe_kwargs(
         if not pipeline_seed_supported(fam):
             return {}
         source = denoiser_prequant_source(
-            fam, scheme, base_repo = base_repo, path_override = path_override
+            fam,
+            scheme,
+            base_repo = base_repo,
+            path_override = path_override,
+            local_files_only = local_files_only,
+            hf_token = hf_token,
+            cache_dir = cache_dir,
         )
         if source is None:
             return {}
@@ -136,6 +161,7 @@ def denoiser_prequant_pipe_kwargs(
             local_files_only = local_files_only,
             logger = logger,
             placement_device = placement_device,
+            family = getattr(fam, "name", None),
         )
         if module is None:
             if logger is not None:

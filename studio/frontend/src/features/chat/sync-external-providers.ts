@@ -15,6 +15,7 @@ import {
   migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
+import { normalizeCustomReasoningConfig } from "./custom-reasoning";
 import {
   modelsDevCatalogFetchedAt,
   providerModelCatalogFetchedAt,
@@ -318,6 +319,11 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        reasoningConfig:
+          config.provider_type === "custom" &&
+          config.api_type !== "responses" && config.api_type !== "systemone"
+            ? normalizeCustomReasoningConfig(config.reasoning_config)
+            : undefined,
 
         hasApiKey: config.has_api_key,
 

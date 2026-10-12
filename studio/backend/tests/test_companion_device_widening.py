@@ -145,9 +145,7 @@ def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():
 
 
 def test_a_widened_explicit_pin_is_what_status_and_dedupe_see():
-    # #12467: gpu_ids [0, 1] fitted to [0] then widened for the projector. The effective
-    # pin was recorded before widening, so /status echoed [0]; a client re-sending that
-    # matched, became the stored intent, and the replayed load lost GPU 1 again.
+    # #12467: /status echoed the pre-widen pin [0], so a replayed load lost GPU 1.
     import inspect
 
     src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
@@ -162,10 +160,8 @@ def test_a_widened_explicit_pin_is_what_status_and_dedupe_see():
     backend._adopt_widened_pin([0, 1])
     assert backend._gpu_ids == [0, 1]
     assert backend.matches_gpu_ids([0, 1]) is True
-    # Dropping the projector's card is a real placement change, so it reloads.
     assert backend.matches_gpu_ids([0]) is False
 
-    # A launch that recorded no effective pin (forced CPU) keeps recording none.
     backend._gpu_ids = None
     backend._adopt_widened_pin([0, 1])
     assert backend._gpu_ids is None

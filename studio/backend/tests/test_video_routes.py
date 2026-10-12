@@ -1648,7 +1648,8 @@ def test_video_download_plan_refuses_an_unsupported_combination_before_staging(c
         "/api/inference/video/download-plan",
         json = {
             "model_path": "MiniMaxAI/MiniMax-H3",
-            "gguf_filename": "minimax_h3_fl2va_pruned_int8_rowwise.safetensors",
+            # Only a ComfyUI-quantized denoiser loads as an H3 single file; the conditioner never does.
+            "gguf_filename": "qwen3vl_32b_minimax_h3_bf16.safetensors",
             "model_kind": "single_file",
         },
     )

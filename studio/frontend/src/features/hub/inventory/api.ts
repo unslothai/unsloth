@@ -186,6 +186,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Sub-folders are scanned too. Absent on older backends. */
+  recursive?: boolean;
   /** Result of the last scan. Absent on older backends, which means "ok". */
   status?: ScanFolderStatus;
 }
@@ -222,7 +224,7 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True only when Hub metadata resolved every required companion. */
+  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
 }
 
@@ -436,11 +438,14 @@ export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   return data.folders;
 }
 
-export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+export async function addScanFolder(
+  path: string,
+  recursive?: boolean,
+): Promise<ScanFolderInfo> {
   const response = await authFetch("/api/hub/scan-folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, recursive }),
   });
   const folder = await parseJsonOrThrow<ScanFolderInfo>(response);
   bumpInventoryVersion();
@@ -499,18 +504,19 @@ export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
   options?: {
+    localOnly?: boolean;
     preferLocalCache?: boolean;
     includeCacheLocations?: boolean;
     localPath?: string | null;
     signal?: AbortSignal;
   },
 ): Promise<GgufVariantsResponse> {
-  const offline = isHuggingFaceOffline();
+  const offline = options?.localOnly === true || isHuggingFaceOffline();
   const localPath = options?.localPath?.trim() || null;
   const preferLocalCache = !!options?.preferLocalCache || offline;
   const signal = options?.signal;
   const key = `${repoId}::${fingerprintToken(hfToken)}::${
-    preferLocalCache ? "local" : "remote"
+    offline ? "offline" : preferLocalCache ? "local" : "remote"
   }::${localPathCacheKey(localPath)}::${!!options?.includeCacheLocations}`;
   const now = Date.now();
   const hit = ggufVariantsCache.get(key);

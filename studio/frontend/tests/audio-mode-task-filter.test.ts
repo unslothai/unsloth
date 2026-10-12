@@ -11,8 +11,9 @@ import {
 import { detectCapabilities } from "../src/features/model-picker/components/model-selector/model-capabilities.ts";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const pageSource = readSrc("features/audio/audio-page.tsx");
+const pageSource = readAudioWorkspaceSource();
 const catalogSource = readSrc("features/audio/catalog.ts");
 
 test("Hub discovery follows the active audio mode", () => {

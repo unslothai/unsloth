@@ -24,7 +24,7 @@ test("a managed account never sees a tab whose routes are all owner-only", () =>
     assert.ok(OWNER_ONLY_SETTINGS_TABS.has(tab), tab);
     assert.equal(resolveSettingsTab(tab, false), "general");
   }
-  for (const tab of ["general", "api-keys", "data", "chat", "connections"] as const) {
+  for (const tab of ["general", "api-keys", "data", "chat", "connections", "sandbox"] as const) {
     assert.equal(resolveSettingsTab(tab, false), tab);
   }
 });

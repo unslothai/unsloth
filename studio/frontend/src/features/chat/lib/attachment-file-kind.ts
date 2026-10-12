@@ -4,19 +4,17 @@
 // Name and MIME type only: the bytes can be megabytes and this runs on every tile and row.
 
 import {
-  AudioWave01Icon,
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
   Image02Icon,
-  InternetIcon,
   Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
   Zip02Icon,
 } from "@hugeicons/core-free-icons";
 // Relative so the node tests can load this file.
-import { SheetIcon } from "../../../lib/hugeicons-derived.ts";
+import { AiSpeechIcon, SheetIcon } from "../../../lib/hugeicons-derived.ts";
 
 export type AttachmentFileKind =
   | "image"
@@ -103,13 +101,13 @@ export function attachmentFileKind(
 export const ATTACHMENT_KIND_ICONS = {
   image: Image02Icon,
   pdf: Pdf01Icon,
-  audio: AudioWave01Icon,
+  audio: AiSpeechIcon,
   video: FlimSlateIcon,
   word: Doc01Icon,
   document: FileEmpty02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
-  web: InternetIcon,
+  web: SourceCodeIcon,
   code: SourceCodeIcon,
   text: FileEmpty02Icon,
   archive: Zip02Icon,
@@ -121,16 +119,16 @@ export const ATTACHMENT_KIND_ICON_CLASS: Record<AttachmentFileKind, string> = {
   pdf: "text-red-500",
   audio: "text-violet-500",
   video: "text-pink-400 scale-90",
-  // Google Docs' blue, close to Word's lighter blue.
+  // Google Docs' blue, close to Word's lighter blue. Only docs are blue.
   word: "text-[#4285F4]",
-  document: "text-blue-500",
+  document: "text-foreground",
   spreadsheet: "text-emerald-500",
   presentation: "text-orange-500",
   web: "text-foreground",
-  code: "text-blue-500",
-  text: "text-blue-500",
+  code: "text-foreground",
+  text: "text-foreground",
   archive: "text-amber-500",
-  file: "text-muted-foreground",
+  file: "text-foreground",
 };
 
 const KIND_LABELS: Record<Exclude<AttachmentFileKind, "file">, string> = {

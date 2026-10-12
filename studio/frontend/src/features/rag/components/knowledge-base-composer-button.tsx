@@ -8,7 +8,7 @@ import {
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   DropdownMenu,
@@ -18,11 +18,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useIsAccountOwner } from "@/features/auth";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-import { listKnowledgeBases } from "../api/rag-api";
+import {
+  listKnowledgeBases,
+  subscribeKnowledgeBasesChanged,
+} from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
+import { EmbeddingModelMenuChip, EmbeddingModelMenuList } from "./embedding-model-menu-picker";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
 // Matches the Thinking/MCP pill chevron. Picks the retrieval source. Shown whenever retrieval is
@@ -37,26 +42,45 @@ export function KnowledgeBaseComposerButton({
   const ragDisabled = useRagToolDisabled();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  // The embedding model is a server setting only the owner can change.
+  const isOwner = useIsAccountOwner();
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [kbsLoaded, setKbsLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // The embedding list replaces the source list in the same menu.
+  const [view, setView] = useState<"source" | "embedding">("source");
+  const contentRef = useRef<HTMLDivElement>(null);
+  const shownViewRef = useRef(view);
+  // A swap unmounts the focused item while the menu stays open, which strands focus outside it and
+  // kills arrow keys. Focus the new view's first item, as Radix does on open.
+  useLayoutEffect(() => {
+    if (shownViewRef.current === view) return;
+    shownViewRef.current = view;
+    contentRef.current
+      ?.querySelector<HTMLElement>('[role^="menuitem"]:not([data-disabled])')
+      ?.focus();
+  }, [view]);
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // Refreshes overlap; an older answer landing last would restore a deleted KB.
+  const latestRefreshRef = useRef(0);
   const refresh = useCallback(async () => {
+    const request = ++latestRefreshRef.current;
     try {
       const rows = await listKnowledgeBases();
-      setKbs(rows);
+      if (request === latestRefreshRef.current) setKbs(rows);
     } catch {
       // Keep prior state on failure.
     } finally {
-      setKbsLoaded(true);
+      if (request === latestRefreshRef.current) setKbsLoaded(true);
     }
   }, []);
 
   // Load on mount so newly created KBs show up.
   useEffect(() => {
     void refresh();
+    return subscribeKnowledgeBasesChanged(() => void refresh());
   }, [refresh]);
 
   // If the selected KB was deleted, fall back to thread source so we never send a
@@ -81,6 +105,7 @@ export function KnowledgeBaseComposerButton({
         onOpenChange={(open) => {
           setMenuOpen(open);
           if (open) void refresh();
+          else setView("source");
         }}
       >
         <DropdownMenuTrigger asChild={true}>
@@ -122,70 +147,81 @@ export function KnowledgeBaseComposerButton({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
+          ref={contentRef}
           side={side}
           align="start"
           sideOffset={2}
           avoidCollisions={true}
-          className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
+          className={
+            isOwner
+              ? "unsloth-plus-menu mcp-menu w-[calc(320px*var(--ui-space-scale,1))]"
+              : "unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
+          }
         >
-          <DropdownMenuLabel>Retrieve from</DropdownMenuLabel>
-          <DropdownMenuItem
-            onSelect={() => setRagSource({ type: "thread" })}
-            className={
-              ragSource.type === "thread"
-                ? "relative text-primary font-medium"
-                : "relative"
-            }
-          >
-            <span className="truncate">This thread's documents</span>
-            {ragSource.type === "thread" ? (
-              <HugeiconsIcon
-                icon={Tick02Icon}
-                strokeWidth={2}
-                className="ml-auto"
-              />
-            ) : null}
-          </DropdownMenuItem>
-          {kbs.length > 0 ? <DropdownMenuSeparator /> : null}
-          {kbs.map((kb) => {
-            const selected =
-              ragSource.type === "kb" && ragSource.kbId === kb.id;
-            return (
-              <DropdownMenuItem
-                key={kb.id}
-                onSelect={() => setRagSource({ type: "kb", kbId: kb.id })}
-                className={
-                  selected ? "relative text-primary font-medium" : "relative"
-                }
-              >
-                <span className="truncate">{kb.name}</span>
-                {selected ? (
-                  <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                    className="ml-auto"
-                  />
-                ) : null}
-              </DropdownMenuItem>
-            );
-          })}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={() => {
-              setMenuOpen(false);
-              setDialogOpen(true);
-            }}
-          >
-            Manage knowledge bases…
-          </DropdownMenuItem>
+          {isOwner && view === "embedding" ? (
+            <EmbeddingModelMenuList onBack={() => setView("source")} />
+          ) : (
+            <>
+            <DropdownMenuLabel className="flex items-center justify-between gap-3">
+              <span className="shrink-0">Retrieve from</span>
+              {isOwner ? <EmbeddingModelMenuChip onOpen={() => setView("embedding")} /> : null}
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              onSelect={() => setRagSource({ type: "thread" })}
+              className={
+                ragSource.type === "thread"
+                  ? "relative text-primary font-medium"
+                  : "relative"
+              }
+            >
+              <span className="truncate">This thread's documents</span>
+              {ragSource.type === "thread" ? (
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                  className="ml-auto"
+                />
+              ) : null}
+            </DropdownMenuItem>
+            {kbs.length > 0 ? <DropdownMenuSeparator /> : null}
+            {kbs.map((kb) => {
+              const selected =
+                ragSource.type === "kb" && ragSource.kbId === kb.id;
+              return (
+                <DropdownMenuItem
+                  key={kb.id}
+                  onSelect={() => setRagSource({ type: "kb", kbId: kb.id })}
+                  className={
+                    selected ? "relative text-primary font-medium" : "relative"
+                  }
+                >
+                  <span className="truncate">{kb.name}</span>
+                  {selected ? (
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
+                  ) : null}
+                </DropdownMenuItem>
+              );
+            })}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => {
+                setMenuOpen(false);
+                setDialogOpen(true);
+              }}
+            >
+              Manage knowledge bases…
+            </DropdownMenuItem>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
       <KnowledgeBaseDialog
         open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          if (!next) void refresh();
-        }}
+        onOpenChange={setDialogOpen}
       />
     </>
   );

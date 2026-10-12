@@ -15,9 +15,11 @@ registerBundlerResolver();
 
 import {
   REMEMBERED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_MAX_TOKENS_MAX,
   getRememberedParamsPatch,
   getReplayedParams,
   pickRememberedParams,
+  recordMaxTokensAsMax,
 } from "../src/features/chat/lib/per-model-params.ts";
 import type { InferenceParams } from "../src/features/chat/types/runtime.ts";
 
@@ -421,17 +423,25 @@ for (const [label, id] of [
   });
 }
 
-test("a custom llama.cpp repeat-penalty seeds the slider; otherwise it is kept", async () => {
-  const { mergeBackendRecommendedInference } =
-    await import("../src/features/chat/presets/preset-policy.ts");
-  const merge = (inference: Record<string, number>) =>
-    mergeBackendRecommendedInference({
-      current: params({ repetitionPenalty: 1.3 }),
-      response: { inference, is_gguf: true, context_length: 4096 },
-      modelId: QWEN,
-      presetSource: "builtin-default",
-      loadedContextLength: 4096,
-    }).repetitionPenalty;
-  assert.equal(merge({ repetition_penalty: 1.1 }), 1.1);
-  assert.equal(merge({ temperature: 0.7 }), 1.3);
+// #10671: "Max" is recorded apart from the window it was on, and replays as the
+// window of whatever load replays it.
+test("a remembered Max replays as the load's window, never as itself", () => {
+  assert.deepEqual(recordMaxTokensAsMax({ maxTokens: 30000 }, 30000), {
+    maxTokens: REMEMBERED_MAX_TOKENS_MAX,
+  });
+  assert.deepEqual(recordMaxTokensAsMax({ maxTokens: 4096 }, 30000), {
+    maxTokens: 4096,
+  });
+  // No window known (or an external model): recorded as before.
+  assert.deepEqual(recordMaxTokensAsMax({ maxTokens: 30000 }, null), {
+    maxTokens: 30000,
+  });
+
+  const memory = { [QWEN]: { maxTokens: REMEMBERED_MAX_TOKENS_MAX } };
+  const at = (cap?: number) =>
+    getReplayedParams(true, memory, params({ maxTokens: 777 }), QWEN, true, cap)
+      .maxTokens;
+  assert.equal(at(35000), 35000);
+  assert.equal(at(8192), 8192);
+  assert.equal(at(undefined), 777, "nothing sized a window: what is on screen");
 });

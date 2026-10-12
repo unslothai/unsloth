@@ -10,6 +10,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useTheme } from "@/features/settings/stores/theme-store";
 import { createLoadingToastIcon } from "@/lib/toast";
+import { cornerInsetScope } from "@/lib/toast-offset";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
 // Make toast text selectable. Sonner's onPointerDown calls setPointerCapture(), which steals the
@@ -40,6 +41,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
     // display:contents adds no box; only carries the selection-fix handler.
     // biome-ignore lint/a11y/noStaticElementInteractions: capture-only guard, not interactive
     <div
+      ref={cornerInsetScope}
       style={{ display: "contents" }}
       onPointerDownCapture={handleToastPointerDownCapture}
     >
@@ -83,14 +85,15 @@ const Toaster = ({ ...props }: ToasterProps) => {
           {
             "--normal-bg": "var(--popover)",
             "--normal-text": "var(--popover-foreground)",
-            // No border line; elevation comes from the composer's drop shadow.
+            // No border line; elevation comes from the shadow in index.css.
             "--normal-border": "transparent",
-            "--border-radius": "var(--radius)",
+            // Rounder than cards, a step below the composer's 28px.
+            "--border-radius": "calc(var(--radius) + 8px)",
             // Pin the close button inside the toast's top-right corner.
             // Sonner defaults to the left/outside edge, so keep the horizontal
             // override here and the top offset in index.css.
             "--toast-close-button-start": "auto",
-            "--toast-close-button-end": "8px",
+            "--toast-close-button-end": "12px",
             "--toast-close-button-transform": "none",
           } as React.CSSProperties
         }

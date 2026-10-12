@@ -5,6 +5,9 @@ import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { type Plugin, defineConfig } from "vite";
+import { childSelectorOrder } from "./vite-plugin-child-selectors";
+import { viewportMediaGate } from "./vite-plugin-viewport-media";
+import { previewRuntime } from "./vite-preview-runtime.ts";
 
 function smokeModuleDelay(): Plugin {
   const match = process.env.SMOKE_MODULE_DELAY_MATCH;
@@ -24,13 +27,13 @@ function smokeModuleDelay(): Plugin {
   };
 }
 
-// https://vite.dev/config/
 export default defineConfig({
+  // concurrent browser checks use separate dependency optimizer caches.
+  cacheDir: process.env.VITE_TEST_CACHE_DIR || "node_modules/.vite",
   // Reasoning's highlighter loads only the grammar it needs in its module worker.
   worker: { format: "es" },
-  plugins: [react(), tailwindcss(), smokeModuleDelay()],
-  // Keep an unrelated PostCSS config in an ancestor directory from leaking
-  // into Unsloth installs. Tailwind is provided by its dedicated Vite plugin.
+  plugins: [react(), tailwindcss(), childSelectorOrder(), viewportMediaGate(), smokeModuleDelay(), previewRuntime()],
+  // prevent ancestor PostCSS configs from leaking into installs; Tailwind uses its Vite plugin.
   css: {
     postcss: {
       plugins: [],

@@ -114,6 +114,42 @@ RELEASE_NOTES = {
 }
 # A successful lookup with no previewable body.
 RELEASE_NOTES_NONE = dict(RELEASE_NOTES, markdown = "", matched = False)
+# A Platform | Link table as release notes carry it. The cells inherited overflow-wrap:anywhere, so the table sized
+# the Link column below "Download" and split it ("Downloa / d"). The bare URL may wrap or scroll, never leave the card.
+_DL = "https://github.com/unslothai/unsloth/releases/latest/download"
+RELEASE_NOTES_TABLE = dict(
+    RELEASE_NOTES,
+    markdown = "\n".join(
+        [
+            NOTES_MARKDOWN,
+            "",
+            "## Download Unsloth Desktop",
+            "",
+            "| Platform | Link |",
+            "|---|---|",
+            f"| macOS (Apple Silicon, M1 or newer, macOS 12 and later) | [Download]({_DL}/Unsloth-Desktop-MacOS.dmg) |",
+            f"| Windows 10 / 11 (x64 installer with automatic updates) | [Download]({_DL}/Unsloth-Desktop-Windows.exe) |",
+            f"| Linux AppImage (x86_64, runs on most distributions) | [Download]({_DL}/Unsloth-Desktop-Linux.AppImage) |",
+            "",
+            "| Platform | URL |",
+            "|---|---|",
+            f"| macOS | {_DL}/Unsloth-Desktop-MacOS.dmg |",
+        ]
+    ),
+)
+TABLE_VIEWPORTS = [(1440, 900), (390, 844)]
+NOTES_TABLES = """
+() => {
+  const scroll = document.querySelector('[data-testid="update-release-notes-scroll"]');
+  const card = document.querySelector('[data-testid="web-update-banner"]');
+  if (!scroll || !card) return null;
+  const right = card.getBoundingClientRect().right;
+  return [...scroll.querySelectorAll('table')].map((table) => ({
+    links: [...table.querySelectorAll('td a')].map((a) => [a.textContent, a.getClientRects().length]),
+    pastCard: Math.max(0, table.parentElement.getBoundingClientRect().right - right),
+  }));
+}
+"""
 LLAMA_STATUS = {
     "supported": True,
     "update_available": True,
@@ -1250,6 +1286,43 @@ def main() -> int:
                 panel.wait_for(state = "visible", timeout = 10_000)
                 settle_cards(page)
                 measure(page, f"{width}x{height} with no preview, expanded")
+            context.close()
+
+        for width, height in TABLE_VIEWPORTS[:1] if SPOT else TABLE_VIEWPORTS:
+            size = f"{width}x{height}"
+            phase(f"release-notes tables at {size}")
+            context = browser.new_context(
+                viewport = {"width": width, "height": height},
+                reduced_motion = "reduce",
+            )
+            context.add_init_script(seed_js)
+            for pattern, payload in (
+                ("**/api/studio/update-status*", UPDATE_STATUS),
+                ("**/api/studio/release-notes*", RELEASE_NOTES_TABLE),
+                ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
+            ):
+                context.route(pattern, stub(payload))
+            page = context.new_page()
+            boot(page, "/")
+            page.locator('[data-testid="web-update-release-notes-toggle"]').click()
+            page.wait_for_selector(
+                '[data-testid="update-release-notes-scroll"] table', timeout = 10_000
+            )
+            settle_cards(page)
+            tables = page.evaluate(NOTES_TABLES) or []
+            words = tables[0]["links"] if tables else []
+            check(
+                f"{size}: every Download link in the notes table is on one line",
+                len(words) == 3 and all(text == "Download" and lines == 1 for text, lines in words),
+                f"links={words}",
+            )
+            check(
+                f"{size}: no notes table paints past the card",
+                len(tables) == 2 and all(t["pastCard"] <= 0.5 for t in tables),
+                f"tables={tables}",
+            )
+            page.screenshot(path = str(ART / f"{size}-notes-tables.png"))
             context.close()
 
         # The loaded models indicator, switched on. It is the last child of the

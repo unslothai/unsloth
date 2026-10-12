@@ -1060,6 +1060,23 @@ def test_a_runnable_media_pick_in_the_same_repo_still_loads(monkeypatch):
     diffusion_compat.assert_pick_is_not_speech(CSM_REPO, DENOISER_FILE)
 
 
+TE_REPO = "ponpoke/flux2-klein-9b-uncensored-text-encoder"
+TE_FILE = "flux2-klein-9b-uncensored-q4_k_m.gguf"
+
+
+def test_an_undownloaded_text_encoder_pick_is_refused_before_any_download(monkeypatch):
+    """#9875: the repo name matches flux.2-klein, so without this the Qwen3 encoder loads as the denoiser and dies
+    with "Cannot copy out of meta tensor" after the download and the teardown."""
+    requests = _stub_range_reads(monkeypatch, {TE_FILE: _arch_header("qwen3")})
+
+    with pytest.raises(ValueError) as excinfo:
+        diffusion_compat.assert_pick_is_not_speech(TE_REPO, TE_FILE)
+
+    detail = str(excinfo.value)
+    assert TE_FILE in detail and "text encoder (qwen3 GGUF)" in detail
+    assert len(requests) == 1
+
+
 def test_an_unreadable_speech_header_fails_open(monkeypatch):
     """Fail-open throughout: refusing a pick that works is worse than the download this saves."""
     _stub_range_reads(monkeypatch, {}, status = 200)

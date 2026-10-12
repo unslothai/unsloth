@@ -8,6 +8,12 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+// Each render cold-starts Vite and transforms the Markdown component graph with no
+// prebundle: about 9 s on an idle Linux box. The Windows frontend job runs it beside
+// thousands of other tests and went past a 30 s cap, failing PRs that never touched
+// the renderer. The cap only stops a hung child; the assertions are what is tested.
+const RENDER_TIMEOUT_MS = 120_000;
+
 // Vite's Markdown plugin graph retains close hooks after SSR. Run the real
 // renderer in an isolated process so the assertion owns its complete lifetime
 // and can terminate those hooks after the markup has been produced.
@@ -115,7 +121,7 @@ test("source Markdown renders in an assistant root scope without a message part"
     {
       cwd: process.cwd(),
       maxBuffer: 1_000_000,
-      timeout: 30_000,
+      timeout: RENDER_TIMEOUT_MS,
     },
   );
 
@@ -133,7 +139,7 @@ test("source Markdown suppresses a duplicate HTML card when render_html is prese
     {
       cwd: process.cwd(),
       maxBuffer: 1_000_000,
-      timeout: 30_000,
+      timeout: RENDER_TIMEOUT_MS,
     },
   );
 

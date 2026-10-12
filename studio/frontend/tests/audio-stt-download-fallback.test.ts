@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 const mirrorSource = readSrc("features/settings/lib/stt-download-mirror.ts");
 
 test("STT download polling uses the available engine fallback", () => {
@@ -23,7 +24,7 @@ test("STT download polling uses the available engine fallback", () => {
 test("Audio mirrors an STT transfer into Downloads without resetting an adopted job", () => {
   assert.match(
     source,
-    /await startSttDownload\(\s*sidecarKey,[\s\S]*engine,\s*ggufVariant,\s*\);[\s\S]*if \(!isTrackingSttDownload\(sidecarKey, engine\)\) \{[\s\S]*trackSttDownload\(sidecarKey, \{[\s\S]*warmSelectedVoiceModelOnComplete: false,[\s\S]*engine,[\s\S]*repoId,[\s\S]*\}\);[\s\S]*\}[\s\S]*for \(;;\)/,
+    /const download = await startSttDownload\(\s*sidecarKey,[\s\S]*engine,\s*ggufVariant,\s*\);[\s\S]*trackSttDownload\(sidecarKey, \{[\s\S]*warmSelectedVoiceModelOnComplete: false,[\s\S]*engine,[\s\S]*repoId,[\s\S]*ggufVariant,[\s\S]*downloadId: download\.download_id,[\s\S]*\}\);[\s\S]*for \(;;\)/,
   );
   assert.doesNotMatch(source, /`Downloading \$\{sidecarKey\}:/);
 });
@@ -57,7 +58,7 @@ test("resolved Transformers transfers share one tracker identity", () => {
   );
   assert.match(
     mirrorSource,
-    /if \(trackers\.has\(key\)\)[\s\S]*warmSelectedVoiceModelOnComplete\.set\(key, true\)/,
+    /if \(wasTracking && !changedAttempt\)[\s\S]*warmSelectedVoiceModelOnComplete\.set\(key, true\)/,
   );
 });
 

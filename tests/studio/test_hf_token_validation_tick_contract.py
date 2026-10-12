@@ -161,7 +161,10 @@ def test_training_start_prepares_token_once_before_transport():
         "async function checkSelectedDataset", 1
     )[0]
     assert "await prepareHfTokenForUse(attempt.hfToken)" in prepare_attempt
-    assert "buildTrainingStartPayload(attempt.config, hfToken)" in submit_attempt
+    assert (
+        "buildTrainingStartPayload(attempt.config, hfToken, getCachedSystemInfo())"
+        in submit_attempt
+    )
     assert "payload.hf_token = hfToken" not in submit_attempt
     assert submit_attempt.index("attempt.enterTransport()") < submit_attempt.index(
         "await startTraining(payload, attempt.startRequestId)"

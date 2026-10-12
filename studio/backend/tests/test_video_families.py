@@ -183,6 +183,8 @@ def test_supported_names():
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
+        "wan2.1-t2v-1.3b",
+        "wan2.1-t2v-14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     )
@@ -240,7 +242,6 @@ def test_wan_snap_video_size_16():
 
 
 def test_wan_generation_defaults():
-    # ComfyUI's templates: TI2V-5B 20 steps / CFG 5, T2V-A14B 20 steps / CFG 3.5 (Lightning LoRA off).
     assert default_video_generation_params(None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers") == (20, 5.0)
     assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers") == (20, 3.5)
     assert default_video_generation_params("wan2.2-14b") == (20, 3.5)
@@ -526,7 +527,7 @@ def test_the_a14b_row_prices_both_experts_not_one():
 
     fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert fam.is_moe
-    names = {entry[-1] for entry in fam.prequant_filenames}
+    names = {entry[-1] for entry in fam.prequant_filenames if entry[0] == "nvfp4"}
     assert len(names) == 2
     measured = video_family_prequant_resident_gb(fam, "nvfp4")
     assert measured == pytest.approx(16.2)

@@ -3,11 +3,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import remend from "remend";
 import { parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
-import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import {
+  IncrementalMarkdownCache,
+  repairStreamingMarkdown,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const processStreamingText = (text: string): string =>
@@ -246,7 +248,7 @@ test("retaining across a rewrite still matches a full Streamdown split", () => {
       const render = cache.update(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoBlocks(remend(input)),
+        parseMarkdownIntoBlocks(repairStreamingMarkdown(input)),
         `block mismatch at prefix ${length}`,
       );
     }
@@ -275,7 +277,7 @@ test("a rewind restores the repair context of the commit it lands on", () => {
     const render = cache.update(input);
     assert.deepEqual(
       render.parseMarkdownIntoBlocks(render.markdown),
-      parseMarkdownIntoBlocks(remend(input)),
+      parseMarkdownIntoBlocks(repairStreamingMarkdown(input)),
       `block mismatch at prefix ${length}`,
     );
   }
@@ -314,7 +316,7 @@ test("an edit that closes up a blank line cannot keep the block before it", () =
     const render = cache.update(edited);
     assert.deepEqual(
       render.parseMarkdownIntoBlocks(render.markdown),
-      parseMarkdownIntoBlocks(remend(edited)),
+      parseMarkdownIntoBlocks(repairStreamingMarkdown(edited)),
       `block mismatch after ${JSON.stringify(edited.slice(0, 24))}`,
     );
   }

@@ -16,13 +16,16 @@ const {
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  kimiSearchExcludesThinking,
   providerHostsCodeExecution,
+  providerModelReplaysReasoning,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
   providerSupportsPreserveThinking,
+  resolveExternalReasoningEffort,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
 const {
@@ -58,18 +61,27 @@ test("Claude 5 and Opus 4.8 expose the adaptive effort ladder", () => {
 });
 
 test("Fable 5 thinks always, so no off switch is offered", () => {
-  // `thinking.type: "disabled"` 400s on Fable/Mythos 5
+  // Fable/Mythos 5 reject `thinking.type: "disabled"` with HTTP 400
   const caps = getExternalReasoningCapabilities("anthropic", "claude-fable-5");
   assert.equal(caps.supportsReasoning, true);
   assert.equal(caps.supportsReasoningOff, false);
   assert.ok(![...caps.reasoningEffortLevels].includes("none"));
 });
 
+test("Opus 5.5 cannot turn thinking off, Sonnet 5.5 can", () => {
+  const opus = getExternalReasoningCapabilities("anthropic", "claude-opus-5-5");
+  assert.equal(opus.supportsReasoning, true);
+  assert.equal(opus.supportsReasoningOff, false);
+  assert.ok(![...opus.reasoningEffortLevels].includes("none"));
+  const sonnet = getExternalReasoningCapabilities("anthropic", "claude-sonnet-5-5");
+  assert.equal(sonnet.supportsReasoningOff, true);
+});
+
 test("fast mode is offered on Opus 5 / 4.8 and nowhere else", () => {
   for (const model of ["claude-opus-5", "claude-opus-4-8-2026-02-01"]) {
     assert.equal(providerSupportsFastMode("anthropic", model), true, model);
   }
-  // 4.7 errors on `speed`; 4.6 accepts it but answers at standard speed
+  // 4.7 rejects `speed`; 4.6 accepts it without changing response speed
   for (const model of ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5"]) {
     assert.equal(providerSupportsFastMode("anthropic", model), false, model);
   }
@@ -302,7 +314,7 @@ test("GPT-6 Sol and Luna subscription models use local Code tools", () => {
       codeToolsEnabled: true,
       hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution("openai_codex", model),
       providerHostsCodeExecution: providerHostsCodeExecution("openai_codex"),
-    }), { local: ["python", "terminal", "edit_file"], hosted: [] });
+    }), { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] });
   }
 });
 
@@ -332,7 +344,7 @@ test("ChatGPT subscription models expose Unsloth-owned search and local code too
         hostedCodeExecutionForThisTurn,
         providerHostsCodeExecution: sandbox,
       }),
-      { local: ["python", "terminal", "edit_file"], hosted: [] },
+      { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] },
       model,
     );
     assert.equal(
@@ -548,4 +560,40 @@ test("preserve thinking is available only for explicit llama.cpp connections", (
   for (const provider of [undefined, null, "custom", "vllm", "ollama", "openai", "anthropic", "openrouter"]) {
     assert.equal(providerSupportsPreserveThinking(provider), false);
   }
+});
+
+test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they were (#8735)", () => {
+  const k3 = getExternalReasoningCapabilities("kimi", "kimi-k3");
+  assert.equal(k3.supportsReasoning, true);
+  assert.equal(k3.reasoningStyle, "reasoning_effort");
+  assert.equal(k3.supportsReasoningOff, false);
+  assert.deepEqual([...k3.reasoningEffortLevels], ["low", "high", "max"]);
+  assert.equal(clampReasoningEffortToLevels("xhigh", k3.reasoningEffortLevels), "max");
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k3"), 1048576);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k3")?.presencePenalty, false);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k3"), false);
+  // A fresh chat's medium would clamp down to low; K3's own default is max.
+  assert.equal(
+    resolveExternalReasoningEffort({ caps: k3, providerType: "kimi", current: "medium" }),
+    "max",
+  );
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k3"), true);
+
+  const k26 = getExternalReasoningCapabilities("kimi", "kimi-k2.6");
+  assert.equal(k26.reasoningStyle, "enable_thinking");
+  assert.equal(k26.supportsReasoningOff, true);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k2.6")?.presencePenalty, true);
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6"), 32768);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k2.6"), true);
+  assert.equal(kimiSearchExcludesThinking("openai", "kimi-k3"), false);
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k2.6"), false);
+});
+
+test("a saved Search choice survives selecting or reloading Kimi K3", () => {
+  const page = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/features/chat/chat-page.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(page, /const isKimi = \w+\?\.providerType === "kimi"/);
+  assert.equal(page.match(/const isKimi = kimiSearchExcludesThinking\(/g)?.length, 2);
 });

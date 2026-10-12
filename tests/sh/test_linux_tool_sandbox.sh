@@ -111,6 +111,13 @@ _out="$(_run 0)"
 assert_not_contains "no apt call"                   "$_out" "APT_CALLED"
 assert_contains "reports it works"                  "$_out" "bubblewrap works"
 
+echo "=== kernel without the AppArmor userns sysctl: no error for the missing file ==="
+rm -f "$_SYSCTL"
+_out="$(_run 0)"
+assert_not_contains "prints no shell error"         "$_out" "No such file"
+assert_contains "reports it works"                  "$_out" "bubblewrap works"
+: > "$_SYSCTL"
+
 echo "=== bubblewrap present, AppArmor restricts user namespaces ==="
 rm -f "$_BIN"/*
 _mk bwrap 'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1'

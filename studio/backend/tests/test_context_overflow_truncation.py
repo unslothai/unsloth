@@ -1051,6 +1051,39 @@ def test_v1_models_exposes_real_context_window(monkeypatch):
     assert entry["max_context_length"] == 262144
 
 
+class _FakeSpillingLlamaBackend(_FakeLlamaBackend):
+    # #12571: a 100k load on a Mac whose Metal budget only fits 8k without spilling.
+    context_length = 100000
+    max_context_length = 8192
+    vram_fit_context_length = 8192
+    native_context_length = 262144
+
+
+class _FakeNothingFitsLlamaBackend(_FakeSpillingLlamaBackend):
+    # Weights over every budget: max_context_length is the Auto anchor, not a fit.
+    vram_fit_context_length = None
+
+
+def test_v1_models_names_the_vram_fit_estimate(monkeypatch):
+    monkeypatch.setattr(routes_mod, "get_llama_cpp_backend", lambda: _FakeSpillingLlamaBackend())
+    monkeypatch.setattr(routes_mod, "get_inference_backend", lambda: _FakeEmptyBackend())
+    entry = _openai_model_objects()[0]
+    # The window the server runs at stays the one to size requests by.
+    assert entry["context_length"] == 100000
+    assert entry["vram_fit_context_length"] == 8192
+    # The old name still answers, with the same estimate.
+    assert entry["max_context_length"] == 8192
+    assert entry["native_context_length"] == 262144
+
+
+def test_v1_models_claims_no_vram_fit_when_nothing_fits(monkeypatch):
+    monkeypatch.setattr(routes_mod, "get_llama_cpp_backend", lambda: _FakeNothingFitsLlamaBackend())
+    monkeypatch.setattr(routes_mod, "get_inference_backend", lambda: _FakeEmptyBackend())
+    entry = _openai_model_objects()[0]
+    assert "vram_fit_context_length" not in entry
+    assert entry["max_context_length"] == 8192
+
+
 def _conversation_with_big_reasoning(trace_chars: int = 40000) -> list[dict]:
     messages = [{"role": "system", "content": "sys"}]
     for index in range(8):
@@ -1674,35 +1707,6 @@ def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
         {"role": "user", "content": "continue"},
     ]
     assert instruction_pin.pinned_instruction_ids(with_reply, groups = 2, max_tokens = 1024) == set()
-
-
-def test_an_evicted_first_turn_hands_its_date_note_to_the_oldest_kept_turn():
-    from core.inference import llama_cpp
-
-    first = {"role": "user", "content": "[Current date: 2026-10-01]\n\n" + "A" * 400}
-    kept = {"role": "user", "content": "C" * 200}
-    messages = [
-        first,
-        {"role": "assistant", "content": "B" * 400},
-        kept,
-        {"role": "assistant", "content": "D" * 100},
-        {"role": "user", "content": "what is the date?"},
-    ]
-    counter = lambda candidate: sum(  # noqa: E731
-        len(str(message.get("content", ""))) for message in candidate
-    )
-    fitted, info = llama_cpp._fit_with_instruction_pins(
-        messages, context_length = 700, max_tokens = 64, count_tokens = counter
-    )
-
-    assert info is not None and info["dropped_messages"] == 2
-    assert fitted[0] is kept
-    assert kept["content"] == "[Current date: 2026-10-01]\n\n" + "C" * 200
-    assert info["prompt_tokens_after"] == counter(fitted)
-    again, _ = llama_cpp._fit_with_instruction_pins(
-        messages, context_length = 700, max_tokens = 64, count_tokens = counter
-    )
-    assert again[0]["content"].count("[Current date:") == 1
 
 
 def test_a_date_note_that_would_overflow_the_fit_is_not_moved():

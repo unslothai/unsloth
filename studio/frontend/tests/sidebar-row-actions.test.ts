@@ -24,7 +24,8 @@ test("row forks retain the visible branch across settings settlement", async () 
   for (const open of [true, false]) {
     let visible = open;
     const unregister = liveThreadHead.registerLiveThreadView({
-      threadListItem: () => ({ getState: () => ({ remoteId: visible ? "source" : "other" }) }),
+      threads: () => ({ getState: () => ({ mainThreadId: "main" }) }),
+      threadListItem: () => ({ getState: () => ({ id: "main", remoteId: visible ? "source" : "other" }) }),
       thread: () => ({ getState: () => ({ messages: [{ id: "root" }, { id: "older-reply" }] }) }),
     });
     const calls: string[] = [];

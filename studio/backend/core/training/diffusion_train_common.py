@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core._torchao_stub import (
+    alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -42,6 +43,7 @@ from utils.paths.path_utils import drop_appledouble_metadata
 install_xformers_windows_rocm_stub()
 hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
+alias_torchao_fqn_to_config()
 # Same child: the DiT trainer's int8 base-weight quantisation goes through torchao.
 install_torchao_int_mm_patch()
 
@@ -278,6 +280,14 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
+    family = _resolve_trainable_family(base_model, model_family)
+    from core.inference.video_families import assert_ltx_pick_supported
+
+    assert_ltx_pick_supported(family, base_model)
+    return family
+
+
+def _resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     """Resolve the trainer family for a base model, or raise ValueError with a clear reason.
     Positive resolution, before anything is downloaded: a ``.gguf`` name can never be a training
     base; an explicit ``model_family`` must name a registry family, and that family must be
@@ -311,6 +321,10 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # Same shape as the component-only refusal: the name resolves to a real, trainable family, but the repo is not
     # something the training loader can open.
     _refuse_ltx23_training_base(base_model)
+    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
+    from core.inference.video_families import assert_local_pipeline_not_ltx25
+
+    assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -421,7 +435,7 @@ def train_precision_modes() -> tuple[list[str], str]:
     recommended = "nf4"
     try:
         import torch
-        if native_bf16_supported():
+        if flow_bf16_trainable():
             modes.append("bf16")
             # ROCm capability values are gfx versions, not the NVIDIA SM levels checked below.
             torchao_ok = has_functional_torchao() and not torch_is_rocm()
@@ -631,17 +645,37 @@ def native_bf16_supported() -> bool:
     ``torch.cuda.is_bf16_supported()`` defaults to counting EMULATED bf16, which every pre-Ampere
     CUDA card (T4 / V100 / RTX 20xx) reports as supported even though the DiT trainer needs real
     Ampere-or-newer bf16. Gate NVIDIA on compute capability major >= 8 instead, the same #6658
-    fix the inference device resolver already uses; ROCm has no such quirk. Never raises. Shared
-    by the /info modes, the start preflight, and the trainer guard so all three stay in sync."""
+    fix the inference device resolver already uses; ROCm by gfx arch (``rocm_bf16_supported``).
+    Never raises. The flow trainers' admission is ``flow_bf16_trainable``."""
     try:
         import torch
 
         if not torch.cuda.is_available():
             return False
-        is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
-        if is_rocm:
-            return bool(torch.cuda.is_bf16_supported())
+        from core.inference.rocm_bf16 import is_rocm_torch, rocm_bf16_supported
+
+        if is_rocm_torch(torch):
+            return rocm_bf16_supported(torch)
         return torch.cuda.get_device_capability()[0] >= 8
+    except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
+        return False
+
+
+def flow_bf16_trainable() -> bool:
+    """Whether the bf16-only flow trainers (DiT, MiniMax-H3; no fp16 path) may run on this GPU. ROCm targets
+    without native bf16 (RDNA2-and-older / Vega) still run bf16 through fp32 emulation, slowly, so they stay
+    admitted as before the arch gate; only pre-Ampere NVIDIA and ``UNSLOTH_STUDIO_ROCM_BF16=0`` are refused. Never raises."""
+    if native_bf16_supported():
+        return True
+    try:
+        import torch
+        from core.inference.rocm_bf16 import rocm_bf16_forced_off
+
+        if rocm_bf16_forced_off():
+            return False
+        return bool(
+            torch.cuda.is_available() and torch_is_rocm() and torch.cuda.is_bf16_supported()
+        )
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
         return False
 
@@ -714,7 +748,7 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
         return None
     try:
         import torch
-        if torch.cuda.is_available() and not native_bf16_supported():
+        if torch.cuda.is_available() and not flow_bf16_trainable():
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
                 "device does not support bf16. Train the DiT families on a newer GPU."
@@ -2146,6 +2180,8 @@ def _write_lora_sidecar(
         "trigger_prompt": cfg.instance_prompt,
         "created_at": time.time(),
         "source": "studio-trained",
+        # diffusion_lora.LORA_SIDECAR_KIND: marks the adapter as an image LoRA wherever it is copied.
+        "kind": "diffusion-lora",
     }
     sidecar_path.write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
 

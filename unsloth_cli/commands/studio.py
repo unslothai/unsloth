@@ -297,8 +297,8 @@ _MANAGED_CLI_IMPORT_PROBE = (
 # Generous: cold interpreter start plus package import. A timeout means "no verdict", not failure.
 _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 
-# ERROR_ACCESS_DISABLED_BY_POLICY, surfaced by Python as OSError.winerror.
-_ERROR_ACCESS_DISABLED_BY_POLICY = 1260
+# Policy refusals: AppLocker 1260, App Control / Smart App Control 4551. Not 577: a bad hash can be a damaged file.
+_APPLICATION_CONTROL_WINERRORS = frozenset({1260, 4551})
 
 
 def _managed_cli_argv(
@@ -314,7 +314,7 @@ def _managed_cli_argv(
 
 def _is_application_control_block(error: OSError) -> bool:
     """True when Windows refused to start a program by policy: nothing ran."""
-    return getattr(error, "winerror", None) == _ERROR_ACCESS_DISABLED_BY_POLICY
+    return getattr(error, "winerror", None) in _APPLICATION_CONTROL_WINERRORS
 
 
 @contextlib.contextmanager
@@ -3799,6 +3799,33 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
 
 
+def _with_studio_uv(env: Optional[dict]) -> Optional[dict]:
+    """An install with a custom UNSLOTH_STUDIO_HOME keeps its uv-managed Python in <home>/python
+    and its own uv in <home>/uv; only that installer creates <home>/python. Without this, setup
+    would put a missing or stale uv, and any managed Python, in the profile. setup version-checks
+    the uv it finds there and replaces it in place; a uv already on PATH is used as before."""
+    try:
+        if (
+            not _STUDIO_HOME_IS_CUSTOM
+            or STUDIO_HOME.resolve() == (Path.home() / ".unsloth" / "studio").resolve()
+        ):
+            return env
+    except (OSError, RuntimeError, ValueError):
+        return env
+    if not (STUDIO_HOME / "python").is_dir():
+        return env
+    out = {**(env if env is not None else os.environ)}
+    if not (out.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+        out["UV_PYTHON_INSTALL_DIR"] = str(STUDIO_HOME / "python")
+    # astral's unmanaged mode: that directory, no profile or user PATH edit (setup.sh, setup.ps1).
+    if not any(
+        (out.get(k) or "").strip()
+        for k in ("UV_INSTALL_DIR", "UV_UNMANAGED_INSTALL", "XDG_BIN_HOME")
+    ):
+        out["UV_UNMANAGED_INSTALL"] = str(STUDIO_HOME / "uv")
+    return out
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     script = _find_setup_script(repo_root)
     if not script:
@@ -3815,6 +3842,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    env = _with_studio_uv(env)
     # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
     # the managed venv's python, while a pip install, a checkout or a staged run puts an
     # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests
@@ -4527,19 +4555,23 @@ class _WindowsLauncherUpdateTransaction:
         return False
 
     def _restore_runnable(self) -> bool:
-        """Put back the first copy that actually runs. Under Application Control every --version dies in
-        CreateProcess, so this degrades to the shape check."""
+        return self._restore_failure_reason() is None
+
+    def _restore_failure_reason(self) -> Optional[str]:
+        """Put back the first copy that actually runs; return why the CLI still cannot, or None.
+        Under Application Control every --version dies in CreateProcess, so this degrades to the
+        shape check."""
         if self._launcher_health_error() is None:
-            return True
+            return None
         candidates = self._recovery_candidates()
         for source in candidates:
             if self._restore_from(source) and self._launcher_health_error() is None:
-                return True
+                return None
         # Nothing ran; leave the best candidate rather than whichever was tried last.
         if candidates:
             self._restore_from(candidates[0])
         # Gone, or denied by policy, is still not a broken CLI. Asked only after every candidate.
-        return self._recovered_cli_health_error() is None
+        return self._recovered_cli_health_error()
 
     def _launcher_runs_error(self) -> Optional[str]:
         """Whether THIS launcher file starts and answers --version. About the file, not the CLI: the
@@ -4679,10 +4711,16 @@ class _WindowsLauncherUpdateTransaction:
         published = self.launcher.exists()
         error = self._launcher_health_error()
         if error is not None:
-            restored = self._restore_runnable()
+            reason = self._restore_failure_reason()
+            restored = reason is None
             # Setup publishing nothing is the case this exists for, so restoring is success; a launcher setup DID write that cannot run is a failure.
             if published or not restored:
-                typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
+                # Absence names no cause (#9804); any other error is the published launcher's own and must win over the restored copy's.
+                cause = reason if error is self._LAUNCHER_ABSENT else None
+                typer.echo(
+                    f"Error: Unsloth Studio update failed because {cause or error}.",
+                    err = True,
+                )
                 if restored:
                     typer.echo("The previous launcher was restored.", err = True)
                 elif self._retained_backup() is not None:

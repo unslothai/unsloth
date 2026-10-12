@@ -173,6 +173,7 @@ const FIELDS: FieldCase[] = [
     same: 16,
     different: 8,
   },
+  { key: "specDraftModel", statusKey: "spec_draft_model", same: "org/d", different: "org/e" },
   {
     key: "nParallel",
     statusKey: "requested_parallel_slots",
@@ -277,6 +278,12 @@ const FIELDS: FieldCase[] = [
   {
     key: "disableVision",
     statusKey: "disable_vision",
+    same: true,
+    different: false,
+  },
+  {
+    key: "mlxInt8Prefill",
+    statusKey: "mlx_int8_prefill_requested",
     same: true,
     different: false,
   },
@@ -487,8 +494,6 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
     // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
     // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",
-    // Custom intent always reaches backend preflight and compiled-identity comparison.
-    "llamaCppConfig",
     // Compared through standing.splitRatio, which the caller seeds from it.
     "tensorSplit",
   ]);

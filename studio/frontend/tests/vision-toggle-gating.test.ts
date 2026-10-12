@@ -91,20 +91,19 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
     1,
     "expected exactly one Vision switch in the file",
   );
-  assert.ok(bodyOf("VisionRow").includes(wiring));
   assert.ok(
-    gguf.includes("<VisionRow"),
+    gguf.includes(wiring),
     "Vision switch is not in GgufAdvancedSettings",
   );
   assert.ok(
-    !mlx.includes("VisionRow"),
+    !mlx.includes(wiring),
     "Vision switch leaked into MlxAdvancedSettings",
   );
   assert.ok(
     !mlx.includes("disableVision"),
     "MlxAdvancedSettings reads disableVision, which it cannot act on",
   );
-  assert.ok(bodyOf("VisionRow").includes(">Vision</span>"));
+  assert.ok(gguf.includes(">Vision</span>"));
 
   // And the GGUF half only renders under target.isGguf, so a non-GGUF target
   // shows no Vision switch at all.
@@ -292,9 +291,7 @@ test("the Vision row is gated out for diffusion models", () => {
 
   const lines = CONFIG_PAGE.split("\n");
   const visionAt = lines.findIndex((line) =>
-    line.includes(
-      "hideVision ? null : <VisionRow config={config} update={update} />",
-    ),
+    line.includes("checked={!config.disableVision}"),
   );
   assert.notEqual(visionAt, -1, "no Vision switch to gate");
 

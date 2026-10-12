@@ -79,6 +79,11 @@ FAKE_SERVER = textwrap.dedent(
                 if fields.get("language") == "slow":
                     time.sleep(30)
                 return self.reply(200, json.dumps({"text": json.dumps(fields, sort_keys=True)}).encode())
+            if self.path == "/v1/audio/transcriptions/details":
+                req = json.loads(body)
+                if req.get("language") == "slow":
+                    time.sleep(30)
+                return self.reply(200, json.dumps({"text": json.dumps(req, sort_keys=True)}).encode())
             self.reply(404, b"{}")
 
     ThreadingHTTPServer(("127.0.0.1", cfg["port"]), H).serve_forever()
@@ -160,16 +165,20 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
         server.stop()
 
 
-def test_transcription_multipart_carries_model_language_and_file(fake_binary, tmp_path):
+def test_transcription_details_carries_model_audio_language_and_options(fake_binary, tmp_path):
     from core.inference.stt_audiocpp_sidecar import AudioCppSttSidecar
-
-    model = CANARY
-    server = srv.AudioCppServer.start(model, str(tmp_path / "m.gguf"))
+    server = srv.AudioCppServer.start(CANARY, str(tmp_path / "m.gguf"))
     try:
         side = AudioCppSttSidecar()
         side._server = server
-        fields = json.loads(side._post_transcription(b"RIFF....WAVE", "en", None))
-        assert fields == {"file": "dictation.wav", "language": "en", "model": server.model_id}
+        audio = tmp_path / "a.wav"
+        payload = side._post_details(audio, "en", None, {"timestamps": True})
+        assert json.loads(payload["text"]) == {
+            "audio": str(audio),
+            "language": "en",
+            "model": server.model_id,
+            "options": {"timestamps": True},
+        }
     finally:
         server.stop()
 
@@ -186,7 +195,7 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
         cancel = threading.Event()
         threading.Timer(0.3, cancel.set).start()
         with side._lock, pytest.raises(SttTranscriptionCancelledError):
-            side._post_transcription(b"RIFF....WAVE", "slow", cancel)
+            side._post_details(tmp_path / "a.wav", "slow", cancel, {})
         # The child still decoding the abandoned clip is gone, so the next load starts a fresh one.
         assert side._server is None and not server.alive()
     finally:
@@ -272,3 +281,60 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     assert srv.select_backend(build("cuda", "cpu,cuda"), False) == "cuda"
     # A build too old to report keeps the host guess.
     assert srv.select_backend(build("silent", ""), False) == "cuda"
+
+
+def test_stop_survives_a_server_slow_to_exit_after_sigkill(tmp_path):
+    # A server switching task mid-request (Vevo2 Clone <-> Edit) failed the request when the old
+    # process outlived the SIGKILL wait in GPU teardown.
+    class Stuck:
+        pid = 999999999
+        waits: list = []
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            raise srv.subprocess.TimeoutExpired("audiocpp_server", timeout)
+
+    server = object.__new__(srv.AudioCppServer)
+    server.process = Stuck()
+    server._config_dir = tmp_path / "cfg"
+    server.stop()
+    assert Stuck.waits == [10, 120]
+
+
+def test_a_server_slow_to_exit_after_kill_does_not_fail_the_restart(tmp_path, monkeypatch):
+    """Seed-VC exited ~54 s after SIGTERM following a run; a reload must not raise on it."""
+    import subprocess as sp
+
+    class SlowProcess:
+        pid = 424242
+        killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout = None):
+            raise sp.TimeoutExpired(["audiocpp_server"], timeout)
+
+    forgotten = []
+    monkeypatch.setattr(srv, "forget_pid", forgotten.append)
+    config_dir = tmp_path / "cfg"
+    config_dir.mkdir()
+    process = SlowProcess()
+    server = srv.AudioCppServer(process, 1, KOKORO, "kokoro", "cuda", config_dir)
+    server.stop()
+    assert process.killed and not config_dir.exists() and forgotten == []

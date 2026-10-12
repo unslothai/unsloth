@@ -137,8 +137,12 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     src = _CHAT_ADAPTER_SOURCE.read_text(encoding = "utf-8")
     external_body = _external_request_body(src)
 
-    # false, not omitted (#9686); chat-adapter.ts carries the why.
-    assert "nudge_tool_calls: false" in external_body
+    # false, not omitted (#9686); chat-adapter.ts carries the why. A browser-use turn is the one
+    # exception: a step announced and not taken ends the task there.
+    assert (
+        "nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false"
+        in external_body
+    )
     assert "nudge_tool_calls: runtime.nudgeToolCalls" not in external_body
 
     local_src = src.replace(external_body, "")
