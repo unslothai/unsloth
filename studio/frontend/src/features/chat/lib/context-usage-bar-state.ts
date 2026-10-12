@@ -20,6 +20,7 @@ export type ContextUsageBarInput = {
   cached?: number;
   // anthropic-only (billed at the write premium)
   cacheWrites?: number;
+  compactionCount?: number;
   promptTokens?: number;
   completionTokens?: number;
   // MLX keeps generating past the window instead of stopping there, so it needs the

@@ -33,6 +33,7 @@ import {
   partsSearchImagesSignature,
   partsTextKey,
 } from "@/components/assistant-ui/message-derived";
+import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
@@ -46,7 +47,6 @@ import {
   INTERNAL,
   useAui,
   useAuiState,
-  useMessagePartText,
 } from "@assistant-ui/react";
 import {
   Copy01Icon,
@@ -1603,7 +1603,7 @@ function MarkdownTextRenderer({
 const MarkdownTextImpl = () => {
   const allowSearchImages = useContext(SearchImagesEnabledContext);
   const aui = useAui();
-  const { text, status } = useMessagePartText();
+  const { text, status } = useMessagePartTextSafe();
   const partIndex =
     aui.part.source === "message" && aui.part.query.type === "index"
       ? aui.part.query.index

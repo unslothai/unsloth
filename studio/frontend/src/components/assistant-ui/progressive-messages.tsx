@@ -14,12 +14,7 @@
 // every pre-existing row and React skips those subtrees. A `components` object would allocate fresh props per row
 // per commit, so every delete would re-render every body, action bar and tooltip: the regression #9042 removed.
 
-import {
-  AuiProvider,
-  MessageByIndexProvider,
-  useAui,
-  useAuiState,
-} from "@assistant-ui/react";
+import { AuiProvider, useAui, useAuiState } from "@assistant-ui/react";
 import {
   type FC,
   type ReactElement,
@@ -35,6 +30,7 @@ import {
 } from "react";
 
 import { createRowNotificationGate } from "@/components/assistant-ui/row-notification-gate";
+import { MessageByIndexProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import {
   type AnchorSample,
   type MountWindow,

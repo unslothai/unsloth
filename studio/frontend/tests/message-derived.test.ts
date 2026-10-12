@@ -189,6 +189,8 @@ test("compaction notice ids match the per-message walk", () => {
     assert.equal(ids.has(message.id), walk(messages, message.id), message.id);
   }
   assert.deepEqual([...ids], ["a1", "a3", "a4"]);
+  // The context meter's compaction count is this set's size.
+  assert.equal(ids.size, 3);
   assert.equal(ids.has("missing"), false);
   assert.equal(compactionNoticeMessageIds(messages), ids);
   assert.notEqual(compactionNoticeMessageIds([...messages]), ids);

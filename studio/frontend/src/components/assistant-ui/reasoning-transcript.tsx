@@ -69,6 +69,9 @@ import { hasPendingProgressiveMounts } from "./progressive-messages";
 import { panelDragInProgress } from "@/components/ui/panel-drag-overlay";
 import { cn } from "@/lib/utils";
 
+// Twice the live box's tallest cap (18rem in reasoning.tsx).
+const BOUNDED_TAIL_PX = 576;
+
 type Reserve = { element: HTMLDivElement; from: number; to: number };
 type Reading = ReasoningReadingAnchor & {
   key: string;
@@ -83,6 +86,8 @@ type Props = {
   messageId: string;
   messageHasRenderableRenderHtmlTool: boolean;
   streaming: boolean;
+  /** In the live tail box: rows grow upward in a fixed box, so no thread correction applies. */
+  bounded?: boolean;
 };
 
 const hiddenTranscripts = new WeakSet<Element>();
@@ -532,6 +537,41 @@ const keepGeometry =
       ? old
       : next;
 
+// IntersectionObserver reports after paint; this catches jumps past its margin before paint.
+const jumpWatchers = new WeakMap<
+  HTMLElement,
+  { checks: Set<() => void>; stop: () => void }
+>();
+
+function onViewportJump(scroll: HTMLElement, check: () => void): () => void {
+  let watcher = jumpWatchers.get(scroll);
+  if (!watcher) {
+    const checks = new Set<() => void>();
+    let last = scroll.scrollTop;
+    const listener = () => {
+      const top = scroll.scrollTop;
+      const jumped = Math.abs(top - last) >= scroll.clientHeight / 2;
+      last = top;
+      if (jumped) for (const run of [...checks]) run();
+    };
+    scroll.addEventListener("scroll", listener, { passive: true });
+    watcher = {
+      checks,
+      stop: () => {
+        scroll.removeEventListener("scroll", listener);
+        jumpWatchers.delete(scroll);
+      },
+    };
+    jumpWatchers.set(scroll, watcher);
+  }
+  const { checks, stop } = watcher;
+  checks.add(check);
+  return () => {
+    checks.delete(check);
+    if (!checks.size) stop();
+  };
+}
+
 export function ReasoningTranscript({
   initialAnchor,
   documents,
@@ -539,10 +579,13 @@ export function ReasoningTranscript({
   messageId,
   messageHasRenderableRenderHtmlTool,
   streaming,
+  bounded = false,
 }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const codeProbe = useRef<HTMLDivElement>(null);
   const [index] = useState(() => cachedReasoningTranscriptIndex(indexKey));
+  // Over a screen away, a transcript stops listening to the shared viewport's scroll (#12025).
+  const nearby = useRef(true);
   const fragments = useMemo(() => index.update(documents), [documents, index]);
   const fragmentsRef = useRef(fragments);
   const [geometry, setGeometry] = useState(DEFAULT_GEOMETRY);
@@ -631,6 +674,7 @@ export function ReasoningTranscript({
     const previous = fragmentsRef.current;
     fragmentsRef.current = fragments;
     streamingRef.current = streaming;
+    boundedRef.current = bounded;
     estimatesRef.current = estimates;
     gridRef.current = grid;
     const restarted = originRef.current !== origin;
@@ -664,7 +708,13 @@ export function ReasoningTranscript({
       printers.delete(print);
     };
   }, [setLimit]);
-  const adjustAbove = useAdjustForContentInsertedAbove();
+  const adjustThread = useAdjustForContentInsertedAbove();
+  const boundedRef = useRef(bounded);
+  // In the live tail box rows grow upward in a fixed box, so no thread correction applies.
+  const adjustAbove = useCallback(
+    (delta: number) => !boundedRef.current && adjustThread(delta),
+    [adjustThread],
+  );
   const detach = useDetachThreadFromBottom();
   const covered = isCovered(limit, fragments.length);
 
@@ -710,6 +760,27 @@ export function ReasoningTranscript({
     const next = element && measureGeometry(element, codeProbe.current);
     if (next) setGeometry(keepGeometry(next));
   }, []);
+
+  useLayoutEffect(() => {
+    if (!bounded || covered) return;
+    // The box shows the end of the trace, which the prefix mount reaches last.
+    let start = fragments.length;
+    for (let height = 0; start > 0 && height < BOUNDED_TAIL_PX; )
+      height += estimates[--start];
+    const next = addIsland(
+      islandsRef.current,
+      { start: chunkStartAt(grid, start), end: fragments.length },
+      committedRef.current,
+    );
+    if (next === islandsRef.current) return;
+    islandsRef.current = next;
+    setIslands(next);
+  }, [bounded, covered, fragments.length, estimates, grid, setIslands]);
+
+  useLayoutEffect(() => {
+    // Lifting the cap moves every row without resizing the transcript.
+    recapture.current(true);
+  }, [bounded]);
 
   useLayoutEffect(() => {
     const pending = restore;
@@ -1016,10 +1087,50 @@ export function ReasoningTranscript({
       adjustAbove(top - anchor.top);
     });
     observer.observe(element);
-    scroll.addEventListener("scroll", schedule, { passive: true });
+    let stopJumpWatch: (() => void) | undefined;
+    const setNearby = (near: boolean, beforePaint = false) => {
+      if (near === nearby.current) return;
+      nearby.current = near;
+      if (near) {
+        stopJumpWatch?.();
+        stopJumpWatch = undefined;
+        scroll.addEventListener("scroll", schedule, { passive: true });
+        // A jump lands before IntersectionObserver reports: mount the rows in view before this paint.
+        if (beforePaint) flushSync(capture);
+        else schedule();
+        return;
+      }
+      scroll.removeEventListener("scroll", schedule);
+      if (frame !== 0) cancelAnimationFrame(frame);
+      frame = 0;
+      reading = undefined;
+      stopJumpWatch = onViewportJump(scroll, () => {
+        const box = element.getBoundingClientRect();
+        const view = scroll.getBoundingClientRect();
+        if (
+          box.height > 0 &&
+          box.bottom > view.top - view.height &&
+          box.top < view.bottom + view.height
+        )
+          setNearby(true, true);
+      });
+    };
+    if (nearby.current)
+      scroll.addEventListener("scroll", schedule, { passive: true });
+    const proximity =
+      typeof IntersectionObserver === "undefined"
+        ? undefined
+        : new IntersectionObserver(
+            (entries) =>
+              setNearby(entries.at(-1)?.isIntersecting ?? nearby.current),
+            { root: scroll, rootMargin: "100% 0px" },
+          );
+    proximity?.observe(element);
     return () => {
       commitEdge.current = { before: () => {}, after: () => {} };
       observer.disconnect();
+      proximity?.disconnect();
+      stopJumpWatch?.();
       scroll.removeEventListener("scroll", schedule);
       if (frame !== 0) cancelAnimationFrame(frame);
       if (settleTimer !== 0) clearTimeout(settleTimer);

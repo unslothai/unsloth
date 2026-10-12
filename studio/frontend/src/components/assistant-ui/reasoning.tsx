@@ -31,6 +31,7 @@ import {
 import {
   clearReasoningRound,
   foldIsActive,
+  reasoningTailCapped,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   setReasoningRoundOpen,
@@ -486,6 +487,7 @@ function ReasoningBody({
   roundStart,
   messageHasRenderableRenderHtmlTool,
   isStreaming,
+  bounded = false,
   textClassName,
   children,
 }: {
@@ -494,6 +496,7 @@ function ReasoningBody({
   roundStart: number;
   messageHasRenderableRenderHtmlTool: boolean;
   isStreaming: boolean;
+  bounded?: boolean;
   textClassName?: string;
   children: ReactNode;
 }) {
@@ -514,11 +517,87 @@ function ReasoningBody({
             messageHasRenderableRenderHtmlTool
           }
           streaming={isStreaming}
+          bounded={bounded}
         />
       ) : (
         children
       )}
     </ReasoningText>
+  );
+}
+
+// The newest lines of a live trace in a fixed box (#11703), clipped at the top rather than an inner
+// scroller, which split the reading anchor across two containers and wrote its own scroll (#11704).
+function ReasoningTail({
+  capped,
+  onShowFull,
+  children,
+}: {
+  capped: boolean;
+  onShowFull: () => void;
+  children: ReactNode;
+}) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const content = box?.firstElementChild as HTMLElement | null | undefined;
+    if (!capped || !box || !content) {
+      setOverflowing(false);
+      return;
+    }
+    const check = () => setOverflowing(content.offsetHeight > box.clientHeight);
+    const observer = new ResizeObserver(check);
+    observer.observe(content);
+    observer.observe(box);
+    check();
+    return () => observer.disconnect();
+  }, [capped]);
+  const clipped = capped && overflowing;
+  return (
+    <>
+      <div
+        ref={boxRef}
+        data-slot="reasoning-tail"
+        data-capped={capped ? "" : undefined}
+        data-overflowing={clipped ? "" : undefined}
+        onFocus={(event) => {
+          // Clipped lines cannot scroll into view: a link focused up there shows the full trace.
+          if (
+            clipped &&
+            event.target.getBoundingClientRect().top <
+              event.currentTarget.getBoundingClientRect().top
+          )
+            onShowFull();
+        }}
+        className={cn(
+          capped &&
+            "flex max-h-[min(18rem,40vh)] flex-col justify-end overflow-hidden [&>*]:shrink-0",
+          clipped &&
+            "[mask-image:linear-gradient(to_bottom,transparent,black_3rem)]",
+        )}
+      >
+        {children}
+      </div>
+      {clipped && (
+        <button
+          type="button"
+          data-slot="reasoning-show-full"
+          onClick={(event) => {
+            // The button unmounts with the cap: keep keyboard focus on this block's header.
+            if (event.currentTarget === document.activeElement)
+              boxRef.current
+                ?.closest('[data-slot="reasoning-root"]')
+                ?.querySelector<HTMLElement>('[data-slot="reasoning-trigger"]')
+                ?.focus({ preventScroll: true });
+            onShowFull();
+          }}
+          className="mt-2 cursor-pointer font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          Show full thinking
+        </button>
+      )}
+    </>
   );
 }
 
@@ -752,6 +831,15 @@ const ReasoningGroupBlock = ({
     override,
   });
 
+  // Fold mode keeps its rounds inline: the lead's box could not hold the rounds folded after it.
+  // A closing block keeps the cap it had while open: a hand close must not re-cap a full trace.
+  const cappedNow = !foldLead && reasoningTailCapped({ visibility, override });
+  const [closingCapped, setClosingCapped] = useState(cappedNow);
+  if (isOpen && closingCapped !== cappedNow) {
+    setClosingCapped(cappedNow);
+  }
+  const capped = isOpen ? cappedNow : closingCapped;
+
   // Publish the lead's open state for everything folded under it, and count the tool calls for
   // its header. A layout effect, so the folded parts settle before the frame the user sees.
   const roundKey = reasoningRoundKey(messageId, endIndex);
@@ -825,17 +913,23 @@ const ReasoningGroupBlock = ({
         streaming={isReasoningStreaming}
         ref={reasoningContentRef}
       >
-        <ReasoningBody
-          transcript={transcript}
-          messageId={messageId}
-          roundStart={startIndex}
-          messageHasRenderableRenderHtmlTool={
-            messageHasRenderableRenderHtmlTool
-          }
-          isStreaming={isReasoningStreaming}
+        <ReasoningTail
+          capped={capped}
+          onShowFull={() => handleOpenChange(true)}
         >
-          {children}
-        </ReasoningBody>
+          <ReasoningBody
+            transcript={transcript}
+            messageId={messageId}
+            roundStart={startIndex}
+            messageHasRenderableRenderHtmlTool={
+              messageHasRenderableRenderHtmlTool
+            }
+            isStreaming={isReasoningStreaming}
+            bounded={capped}
+          >
+            {children}
+          </ReasoningBody>
+        </ReasoningTail>
         {closesTrace && <ReasoningEndRule />}
       </ReasoningContent>
     </ReasoningRoot>

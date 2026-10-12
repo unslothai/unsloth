@@ -14,6 +14,7 @@
 
 import torch
 import gc
+import contextlib
 import math
 import functools
 from typing import Optional, Tuple, List, Union
@@ -250,6 +251,31 @@ def _offload_frozen_module_for_training(
     if offload_device is not None:
         module.original_module.to(device = offload_device, non_blocking = True)
     module.original_module.requires_grad_(False)
+
+
+def _unfreeze_modules_to_save(model) -> None:
+    """Re-train each ModulesToSaveWrapper's active copy, as PEFT and FastModel do: kbit prep
+    froze it, so a reloaded adapter dropped embed_tokens / lm_head and resume_from_checkpoint
+    failed (#3108). Dtype only, never device."""
+    for module in model.modules():
+        if not isinstance(module, ModulesToSaveWrapper) or getattr(
+            module, "disable_adapters", False
+        ):
+            continue
+        active = getattr(module, "active_adapters", None)
+        if active is None:
+            active = [getattr(module, "active_adapter", "default")]
+        elif isinstance(active, str):
+            active = [active]
+        for adapter_name in active:
+            if adapter_name not in module.modules_to_save:
+                continue
+            trainable = module.modules_to_save[adapter_name]
+            # Any param, not .weight (a saved block has none); fp16 must train in fp32 (#1200).
+            if any(p.dtype == torch.float16 for p in trainable.parameters()):
+                trainable.to(dtype = torch.float32)
+            trainable.requires_grad_(True)
+        module.original_module.requires_grad_(False)
 
 
 def _ensure_cache_is_dynamic(past_key_values):
@@ -1856,6 +1882,25 @@ def _rope_scaling_as_dict(rope_scaling):
         return {}
 
 
+def _user_rope_scaling(config, rope_scaling):
+    """The caller's rope_scaling as a dict. On transformers v5 it carries the config's rope_theta:
+    assigning rope_scaling there replaces all of rope_parameters, base included."""
+    scaling = dict(_rope_scaling_as_dict(rope_scaling))
+    if "rope_type" not in scaling and "type" in scaling:
+        scaling["rope_type"] = scaling["type"]
+    # Pin YaRN's pretraining window to the checkpoint's, before max_position_embeddings is widened.
+    if scaling.get("rope_type") == "yarn" and "original_max_position_embeddings" not in scaling:
+        existing = _rope_scaling_as_dict(
+            getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
+        )
+        scaling["original_max_position_embeddings"] = (
+            existing.get("original_max_position_embeddings") or config.max_position_embeddings
+        )
+    if isinstance(getattr(config, "rope_parameters", None), dict) and "rope_theta" not in scaling:
+        scaling["rope_theta"] = _get_rope_theta(config)
+    return scaling
+
+
 def _extended_rope_scaling(config, factor):
     """RoPE scaling to extend a model past its native window. Keeps native llama3 as-is
     (linear extension is far worse for long context); everything else gets linear. Returns
@@ -1932,17 +1977,24 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
         from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
         rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
-        try:
-            inv_freq, attention_scaling = rope_init_fn(config, torch.device("cpu"))
-        except Exception:
-            # Object-style rope_scaling: retry with a config copy carrying the plain dict.
-            if isinstance(original_rope_scaling, dict):
-                raise
-            import copy as _copy
+        # Under the meta-device load context yarn's inner aranges land on meta and the copy to CPU fails;
+        # the device mode is only entered then, as it slows every op inside it.
+        with (
+            torch.device("cpu")
+            if torch.get_default_device().type != "cpu"
+            else contextlib.nullcontext()
+        ):
+            try:
+                inv_freq, attention_scaling = rope_init_fn(config, torch.device("cpu"))
+            except Exception:
+                # Object-style rope_scaling: retry with a config copy carrying the plain dict.
+                if isinstance(original_rope_scaling, dict):
+                    raise
+                import copy as _copy
 
-            config_copy = _copy.copy(config)
-            config_copy.rope_scaling = rope_scaling
-            inv_freq, attention_scaling = rope_init_fn(config_copy, torch.device("cpu"))
+                config_copy = _copy.copy(config)
+                config_copy.rope_scaling = rope_scaling
+                inv_freq, attention_scaling = rope_init_fn(config_copy, torch.device("cpu"))
         return inv_freq.to(dtype = torch.float32, device = "cpu"), float(attention_scaling)
     except Exception as exception:
         if rope_type == "llama3":
@@ -2936,12 +2988,36 @@ class FastLlamaModel:
         if max_seq_length is None:
             max_seq_length = model_max_seq_length
 
-        if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
+        caller_rope_scaling = rope_scaling is not None
+        if caller_rope_scaling:
+            _rope = _rope_scaling_as_dict(rope_scaling)
+            _rope_type = _rope.get("rope_type") or _rope.get("type")
+            # Only static types Unsloth's rotary reproduces exactly (no seq_len-dependent dynamic or
+            # longrope switch; Gemma's rotary ignores config scaling), else vLLM and training disagree.
+            if model_config.model_type in ("gemma", "gemma2") or _rope_type not in (
+                "linear",
+                "yarn",
+                "llama3",
+            ):
+                logger.warning_once(
+                    f"Unsloth: `rope_scaling` of type {_rope_type} is not supported for "
+                    f"{model_config.model_type} and is ignored."
+                )
+                rope_scaling = None
+        if rope_scaling is not None:
+            # On the config for the in-process load and in kwargs for load_vllm, else vLLM keeps the
+            # checkpoint's RoPE and indexes past its cos/sin cache (#3083).
+            rope_scaling = _user_rope_scaling(model_config, rope_scaling)
+            model_config.rope_scaling = rope_scaling
+            kwargs["rope_scaling"] = rope_scaling
+        elif not caller_rope_scaling and max_seq_length > model_max_seq_length:
             factor = max_seq_length / model_max_seq_length
 
             if fast_inference:
                 raise NotImplementedError(
-                    "Unsloth: Fast inference does not yet work with RoPE Scaling."
+                    "Unsloth: Fast inference does not yet work with automatic RoPE Scaling.\n"
+                    f"{model_name} supports {model_max_seq_length} tokens; pass `rope_scaling` "
+                    f"explicitly (for example YaRN) to use max_seq_length = {max_seq_length}."
                 )
 
             linear_scaling, native_type = _extended_rope_scaling(model_config, factor)
@@ -3424,6 +3500,9 @@ class FastLlamaModel:
                 model = convert_vllm_to_huggingface(
                     quant_state_dict, model_config, dtype, bnb_config
                 )
+                # The rebuilt model takes the checkpoint's config, so put the caller's RoPE back for saving.
+                if rope_scaling is not None:
+                    model.config.rope_scaling = rope_scaling
                 model.vllm_engine = llm
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate
@@ -4377,6 +4456,7 @@ class FastLlamaModel:
             use_reentrant = True,
         )
         freeze_peft_variant_weights(model)
+        _unfreeze_modules_to_save(model)
 
         for active_adapter in model.peft_config.keys():
             if False:
@@ -4661,17 +4741,12 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = True
 
-        # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored
-        # it; the record only exists after a disable.
-        if (
-            use_gradient_checkpointing
-            and getattr(model, "_unsloth_use_cache_originals", None) is not None
-        ):
-            try:
-                from unsloth_zoo.training_utils import disable_use_cache
-                disable_use_cache(model)
-            except ImportError:
-                pass
+        # Not only under GC: with a KV cache transformers drops the packed-sequence mask (padding-free rows leak).
+        try:
+            from unsloth_zoo.training_utils import disable_use_cache
+            disable_use_cache(model)
+        except ImportError:
+            pass
         return model
 
 

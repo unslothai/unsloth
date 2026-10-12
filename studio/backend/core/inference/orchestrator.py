@@ -408,6 +408,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_edit": model_info.get("audio_edit"),
         "audio_music": model_info.get("audio_music"),
         "audio_cpp_backend": model_info.get("audio_cpp_backend"),
+        "max_image_side": model_info.get("max_image_side"),
     }
 
 
@@ -4024,6 +4025,8 @@ class InferenceOrchestrator:
         """Resize image preserving aspect ratio (runs locally, no ML imports)."""
         if img is None:
             return None
+        entry = self.models.get(self.active_model_name) or {}
+        max_size = max(max_size, entry.get("max_image_side") or 0)
         if img.size[0] > max_size or img.size[1] > max_size:
             from PIL import Image
 
