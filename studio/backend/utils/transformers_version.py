@@ -3280,7 +3280,6 @@ def _ensure_venv_t5_510_exists() -> bool:
 
 
 def _ensure_venv_t4_457_exists() -> bool:
-    """Ensure .venv_t4_457/ exists with transformers 4.57.6."""
     return _ensure_venv_dir(
         _VENV_T4_457_DIR,
         _VENV_T4_457_PACKAGES,

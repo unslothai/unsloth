@@ -1649,8 +1649,7 @@ class InferenceBackend:
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
         prompt = "<image>\n" + (last_user_text(messages) or "Free OCR.")
         infer = model_info["model"].infer
-        # infer() hardcodes max_new_tokens=8192 and takes no stopping criteria, so bound the
-        # generate() it calls on its own module (the base model under a PEFT wrapper).
+        # infer() hardcodes max_new_tokens=8192 and no stopping criteria: bound the generate() it calls.
         owner = infer.__self__
         previous = owner.__dict__.get("generate", _MISSING)
         generate = owner.generate
