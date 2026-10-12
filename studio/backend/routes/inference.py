@@ -37823,6 +37823,41 @@ def _responses_custom_tool_names(tools: Optional[list[dict]]) -> set[str]:
     return {tool["name"] for tool in tools or [] if _is_responses_apply_patch_tool(tool)}
 
 
+def _responses_namespaced_name(namespace: str, name: str) -> str:
+    return f"{namespace}__{name}"
+
+
+def _responses_namespace_functions(tool: dict) -> list[tuple[str, dict]]:
+    namespace = tool.get("name")
+    if not isinstance(namespace, str) or not namespace:
+        return []
+    return [
+        (_responses_namespaced_name(namespace, inner["name"]), inner)
+        for inner in tool.get("tools") or []
+        if isinstance(inner, dict)
+        and inner.get("type") == "function"
+        and isinstance(inner.get("name"), str)
+    ]
+
+
+def _responses_namespaced_tool_names(tools: Optional[list[dict]]) -> dict[str, tuple[str, str]]:
+    return {
+        flat_name: (tool["name"], inner["name"])
+        for tool in tools or []
+        if isinstance(tool, dict) and tool.get("type") == "namespace"
+        for flat_name, inner in _responses_namespace_functions(tool)
+    }
+
+
+def _responses_function_call_name(
+    name: str, namespaced_tool_names: dict[str, tuple[str, str]]
+) -> dict:
+    if name in namespaced_tool_names:
+        namespace, bare_name = namespaced_tool_names[name]
+        return {"name": bare_name, "namespace": namespace}
+    return {"name": name}
+
+
 def _responses_apply_patch_description(tool: dict) -> str:
     description = (
         "Edit files by passing one complete patch in the input field. "
@@ -37885,19 +37920,29 @@ def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[
                 }
             )
             continue
+        if tool.get("type") == "namespace":
+            out.extend(
+                _responses_function_tool_to_chat({**inner, "name": flat_name})
+                for flat_name, inner in _responses_namespace_functions(tool)
+            )
+            continue
         if tool.get("type") != "function":
             continue
-        fn: dict = {}
-        if "name" in tool:
-            fn["name"] = tool["name"]
-        if tool.get("description") is not None:
-            fn["description"] = tool["description"]
-        if tool.get("parameters") is not None:
-            fn["parameters"] = tool["parameters"]
-        if tool.get("strict") is not None:
-            fn["strict"] = tool["strict"]
-        out.append({"type": "function", "function": fn})
+        out.append(_responses_function_tool_to_chat(tool))
     return out or None
+
+
+def _responses_function_tool_to_chat(tool: dict) -> dict:
+    fn: dict = {}
+    if "name" in tool:
+        fn["name"] = tool["name"]
+    if tool.get("description") is not None:
+        fn["description"] = tool["description"]
+    if tool.get("parameters") is not None:
+        fn["parameters"] = tool["parameters"]
+    if tool.get("strict") is not None:
+        fn["strict"] = tool["strict"]
+    return {"type": "function", "function": fn}
 
 
 def _translate_responses_tool_choice_to_chat(
@@ -38394,7 +38439,11 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                     "id": item.call_id,
                     "type": "function",
                     "function": {
-                        "name": item.name,
+                        "name": (
+                            _responses_namespaced_name(item.namespace, item.name)
+                            if item.namespace
+                            else item.name
+                        ),
                         "arguments": item.arguments,
                     },
                 }
@@ -38621,6 +38670,7 @@ def _chat_tool_calls_to_responses_output(
     tool_calls: list[dict],
     custom_tool_names: Optional[set[str]] = None,
     status: Literal["completed", "incomplete"] = "completed",
+    namespaced_tool_names: Optional[dict[str, tuple[str, str]]] = None,
 ) -> list[dict]:
     """Map local function calls back into their Responses output item types.
 
@@ -38649,7 +38699,7 @@ def _chat_tool_calls_to_responses_output(
         items.append(
             ResponsesOutputFunctionCall(
                 call_id = tc.get("id", ""),
-                name = name,
+                **_responses_function_call_name(name, namespaced_tool_names or {}),
                 arguments = arguments,
                 status = status,
             ).model_dump()
@@ -38771,6 +38821,7 @@ async def _responses_non_streaming(
                 tool_calls,
                 _responses_custom_tool_names(payload.tools),
                 status = item_status,
+                namespaced_tool_names = _responses_namespaced_tool_names(payload.tools),
             )
         )
 
@@ -38858,6 +38909,7 @@ async def _responses_stream(
 
     chat_req = _build_chat_request(payload, messages, stream = True)
     custom_tool_names = _responses_custom_tool_names(payload.tools)
+    namespaced_tool_names = _responses_namespaced_tool_names(payload.tools)
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
@@ -39069,7 +39121,7 @@ async def _responses_stream(
                         "id": st["item_id"],
                         "status": "in_progress",
                         "call_id": st["call_id"],
-                        "name": st["name"],
+                        **_responses_function_call_name(st["name"], namespaced_tool_names),
                         "arguments": "",
                     },
                 }
@@ -39321,7 +39373,7 @@ async def _responses_stream(
                         "id": st["item_id"],
                         "status": active_item_status,
                         "call_id": st["call_id"],
-                        "name": st["name"],
+                        **_responses_function_call_name(st["name"], namespaced_tool_names),
                         "arguments": st["arguments"],
                     }
                 indexed_items.append(
@@ -39809,7 +39861,7 @@ async def _responses_stream(
                         "id": st["item_id"],
                         "status": "in_progress",
                         "call_id": st["call_id"],
-                        "name": st["name"],
+                        **_responses_function_call_name(st["name"], namespaced_tool_names),
                         "arguments": "",
                     },
                 }
@@ -39843,7 +39895,7 @@ async def _responses_stream(
                     "id": st["item_id"],
                     "status": active_item_status,
                     "call_id": st["call_id"],
-                    "name": st["name"],
+                    **_responses_function_call_name(st["name"], namespaced_tool_names),
                     "arguments": st["arguments"],
                 },
             }
