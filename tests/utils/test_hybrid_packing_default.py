@@ -422,40 +422,6 @@ def test_hub_kernel_behind_compile_disable_wrapper(monkeypatch):
         sys.modules.pop(name, None)
 
 
-class LabelEchoHybrid(FakeHybrid):
-    def forward(self, input_ids = None, position_ids = None, packed_seq_lengths = None, use_cache = None, labels = None, **kw):
-        self.seen_labels = labels
-        return self.linear_attn(self.embed(input_ids))
-
-
-def test_packed_boundary_labels_are_masked(monkeypatch):
-    # TRL < 0.24 leaves labels at document starts: the hybrid forward must not train them.
-    monkeypatch.delenv(ENV, raising = False)
-    model = LabelEchoHybrid(FakeGatedDeltaNet())
-    assert patch_hybrid_linear_attention_varlen(model) is True
-    ids = torch.arange(9)[None]
-    labels = ids.clone()
-    model(input_ids = ids, labels = labels, packed_seq_lengths = torch.tensor([4, 1, 4], dtype = torch.int32), use_cache = False)
-    assert model.seen_labels.tolist() == [[0, 1, 2, 3, -100, -100, 6, 7, 8]]
-    assert labels.tolist() == [list(range(9))]  # the caller's batch is untouched
-    # Trailing pad segment (pad_to_multiple_of): its start is masked too, the rest is left alone.
-    model(input_ids = ids, labels = labels, packed_seq_lengths = torch.tensor([4, 3], dtype = torch.int32), use_cache = False)
-    assert model.seen_labels.tolist() == [[0, 1, 2, 3, -100, 5, 6, -100, 8]]
-    model(input_ids = ids, labels = labels, use_cache = False)
-    assert model.seen_labels is labels
-
-
-def test_positional_labels_are_masked_too(monkeypatch):
-    monkeypatch.delenv(ENV, raising = False)
-    model = LabelEchoHybrid(FakeGatedDeltaNet())
-    assert patch_hybrid_linear_attention_varlen(model) is True
-    ids = torch.arange(9)[None]
-    labels = ids.clone()
-    model(ids, None, torch.tensor([4, 1, 4], dtype = torch.int32), False, labels)
-    assert model.seen_labels.tolist() == [[0, 1, 2, 3, -100, -100, 6, 7, 8]]
-    assert labels.tolist() == [list(range(9))]
-
-
 def test_boundaries_follow_the_call_onto_its_device():
     varlen = (torch.tensor([0, 4, 9], dtype = torch.int32), torch.tensor([[0] * 4 + [1] * 5], dtype = torch.int32))
     x = torch.empty(1, 8, 9, device = "meta")

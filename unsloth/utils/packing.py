@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 from collections import OrderedDict
+from collections.abc import Mapping
 from functools import wraps
 from typing import Any, Iterable, Optional, Sequence, Tuple
 
@@ -188,14 +189,13 @@ def configure_sample_packing(config):
 
 
 def configure_padding_free(config):
-    """Mutate an ``SFTConfig`` so TRL enables padding-free batching without packing."""
     _ensure_trl_warning_filter()
     setattr(config, "padding_free", True)
     setattr(config, "remove_unused_columns", False)
 
 
 def _enable_hf_packed_attention() -> None:
-    # Packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
+    # packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
     try:
         from .hf_packed_attention import enable_hf_packed_attention
         enable_hf_packed_attention()
@@ -211,13 +211,20 @@ def _scope_flash_attention_impl(model, trainer) -> None:
         logging.getLogger(__name__).info(f"Unsloth: flash attention impl not scoped ({exc})")
 
 
+def _mask_padding_free_boundary_labels(batch) -> None:
+    """TRL < 0.23.1 targets document starts; the zoo count excludes them; single row only."""
+    labels = batch.get("labels") if isinstance(batch, Mapping) else None
+    if not isinstance(labels, torch.Tensor) or labels.dim() != 2 or labels.shape[0] != 1:
+        return
+    batch["labels"] = mask_packed_boundary_labels(labels, batch["packed_seq_lengths"])
+
+
 def enable_sample_packing(
     model,
     trainer,
     *,
     sequence_lengths_key: str = "seq_lengths",
 ) -> None:
-    """Enable runtime support for packed batches on an existing trainer."""
     if model is None or trainer is None:
         raise ValueError("model and trainer must not be None")
 
@@ -249,20 +256,14 @@ def enable_sample_packing(
                 lengths = example.get(sequence_lengths_key)
                 if isinstance(lengths, Iterable):
                     seq_lengths.extend(int(length) for length in lengths)
-            # Fallback: infer lengths from tokenized inputs when metadata is absent.
             if not seq_lengths:
                 for example in examples:
                     ids = example.get("input_ids")
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                # Boundary labels are NOT masked here: unsloth_zoo's _unsloth_get_batch_samples counts
-                # num_items_in_batch off this batch and discounts the N-1 boundary targets itself, idempotently,
-                # zeroing those slots rather than subtracting a constant, so the count is unaffected by upstream
-                # masking (TRL >= 0.24's labels[position_ids == 0] = -100, completion-only masking,
-                # assistant_masks). Labels are left alone because the guard that needs these positions runs in the
-                # forward, off packed_seq_lengths.
                 batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
+                _mask_padding_free_boundary_labels(batch)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
         return batch
@@ -272,7 +273,7 @@ def enable_sample_packing(
 
 
 def enable_padding_free_metadata(model, trainer):
-    """Inject seq-length metadata when padding-free batching is enabled without packing."""
+    """supply sequence lengths for padding-free batches without packing."""
     collator = getattr(trainer, "data_collator", None)
     if collator is None or not getattr(collator, "padding_free", False):
         return
@@ -301,7 +302,7 @@ def enable_padding_free_metadata(model, trainer):
                     if ids is None:
                         continue
                     lengths = [len(ids)]
-                    # TRL's collator keys seq_lengths off examples[0] and reads every row: pass a copy, not the caller's row.
+                    # TRL reads all seq_lengths if examples[0] has them; copies preserve inputs.
                     if collated is examples:
                         collated = list(examples)
                     collated[index] = {**example, "seq_lengths": lengths}
@@ -309,12 +310,11 @@ def enable_padding_free_metadata(model, trainer):
 
         batch = original_torch_call(collated)
         if seq_lengths:
-            # Labels left alone for the same reason as enable_sample_packing: num_items_in_batch is counted off
-            # this batch and the zoo's discount of the boundary targets is idempotent.
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
             )
+            _mask_padding_free_boundary_labels(batch)
         return batch
 
     collator.torch_call = torch_call_with_padding_free_metadata
@@ -1449,14 +1449,6 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             forward_sig = inspect.signature(forward_orig)
         except (TypeError, ValueError):
             forward_sig = None
-        labels_index = None
-        if forward_sig is not None:
-            names = list(forward_sig.parameters)
-            if "labels" in names and forward_sig.parameters["labels"].kind in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            ):
-                labels_index = names.index("labels")
 
         @wraps(forward_orig)
         def forward_with_varlen(*args, **kwargs):
@@ -1479,11 +1471,6 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_scan_hit = False
                     module._unsloth_varlen_fused_hit = False
                     module._unsloth_varlen_kwargs_hit = False
-            if varlen is not None:
-                kwargs = _mask_hybrid_boundary_labels(kwargs, varlen)
-                if labels_index is not None and len(args) > labels_index:
-                    masked = _mask_hybrid_boundary_labels({"labels": args[labels_index]}, varlen)["labels"]
-                    args = args[:labels_index] + (masked,) + args[labels_index + 1 :]
             outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)
@@ -1517,23 +1504,6 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     _wrap_generate_clears_varlen(model, hybrid_modules)
     HYBRID_PACKING_STATS["patched"] += 1
     return True
-
-
-def _mask_hybrid_boundary_labels(kwargs, varlen):
-    """Mask each packed document's first label; older TRL (< 0.24) does not. Out of place, idempotent."""
-    labels = kwargs.get("labels")
-    seq_idx = varlen[1]
-    if (
-        not isinstance(labels, torch.Tensor)
-        or labels.dim() != 2
-        or labels.shape[0] != 1
-        or labels.shape[1] != seq_idx.shape[-1]
-    ):
-        return kwargs
-    starts = varlen[0][1:-1].to(device = labels.device, dtype = torch.long)
-    if starts.numel() == 0:
-        return kwargs
-    return {**kwargs, "labels": labels.index_fill(1, starts, -100)}
 
 
 def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:

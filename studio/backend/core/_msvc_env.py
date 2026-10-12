@@ -161,7 +161,63 @@ def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
     return done.returncode == 0
 
 
+def _bundled_tcc() -> str | None:
+    import sysconfig  # noqa: PLC0415
+    path = os.path.join(sysconfig.get_path("platlib"), "triton", "runtime", "tcc", "tcc.exe")
+    return path if os.path.isfile(path) else None
+
+
+def _clear_compiler_cache() -> None:
+    """`_find_compiler` is lru_cached in triton-windows 3.8, so a CC set after its first call is otherwise ignored."""
+    try:
+        from triton.runtime import build  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    for name in ("_find_compiler", "get_cc"):
+        clear = getattr(getattr(build, name, None), "cache_clear", None)
+        if callable(clear):
+            clear()
+
+
+def _triton_driver_builds() -> bool:
+    """Creating the active driver compiles its C helper (`hip_utils.c` on AMD) with the selected compiler."""
+    try:
+        _clear_compiler_cache()
+        from triton.runtime import driver  # noqa: PLC0415
+
+        driver.active.get_current_target()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("Triton's driver did not build with the bundled TinyCC", exc_info = True)
+        return False
+
+
+def _switch_to_bundled_tcc() -> bool:
+    """clang-cl without the CRT headers (#9897): build with the TinyCC triton-windows bundles, which carries its own
+    and is what it already picks when no ROCm wheel is installed. Kept only if Triton's driver then builds; an
+    explicit CC is the user's choice."""
+    if os.environ.get("CC"):
+        return False
+    tcc = _bundled_tcc()
+    if tcc is None:
+        return False
+    os.environ["CC"] = tcc
+    if _triton_driver_builds():
+        logger.info(
+            "Triton's C toolchain has no CRT headers; building with its bundled TinyCC (%s)", tcc
+        )
+        return True
+    os.environ.pop("CC", None)
+    _clear_compiler_cache()
+    return False
+
+
 def crt_headers_reachable() -> bool:
+    """Whether Triton's JIT can build its C helpers here, switching to the bundled TinyCC when clang-cl cannot."""
+    return _crt_headers_reachable() or _switch_to_bundled_tcc()
+
+
+def _crt_headers_reachable() -> bool:
     if sys.platform != "win32":
         return True
     if not _needs_msvc_headers():
