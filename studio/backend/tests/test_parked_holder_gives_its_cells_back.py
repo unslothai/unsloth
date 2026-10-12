@@ -171,6 +171,9 @@ class _ApprovalToolBackend(FakeLlamaCppBackend):
     effective_parallel_slots = 2
     supports_tools = True
     context_length = 8192
+    # A unified, sized cache: arming takes the accounting gate, and without one nothing arms.
+    _kv_cache_unified = True
+    _kv_cache_context_total = 16384
 
     def _maybe_recover_from_mtp_crash(self, exc):
         return None

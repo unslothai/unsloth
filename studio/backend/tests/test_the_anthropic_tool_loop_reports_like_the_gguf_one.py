@@ -39,7 +39,13 @@ def _controller(key: str = "test://anthropic") -> PreemptionController:
 
 
 def _backend():
-    return SimpleNamespace(base_url = "http://anthropic.test", admission_key = "test://anthropic")
+    # Unified and sized: arming takes the accounting gate, and without a cache nothing arms.
+    return SimpleNamespace(
+        base_url = "http://anthropic.test",
+        admission_key = "test://anthropic",
+        _kv_cache_unified = True,
+        _kv_cache_context_total = 16384,
+    )
 
 
 class TestTheRoundChargeReachesTheLedger:
