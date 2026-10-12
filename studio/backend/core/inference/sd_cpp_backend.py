@@ -1859,6 +1859,16 @@ def note_unlaunchable_accelerator_build(
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 
 
+def _install_kwargs(accelerator: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"accelerator": accelerator}
+    if _accelerator_class_of(accelerator) == "cuda":
+        from core.inference.sd_cpp_engine import host_cuda_runtime_major
+        major = host_cuda_runtime_major()
+        if major:
+            kwargs["cuda_major"] = major
+    return kwargs
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Never raises: None means no usable binary and tells the router to fall back to diffusers."""
     found = find_sd_cpp_binary()
@@ -1883,7 +1893,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             if not claimed:
                 return fallback
             try:
-                path = _install(accelerator = accelerator)
+                path = _install(**_install_kwargs(accelerator))
                 logger.info("sd-cli installed at %s", path)
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
@@ -1928,7 +1938,7 @@ def ensure_sd_server_binary(
             if not claimed:
                 return fallback
             try:
-                _install(accelerator = accelerator)
+                _install(**_install_kwargs(accelerator))  # extracts sd-cli AND sd-server
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
                 if _incomplete_tree_replacement(exc):

@@ -245,14 +245,15 @@ def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
 
 
 def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
-    # The header says 'wan' for every Wan file, so the refusal must consult _arch_to_task, not the
-    # arch.
+    # The header says "wan" for an unpaired A14B expert and Wan 2.1 I2V alike: the refusal must consult
+    # family resolution, not the arch.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
         ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", True),
         ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-Q4_K_M.gguf", False),
-        ("QuantStack/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", False),
+        ("QuantStack/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", True),
+        ("city96/Wan2.1-I2V-14B-480P-gguf", "wan2.1-i2v-14b-480p-Q4_K_M.gguf", False),
     ):
         _, message = _refusal(tmp_path, arch = "wan", name = name, identifier = identifier)
         assert message is not None

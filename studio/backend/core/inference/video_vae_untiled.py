@@ -14,11 +14,15 @@ UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 _BYTES_PER_LATENT_PIXEL = {
     "wan2.2-ti2v-5b": 2.5 * 2**20,
     "wan2.2-t2v-a14b": 0.6 * 2**20,
+    "wan2.1-t2v-1.3b": 0.6 * 2**20,
+    "wan2.1-t2v-14b": 0.6 * 2**20,
 }
 # (spatial, temporal) upsampling to RGB; Wan's decode holds that output about twice.
 _OUTPUT_SCALE = {
     "wan2.2-ti2v-5b": (16, 4),
     "wan2.2-t2v-a14b": (8, 4),
+    "wan2.1-t2v-1.3b": (8, 4),
+    "wan2.1-t2v-14b": (8, 4),
 }
 # LTX-2 / 2.3 holds every frame: per output frame x latent pixel, 0.102-0.105 MiB bf16 (B200).
 _BYTES_PER_FRAME_LATENT_PIXEL = {

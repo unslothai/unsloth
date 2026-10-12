@@ -8265,7 +8265,7 @@ def test_h3_guidance_normalises_to_its_own_default_not_a_neighbours(monkeypatch)
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
-    local = "/models/wan/minimax_h3_fl2va-Q4_K_M.gguf"
+    local = "/models/ltx/minimax_h3_fl2va-Q4_K_M.gguf"
     backend._state = dataclasses.replace(backend._state, repo_id = local)
 
     # Precondition: the identifier really does resolve to a different family's guidance, so the

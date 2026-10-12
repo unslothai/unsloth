@@ -260,6 +260,46 @@ def test_windows_cuda_picks_cuda12():
     assert _resolve("Windows", "AMD64", "cuda") == "sd-master-8caa3f9-bin-win-cuda12-x64.zip"
 
 
+_CUDA_SPLIT = [
+    "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+    "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
+    "sd-x-bin-win-cuda12-x64.zip",
+    "sd-x-bin-win-cuda13-x64.zip",
+    "sd-x-bin-win-cpu-x64.zip",
+]
+
+
+@pytest.mark.parametrize(
+    "system, machine, major, want",
+    [
+        ("Linux", "x86_64", "13", "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip"),
+        ("Linux", "x86_64", "12", "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip"),
+        ("Windows", "AMD64", "13", "sd-x-bin-win-cuda13-x64.zip"),
+        ("Windows", "AMD64", "12", "sd-x-bin-win-cuda12-x64.zip"),
+        ("Windows", "AMD64", None, "sd-x-bin-win-cuda12-x64.zip"),
+    ],
+)
+def test_cuda_bundles_follow_the_host_runtime_major(system, machine, major, want):
+    assert (
+        resolve_release_asset(
+            _CUDA_SPLIT, system = system, machine = machine, accelerator = "cuda", cuda_major = major
+        )
+        == want
+    )
+
+
+def test_a_release_without_the_hosts_cuda_major_still_offers_its_cuda_build():
+    for system, machine in (("Linux", "x86_64"), ("Windows", "AMD64")):
+        got = resolve_release_asset(
+            [n for n in _CUDA_SPLIT if "cuda13" not in n],
+            system = system,
+            machine = machine,
+            accelerator = "cuda",
+            cuda_major = "13",
+        )
+        assert got is not None and "cuda12" in got
+
+
 def test_windows_vulkan_picks_vulkan():
     assert _resolve("Windows", "AMD64", "vulkan") == "sd-master-8caa3f9-bin-win-vulkan-x64.zip"
 
@@ -1282,6 +1322,45 @@ def test_upstream_fallback_asks_for_the_translated_pin_not_latest(monkeypatch):
     assert chosen.endswith("-vulkan.zip")
     assert (sdmod.UPSTREAM_FALLBACK_REPO, "master-813-bfbef5b-u13b9d92") not in seen
     assert not any(tag is None for _repo_name, tag in seen)
+
+
+def test_the_shipped_pin_falls_back_to_an_upstream_release_that_runs_qwen_image_2_1(monkeypatch):
+    """#12470: the previous pin's upstream base (master-813) predated Qwen-Image-2.1, so hosts the mirror skips got a build the router refuses."""
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+    monkeypatch.setattr(sdmod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(sdmod.platform, "machine", lambda: "AMD64")
+    seen = []
+
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        token = None,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
+        seen.append((repo, tag))
+        if repo == sdmod.DEFAULT_REPO and tag == DEFAULT_TAG:
+            return {"tag_name": tag, "assets": [{"name": f"sd-{tag}-bin-win-cpu-x64.zip"}]}
+        if repo == sdmod.UPSTREAM_FALLBACK_REPO and tag:
+            short = tag.rsplit("-", 1)[-1]
+            return {
+                "tag_name": tag,
+                "assets": [{"name": f"sd-master-{short}-bin-win-cuda12-x64.zip"}],
+            }
+        raise urllib.error.HTTPError(f"https://api/{repo}", 404, "not found", None, None)
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    repo, release, chosen = sdmod._resolve_with_fallback("cuda", None)
+    assert repo == sdmod.UPSTREAM_FALLBACK_REPO
+    assert chosen.endswith("-win-cuda12-x64.zip")
+    assert release["tag_name"] == upstream_tag_for(DEFAULT_TAG)
+    # Qwen-Image-2.1 landed upstream in master-883, its reference-alpha fix in master-896.
+    assert int(release["tag_name"].split("-")[1]) >= 896
+
+
+# ── mirror -> upstream fallback in install() ─────────────────────────────────
 
 
 def _stub_two_repos(monkeypatch, *, mirror_serves, upstream_serves, zip_bytes, digest):

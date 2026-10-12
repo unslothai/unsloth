@@ -373,6 +373,7 @@ from core.inference.mcp_images import (
 )
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
+    BROWSER_TOOL_NAMES,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -29414,6 +29415,13 @@ class LlamaCppBackend:
         # Re-prompt once when the model states intent without calling a tool.
         _reprompt_count = 0
         _post_tool_reprompts = 0
+        # A browser task is many steps, each a chance to announce the next one and stop: there the
+        # budget is one nudge per tool turn, as in the external loop, not one per request.
+        _browser_turns = any(
+            ((tool.get("function") or {}).get("name") in BROWSER_TOOL_NAMES)
+            for tool in (tools or [])
+        )
+        # Text that triggered the last nudge; if the retry restates it, stop.
         _last_reprompt_text = ""
         # Counts real tool turns so re-prompt slots don't extend the budget.
         _tool_iters_done = 0
@@ -30942,7 +30950,8 @@ class LlamaCppBackend:
                                 _novel_kept += 1
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
-                        elif _key in _seen_keys:
+                        # A browser call acts on the page as it is then: two scrolls are two scrolls.
+                        elif _key in _seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -31790,6 +31799,8 @@ class LlamaCppBackend:
                     break
                 if _turn_executed_real_tool:
                     _tool_iters_done += 1
+                    if _browser_turns:
+                        _post_tool_reprompts = 0
                     if _tool_iters_done >= max_tool_iterations:
                         break
                 continue
