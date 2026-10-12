@@ -28,6 +28,7 @@ passthrough guard are built around.
 
 import contextvars
 from contextlib import contextmanager
+from functools import partial, wraps
 from typing import Iterator, Optional
 
 _tool_policy: Optional[bool] = None
@@ -37,6 +38,159 @@ _tool_policy_default: Optional[bool] = None
 _force_disabled: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "tool_policy_force_disabled", default = False
 )
+
+
+def require_tool_access(
+    permission_mode: Optional[str] = None,
+    *,
+    bypass_permissions: bool = False,
+    disable_sandbox: bool = False,
+) -> None:
+    if permission_mode != "full" and not bypass_permissions and not disable_sandbox:
+        return
+    from auth.policy import full_access_permitted
+    from fastapi import HTTPException
+
+    if not full_access_permitted():
+        raise HTTPException(
+            status_code = 400,
+            detail = "Full access is only available to the installation owner.",
+        )
+
+
+def normalize_tool_permissions(
+    permission_mode: Optional[str], bypass_permissions: bool
+) -> tuple[str, bool]:
+    require_tool_access(permission_mode, bypass_permissions = bypass_permissions)
+    if permission_mode == "full" or bypass_permissions:
+        return "full", True
+    if permission_mode is None:
+        return "auto", False
+    if permission_mode not in ("ask", "auto", "off"):
+        return "ask", False
+    return permission_mode, False
+
+
+OS_SANDBOXED_TOOLS = frozenset({"python", "terminal"})
+
+
+SANDBOX_LEVELS = ("high", "low")
+
+
+def normalize_sandbox_level(value: Optional[str]) -> str:
+    """Absent reads as "high"; anything else is a caller bug, so it never silently loosens to "low"."""
+    if value is None:
+        return "high"
+    level = str(value).strip().lower()
+    if level not in SANDBOX_LEVELS:
+        raise ValueError(f"sandbox_level must be 'high' or 'low', not {value!r}")
+    return level
+
+
+def runs_without_os_sandbox(name: str, sandbox_level: Optional[str]) -> bool:
+    """Low: Python and Terminal run on software safeguards only, so they never claim OS isolation."""
+    return name in OS_SANDBOXED_TOOLS and sandbox_level == "low"
+
+
+def off_mode_still_gates(name: str, sandbox_level: Optional[str] = None) -> bool:
+    """Whether "off" must still ask for this tool. Cached only; unknown counts as not isolated."""
+    if name not in OS_SANDBOXED_TOOLS:
+        return False
+    if runs_without_os_sandbox(name, sandbox_level):
+        return True
+    from core.inference.os_sandbox import cached_tool_isolation
+
+    return cached_tool_isolation(name) is not True
+
+
+def tool_call_may_prompt(
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    sandbox_level: Optional[str] = None,
+) -> bool:
+    """Before the arguments are known: whether a call to ``name`` could stop and ask."""
+    if not confirm_tool_calls or bypass_permissions:
+        return False
+    if permission_mode == "off":
+        return off_mode_still_gates(name, sandbox_level)
+    if permission_mode == "auto":
+        from core.inference.tools import is_always_safe_tool
+        return not is_always_safe_tool(name)
+    return True
+
+
+def needs_tool_confirmation(
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    arguments,
+    is_high_risk = None,
+    never_needs = None,
+    sandbox_level: Optional[str] = None,
+) -> bool:
+    if is_high_risk is None or never_needs is None:
+        from core.inference import tools
+        is_high_risk = is_high_risk or tools.is_high_risk_tool_call
+        never_needs = never_needs or tools.never_needs_approval
+    if not confirm_tool_calls or bypass_permissions or never_needs(name):
+        return False
+    if permission_mode == "off":
+        return off_mode_still_gates(name, sandbox_level) and _classify(
+            is_high_risk, name, arguments, sandbox_level
+        )
+    if permission_mode == "auto":
+        return _classify(is_high_risk, name, arguments, sandbox_level)
+    return True
+
+
+def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) -> bool:
+    """The risk check, told the level: under Low the Terminal's shell is the host's."""
+    from core.inference.tools import classifying_under
+    with classifying_under(sandbox_level):
+        return bool(is_high_risk(name, arguments))
+
+
+def requires_os_isolation(
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    arguments,
+    prompted: bool,
+    is_high_risk = None,
+    sandbox_level: Optional[str] = None,
+) -> bool:
+    """Whether this call must launch with tool_execution_mode="required" (no software fallback).
+
+    ``prompted`` is needs_tool_confirmation's decision; re-reading the cache here could race a refresh.
+    """
+    if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
+        return False
+    if name not in OS_SANDBOXED_TOOLS or runs_without_os_sandbox(name, sandbox_level):
+        return False
+    if is_high_risk is None:
+        from core.inference.tools import is_high_risk_tool_call as is_high_risk
+    return _classify(is_high_risk, name, arguments, sandbox_level)
+
+
+def account_tool_stream(stream):
+    from utils.account_context import current_account, is_owner_context, run_as
+
+    if is_owner_context():
+        return stream
+    account = current_account()
+
+    @wraps(stream)
+    def scoped(invoke, *args, **kwargs):
+        return stream(partial(run_as, account, invoke), *args, **kwargs)
+
+    return scoped
 
 
 def get_tool_policy() -> Optional[bool]:
@@ -52,6 +206,11 @@ def get_tool_policy_default() -> Optional[bool]:
     if _force_disabled.get():
         return False
     return _tool_policy_default
+
+
+def conversation_recall_allowed() -> bool:
+    """Recall reads only this thread's archive: `--disable-tools` keeps it, `tools_force_disabled` does not."""
+    return not _force_disabled.get()
 
 
 @contextmanager

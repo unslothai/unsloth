@@ -193,15 +193,11 @@ export function useFindInPage(
       const index = indexRef.current;
       // One past the cap: a count equal to the cap cannot say whether it is the total or a floor,
       // and the counter would read "5000+" for a page holding exactly 5000. Only its existence is
-      // kept.
-      //
-      // The anchor decides WHICH matches survive the cap, keeping the ones nearest the reader. It
-      // is a thunk because `viewportOffset` reads layout and an argument is evaluated whether or
-      // not the callee wants it, so inline it ran on every keystroke however few matches there
-      // were.
-      //
-      // Remembered as the thunk resolves it, so the trim below can ask where the reader was
-      // without a second layout read, and without one at all under the cap.
+      // kept. The anchor decides WHICH matches survive the cap, keeping the ones nearest the
+      // reader. It is a thunk because `viewportOffset` reads layout and an argument is evaluated
+      // whether or not the callee wants it, so inline it ran on every keystroke however few matches
+      // there were. Remembered as the thunk resolves it, so the trim below can ask where the reader
+      // was without a second layout read, and without one at all under the cap.
       let anchoredAt: number | null = null;
       const matches = findMatches(
         index,
@@ -266,11 +262,10 @@ export function useFindInPage(
     // A fresh open always starts from the reader, whatever the index says.
     search(false, true);
 
-    // The thread mounts its tail first and widens over the next few frames, so a search against
-    // the document as found would miss everything above the fold. The bar stays usable throughout.
-    //
-    // Only the threads this search can read: asking globally would make an off-route conversation
-    // mount every row it withheld, to be skipped by the very walk that asked for it.
+    // The thread mounts its tail first and widens over the next few frames, so a search against the
+    // document as found would miss everything above the fold. The bar stays usable throughout. Only
+    // the threads this search can read: asking globally would make an off-route conversation mount
+    // every row it withheld, to be skipped by the very walk that asked for it.
     let live = true;
     void completeProgressiveMounts((viewport) =>
       indexReaches(scope, viewport),
@@ -282,6 +277,26 @@ export function useFindInPage(
       search(false, reindex());
     });
 
+    let scrolledAt = Number.NEGATIVE_INFINITY;
+    let reindexBy = Number.POSITIVE_INFINITY;
+    const noteScroll = () => {
+      scrolledAt = performance.now();
+    };
+    const flush = () => {
+      const now = performance.now();
+      const wait = Math.min(
+        REINDEX_INTERVAL_MS - (now - scrolledAt),
+        reindexBy - now,
+      );
+      if (wait > 0) {
+        timerRef.current = setTimeout(flush, wait);
+        return;
+      }
+      timerRef.current = null;
+      if (!staleRef.current) return;
+      search(false, reindex());
+    };
+
     // Mark the index stale and schedule one rebuild. No reveal: something moved under the reader,
     // they did not ask to go anywhere.
     const invalidate = () => {
@@ -290,16 +305,18 @@ export function useFindInPage(
       if (queryRef.current.length === 0) return;
       // Already scheduled: the interval is the floor, so a burst costs one rebuild, not one each.
       if (timerRef.current !== null) return;
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        if (!staleRef.current) return;
-        search(false, reindex());
-      }, REINDEX_INTERVAL_MS);
+      reindexBy = performance.now() + 4 * REINDEX_INTERVAL_MS;
+      timerRef.current = setTimeout(flush, REINDEX_INTERVAL_MS);
     };
 
     // A media query is not a mutation: crossing a breakpoint hides or reveals whole columns with
     // nothing in the DOM to observe, so without this the bar searches the layout that has gone.
     window.addEventListener("resize", invalidate);
+    window.addEventListener("wheel", noteScroll, { capture: true, passive: true });
+    window.addEventListener("touchmove", noteScroll, {
+      capture: true,
+      passive: true,
+    });
 
     // And a container query does not even need the window to change. Images is an `@container` with
     // labels on `@[50rem]`, so pinning or collapsing the sidebar crosses that breakpoint on its own.
@@ -357,6 +374,8 @@ export function useFindInPage(
       // The bar is going away; any queued reveal would scroll the reader after it is gone.
       cancelRevealPasses();
       window.removeEventListener("resize", invalidate);
+      window.removeEventListener("wheel", noteScroll, { capture: true });
+      window.removeEventListener("touchmove", noteScroll, { capture: true });
       sized?.disconnect();
       observer?.disconnect();
       if (timerRef.current !== null) {
@@ -394,13 +413,23 @@ export function useFindInPage(
 
   const step = useCallback(
     (delta: number) => {
-      const count = matchesRef.current.length;
+      const matches = matchesRef.current;
+      const count = matches.length;
       if (count === 0) return;
       // Wraps, so the walk never dead-ends.
       activeRef.current = (activeRef.current + delta + count) % count;
+      const target = matches[activeRef.current];
+      if (staleRef.current) {
+        const range = rangeForMatch(indexRef.current, target);
+        if (!(range?.startContainer.isConnected && range.endContainer.isConnected)) {
+          activeStartRef.current = target.start;
+          search(true, reindex());
+          return;
+        }
+      }
       apply(true);
     },
-    [apply],
+    [apply, reindex, search],
   );
 
   const next = useCallback(() => step(1), [step]);

@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -42,7 +43,6 @@ DEFAULT_HTTP_STALL_TIMEOUT = 180.0
 # The worker runs snapshot_download(max_workers=1), so every finished shard is already a blob and is skipped.
 DEFAULT_XET_ATTEMPTS = 2
 
-# --- lazy shared-backend loader ----------------------------------------------------------------
 _shared: Any = None
 _shared_available: Optional[bool] = None
 _shared_import_error: Optional[BaseException] = None
@@ -57,6 +57,7 @@ def _gpu_present() -> bool:
 
     Only torch is consulted (already imported by the time any download helper runs), and any
     failure answers False so a genuinely torch-less host keeps the light-init retry below.
+    MPS does not count: unsloth_zoo's full init rejects it, so the light path is the only one there.
     """
     try:
         import torch
@@ -64,7 +65,6 @@ def _gpu_present() -> bool:
         return False
     for probe in (
         lambda: torch.cuda.is_available(),
-        lambda: torch.backends.mps.is_available(),
         lambda: torch.xpu.is_available(),
     ):
         try:
@@ -75,6 +75,15 @@ def _gpu_present() -> bool:
     return False
 
 
+def _gate_torch_stack(reason: str) -> None:
+    """Let the torch warm finish ``import torch._dynamo`` before an ``unsloth_zoo`` import (never fatal)."""
+    try:
+        from utils.torch_warmup import gate_torch_stack_import
+        gate_torch_stack_import(reason)
+    except Exception:  # noqa: BLE001, S110 - the gate is a safety net, never a new failure
+        pass
+
+
 def _load_shared() -> bool:
     """Import ``unsloth_zoo.hf_xet_fallback`` on demand; return True if available. Deferred so
     importing this module at worker startup does not pull transformers in before the sidecar is
@@ -82,6 +91,8 @@ def _load_shared() -> bool:
     global _shared, _shared_available, _shared_import_error
     if _shared_available is not None:
         return _shared_available
+    # Outside _load_lock: a thread waiting on the warm must not hold up the env-var bookkeeping.
+    _gate_torch_stack("unsloth_zoo.hf_xet_fallback import")
     with _load_lock:
         if _shared_available is not None:
             return _shared_available
@@ -98,7 +109,7 @@ def _load_shared() -> bool:
             _shared_import_error = exc
             import os as _os
 
-            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path,
+            # ...but NOT on a CUDA/XPU host (see _gpu_present). That flag makes unsloth_zoo take its MLX/CPU path,
             # injecting triton and bitsandbytes STUBS into sys.modules for the process. On a working GPU box those stubs
             # raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
             if _gpu_present():
@@ -177,6 +188,7 @@ def _load_optional(module_name: str) -> Any:
     if cached is not _UNTRIED:
         return cached
 
+    _gate_torch_stack(f"{module_name} import")
     try:
         module = importlib.import_module(module_name)
         _optional_modules[module_name] = module
@@ -190,6 +202,25 @@ def _load_optional(module_name: str) -> Any:
         cached = _optional_modules.get(module_name, _UNTRIED)
         if cached is not _UNTRIED:
             return cached
+        # Same rule as _load_shared: the retry's triton/bitsandbytes stubs stay in sys.modules for good.
+        if _gpu_present():
+            import sys as _sys
+
+            # A zoo __init__ failing late leaves the submodules it already ran (hf_xet_tuning) in sys.modules.
+            module = _sys.modules.get(module_name)
+            # Still executing in another thread: never memoise a half-built module.
+            if getattr(getattr(module, "__spec__", None), "_initializing", False):
+                module = None
+            if module is None:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "%s unavailable (%s); not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host has an "
+                    "accelerator and that path would stub out triton/bitsandbytes for the whole process.",
+                    module_name,
+                    first_error,
+                )
+            _optional_modules[module_name] = module
+            return module
         global _gpu_init_override_depth
         previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         ours = previous != "1"
@@ -216,9 +247,33 @@ def _load_optional(module_name: str) -> Any:
         return module
 
 
+@dataclass(frozen = True)
+class _EnvXetHealth:
+    use_xet: bool
+    reason: str
+    source: str = "forced"
+
+    def __bool__(self) -> bool:
+        return self.use_xet
+
+
+def _env_xet_health() -> Any:
+    """The env checks atop ``unsloth_zoo.hf_xet_health.xet_health``, for when that module cannot load: without
+    them Auto picks Xet and the worker gets ``HF_HUB_DISABLE_XET=0`` over the operator's ``1``."""
+
+    def _on(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+    if _on("UNSLOTH_DISABLE_XET") or _on("UNSLOTH_STABLE_DOWNLOADS") or _on("HF_HUB_DISABLE_XET"):
+        return _EnvXetHealth(False, "Xet disabled by environment")
+    if _on("UNSLOTH_FORCE_XET"):
+        return _EnvXetHealth(True, "Xet forced by environment")
+    return None
+
+
 def _xet_health_from(module: Any, **kwargs: Any) -> Any:
     if module is None:
-        return None
+        return _env_xet_health()
     try:
         return module.xet_health(**kwargs)
     except Exception as exc:  # noqa: BLE001
@@ -344,7 +399,6 @@ def _as_int(value: str) -> "Optional[int]":
 # would each read the same untouched `available` and promise the whole machine. Reservations bridge
 # that window, counting only the unmaterialized remainder: once buffers are resident `available` has
 # already dropped by them, and charging the promise again would double-count for the worker's life.
-# --- concurrent-worker budget ledger -------------------------------------------------------------
 _budget_lock = threading.RLock()
 # token -> [bytes, pid or None, monotonic stamp]
 _budget_reservations: "dict[int, list]" = {}
@@ -656,7 +710,6 @@ def xet_attempts() -> int:
     return min(value, 8)
 
 
-# --- degraded stubs (used only when unsloth_zoo is unavailable) -------------------------------
 class _DegradedDownloadStallError(RuntimeError):
     """Stub mirror so callers' ``except`` clauses resolve; never raised in degraded mode."""
 
@@ -768,7 +821,6 @@ def _degraded_snapshot_download_with_xet_fallback(
 # Resolved via PEP 562 so importing them triggers the heavy load and the light names do not.
 # The light names, `child_should_disable_xet` / `DEFAULT_*`, are importable from utils.hf_xet_fallback without
 # triggering the load.
-# --- lazy attribute access for the heavy shared API -------------------------------------------
 _DEGRADED_ATTRS = {
     "DownloadStallError": _DegradedDownloadStallError,
     "get_hf_download_state": _degraded_get_hf_download_state,
@@ -944,6 +996,7 @@ def hf_hub_download_with_xet_fallback(
     cache_dir: Optional[str] = None,
     reuse_other_cache_root: bool = False,
     local_files_only: bool = False,
+    gguf_header_delta: bool = False,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
     ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
@@ -963,7 +1016,11 @@ def hf_hub_download_with_xet_fallback(
     already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still
     resolves and a republished file is picked up; the blob is reused, and offline/401
     hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
-    ``force_download``, whose point is to re-fetch."""
+    ``force_download``, whose point is to re-fetch.
+
+    ``gguf_header_delta`` (opt-in, Images / Video GGUF loads only) rebuilds a GGUF whose new revision changed only its
+    header from the cached older copy (``hub.utils.gguf_header_delta``); no network unless that file is missing for
+    the target commit and an older snapshot holds it."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
@@ -1002,25 +1059,47 @@ def hf_hub_download_with_xet_fallback(
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Cancelled")
         return path
+    if gguf_header_delta and str(filename).lower().endswith(".gguf"):
+        # A rebuilt file has the Hub's sha256, so it already is the newer blob a forced fetch wants.
+        try:
+            from hub.utils.gguf_header_delta import prepare_media_gguf
+            if prepare_media_gguf(
+                repo_id,
+                filename,
+                token,
+                repo_type = repo_type,
+                revision = revision,
+                cache_dir = cache_dir,
+                cancel_event = cancel_event,
+            ).placed:
+                force_download = False
+        except Exception:  # noqa: BLE001 - an optimisation only: the normal download follows
+            pass
     # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait()
     optional: dict[str, Any] = {}
     if stall_timeout is not None:
         optional["stall_timeout"] = stall_timeout
     if interval is not None:
         optional["interval"] = interval
-    return _shared_hf_hub_download_with_xet_fallback(
-        repo_id,
-        filename,
+    from hub.utils.hf_tokens import call_with_anonymous_retry
+
+    # The 401 comes on the metadata HEAD, before any byte is written.
+    return call_with_anonymous_retry(
+        lambda token: _shared_hf_hub_download_with_xet_fallback(
+            repo_id,
+            filename,
+            token,
+            cancel_event = cancel_event,
+            repo_type = repo_type,
+            revision = revision,
+            **optional,
+            grace_period = grace_period,
+            on_status = on_status,
+            force_download = force_download,
+            cache_dir = cache_dir,
+            prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
+        ),
         token,
-        cancel_event = cancel_event,
-        repo_type = repo_type,
-        revision = revision,
-        **optional,
-        grace_period = grace_period,
-        on_status = on_status,
-        force_download = force_download,
-        cache_dir = cache_dir,
-        prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
     )
 
 

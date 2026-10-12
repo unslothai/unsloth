@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Structured logging handlers and middleware.
-
-LoggingMiddleware (request/response logging with timing),
-filter_sensitive_data (structlog processor for sanitization), and
-get_logger (factory for structured loggers).
+"""Structured logging handlers and middleware: LoggingMiddleware (request/response logging with timing),
+filter_sensitive_data (structlog processor for sanitization), and get_logger (factory for structured loggers).
 """
 
 from __future__ import annotations
@@ -75,12 +72,11 @@ _QUIET_POLL_PATHS = {
     "/api/chat/threads/{id}",
     "/api/chat/threads/{id}/forks",
 }
-# The pure-liveness subset: the SPA fires them together in one burst, so they share a single bucket,
-# the first logging with its real path and the rest of the window dropping.
-# Only this group is shared: the other quiet paths each report on a different subsystem, so they
-# keep their own heartbeat.
-# Two paths are deliberately NOT here because their latency is worth seeing: /api/health waits on
-# hardware detection, and /api/inference/status reads llama.cpp capabilities in an executor.
+# The pure-liveness subset: the SPA fires them together in one burst, so they share a single bucket, the first
+# logging with its real path and the rest of the window dropping. Only this group is shared: the other quiet paths
+# each report on a different subsystem, so they keep their own heartbeat. Two paths are deliberately NOT here
+# because their latency is worth seeing: /api/health waits on hardware detection, and /api/inference/status reads
+# llama.cpp capabilities in an executor.
 _LIVENESS_POLL_PATHS = frozenset(
     {
         "/api/auth/status",
@@ -137,10 +133,9 @@ _QUIET_SUCCESS_PATHS = {
     "/api/hub/datasets/download-progress",
     "/api/hub/datasets/active-downloads",
     "/api/hub/datasets/transport-status",
-    # Boot-burst catalog reads: the SPA refetches these on every auth change and dialog open, and each
-    # outcome is already visible in the UI.
-    # syncExternalProvidersFromBackend fetches the pair in one Promise.all, so they always arrive as two
-    # lines saying the same thing.
+    # Boot-burst catalog reads: the SPA refetches these on every auth change and dialog open, and each outcome is
+    # already visible in the UI. syncExternalProvidersFromBackend fetches the pair in one Promise.all, so they
+    # always arrive as two lines saying the same thing.
     "/api/providers/registry",
     "/api/providers/",
     # Fetched in the same Promise.all as two routes that keep their access line, so the resync is still
@@ -168,11 +163,9 @@ _CHAT_THREAD_PATH_RE = re.compile(r"^/api/chat/threads/(?!$)[^/]+(/forks)?$")
 
 
 def normalize_poll_path(path: str) -> str:
-    """Collapse a per-resource id so a templated path can join a suppression class.
-
-    Used for classification and the de-duplication bucket only; the emitted line still
-    carries the real path. One bucket across ids is deliberate, as with the liveness
-    group: four tabs polling four threads are still one question.
+    """Collapse a per-resource id so a templated path can join a suppression class. Used for classification and
+    the de-duplication bucket only; the emitted line still carries the real path. One bucket across ids is
+    deliberate, as with the liveness group: four tabs polling four threads are still one question.
     """
     m = _CHAT_THREAD_PATH_RE.match(path)
     if m is None:
@@ -180,10 +173,9 @@ def normalize_poll_path(path: str) -> str:
     return _CHAT_THREAD_FORKS if m.group(1) else _CHAT_THREAD_DETAIL
 
 
-# The log viewer polls these while reading the very file this middleware writes, so unsuppressed
-# each poll appends a record the next reads back; _is_redundant_repeat cannot cover it.
-# Separate from _QUIET_SUCCESS_PATHS because --verbose must NOT lift this one: the extra noise
-# buries the failure the viewer was opened for.
+# The log viewer polls these while reading the very file this middleware writes, so unsuppressed each poll
+# appends a record the next reads back; _is_redundant_repeat cannot cover it. Separate from _QUIET_SUCCESS_PATHS
+# because --verbose must NOT lift this one: the extra noise buries the failure the viewer was opened for.
 _SELF_READ_PATHS = {
     "/api/settings/debug/logs",
     "/api/settings/debug/logs/sources",
@@ -191,11 +183,10 @@ _SELF_READ_PATHS = {
 
 
 def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) -> bool:
-    """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list
-    poll's transient pre-auth 401 (only in the bootstrap window before the first
-    successful token refresh). Mutations, real (post-refresh) auth failures, and
-    all other errors always log. --verbose disables the whole suppressor, except
-    for the log viewer's own reads."""
+    """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list poll's transient pre-auth 401
+    (only in the bootstrap window before the first successful token refresh). Mutations, real (post-refresh)
+    auth failures, and all other errors always log. --verbose disables the whole suppressor, except for the log
+    viewer's own reads."""
     if method != "GET":
         return False
     if 200 <= status_code < 300 and path in _SELF_READ_PATHS:
@@ -207,14 +198,13 @@ def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) 
     return pre_auth and status_code == 401 and path in _CHAT_LIST_PATHS
 
 
-# An unhandled request exception is logged twice: here as a structured request_failed event whose
-# "exception" field carries the whole traceback (format_exc_info renders it, see
-# loggers/config.py), and again by uvicorn on stderr, which the desktop shell mirrors into
-# tauri.log at ~90 lines per failure. Keep the structured copy.
+# An unhandled request exception is logged twice: here as a structured request_failed event whose "exception"
+# field carries the whole traceback (format_exc_info renders it, see loggers/config.py), and again by uvicorn on
+# stderr, which the desktop shell mirrors into tauri.log at ~90 lines per failure. Keep the structured copy.
 _UVICORN_ASGI_EXC_MSG = "Exception in ASGI application"
-# Set on the exception instance itself rather than a side table: the object is what uvicorn hands
-# us, so the match cannot go stale or collide with a recycled id, and an exception raised above
-# this middleware (CORS, remote-access, the protocol layer) keeps uvicorn's traceback.
+# Set on the exception instance itself rather than a side table: the object is what uvicorn hands us, so the
+# match cannot go stale or collide with a recycled id, and an exception raised above this middleware (CORS,
+# remote-access, the protocol layer) keeps uvicorn's traceback.
 _LOGGED_EXC_ATTR = "_unsloth_request_failed_logged"
 
 
@@ -228,9 +218,9 @@ def _mark_exception_logged(exc: BaseException) -> None:
 
 
 class _DropDuplicateAsgiException(logging.Filter):
-    """Drop uvicorn's "Exception in ASGI application" record when request_failed has
-    already logged that same exception. Anything else, including a failure that never
-    reached this middleware, passes through untouched. --verbose keeps both copies."""
+    """Drop uvicorn's "Exception in ASGI application" record when request_failed has already logged that same
+    exception. Anything else, including a failure that never reached this middleware, passes through untouched.
+    --verbose keeps both copies."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if _VERBOSE_ACCESS_LOG:
@@ -247,9 +237,9 @@ class _DropDuplicateAsgiException(logging.Filter):
 
 
 def install_uvicorn_duplicate_exception_filter() -> None:
-    """Attach the duplicate-traceback filter to uvicorn's error logger. Same
-    logger-level filter technique as run.py's startup-line rewrite; safe to call more
-    than once because a second identical install only re-checks the same records."""
+    """Attach the duplicate-traceback filter to uvicorn's error logger. Same logger-level filter technique as
+    run.py's startup-line rewrite; safe to call more than once because a second identical install only re-checks
+    the same records."""
     logging.getLogger("uvicorn.error").addFilter(_DropDuplicateAsgiException())
 
 
@@ -267,9 +257,8 @@ class LoggingMiddleware:
     def _is_redundant_repeat(
         self, method: str, path: str, query: bytes, status_code: int, now: float
     ) -> bool:
-        """True if an identical GET/2xx log fired < window ago (query string is part
-        of the identity). Non-GET/non-2xx never dedup; quiet-poll paths use the longer
-        heartbeat. Stamps only on emit, so steady polls still log."""
+        """True if an identical GET/2xx log fired < window ago (query string is part of the identity). Non-GET/non-2xx
+        never dedup; quiet-poll paths use the longer heartbeat. Stamps only on emit, so steady polls still log."""
         if method != "GET" or not (200 <= status_code < 300):
             return False
         # A query makes the request something other than the background poll, so it keeps its own identity

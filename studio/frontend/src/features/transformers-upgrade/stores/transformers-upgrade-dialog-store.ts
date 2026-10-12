@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { installLatestTransformers } from "../api/transformers-upgrade-api";
+import { upgradeInstallVersion } from "../lib/upgrade-dialog-actions";
 import type {
   TransformersUpgradeInfo,
   TransformersUpgradePhase,
@@ -89,7 +90,7 @@ export const useTransformersUpgradeDialogStore =
     },
     install: async () => {
       const { upgrade, phase, forceCancelActive } = get();
-      const version = upgrade?.pypi_version;
+      const version = upgradeInstallVersion(upgrade);
       if (!version || phase === "installing") return;
       const requestResolver = pendingResolver;
       set({ phase: "installing", errorMessage: null });
@@ -128,18 +129,24 @@ export const useTransformersUpgradeDialogStore =
           get().resolve(true);
           return;
         }
-        // Structured failure: the swap failed but may have already unloaded the
-        // chat model; record that so a later cancel still rolls the caller back.
-        // A version mismatch also carries the superseding release, so Retry
-        // re-requests a version that can actually succeed.
+        // Structured failure: the swap failed but may have already unloaded the chat model; record
+        // that so a later cancel still rolls the caller back. A version mismatch also carries the
+        // superseding release, so Retry re-requests a version that can actually succeed.
         const { upgrade } = get();
         set({
           phase: "error",
           errorMessage: result.message || "Failed to install transformers.",
           serverUnloadedChat:
             get().serverUnloadedChat || Boolean(result.model_unloaded),
-          ...(result.latest_version && upgrade
-            ? { upgrade: { ...upgrade, pypi_version: result.latest_version } }
+          ...(upgrade && (result.latest_version || result.latest_main_version)
+            ? {
+                upgrade: {
+                  ...upgrade,
+                  pypi_version: result.latest_version ?? upgrade.pypi_version,
+                  main_version:
+                    result.latest_main_version ?? upgrade.main_version,
+                },
+              }
             : {}),
         });
       }

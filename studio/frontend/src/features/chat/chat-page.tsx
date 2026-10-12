@@ -21,6 +21,8 @@ import {
   SidebarModelConfig,
   useActiveModelConfig,
   useModelConfigHandoffStore,
+  pinnedReasoningEffort,
+  useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
@@ -44,14 +46,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { armPanelDrag } from "@/components/ui/panel-drag-overlay";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -60,6 +55,7 @@ import {
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { holdSidebarPinned, releaseSidebarPinned } from "@/hooks/use-sidebar-pin";
 import {
   DOWNLOAD_KIND,
   dismissStartToast,
@@ -73,6 +69,7 @@ import {
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import { ChatHeaderMenu } from "./components/chat-header-menu";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -84,24 +81,33 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { useDocumentFlag } from "@/lib/document-flag";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { setInAppLinkHandler } from "@/lib/open-link";
+import {
+  BrowserToggleButton,
+  openUrlInBrowser,
+  pinBrowserPage,
+  setBrowserPanelAvailable,
+  useBrowserStore,
+} from "@/features/browser";
 import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
-  BookOpen01Icon,
-  BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FolderAttachmentIcon,
   Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
@@ -113,31 +119,43 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import {
+  SaveTemporaryChatMenu,
+  TemporaryChatSaveBridge,
+} from "./components/temporary-chat-save";
+import { useT } from "@/i18n";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
+  createContext,
   lazy,
   memo,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
-import { notifyChatHistoryUpdated } from "./api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  notifyChatHistoryUpdated,
+} from "./api/chat-api";
 import { codeToolCanRun } from "./api/code-tool-placement";
-import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
   useChatArtifactsStore,
-  useSelectedChatArtifact,
 } from "./artifacts/store";
-import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
+import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
 import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
@@ -152,8 +170,10 @@ import {
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
+import { EditProjectDialog } from "./components/edit-project-dialog";
 import {
   buildExternalModelId,
+  isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,
 
@@ -164,7 +184,6 @@ import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import {
   deleteChatProject,
   moveChatItemToProject,
-  renameChatProject,
   useChatProjects,
 } from "./hooks/use-chat-projects";
 import {
@@ -175,21 +194,36 @@ import {
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
 import { usePinnedChatsStore } from "./stores/pinned-chats-store";
-import { usePinnedProjectsStore } from "./stores/pinned-projects-store";
+import {
+  normalizeSectionName,
+  useSidebarOrganizationStore,
+} from "./stores/sidebar-organization-store";
+import { SectionNameDialog } from "./components/section-name-dialog";
+import { ProjectMenuItems } from "./components/project-menu-items";
+import { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
+  normalizeModelRef,
+  pickTrainingCompareTarget,
+  trainingCompareSelection,
 } from "./lib/training-compare-handoff";
 import {
-  clampReasoningEffortToLevels,
+  externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
+  providerSupportsPreserveThinking,
   getProviderCapabilities,
+  kimiSearchExcludesThinking,
+  modelCatalogVersion,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  reasoningFieldsAfterCatalogRefresh,
+  resolveExternalReasoningEffort,
+  subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -209,6 +243,7 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
+import { RootSandboxSetupDialog } from "./sandbox-setup-dialog";
 import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
@@ -216,8 +251,13 @@ import {
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
   loadOptionalBool,
+  noteEffortDisplacedByPin,
+  pinHoldsLiveEffort,
   readPendingAttachmentTargetClaim,
+  reconcilePinnedReasoningEffort,
+  takeEffortDisplacedByPin,
   threadScopedOverride,
+  resolvePreserveThinkingOnLoad,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
@@ -240,26 +280,159 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isCoalescedHistoryEvent } from "./utils/chat-history-revision";
 import { attachmentsSample } from "./utils/pasted-text";
+import {
+  type DocumentAnnotations,
+  createAnnotationsFile,
+} from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { savedBranchHead } from "./utils/branch-head";
+import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
+  noteProjectLandingMounted,
 } from "@/features/rag/components/project-source-dropzone";
+import {
+  exportConversationCsv,
+  exportConversationMarkdown,
+  exportConversationMessagesJsonl,
+  exportConversationRawJsonl,
+  exportConversationShareGPT,
+  saveChatItemAsProjectSource,
+} from "./prompt-storage/prompt-storage-dialog";
+
+const BrowserPanel = lazy(() =>
+  import("@/features/browser/browser-panel").then((module) => ({
+    default: module.BrowserPanel,
+  })),
+);
+const FullViewChatBar = lazy(() =>
+  import("@/features/browser/full-view-chat").then((module) => ({
+    default: module.FullViewChatBar,
+  })),
+);
+const FullViewChatButton = lazy(() =>
+  import("@/features/browser/full-view-chat").then((module) => ({
+    default: module.FullViewChatButton,
+  })),
+);
+
+// Sandboxed page frames stay outside the trap: same-origin access would weaken their isolation.
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Only what is on screen: background tabs stay mounted under hidden or aria-hidden wrappers.
+function focusableIn(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) =>
+      element.tabIndex !== -1 &&
+      !element.closest('[aria-hidden="true"], [inert]') &&
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== "hidden",
+  );
+}
+
+/** Puts a staged fix prompt in this view's composer once it is on screen. */
+function useStagedFixPrompt(pendingFixPrompt: string | null, active: boolean): void {
+  const aui = useAui();
+  useEffect(() => {
+    if (!pendingFixPrompt || !active) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    const composer = aui.composer();
+    const current = composer.getState().text;
+    composer.setText(
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // Focus the composer after the overlay returns focus to its opener.
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+        ?.focus();
+    }, 0);
+  }, [pendingFixPrompt, aui, active]);
+}
+
+// Compare keeps the base view mounted but hidden; the overlay owns the browser then, so it runs once.
+const BrowserOverlaidContext = createContext(false);
+
+/** The browser over the chat, where it cannot sit beside it. A modal: focus moves in, stays in, and returns on close. */
+function BrowserOverlay(): ReactElement {
+  const t = useT();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDocumentFlag("data-browser-overlay-open", true);
+  useEffect(() => {
+    const previous = document.activeElement;
+    const id = window.setTimeout(() => {
+      const dialog = dialogRef.current;
+      if (dialog && !dialog.contains(document.activeElement)) (focusableIn(dialog)[0] ?? dialog).focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(id);
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, []);
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      // Menus, fields and annotating handle their own Escape first.
+      const target = event.target as HTMLElement;
+      const typing = target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+      if (event.defaultPrevented || typing || useBrowserStore.getState().annotateTabId !== null) return;
+      event.preventDefault();
+      useBrowserStore.getState().closePanel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = focusableIn(event.currentTarget);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      event.currentTarget.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm sm:p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          useBrowserStore.getState().closePanel();
+        }
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal={true}
+        aria-label={t("browser.title")}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+        className="size-full overflow-hidden border-border bg-background outline-none sm:h-[min(92dvh,900px)] sm:w-[min(96vw,1200px)] sm:rounded-2xl sm:border sm:shadow-xl"
+      >
+        <Suspense fallback={null}>
+          <BrowserPanel active={true} />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
     default: module.ProjectSourcesPanel,
   })),
 );
-
-type LoraCandidate = {
-  id: string;
-  baseModel: string;
-  updatedAt?: number;
-  exportType?: "lora" | "merged" | "gguf";
-};
 
 const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
   openai: 0,
@@ -270,36 +443,29 @@ function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
 }
 
-function normalizeModelRef(value: string | null | undefined): string {
-  return value?.trim().toLowerCase() ?? "";
-}
+type RuntimeStoreState = ReturnType<typeof useChatRuntimeStore.getState>;
 
-function pickBestLoraForBase(
-  loras: LoraCandidate[],
-  baseModel: string | null,
-): LoraCandidate | null {
-  const adapterOnly = loras.filter((lora) => lora.exportType === "lora");
-  if (adapterOnly.length === 0) return null;
-  const sorted = [...adapterOnly].sort(
-    (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
-  );
-  const normalizedBase = normalizeModelRef(baseModel);
-  if (!normalizedBase) return sorted[0] ?? null;
-
-  const exact = sorted.find(
-    (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
-  );
-  if (exact) return exact;
-
-  const partial = sorted.find((lora) => {
-    const normalizedLoraBase = normalizeModelRef(lora.baseModel);
-    if (!normalizedLoraBase) return false;
-    return (
-      normalizedLoraBase.includes(normalizedBase) ||
-      normalizedBase.includes(normalizedLoraBase)
-    );
-  });
-  return partial ?? sorted[0] ?? null;
+// The newest saved usage if the active checkpoint and window could have produced it, else null.
+function savedUsageFor(
+  messages: MessageRecord[],
+  store: RuntimeStoreState,
+): RuntimeStoreState["contextUsage"] {
+  const msg = [...messages].sort((a, b) => b.createdAt - a.createdAt)[0];
+  const usage = msg?.metadata?.contextUsage as RuntimeStoreState["contextUsage"];
+  if (!usage) return null;
+  const activeCheckpoint = store.params.checkpoint;
+  const usageModelId = (usage as { modelId?: unknown }).modelId;
+  if (typeof usageModelId === "string" && usageModelId) {
+    if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
+      return null;
+    }
+  }
+  // llama.cpp stops at the window, so a count past it is stale; MLX runs past it, so its count stands.
+  const limit = store.loadedIsGguf ? store.loadedContextLength : null;
+  if (typeof limit === "number" && limit > 0 && (usage.contextTokens ?? usage.totalTokens ?? 0) > limit) {
+    return null;
+  }
+  return usage;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -321,25 +487,140 @@ function messageHasImage(message: MessageRecord): boolean {
   return false;
 }
 
+/** Send browser annotations as their own message via the composer (same checks); a refused send or a draft leaves them staged. */
+function sendDocumentAnnotations(
+  aui: ReturnType<typeof useAui>,
+  annotations: DocumentAnnotations,
+  files: File[] = [],
+): Promise<boolean> {
+  const composer = aui.composer();
+  const drafted = () => {
+    const state = composer.getState();
+    return { text: state.text.trim().length > 0, attachments: state.attachments.length };
+  };
+  // Text or files the user staged are their next message: the annotations join it unsent.
+  const before = drafted();
+  const hasDraft = before.text || before.attachments > 0;
+  // Extra files first, after the draft check, so they don't count as a draft. They're optional:
+  // one the model can't take (a screenshot on a text-only model) is skipped.
+  let extras = 0;
+  return files
+    .reduce(
+      (staged, file) =>
+        staged.then(() =>
+          composer.addAttachment(file).then(
+            () => void extras++,
+            () => undefined,
+          ),
+        ),
+      Promise.resolve(),
+    )
+    .then(() => composer.addAttachment(createAnnotationsFile(annotations)))
+    .then(() => {
+      const form = [
+        ...document.querySelectorAll<HTMLFormElement>("form.aui-composer-root"),
+      ].find(
+        (element) =>
+          element.offsetParent !== null &&
+          !element.closest('[aria-hidden="true"], [inert]'),
+      );
+      if (hasDraft || !form) {
+        document
+          .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+          ?.focus();
+        return true;
+      }
+      // Two frames, so the composer has rendered the attachment it now sends.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const now = drafted();
+          if (now.text || now.attachments > 1 + extras) return;
+          form.requestSubmit();
+        }),
+      );
+      return true;
+    })
+    .catch(() => false);
+}
+
+function useStoredChatTitle(threadId: string | null): string | undefined {
+  const [title, setTitle] = useState<{ id: string; title: string } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!threadId) return;
+    let live = true;
+    const load = () => {
+      getStoredChatThread(threadId)
+        .then((thread) => {
+          if (!live || !thread) return;
+          setTitle((current) =>
+            current?.id === threadId && current.title === thread.title
+              ? current
+              : { id: threadId, title: thread.title },
+          );
+        })
+        .catch(() => undefined);
+    };
+    // Streaming saves fire this per chunk and never rename the chat.
+    const onHistoryUpdated = (event: Event) => {
+      if (!isCoalescedHistoryEvent(event)) load();
+    };
+    load();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    return () => {
+      live = false;
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    };
+  }, [threadId]);
+  return title && title.id === threadId ? title.title : undefined;
+}
+
 const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
+const BROWSER_PANEL_DEFAULT_SIZE = "50%";
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
 const SingleContent = memo(function SingleContent({
   threadId,
-  artifact,
-  artifactSurface,
-  onCloseArtifact,
 }: {
   threadId?: string;
-  artifact?: ChatArtifact | null;
-  artifactSurface: ChatArtifactSurface;
-  onCloseArtifact: () => void;
 }): ReactElement {
-  const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
+  const aui = useAui();
+  // Compare keeps this view mounted but hidden, so the backgrounded copy leaves the prompt to SharedComposer.
+  const pendingFixPrompt = useChatArtifactsStore(
+    (state) => state.pendingFixPrompt,
+  );
+  const browserOpen = useBrowserStore((state) => state.open);
+  const browserOpenSequence = useBrowserStore((state) => state.openSequence);
+  const closeBrowser = useBrowserStore((state) => state.closePanel);
+  useEffect(() => {
+    if (!chatActive || isMobile) return;
+    setBrowserPanelAvailable(true);
+    setInAppLinkHandler(openUrlInBrowser);
+    useBrowserStore.setState({
+      requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
+      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
+      attachToChat: (file) =>
+        aui
+          .composer()
+          .addAttachment(file)
+          .then(() => {
+            document.querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)?.focus();
+            return true;
+          })
+          .catch(() => false),
+    });
+    return () => {
+      setBrowserPanelAvailable(false);
+      setInAppLinkHandler(null);
+      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
+    };
+  }, [chatActive, isMobile, aui]);
+  useStagedFixPrompt(pendingFixPrompt, chatActive);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   useEffect(() => {
@@ -355,6 +636,18 @@ const SingleContent = memo(function SingleContent({
       : undefined,
   );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
+  // Sampled on drag end, not onResize: that fires through the open/close animations too.
+  const artifactPanelWidthRef = useRef<string | null>(null);
+  const rememberArtifactPanelWidth = useCallback(() => {
+    const size = artifactPanelRef.current?.getSize().asPercentage;
+    if (size == null) return;
+    // Dragged shut means closed.
+    if (size <= 5) {
+      closeBrowser();
+      return;
+    }
+    artifactPanelWidthRef.current = `${size}%`;
+  }, [closeBrowser]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -367,21 +660,52 @@ const SingleContent = memo(function SingleContent({
       openResearchThreadId === (threadId ?? activeThreadId),
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
-  // Without a URL threadId the artifact must belong to the active thread.
-  const showArtifactPanel = !showResearchPanel && Boolean(
-    artifact &&
-      artifactSurface === "panel" &&
-      (threadId
-        ? !artifact.threadId || artifact.threadId === threadId
-        : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
-  );
-  const showContextPanel = showResearchPanel || showArtifactPanel;
+  const browserOverlaid = useContext(BrowserOverlaidContext);
+  const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;
+  // Research outranks the browser in the side pane, so a new browser open (a card, a link) closes it.
+  const handledBrowserOpenRef = useRef(browserOpenSequence);
+  useEffect(() => {
+    if (handledBrowserOpenRef.current === browserOpenSequence) return;
+    handledBrowserOpenRef.current = browserOpenSequence;
+    if (showResearchPanel && browserOpen && !browserOverlaid) closeResearchPanel();
+  }, [browserOpenSequence, browserOpen, browserOverlaid, showResearchPanel, closeResearchPanel]);
+  const browserFullView =
+    useBrowserStore((state) => state.fullView) && showBrowserPanel;
+  const chatDock = useBrowserStore((state) => state.chatDock);
+  const chatOnRight =
+    useBrowserStore((state) => state.chatSide === "right") &&
+    showBrowserPanel &&
+    !browserFullView;
+  const defaultPanelSizeRef = useRef(ARTIFACT_PANEL_DEFAULT_SIZE);
+  useEffect(() => {
+    defaultPanelSizeRef.current = showBrowserPanel
+      ? BROWSER_PANEL_DEFAULT_SIZE
+      : ARTIFACT_PANEL_DEFAULT_SIZE;
+  });
+  const showContextPanel = showResearchPanel || showBrowserPanel;
 
   const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
     showContextPanel &&
     isArtifactPanelLayoutActive &&
     !isArtifactLayoutAnimating;
+
+  const artifactPanelThread = threadId ?? activeThreadId ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetting is the effect
+  useEffect(() => {
+    artifactPanelWidthRef.current = null;
+  }, [artifactPanelThread]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequence is the re-expand trigger
+  useEffect(() => {
+    if (!showContextPanel || browserOpenSequence === 0) return;
+    const panel = artifactPanelRef.current;
+    if (!panel) return;
+    if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
+    // expand() alone restores the pre-collapse width, which is zero after a drag shut.
+    panel.expand();
+    panel.resize(artifactPanelWidthRef.current ?? defaultPanelSizeRef.current);
+  }, [browserOpenSequence, showContextPanel]);
 
   useEffect(() => {
     const panel = artifactPanelRef.current;
@@ -402,7 +726,11 @@ const SingleContent = memo(function SingleContent({
     let resizeFrameId = 0;
     const prepFrameId = window.requestAnimationFrame(() => {
       resizeFrameId = window.requestAnimationFrame(() => {
-        panel.resize(showContextPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
+        panel.resize(
+          showContextPanel
+            ? (artifactPanelWidthRef.current ?? defaultPanelSizeRef.current)
+            : "0%",
+        );
       });
     });
     const surfaceTimerId = showContextPanel
@@ -430,13 +758,110 @@ const SingleContent = memo(function SingleContent({
 
   useEffect(() => {
     if (!researchMatchesThread) return;
-    onCloseArtifact();
+    closeBrowser();
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
-  }, [researchMatchesThread, onCloseArtifact]);
+  }, [researchMatchesThread, closeBrowser]);
 
+  // Close the browser on leaving the chat; the runtime thread id survives a new chat's first save.
+  const shownThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const shownThreadIdRef = useRef(shownThreadId);
+  useEffect(() => {
+    if (shownThreadIdRef.current === shownThreadId) return;
+    shownThreadIdRef.current = shownThreadId;
+    closeBrowser();
+  }, [shownThreadId, closeBrowser]);
+  useEffect(() => {
+    if (!chatActive) closeBrowser();
+  }, [chatActive, closeBrowser]);
+
+  // Width on header/notice only: on the root it would restyle the whole thread per resize.
+  const contextSurfaceRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const surface = contextSurfaceRef.current;
+    const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
+    if (!surface || !root || !showBrowserPanel) return;
+    let width = "";
+    const insets = () =>
+      root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
+    const apply = () => {
+      for (const element of insets()) {
+        element.style.setProperty(
+          "--studio-side-panel-width",
+          chatOnRight ? "0px" : width,
+        );
+        element.style.setProperty(
+          "--studio-side-panel-left",
+          chatOnRight ? width : "0px",
+        );
+      }
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      const next = `${Math.round(surface.getBoundingClientRect().width)}px`;
+      if (next === width) return;
+      width = next;
+      apply();
+    });
+    resizeObserver.observe(surface);
+    const childObserver = new MutationObserver(apply);
+    childObserver.observe(root, { childList: true });
+    return () => {
+      resizeObserver.disconnect();
+      childObserver.disconnect();
+      for (const element of insets()) {
+        element.style.removeProperty("--studio-side-panel-width");
+        element.style.removeProperty("--studio-side-panel-left");
+      }
+    };
+  }, [showBrowserPanel, chatOnRight]);
+
+  // Moving the chat re-sorts panels to default sizes; restore the browser's width (full view fills).
+  const browserLayout = `${browserFullView}:${chatOnRight}`;
+  const seenBrowserLayoutRef = useRef(browserLayout);
+  useEffect(() => {
+    if (seenBrowserLayoutRef.current === browserLayout) return;
+    seenBrowserLayoutRef.current = browserLayout;
+    const panel = artifactPanelRef.current;
+    if (!panel || !showBrowserPanel) return;
+    const frameId = window.requestAnimationFrame(() => {
+      panel.resize(
+        artifactPanelWidthRef.current ?? defaultPanelSizeRef.current,
+      );
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [browserLayout, showBrowserPanel]);
+
+  // With no chat beside it, the chat header would sit over the browser's tabs.
+  useEffect(() => {
+    const root = contextSurfaceRef.current?.closest<HTMLElement>(
+      "[data-chat-content-root]",
+    );
+    if (!root || !browserFullView) return;
+    const insets = root.querySelectorAll<HTMLElement>(
+      ":scope > [data-side-panel-inset]",
+    );
+    for (const element of insets) element.style.visibility = "hidden";
+    return () => {
+      for (const element of insets) element.style.removeProperty("visibility");
+    };
+  }, [browserFullView]);
+
+  const fullViewChatTitle = useStoredChatTitle(
+    browserFullView ? artifactPanelThread : null,
+  );
+
+  // Kept at one place in the tree in every layout, so switching layouts never remounts the thread.
   const threadPane = (
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-      <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
+    <div
+      className={cn(
+        "chat-thread-pane flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
+        browserFullView && chatDock === "minimized" && "hidden",
+      )}
+    >
+      {/* A floating chat has no welcome screen, so its composer shows in a new chat too. */}
+      <Thread
+        hideWelcome={Boolean(threadId) || browserFullView}
+        targetThreadId={threadId}
+      />
     </div>
   );
 
@@ -444,26 +869,86 @@ const SingleContent = memo(function SingleContent({
     <>
       <ResizablePanelGroup
         orientation="horizontal"
+        disableCursor
         data-artifact-layout-animating={
           isArtifactLayoutAnimating ? "true" : "false"
         }
-        className="chat-artifact-split min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+        className={cn(
+          "chat-artifact-split relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
+          chatOnRight &&
+            "[&>#chat-artifact]:order-1 [&>[data-slot=resizable-handle]]:order-2 [&>#chat-thread]:order-3",
+        )}
+        data-browser-full-view={browserFullView ? "true" : undefined}
+        // Not :has(), which re-walks the thread per token (thread-ancestor-has-scope.test.ts).
+        data-chat-dock={browserFullView ? chatDock : undefined}
       >
         <ResizablePanel
           id="chat-thread"
           defaultSize="100%"
-          minSize={artifactLayoutActive ? "42%" : "100%"}
+          // Distinct per layout: re-registering re-sorts panels so resizing follows the chat.
+          minSize={
+            browserFullView
+              ? "0%"
+              : chatOnRight
+                ? "34%"
+                : artifactLayoutActive
+                  ? "42%"
+                  : "100%"
+          }
           className="h-full min-h-0 min-w-0 overflow-hidden"
+          style={browserFullView ? { overflow: "visible" } : undefined}
         >
-          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          <div
+            data-expanded={chatDock === "expanded" ? "true" : "false"}
+            className={cn(
+              "flex h-full min-h-0 min-w-0 flex-col overflow-hidden [html[data-panel-resizing]_&]:pointer-events-auto",
+              browserFullView &&
+                (chatDock === "minimized"
+                  ? "chat-full-view-dock-minimized"
+                  : "chat-full-view-dock group/dock"),
+            )}
+          >
+            <Suspense fallback={null}>
+              {browserFullView && chatDock !== "minimized" ? (
+                <FullViewChatBar title={fullViewChatTitle} />
+              ) : null}
+              {browserFullView && chatDock === "minimized" ? (
+                <FullViewChatButton />
+              ) : null}
+            </Suspense>
             {threadPane}
           </div>
         </ResizablePanel>
         <ResizableHandle
           withHandle={false}
+          // The library's double-click reset would shut the panel without closing the artifact.
+          disableDoubleClick
+          disabled={!artifactLayoutActive || browserFullView}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            const drag = armPanelDrag(event.clientX);
+            const unpin = pinBrowserPage(event.currentTarget);
+            const release = () => {
+              window.removeEventListener("pointerup", release);
+              window.removeEventListener("pointercancel", release);
+              window.removeEventListener("pointermove", moved);
+              drag.release();
+              unpin();
+              rememberArtifactPanelWidth();
+            };
+            const moved = (move: PointerEvent) => {
+              if (move.buttons === 0) release();
+              else drag.move(move.clientX);
+            };
+            window.addEventListener("pointerup", release);
+            window.addEventListener("pointercancel", release);
+            window.addEventListener("pointermove", moved);
+          }}
+          onKeyUp={rememberArtifactPanelWidth}
           className={cn(
-            "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
-            !artifactLayoutActive &&
+            "relative z-30 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
+            chatOnRight ? "-ml-4 -mr-1" : "-ml-1 -mr-4",
+            (!artifactLayoutActive || browserFullView) &&
               "pointer-events-none -ml-0 -mr-0 w-0",
           )}
         />
@@ -479,13 +964,15 @@ const SingleContent = memo(function SingleContent({
                 : "0%"
           }
           maxSize={
-            showResearchPanel
+            chatOnRight
+              ? "66%"
+              : showResearchPanel
               ? "58%"
               : artifactLayoutActive
                 ? "58%"
                 : "0%"
           }
-          collapsible={showArtifactPanel}
+          collapsible={showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -493,13 +980,17 @@ const SingleContent = memo(function SingleContent({
           )}
         >
           <div
+            ref={contextSurfaceRef}
             data-artifact-surface-visible={
               isArtifactSurfaceVisible ? "true" : "false"
             }
             className={cn(
               "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
-              showResearchPanel && "border-l border-border/70",
+              (showResearchPanel || showBrowserPanel) &&
+                (chatOnRight ? "border-r" : "border-l"),
+              (showResearchPanel || showBrowserPanel) && "border-border/70",
             )}
+            style={showBrowserPanel ? { transform: "none" } : undefined}
           >
              {showResearchPanel && openResearchRunId ? (
                <ResearchActivityPanel
@@ -507,15 +998,10 @@ const SingleContent = memo(function SingleContent({
                  runId={openResearchRunId}
                  onClose={closeResearchPanel}
                />
-             ) : showArtifactPanel && artifact ? (
-              <ArtifactSurface
-                artifact={artifact}
-                variant="panel"
-                onClose={onCloseArtifact}
-                onOpenFullscreen={() =>
-                  openArtifact(artifact, { surface: "overlay" })
-                }
-              />
+             ) : showBrowserPanel ? (
+              <Suspense fallback={null}>
+                <BrowserPanel active={chatActive} />
+              </Suspense>
             ) : null}
           </div>
         </ResizablePanel>
@@ -696,9 +1182,9 @@ const CompareContent = memo(function CompareContent({
   );
 });
 
-/** One column in the compare layout: a ChatRuntimeProvider and a Thread with hideComposer. Each
- *  pane is `flex-1 basis-0 min-h-0 min-w-0` so panes share space equally and the inner
- *  viewport scrolls instead of spilling. */
+/** One column in the compare layout: a ChatRuntimeProvider and a Thread with hideComposer. Each pane is
+ *  `flex-1 basis-0 min-h-0 min-w-0` so panes share space equally and the inner viewport scrolls instead of
+ *  spilling. */
 function ComparePane({
   modelType,
   pairId,
@@ -733,7 +1219,11 @@ function ComparePane({
       )}
     >
       {header}
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+        <div
+          aria-hidden={true}
+          className="compare-pane-fade pointer-events-none absolute top-0 left-0 right-[var(--thread-scrollbar-gutter,10px)] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+        />
         <ChatRuntimeProvider
           modelType={modelType}
           pairId={pairId}
@@ -777,9 +1267,9 @@ function useCompareReloadReadiness(pairId: string): (pane: string) => void {
   );
 }
 
-/** Shared shell for both compare variants: a flex column with the two panes as siblings and the
- *  shared composer docked at the bottom. Flex, not grid: grid rows with 1fr triggered resize
- *  thrash in assistant-ui's autoscroll on breakpoint crossings. */
+/** Shared shell for both compare variants: a flex column with the two panes as siblings and the shared composer
+ *  docked at the bottom. Flex, not grid: grid rows with 1fr triggered resize thrash in assistant-ui's autoscroll
+ *  on breakpoint crossings. */
 function CompareShell({
   handlesRef,
   children,
@@ -797,12 +1287,15 @@ function CompareShell({
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
         <div
           data-tour="chat-compare-view"
-          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] md:flex-row"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] lg:flex-row"
         >
           {children}
         </div>
-        <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
+        {/* Symmetric: the extra right inset mirrored the viewport's one-sided
+            scrollbar gutter, which is now reserved on both edges. */}
+        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
+          {/* unsloth-composer-shell: the size container the single composer's narrow layout queries. */}
+          <div className="unsloth-composer-shell mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.
@@ -834,15 +1327,15 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const checkpointIsLora = useIsLoraCompare();
 
-  // Global on purpose: a first compare run starts before either thread exists, so there is no pair
-  // id to scope BY. The gate exists at all because these ids feed ComparePane's
-  // `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a live thread.
+  // Global on purpose: a first compare run starts before either thread exists, so there is no pair id to scope
+  // BY. The gate exists at all because these ids feed ComparePane's `initialThreadId`, so learning them mid-run
+  // points ThreadAutoSwitch at a live thread.
   const anyRunning = useChatRuntimeStore(
     (s) => Object.keys(s.localRunByThreadId).length > 0,
   );
-  // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive across
-  // the switch into compare, so `anyRunning` is true on arrival for an unrelated reason, and
-  // gating the FIRST list on it left an existing compare on blank runtimes.
+  // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive across the switch into
+  // compare, so `anyRunning` is true on arrival for an unrelated reason, and gating the FIRST list on it left an
+  // existing compare on blank runtimes.
   const listedPairRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -942,9 +1435,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           onInitialHistoryReady={
             threadsSettled ? markInitialHistoryReady : undefined
           }
-          borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
+          borderClassName="border-t border-border/60 lg:border-t-0 lg:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -971,6 +1464,7 @@ function GeneralCompareHeader({
   onModelsChange,
   deleteDisabled,
   side,
+  label,
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -987,6 +1481,7 @@ function GeneralCompareHeader({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   side: "left" | "right";
+  label?: "Base Model" | "Fine-tuned";
 }): ReactElement {
   // Controlled so the body-portaled popover cannot linger over another tab off-route.
   const active = useChatActive();
@@ -996,12 +1491,14 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
-            : "pl-12 pr-3 md:pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
-          : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            : isTauri
+              ? "pl-12 pr-3 md:pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
+          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
       <ModelSelector
@@ -1021,8 +1518,39 @@ function GeneralCompareHeader({
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
+      {label ? (
+        <span
+          className={cn(
+            "pointer-events-none hidden h-[var(--studio-chat-control-height,34px)] shrink-0 items-center text-ui-10 font-semibold uppercase tracking-wider sm:flex",
+            side === "right" && "ml-auto",
+            label === "Fine-tuned" ? "text-primary" : "text-muted-foreground",
+          )}
+        >
+          {label}
+        </span>
+      ) : null}
     </div>
   );
+}
+
+/** Base Model / Fine-tuned labels when one pane is a LoRA trained on the other pane's model. */
+function generalCompareLabels(
+  loraModels: LoraModelOption[],
+  model1: CompareModelSelection,
+  model2: CompareModelSelection,
+): ["Base Model" | "Fine-tuned" | undefined, "Base Model" | "Fine-tuned" | undefined] {
+  const baseOf = (sel: CompareModelSelection) =>
+    sel.isLora
+      ? loraModels.find((lora) => lora.id === sel.id)?.baseModel
+      : undefined;
+  const isTunedFrom = (tuned: CompareModelSelection, base: CompareModelSelection) => {
+    const loraBase = baseOf(tuned);
+    return Boolean(loraBase && base.id) &&
+      normalizeModelRef(loraBase) === normalizeModelRef(base.id);
+  };
+  if (isTunedFrom(model1, model2)) return ["Fine-tuned", "Base Model"];
+  if (isTunedFrom(model2, model1)) return ["Base Model", "Fine-tuned"];
+  return [undefined, undefined];
 }
 
 /** General path: any two models, sequential load → generate. */
@@ -1063,10 +1591,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const anyRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  // A compare send is idle between the two sequential runs; a re-list there swaps the pane threads mid-send.
+  const [comparing, setComparing] = useState(false);
   const listedPairRef = useRef<string | null>(null);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
-    isLora: false,
+    isLora: loraModels.some(
+      (lora) => lora.id === globalCheckpoint && lora.exportType === "lora",
+    ),
     ggufVariant: globalGgufVariant ?? undefined,
     isDiffusion: globalIsDiffusion,
   });
@@ -1089,7 +1621,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (anyRunning && listedPairRef.current === pairId) return;
+    if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
     setThreadsSettled(false);
@@ -1111,7 +1643,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, anyRunning]);
+  }, [pairId, anyRunning, comparing]);
 
   useEffect(() => {
     if (!threadsSettled) return;
@@ -1124,6 +1656,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     threadsSettled,
   ]);
 
+  const [model1Label, model2Label] = generalCompareLabels(
+    loraModels,
+    model1,
+    model2,
+  );
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -1134,8 +1672,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             model1={model1}
             model2={model2}
             onExitCompare={onExitCompare}
+            onComparingChange={setComparing}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
+            sendUnavailableReason={
+              threadsSettled ? undefined : "Loading comparison history."
+            }
           />
         ) : (
           <></>
@@ -1155,6 +1697,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           header={
             <GeneralCompareHeader
               side="left"
+              label={model1Label}
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
@@ -1186,10 +1729,11 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           onInitialHistoryReady={
             threadsSettled ? markInitialHistoryReady : undefined
           }
-          borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
+          borderClassName="border-t border-sidebar-border lg:border-t-0 lg:border-l"
           header={
             <GeneralCompareHeader
               side="right"
+              label={model2Label}
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
@@ -1257,14 +1801,13 @@ async function exportProjectConversation(
   threadId: string,
   format: ProjectChatExportFormat,
 ): Promise<void> {
-  const exports = await import("./prompt-storage/prompt-storage-dialog");
-  if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "raw-jsonl") return exportConversationRawJsonl(threadId);
   if (format === "messages-jsonl")
-    return exports.exportConversationMessagesJsonl(threadId);
-  if (format === "csv") return exports.exportConversationCsv(threadId);
+    return exportConversationMessagesJsonl(threadId);
+  if (format === "csv") return exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
-    return exports.exportConversationMarkdown(threadId);
-  if (format === "sharegpt-jsonl") return exports.exportConversationShareGPT(threadId);
+    return exportConversationMarkdown(threadId);
+  if (format === "sharegpt-jsonl") return exportConversationShareGPT(threadId);
   // Was a fallthrough return, so an unhandled format silently exported ShareGPT.
   const unhandled: never = format;
   throw new Error(`Unhandled export format: ${String(unhandled)}`);
@@ -1285,9 +1828,6 @@ async function saveProjectChatItemAsSource(
   item: SidebarItem,
   projectId: string,
 ): Promise<void> {
-  const { saveChatItemAsProjectSource } = await import(
-    "./prompt-storage/prompt-storage-dialog"
-  );
   await saveChatItemAsProjectSource(item, projectId);
 }
 
@@ -1338,6 +1878,11 @@ function ProjectLanding({
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
+  // The browser shows over a project, so its Request edits lands in this composer.
+  useStagedFixPrompt(
+    useChatArtifactsStore((state) => state.pendingFixPrompt),
+    active,
+  );
   const wasActiveRef = useRef(active);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   // Captured in render, not an effect: the shared provider's ThreadNewChatSwitch is an earlier
@@ -1352,6 +1897,7 @@ function ProjectLanding({
   // Drop the marker once committed: React may replay the initializer above.
   useEffect(() => {
     consumeProjectSourcesPending(projectId);
+    return noteProjectLandingMounted(projectId);
   }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
@@ -1373,45 +1919,25 @@ function ProjectLanding({
   } | null>(null);
 
   // Project-level options (the header kebab menu).
-  const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
-  const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
-  const projectPinned = pinnedProjectIds.includes(projectId);
-  const [renamingProject, setRenamingProject] = useState(false);
-  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [editingProject, setEditingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
+  const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
+  const fileProjectInSection = useFileProjectInSection();
+  const [creatingSection, setCreatingSection] = useState(false);
 
-  async function handleProjectExport(
-    format: ProjectChatExportFormat,
-  ): Promise<void> {
-    try {
-      const threads = await listStoredChatThreads({
-        projectId,
-        includeArchived: false,
-      });
-      const ids = [...new Set(threads.map((t) => t.id))];
-      for (const id of ids) await exportProjectConversation(id, format);
-    } catch (error) {
-      if (!isDownloadCancelled(error)) toast.error("Export failed.");
-    }
-  }
-
-  async function commitProjectRename(): Promise<void> {
-    const name = projectNameDraft.trim();
-    setRenamingProject(false);
-    if (!name || name === projectName) return;
-    try {
-      await renameChatProject(projectId, name);
-    } catch (err) {
-      toast.error("Failed to rename project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
+  /** A project workspace is a bigger thing to remove than a chat's sandbox, so it asks from
+   *  scratch rather than following the chat preference, as the sidebar does it. */
+  function openProjectDelete(): void {
+    setDeleteFilesOnDelete(false);
+    setDeletingProject(true);
   }
 
   async function commitProjectDelete(): Promise<void> {
+    const deleteFiles = deleteFilesOnDelete;
     setDeletingProject(false);
+    setDeleteFilesOnDelete(false);
     try {
-      await deleteChatProject(projectId);
+      await deleteChatProject(projectId, { deleteFiles });
       // Refresh chat history so the project's now-deleted chats do not linger in the sidebar, matching
       // the sidebar delete path.
       notifyChatHistoryUpdated();
@@ -1465,6 +1991,11 @@ function ProjectLanding({
 
   // Full chat actions, matching the sidebar chat menu.
   const { projects } = useChatProjects();
+  // The record behind the header, for the Edit dialog.
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === projectId),
+    [projects, projectId],
+  );
   const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
   const confirmDeleteChats = useChatPreferencesStore(
@@ -1598,9 +2129,9 @@ function ProjectLanding({
     }
     if (!activeThreadId) {
       if (resumed && pendingNewThreadId) {
-        // ...unless it was deleted while another view held the screen. Nothing else clears this id, so
-        // restoring a tombstoned thread would put a conversation storage no longer has back on
-        // screen. Fall through to the rotate below.
+        // ...unless it was deleted while another view held the screen. Nothing else clears this id, so restoring a
+        // tombstoned thread would put a conversation storage no longer has back on screen. Fall through to the
+        // rotate below.
         if (!isChatThreadDeleted(pendingNewThreadId)) {
           useChatRuntimeStore.getState().setActiveThreadId(pendingNewThreadId);
           return;
@@ -1620,9 +2151,9 @@ function ProjectLanding({
     ) {
       return;
     }
-    // Hand the composer's attach choice to the chat it just created: setting this swaps
-    // ProjectComposer for Thread, so the bar holding the choice unmounts and its cleanup drops
-    // it. Its own choice only, or a later send would consume another composer's pick.
+    // Hand the composer's attach choice to the chat it just created: setting this swaps ProjectComposer for
+    // Thread, so the bar holding the choice unmounts and its cleanup drops it. Its own choice only, or a later
+    // send would consume another composer's pick.
     const captured = pendingTargetClaimRef.current;
     useChatRuntimeStore
       .getState()
@@ -1714,7 +2245,7 @@ function ProjectLanding({
           }
         >
           {/* Slightly narrower than the composer max; every block shares this. */}
-          <div className="mx-auto flex w-full max-w-[44rem] flex-col pt-[120px] pb-14">
+          <div className="mx-auto flex w-full max-w-[calc(44rem*var(--ui-space-scale,1))] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
             <div className="mb-12 flex items-center gap-4">
               <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
                 <HugeiconsIcon
@@ -1742,43 +2273,14 @@ function ProjectLanding({
                   </button>
                 )}
               >
-                <DropdownMenuItem
-                  onSelect={() => {
-                    setProjectNameDraft(projectName);
-                    setRenamingProject(true);
-                  }}
-                >
-                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Rename project</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
-                  <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
-                </DropdownMenuItem>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Export</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-48">
-                    {PROJECT_CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
-                      <DropdownMenuItem
-                        key={format}
-                        onSelect={() => void handleProjectExport(format)}
-                      >
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() => setDeletingProject(true)}
-                >
-                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Delete project</span>
-                </DropdownMenuItem>
+                <ProjectMenuItems
+                  project={{ id: projectId, name: projectName }}
+                  chatCount={items.length}
+                  onEdit={() => setEditingProject(true)}
+                  onDelete={() => openProjectDelete()}
+                  onNewSection={() => setCreatingSection(true)}
+                  subClassName="unsloth-plus-menu"
+                />
               </NonModalDropdownMenu>
             </div>
 
@@ -1828,7 +2330,7 @@ function ProjectLanding({
                     return (
                       <div
                         key={`${item.type}:${item.id}`}
-                        className="flex min-h-[58px] w-full items-center rounded-full px-4 py-2"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[14px] px-4 py-2"
                       >
                         <div className="min-w-0 flex-1">
                           <input
@@ -1838,9 +2340,9 @@ function ProjectLanding({
                               setRenameDraft(event.target.value)
                             }
                             onKeyDown={(event) => {
-                              // Ignore keydowns fired mid-IME-composition (CJK) so a candidate-confirming
-                              // Enter does not commit the rename. Guarded before the key branch so Escape
-                              // is covered too (isComposing on WebKit, 229 on Chromium).
+                              // Ignore keydowns fired mid-IME-composition (CJK) so a candidate-confirming Enter does not commit
+                              // the rename. Guarded before the key branch so Escape is covered too (isComposing on
+                              // WebKit, 229 on Chromium).
                               if (
                                 event.nativeEvent.isComposing ||
                                 event.keyCode === 229
@@ -1866,7 +2368,7 @@ function ProjectLanding({
                             onFocus={(event) => event.currentTarget.select()}
                             maxLength={120}
                             aria-label="Rename chat"
-                            className="w-full border-0 bg-transparent text-ui-15 font-semibold leading-5 text-foreground outline-none"
+                            className="w-full border-0 bg-transparent text-ui-15 leading-5 text-foreground outline-none"
                           />
                         </div>
                       </div>
@@ -1875,7 +2377,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[58px] w-full items-center rounded-full transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[14px] transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
                     >
                       <button
                         type="button"
@@ -1888,10 +2390,10 @@ function ProjectLanding({
                                 : { compare: item.id, project: projectId },
                           });
                         }}
-                        className="flex min-h-[58px] min-w-0 flex-1 items-center gap-4 rounded-full px-4 py-2 text-left"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-[14px] px-4 py-2 text-left"
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-ui-15 font-semibold leading-5 text-foreground">
+                          <div className="truncate text-ui-15 leading-5 text-foreground">
                             {displayTitle}
                           </div>
                         </div>
@@ -1911,7 +2413,7 @@ function ProjectLanding({
                             type="button"
                             onClick={(event) => event.stopPropagation()}
                             aria-label="Chat options"
-                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none transition-opacity hover:bg-foreground/10 md:pointer-fine:opacity-0 md:pointer-fine:pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
+                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none transition-opacity hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] md:pointer-fine:opacity-0 md:pointer-fine:pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
                           >
                             <HugeiconsIcon
                               icon={MoreVerticalIcon}
@@ -1954,7 +2456,8 @@ function ProjectLanding({
                               strokeWidth={1.75}
                               className="size-icon"
                             />
-                            <span>Move to project</span>
+                            {/* Same label the sidebar row menu uses. */}
+                            <span>Project</span>
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent className="unsloth-plus-menu w-52">
                             <DropdownMenuItem
@@ -2011,11 +2514,11 @@ function ProjectLanding({
                           onSelect={() => void handleSaveAsSource(item)}
                         >
                           <HugeiconsIcon
-                            icon={BookOpen01Icon}
+                            icon={FolderAttachmentIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
-                          <span>Save to project sources</span>
+                          <span>Project sources</span>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -2082,47 +2585,29 @@ function ProjectLanding({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <Dialog
-        open={active && renamingProject}
-        onOpenChange={(open) => {
-          if (!open) setRenamingProject(false);
+      <SectionNameDialog
+        open={active && creatingSection}
+        mode="create"
+        onOpenChange={(open) => !open && setCreatingSection(false)}
+        onSubmit={(name) => {
+          const sectionId = createCustomSection(name);
+          if (sectionId) {
+            fileProjectInSection({ id: projectId, name: projectName }, sectionId, normalizeSectionName(name));
+          }
         }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Rename project</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={projectNameDraft}
-            onChange={(e) => setProjectNameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commitProjectRename();
-              }
-            }}
-            autoFocus={true}
-            maxLength={120}
-            placeholder="Project name"
-            aria-label="Project name"
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setRenamingProject(false)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void commitProjectRename()}
-              disabled={
-                !projectNameDraft.trim() || projectNameDraft.trim() === projectName
-              }
-            >
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      />
+      {/* The sidebar's dialog, so a project is edited the same way wherever it is opened from.
+          Delete hands back here, which owns the confirmation below. */}
+      <EditProjectDialog
+        project={active && editingProject ? (currentProject ?? null) : null}
+        onOpenChange={(open) => {
+          if (!open) setEditingProject(false);
+        }}
+        onDelete={() => {
+          setEditingProject(false);
+          openProjectDelete();
+        }}
+      />
       <AlertDialog
         open={active && deletingProject}
         onOpenChange={(open) => {
@@ -2136,10 +2621,20 @@ function ProjectLanding({
               Delete "{projectName}"? Its chats will be permanently deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* Same offer the sidebar makes, naming the folder when the record carries one. */}
+          <DeleteChatFilesSwitch
+            id="chat-landing-delete-project-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+            description={
+              currentProject?.rootPath ??
+              "The project workspace folder will be removed from disk."
+            }
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={() => void commitProjectDelete()}>
-              Delete
+              {deleteFilesOnDelete ? "Delete all" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -2171,29 +2666,28 @@ type PendingHubAutoLoad = {
   originGgufVariant: string | null;
 };
 
-// `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route, frozen to
-// the last /chat search. `active` is false off-route: close portaled surfaces and stop
-// route-specific listeners.
+// `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route, frozen to the last /chat
+// search. `active` is false off-route: close portaled surfaces and stop route-specific listeners.
 export function ChatPage({
   search,
   active,
 }: { search: ChatSearch; active: boolean }): ReactElement {
+  const showContextWindowUsage = useChatPreferencesStore(
+    (s) => s.showContextWindowUsage,
+  );
   const navigate = useNavigate();
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
-  const incognitoLabel = incognito
-    ? "Turn off temporary chat"
-    : "Turn on temporary chat";
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
     const wasIncognito = store.incognito;
     store.setIncognito(!store.incognito);
-    // On an empty scratch chat there is nothing to abandon, so flip in place: navigating would
-    // remount the thread and bounce the composer. Otherwise start a clean chat so the temporary
-    // session cannot inherit or leave behind a persisted thread.
+    // On an empty scratch chat there is nothing to abandon, so flip in place: navigating would remount the thread
+    // and bounce the composer. Otherwise start a clean chat so the temporary session cannot inherit or leave
+    // behind a persisted thread.
     const onEmptyScratchChat =
       !search.thread &&
       !search.compare &&
@@ -2288,14 +2782,16 @@ export function ChatPage({
       lastNonCompareViewRef.current = { ...search };
     }
   }, [search]);
-  const inferenceParams = useChatRuntimeStore((state) => state.params);
-  const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
+  const inferenceCheckpoint = useChatRuntimeStore(
+    (state) => state.params.checkpoint,
+  );
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
+  const loadedCount = useChatRuntimeStore((state) => state.loadedModels.length);
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
   );
@@ -2304,6 +2800,15 @@ export function ChatPage({
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const loadedContextUnboundedWhenBatched = useChatRuntimeStore(
+    (state) => state.loadedContextUnboundedWhenBatched,
+  );
+  const loadedParallelSlots = useChatRuntimeStore(
+    (state) => state.loadedParallelSlots,
+  );
+  const loadedContextBudget = useChatRuntimeStore(
+    (state) => state.loadedContextBudget,
+  );
   const loadedContextEnforced = useChatRuntimeStore(
     (state) => state.loadedContextEnforced,
   );
@@ -2316,8 +2821,25 @@ export function ChatPage({
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
-  const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const [compactionSnapshot, setCompactionSnapshot] = useState<{
+    threadId: string;
+    count: number;
+  } | null>(null);
+  const handleCompactionCountChange = useCallback(
+    (threadId: string, count: number) => {
+      setCompactionSnapshot((current) =>
+        current?.threadId === threadId && current.count === count
+          ? current
+          : { threadId, count },
+      );
+    },
+    [],
+  );
+  const compactionCount =
+    compactionSnapshot?.threadId === activeThreadId
+      ? compactionSnapshot.count
+      : 0;
   const latestResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
   );
@@ -2373,9 +2895,7 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
-  // A ?new=<nonce> chat has no thread in the URL before or after its first send, and for the first
-  // render the store still holds the PREVIOUS chat's id until ThreadNewChatSwitch blanks it,
-  // so latch on having seen it blanked for this nonce.
+  // ?new=<nonce> lacks a URL thread; wait for ThreadNewChatSwitch to clear stale activeThreadId.
   const newChatBlankedRef = useRef<string | null>(null);
   if (
     search.new &&
@@ -2387,13 +2907,32 @@ export function ChatPage({
     search.new && newChatBlankedRef.current === search.new
       ? persistedActiveThreadId
       : null;
+  // leaving Chat clears activeThreadId and restores it later, so the shown thread id is latched.
+  const newChatIdentityBlankedRef = useRef<string | null>(null);
+  if (search.new && activeThreadId === null) {
+    newChatIdentityBlankedRef.current = search.new;
+  }
+  // re-latch after every blank: a nonce whose chat was deleted while hidden comes back on a fresh thread.
+  const newChatRef = useRef<{ nonce: string; threadId: string } | null>(null);
+  if (search.new && activeThreadId && newChatIdentityBlankedRef.current === search.new) {
+    newChatRef.current = { nonce: search.new, threadId: activeThreadId };
+    newChatIdentityBlankedRef.current = null;
+  }
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
   const {
     refresh,
+    cancelLoadingForReplacement,
+    invalidatePendingModelSelection,
+    discardExternalReplacement,
+    restoreConfigForExternalReplacement,
+
+    isModelSelectionIntentCurrent,
     selectModel,
+    loadNpuModel,
     ejectModel,
+    ejectAllModels,
     cancelLoading,
     loadingModel,
     loadProgress,
@@ -2402,8 +2941,7 @@ export function ChatPage({
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
-    if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
-      resetArtifacts();
+    if (!connectionsEnabled && isExternalModelId(inferenceCheckpoint)) {
       clearCheckpoint();
       if (turnedOff) {
         toast.info("Connections disabled", {
@@ -2415,8 +2953,7 @@ export function ChatPage({
   }, [
     clearCheckpoint,
     connectionsEnabled,
-    inferenceParams.checkpoint,
-    resetArtifacts,
+    inferenceCheckpoint,
   ]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
@@ -2445,8 +2982,8 @@ export function ChatPage({
     [],
   );
   const isExternalModel = useMemo(
-    () => isExternalModelId(inferenceParams.checkpoint),
-    [inferenceParams.checkpoint],
+    () => isExternalModelId(inferenceCheckpoint),
+    [inferenceCheckpoint],
   );
   const contextWindowKnown = hasKnownContextWindow({
     loadedContextLength,
@@ -2465,13 +3002,13 @@ export function ChatPage({
     (s) => s.loadedIsDiffusion,
   );
   const activeModelIsLora = useMemo(() => {
-    const checkpoint = inferenceParams.checkpoint;
+    const checkpoint = inferenceCheckpoint;
     if (!checkpoint || isExternalModel) return false;
     const model = modelsFromStore.find((entry) => entry.id === checkpoint);
     if (model) return model.isLora;
     const lora = lorasFromStore.find((entry) => entry.id === checkpoint);
     return lora?.exportType === "lora";
-  }, [inferenceParams.checkpoint, isExternalModel, modelsFromStore, lorasFromStore]);
+  }, [inferenceCheckpoint, isExternalModel, modelsFromStore, lorasFromStore]);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
@@ -2479,22 +3016,27 @@ export function ChatPage({
     (s) => s.supportsReasoningOff,
   );
   const activeExternalProvider = useMemo(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return null;
     return (
       externalProvidersForChat.find((p) => p.id === selection.providerId) ??
       null
     );
-  }, [externalProvidersForChat, inferenceParams.checkpoint]);
+  }, [externalProvidersForChat, inferenceCheckpoint]);
   const activeExternalProviderType =
     activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return null;
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
     );
-    const baseCapabilities = getProviderCapabilities(provider?.providerType);
+    const baseCapabilities = getProviderCapabilities(
+      provider?.providerType,
+      provider?.apiType,
+      selection.modelId,
+      provider?.baseUrl,
+    );
     if (!baseCapabilities) return baseCapabilities;
     const anthropicThinkingEnabled =
       provider?.providerType === "anthropic" &&
@@ -2509,14 +3051,14 @@ export function ChatPage({
     };
   }, [
     externalProvidersForChat,
-    inferenceParams.checkpoint,
+    inferenceCheckpoint,
     reasoningEnabled,
     reasoningStyle,
     reasoningEffort,
     supportsReasoningOff,
   ]);
   useEffect(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return;
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
@@ -2527,38 +3069,34 @@ export function ChatPage({
       {
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
+        reasoningConfig: provider?.reasoningConfig,
       },
     );
     const state = useChatRuntimeStore.getState();
-    const preferredEffort = state.reasoningEffort;
     const effortLevels = reasoningCaps.reasoningEffortLevels;
-    const clampedEffort = clampReasoningEffortToLevels(
-      preferredEffort,
-      effortLevels,
-    );
-    // Per-provider default effort: Anthropic gets the highest level, since Claude's adaptive thinking
-    // adjusts cost per turn; OpenAI gets "high"; everyone else "medium". Overridable via Think.
-    const isAnthropic = provider?.providerType === "anthropic";
-    const isOpenAI = provider?.providerType === "openai";
-    const anthropicTopEffort = effortLevels.includes("xhigh")
-      ? "xhigh"
-      : effortLevels.includes("high")
-        ? "high"
-        : clampedEffort;
-    const openaiDefaultEffort = effortLevels.includes("high")
-      ? "high"
-      : effortLevels.includes("medium")
-        ? "medium"
-        : clampedEffort;
-    const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? isAnthropic
-        ? anthropicTopEffort
-        : isOpenAI
-          ? openaiDefaultEffort
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort
-      : state.reasoningEffort;
+    // Through the shared resolver, pin included: this runs on reload and on every provider
+    // resync, and resolving it without the pin is what put the provider default back over a
+    // level the user had set on the model's row.
+    const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
+      ? pinnedReasoningEffort(inferenceCheckpoint, effortLevels)
+      : null;
+    const nextReasoningEffort = resolveExternalReasoningEffort({
+      caps: reasoningCaps,
+      providerType: provider?.providerType,
+      apiType: provider?.apiType,
+      // Same as the switch below: a checkpoint that changed without going through it leaves the
+      // previous model's pin in the live level, which an unpinned model must not inherit.
+      current:
+        !pinnedEffort && pinHoldsLiveEffort()
+          ? (takeEffortDisplacedByPin() ?? state.reasoningEffort)
+          : state.reasoningEffort,
+      pinned: pinnedEffort,
+    });
+    // The chat's own level, before the pin takes its place, so clearing the pin can put it back.
+    if (pinnedEffort && nextReasoningEffort !== state.reasoningEffort) {
+      noteEffortDisplacedByPin(state.reasoningEffort);
+    }
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
       selection.modelId,
@@ -2568,20 +3106,24 @@ export function ChatPage({
       provider?.providerType,
       selection.modelId,
       provider?.baseUrl,
+      provider?.apiType,
     );
     const supportsBuiltinImageGeneration =
       providerSupportsBuiltinImageGeneration(
         provider?.providerType,
         selection.modelId,
         provider?.baseUrl,
+        provider?.apiType,
       );
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
     );
-    // Kimi's k2.6/k2.5 default to thinking enabled server-side, so the Think pill comes up clicked.
-    // Search stays off; the composer's mutual-exclusion handlers flip the two.
-    // Per https://platform.kimi.ai/docs/models.
-    const isKimi = provider?.providerType === "kimi";
+    // Kimi's k2.6/k2.5 default to thinking enabled server-side, so the Think pill comes up clicked. Search stays
+    // off; the composer's mutual-exclusion handlers flip the two. Per https://platform.kimi.ai/docs/models.
+    const isKimi = kimiSearchExcludesThinking(
+      provider?.providerType,
+      selection.modelId,
+    );
     // Web search on by default only for Anthropic and OpenAI, both with structured citations.
     // OpenRouter and Kimi work on opt-in but are less reliable.
     const searchOnByDefault =
@@ -2601,10 +3143,9 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Unsloth runs Search and Code itself for any provider that advertises the capability, so a
-    // self-hosted connection has no hosted builtin to key off. Keying the pill state on the
-    // hosted flags alone discarded the saved preference on every reload and sent
-    // enable_tools: false.
+    // Unsloth runs Search and Code itself for any provider that advertises the capability, so a self-hosted
+    // connection has no hosted builtin to key off. Keying the pill state on the hosted flags alone discarded the
+    // saved preference on every reload and sent enable_tools: false.
     const supportsStudioToolsHere =
       providerModelSupportsStudioTools(
         provider?.providerType,
@@ -2615,7 +3156,11 @@ export function ChatPage({
     // provider that cannot use it runs nothing either way.
     const canRunCode = codeToolCanRun({
       hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
-      providerHostsCodeExecution: providerHostsCodeExecution(provider?.providerType),
+      providerHostsCodeExecution: providerHostsCodeExecution(
+        provider?.providerType,
+        provider?.baseUrl,
+        provider?.apiType,
+      ),
       supportsStudioTools: supportsStudioToolsHere,
     });
     const nextToolsEnabled = canSearch
@@ -2637,7 +3182,10 @@ export function ChatPage({
             : state.reasoningEnabled
           : true
         : state.reasoningEnabled,
-      supportsPreserveThinking: false,
+      supportsPreserveThinking: providerSupportsPreserveThinking(provider?.providerType),
+      preserveThinking: resolvePreserveThinkingOnLoad({
+        supports_preserve_thinking: providerSupportsPreserveThinking(provider?.providerType),
+      }),
       supportsTools: supportsStudioToolsHere,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -2655,10 +3203,81 @@ export function ChatPage({
     });
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
-  }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
+  }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
+  // Another tab can change the active model's pin (the pin store listens for the storage event),
+  // and the normalization above reads the pin through a getState helper without subscribing, so
+  // the composer kept the old level until a switch. Only the effort here: the pills and the rest
+  // of that block are not this one's to rerun.
+  const activePinnedEffort = useModelReasoningEffortStore(
+    (state) => state.effortByModel[inferenceCheckpoint],
+  );
+  const appliedPinnedEffort = useRef(activePinnedEffort);
+  useEffect(() => {
+    if (appliedPinnedEffort.current === activePinnedEffort) return;
+    appliedPinnedEffort.current = activePinnedEffort;
+    const selection = parseExternalModelId(inferenceCheckpoint);
+    if (!selection) return;
+    const provider = externalProvidersForChat.find(
+      (p) => p.id === selection.providerId,
+    );
+    const caps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
+        reasoningConfig: provider?.reasoningConfig,
+      },
+    );
+    reconcilePinnedReasoningEffort({
+      checkpoint: inferenceCheckpoint,
+      caps,
+      providerType: provider?.providerType,
+      apiType: provider?.apiType,
+    });
+  }, [activePinnedEffort, externalProvidersForChat, inferenceCheckpoint]);
+  // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
+  // never the selection defaults above, so a chosen effort and the pills survive the refresh.
+  const modelCatalogChange = useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+  );
+  const appliedCatalogChange = useRef(modelCatalogChange);
+  useEffect(() => {
+    if (appliedCatalogChange.current === modelCatalogChange) return;
+    appliedCatalogChange.current = modelCatalogChange;
+    const selection = parseExternalModelId(inferenceCheckpoint);
+    if (!selection) return;
+    const { providers, connectionsEnabled: enabled } = useExternalProvidersStore.getState();
+    const provider = enabled
+      ? providers.find((p) => p.id === selection.providerId)
+      : undefined;
+    const caps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
+        reasoningConfig: provider?.reasoningConfig,
+      },
+    );
+    useChatRuntimeStore.setState(
+      reasoningFieldsAfterCatalogRefresh(useChatRuntimeStore.getState(), caps),
+    );
+    // After the levels, not before: a pin is only applied while the catalogue calls it legal, so
+    // the refresh that publishes the level is what puts the model's own pin in force.
+    reconcilePinnedReasoningEffort({
+      checkpoint: inferenceCheckpoint,
+      caps,
+      providerType: provider?.providerType,
+      apiType: provider?.apiType,
+    });
+  }, [modelCatalogChange, inferenceCheckpoint]);
   const canCompare = useMemo(() => {
-    return Boolean(inferenceParams.checkpoint) && !isExternalModel;
-  }, [inferenceParams.checkpoint, isExternalModel]);
+    return Boolean(inferenceCheckpoint) && !isExternalModel;
+  }, [inferenceCheckpoint, isExternalModel]);
 
   useEffect(() => {
     let canceled = false;
@@ -2766,11 +3385,15 @@ export function ChatPage({
     }
   }, [view, incognito, setIncognito]);
 
-  const selectedArtifact = useSelectedChatArtifact();
-  const artifactSurface = useChatArtifactsStore((state) => state.surface);
-  const closeArtifactSurface = useChatArtifactsStore(
-    (state) => state.closeArtifactSurface,
-  );
+  const browserOpen = useBrowserStore((state) => state.open);
+  const browserOpenSequence = useBrowserStore((state) => state.openSequence);
+  // A project has no side pane: only a browser opened from it (a card, a link) shows over it, not
+  // one left open in a chat before.
+  const [projectBrowserBaseline, setProjectBrowserBaseline] = useState<number | null>(null);
+  const projectViewId = view.mode === "project" ? view.projectId : null;
+  useEffect(() => {
+    setProjectBrowserBaseline(projectViewId ? useBrowserStore.getState().openSequence : null);
+  }, [projectViewId]);
   const artifactViewKey =
     view.mode === "single"
       ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
@@ -2783,9 +3406,9 @@ export function ChatPage({
       ? "single:implicit"
       : artifactViewKey;
 
-  // Compare replaces the shared provider on screen, so the base view is kept mounted behind it:
-  // unmounting runs useLocalRuntime's detach(), the backend cancels on the disconnect, and a
-  // project chat's run would die. Frozen to the last non-compare view.
+  // Compare replaces the shared provider on screen, so the base view is kept mounted behind it: unmounting runs
+  // useLocalRuntime's detach(), the backend cancels on the disconnect, and a project chat's run would die. Frozen
+  // to the last non-compare view.
   const keptBaseViewRef = useRef<{
     view: Exclude<ChatView, { mode: "compare" }>;
     attachmentTargetKey: string;
@@ -2798,9 +3421,9 @@ export function ChatPage({
     keptBaseViewRef.current?.attachmentTargetKey ?? artifactViewKey;
   const baseBackgrounded = view.mode === "compare";
 
-  // #9251's reload signal, taken here because the provider is hoisted. Stored as the project it
-  // belongs to, not a boolean: the hoisted provider is not remounted when the project changes,
-  // so a flag would release the next landing's shell early.
+  // #9251's reload signal, taken here because the provider is hoisted. Stored as the project it belongs to, not
+  // a boolean: the hoisted provider is not remounted when the project changes, so a flag would release the next
+  // landing's shell early.
   const projectLandingId =
     baseView?.mode === "project" ? baseView.projectId : null;
   const [projectRuntimeReadyFor, setProjectRuntimeReadyFor] = useState<
@@ -2812,24 +3435,56 @@ export function ChatPage({
   const projectRuntimeReady =
     projectLandingId !== null && projectRuntimeReadyFor === projectLandingId;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view is the reset
   useEffect(() => {
     clearAutoOpenedArtifacts();
-    closeArtifactSurface();
-  }, [artifactViewKey, closeArtifactSurface]);
+  }, [artifactViewKey]);
 
-  useEffect(() => {
-    if (view.mode !== "single") return;
-    if (view.threadId || !selectedArtifact) return;
-    // Close any canvas that does not belong to the active thread.
-    if (
-      selectedArtifact.threadId &&
-      selectedArtifact.threadId === activeThreadId
-    )
-      return;
-    closeArtifactSurface();
-  }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
+  const newChat = newChatRef.current;
+  const newChatShownId =
+    newChat && view.mode === "single" && view.newThreadNonce === newChat.nonce ? newChat.threadId : null;
+  const projectChatBlankedRef = useRef<{ projectId: string; nonce: string } | null>(null);
+  if (view.mode === "project" && activeThreadId === null) {
+    projectChatBlankedRef.current = { projectId: view.projectId, nonce: projectNewThreadNonce };
+  }
+  const projectChatRef = useRef<{ projectId: string; nonce: string; threadId: string } | null>(null);
+  const projectChatBlanked = projectChatBlankedRef.current;
+  if (
+    view.mode === "project" &&
+    activeThreadId &&
+    projectChatBlanked?.projectId === view.projectId &&
+    projectChatBlanked.nonce === projectNewThreadNonce &&
+    (projectChatRef.current?.projectId !== view.projectId ||
+      projectChatRef.current.nonce !== projectNewThreadNonce)
+  ) {
+    projectChatRef.current = {
+      projectId: view.projectId,
+      nonce: projectNewThreadNonce,
+      threadId: activeThreadId,
+    };
+  }
+  const projectChat = projectChatRef.current;
+  const projectChatShownId =
+    projectChat &&
+    view.mode === "project" &&
+    projectChat.projectId === view.projectId &&
+    projectChat.nonce === projectNewThreadNonce
+      ? projectChat.threadId
+      : null;
+  const shownChatKey =
+    view.mode === "single"
+      ? `single:${view.threadId ?? newChatShownId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
+      : view.mode === "project"
+        ? projectChatShownId
+          ? `single:${projectChatShownId}`
+          : `project:${view.projectId}:${projectNewThreadNonce}`
+        : artifactViewKey;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
+  useLayoutEffect(() => {
+    useBrowserStore.getState().closeChatPages();
+  }, [shownChatKey]);
 
-  const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  const hasActiveModel = Boolean(inferenceCheckpoint);
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
   const [pendingHubAutoLoad, setPendingHubAutoLoad] =
     useState<PendingHubAutoLoad | null>(null);
@@ -2853,12 +3508,16 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantManagerStaging) {
+          // The duplicate click is the only pick this guard refuses.
+          return;
+        }
+        if (wantManagerStaging) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
+            presentation: selection.downloadPresentation,
             // Handed over, not raised here, so one start makes one toast.
             callerToast: {
               title: "Downloading in the background",
@@ -2877,12 +3536,11 @@ export function ChatPage({
                 "Another download for this model is still running. Reselect it once that finishes to load it.",
             });
           }
-        } else {
-          toast.info("Another model is already loading", {
-            description: "Wait for it to finish or cancel it first.",
-          });
+          return;
         }
-        return;
+        // A different pick takes the slot rather than being rejected: fall through to
+        // selectModel below, which cancels the pending load and keeps the working
+        // checkpoint as the rollback target for the replacement.
       }
       if (wantManagerStaging) {
         setPendingHubAutoLoad((current) =>
@@ -2985,6 +3643,7 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
+        presentation: pending.selection.downloadPresentation,
         // Notice-only: #9663 removed this surface's own toast, so it must not return on an HTTP start or
         // once the three notices are spent.
         callerToast: {
@@ -3127,13 +3786,63 @@ export function ChatPage({
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
       setPendingHubAutoLoad(null);
+      const isExternalSelection =
+        meta?.source === "external" || isExternalModelId(value);
+      const isActiveModelLoad = modelOperationInProgress || loadingModel;
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
       if (isSameLoadedModel && !meta?.forceReload) {
+        if (!isExternalSelection) return;
+        // A repeated external pick is a no-op unless it supersedes a local load. With only a
+        // preflight in flight, invalidate it here even though no loading flag has been published.
+        if (!isActiveModelLoad) {
+          invalidatePendingModelSelection();
+          return;
+        }
+      }
+      if (isNpuModelId(value)) {
+        void loadNpuModel(value, {
+          forceReload: meta?.forceReload,
+          config: meta?.config,
+        });
         return;
       }
-      if (meta?.source === "external" || isExternalModelId(value)) {
+      if (isExternalSelection) {
+        // Any pending local preflight is stale now, even before it has published a loading run.
+        const externalIntentId = invalidatePendingModelSelection();
+        let externalCapabilityPatch: Partial<ReturnType<typeof useChatRuntimeStore.getState>> | null = null;
+        // A local load still in flight has to be stopped by this external pick. Leaving it
+        // running pins modelLoading true, which makes the composer treat even this external
+        // checkpoint as unavailable, and the local run's completion would write the local
+        // model's capability fields over the ones set below. The intent is invalidated before
+        // the cancellation so a local run still parked in its preflight yields on wakeup
+        // instead of adopting its status and starting anyway.
+        if (isActiveModelLoad) {
+          void cancelLoadingForReplacement(externalIntentId).then((stopped) => {
+            // A newer pick already owns the store; this one must not write to it.
+            if (!isModelSelectionIntentCurrent(externalIntentId)) return;
+            if (!stopped) {
+              // The backend is uncertain after a failed stop, so drop the rollback marker a
+              // later local pick would otherwise inherit from the run that did not stop.
+              discardExternalReplacement(externalIntentId);
+              return;
+            }
+            restoreConfigForExternalReplacement(externalIntentId);
+            // The cancelled run's own reconciliation clears the store checkpoint when it had
+            // already unloaded the resident. The external pick is still the user's choice, so
+            // put it back rather than leaving the bar naming a model that is gone.
+            const live = useChatRuntimeStore.getState();
+            if (live.params.checkpoint !== value) {
+              live.setCheckpoint(value, null);
+            }
+            // Cancellation can finish after clearCheckpoint reset these fields. Reapply the
+            // complete external capability/tool state computed below, not just its checkpoint.
+            if (externalCapabilityPatch) {
+              useChatRuntimeStore.setState(externalCapabilityPatch);
+            }
+          });
+        }
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -3146,37 +3855,30 @@ export function ChatPage({
           {
             isReasoningProvider: selectedProvider?.isReasoningModel === true,
             baseUrl: selectedProvider?.baseUrl ?? null,
+            apiType: selectedProvider?.apiType,
+            reasoningConfig: selectedProvider?.reasoningConfig,
           },
         );
-        const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;
-        const clampedEffort = clampReasoningEffortToLevels(
-          preferredEffort,
-          effortLevels,
-        );
-        // Same per-provider default policy as the useEffect above: Anthropic highest level, OpenAI
-        // "high", everyone else "medium".
-        const isAnthropic = selectedProvider?.providerType === "anthropic";
-        const isOpenAI = selectedProvider?.providerType === "openai";
-        const anthropicTopEffort = effortLevels.includes("xhigh")
-          ? "xhigh"
-          : effortLevels.includes("high")
-            ? "high"
-            : clampedEffort;
-        const openaiDefaultEffort = effortLevels.includes("high")
-          ? "high"
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort;
-        const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? isAnthropic
-            ? anthropicTopEffort
-            : isOpenAI
-              ? openaiDefaultEffort
-              : effortLevels.includes("medium")
-                ? "medium"
-                : clampedEffort
-          : store.reasoningEffort;
+        const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
+          ? pinnedReasoningEffort(value, effortLevels)
+          : null;
+        const nextReasoningEffort = resolveExternalReasoningEffort({
+          caps: reasoningCaps,
+          providerType: selectedProvider?.providerType,
+          apiType: selectedProvider?.apiType,
+          // The outgoing model's pin is what the live level holds, so an unpinned target resolves
+          // from the chat's own effort rather than inheriting one model's override.
+          current:
+            !pinnedEffort && pinHoldsLiveEffort()
+              ? (takeEffortDisplacedByPin() ?? store.reasoningEffort)
+              : store.reasoningEffort,
+          pinned: pinnedEffort,
+        });
+        // The chat's own level, before the pin takes its place, so clearing it can put it back.
+        if (pinnedEffort && nextReasoningEffort !== store.reasoningEffort) {
+          noteEffortDisplacedByPin(store.reasoningEffort);
+        }
         // Clear any cached router-picked openrouter/free model unless staying on openrouter/free, else
         // the chip keeps a stale ":<chosen>" suffix.
         const stillOnOpenRouterFree =
@@ -3193,19 +3895,24 @@ export function ChatPage({
             selectedProvider?.providerType,
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           );
         const supportsBuiltinImageGeneration =
           providerSupportsBuiltinImageGeneration(
             selectedProvider?.providerType,
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           );
         const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
           selectedProvider?.providerType,
         );
         // See sibling useEffect: Kimi's k2.x default to thinking enabled. Search stays off; the
         // composer's mutual exclusion flips them.
-        const isKimi = selectedProvider?.providerType === "kimi";
+        const isKimi = kimiSearchExcludesThinking(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+        );
         // Mirror of sibling useEffect: Anthropic/OpenAI get Search on by default; others stay off.
         const searchOnByDefault =
           supportsBuiltinWebSearch &&
@@ -3237,6 +3944,8 @@ export function ChatPage({
           hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
           providerHostsCodeExecution: providerHostsCodeExecution(
             selectedProvider?.providerType,
+            selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           ),
           supportsStudioTools: supportsStudioToolsHere,
         });
@@ -3245,7 +3954,7 @@ export function ChatPage({
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
           : false;
-        useChatRuntimeStore.setState({
+        externalCapabilityPatch = {
           activeGgufVariant: null,
           ...loadedContextFields(null),
           activeNativePathToken: null,
@@ -3267,7 +3976,10 @@ export function ChatPage({
                 : store.reasoningEnabled
               : true
             : store.reasoningEnabled,
-          supportsPreserveThinking: false,
+          supportsPreserveThinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
+          preserveThinking: resolvePreserveThinkingOnLoad({
+            supports_preserve_thinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
+          }),
           supportsTools: supportsStudioToolsHere,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
@@ -3284,11 +3996,15 @@ export function ChatPage({
             ? (storedWebFetchToolsEnabled ?? false)
             : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
-        });
+        };
+        useChatRuntimeStore.setState(externalCapabilityPatch);
         return;
       }
       // Local model picked: drop any cached openrouter/free chosen model.
       useChatRuntimeStore.setState({ lastOpenRouterChosenModel: null });
+      // The chat's own effort goes back where the load applies its own reasoning fields, since
+      // everything from here on can still abort or only queue a download, leaving the pinned
+      // model the one running.
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
@@ -3301,7 +4017,11 @@ export function ChatPage({
                 (model) => model.id === value,
               );
               showImageCompatibilityWarning =
-                hasImage && targetModel?.isVision === false;
+                hasImage &&
+                isKnownTextOnlySelection(
+                  { isVision: meta?.isVision, isGguf: meta?.isGguf },
+                  targetModel,
+                );
             }
           }
         }
@@ -3321,7 +4041,9 @@ export function ChatPage({
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded || isSameLoadedModel,
           expectedBytes: meta?.expectedBytes,
+          downloadPresentation: meta?.downloadPresentation,
           isGguf: meta?.isGguf,
+          isVision: meta?.isVision,
           isDiffusion: meta?.isDiffusion,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
@@ -3334,14 +4056,23 @@ export function ChatPage({
     [
       activeThreadId,
       externalProvidersForChat,
+      loadNpuModel,
       modelsFromStore,
       stageOrLoad,
       view,
+      modelOperationInProgress,
+      loadingModel,
+      cancelLoadingForReplacement,
+      invalidatePendingModelSelection,
+      discardExternalReplacement,
+      restoreConfigForExternalReplacement,
+
+      isModelSelectionIntentCurrent,
     ],
   );
   const handleReloadActiveModel = useCallback(
     (config: PerModelConfig) => {
-      const checkpoint = inferenceParams.checkpoint;
+      const checkpoint = inferenceCheckpoint;
       if (!checkpoint) return;
       const runtime = useChatRuntimeStore.getState();
       const activeLoadId = runtime.activeLoadId;
@@ -3372,7 +4103,7 @@ export function ChatPage({
       });
     },
     [
-      inferenceParams.checkpoint,
+      inferenceCheckpoint,
       activeGgufVariant,
       activeModelIsLora,
       activeModelIsGguf,
@@ -3380,13 +4111,15 @@ export function ChatPage({
       handleCheckpointChange,
     ],
   );
-  const handleEject = useCallback(() => {
-    void (async () => {
-      if (await ejectModel()) {
-        resetArtifacts();
-      }
-    })();
-  }, [ejectModel, resetArtifacts]);
+  const handleEject = useCallback(
+    (modelId?: string) => {
+      void ejectModel(modelId);
+    },
+    [ejectModel],
+  );
+  const handleEjectAll = useCallback(() => {
+    void ejectAllModels();
+  }, [ejectAllModels]);
 
   // Pins the picker open so a stray click cannot dismiss the step under it. Tour steps only: the
   // effect below shuts anything left pinned once the tour is gone.
@@ -3426,9 +4159,9 @@ export function ChatPage({
   // Both controls are the header's, and the header drops them in Compare, where each pane carries
   // its own picker. Without the check the chord would toggle state nothing renders.
   const headerPickersShown = active && view.mode !== "compare";
-  // This page stays mounted under a dialog, so `enabled` still says yes while the header is inert;
-  // without a press-time check the chord opens a popover on the covered surface.
-  // Backgrounded, not "not in the foreground": an unrendered layout is not a covered one.
+  // This page stays mounted under a dialog, so `enabled` still says yes while the header is inert; without a
+  // press-time check the chord opens a popover on the covered surface. Backgrounded, not "not in the foreground":
+  // an unrendered layout is not a covered one.
   const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
   useShortcut(
     "openModelPicker",
@@ -3448,9 +4181,9 @@ export function ChatPage({
     },
     { enabled: projectSwitcherShown },
   );
-  // A picker left open would come back on the next visit as a ghost. Off-route is one way to leave
-  // it (this page stays mounted), and so is entering Compare or a standalone chat taking the
-  // project away. Adjusted during render, as React prescribes for derived state.
+  // A picker left open would come back on the next visit as a ghost. Off-route is one way to leave it (this page
+  // stays mounted), and so is entering Compare or a standalone chat taking the project away. Adjusted during
+  // render, as React prescribes for derived state.
   if (!projectSwitcherShown && projectPickerOpen) {
     setProjectPickerOpen(false);
   }
@@ -3512,7 +4245,7 @@ export function ChatPage({
 
   const fastModeSupported = providerSupportsFastMode(
     activeExternalProviderType,
-    parseExternalModelId(inferenceParams.checkpoint)?.modelId ?? null,
+    parseExternalModelId(inferenceCheckpoint)?.modelId ?? null,
   );
   useShortcut(
     "toggleFastMode",
@@ -3526,6 +4259,10 @@ export function ChatPage({
     { enabled: active && fastModeSupported },
   );
   const { isMobile, pinned } = useSidebar();
+  // The tour's orientation step spotlights the nav, so hold it open for that step. The hold is
+  // never persisted, so a tour cannot rewrite the user's pin or the width default.
+  const showSidebarForTour = holdSidebarPinned;
+  const restoreSidebarAfterTour = releaseSidebarPinned;
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -3541,58 +4278,28 @@ export function ChatPage({
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    // Prefer the explicit save; fall back to the last non-compare view so the composer + menu path
-    // also returns where the user started.
+    // the composer and menu exit paths rely on the last non-compare view.
     const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
-    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    // direct compare URLs have no saved view, so return to a fresh chat.
     if (!saved) {
       navigate({ to: "/chat" });
       return;
     }
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore usage from the last assistant message, only if it matches the active checkpoint, else
-    // the relaxed render gate shows stale stats.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
       void listStoredChatMessages(threadId)
-        .then(
-          (messages) =>
-            [...messages].sort((a, b) => b.createdAt - a.createdAt)[0],
-        )
-        .then((msg) => {
-          const metadata = msg?.metadata as Record<string, unknown> | undefined;
-          const usage = metadata?.contextUsage as ReturnType<
-            typeof useChatRuntimeStore.getState
-          >["contextUsage"];
-          if (!usage) return;
+        .then((messages) => {
           const store = useChatRuntimeStore.getState();
-          const activeCheckpoint = store.params.checkpoint;
-          const usageModelId = (usage as { modelId?: unknown }).modelId;
-          // Scope by modelId when present; reject if no active checkpoint, since model-scoped usage cannot
-          // be attributed to "nothing".
-          if (typeof usageModelId === "string" && usageModelId) {
-            if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
-              return;
-            }
-          }
-          // For local turns, also require the restored count to fit in
-          // the active window. Skip when unknown (external provider).
-          //
-          // llama.cpp only: it stops at the window, so a count past it is stale by
-          // definition. MLX generates straight past instead, where an over-window count
-          // is the true one and the bar has a state for it.
-          const limit = store.loadedIsGguf ? store.loadedContextLength : null;
-          if (
-            typeof limit === "number" &&
-            limit > 0 &&
-            (usage.totalTokens ?? 0) > limit
-          ) {
-            return;
-          }
-          // Key by the thread this restore read, like the history loader: the await above can outlast a
-          // switch away, and an unkeyed write would file this usage under the incoming thread.
+          const branch = orderBySelectedBranch(
+            messages,
+            savedBranchHead(threadId, messages),
+          );
+          const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
+          if (!usage) return;
+          // key usage by the restored thread because this read can outlast a thread switch.
           store.setThreadContextUsage(threadId, usage);
           if (store.activeThreadId === threadId) {
             store.setContextUsage(usage);
@@ -3621,7 +4328,8 @@ export function ChatPage({
   );
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
-      [...externalProvidersForChat]
+      externalProvidersForChat
+        .filter((provider) => !isDecisionConnection(provider))
         .sort(
           (a, b) =>
             getExternalProviderDropdownRank(a.providerType) -
@@ -3629,10 +4337,10 @@ export function ChatPage({
         )
         .flatMap((provider) =>
           provider.models.map((model) => {
-            // For OpenRouter's free router the chosen underlying model is latched from `chunk.model`, so
-            // render the chip as `openrouter:<short-chosen>`, dropping the redundant `/free` and the
-            // chosen id's org prefix: inclusionai/ring-2.6-1t-20260508:free becomes
-            // ring-2.6-1t-20260508:free. The `:free` suffix already conveys "free model".
+            // For OpenRouter's free router the chosen underlying model is latched from `chunk.model`, so render the
+            // chip as `openrouter:<short-chosen>`, dropping the redundant `/free` and the chosen id's org prefix:
+            // inclusionai/ring-2.6-1t-20260508:free becomes ring-2.6-1t-20260508:free. The `:free` suffix already
+            // conveys "free model".
             let displayName = model;
             if (
               provider.providerType === "openrouter" &&
@@ -3657,10 +4365,10 @@ export function ChatPage({
         ),
     [externalProvidersForChat, lastOpenRouterChosenModel],
   );
-  // `externalModels` is flat-mapped from `provider.models`, the ids the user ticked, so a model
-  // unticked in the connection dialog looks exactly like one the provider withdrew; the
-  // connection's cached catalogue tells the two apart. Depends on the store value and the gate
-  // rather than on `externalProvidersForChat`, which is a fresh array each render.
+  // `externalModels` is flat-mapped from `provider.models`, the ids the user ticked, so a model unticked in the
+  // connection dialog looks exactly like one the provider withdrew; the connection's cached catalogue tells the
+  // two apart. Depends on the store value and the gate rather than on `externalProvidersForChat`, which is a
+  // fresh array each render.
   const externalConnections = useMemo<ExternalConnectionRef[]>(
     () =>
       connectionsEnabled
@@ -3713,6 +4421,7 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      sizeBytes: lora.sizeBytes,
       audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
@@ -3729,9 +4438,9 @@ export function ChatPage({
     [models, loraModels, externalModels],
   );
 
-  // The picker's own handler, reached the way the picker reaches it: with the row's metadata, not
-  // the bare id. A local or fine-tuned row is in neither `/api/models/list` nor the external
-  // ids, so without it the switch loads on different arguments.
+  // The picker's own handler, reached the way the picker reaches it: with the row's metadata, not the bare id. A
+  // local or fine-tuned row is in neither `/api/models/list` nor the external ids, so without it the switch loads
+  // on different arguments.
   const handleSwitchBackToChatModel = useCallback(
     (target: ChatModelSwitchTarget) => {
       handleCheckpointChange(
@@ -3793,9 +4502,12 @@ export function ChatPage({
         if (canceled) return;
 
         const state = useChatRuntimeStore.getState();
-        const targetLora = pickBestLoraForBase(state.loras, handoff.baseModel);
+        const target = pickTrainingCompareTarget(state.loras, handoff);
         const selectWithConfig = async (
-          selection: Pick<SelectedModelInput, "id" | "isLora">,
+          selection: Pick<
+            SelectedModelInput,
+            "id" | "isLora" | "isDownloaded"
+          >,
         ) => {
           const previousConfig = currentRuntimePerModelConfig({
             includeMaxSeqLength: true,
@@ -3811,18 +4523,19 @@ export function ChatPage({
             ...(remembered ? { config: remembered } : {}),
           });
         };
-        if (targetLora) {
-          console.info("[chat-handoff] loading lora", {
-            id: targetLora.id,
-            baseModel: targetLora.baseModel,
+        if (target) {
+          const selection = trainingCompareSelection(target);
+          console.info("[chat-handoff] loading trained model", {
+            ...selection,
+            baseModel: target.baseModel,
           });
-          await selectWithConfig({ id: targetLora.id, isLora: true });
+          await selectWithConfig(selection);
           if (canceled) return;
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
           navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
           clearHandoff();
-          console.info("[chat-handoff] loaded lora + opened compare");
+          console.info("[chat-handoff] loaded trained model + opened compare");
           return;
         }
 
@@ -3859,6 +4572,7 @@ export function ChatPage({
     () =>
       // eslint-disable-next-line react-hooks/refs -- buildChatTourSteps stores callbacks without invoking them during render.
       buildChatTourSteps({
+        canShowNav: !isMobile,
         canCompare,
         openModelSelector,
         closeModelSelector,
@@ -3866,21 +4580,33 @@ export function ChatPage({
         closeSettings,
         enterCompare,
         exitCompare,
-      }),
+      }).map((step) =>
+        step.target === "navbar"
+          ? {
+              ...step,
+              onEnter: showSidebarForTour,
+              onExit: restoreSidebarAfterTour,
+            }
+          : step,
+      ),
     [
       canCompare,
       closeModelSelector,
       closeSettings,
       enterCompare,
       exitCompare,
+      isMobile,
       openModelSelector,
       openSettings,
+      restoreSidebarAfterTour,
+      showSidebarForTour,
     ],
   );
 
   const tour = useGuidedTourController({
     id: "chat",
     steps: tourSteps,
+    enabled: active,
   });
 
   useEffect(() => {
@@ -3893,10 +4619,15 @@ export function ChatPage({
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
 
-  const showArtifactOverlay = Boolean(
-    selectedArtifact &&
-      (view.mode === "compare" || artifactSurface === "overlay"),
-  );
+  // Compare, projects (no side pane) and phones show the browser over the chat.
+  const showBrowserOverlay =
+    active &&
+    browserOpen &&
+    (view.mode === "compare" ||
+      isMobile ||
+      (view.mode === "project" &&
+        projectBrowserBaseline !== null &&
+        browserOpenSequence > projectBrowserBaseline));
 
   return (
     // Provides `active` to ChatRuntimeProvider (drops the message views while off-route, keeping the
@@ -3910,6 +4641,7 @@ export function ChatPage({
           so it must live at one stable root, or Compare mode's composers would each render a copy.
           It also portals to body, so gate it on `active`. */}
       {active && <BypassPermissionsConfirmDialog />}
+      {active && <RootSandboxSetupDialog />}
       {/* The MCP servers dialog: its chord has to work before MCP is switched on, and the pill that
           used to own it only renders once it is. Mounted through the route change so it can close
           itself on the way out. */}
@@ -3921,30 +4653,35 @@ export function ChatPage({
           subtree, which walks the whole thread on every mutation - 17.5 ms per append on a 357k-
           element thread, against 0.10 ms without this rule (Chromium). ChatModelNotice renders a
           direct child, which tests/thread-ancestor-has-scope.test.ts asserts. */}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
+      <div
+        data-chat-content-root=""
+        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]"
+      >
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            data-side-panel-inset=""
+            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
+          data-side-panel-inset=""
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
                 ? "pl-2"
                 : isTauri
                   ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                  : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="pointer-events-auto flex items-center gap-1">
+          <div className="pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -3953,7 +4690,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[30px] rounded-[10px] text-muted-foreground"
+                className="!size-[calc(30px*var(--ui-space-scale,1))] shrink-0 rounded-[10px] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -3968,13 +4705,13 @@ export function ChatPage({
                 loraModels={loraModels}
                 externalModels={externalModels}
                 externalConnections={externalConnections}
-                value={inferenceParams.checkpoint}
+                value={inferenceCheckpoint}
                 // Resident, not merely picked: an image or video load evicts the chat model and leaves this
                 // selection behind, so the tick stayed on a released model.
                 loaded={chatModelLoaded({
-                  checkpoint: inferenceParams.checkpoint,
+                  checkpoint: inferenceCheckpoint,
                   isExternalModel: isExternalModelId(
-                    inferenceParams.checkpoint,
+                    inferenceCheckpoint,
                   ),
                   residentCheckpoint,
                 })}
@@ -3985,6 +4722,8 @@ export function ChatPage({
                 onConfigRequestAdopted={handleModelConfigRequestAdopted}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
+                onEjectAll={handleEjectAll}
+                loadedCount={loadedCount}
                 onFoldersChange={refreshLocalModels}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
@@ -3996,7 +4735,7 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
@@ -4068,56 +4807,48 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex items-center gap-1">
-            {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
+          <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
+            {showContextWindowUsage &&
+            (view.mode === "single" ||
+              (view.mode === "project" && activeThreadId != null)) &&
+            (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
-                used={contextUsage?.totalTokens ?? null}
+                used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
                 cached={contextUsage?.cachedTokens}
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}
-                completionTokens={contextUsage?.completionTokens}
+                // A tool turn's completionTokens sums every pass; the context holds only the last one.
+                completionTokens={
+                  contextUsage?.contextTokens !== undefined
+                    ? contextUsage.contextTokens - contextUsage.promptTokens
+                    : contextUsage?.completionTokens
+                }
+                compactionCount={compactionCount}
                 isMlx={isServedByMlx(
                   Boolean(loadedIsGguf),
                   platformDeviceType,
                   platformChatOnlyReason,
                 )}
                 contextEnforced={loadedContextEnforced}
+                contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}
+                parallelSlots={loadedParallelSlots}
+                contextBudget={loadedContextBudget}
+                estimated={contextUsage?.estimated}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
+            {view.mode === "single" && incognito ? (
+              <SaveTemporaryChatMenu
+                className="mr-[calc(6px*var(--ui-space-scale,1))]"
+                onDiscard={toggleIncognito}
+              />
+            ) : null}
             {view.mode === "single" && (
-              <Tooltip>
-                <TooltipPrimitive.Trigger asChild={true}>
-                  <button
-                    type="button"
-                    onClick={toggleIncognito}
-                    className={cn(
-                      "flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                      incognito
-                        ? "bg-primary/10 text-primary hover:bg-primary/15"
-                        : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
-                    )}
-                    aria-label={incognitoLabel}
-                    aria-pressed={incognito}
-                  >
-                    <HugeiconsIcon
-                      icon={BubbleChatTemporaryIcon}
-                      strokeWidth={1.75}
-                      className="size-icon"
-                    />
-                  </button>
-                </TooltipPrimitive.Trigger>
-                <TooltipContent
-                  side="bottom"
-                  sideOffset={6}
-                  className="tooltip-compact"
-                >
-                  {incognitoLabel}
-                </TooltipContent>
-              </Tooltip>
+              <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
+            {view.mode === "single" && !isMobile ? <BrowserToggleButton active={active} /> : null}
             {view.mode === "single" &&
             latestResearchRunId &&
             latestResearchRunStatus ? (
@@ -4131,10 +4862,9 @@ export function ChatPage({
                         return;
                       }
                       setSettingsOpen(false);
-                      closeArtifactSurface();
                       openResearchPanel(latestResearchRunId);
                     }}
-                    className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    className="relative flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRunId}
                   >
@@ -4162,7 +4892,7 @@ export function ChatPage({
                       useResearchRunStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
-                    className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon
@@ -4187,7 +4917,7 @@ export function ChatPage({
         {view.mode === "single" && (
           <ChatModelNotice
             threadId={view.threadId ?? newChatThreadId ?? undefined}
-            checkpoint={inferenceParams.checkpoint}
+            checkpoint={inferenceCheckpoint}
             activeGgufVariant={activeGgufVariant}
             selectableModelIds={selectableModelIds}
             onSwitch={handleSwitchBackToChatModel}
@@ -4208,6 +4938,7 @@ export function ChatPage({
             }
             inert={baseBackgrounded || undefined}
           >
+            <BrowserOverlaidContext.Provider value={baseBackgrounded}>
             <ChatActiveContext.Provider value={active && !baseBackgrounded}>
               <ChatRuntimeProvider
                 modelType="base"
@@ -4227,6 +4958,7 @@ export function ChatPage({
                     ? markProjectRuntimeReady
                     : undefined
                 }
+                onCompactionCountChange={handleCompactionCountChange}
               >
                 {baseView.mode === "project" ? (
                   <ProjectLanding
@@ -4243,16 +4975,13 @@ export function ChatPage({
                   <NativeAttachmentTargetContext.Provider
                     value={baseAttachmentTargetKey}
                   >
-                    <SingleContent
-                      threadId={baseView.threadId}
-                      artifact={selectedArtifact}
-                      artifactSurface={artifactSurface}
-                      onCloseArtifact={closeArtifactSurface}
-                    />
+                    <TemporaryChatSaveBridge />
+                    <SingleContent threadId={baseView.threadId} />
                   </NativeAttachmentTargetContext.Provider>
                 )}
               </ChatRuntimeProvider>
             </ChatActiveContext.Provider>
+            </BrowserOverlaidContext.Provider>
           </div>
         ) : null}
         {view.mode === "compare" ? (
@@ -4271,13 +5000,7 @@ export function ChatPage({
           />
         ) : null}
 
-        {active && showArtifactOverlay && selectedArtifact ? (
-          <ArtifactSurface
-            artifact={selectedArtifact}
-            variant="overlay"
-            onClose={closeArtifactSurface}
-          />
-        ) : null}
+        {showBrowserOverlay ? <BrowserOverlay /> : null}
       </div>
 
       <ChatSettingsPanel
@@ -4285,14 +5008,13 @@ export function ChatPage({
         onOpenChange={(open) => {
           setSettingsOpen(open);
         }}
-        params={inferenceParams}
-        onParamsChange={setInferenceParams}
         modelConfig={
           view.mode !== "compare" && activeModelConfig && !modelLoading ? (
             <SidebarModelConfig
-              modelId={inferenceParams.checkpoint}
+              modelId={inferenceCheckpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              isLora={activeModelIsLora}
               isDiffusion={activeModelIsDiffusion}
               nativeContextLength={nativeContextLength}
               loadedContextLength={loadedContextLength}

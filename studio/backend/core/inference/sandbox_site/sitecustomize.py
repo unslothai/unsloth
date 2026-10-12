@@ -33,7 +33,6 @@ import json
 import os
 import sys
 
-# remapping is gated on the prefix being ABSENT (see _remap) so a genuine host mount is never shadowed
 # Code-interpreter convention prefixes. Remapping is gated on the prefix being ABSENT (see _remap) so a genuine host
 # mount / user dir is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
@@ -43,7 +42,6 @@ _notified = False
 # Invented absolute write path -> healed CWD target, so re-writing the same artifact re-serves it instead of tripping
 # the anti-clobber guard.
 _remapped_writes: dict = {}
-# each tool call is a fresh subprocess, so an on-disk sidecar carries the map across runs;
 # Each tool call is a fresh subprocess (in-process map starts empty), so this on-disk sidecar carries the map across
 # runs. It records only sources the fallback healed, so an unrelated same-basename file is never adopted.
 _REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
@@ -186,9 +184,8 @@ def _remap_open(file, mode):
     if text == cwd or text.startswith(cwd + os.sep):
         return file
     parent = os.path.dirname(text)
-    # an existing external directory is a deliberate target and stays truthful (os.path.exists follows symlinks)
-    # Redirect only when the parent is missing; an existing external directory is a deliberate target and stays truthful
-    # (os.path.exists follows symlinks).
+    # Redirect only when the parent is missing; an existing external directory is a deliberate target and stays
+    # truthful (os.path.exists follows symlinks).
     if parent and os.path.exists(parent):
         return file
     base = os.path.basename(text)
@@ -271,7 +268,6 @@ def _install():
         *,
         dir_fd = None,
     ):
-        # only O_CREAT can create; O_TRUNC / O_APPEND without it still require the file to exist
         # Path.touch() etc. go through os.open, not builtins.open. Only O_CREAT can create, so only it maps to
         # "creating" mode; O_TRUNC / O_APPEND without O_CREAT still require the file to exist, so behave as a read.
         logical_mode = "w" if (flags & os.O_CREAT) else "r"
@@ -281,7 +277,6 @@ def _install():
         return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
 
     def _path_mkdir(self, *args, **kwargs):
-        # pathlib probes the unpatched Path.is_dir()/os.stat on FileExistsError
         # pathlib probes Path.is_dir()/os.stat (unpatched) on FileExistsError, so a bare os.mkdir remap would still
         # raise when the target exists. Remap the receiver up front so parents/exist_ok stays idempotent.
         mapped = _remap(self)

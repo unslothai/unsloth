@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { TrashIcon, RefreshCwIcon, PlusIcon } from "lucide-react";
+import { TrashIcon, PlusIcon } from "lucide-react";
 import {
   createOpenAIContainer,
   deleteOpenAIContainer,
@@ -40,6 +40,7 @@ import {
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 
 const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
@@ -399,7 +400,7 @@ export function OpenAICodeExecSection({
   const displayActiveId = displayedContainerId;
 
   return (
-    <div className="flex flex-col gap-3 pt-1">
+    <div className="flex flex-col gap-3">
       {/* TTL */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -421,7 +422,7 @@ export function OpenAICodeExecSection({
           max={TTL_MAX}
           value={ttlValue}
           onChange={(e) => onTtlChange(e.target.value)}
-          className="h-8 w-[72px] pl-3 text-sm tabular-nums"
+          className="h-8 w-[calc(72px*var(--ui-space-scale,1))] pl-3 text-sm tabular-nums"
         />
       </div>
 
@@ -440,7 +441,7 @@ export function OpenAICodeExecSection({
             disabled={isLoading || !hasCredential}
             aria-label="Refresh container list"
           >
-            <RefreshCwIcon
+            <RefreshGlyph
               className={`size-3.5 ${isLoading ? "animate-spin" : ""}`}
             />
           </Button>

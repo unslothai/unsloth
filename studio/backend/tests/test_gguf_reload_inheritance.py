@@ -10,6 +10,7 @@ HF-mode hf_variant fallback, and ``extra_args`` None-vs-[] inherit semantics.
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types as _types
 from pathlib import Path
@@ -59,6 +60,12 @@ except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+from models.inference import (
+    InferenceStatusResponse,
+    LoadRequest,
+    LoadResponse,
+    ValidateModelRequest,
+)
 
 
 class _FakeProcess:
@@ -85,6 +92,8 @@ def _loaded_backend(**overrides):
     backend._hf_variant = "Q4_K_M"
     backend._requested_n_ctx = 8192
     backend._cache_type_kv = None
+    backend._reasoning_budget = -1
+    backend._reasoning_budget_message = ""
     backend._speculative_type = None
     backend._requested_spec_mode = "auto"
     backend._chat_template_override = None
@@ -278,6 +287,104 @@ def test_extra_args_source_default_is_none():
     assert backend.extra_args_source is None
 
 
+def test_reasoning_budget_schema_contract():
+    request = LoadRequest(model_path = "owner/repo")
+    assert request.reasoning_budget == -1
+    assert request.reasoning_budget_message == ""
+    assert LoadRequest(model_path = "owner/repo", reasoning_budget = 0).reasoning_budget == 0
+    with pytest.raises(ValueError):
+        LoadRequest(model_path = "owner/repo", reasoning_budget = -2)
+    with pytest.raises(ValueError, match = "8192-byte"):
+        LoadRequest(model_path = "owner/repo", reasoning_budget_message = "😀" * 2_049)
+    with pytest.raises(ValueError, match = "NUL"):
+        LoadRequest(model_path = "owner/repo", reasoning_budget_message = "bad\0message")
+    padded = LoadRequest(model_path = "owner/repo", reasoning_budget_message = "  PAD  ")
+    assert padded.reasoning_budget_message == "  PAD  "
+
+    load = LoadResponse(status = "loaded", model = "m", display_name = "m", inference = {})
+    status = InferenceStatusResponse()
+    assert (load.reasoning_budget, load.reasoning_budget_message) == (-1, "")
+    assert (status.reasoning_budget, status.reasoning_budget_message) == (-1, "")
+
+
+def test_reasoning_budget_is_part_of_backend_dedupe():
+    backend = _loaded_backend(
+        _reasoning_budget = 64,
+        _reasoning_budget_message = "limit",
+        _requested_reasoning_budget = 64,
+        _requested_reasoning_budget_message = "limit",
+    )
+    common = dict(
+        model_identifier = "owner/repo",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = None,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        reasoning_budget = 64,
+        reasoning_budget_message = "limit",
+    )
+    assert _matches(backend, **common) is True
+    assert _matches(backend, **{**common, "reasoning_budget": 32}) is False
+    flags = ["--reasoning-budget", "64", "--reasoning-budget-message", "limit"]
+    backend = _loaded_backend(
+        _reasoning_budget = 64,
+        _reasoning_budget_message = "limit",
+        _requested_reasoning_budget = 64,
+        _requested_reasoning_budget_message = "limit",
+        _extra_args = flags,
+    )
+    assert (
+        _matches(
+            backend,
+            **{
+                **common,
+                "reasoning_budget": -1,
+                "reasoning_budget_message": "",
+                "extra_args": flags,
+            },
+        )
+        is True
+    )
+
+
+def test_reasoning_budget_state_resets_on_unload():
+    backend = _loaded_backend(_reasoning_budget = 64, _reasoning_budget_message = "limit")
+    backend.unload_model()
+    assert backend.reasoning_budget == -1
+    assert backend.reasoning_budget_message == ""
+
+
+def test_load_wires_reasoning_args_and_respawn_snapshot():
+    source = inspect.getsource(LlamaCppBackend.load_model)
+    assert "_build_reasoning_budget_flags(" in source
+    # The respawn snapshot is the intent itself, so the fields have to come off it.
+    assert "reasoning_budget = intent.reasoning_budget" in source
+    assert "reasoning_budget_message = intent.reasoning_budget_message" in source
+    assert source.index("validate_reasoning_budget_capabilities") < source.index(
+        "self._kill_process()"
+    )
+
+
+def test_route_checks_reasoning_budget_capabilities_before_teardown():
+    route_source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    preflight = route_source.index("backend.validate_reasoning_budget_capabilities")
+    diffusion_rejection = route_source.index(
+        "Reasoning Budget settings are not supported for DiffusionGemma models."
+    )
+    unknown_rejection = route_source.index(
+        "Reasoning Budget settings cannot be applied until this GGUF is"
+    )
+    teardown = route_source.index("# Point of no return for the GGUF path")
+    assert preflight < teardown
+    assert diffusion_rejection < teardown
+    assert unknown_rejection < teardown
+
+
 class TestRepeatLoadMatchesTheEffectiveCache:
     """A repeat /load of an identical request must reuse the healthy server.
 
@@ -378,3 +485,307 @@ class TestRepeatLoadMatchesTheEffectiveCache:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "self._effective_cache_types=_effective_main_cache_types(" in load
         assert "self._requested_cache_types=_planned_cache_pair" in load
+
+
+@pytest.mark.parametrize("model", [LoadRequest, ValidateModelRequest])
+def test_reasoning_budget_rejects_booleans(model):
+    # bool subclasses int and pydantic parses lax, so `true` would launch a one-token budget.
+    with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
+        model(model_path = "unsloth/x", reasoning_budget = True)
+    assert model(model_path = "unsloth/x", reasoning_budget = 1).reasoning_budget == 1
+
+
+def test_the_reuse_check_compares_the_request_not_the_environment():
+    """An inherited LLAMA_ARG_THINK_BUDGET* cannot be sent or cleared by any request, so comparing
+    the live EFFECTIVE value against a resolved request tore down a healthy server on every load."""
+    source = inspect.getsource(LlamaCppBackend._runtime_matches_intent)
+    assert "self._requested_reasoning_budget" in source
+    assert (
+        "resolve_reasoning_budget_with_env" not in source
+    ), "the reuse check must not fold the environment into the request"
+
+    launch = inspect.getsource(LlamaCppBackend.load_model)
+    assert "self._requested_reasoning_budget = reasoning_budget" in launch
+    # A probe that could not be read says nothing about the flag, and the child still applies
+    # the environment, so only a conclusive "unsupported" may drop it.
+    assert "reasoning_budget_probe_inconclusive" in launch
+
+
+def test_requested_reasoning_budget_is_reported_separately():
+    from models.inference import InferenceStatusResponse
+
+    fields = InferenceStatusResponse.model_fields
+    for name in ("requested_reasoning_budget", "requested_reasoning_budget_message"):
+        assert name in fields, name
+    assert fields["requested_reasoning_budget"].default == -1
+    assert fields["requested_reasoning_budget_message"].default == ""
+
+
+def test_an_inherited_env_budget_does_not_force_a_reload():
+    """The live EFFECTIVE value carries LLAMA_ARG_THINK_BUDGET*, which no request can send or
+    clear. Comparing against it tore down a healthy server on every load and never converged."""
+    backend = _loaded_backend(
+        # What the environment gave the child...
+        _reasoning_budget = 512,
+        _reasoning_budget_message = "from env",
+        # ...against a load that asked for nothing.
+        _requested_reasoning_budget = -1,
+        _requested_reasoning_budget_message = "",
+    )
+    assert (
+        _matches(
+            backend,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            reasoning_budget = -1,
+            reasoning_budget_message = "",
+        )
+        is True
+    )
+
+
+# ── Canonical identity normalization ────────────────────────────
+
+
+def test_canonical_model_identity_resolves_snapshot_to_repo():
+    from routes.inference import _canonical_model_identity
+    snapshot = "/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123"
+    assert _canonical_model_identity(snapshot) == "unsloth/qwen3.8-27b-gguf"
+
+
+def test_canonical_model_identity_folds_repo_id_case():
+    from routes.inference import _canonical_model_identity
+    assert _canonical_model_identity("unsloth/Qwen3.8-27B-GGUF") == "unsloth/qwen3.8-27b-gguf"
+
+
+def test_canonical_model_identity_reads_windows_snapshot_path():
+    from routes.inference import _canonical_model_identity
+    snapshot = r"C:\hub\models--unsloth--Qwen3.8-27B-GGUF\snapshots\abc123"
+    assert _canonical_model_identity(snapshot) == "unsloth/qwen3.8-27b-gguf"
+
+
+def test_canonical_model_identity_empty_and_none():
+    from routes.inference import _canonical_model_identity
+    assert _canonical_model_identity("") == ""
+    assert _canonical_model_identity(None) == ""
+
+
+def test_canonical_model_identity_keeps_other_local_paths():
+    from routes.inference import _canonical_model_identity
+    assert _canonical_model_identity("/models/my-model.gguf") == "/models/my-model.gguf"
+    # A models-- folder outside the cache layout is not a repo id.
+    assert _canonical_model_identity("/models--org--name/x.gguf") == "/models--org--name/x.gguf"
+
+
+# ── _resolve_inherited_extra_args: snapshot vs repo id ──────────
+
+
+def test_inheritance_works_when_stored_is_snapshot_and_load_is_repo():
+    """Storing extras under a snapshot-path identifier and resolving on a JIT
+    auto-switch load of the same repo id must still inherit them.
+    """
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "ud-q6_k_l"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn", "-c", "300000"]
+        extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+        )
+        assert result == [
+            "--rope-scaling",
+            "yarn",
+            "-c",
+            "300000",
+        ], f"Expected inherited extras but got: {result}"
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_inheritance_works_when_case_differs():
+    """A stored snapshot/repo with different casing than the load model_identifier
+    still inherits extras for the same Hub GGUF + same variant."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "ud-q6_k_l"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn", "-c", "300000"]
+        extra_args_source = ("/models--Unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/qwen3.8-27b-gguf", None
+        )
+        assert result == [
+            "--rope-scaling",
+            "yarn",
+            "-c",
+            "300000",
+        ], f"Expected inherited extras for case-variant match, got: {result}"
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_inheritance_refuses_different_repo():
+    """Different repo ids must not inherit extras."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "different/repo"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = None
+        identifier = "different/repo"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn"]
+        extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(FakeRequest(), FakeConfig(), "different/repo", None)
+        assert result == [], f"Expected empty extras for cross-model, got: {result}"
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_inheritance_refuses_different_variant():
+    """Different variants must not inherit extras."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = "Q4_K_M"
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "Q4_K_M"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn"]
+        extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+        )
+        assert result == [], f"Expected empty extras for variant mismatch, got: {result}"
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_explicit_empty_extras_still_clears():
+    """An explicit [] still clears extras regardless of identity match."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = []
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = None
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn"]
+        extra_args_source = ("unsloth/Qwen3.8-27B-GGUF", "ud-q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+        )
+        assert result is None  # early return because llama_extra_args is not None (it's [])
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_missing_extra_args_source_refuses_without_raising():
+    """Stored extras with no recorded source are not inherited, and the refusal log
+    must not index into the missing source."""
+    from routes.inference import _resolve_inherited_extra_args
+    import routes.inference as _routes
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "ud-q6_k_l"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    original = _routes.get_llama_cpp_backend
+    try:
+        for source in (None, (None, "ud-q6_k_l"), ("", None)):
+
+            class FakeBackend:
+                extra_args = ["--rope-scaling", "yarn"]
+                extra_args_source = source
+
+            _routes.get_llama_cpp_backend = lambda: FakeBackend()
+            result = _resolve_inherited_extra_args(
+                FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+            )
+            assert result == [], (source, result)
+    finally:
+        _routes.get_llama_cpp_backend = original

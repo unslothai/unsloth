@@ -150,7 +150,7 @@ fn validate_channel_metadata(
 fn desktop_update_mode() -> DesktopUpdateMode {
     #[cfg(target_os = "linux")]
     {
-        if std::env::var_os("APPIMAGE").is_some() {
+        if std::env::var_os("APPIMAGE").is_some() || crate::debian_update::is_supported_install() {
             DesktopUpdateMode::InApp
         } else {
             DesktopUpdateMode::ManualLinuxPackage

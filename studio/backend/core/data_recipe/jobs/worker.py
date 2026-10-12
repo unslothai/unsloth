@@ -15,18 +15,21 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ..jsonable import to_jsonable, to_preview_jsonable
+from ..jsonable import to_jsonable, to_preview_jsonable_row
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..service import build_config_builder, create_data_designer
+from ..service import build_config_builder, create_data_designer, install_public_egress_guard
+from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
 
-# Fresh spawned interpreter: re-apply main.py's OS-trust-store injection.
+# Fresh spawned interpreter: re-apply main.py's process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 from utils.paths.path_utils import drop_appledouble_metadata
 
 activate_native_tls()
+activate_happy_eyeballs()
 
-_ARTIFACT_ROOT = recipe_datasets_root()
+_ARTIFACT_ROOT = LazyPath(recipe_datasets_root)
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
 _RE_SECRET_TOKEN = re.compile(
     r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
@@ -82,6 +85,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
     """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
+    install_public_egress_guard()
     os.environ["PYTHONWARNINGS"] = "ignore"
 
     import warnings
@@ -95,11 +99,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    event_queue.put({"type": EVENT_JOB_STARTED, "ts": time.time()})
-
     try:
-        from data_designer.config.run_config import RunConfig
-
         rows = int(run.get("rows") or 1000)
         job_id = str(run.get("_job_id") or "").strip()
         if not job_id:
@@ -114,6 +114,20 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         merge_batches = bool(run.get("merge_batches"))
         ensure_dir(_ARTIFACT_ROOT)
         run_config_raw = run.get("run_config") or {}
+        execution_type = str(run.get("execution_type") or "full").strip().lower()
+        planned_artifact_path = (
+            str(_ARTIFACT_ROOT / dataset_name) if execution_type != "preview" else None
+        )
+        event_queue.put(
+            {
+                "type": EVENT_JOB_STARTED,
+                "ts": time.time(),
+                "artifact_path": planned_artifact_path,
+                "execution_type": execution_type,
+            }
+        )
+
+        from data_designer.config.run_config import RunConfig
 
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
@@ -136,7 +150,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         if run_config_raw:
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
 
-        execution_type = str(run.get("execution_type") or "full").strip().lower()
         if execution_type == "preview":
             results = designer.preview(builder, num_records = rows)
             analysis = (
@@ -147,7 +160,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             dataset = (
                 []
                 if results.dataset is None
-                else to_preview_jsonable(results.dataset.to_dict(orient = "records"))
+                else to_preview_jsonable_row(results.dataset.to_dict(orient = "records"))
             )
             processor_artifacts = (
                 None

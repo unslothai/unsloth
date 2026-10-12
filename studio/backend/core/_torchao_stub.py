@@ -11,7 +11,8 @@ Worker subprocesses call install_torchao_windows_rocm_stub() before importing
 transformers / unsloth_zoo.
 
 xformers hits the same absent backend and takes diffusers with it, so the diffusion paths
-install both stubs before importing diffusers.
+install both stubs before importing diffusers. They also hide an xformers built for a newer
+torch than the venv has, which fails the same import on any platform.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import re
 import sys
 import types
 import importlib.abc
+import importlib.metadata
 import importlib.machinery
 import importlib.util
 from typing import Optional
@@ -52,10 +54,15 @@ def _make_stub_type(name):
     return _StubTypeMeta(name, (), {})
 
 
+# Below every minimum: without dist-info, transformers 5 parses this ("N/A" raised).
+STUB_VERSION = "0.0.0"
+
+
 def _make_mod_stub(mod_name):
     m = types.ModuleType(mod_name)
     m.__path__ = []
     m.__package__ = mod_name
+    m.__version__ = STUB_VERSION
     m._unsloth_stub = _STUB_SENTINEL
     m.__spec__ = importlib.machinery.ModuleSpec(mod_name, loader = None, is_package = True)
 
@@ -221,6 +228,158 @@ def install_torchao_windows_rocm_stub() -> None:
                 sys.modules[_tao_name] = _make_mod_stub(_tao_name)
 
 
+_FQN_TO_CONFIG_SINCE = (0, 15)
+
+
+def _alias_fqn_to_config_now() -> None:
+    if is_stubbed("torchao"):
+        return
+    try:
+        version = importlib.metadata.version("torchao")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    nums = re.findall(r"\d+", version.split("+", 1)[0])[:2]
+    if len(nums) < 2 or (int(nums[0]), int(nums[1])) >= _FQN_TO_CONFIG_SINCE:
+        return
+    try:
+        import torchao.quantization as quantization
+    except Exception:  # noqa: BLE001 -- an unimportable torchao fails later with its own error
+        return
+    if not hasattr(quantization, "FqnToConfig") and hasattr(quantization, "ModuleFqnToConfig"):
+        quantization.FqnToConfig = quantization.ModuleFqnToConfig
+
+
+class _FqnAliasBeforeDiffusers(importlib.abc.MetaPathFinder):
+    """Aliases on the first ``import diffusers`` and never resolves a module itself."""
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname == "diffusers":
+            try:
+                _alias_fqn_to_config_now()
+            except Exception:  # noqa: BLE001 -- must never break the diffusers import it precedes
+                pass
+        return None
+
+
+def alias_torchao_fqn_to_config() -> None:
+    """diffusers 0.41 imports ``FqnToConfig`` from torchao unguarded; torchao < 0.15 (what older Studio
+    installs paired with torch <= 2.8) names it ``ModuleFqnToConfig``, and 0.15 keeps ``ModuleFqnToConfig = FqnToConfig``.
+    Deferred to the first diffusers import: importing torchao here would load torch into the server
+    process and every spawn child (seconds and ~600 MB each) that never touch diffusers."""
+    if "diffusers" in sys.modules or "torchao.quantization" in sys.modules:
+        _alias_fqn_to_config_now()
+    elif not any(isinstance(f, _FqnAliasBeforeDiffusers) for f in sys.meta_path):
+        sys.meta_path.insert(0, _FqnAliasBeforeDiffusers())
+
+
+def _load_torchao_nodist():
+    """unsloth/_torchao_nodist.py, loaded by path: importing unsloth here would start its GPU
+    stack before the worker is ready. None on an unsloth that predates it."""
+    try:
+        spec = importlib.util.find_spec("unsloth")
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        path = os.path.join(locations[0], "_torchao_nodist.py") if locations else None
+        if not path or not os.path.isfile(path):
+            return None
+        module_spec = importlib.util.spec_from_file_location("_studio_torchao_nodist", path)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+_TORCHAO_EXPORT_MIN = "0.15.0"
+
+
+def _torchao_below(version: str, floor: str) -> bool:
+    """PEP 440 compare, as transformers and diffusers do: 0.15.0rc1 and 0.15.0.dev are below 0.15.0."""
+    try:
+        from packaging.version import Version
+        return Version(version) < Version(floor)
+    except Exception:  # noqa: BLE001 -- packaging missing or an unparseable version
+        have = re.match(r"(\d+)\.(\d+)", version or "")
+        need = re.match(r"(\d+)\.(\d+)", floor or "")
+        return bool(have and need) and (int(have[1]), int(have[2])) < (int(need[1]), int(need[2]))
+
+
+def _transformers_torchao_min() -> Optional[str]:
+    """``TORCHAO_MIN_VERSION`` of the installed transformers, read from its source without importing it:
+    0.15.0 on transformers 5.5, 0.4.0 on the 4.57.6 Python 3.9 pin. None when it cannot be read."""
+    try:
+        spec = importlib.util.find_spec("transformers")
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        if not locations:
+            return None
+        with open(os.path.join(locations[0], "utils", "import_utils.py"), encoding = "utf-8") as f:
+            found = re.search(r"^TORCHAO_MIN_VERSION\s*=\s*[\"']([^\"']+)[\"']", f.read(), re.M)
+        return found[1] if found else None
+    except Exception:  # noqa: BLE001 -- unreadable: do not guess a floor
+        return None
+
+
+def torchao_too_old_for_export() -> Optional[str]:
+    """The installed torchao version when the installed transformers' TorchAoConfig refuses it (below
+    0.15 on transformers 5.5, which then reports torchao as not installed at all), else None. Reads
+    metadata and source only: never imports torchao or transformers, so it is safe at server startup."""
+    try:
+        version = importlib.metadata.version("torchao")
+    except Exception:  # noqa: BLE001 -- absent or unreadable: nothing to name
+        return None
+    floor = _transformers_torchao_min()
+    if not version or not floor:
+        return None
+    return version if _torchao_below(version, floor) else None
+
+
+def torchao_export_loadable() -> bool:
+    """False when the installed torchao is too old for TorchAoConfig; on Windows ROCm also checks
+    for torchao and unsloth's shim. Never imports either."""
+    if not _is_windows_rocm():
+        return torchao_too_old_for_export() is None
+    try:
+        if importlib.machinery.PathFinder.find_spec("torchao") is None:
+            return False
+        # TorchAoConfig requires torchao 0.15
+        version = importlib.metadata.version("torchao")
+        if not re.match(r"\d+\.\d+", version or "") or _torchao_below(version, _TORCHAO_EXPORT_MIN):
+            return False
+        spec = importlib.util.find_spec("unsloth")
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        return bool(locations) and os.path.isfile(os.path.join(locations[0], "_torchao_nodist.py"))
+    except Exception:
+        return False
+
+
+_STUB_CONSUMERS = ("transformers", "peft", "diffusers", "accelerate", "unsloth", "unsloth_zoo")
+
+
+def install_torchao_windows_rocm_real_or_stub() -> bool:
+    """load real torchao on Windows ROCm when its no-distributed shim works; return true iff loaded."""
+    if not _is_windows_rocm():
+        return False
+    # A spawn child re-runs run.py as __mp_main__, which stubs torchao first. Drop that stub
+    # while nothing that could have bound it is loaded yet.
+    if is_stubbed("torchao") and not any(m in sys.modules for m in _STUB_CONSUMERS):
+        for name in [n for n in sys.modules if n == "torchao" or n.startswith("torchao.")]:
+            if getattr(sys.modules[name], "_unsloth_stub", None) is _STUB_SENTINEL:
+                del sys.modules[name]
+    if "torchao" not in sys.modules and torchao_export_loadable():
+        module = _load_torchao_nodist()
+        try:
+            if module is not None and module.fix_torchao_without_torch_distributed():
+                return True
+        except Exception:
+            pass
+    install_torchao_windows_rocm_stub()
+    return not is_stubbed("torchao") and "torchao" in sys.modules
+
+
 def install_xformers_windows_rocm_stub() -> None:
     """Pre-stub xformers on Windows ROCm so diffusers can import at all. No-op elsewhere, and must
     precede diffusers: the Windows xformers pin is CUDA-only, so against a ROCm torch (no
@@ -231,3 +390,27 @@ def install_xformers_windows_rocm_stub() -> None:
         for _xf_name in ("xformers", "xformers.ops"):
             if _xf_name not in sys.modules:
                 sys.modules[_xf_name] = _make_mod_stub(_xf_name)
+
+
+def hide_xformers_built_for_another_torch() -> None:
+    """Hide an xFormers whose torch requirement is unmet (#11545); None, not a stub, so nothing sees usable attention."""
+    if "xformers" in sys.modules:
+        return
+    try:
+        if importlib.util.find_spec("xformers") is None:
+            return
+        from utils.wheel_utils import xformers_torch_requirement_unmet
+        mismatch = xformers_torch_requirement_unmet()
+    except Exception:  # noqa: BLE001 -- a check that cannot answer leaves xformers alone
+        return
+    if mismatch is None:
+        return
+    sys.modules["xformers"] = None
+    xformers_version, requirement, torch_version = mismatch
+    print(
+        f"Unsloth: xformers {xformers_version} requires torch{requirement} but torch "
+        f"{torch_version} is installed, so it cannot be imported. Using PyTorch attention "
+        "instead.",
+        file = sys.stderr,
+        flush = True,
+    )

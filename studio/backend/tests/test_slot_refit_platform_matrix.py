@@ -29,7 +29,11 @@ import pytest  # noqa: E402
 
 import core.inference.llama_cpp as llama_mod  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
-from test_llama_cpp_placement import _backend, _launch  # noqa: E402
+from test_llama_cpp_placement import (  # noqa: E402
+    _backend,
+    _install_slot_scaled_compute,
+    _launch,
+)
 
 MIB = 1024 * 1024
 NATIVE_CTX = 262144
@@ -150,6 +154,8 @@ def _plan(
         backend._read_gguf_metadata = read
         backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
         del backend._can_estimate_kv  # the real one, now that the dims are set
+        # The per-slot cost the re-fit trades against (see the helper).
+        _install_slot_scaled_compute(backend)
         backend.probe_server_capabilities = lambda _binary = None: {
             "mtp_token": "draft-mtp",
             "supports_ngram_mod": True,

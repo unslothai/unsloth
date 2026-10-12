@@ -123,7 +123,7 @@ export function FreeUpSpaceDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[520px]">
+      <DialogContent className="max-w-[calc(520px*var(--ui-space-scale,1))]">
         <DialogHeader>
           <DialogTitle>Free up space</DialogTitle>
           <DialogDescription>
@@ -144,7 +144,7 @@ export function FreeUpSpaceDialog({
             installed.
           </p>
         ) : (
-          <ul className="flex max-h-[260px] flex-col gap-1 overflow-y-auto py-1">
+          <ul className="flex max-h-[calc(260px*var(--ui-space-scale,1))] flex-col gap-1 overflow-y-auto py-1">
             {companions.map((companion, index) => (
               <li
                 key={companionIdentity(companion)}
