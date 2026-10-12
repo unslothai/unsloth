@@ -32684,12 +32684,31 @@ class LlamaCppBackend:
                         shared_gpu_ids = _shared_gpu_ids,
                     )
                     _rebound_named_parking_budget(launch_cmd, _named, self, _planned)
-                    if _planned:
-                        with _parking_budget_lock:
-                            _held = getattr(self, "_parking_reserving_mib", None) or 0
+                    # The rebound reserves the budget alone; the spawn puts the weights back.
+                    with _parking_budget_lock:
+                        _reserved_weights_mib[0] = 0
+
+                # The host weights the in-flight reservation holds, priced for the launch first.
+                _reserved_weights_mib = [_host_weights_mib]
+
+                def _reserve_launch_weights(launch_cmd) -> None:
+                    """Price the weights a spawn leaves in host RAM off ITS argv: a retry re-places
+                    them (CPU replay, arch fallback, no-flash fit, projector on CPU), and a peer
+                    certifying exact parks reads the reservation, not the launch it replaced."""
+                    _planned = self._planned_host_weights_mib(
+                        launch_cmd,
+                        _reachable_gpus,
+                        env,
+                        child_has_no_gpu = _child_has_no_gpu,
+                        shared_gpu_ids = _shared_gpu_ids,
+                    )
+                    with _parking_budget_lock:
+                        _held = getattr(self, "_parking_reserving_mib", None) or 0
+                        if _held >= 0:
                             _reserve_inflight_parking(
-                                self, _held if _held < 0 else _held + _planned
+                                self, max(0, _held - _reserved_weights_mib[0]) + _planned
                             )
+                        _reserved_weights_mib[0] = _planned
 
                 # Memoed only when the load ends terminally, so a recovering fallback is not blocked.
                 _sched_abort_seen = False
@@ -32763,6 +32782,7 @@ class LlamaCppBackend:
                             logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
                         _last_spawn_cmd = list(run_cmd)
+                        _reserve_launch_weights(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
                         self._idle_slot_clearing_active = _idle_slot_clearing_active(

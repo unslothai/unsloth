@@ -54,19 +54,28 @@ def host(monkeypatch):
     monkeypatch.setattr(llama_mod, "_parking_backends", weakref.WeakSet())
 
 
-def _bound(backend, *, exact_wanted = True, budget = 40_000, done = None):
+def _namespace(backend, *, exact_wanted = True, budget = 40_000, done = None, reserved = None):
     namespace = dict(vars(llama_mod))
     namespace.update(
         self = backend,
         _exact_budget = budget,
         _exact_wanted = exact_wanted,
         _parking_off_exact = [] if done is None else done,
+        _reserved_weights_mib = [0] if reserved is None else reserved,
         _reachable_gpus = [],
         env = {},
         _child_has_no_gpu = False,
         _shared_gpu_ids = None,
     )
-    return _lift_closure("_bound_parking_off_exact", namespace)
+    return namespace
+
+
+def _bound(backend, **kwargs):
+    return _lift_closure("_bound_parking_off_exact", _namespace(backend, **kwargs))
+
+
+def _spawned(backend, **kwargs):
+    return _lift_closure("_reserve_launch_weights", _namespace(backend, **kwargs))
 
 
 class TestTheRetryPricesItsOwnWeights:
@@ -89,8 +98,11 @@ class TestTheRetryPricesItsOwnWeights:
 
     def test_the_weights_stay_reserved_beside_the_budget(self, host):
         backend = _Backend(planned_mib = 20_000)
+        reserved = [20_000]
         cmd = ["llama-server", "--preempt-ram", "40000"]
-        _bound(backend)(cmd)
+        _bound(backend, reserved = reserved)(cmd)
+        assert reserved == [0]
+        _spawned(backend, reserved = reserved)(cmd)
         assert backend._parking_reserving_mib == int(cmd[-1]) + 20_000
 
     def test_once_per_launch(self, host):
@@ -107,6 +119,32 @@ class TestTheRetryPricesItsOwnWeights:
         _bound(_Backend(90_000), exact_wanted = False)(cmd)
         _bound(_Backend(90_000), budget = None)(cmd)
         assert cmd[-1] == "40000"
+
+    def test_a_respawn_reprices_the_weights_it_places(self, host):
+        # Priced fully offloaded, then replayed on the CPU: the reservation holds the replay's
+        # weights in place of the first launch's, never both and never the stale figure.
+        backend = _Backend(planned_mib = 0)
+        backend._parking_reserving_mib = 4096 + 1000
+        reserved = [1000]
+        backend.planned_mib = 30_000
+        _spawned(backend, reserved = reserved)(["llama-server", "--device", "none"])
+        assert backend._parking_reserving_mib == 4096 + 30_000
+        assert reserved == [30_000]
+        backend.planned_mib = 2000
+        _spawned(backend, reserved = reserved)(["llama-server"])
+        assert backend._parking_reserving_mib == 4096 + 2000
+
+    def test_an_unlimited_reservation_stays_unlimited(self, host):
+        backend = _Backend(planned_mib = 30_000)
+        backend._parking_reserving_mib = -1
+        _spawned(backend, reserved = [1000])(["llama-server"])
+        assert backend._parking_reserving_mib == -1
+
+    def test_every_spawn_is_priced_before_it_starts(self):
+        source = _load_source()
+        spawn = source.index("def _spawn_and_wait(run_cmd")
+        body = source[spawn : source.index("_spawn_on_lifetime_thread(", spawn)]
+        assert "_reserve_launch_weights(run_cmd)" in body
 
     def test_every_retry_that_drops_the_mode_takes_it(self):
         source = _load_source()
