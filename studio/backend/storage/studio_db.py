@@ -2997,7 +2997,8 @@ def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
     the caller falls back to the managed workspace. A moved or replaced folder is never followed:
     the identity check is what keeps a new directory at the old path from inheriting the grant."""
     path = (project or {}).get("workingFolder")
-    if not path:
+    # Host folders are the owner's only, as everywhere else a project touches the host.
+    if not path or not is_owner_context():
         return None
     try:
         st = os.lstat(path)

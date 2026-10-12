@@ -39,7 +39,24 @@ def projects_home(tmp_path):
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch, projects_home):
+def repo_parent(tmp_path):
+    """Where the user's folder lives: macOS tmp_path is under /private, which Link folder refuses as a
+    system directory, while a real repository sits under the home folder."""
+    from hub.storage.scan_folders import is_denied_system_path
+
+    if not is_denied_system_path(os.path.realpath(tmp_path)):
+        yield tmp_path
+        return
+    candidate = Path.home() / ".unsloth-studio-tests" / uuid.uuid4().hex
+    candidate.mkdir(parents = True)
+    try:
+        yield candidate
+    finally:
+        shutil.rmtree(candidate, ignore_errors = True)
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch, projects_home, repo_parent):
     from core.inference import tools
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -48,7 +65,7 @@ def env(tmp_path, monkeypatch, projects_home):
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(tools, "_workdirs", {})
     monkeypatch.setattr(tools, "_legacy_sandbox_migrated", True)
-    repo = tmp_path / "repo"
+    repo = repo_parent / "repo"
     repo.mkdir()
     (repo / "main.py").write_text("print('hi')\n")
     os.chmod(repo, 0o755)
@@ -145,6 +162,22 @@ def test_agents_md_is_read_from_the_users_folder(env, monkeypatch):
     assert "Use tabs." not in agents_md.agents_md_text(studio_db.get_chat_project("p1"))
     _use_repo(env)
     assert "Use tabs." in agents_md.agents_md_text(studio_db.get_chat_project("p1"))
+
+
+def test_add_to_project_lands_where_the_tools_run(env, tmp_path):
+    from core.inference import gallery_projects
+
+    image = tmp_path / "gen-1.png"
+    image.write_bytes(b"png")
+    _use_repo(env)
+    added = gallery_projects.copy_into_project(image, "p1", "images")
+    assert added["path"] == os.path.join(os.path.realpath(env.repo), "images", "gen-1.png")
+    # Never over a file the user already has.
+    (env.repo / "images" / "gen-2.png").write_bytes(b"mine")
+    other = tmp_path / "gen-2.png"
+    other.write_bytes(b"generated")
+    assert gallery_projects.copy_into_project(other, "p1", "images")["already"] is True
+    assert (env.repo / "images" / "gen-2.png").read_bytes() == b"mine"
 
 
 def test_the_library_does_not_list_the_users_folder(env):
