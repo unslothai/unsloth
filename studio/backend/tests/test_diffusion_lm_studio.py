@@ -7,6 +7,7 @@ keeps its existing path."""
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 import json
 import threading
@@ -51,6 +52,10 @@ AUTOREGRESSIVE_CONFIGS = [
     {"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]},
 ]
 
+# These import Studio's training / inference modules or core Unsloth, which need torch; the
+# cross-platform legs run the backend tests without it.
+_needs_torch = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason = "needs torch")
+
 
 @pytest.mark.parametrize("profile", sorted(DIFFUSION_CONFIGS))
 def test_each_family_is_detected_from_raw_config(profile):
@@ -69,6 +74,7 @@ def test_legacy_diffusion_gemma_type_and_odd_inputs():
     assert diffusion_lm_profile({}) is None
 
 
+@_needs_torch
 def test_mirror_matches_the_core_registry():
     """Same names, same model_types / architectures, same order as Unsloth's own profile registry."""
     profiles_mod = pytest.importorskip("unsloth.models.diffusion_profiles")
@@ -204,6 +210,7 @@ def captured_peft(monkeypatch):
 _DEFAULT = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
+@_needs_torch
 @pytest.mark.parametrize(
     "requested, expected",
     [
@@ -224,6 +231,7 @@ def test_lora_targets_default_to_the_profile(captured_peft, requested, expected)
     assert "use_rslora" not in captured_peft[-1]
 
 
+@_needs_torch
 def test_cpt_embedding_names_resolve_to_the_models_own_modules(captured_peft):
     import torch.nn as nn
 
@@ -256,6 +264,7 @@ def test_cpt_embedding_names_resolve_to_the_models_own_modules(captured_peft):
     assert "modules_to_save" not in captured_peft[-1]
 
 
+@_needs_torch
 @pytest.mark.parametrize("dora, loftq", [(True, False), (False, True)])
 def test_unsupported_lora_options_fail_loudly(captured_peft, dora, loftq):
     with pytest.raises(ValueError, match = "not supported for text-diffusion"):
@@ -265,6 +274,7 @@ def test_unsupported_lora_options_fail_loudly(captured_peft, dora, loftq):
     assert captured_peft == []
 
 
+@_needs_torch
 def test_prepare_routes_diffusion_before_any_other_branch(captured_peft):
     t = _trainer(model = SimpleNamespace(named_modules = lambda: iter(()), config = object()))
     t._use_gradient_checkpointing = "unsloth"
@@ -273,6 +283,7 @@ def test_prepare_routes_diffusion_before_any_other_branch(captured_peft):
     assert captured_peft[-1]["target_modules"] is None
 
 
+@_needs_torch
 def test_detection_keeps_diffusion_gemma_off_the_vision_path(monkeypatch):
     from core.training import trainer as trainer_mod
 
@@ -286,6 +297,7 @@ def test_detection_keeps_diffusion_gemma_off_the_vision_path(monkeypatch):
     assert t.warnings and "text only" in t.warnings[0]
 
 
+@_needs_torch
 def test_detection_skips_audio_models(monkeypatch):
     from core.training import trainer as trainer_mod
 
@@ -296,6 +308,7 @@ def test_detection_skips_audio_models(monkeypatch):
     assert t.diffusion_lm_profile is None
 
 
+@_needs_torch
 def test_autoregressive_detection_is_a_no_op(monkeypatch):
     from core.training import trainer as trainer_mod
 
@@ -321,6 +334,7 @@ def test_worker_turns_packing_off_once_and_only_for_diffusion():
     assert ar == {"packing": True}
 
 
+@_needs_torch
 def test_unpicklable_remote_tokenizer_runs_the_map_in_process():
     import ssl
     from core.training import trainer as trainer_mod
@@ -343,6 +357,7 @@ def test_unpicklable_remote_tokenizer_runs_the_map_in_process():
     assert "or _tokenizer_blocks_map_workers(self.tokenizer)" in src
 
 
+@_needs_torch
 def test_diffusion_cpt_passes_the_embedding_learning_rate():
     from core.training import trainer as trainer_mod
 
@@ -387,6 +402,7 @@ def test_pre_detect_applies_the_overrides_before_the_row_bound():
     assert "_apply_diffusion_lm_overrides(trainer, config)" in src
 
 
+@_needs_torch
 def test_text_path_builds_diffusion_trainer_before_cpt_and_sft():
     from core.training import trainer as trainer_mod
 
@@ -406,6 +422,7 @@ def test_text_path_builds_diffusion_trainer_before_cpt_and_sft():
     )
 
 
+@_needs_torch
 def test_load_uses_fastmodel_and_refuses_a_silent_autoregressive_load():
     from core.training import trainer as trainer_mod
 
@@ -443,6 +460,7 @@ def test_loaded_profile_comes_from_the_config_not_a_stamp():
     assert loaded_diffusion_profile(None) is None
 
 
+@_needs_torch
 def test_missing_core_api_names_the_update(monkeypatch):
     import unsloth
     monkeypatch.delattr(unsloth, "DefinitelyNotThere", raising = False)
@@ -485,6 +503,7 @@ def _inference_backend(monkeypatch, profile = "llada"):
     return backend, applied
 
 
+@_needs_torch
 def test_chat_uses_the_diffusion_sampler_as_one_completion(monkeypatch):
     backend, applied = _inference_backend(monkeypatch)
     backend.last_generation_stats = {"prompt_tokens": 999}  # left over from an earlier generation
@@ -505,6 +524,7 @@ def test_chat_uses_the_diffusion_sampler_as_one_completion(monkeypatch):
     assert backend.last_generation_stats is None
 
 
+@_needs_torch
 def test_raw_prompt_stream_uses_the_sampler_too(monkeypatch):
     backend, _ = _inference_backend(monkeypatch)
     assert list(backend.generate_stream("Q: 2+2?\nA:", max_new_tokens = 8)) == [
@@ -513,6 +533,7 @@ def test_raw_prompt_stream_uses_the_sampler_too(monkeypatch):
     assert _Sampler.calls[-1]["prompt"] == "Q: 2+2?\nA:"
 
 
+@_needs_torch
 def test_cancelled_chat_returns_nothing(monkeypatch):
     backend, _ = _inference_backend(monkeypatch)
     cancel = threading.Event()
@@ -521,6 +542,7 @@ def test_cancelled_chat_returns_nothing(monkeypatch):
     assert _Sampler.calls[-1]["stop"] is True
 
 
+@_needs_torch
 def test_sampler_holds_the_generation_lock(monkeypatch):
     backend, _ = _inference_backend(monkeypatch)
     held = {}
@@ -538,6 +560,7 @@ def test_sampler_holds_the_generation_lock(monkeypatch):
     assert held == {"locked": True} and not backend._generation_lock.locked()
 
 
+@_needs_torch
 def test_older_core_without_sampler_fails_clearly(monkeypatch):
     backend, _ = _inference_backend(monkeypatch)
     monkeypatch.setattr(diffusion_lm, "require_diffusion_api", lambda name: SimpleNamespace())
@@ -545,6 +568,7 @@ def test_older_core_without_sampler_fails_clearly(monkeypatch):
         list(backend.generate_stream("x"))
 
 
+@_needs_torch
 def test_sampler_cancellation_error_ends_the_chat_quietly(monkeypatch):
     class Cancelled(RuntimeError):
         pass
@@ -565,6 +589,7 @@ def test_sampler_cancellation_error_ends_the_chat_quietly(monkeypatch):
     backend._generation_lock.release()
 
 
+@_needs_torch
 def test_text_path_load_still_catches_a_diffusion_model():
     # A Hub LoRA has no config.json for the probe; core loads its diffusion base anyway.
     from core.inference import inference as inference_mod
@@ -578,6 +603,7 @@ def test_text_path_load_still_catches_a_diffusion_model():
     assert "loaded_diffusion_profile(model)" in tail.split("raise_if_offloaded")[0]
 
 
+@_needs_torch
 def test_chat_diffusion_load_refuses_an_unmarked_model_and_keeps_the_token_boundary():
     from core.inference import inference as inference_mod
 
@@ -687,6 +713,7 @@ def test_export_classifies_from_the_loaded_model():
     assert "loaded_diffusion_profile(model)" in tail
 
 
+@_needs_torch
 def test_diffusion_chat_neutralizes_control_markup(monkeypatch):
     from core.inference import chat_template_helpers
 
