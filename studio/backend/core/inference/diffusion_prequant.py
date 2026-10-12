@@ -1773,8 +1773,8 @@ def _cached_snapshot_current(repo_id: str, local: str, token: Optional[str]) -> 
     from .prequant_header_probe import hub_file_revision
 
     current = hub_file_revision(repo_id, name, token = token)
-    if current is None:
-        return None
+    if current is None or current == "missing":
+        return None if current is None else False
     etag, hub_commit = current
     if (etag and etag == blob) or (hub_commit and hub_commit == commit):
         return True
@@ -1891,8 +1891,11 @@ def hosted_prequant_refusal(
         # Only a safetensors header is ever read, so a cached pickle is "unknown" and not worth a HEAD.
         if local is not None and not offline and is_safetensors_checkpoint(local):
             if _cached_snapshot_current(source.location, local, hf_token) is False:
-                # Judge the revision the download would fetch, not the superseded one on disk.
-                hub_names, local = [os.path.basename(local)], None
+                # Judge the revision the download would fetch, not the superseded one on disk. A name the
+                # Hub no longer serves 404s at download, which moves on to the next name, so probe from there.
+                cached_name = os.path.basename(local)
+                at = names.index(cached_name) if cached_name in names else -1
+                hub_names, local = (names[at:] if at >= 0 else [cached_name]), None
         if local is not None:
             header, name = read_local_checkpoint_header(local), os.path.basename(local)
         else:
@@ -1909,6 +1912,8 @@ def hosted_prequant_refusal(
         if header is not None:
             collect = _CollectWarnings()
             try:
+                if not isinstance(header["metadata"], dict):
+                    raise ValueError("metadata is not a JSON object")
                 ok = _validate_checkpoint(
                     {"format": header["format"], "metadata": header["metadata"]},
                     scheme,

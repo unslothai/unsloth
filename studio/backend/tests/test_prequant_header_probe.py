@@ -794,6 +794,40 @@ def test_an_online_cached_verdict_expires(hub, replaced, monkeypatch):
     assert pq.hosted_prequant_refusal(replaced.source, "int8") is None
 
 
+def test_a_cached_name_the_hub_no_longer_serves_moves_on_to_the_next_name(hub, tmp_path, monkeypatch):
+    # The cached first name is stale and has been deleted from the Hub; the download 404s on it and loads
+    # the next name, which is current, so planning must judge that next file, not the obsolete cache.
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    repo = "unsloth/Qwen-Image-2512-FP8"
+    gone, current = "Qwen-Image-2512-INT8-ComfyUI.safetensors", "Qwen-Image-2512-INT8.safetensors"
+    cached = _hf_cache_file(
+        tmp_path, gone, "c0ffee01", "etag-stale", _write_safetensors, _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+    )
+    monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
+    _write_safetensors(
+        _repo_file(hub, repo, current), _qwen_int8_meta(exclude_tokens_for_scheme("int8", "qwen-image"))
+    )
+    assert pq.hosted_prequant_refusal(_source(repo, gone, current), "int8") is None
+    assert hub.downloads == []
+
+
+def test_unsloth_metadata_that_is_not_an_object_is_refused_before_download(hub):
+    from safetensors.torch import save_file
+
+    from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
+
+    repo, name = "unsloth/Qwen-Image-2512-FP8", "Qwen-Image-2512-INT8.safetensors"
+    save_file(
+        {"blocks.0.weight": torch.zeros(256, 1024, dtype = torch.int8)},
+        str(_repo_file(hub, repo, name)),
+        metadata = {UNSLOTH_FORMAT_KEY: PREQUANT_FORMAT, UNSLOTH_METADATA_KEY: "[]"},
+    )
+    reason = pq.hosted_prequant_refusal(_source(repo, name), "int8")
+    assert reason is not None and "malformed" in reason
+    assert hub.downloads == []
+
+
 # -- the probe's memo and said-set stay bounded --
 
 

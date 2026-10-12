@@ -71,8 +71,9 @@ def _from_safetensors(read_range: ReadRange, size: int) -> Optional[dict]:
     if not isinstance(inner, str) or not _json_within(inner):
         return None
     meta = json.loads(inner)
-    if not isinstance(fmt, str) or not isinstance(meta, dict):
+    if not isinstance(fmt, str):
         return None
+    # An Unsloth header whose metadata is not an object is malformed, not unreadable: the loader refuses it.
     return {"format": fmt, "metadata": meta, "container": "safetensors"}
 
 
@@ -165,6 +166,14 @@ def _hub_range_reader(url: str, headers: dict, deadline: float) -> ReadRange:
     return _read
 
 
+MISSING = "missing"
+
+
+def _is_not_found(exc: BaseException) -> bool:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status == 404 or type(exc).__name__ in ("EntryNotFoundError", "RemoteEntryNotFoundError")
+
+
 def hub_file_revision(
     repo_id: str,
     filename: str,
@@ -173,7 +182,8 @@ def hub_file_revision(
     revision: Optional[str] = None,
     timeout_seconds: float = TIMEOUT_SECONDS,
 ) -> Optional[tuple]:
-    """``(etag, commit)`` the Hub serves for ``filename`` now (one HEAD, no body), or None if unanswerable."""
+    """``(etag, commit)`` the Hub serves for ``filename`` now (one HEAD, no body), ``MISSING`` on a definite
+    404, or None if unanswerable."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         meta = get_hf_file_metadata(
@@ -181,8 +191,8 @@ def hub_file_revision(
             token = token,
             timeout = timeout_seconds,
         )
-    except Exception:  # noqa: BLE001 - offline, refused or missing: the caller keeps what it has
-        return None
+    except Exception as exc:  # noqa: BLE001 - offline or refused: the caller keeps what it has
+        return MISSING if _is_not_found(exc) else None
     return getattr(meta, "etag", None), getattr(meta, "commit_hash", None)
 
 
@@ -208,13 +218,7 @@ def read_hub_checkpoint_header(
             timeout = timeout_seconds,
         )
     except Exception as exc:  # noqa: BLE001
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status == 404 or type(exc).__name__ in (
-            "EntryNotFoundError",
-            "RemoteEntryNotFoundError",
-        ):
-            return None, False
-        return None, None
+        return None, (False if _is_not_found(exc) else None)
     size = getattr(meta, "size", None)
     if not size:
         return None, True
