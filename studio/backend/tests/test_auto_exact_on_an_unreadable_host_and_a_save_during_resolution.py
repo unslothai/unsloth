@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unreadable host certifies no exact parks.
+"""An unreadable host certifies no exact parks, and a save during resolution is not missed.
 
 Before launch, auto skipped its fallback when the host could not be read, so the child ran
 with the whole budget sized for exact parks, where a plain launch on the same host parks
-nothing.
+nothing. And a save landing between a load reading its setting and publishing it saw neither
+a child nor a pending load, answering that no reload was needed.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import weakref
 from core.inference import llama_cpp as llama_mod
 from core.inference import llama_exact as exact
 from core.inference.llama_cpp import LlamaCppBackend
+import utils.exact_concurrency_settings as stored
 import pytest
 
 pytestmark = pytest.mark.usefixtures("preemption_opted_in")
@@ -101,3 +103,29 @@ class TestAnUnreadableHostIsAShortfall:
         assert namespace["_exact_wanted"] is False
         assert backend._exact_host_short == (40_000, -1)
         assert "--preempt-ram" not in cmd, cmd
+
+
+class TestASaveDuringResolutionIsNotMissed:
+    def test_a_write_between_the_read_and_the_publication_republishes(self):
+        published: list[str] = []
+        reads = iter(["off", "on"])
+
+        def resolve():
+            value = next(reads)
+            if value == "off":
+                # The owner saves while this read is in flight.
+                stored._invalidate(stored.EXACT_CONCURRENCY_SETTING_KEY)
+            return value
+
+        assert stored.capture_exact_concurrency(resolve, published.append) == "on"
+        assert published == ["off", "on"], "the load kept the setting the save replaced"
+
+    def test_a_quiet_read_publishes_once(self):
+        published: list[str] = []
+        assert stored.capture_exact_concurrency(lambda: "auto", published.append) == "auto"
+        assert published == ["auto"]
+
+    def test_the_load_resolves_through_the_capture(self):
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        assert "capture_exact_concurrency(" in source
+        assert "_exact_setting = _exact.resolve_exact_setting(" not in source

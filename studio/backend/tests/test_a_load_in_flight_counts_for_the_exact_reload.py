@@ -46,7 +46,9 @@ def test_no_load_in_flight_answers_as_before(monkeypatch):
 
 def test_the_load_marks_what_it_resolved_and_the_scope_clears_it():
     load = inspect.getsource(LlamaCppBackend.load_model)
-    resolved = load.index("_exact_setting = _exact.resolve_exact_setting(")
-    assert "self._exact_setting_pending = _exact_setting" in load[resolved : resolved + 400]
+    resolved = load.index("_exact_setting = capture_exact_concurrency(")
+    window = load[resolved : resolved + 400]
+    assert "_exact.resolve_exact_setting(intent.exact_concurrency)" in window
+    assert 'setattr(self, "_exact_setting_pending", setting)' in window
     scope = inspect.getsource(LlamaCppBackend._serial_load_scope)
     assert "self._exact_setting_pending = None" in scope.split("finally:")[1]

@@ -80,5 +80,26 @@ def set_exact_concurrency(value: Any) -> Optional[str]:
     return get_exact_concurrency()
 
 
+def _setting_generation() -> int:
+    with _cache_lock:
+        return _generation.get(EXACT_CONCURRENCY_SETTING_KEY, 0)
+
+
+def capture_exact_concurrency(resolve, publish) -> str:
+    """Resolve a load's setting and publish it, with no window in between for a save to fall
+    through. A save landing before the publication sees neither a child nor a pending load and
+    answers ``reload_required=false`` about a load that runs the old value. Detected rather than
+    locked, as ``capture_model_memory_settings`` does: the write bumps a generation, so a capture
+    whose generation moved resolves and publishes again."""
+    setting = None
+    for _attempt in range(_MAX_REREADS):
+        before = _setting_generation()
+        setting = resolve()
+        publish(setting)
+        if _setting_generation() == before:
+            return setting
+    return setting
+
+
 def default_exact_concurrency() -> str:
     return DEFAULT_EXACT_SETTING

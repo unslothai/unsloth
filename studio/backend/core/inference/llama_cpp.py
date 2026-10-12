@@ -31477,9 +31477,14 @@ class LlamaCppBackend:
                     )
 
                 # The mode needs a unified cache, and adding one keeps a single-slot load from being refused.
-                _exact_setting = _exact.resolve_exact_setting(intent.exact_concurrency)
-                # This load runs under it now, so a save from here on needs a reload to apply.
-                self._exact_setting_pending = _exact_setting
+                # This load runs under it from here, so a save from now on needs a reload to apply.
+                # Published with the read, so a save between the two is never missed.
+                from utils.exact_concurrency_settings import capture_exact_concurrency
+
+                _exact_setting = capture_exact_concurrency(
+                    lambda: _exact.resolve_exact_setting(intent.exact_concurrency),
+                    lambda setting: setattr(self, "_exact_setting_pending", setting),
+                )
                 _exact_wanted = _exact.wants_exact(_exact_setting)
                 if _exact_wanted and _flash_attn_known_off and _exact_setting == _exact.EXACT_AUTO:
                     # V is left transposed without flash attention and the paged pool refuses
