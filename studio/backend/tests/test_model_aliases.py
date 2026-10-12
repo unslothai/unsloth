@@ -65,6 +65,7 @@ def _run_middleware(
     headers = None,
     path = "/v1/chat/completions",
     method = "POST",
+    skip_paths = (),
 ):
     seen = {}
 
@@ -86,7 +87,7 @@ def _run_middleware(
         if headers is not None
         else [(b"content-type", b"application/json"), (b"content-length", b"%d" % len(body))],
     }
-    asyncio.run(ModelAliasMiddleware(app)(scope, receive, None))
+    asyncio.run(ModelAliasMiddleware(app, skip_paths)(scope, receive, None))
     return seen
 
 
@@ -112,6 +113,10 @@ def test_middleware_rewrites_alias_and_content_length(store):
         (b'{"model": "fast-chat"}', {"headers": [(b"content-type", b"audio/wav")]}),
         (b'{"model": "fast-chat"}', {"headers": [(b"content-type", b"application/octet-stream")]}),
         (b'{"model": "fast-chat"}', {"headers": []}),
+        (
+            b'{"model": "fast-chat"}',
+            {"path": "/v1/audio/inputs/", "skip_paths": ("/v1/audio/inputs",)},
+        ),
     ],
 )
 def test_middleware_leaves_other_requests_byte_identical(store, body, kwargs):
@@ -130,6 +135,7 @@ def test_alias_rows_follow_the_visible_catalog(store):
             {"name": "fast-chat", "model": "unsloth/Qwen3-4B-GGUF:Q4_K_M"},
             {"name": "hidden", "model": "someone/not-on-disk"},
             {"name": "local-model", "model": "unsloth/Qwen3-4B-GGUF"},
+            {"name": "dictate", "model": "unsloth/whisper-tiny"},
         ]
     )
     catalog = [
@@ -141,6 +147,7 @@ def test_alias_rows_follow_the_visible_catalog(store):
             "display_name": "Qwen3 4B",
         },
         {"id": "local-model", "object": "model", "loaded": False},
+        {"id": "unsloth/whisper-tiny", "object": "model", "task": "automatic-speech-recognition"},
     ]
 
     def pinned(target, objects):
@@ -149,7 +156,14 @@ def test_alias_rows_follow_the_visible_catalog(store):
             return {**objects[0], "id": target, "quant": "Q4_K_M", "loaded": False}
         return None
 
-    assert alias_model_objects(catalog) == []
+    local = {
+        "id": "local-model",
+        "object": "model",
+        "loaded": True,
+        "alias_for": "unsloth/Qwen3-4B-GGUF",
+    }
+    # An alias the rewrite applies is listed even over a same-named model row.
+    assert alias_model_objects(catalog) == [local]
     rows = alias_model_objects(catalog, pinned)
     assert rows == [
         {
@@ -157,10 +171,29 @@ def test_alias_rows_follow_the_visible_catalog(store):
             "object": "model",
             "loaded": False,
             "alias_for": "unsloth/Qwen3-4B-GGUF:Q4_K_M",
-        }
+        },
+        local,
     ]
     set_model_aliases([{"name": "fast-chat", "model": "unsloth/Qwen3-4B-GGUF:Q8_0"}])
     assert alias_model_objects(catalog, pinned) == []
+
+
+def test_catalog_listing_drops_the_model_row_an_alias_shadows(store, monkeypatch):
+    import routes.inference as inference
+
+    async def catalog():
+        return [
+            {"id": "unsloth/Qwen3-4B-GGUF", "object": "model", "loaded": False},
+            {"id": "local-model", "object": "model", "loaded": False},
+        ]
+
+    monkeypatch.setattr(inference, "_openai_catalog_objects", catalog)
+    set_model_aliases([{"name": "local-model", "model": "unsloth/Qwen3-4B-GGUF"}])
+    listed = asyncio.run(inference._openai_catalog_with_aliases())
+    assert [(m["id"], m.get("alias_for")) for m in listed] == [
+        ("unsloth/Qwen3-4B-GGUF", None),
+        ("local-model", "unsloth/Qwen3-4B-GGUF"),
+    ]
 
 
 def test_set_rejects_an_alias_that_reuses_a_real_model_id(store):

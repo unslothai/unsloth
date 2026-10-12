@@ -98,7 +98,8 @@ def alias_model_objects(
     objects: list[dict], pinned_object: Optional[Callable[[str, list[dict]], Optional[dict]]] = None
 ) -> list[dict]:
     """``/v1/models`` rows for aliases whose target is in ``objects``, the caller's visible
-    catalog, so the listing never advertises a name that would 404. ``pinned_object`` resolves a
+    catalog, so the listing never advertises a name that would 404. An alias the rewrite would
+    apply shadows a same-named model row (dropped by the caller). ``pinned_object`` resolves a
     ``model:quant`` target the way ``GET /v1/models/{id}`` does (the quant must be on disk)."""
     aliases = get_model_aliases()
     if not aliases:
@@ -106,13 +107,12 @@ def alias_model_objects(
     by_id = {o["id"].lower(): o for o in objects if isinstance(o.get("id"), str)}
     rows = []
     for alias in aliases:
-        if alias["name"].lower() in by_id:
-            continue
         target = alias["model"]
         listed = by_id.get(target.lower())
         if listed is None and ":" in target and pinned_object is not None:
             listed = pinned_object(target, objects)
-        if listed is None:
+        # Speech-to-text takes ``model`` as a multipart field, which the rewrite never touches.
+        if listed is None or listed.get("task") == "automatic-speech-recognition":
             continue
         # The alias already names its quant; a listed one would invite an unresolvable "alias:Q4".
         row = {k: v for k, v in listed.items() if k not in ("display_name", "quant")}
@@ -149,8 +149,14 @@ class ModelAliasMiddleware:
     """Swap an aliased ``model`` for its target before any route runs. Never reads the body when
     no alias is configured; registered inside MaxBodyMiddleware, so what it buffers is capped."""
 
-    def __init__(self, app):
+    def __init__(
+        self,
+        app,
+        skip_paths: Iterable[str] = (),
+    ):
         self.app = app
+        # MaxBodyMiddleware's upload passthroughs: their cap is the upload limit, not the JSON one.
+        self.skip_paths = frozenset(skip_paths)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope.get("method", "").upper() != "POST":
@@ -163,7 +169,11 @@ class ModelAliasMiddleware:
         content_type = dict(scope.get("headers", [])).get(b"content-type", b"").lower()
         # JSON only: raw and multipart uploads (audio inputs, transcriptions) stream past the body
         # cap and must never be held here.
-        if not path.startswith(_ALIAS_PATH_PREFIXES) or b"json" not in content_type:
+        if (
+            not path.startswith(_ALIAS_PATH_PREFIXES)
+            or b"json" not in content_type
+            or path.rstrip("/") in self.skip_paths
+        ):
             await self.app(scope, receive, send)
             return
         aliases = model_alias_map()
