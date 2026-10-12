@@ -318,6 +318,8 @@ export const zhCN = {
       pathCopied: "已复制路径",
       openFailed: "无法打开 {name}。",
       wrap: "自动换行",
+      reactNeedsNode: "React 预览需要 Node.js 20.19 或更高版本。如未安装，请先安装，然后重新运行 Unsloth 安装程序。",
+      reactFailed: "无法准备此预览。请再次运行以重试。",
     },
     pages: {
       searchDownloads: "搜索下载记录",

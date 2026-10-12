@@ -174,3 +174,18 @@ test("over the budget exits 1 and says what to do about it", () => {
   assert.ok(err.includes("over the startup budget"), err);
   assert.ok(err.includes("raise BUDGET"), err);
 });
+
+test("React-preview runtime code on the startup path exits 1 and names the chunk", () => {
+  const root = fixture();
+  writeFileSync(
+    join(root, "dist", "assets", "react-bbb.js"),
+    "export const run = (id) => __vite_ssr_import__(id);\n",
+  );
+  const { code, out, err } = runIn(root);
+  assert.equal(code, 1);
+  assert.ok(out.includes("eager startup JS"), out);
+  assert.ok(
+    err.includes("assets/react-bbb.js contains __vite_ssr_import__"),
+    err,
+  );
+});

@@ -318,6 +318,8 @@ export const fr = {
       pathCopied: "Chemin copié",
       openFailed: "Impossible d'ouvrir {name}.",
       wrap: "Retour à la ligne",
+      reactNeedsNode: "Les aperçus React nécessitent Node.js 20.19 ou plus récent. Installez-le s’il manque, puis relancez la configuration d’Unsloth.",
+      reactFailed: "Impossible de préparer cet aperçu. Relancez-le pour réessayer.",
     },
     pages: {
       searchDownloads: "Rechercher dans l'historique des téléchargements",

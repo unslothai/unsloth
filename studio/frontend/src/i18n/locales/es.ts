@@ -318,6 +318,8 @@ export const es = {
       pathCopied: "Ruta copiada",
       openFailed: "No se pudo abrir {name}.",
       wrap: "Ajustar líneas",
+      reactNeedsNode: "Las vistas previas de React necesitan Node.js 20.19 o posterior. Instálalo si falta y vuelve a ejecutar la configuración de Unsloth.",
+      reactFailed: "No se pudo preparar esta vista previa. Vuelve a ejecutarla para reintentarlo.",
     },
     pages: {
       searchDownloads: "Buscar en el historial de descargas",

@@ -318,6 +318,8 @@ export const ptBR = {
       pathCopied: "Caminho copiado",
       openFailed: "Não foi possível abrir {name}.",
       wrap: "Quebrar linhas",
+      reactNeedsNode: "As prévias de React precisam do Node.js 20.19 ou mais recente. Instale-o se estiver faltando e execute a configuração do Unsloth de novo.",
+      reactFailed: "Não foi possível preparar esta prévia. Execute de novo para tentar outra vez.",
     },
     pages: {
       searchDownloads: "Pesquisar histórico de downloads",
