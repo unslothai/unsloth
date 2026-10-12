@@ -7190,6 +7190,99 @@ def _filter_fn_to_fqns(
             yield fqn
 
 
+def _unquantized_filter(filter_fn):
+    from torchao.quantization.quant_api import _is_linear
+    from torchao.utils import TorchAOBaseTensor
+
+    filter_fn = filter_fn or _is_linear
+
+    def _filter(module, fqn):
+        if not filter_fn(module, fqn):
+            return False
+        weight = getattr(module, "weight", None)
+        return isinstance(weight, torch.Tensor) and not isinstance(weight, TorchAOBaseTensor)
+
+    return _filter
+
+
+def _strip_torchao_fake_quantization(model):
+    """Swap fake-quantized modules back to plain ones, weights untouched (QATConfig(step = "convert") without a base config)."""
+    from torchao.quantization import quantize_
+    from torchao.quantization.qat import QATConfig
+
+    quantize_(
+        model,
+        QATConfig(step = "convert"),
+        filter_fn = lambda m, _: hasattr(m, "weight_fake_quantizer"),
+    )
+
+
+def _merged_torchao_config_for_peft_qat(model):
+    """TorchAoConfig for the merged 16-bit reload of a QAT LoRA model, naming modules as the reload does (PEFT wrappers removed)."""
+    from transformers import TorchAoConfig
+    from torchao.quantization import ModuleFqnToConfig
+    from torchao.quantization.quant_api import _is_linear
+
+    def _merged_name(fqn):
+        parts = fqn.split(".")
+        if parts[:2] == ["base_model", "model"]:
+            parts = parts[2:]
+        # Adapter weights are merged into their base layer.
+        if any(p.startswith("lora_") for p in parts):
+            return None
+        return ".".join(p for p in parts if p != "base_layer")
+
+    configs = model._torchao_config.base_config_and_filter_fns
+    if len(configs) == 1:
+        # One plain config plus an explicit skip list, as for PTQ: transformers applies a module-name
+        # FqnToConfig entry to every parameter of the module, so a Linear bias would be quantized too.
+        base_config, filter_fn = configs[0]
+        filter_fn = filter_fn or _is_linear
+        skip = [
+            name
+            for fqn, module in model.named_modules()
+            if isinstance(module, (torch.nn.Linear, torch.nn.Embedding))
+            and (name := _merged_name(fqn))
+            and not filter_fn(module, fqn)
+        ]
+        return TorchAoConfig(quant_type = base_config, modules_to_not_convert = skip)
+
+    embeddings = set()
+    for getter in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            module = getattr(model, getter)()
+        except Exception:
+            module = None
+        if module is not None:
+            embeddings.add(id(module))
+            embeddings.add(id(getattr(module, "base_layer", module)))
+
+    module_to_fqn_dict = {}
+    include_embeddings = False
+    for base_config, filter_fn in configs:
+        if filter_fn is None:
+            if "_default" in module_to_fqn_dict:
+                raise ValueError("Cannot use multiple default quantization configs")
+            module_to_fqn_dict["_default"] = base_config
+            continue
+        for fqn, module in model.named_modules():
+            if not filter_fn(module, fqn):
+                continue
+            name = _merged_name(fqn)
+            if not name:
+                continue
+            if name in module_to_fqn_dict:
+                raise ValueError(f"Found multiple quantization configs for {name}")
+            module_to_fqn_dict[name] = base_config
+            include_embeddings = include_embeddings or id(module) in embeddings
+
+    kwargs = {}
+    if include_embeddings:
+        kwargs["include_input_output_embeddings"] = True
+        kwargs["modules_to_not_convert"] = []
+    return TorchAoConfig(quant_type = ModuleFqnToConfig(module_to_fqn_dict), **kwargs)
+
+
 def _convert_torchao_model(model):
     from transformers import TorchAoConfig
     from torchao.quantization import quantize_, ModuleFqnToConfig
@@ -7199,6 +7292,8 @@ def _convert_torchao_model(model):
     module_to_fqn_dict = {}
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
+        # A manual quantize_(model, QATConfig(step = "convert")) (the QAT notebook) already swapped the fake-quantized modules back to plain ones without quantizing them.
+        quantize_(model, base_config, filter_fn = _unquantized_filter(filter_fn))
 
         if filter_fn is None:
             if "_default" in module_to_fqn_dict:
