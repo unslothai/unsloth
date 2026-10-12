@@ -1378,6 +1378,7 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
+    SANDBOX_UPLOAD_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
@@ -1434,6 +1435,11 @@ _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
 _RAG_DOCUMENT_UPLOAD_RE = _re.compile(
     r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
 )
+# One file into a chat's sandbox folder (multipart, capped by the route), on both mounts of the router.
+_SANDBOX_UPLOAD_RE = _re.compile(r"^/(?:api/inference|v1)/sandbox/[^/]+/upload/?$")
+_UPLOAD_PASSTHROUGH_RE = _re.compile(
+    f"(?:{_RAG_DOCUMENT_UPLOAD_RE.pattern})|(?:{_SANDBOX_UPLOAD_RE.pattern})"
+)
 # Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
 _AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1469,6 +1475,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         return AUDIO_INPUT_MAX_BYTES
+    if _SANDBOX_UPLOAD_RE.match(path):
+        return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):
         from core.rag import config as _rag_config
 
@@ -1685,7 +1693,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
-    upload_passthrough_pattern = _RAG_DOCUMENT_UPLOAD_RE,
+    upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
