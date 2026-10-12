@@ -37896,6 +37896,12 @@ class LlamaCppBackend:
         _reprompt_count = 0
         # Budgeted apart from _reprompt_count so a pre-tool nudge can't spend it.
         _post_tool_reprompts = 0
+        # A browser task is many steps, each a chance to announce the next one and stop: there the
+        # budget is one nudge per tool turn, as in the external loop, not one per request.
+        _browser_turns = any(
+            ((tool.get("function") or {}).get("name") in BROWSER_TOOL_NAMES)
+            for tool in (tools or [])
+        )
         # Text that triggered the last nudge; if the retry restates it, stop.
         _last_reprompt_text = ""
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
@@ -40868,6 +40874,8 @@ class LlamaCppBackend:
                 # extra tool rounds; a no-op correction turn doesn't consume budget (GGUF parity).
                 if _turn_executed_real_tool:
                     _tool_iters_done += 1
+                    if _browser_turns:
+                        _post_tool_reprompts = 0
                     if _tool_iters_done >= max_tool_iterations:
                         break
                 continue

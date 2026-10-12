@@ -45,6 +45,7 @@ const LOAD_TIMEOUT_MS = 30_000;
 const SETTLE_QUIET_MS = 350;
 const SETTLE_MAX_MS = 3_000;
 const PAGE_READY_MS = 4_000;
+const EXPIRED = "Not done: the action ran out of time, likely waiting for the user to answer in the panel. Ask them before trying again.";
 export const STOPPED = "The user stopped the browser agent. Do not use browser tools again unless they ask.";
 
 const str = (value: unknown, max: number): string | undefined =>
@@ -123,8 +124,14 @@ export function runBrowserAction(action: BrowserAction, context: ActionContext):
     const abort = () => controller.abort();
     context.signal?.addEventListener("abort", abort, { once: true });
     if (context.signal?.aborted) abort();
-    if (expires !== null && expires <= Date.now()) abort();
-    const deadline = expires !== null ? setTimeout(abort, Math.max(0, expires - Date.now())) : null;
+    // Out of time is not "the user declined" or "the tab closed", which an abort reads as below.
+    let expired = false;
+    const expire = () => {
+      expired = true;
+      abort();
+    };
+    if (expires !== null && expires <= Date.now()) expire();
+    const deadline = expires !== null ? setTimeout(expire, Math.max(0, expires - Date.now())) : null;
     setActiveAction(controller);
     let result: Result;
     try {
@@ -137,6 +144,7 @@ export function runBrowserAction(action: BrowserAction, context: ActionContext):
       setActiveAction(null);
       useBrowserAgentStore.setState({ working: false });
     }
+    if (expired && !result.ok) result = { ok: false, error: EXPIRED };
     if (useBrowserAgentStore.getState().stoppedRun === context.runKey) result = { ok: false, error: STOPPED };
     await postResult(action, result);
   });
