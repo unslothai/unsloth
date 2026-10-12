@@ -183,7 +183,7 @@ def check_close_preserves_position(page, engine: str, mode: str, mod: str) -> No
     try:
         for outer_scroll in (False, True):
             search_page.evaluate("outer => window.__findSmoke.setOuterScroll(outer)", outer_scroll)
-            origin = search_page.locator('[data-find-scope] .mx-auto > .rounded-xl').first
+            origin = search_page.locator("[data-find-scope] .mx-auto > .rounded-xl").first
             origin.evaluate("element => { element.tabIndex = 0; }")
             for dismiss in ("Escape", "button"):
                 origin.focus()
