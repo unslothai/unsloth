@@ -9,6 +9,7 @@ import pytest
 
 from auth import policy
 from utils import (
+    exact_concurrency_settings,
     hf_cache_settings,
     llama_cpp_path_settings,
     model_memory_settings,
@@ -27,7 +28,12 @@ def studio_home(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})
-    for module in (model_memory_settings, vram_budget_settings, openai_auto_switch_settings):
+    for module in (
+        model_memory_settings,
+        vram_budget_settings,
+        openai_auto_switch_settings,
+        exact_concurrency_settings,
+    ):
         monkeypatch.setattr(module, "_cache", {})
         if hasattr(module, "_generation"):
             monkeypatch.setattr(module, "_generation", {})
@@ -43,6 +49,14 @@ def test_a_managed_load_reads_the_owners_model_memory_policy():
 def test_a_managed_load_reads_the_owners_vram_budget():
     run_as(OWNER, vram_budget_settings.set_vram_budget_fraction, 0.85)
     assert run_as(ALICE, vram_budget_settings.get_vram_budget_fraction) == pytest.approx(0.85)
+
+
+def test_a_managed_load_reads_the_owners_exact_concurrency_setting():
+    run_as(OWNER, exact_concurrency_settings.set_exact_concurrency, "on")
+    exact_concurrency_settings._cache.clear()
+    assert run_as(ALICE, exact_concurrency_settings.get_exact_concurrency) == "on"
+    # And what that read cached is still the owner's value for the owner.
+    assert run_as(OWNER, exact_concurrency_settings.get_exact_concurrency) == "on"
 
 
 def test_a_managed_request_reads_the_owners_auto_switch_policy():

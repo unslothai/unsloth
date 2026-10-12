@@ -486,6 +486,47 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._exact_host_free_mib(me) == 10_000
         assert llama_mod._neighbour_parking_commitments(me) == ([], False)
 
+    def test_a_launch_in_flight_reserves_the_budget_it_named(self, monkeypatch):
+        # Two backends launching together: the second sizes while the first has named its
+        # budget but not registered, so the first's figure has to be visible already.
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
+        monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 100_000)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
+        monkeypatch.setattr(llama_mod, "_parking_backends", __import__("weakref").WeakSet())
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [])
+        first = self._backend(exact.EXACT_STATE_OFF, None)
+        first._process = None
+        second = self._backend(exact.EXACT_STATE_OFF, None)
+        alone = llama_mod._host_bounded_parking_mib(10**9, second)
+        cmd = ["llama-server", "--preempt-ram", "999999"]
+        named = llama_mod._rebound_named_parking_budget(cmd, 999999, first)
+        assert named and first._parking_reserving_mib == named
+        assert llama_mod._host_bounded_parking_mib(10**9, second) < alone, (
+            "the second launch sized off the same free reading as the first"
+        )
+        first._parking_reserving_mib = None
+        assert llama_mod._host_bounded_parking_mib(10**9, second) == alone
+
+    def test_the_in_flight_figure_is_set_under_the_sizing_lock_and_cleared(self):
+        import inspect
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert (
+            "with _parking_budget_lock: _exact_budget = _server_owned_parking_budget_mib("
+        ) in source
+        assert "_reserve_inflight_parking( self," in source
+        assert "self._parking_reserving_mib = None" in source
+        scope = inspect.getsource(LlamaCppBackend._serial_load_scope)
+        assert "self._parking_reserving_mib = None" in scope
+
+    def test_a_server_without_the_unified_cache_reserves_nothing(self):
+        import inspect
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert (
+            "self._server_launched_parking = bool(self._server_preempts_kv and kv_cache_unified)"
+        ) in source
+
     def test_ordinary_neighbours_reserve_their_budgets_too(self, monkeypatch):
         # Each ordinary budget is allocated only when it parks, so four sized off the same free
         # reading could together take the reserve the bound promises to leave.

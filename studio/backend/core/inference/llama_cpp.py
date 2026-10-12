@@ -612,6 +612,20 @@ def _note_parking_backend(backend) -> None:
         _parking_backends.add(backend)
 
 
+# Held while a launch sizes its parking budget and records it as in flight, so two launches
+# sizing at once each see the other's commitment instead of the same free reading.
+_parking_budget_lock = threading.Lock()
+
+
+def _reserve_inflight_parking(backend, budget_mib: Optional[int]) -> None:
+    """Count ``budget_mib`` against ``backend`` from now until its launch registers or ends."""
+    if backend is None:
+        return
+    backend._parking_reserving_mib = budget_mib if budget_mib else None
+    if budget_mib:
+        _note_parking_backend(backend)
+
+
 def _parking_neighbours(backend) -> list:
     seen = _serving_backends_snapshot()
     with _serving_backends_lock:
@@ -2542,11 +2556,14 @@ def _neighbour_parking_commitments(backend) -> tuple[list, bool]:
     ``unlimited`` is a neighbour on `--preempt-ram -1`, which may take all of it."""
     commitments, unlimited = [], False
     for other in _parking_neighbours(backend):
-        if getattr(other, "_process", None) is None:
+        if getattr(other, "_parking_reserving_mib", None):
+            # Launching: the budget it named is not registered yet, but it may park up to it.
+            commitment = other._parking_reserving_mib
+        elif getattr(other, "_process", None) is None:
             # No server: a load that failed after launching, or one since stopped, parks
             # nothing, whatever its launch flags still say.
             continue
-        if getattr(other, "_exact_concurrency", None) == _exact.EXACT_STATE_ON:
+        elif getattr(other, "_exact_concurrency", None) == _exact.EXACT_STATE_ON:
             commitment = getattr(other, "_exact_parking_writes", 0)
         elif getattr(other, "_server_launched_parking", False):
             commitment = getattr(other, "_launched_parking_mib", 0)
@@ -2610,7 +2627,9 @@ def _rebound_named_parking_budget(
 ) -> Optional[int]:
     """Replace the ``--preempt-ram budget_mib`` pair Studio appended to ``cmd`` with the host-bounded
     figure, dropping the pair when that is zero. Returns the budget now in force."""
-    bounded = _host_bounded_parking_mib(budget_mib, backend)
+    with _parking_budget_lock:
+        bounded = _host_bounded_parking_mib(budget_mib, backend)
+        _reserve_inflight_parking(backend, bounded)
     for i in range(len(cmd) - 1, 0, -1):
         if cmd[i - 1] == "--preempt-ram" and cmd[i] == str(budget_mib):
             if bounded > 0:
@@ -25156,6 +25175,8 @@ class LlamaCppBackend:
                 # Same for the placement marker: released at the end of the call instead, a
                 # finished load could blank the marker of a queued one that had published.
                 self._memory_pending_launch = None
+                # A launch that ended before it registered must not keep its parking reserved.
+                self._parking_reserving_mib = None
 
     @_invalidates_gpu_memory("llama.cpp load")
     @_with_gguf_load_marker
@@ -31090,17 +31111,21 @@ class LlamaCppBackend:
                     # `_park_owned` is the cheap half of the same question, kept because the
                     # exact checks below read it; the helper holds the whole rule so nobody has
                     # to reassemble it, the unified cache included.
-                    _exact_budget = _server_owned_parking_budget_mib(
-                        _exact_kv_bytes,
-                        args = list(cmd) + [str(a) for a in (extra_args or ())],
-                        env = os.environ,
-                        server_supports = _park_supported,
-                        kv_unified = _kv_unified_from_args(cmd),
-                        draft_bytes = _exact_draft_bytes,
-                        parallel = n_parallel,
-                        bound_to_host = not _exact_wanted,
-                        backend = self,
-                    )
+                    with _parking_budget_lock:
+                        _exact_budget = _server_owned_parking_budget_mib(
+                            _exact_kv_bytes,
+                            args = list(cmd) + [str(a) for a in (extra_args or ())],
+                            env = os.environ,
+                            server_supports = _park_supported,
+                            kv_unified = _kv_unified_from_args(cmd),
+                            draft_bytes = _exact_draft_bytes,
+                            parallel = n_parallel,
+                            bound_to_host = not _exact_wanted,
+                            backend = self,
+                        )
+                        _reserve_inflight_parking(
+                            self, _exact_budget if (_exact_budget or 0) > 0 else None
+                        )
                     if _exact_budget is not None:
                         cmd.extend(["--preempt-ram", str(_exact_budget)])
                         logger.info(
@@ -34081,7 +34106,9 @@ class LlamaCppBackend:
                     self._server_preempts_kv = False
                 # Asked to park even where auto cannot confirm it: such a child still parks, so
                 # its silence is read through the park probe, while admission stays fair share.
-                self._server_launched_parking = self._server_preempts_kv
+                # Only on the unified cache it came up with: a fallback that dropped it keeps the
+                # budget on its argv but has no sequence to park, so it reserves no host RAM.
+                self._server_launched_parking = bool(self._server_preempts_kv and kv_cache_unified)
                 # The cap this child may park up to, read off the argv that spawned: a neighbour
                 # loading in exact mode has to leave room for it.
                 self._launched_parking_mib = (
@@ -34091,6 +34118,8 @@ class LlamaCppBackend:
                 )
                 if self._server_launched_parking:
                     _note_parking_backend(self)
+                # Registered above, or parks nothing: the in-flight figure has done its job.
+                self._parking_reserving_mib = None
                 if self._server_preempts_kv:
                     self._server_preempts_kv = self._server_confirms_parking()
                 _preemption.note_server_parking(self._server_preempts_kv and kv_cache_unified, self)

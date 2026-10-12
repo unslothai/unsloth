@@ -17,6 +17,7 @@ from core.inference.llama_exact import (
     EXACT_SETTINGS,
     normalize_setting,
 )
+from utils.account_context import OWNER, run_as
 
 EXACT_CONCURRENCY_SETTING_KEY = "llama_exact_concurrency"
 
@@ -38,7 +39,10 @@ def _cached_setting(key: str) -> Any:
             generation = _generation.get(key, 0)
         try:
             from storage.studio_db import get_app_setting
-            stored = get_app_setting(key, None)
+            # The owner's, as every machine-wide load policy is: a managed account's load read
+            # its own database and found nothing, and the shared cache then served that to
+            # the owner too.
+            stored = run_as(OWNER, get_app_setting, key, None)
         except Exception:
             # An unreadable database must never fail a load; the caller falls back.
             return None
@@ -70,7 +74,7 @@ def set_exact_concurrency(value: Any) -> Optional[str]:
         raise ValueError("Exact concurrency must be one of " + ", ".join(EXACT_SETTINGS) + ".")
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings({EXACT_CONCURRENCY_SETTING_KEY: parsed})
+    run_as(OWNER, upsert_app_settings, {EXACT_CONCURRENCY_SETTING_KEY: parsed})
     _invalidate(EXACT_CONCURRENCY_SETTING_KEY)
     return get_exact_concurrency()
 
