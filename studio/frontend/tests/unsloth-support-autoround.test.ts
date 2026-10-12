@@ -15,16 +15,27 @@ const AUTOROUND = {
 
 test("AutoRound checkpoints are not offered to the Default engine", () => {
   for (const deviceType of ["cuda", "rocm", "mac", "cpu"]) {
-    for (const vllmAvailable of [false, true]) {
-      assert.deepEqual(classifyUnslothSupport({ ...AUTOROUND, deviceType, vllmAvailable }), {
-        status: "unsupported",
-        reason: "Detected AutoRound quantization.",
-      });
-    }
+    assert.deepEqual(classifyUnslothSupport({ ...AUTOROUND, deviceType }), {
+      status: "unsupported",
+      reason: "Detected AutoRound quantization.",
+    });
   }
   for (const quantMethod of ["auto-round", "AUTO-ROUND", "auto_round", "autoround"]) {
     assert.equal(classifyUnslothSupport({ modelId: "owner/model", quantMethod }).status, "unsupported", quantMethod);
   }
+});
+
+test("with vLLM, AutoRound is marked as vLLM-runnable", () => {
+  assert.deepEqual(classifyUnslothSupport({ ...AUTOROUND, deviceType: "cuda", vllmAvailable: true }), {
+    status: "unsupported",
+    reason: "Detected AutoRound quantization.",
+    supportedIn: "vllm",
+  });
+  // vLLM recognises only the spelling transformers writes.
+  assert.equal(
+    classifyUnslothSupport({ modelId: "owner/model", quantMethod: "auto_round", vllmAvailable: true }).supportedIn,
+    undefined,
+  );
 });
 
 test("AutoRound GGUF exports still run through llama.cpp", () => {

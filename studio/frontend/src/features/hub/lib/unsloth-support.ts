@@ -135,6 +135,7 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "compressed-tensors",
   "awq",
   "gptq",
+  "auto-round",
 ]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
 // Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
