@@ -205,6 +205,8 @@ async function waitForLoad(tabId: string, signal?: AbortSignal): Promise<Browser
 const AGENT_ERRORS = [
   /^r\d{1,9} is covered by an overlay; snapshot to find its close button, or scroll first\.$/,
   /^r\d{1,9} is not a text field\.$/,
+  /^r\d{1,9} is disabled or read-only\.$/,
+  /^r\d{1,9} is a radio button; select another option in its group instead\.$/,
   /^r\d{1,9} has no such option; snapshot it to see its options\.$/,
   /^r\d{1,9} is not a dropdown or checkbox; click it, then click the option\.$/,
   /^r\d{1,9} is no longer on the page; call browser_snapshot for fresh refs\.$/,

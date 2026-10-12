@@ -241,7 +241,18 @@ export function installPageAgent(): PageAgent {
     }
     masked.clear();
     if (!on) return { ok: true };
-    for (const el of Array.from(document.querySelectorAll<HTMLInputElement>("input, textarea, [contenteditable]"))) {
+    const fields: HTMLInputElement[] = [];
+    const visit = (root: Document | ShadowRoot) => {
+      fields.push(...Array.from(root.querySelectorAll<HTMLInputElement>("input, textarea, [contenteditable]")));
+      for (const host of Array.from(root.querySelectorAll("*"))) if (host.shadowRoot) visit(host.shadowRoot);
+    };
+    visit(document);
+    // A frame's fields (card and code widgets often live in one) can't be read from here: hide it.
+    for (const frame of Array.from(document.querySelectorAll<HTMLElement>("iframe, frame"))) {
+      masked.set(frame, frame.getAttribute("style"));
+      frame.style.setProperty("visibility", "hidden", "important");
+    }
+    for (const el of fields) {
       const secret = el.isContentEditable
         ? Boolean(el.innerText.trim()) && (SECRET.test(el.getAttribute("autocomplete") ?? "") || SECRET_NAME.test(nameOf(el)))
         : Boolean(el.value) && isSecret(el, roleOf(el));
@@ -542,17 +553,17 @@ export function installPageAgent(): PageAgent {
   const click = (ref: string, directLinks: boolean): Record<string, unknown> => {
     const el = lookup(ref);
     el.scrollIntoView({ block: "center", inline: "center" });
+    const over = covering(el);
+    if (over) {
+      // No page words here: errors reach the model outside the untrusted-content fence.
+      return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
+    }
     const anchor = el.closest("a[href]") as HTMLAnchorElement | null;
     const href = anchor?.href ?? "";
     if (anchor && /^https?:/i.test(href)) {
       const target = new URL(href);
       const hashOnly = target.hash && target.href.split("#")[0] === pageUrl().href.split("#")[0];
       if (!hashOnly && (directLinks || anchor.target === "_blank")) return { ok: true, navigate: href };
-    }
-    const over = covering(el);
-    if (over) {
-      // No page words here: errors reach the model outside the untrusted-content fence.
-      return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
     }
     mouse(el, "pointerover");
     mouse(el, "pointerdown");
@@ -617,9 +628,14 @@ export function installPageAgent(): PageAgent {
       if (tag === "button" || tag === "a" || BUTTON_INPUTS.has(inputType)) (target as HTMLElement).click();
     } else if (name === "Space" && (tag === "button" || (tag === "input" && ["checkbox", "radio"].includes((target as HTMLInputElement).type)))) {
       (target as HTMLElement).click();
-    } else if (name === "Backspace" && (tag === "input" || tag === "textarea")) {
+    } else if ((name === "Backspace" || name === "Delete") && (tag === "input" || tag === "textarea")) {
       const field = target as HTMLInputElement;
-      setValue(field, field.value.slice(0, -1));
+      const end = field.selectionEnd ?? field.value.length;
+      const start = field.selectionStart ?? end;
+      // A selection goes either way; otherwise one character before (Backspace) or after (Delete).
+      const [from, to] = start !== end ? [start, end] : name === "Backspace" ? [Math.max(0, start - 1), end] : [start, Math.min(field.value.length, end + 1)];
+      setValue(field, field.value.slice(0, from) + field.value.slice(to));
+      field.setSelectionRange?.(from, from);
     } else if (name === "Tab") {
       const focusable = Array.from(
         document.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])"),
@@ -644,8 +660,12 @@ export function installPageAgent(): PageAgent {
     el.scrollIntoView({ block: "center" });
     (el as HTMLElement).focus?.({ preventScroll: true });
     const tag = el.tagName.toLowerCase();
-    if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has((el as HTMLInputElement).type.toLowerCase()))) {
-      setValue(el as HTMLInputElement, text);
+    const field = el as HTMLInputElement;
+    if ((tag === "textarea" || tag === "input") && (field.disabled || field.readOnly)) {
+      return { ok: false, error: `${ref} is disabled or read-only.` };
+    }
+    if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has(field.type.toLowerCase()))) {
+      setValue(field, text);
     } else if ((el as HTMLElement).isContentEditable) {
       const selection = window.getSelection();
       const range = document.createRange();
@@ -683,6 +703,9 @@ export function installPageAgent(): PageAgent {
     if (role === "checkbox" || role === "radio" || role === "switch") {
       const on = ["true", "on", "yes", "checked", "1", "check"].includes(value.trim().toLowerCase());
       const current = el instanceof HTMLInputElement ? el.checked : el.getAttribute("aria-checked") === "true";
+      if (current && !on && role === "radio") {
+        return { ok: false, error: `${ref} is a radio button; select another option in its group instead.` };
+      }
       if (current !== on) return click(ref, false);
       return { ok: true, note: `Already ${on ? "checked" : "unchecked"}.` };
     }
