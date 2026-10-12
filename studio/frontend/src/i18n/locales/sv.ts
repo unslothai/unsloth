@@ -330,6 +330,8 @@ export const sv = {
       pathCopied: "Sökvägen kopierad",
       openFailed: "Det gick inte att öppna {name}.",
       wrap: "Radbryt",
+      reactNeedsNode: "React-förhandsvisningar kräver Node.js 20.19 eller senare. Installera det om det saknas och kör sedan Unsloths installation igen.",
+      reactFailed: "Det gick inte att förbereda förhandsvisningen. Kör den igen för att försöka på nytt.",
     },
     pages: {
       searchDownloads: "Sök i hämtningshistoriken",
@@ -897,6 +899,13 @@ export const sv = {
       loginHint:
         "Logga in som {username} med den här koden som lösenord och välj sedan ett nytt lösenord.",
       privateAccount: "Privat konto",
+      modelAccess: "Modellåtkomst",
+      modelAccessTitle: "Modellåtkomst för {username}",
+      modelAccessDescription: "Välj vilka Hugging Face-modeller det här kontot kan se, ladda ner, läsa in och använda via sina API-nycklar.",
+      modelAccessLabel: "Tillåtna modeller",
+      modelAccessHint: "En modell per rad, till exempel unsloth/Qwen3-4B-GGUF, eller unsloth/* för en hel organisation. Lämna tomt för att tillåta alla modeller.",
+      modelAccessSave: "Spara",
+      modelAccessLimited: "Begränsad modellåtkomst",
       empty: "Inga andra konton ännu",
       setupCode: "Konfigurationskod",
       setupFor: "Konfigurationskod för {username}",
@@ -1953,6 +1962,14 @@ export const sv = {
         switchFailed: "Kunde inte byta inbäddningsmodell",
         back: "Tillbaka till källor",
         menuSubtitle: "Används för filsökning",
+        device: "Enhet för inbäddning",
+        deviceDescription:
+          "Var inbäddningsmodellen körs, för alla modeller. GPU indexerar stora dokumentmängder snabbare men håller en del VRAM upptaget tills Studio startas om.",
+        deviceAuto: "Automatiskt",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "Anges av {name}.",
+        deviceSaveError: "Det gick inte att ändra enheten för inbäddning",
       },
       storage: {
         sectionTitle: "Lagring",
@@ -2248,6 +2265,13 @@ export const sv = {
         noGpu: "Ingen synlig GPU",
         gpuUnusable: "GPU oanvändbar",
         gpuUnusableDetail: "Identifierad, men PyTorch kan inte använda den",
+        detailedView: "Detaljerad vy",
+        detailedViewDescription:
+          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret och här.",
+        cpuLoad: "CPU-belastning",
+        gpuLoad: "GPU-belastning",
+        temperature: "Temperatur",
+        power: "Effekt",
       },
       gpu: {
         title: "GPU-enheter",
@@ -4211,6 +4235,15 @@ export const sv = {
         projectMissing: "Det här projektet har ingen mapp än.",
         missingDescription:
           "Den skapas första gången ett verktyg skriver en fil.",
+        upload: "Ladda upp till chattmapp",
+        uploadTitle: "Lägg till filer i mappen som den här chattens verktygsanrop läser och skriver i",
+        uploaded: "{name} lades till i chattmappen",
+        uploadedMany: "{count} filer lades till i chattmappen",
+        uploadedDescription: "Verktygen i den här chatten kan öppna dem nu. De läggs inte till i konversationen.",
+        uploadExists: "{name} finns redan i chattmappen",
+        uploadExistsMany: "{count} filer finns redan i chattmappen",
+        replace: "Ersätt",
+        uploadFailed: "Det gick inte att ladda upp {name}",
       },
     },
     empty: {
