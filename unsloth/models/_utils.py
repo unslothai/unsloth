@@ -5245,11 +5245,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 from .llama import _decline_fused_lora_for_fsdp
                 _decline_fused_lora_for_fsdp(getattr(self, "model", None))
             _replan_auto_offload_safely(self)
-            if not (
-                getattr(self, "is_fsdp_enabled", False)
-                or getattr(self, "is_deepspeed_enabled", False)
-            ):
-                _ignore_block_swap_params_for_ddp(getattr(self, "model", None))
+            _block_swap_for_trainer_backend(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -7715,6 +7711,36 @@ def _ignore_block_swap_params_for_ddp(model):
 
     DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored + added)
     return added
+
+
+def _block_swap_for_trainer_backend(trainer):
+    """DDP: keep the swapped weights out of its init-time broadcast. FSDP / DeepSpeed: refuse an
+    offload_layers = "auto" swap. TrainingArguments(fsdp = ...) / (deepspeed = ...) under torchrun
+    leaves no trace at from_pretrained, so "auto" planned for DDP, and a sharding backend would
+    flatten or partition the 0-element placeholders."""
+    model = getattr(trainer, "model", None)
+    backend = (
+        "FSDP"
+        if getattr(trainer, "is_fsdp_enabled", False)
+        else "DeepSpeed"
+        if getattr(trainer, "is_deepspeed_enabled", False)
+        else None
+    )
+    if backend is None:
+        return _ignore_block_swap_params_for_ddp(model)
+    swapper = getattr(model, "_unsloth_block_swap", None) if model is not None else None
+    auto = model is not None and (
+        getattr(model, "_unsloth_offload_layers_auto_ddp", False)
+        or getattr(model, "_unsloth_offload_layers_auto", None) is not None
+    )
+    if auto and getattr(swapper, "indices", None):
+        raise ValueError(
+            f"Unsloth: offload_layers = 'auto' swapped {len(swapper.indices)} decoder layers to host "
+            f"RAM, but this Trainer runs {backend}, which shards the weights itself and cannot wrap "
+            "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
+            f"or launch without {backend}."
+        )
+    return []
 
 
 def _trainer_offload_replan_skip(trainer):

@@ -791,28 +791,6 @@ def _single_card_device_map(device_map):
     return isinstance(device_map, str) and (device_map == "cuda" or device_map.startswith("cuda:"))
 
 
-def _agree_block_swap_layers(layers, device):
-    """The most layers any rank planned, when a process group already exists, so every rank swaps the
-    same blocks (the swapped set is a function of the count). Without one each rank keeps its own plan;
-    the trainer keeps the swapped weights out of DDP's init-time broadcast (`_ignore_block_swap_params_for_ddp`)."""
-    layers = int(layers or 0)
-    try:
-        import torch.distributed as dist
-
-        if not (dist.is_available() and dist.is_initialized()):
-            print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
-            return layers
-        on_cuda = "nccl" in str(dist.get_backend()).lower()
-        count = torch.tensor(
-            [layers], dtype = torch.int64, device = f"cuda:{device}" if on_cuda else "cpu"
-        )
-        dist.all_reduce(count, op = dist.ReduceOp.MAX)
-        return int(count.item())
-    except Exception as error:
-        print(f"Unsloth: offload_layers = 'auto' could not compare plans across ranks ({error}).")
-        return layers
-
-
 _BLOCK_SWAP_PLANNER_KEYS = (
     "batch_size",
     "lora_rank",
@@ -937,11 +915,10 @@ def resolve_auto_block_swap(
     )
     embedding = bool(getattr(plan, "offload_embedding", False))
     if distributed:
-        layers = _agree_block_swap_layers(plan.layers, target)
-        if layers != plan.layers:
-            print(
-                f"Unsloth: offload_layers = 'auto' swaps {layers} layers to match the other ranks."
-            )
+        # No collective here: a loader only some ranks run would hang on it. Each rank keeps its own
+        # plan; the counts may differ, which `_ignore_block_swap_params_for_ddp` makes safe for DDP.
+        layers = int(plan.layers or 0)
+        print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
         return layers, ({"": target} if layers else device_map), False
     if not plan.layers:
         return 0, device_map, embedding

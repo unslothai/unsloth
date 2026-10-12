@@ -16,16 +16,15 @@
 Each rank of a torchrun launch loads one whole model onto its own card, so "auto" can plan that
 card exactly like a single-GPU load. FSDP / DeepSpeed and multi-GPU splits stay refused, and the
 embedding stays on the card (DDP refuses a module with CPU parameters). Ranks may plan different
-counts, so the trainer keeps the frozen decoder weights out of DDP's init-time broadcast, on every
-rank alike. Extracted with ast so nothing imports torch's CUDA stack.
+counts and never talk to each other while loading, so the frozen decoder weights are kept out of
+DDP's init-time broadcast on every rank alike: after get_peft_model (custom loops) and at Trainer init.
+A Trainer that turns out to run FSDP / DeepSpeed refuses the swap. Extracted with ast so nothing imports torch's CUDA stack.
 """
 
 import ast
 import importlib.util
 import os
-import subprocess
 import sys
-import textwrap
 import types
 
 import pytest
@@ -137,7 +136,6 @@ def resolve(monkeypatch):
                 "resolve_auto_block_swap",
                 "_sharded_data_parallel_launch",
                 "_single_card_device_map",
-                "_agree_block_swap_layers",
                 "_as_bytes",
             ),
             (
@@ -214,35 +212,32 @@ def test_a_single_process_still_offers_the_embedding(resolve):
     assert resolve.calls[0]["offload_embedding"] is True
 
 
-def test_ranks_with_a_process_group_agree_on_the_most_layers(tmp_path):
-    """With a process group up at plan time every rank swaps the largest count, so the swapped
-    set (a function of the count) is the same everywhere. Two gloo ranks on the CPU."""
-    script = tmp_path / "agree.py"
-    script.write_text(
-        textwrap.dedent(
-            f"""
-            import os, sys, torch, torch.distributed as dist
-            rank = int(sys.argv[1])
-            dist.init_process_group("gloo", init_method = "file://{tmp_path}/pg", rank = rank, world_size = 2)
-            ns = {{"torch": torch}}
-            exec({_extract(LOADER_UTILS, ("_agree_block_swap_layers",))!r}, ns)
-            print("AGREED", ns["_agree_block_swap_layers"]([3, 9][rank], 0))
-            dist.destroy_process_group()
-            """
-        )
-    )
-    procs = [
-        subprocess.Popen(
-            [sys.executable, str(script), str(rank)],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-        )
-        for rank in (0, 1)
-    ]
-    outs = [p.communicate(timeout = 120)[0] for p in procs]
-    for out in outs:
-        assert "AGREED 9" in out, out
+def test_planning_never_runs_a_collective(resolve, monkeypatch):
+    """Even with a process group up, from_pretrained must not wait on the other ranks: a loader only
+    some ranks reach would hang. Each rank keeps its own plan."""
+    import torch.distributed as dist
+
+    calls = []
+
+    def collective(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("collective inside from_pretrained")
+
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_backend", lambda *a, **k: "gloo")
+    for name in (
+        "all_reduce",
+        "all_gather",
+        "all_gather_object",
+        "broadcast",
+        "broadcast_object_list",
+        "barrier",
+    ):
+        monkeypatch.setattr(dist, name, collective)
+    resolve.distributed = True
+    assert resolve.fn({"": "cuda:1"}) == (6, {"": 1}, False)
+    assert calls == []
 
 
 # Trainer side: the DDP ignore list.
@@ -267,7 +262,17 @@ def _ignore_helpers(monkeypatch, distributed = True):
         "torch": torch,
         "find_decoder_layers": block_swap.find_decoder_layers,
     }
-    exec(_extract(UTILS, ("mark_auto_offload_for_ddp", "_ignore_block_swap_params_for_ddp")), ns)
+    exec(
+        _extract(
+            UTILS,
+            (
+                "mark_auto_offload_for_ddp",
+                "_ignore_block_swap_params_for_ddp",
+                "_block_swap_for_trainer_backend",
+            ),
+        ),
+        ns,
+    )
     return ns
 
 
@@ -358,7 +363,87 @@ def test_wiring_trainer_init_and_both_loaders():
         for n in ast.walk(ast.parse(utils))
         if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_trainer_init"
     )
-    assert "_ignore_block_swap_params_for_ddp" in ast.get_source_segment(utils, init)
+    assert "_block_swap_for_trainer_backend(self)" in ast.get_source_segment(utils, init)
     for name in ("llama.py", "vision.py"):
         src = open(os.path.join(MODELS, name), encoding = "utf-8").read()
         assert "mark_auto_offload_for_ddp(model, _offload_layers_requested)" in src, name
+    # The pre-wrapped PEFT branch installs the swap after its rope pass, so it applies the list itself.
+    llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    install = llama.index("install_block_swap(\n                    model,")
+    assert "_ignore_block_swap_params_for_ddp(model)" in llama[install : install + 600]
+
+
+def _swapped_model(
+    fsdp = False,
+    deepspeed = False,
+    swapped = (2,),
+    mark = True,
+):
+    model = types.SimpleNamespace(_unsloth_block_swap = types.SimpleNamespace(indices = list(swapped)))
+    if mark:
+        model._unsloth_offload_layers_auto_ddp = True
+    return types.SimpleNamespace(model = model, is_fsdp_enabled = fsdp, is_deepspeed_enabled = deepspeed)
+
+
+@pytest.mark.parametrize("backend", ["fsdp", "deepspeed"])
+def test_a_sharded_trainer_refuses_an_auto_swap(monkeypatch, backend):
+    """TrainingArguments(fsdp / deepspeed = ...) under torchrun leaves no trace at from_pretrained, so
+    "auto" planned for DDP; the sharding backend must not wrap 0-element placeholders."""
+    ns = _ignore_helpers(monkeypatch)
+    check = ns["_block_swap_for_trainer_backend"]
+    with pytest.raises(ValueError, match = "offload_layers = 0"):
+        check(_swapped_model(**{backend: True}))
+    # Nothing swapped on this rank, or no "auto": nothing to refuse.
+    assert check(_swapped_model(swapped = (), **{backend: True})) == []
+    assert check(_swapped_model(mark = False, **{backend: True})) == []
+
+
+def test_ignore_list_is_applied_at_the_end_of_get_peft_model():
+    """A custom loop hands the PeftModel to DistributedDataParallel / accelerator.prepare directly, so
+    both get_peft_model paths apply the list on return. Not at load: before get_peft_model only the
+    swapped host-built layers are frozen, so the list would differ between ranks."""
+    for name, owner in (("llama.py", "FastLlamaModel"), ("vision.py", "FastBaseModel")):
+        src = open(os.path.join(MODELS, name), encoding = "utf-8").read()
+        cls = next(
+            n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ClassDef) and n.name == owner
+        )
+        fn = next(
+            n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "get_peft_model"
+        )
+        body = ast.get_source_segment(src, fn)
+        tail = body[body.rindex("_exclude_rope_inv_freq_from_ddp(model)") :]
+        assert "_ignore_block_swap_params_for_ddp(model)" in tail.split("return model")[0], name
+    rope = _extract(LOADER_UTILS, ("_exclude_rope_inv_freq_from_ddp",))
+    assert "_ignore_block_swap_params_for_ddp" not in rope
+
+
+def test_load_time_frozen_set_is_rank_dependent(monkeypatch):
+    """Why the list is never built at load: there only swapped layers are frozen."""
+    ns = _ignore_helpers(monkeypatch)
+    transformers = pytest.importorskip("transformers")
+    config = transformers.LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 3,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+    )
+    lists = []
+    for swapped in (1, 2):
+        model = transformers.LlamaForCausalLM(config)
+        model._unsloth_offload_layers_auto_ddp = True
+        for layer in model.model.layers[3 - swapped :]:
+            layer.requires_grad_(False)
+        lists.append(ns["_ignore_block_swap_params_for_ddp"](model))
+    assert lists[0] != lists[1]
+
+
+def test_full_finetuning_never_ignores_a_trainable_weight(monkeypatch):
+    """Every weight trainable: nothing to keep out of DDP (zoo's BlockSwap only swaps frozen weights,
+    and the loaders refuse offload_layers with full_finetuning)."""
+    ns = _ignore_helpers(monkeypatch)
+    model = _tiny_peft_model()
+    for p in model.parameters():
+        p.requires_grad_(True)
+    assert ns["_ignore_block_swap_params_for_ddp"](model) == []

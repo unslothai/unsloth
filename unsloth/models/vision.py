@@ -131,6 +131,7 @@ from ._utils import (
     _is_seq2seq_lm_config,
 )
 from ._utils import *
+from ._utils import _ignore_block_swap_params_for_ddp
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -4801,6 +4802,9 @@ class FastBaseModel:
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # Here, not at load: only after get_peft_model is the frozen set the same on every rank, and a
+        # custom loop may hand the model to DistributedDataParallel without a Trainer.
+        _ignore_block_swap_params_for_ddp(model)
         return model
 
     @staticmethod
