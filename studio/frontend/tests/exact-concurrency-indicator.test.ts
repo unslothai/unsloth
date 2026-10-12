@@ -230,6 +230,11 @@ test("the recompute note is persisted with the answer and read from the answer o
     "the live and the final metadata both name the recompute's model",
   );
   assert.match(PROVIDER, /: typeof recomputedOn === "string" && recomputedOn\s+\? recomputedOn/);
+  // And the durable follower, whose interrupted answers persist without details either.
+  assert.match(
+    PROVIDER,
+    /const recomputedOn = update\.run\.requestPayload\?\.model;[\s\S]{0,300}preemptRecomputedModelId: recomputedOn/,
+  );
   // The selector hands back the message itself, never a fresh object: a new object on every
   // store read re-renders without end (React error 185, seen in the Windows UI lane).
   assert.doesNotMatch(PROVIDER, /useAuiState\(\(\{ thread \}\) => \{[\s\S]{0,400}return \{/);

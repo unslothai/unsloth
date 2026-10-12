@@ -1576,7 +1576,16 @@ function scheduleGenerationRecovery(
                 if (chunk._admissionStatus === "recomputed") {
                   // Qualifies the resume before it, so the status line stays as it is. Reaches
                   // the chip through the message, as the live adapter's does.
-                  currentMetadata = { ...currentMetadata, preemptRecomputed: true };
+                  // With the model it happened on, as the live adapter stamps it: a follower
+                  // settled as interrupted carries no details to scope the note by.
+                  const recomputedOn = update.run.requestPayload?.model;
+                  currentMetadata = {
+                    ...currentMetadata,
+                    preemptRecomputed: true,
+                    ...(typeof recomputedOn === "string" && recomputedOn
+                      ? { preemptRecomputedModelId: recomputedOn }
+                      : {}),
+                  };
                   continue;
                 }
                 // Queued or paused: the line the live adapter shows, so a follower does

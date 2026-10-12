@@ -31123,9 +31123,14 @@ class LlamaCppBackend:
                             bound_to_host = not _exact_wanted,
                             backend = self,
                         )
-                        _reserve_inflight_parking(
-                            self, _exact_budget if (_exact_budget or 0) > 0 else None
-                        )
+                        _inflight_mib = _exact_budget
+                        if _inflight_mib is None and _park_supported and _kv_unified_from_args(cmd):
+                            # A budget the caller named is kept as named, and parks up to it all
+                            # the same; `-1` reserves as unlimited.
+                            _inflight_mib = _named_preempt_ram_mib(
+                                list(cmd) + [str(a) for a in (extra_args or ())], os.environ
+                            )
+                        _reserve_inflight_parking(self, _inflight_mib or None)
                     if _exact_budget is not None:
                         cmd.extend(["--preempt-ram", str(_exact_budget)])
                         logger.info(

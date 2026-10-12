@@ -509,6 +509,21 @@ class TestExactParksAreCountedAcrossModels:
         first._parking_reserving_mib = None
         assert llama_mod._host_bounded_parking_mib(10**9, second) == alone
 
+    def test_a_named_unlimited_launch_in_flight_leaves_nothing_to_promise(self, monkeypatch):
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
+        monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 100_000)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
+        monkeypatch.setattr(llama_mod, "_parking_backends", __import__("weakref").WeakSet())
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [])
+        named = self._backend(exact.EXACT_STATE_OFF, None)
+        named._process = None
+        me = self._backend(exact.EXACT_STATE_OFF, 8_000)
+        llama_mod._reserve_inflight_parking(named, -1)
+        assert llama_mod._exact_host_free_mib(me) == 0
+        assert llama_mod._host_bounded_parking_mib(10**9, me) == 0
+
     def test_the_in_flight_figure_is_set_under_the_sizing_lock_and_cleared(self):
         import inspect
 
@@ -516,7 +531,11 @@ class TestExactParksAreCountedAcrossModels:
         assert (
             "with _parking_budget_lock: _exact_budget = _server_owned_parking_budget_mib("
         ) in source
-        assert "_reserve_inflight_parking( self," in source
+        assert "_reserve_inflight_parking(self, _inflight_mib or None)" in source
+        # A budget the caller named reserves too, not only one Studio generated.
+        assert (
+            "if _inflight_mib is None and _park_supported and _kv_unified_from_args(cmd):"
+        ) in source
         assert "self._parking_reserving_mib = None" in source
         scope = inspect.getsource(LlamaCppBackend._serial_load_scope)
         assert "self._parking_reserving_mib = None" in scope
