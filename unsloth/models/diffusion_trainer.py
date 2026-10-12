@@ -4,7 +4,7 @@
 """SFT for text-diffusion language models: SFTTrainer data handling, the family's own denoising loss."""
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Optional
 
 import torch
@@ -78,13 +78,15 @@ class DiffusionTrainer(SFTTrainer):
         if args is None:
             args = DiffusionConfig(output_dir = "outputs")
         elif not isinstance(args, DiffusionConfig):
-            values = {
-                k: v for k, v in args.to_dict().items() if k in DiffusionConfig.__dataclass_fields__
-            }
-            # to_dict() masks every *_token field, None included: SFTConfig's eos_token would become
-            # "<EOS_TOKEN>", which SFTTrainer rejects, and hub_token "<HUB_TOKEN>".
-            values.update({k: getattr(args, k) for k in values if k.endswith("_token")})
-            args = DiffusionConfig(**values)
+            # Not to_dict(): it masks every *_token field (eos_token "<EOS_TOKEN>", which SFTTrainer
+            # rejects) and serialises objects such as parallelism_config, which then get dropped.
+            args = DiffusionConfig(
+                **{
+                    f.name: getattr(args, f.name)
+                    for f in fields(args)
+                    if f.init and f.name in DiffusionConfig.__dataclass_fields__
+                }
+            )
         args.packing = False
         args.padding_free = False
         profile = diffusion_profile or resolve_diffusion_profile(_unwrap_config(model))

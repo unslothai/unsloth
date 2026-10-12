@@ -414,6 +414,12 @@ def test_converted_config_keeps_token_fields(monkeypatch, tmp_path):
         assert seen["args"].eos_token is None and seen["args"].pad_token is None
         assert seen["args"].hub_token == "hf_x"
 
+    ParallelismConfig = pytest.importorskip("accelerate.parallelism_config").ParallelismConfig
+    parallelism = ParallelismConfig()
+    args = SFTConfig(output_dir = str(tmp_path), report_to = "none", parallelism_config = parallelism)
+    DiffusionTrainer(model = None, args = args, diffusion_profile = _profile("dream"))
+    assert seen["args"].parallelism_config is parallelism
+
 
 _TINY_TRAIN = r"""
 import math, os, sys, torch
