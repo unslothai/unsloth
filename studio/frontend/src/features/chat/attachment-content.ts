@@ -19,6 +19,7 @@ import {
   OPEN_DOCUMENT_TEXT_MIME,
   RTF_MIMES,
   isRtfAttachmentName,
+  isServerDocumentAttachmentName,
   isToolOnlyAttachmentName,
 } from "./open-document-accept";
 import { readRtfAttachmentContent } from "./rtf";
@@ -2055,6 +2056,11 @@ export async function readAttachmentText(
   name: string,
   contentType: string | undefined,
 ): Promise<AttachmentText> {
+  // First, as in the adapters: text would claim a .mht sent as message/rfc822.
+  if (isServerDocumentAttachmentName(name)) {
+    const { extractServerDocumentText } = await import("./server-document");
+    return { label: null, text: await extractServerDocumentText(file), truncated: false };
+  }
   if (isTextAttachment(name, contentType)) {
     return { label: null, ...(await readBoundedText(file)) };
   }

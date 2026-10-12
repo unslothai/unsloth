@@ -6,7 +6,8 @@ access, not data.
 
 Without a working sqlite-vec the router still mounts, and one contract covers every endpoint. The KB list is
 polled, so it answers 200 with an empty list carrying an availability marker, which is what lets a client tell
-an empty store from a machine where RAG cannot run. Every other endpoint answers 503 stating the same reason.
+an empty store from a machine where RAG cannot run. Every other endpoint but /extract-text, which only parses,
+answers 503 stating the same reason.
 Nothing logs a traceback for it: the condition is fixed for the session and rag_db warns about it exactly once.
 """
 
@@ -941,6 +942,36 @@ def folder_job_events(
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# MAX_TEXT_ATTACHMENT_BYTES in text-attachment-accept.ts: the composer's ceiling for inline text.
+_EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
+
+
+# Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
+@router.post("/extract-text")
+def extract_text(
+    file: UploadFile = File(...),
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    from core.rag import parsers
+
+    stored_path, filename, _digest = _save_upload(file)
+    try:
+        pages = parsers.parse(stored_path)
+    except ImportError as exc:
+        raise HTTPException(status_code = 503, detail = f"{filename} could not be read: {exc}") from exc
+    # Not only ValueError: python-docx raises its own errors for a damaged .docm/.dotx.
+    except Exception as exc:
+        raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
+    finally:
+        _remove_stored_upload(stored_path)
+    text = "\n\n".join(page.text.strip() for page in pages if page.text.strip())
+    raw = text.encode("utf-8")
+    truncated = len(raw) > _EXTRACT_TEXT_MAX_BYTES
+    if truncated:
+        text = raw[:_EXTRACT_TEXT_MAX_BYTES].decode("utf-8", errors = "ignore")
+    return {"filename": filename, "text": text, "truncated": truncated}
 
 
 @router.post("/search")

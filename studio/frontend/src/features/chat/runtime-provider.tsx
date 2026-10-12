@@ -112,6 +112,7 @@ import {
 } from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
+  MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
@@ -119,8 +120,10 @@ import {
 import {
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   RTF_ATTACHMENT_ACCEPT,
+  SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS,
   TOOL_ONLY_ATTACHMENT_EXTENSIONS,
 } from "./open-document-accept";
+import { extractServerDocumentText } from "./server-document";
 import {
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
@@ -235,6 +238,7 @@ import {
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
+  attachmentContentText,
   attachmentsSample,
 } from "./utils/pasted-text";
 import { annotationsOfFile } from "./utils/document-annotations";
@@ -730,8 +734,9 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
 }
 
 class DocxAttachmentAdapter implements AttachmentAdapter {
+  // The extension too: a .docx can arrive with an empty MIME type.
   accept =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
   // The archive's own parts are checked too: a small .docx can declare a part that only mammoth's
   // inflate grows past the cap, and refusing that at send() would empty the composer.
@@ -882,6 +887,109 @@ class RtfAttachmentAdapter implements AttachmentAdapter {
   remove(attachment: Attachment): Promise<void> {
     this.texts.delete(attachment.id);
     return Promise.resolve();
+  }
+}
+
+class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
+  accept = SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS;
+  private readonly texts = new Map<string, Promise<string>>();
+
+  owns(id: string): boolean {
+    return this.texts.has(id);
+  }
+
+  // Read at add, like PDFAttachmentAdapter: a running chip parks Send until the backend answers.
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const attachment = {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    const text = extractServerDocumentText(file);
+    this.texts.set(attachment.id, text);
+    yield attachment;
+    let error: string | null = null;
+    try {
+      await text;
+    } catch (cause) {
+      error = (cause as Error).message;
+    }
+    // Removed or sent while reading: yielding again would put the chip back.
+    if (this.texts.get(attachment.id) !== text) return;
+    if (error) {
+      toast.error(error);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const pending =
+      this.texts.get(attachment.id) ?? extractServerDocumentText(attachment.file);
+    this.texts.delete(attachment.id);
+    const text = await pending.catch((cause: Error) => `[${cause.message}]`);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: attachmentContentText(attachment.name, text, false) },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
+/** Hands a document past the browser readers' ceiling to the backend parser instead of refusing it. */
+class LargeDocumentFallbackAdapter implements AttachmentAdapter {
+  private readonly browser: AttachmentAdapter;
+  private readonly server: ServerDocumentAttachmentAdapter;
+
+  constructor(
+    browser: AttachmentAdapter,
+    server: ServerDocumentAttachmentAdapter,
+  ) {
+    this.browser = browser;
+    this.server = server;
+  }
+
+  get accept(): string {
+    return this.browser.accept;
+  }
+
+  add(state: { file: File }) {
+    return state.file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES
+      ? this.server.add(state)
+      : this.browser.add(state);
+  }
+
+  send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return this.server.owns(attachment.id)
+      ? this.server.send(attachment)
+      : this.browser.send(attachment);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.server.owns(attachment.id)
+      ? this.server.remove(attachment)
+      : this.browser.remove(attachment);
   }
 }
 
@@ -2896,21 +3004,25 @@ function useStudioRuntimeAdapters(
         : undefined,
     [],
   );
-  const attachments = useMemo(
-    () =>
-      new PreStreamAwareAttachmentAdapter(
+  const attachments = useMemo(() => {
+    const server = new ServerDocumentAttachmentAdapter();
+    const largeFallback = (browser: AttachmentAdapter) =>
+      new LargeDocumentFallbackAdapter(browser, server);
+    return new PreStreamAwareAttachmentAdapter(
         new CompositeAttachmentAdapter([
           new VisionImageAdapter(),
           new AudioAttachmentAdapter(),
           // Before the document adapters: a composite takes the first match, and .mkv/.mov must not fall
           // through to them.
           new VideoAttachmentAdapter(),
+          // Before text, which claims message/rfc822 (.mht), and tool-only, which lists .epub/.docm/.odp.
+          server,
           new TextAttachmentAdapter(),
           new HtmlAttachmentAdapter(),
-          new PDFAttachmentAdapter(),
-          new DocxAttachmentAdapter(),
-          new OfficeAttachmentAdapter(),
-          new OpenDocumentAttachmentAdapter(),
+          largeFallback(new PDFAttachmentAdapter()),
+          largeFallback(new DocxAttachmentAdapter()),
+          largeFallback(new OfficeAttachmentAdapter()),
+          largeFallback(new OpenDocumentAttachmentAdapter()),
           new RtfAttachmentAdapter(),
           new ToolOnlyAttachmentAdapter(),
         ]),
@@ -2921,9 +3033,8 @@ function useStudioRuntimeAdapters(
             useChatRuntimeStore.getState().activeThreadId,
           );
         },
-      ),
-    [aui],
-  );
+      );
+  }, [aui]);
   const adapters = useMemo(
     () => ({ history, dictation, speech, attachments }),
     [history, dictation, speech, attachments],
