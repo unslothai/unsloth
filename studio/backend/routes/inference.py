@@ -18672,6 +18672,8 @@ async def _load_model_impl(
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 if replacing:
                     account_access.join_resident("chat")
+                if request._advertised_id:
+                    backend._openai_advertised_id = request._advertised_id
                 return LoadResponse(
                     engine = request.engine,
                     engine_parallelism = request.engine_parallelism,
@@ -36644,6 +36646,10 @@ def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
 
 @router.get("/models/{model_id:path}")
 async def openai_retrieve_model(model_id: str, current_subject: str = Depends(get_current_subject)):
+    return _with_openai_residency(await _openai_retrieve_model_object(model_id))
+
+
+async def _openai_retrieve_model_object(model_id: str) -> dict:
     """
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).
 
@@ -36662,7 +36668,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
-            return _with_openai_residency({**entry, "loaded": True})
+            return {**entry, "loaded": True}
 
     objects = await _openai_catalog_objects()
     for model in objects:

@@ -306,16 +306,16 @@ class _ModelManageBody(BaseModel):
     model: str = Field(..., min_length = 1)
 
 
-def _catalog_match(catalog: list[dict], model_id: str) -> Optional[tuple[str, dict]]:
-    """``(id, row)`` for ``model_id``: the catalog's id, or ``model_id`` itself as ``<listed id>:<quant>``."""
+def _catalog_match(catalog: list[dict], model_id: str) -> Optional[tuple[str, dict, bool]]:
+    """``(id, row, pinned)``: the catalog's own id, or ``model_id`` as ``<listed id>:<quant>`` (pinned)."""
     wanted = model_id.strip()
     rows = {e["id"].lower(): e for e in catalog if isinstance(e.get("id"), str)}
     if wanted.lower() in rows:
         row = rows[wanted.lower()]
-        return row["id"], row
+        return row["id"], row, False
     base, sep, _ = wanted.rpartition(":")
     row = rows.get(base.strip().lower()) if sep else None
-    return (wanted, row) if row is not None else None
+    return (wanted, row, True) if row is not None else None
 
 
 async def _chat_catalog() -> list[dict]:
@@ -323,7 +323,7 @@ async def _chat_catalog() -> list[dict]:
     return [e for e in await _inference()._openai_catalog_objects() if e.get("task") is None]
 
 
-async def _catalog_row(model_id: str) -> tuple[str, dict]:
+async def _catalog_row(model_id: str) -> tuple[str, dict, bool]:
     # The caller's own catalog, so a managed account only reaches models listed to it.
     matched = _catalog_match(await _chat_catalog(), model_id)
     if matched is None:
@@ -359,28 +359,29 @@ async def _unload_target(model_id: str, row: dict) -> Optional[str]:
     resolved = await _resolve_local(model_id)
     path = resolved[0] if resolved else None
     base, suffix = split_model_ref(model_id)
-    wanted_variant = (resolved[1] if resolved else None) or (
-        suffix if suffix and looks_like_quant(suffix) else None
-    )
+    # Only a quant the caller named: a bare id resolves to the preferred quant, not the resident one.
+    wanted_variant = suffix if suffix and looks_like_quant(suffix) else None
 
     llama = inf.get_llama_cpp_backend()
+    orchestrator = inf._peek_inference_backend()
     if getattr(llama, "is_loaded", False) or getattr(llama, "is_active", False):
-        backend, running = llama, getattr(llama, "model_identifier", None)
-        running_variant = getattr(llama, "hf_variant", None)
+        candidates = [(llama, llama.model_identifier, getattr(llama, "hf_variant", None))]
     else:
-        backend = inf._peek_inference_backend()
-        running = (
-            getattr(backend, "active_model_name", None)
-            or getattr(backend, "get_loading_model", lambda: None)()
+        # Loading and active apart: a switch keeps the old model active while the new one loads.
+        loading = getattr(orchestrator, "get_loading_model", lambda: None)()
+        active = getattr(orchestrator, "active_model_name", None)
+        candidates = [(orchestrator, loading, None), (orchestrator, active, None)]
+    for backend, running, running_variant in candidates:
+        if not running:
+            continue
+        advertised = getattr(backend, "_openai_advertised_id", None)
+        # The full id first: an Ollama tag such as "llama3:latest" is the advertised id, not a quant pin.
+        named = _same_path(running, path) or any(
+            advertised and name.strip().lower() == advertised.strip().lower()
+            for name in (model_id, base)
         )
-        running_variant = None
-    advertised = getattr(backend, "_openai_advertised_id", None)
-    # The full id first: an Ollama tag such as "llama3:latest" is the advertised id, not a quant pin.
-    names_primary = _same_path(running, path) or any(
-        advertised and name.strip().lower() == advertised.strip().lower()
-        for name in (model_id, base)
-    )
-    if running and names_primary:
+        if not named:
+            continue
         if wanted_variant and running_variant and wanted_variant.lower() != running_variant.lower():
             return None
         return running
@@ -402,11 +403,14 @@ async def _resolve_load_target(model_id: str):
         stored_gpu_index_kind,
     )
 
-    public_id, _ = await _catalog_row(model_id)
+    public_id, _, pinned = await _catalog_row(model_id)
     resolved = await _resolve_local(public_id)
     if resolved is None:
-        model_path, variant = split_model_ref(public_id)
-        return LoadRequest(model_path = model_path, gguf_variant = variant), public_id
+        if pinned:
+            # A quant this machine does not have: no remote download from a catalog-gated route.
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        # The row's own id, colon and all (an NPU "lemonade:..." id is not a quant pin).
+        return LoadRequest(model_path = public_id), public_id
     model_path, variant, loader_id = resolved[:3]
     alias = loader_id or split_model_ref(public_id)[0]
     _, override = resolve_override_for_load(model_path, alias, variant)
@@ -469,7 +473,7 @@ async def manage_unload_model(
 ):
     from models.inference import UnloadRequest
 
-    model_id, row = await _catalog_row(body.model)
+    model_id, row, _ = await _catalog_row(body.model)
     target = await _unload_target(model_id, row)
     if target is None:
         return {"success": True, "model": model_id}

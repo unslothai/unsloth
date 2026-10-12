@@ -1153,8 +1153,18 @@ def test_management_load_resolves_a_listed_id_through_studios_load(_no_local_ggu
     mod, calls = _management()
     with _client(mod) as c:
         assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
-        assert c.post("/models/load/", json = {"model": QWEN.lower() + ":Q8_0"}).status_code == 200
-    assert calls == [("load", QWEN, None, None), ("load", QWEN.lower(), "Q8_0", None)]
+        # A quant this machine does not have is refused, never fetched.
+        assert c.post("/models/load/", json = {"model": QWEN.lower() + ":Q8_0"}).status_code == 404
+    assert calls == [("load", QWEN, None, None)]
+
+
+def test_management_load_keeps_a_colon_in_an_exact_row_id(_no_local_gguf):
+    """An NPU row such as "lemonade:qwen" is the id itself, not a repo with a quant pin."""
+    row = {"id": "lemonade:qwen", "object": "model", "loaded": True}
+    mod, calls = _management(catalog = [row])
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": "lemonade:qwen"}).status_code == 200
+    assert calls == [("load", "lemonade:qwen", None, None)]
 
 
 def test_management_load_keeps_the_listed_alias_advertised(monkeypatch, _no_local_gguf):
@@ -1358,3 +1368,48 @@ def test_management_unload_keeps_a_resident_of_another_quant(_no_local_gguf):
         assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 200
         assert c.post("/models/unload", json = {"model": QWEN + ":UD-Q4_K_XL"}).status_code == 200
     assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):
+    """A bare id resolves to the preferred quant on disk, which need not be the resident one."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q4_K_M", requested),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q8_0"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_cancels_a_switch_while_the_old_model_stays_active(
+    monkeypatch, _no_local_gguf
+):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", None, requested),
+    )
+    orchestrator = types.SimpleNamespace(
+        active_model_name = "/models/old",
+        get_loading_model = lambda: "/models/laguna",
+        _openai_advertised_id = None,
+    )
+    mod = _load(backend = _Backend(loaded = False), orchestrator = orchestrator)
+    double = mod._inference()
+    calls = []
+
+    async def _unload_impl(request, current_subject):
+        calls.append(request.model_path)
+
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    double._unload_model_impl = _unload_impl
+    double._tunnel_safe_json = _tunnel_safe_json
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == ["/models/laguna"]

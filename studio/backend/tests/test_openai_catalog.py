@@ -602,6 +602,8 @@ def test_retrieve_resolves_an_on_disk_quant_pin(monkeypatch):
     assert model["id"] == "publisher/Qwen3:Q4_K_M"
     assert model["quant"] == "Q4_K_M"
     assert model["loaded"] is False
+    # Open WebUI's llama.cpp provider calls a row without status loaded.
+    assert model["status"] == {"value": "unloaded"}
 
 
 def test_retrieve_pin_of_the_resident_quant_keeps_its_loaded_fields(monkeypatch):
