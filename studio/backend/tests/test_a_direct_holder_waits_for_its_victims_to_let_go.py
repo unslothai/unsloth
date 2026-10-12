@@ -80,6 +80,7 @@ def test_a_worker_thread_caller_waits_inline(backend):
 def test_a_stuck_victim_is_waited_on_only_so_long(backend, monkeypatch):
     fake, controller = backend
     monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_WAIT_S", 0.2)
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 0.5, raising = False)
     started = time.monotonic()
     holder = inference._openai_llama_count_direct_holder(fake, 9000, "direct-holder")
     assert 0.15 <= time.monotonic() - started < 2.0

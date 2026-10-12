@@ -3323,33 +3323,62 @@ def _plan_for_unpausable_holder(controller, gen_id: str) -> None:
             _openai_llama_wait_for_victims(controller, gen_id)
 
 
-# How long an unpausable holder waits for the chats its plan paused to let go before it sends
-# anyway, as it did before. A pause lands within a token or two of the signal.
+# How long an unpausable holder waits for the chats its plan paused to let go. A pause lands
+# within a token or two of the signal, so past the first figure it keeps waiting only while the
+# cache still has no room for it, and past the second the victims are wedged: the holder is
+# refused rather than sent into cells they still hold, where its prefill overflows the cache.
 _UNPAUSABLE_VICTIM_WAIT_S = 2.0
+_UNPAUSABLE_VICTIM_HARD_WAIT_S = 60.0
 
 
-def _openai_llama_wait_for_victims(controller, gen_id: str) -> None:
+def _openai_llama_wait_for_victims(controller, gen_id: str) -> bool:
+    """True once the victims let go, the cache has room anyway, or the holder is gone."""
     victims = controller.take_awaited_victims(gen_id)
-    if victims and not controller.wait_released(victims, _UNPAUSABLE_VICTIM_WAIT_S):
-        _llama_preemption_log(
-            "raw-holder-victims-late", level = "debug", gen_id = gen_id, victims = ",".join(victims)
-        )
+    if not victims or controller.wait_released(victims, _UNPAUSABLE_VICTIM_WAIT_S):
+        return True
+    _llama_preemption_log(
+        "raw-holder-victims-late", level = "debug", gen_id = gen_id, victims = ",".join(victims)
+    )
+    deadline = time.monotonic() + max(0.0, _UNPAUSABLE_VICTIM_HARD_WAIT_S - _UNPAUSABLE_VICTIM_WAIT_S)
+    while True:
+        holder = controller.participant(gen_id)
+        # Released by its route (a disconnect), or room freed some other way: nothing to wait on.
+        if holder is None or controller.room_for(gen_id, holder.tokens):
+            return True
+        left = deadline - time.monotonic()
+        if left <= 0:
+            _llama_preemption_log(
+                "raw-holder-victims-wedged",
+                level = "warning",
+                gen_id = gen_id,
+                victims = ",".join(victims),
+            )
+            return False
+        if controller.wait_released(victims, min(_UNPAUSABLE_VICTIM_WAIT_S, left)):
+            return True
 
 
 async def _openai_llama_let_victims_go(llama_backend, gen_id: Optional[str]) -> None:
     """Before an unpausable request goes upstream, wait for the chats its plan paused.
 
     Off the loop: a paused chat's stream is advanced from it, so blocking it here would keep
-    the victim from ever seeing its signal. Nothing to wait on is a no-op."""
+    the victim from ever seeing its signal. Nothing to wait on is a no-op; victims that never
+    let go raise LlamaAdmissionTimeout, which every caller already answers as a timeout."""
     if gen_id is None or not preemption_enabled():
         return
     try:
         controller = get_preemption_controller(_preempt_key(llama_backend))
         if controller.participant(gen_id) is None:
             return
-        await asyncio.to_thread(_openai_llama_wait_for_victims, controller, gen_id)
+        released = await asyncio.to_thread(_openai_llama_wait_for_victims, controller, gen_id)
     except Exception:
         logger.debug("could not wait for the unpausable holder's victims", exc_info = True)
+        return
+    if not released:
+        # Retryable, as an admission timeout is; sent anyway it would overflow every chat.
+        raise LlamaAdmissionTimeout(
+            "Timed out waiting for the local llama-server cache to free room for this request"
+        )
 
 
 def _prompt_kv_tokens(prompt) -> int:
@@ -24703,6 +24732,8 @@ async def _generate_tts_wav(
             # An idle auto-unload cancels through the backend without setting this route's event.
             if _audio_cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+            if isinstance(e, LlamaAdmissionTimeout):
+                raise HTTPException(status_code = 503, detail = str(e))
             # Missing capability, not a failure: no retry helps, and the message
             # carries no path or user input, so send it as written.
             if isinstance(e, AudioBackendUnsupportedError):
