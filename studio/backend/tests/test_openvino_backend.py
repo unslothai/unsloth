@@ -63,68 +63,6 @@ def test_sidecar_python_needs_openvino_genai(monkeypatch, tmp_path):
     assert ovb.sidecar_python() == str(py)
 
 
-def test_think_splitter_routes_reasoning_even_across_split_tags(monkeypatch):
-    monkeypatch.setitem(sys.modules, "openvino_genai", types.ModuleType("openvino_genai"))
-    from core.inference.openvino_sidecar import ThinkSplitter
-
-    s = ThinkSplitter(thinking = True)
-    out = []
-    for piece in ["plan ", "it</th", "ink>\n\nPar", "is"]:
-        out += s.feed(piece)
-    out += s.flush()
-    joined = {k: "".join(t for kk, t in out if kk == k) for k in ("reasoning", "content")}
-    assert joined == {"reasoning": "plan it", "content": "Paris"}
-
-    s = ThinkSplitter(thinking = False)
-    assert s.feed("hi") + s.flush() == [("content", "hi")]
-
-    # Reasoning despite enable_thinking=false ends with a bare </think>.
-    s = ThinkSplitter(thinking = False)
-    out = s.feed("user wants X\n</th") + s.feed("ink>\n\nX") + s.feed("!") + s.flush()
-    assert out == [("reasoning", "user wants X"), ("content", "X"), ("content", "!")]
-
-
-def test_tool_splitter_turns_tool_call_markup_into_tool_calls(monkeypatch):
-    monkeypatch.setitem(sys.modules, "openvino_genai", types.ModuleType("openvino_genai"))
-    from core.inference.openvino_sidecar import ToolSplitter, history_message
-
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "read",
-                "parameters": {
-                    "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}
-                },
-            },
-        }
-    ]
-    s = ToolSplitter(active = True)
-    text = "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n42\n</parameter>\n"
-    text += "<parameter=limit>\n10\n</parameter>\n</function>\n</tool_call>"
-    out = "".join(s.feed(text[i : i + 3]) for i in range(0, len(text), 3))
-    rest, calls = s.finish(tools)
-    assert (out + rest).strip() == "Reading."
-    assert [c["function"] for c in calls] == [
-        {"name": "read", "arguments": '{"path": "42", "limit": 10}'}
-    ]
-
-    s = ToolSplitter(active = True)
-    s.feed('<tool_call>{"name": "read", "arguments": {"path": "a"}}</tool_call>')
-    assert s.finish(tools)[1][0]["function"]["arguments"] == '{"path": "a"}'
-
-    s = ToolSplitter(active = True)
-    assert s.feed("<tool_call>junk") == "" and s.finish(tools) == ("<tool_call>junk", [])
-
-    msg = history_message(
-        {
-            "role": "assistant",
-            "tool_calls": [{"function": {"name": "read", "arguments": '{"a": 1}'}}],
-        }
-    )
-    assert msg["tool_calls"][0]["function"]["arguments"] == {"a": 1} and msg["content"] == ""
-
-
 FAKE_SIDECAR = textwrap.dedent(
     """
     import argparse, http.server
@@ -195,36 +133,8 @@ def test_a_crashing_sidecar_fails_the_load_with_its_output(tmp_path, monkeypatch
     assert not backend.is_loaded and backend.loading_model is None
 
 
-def test_chat_history_joins_system_messages(monkeypatch):
-    monkeypatch.setitem(sys.modules, "openvino_genai", types.ModuleType("openvino_genai"))
-    from core.inference.openvino_sidecar import chat_history
-
-    joined = chat_history(
-        [
-            {"role": "system", "content": "a"},
-            {"role": "user", "content": "q"},
-            {"role": "system", "content": "b"},
-        ]
-    )
-    assert joined == [{"role": "system", "content": "a\n\nb"}, {"role": "user", "content": "q"}]
-
-
-def test_finish_reason_reports_length(monkeypatch):
-    fake = types.ModuleType("openvino_genai")
-    fake.GenerationFinishReason = types.SimpleNamespace(STOP = 1, LENGTH = 2)
-    monkeypatch.setitem(sys.modules, "openvino_genai", fake)
-    monkeypatch.delitem(sys.modules, "core.inference.openvino_sidecar", raising = False)
-    from core.inference.openvino_sidecar import finish_reason
-
-    res = lambda *r: types.SimpleNamespace(finish_reasons = list(r))
-    assert finish_reason(res(2), []) == "length"
-    assert finish_reason(res(1), []) == "stop"
-    assert finish_reason(None, []) == "stop"
-    assert finish_reason(res(2), [{"id": "c"}]) == "tool_calls"
-    assert finish_reason(res(1), [], out_of_room = True) == "length"
-
-
-def _sidecar(monkeypatch):
+@pytest.fixture
+def sc(monkeypatch):
     fake = types.ModuleType("openvino_genai")
     fake.GenerationFinishReason = types.SimpleNamespace(STOP = 1, LENGTH = 2)
     monkeypatch.setitem(sys.modules, "openvino_genai", fake)
@@ -232,6 +142,45 @@ def _sidecar(monkeypatch):
     from core.inference import openvino_sidecar
 
     return openvino_sidecar
+
+
+def _think(sc, thinking, pieces):
+    s = sc.ThinkSplitter(thinking)
+    out = [p for x in pieces for p in s.feed(x)] + s.flush()
+    return {k: "".join(t for kk, t in out if kk == k) for k in ("reasoning", "content")}, out
+
+
+@pytest.mark.parametrize(
+    "thinking, pieces, reasoning, content",
+    [
+        # Close tag split across pieces.
+        (True, ["plan ", "it</th", "ink>\n\nPar", "is"], "plan it", "Paris"),
+        (True, [], "", ""),
+        # Never closed: all of it is reasoning.
+        (True, ["still ", "thinking"], "still thinking", ""),
+        # Qwen3's template ends the prompt at "assistant\n"; the model itself writes "<think>\n".
+        (True, ["<think>\nplan</think>\n\nA"], "\nplan", "A"),
+        (True, ["<th", "ink>", "\nplan", "</think>A"], "\nplan", "A"),
+        (True, ["\n<think>plan</think>A"], "plan", "A"),
+        (False, ["hi"], "", "hi"),
+        (False, [""], "", ""),
+        (False, ["Par", "is"], "", "Paris"),
+        # Reasoning despite enable_thinking=false: an explicit block, or a bare </think>.
+        (False, ["<think>r</think>A"], "r", "A"),
+        (False, ["user wants X\n</th", "ink>\n\nX", "!"], "user wants X", "X!"),
+        (False, ["</think>\n\nA"], "", "A"),
+    ],
+)
+def test_think_splitter(sc, thinking, pieces, reasoning, content):
+    assert _think(sc, thinking, pieces)[0] == {"reasoning": reasoning, "content": content}
+
+
+def test_think_splitter_releases_stray_reasoning_past_the_window(sc):
+    long = "x" * (sc._STRAY_THINK_WINDOW + 1)
+    joined, out = _think(sc, False, [long, "</think>tail"])
+    assert all(k == "content" for k, _ in out) and joined["content"] == long + "tail"
+    # Thinking off and obeyed: content held to the end, then one piece.
+    assert _think(sc, False, ["Par", "is"])[1] == [("content", "Paris")]
 
 
 READ_TOOL = [
@@ -257,50 +206,66 @@ def _split(
     return out + rest, calls
 
 
-def test_tool_parsing_negative_and_edge_cases(monkeypatch):
-    sc = _sidecar(monkeypatch)
-    args = lambda calls: [json.loads(c["function"]["arguments"]) for c in calls]
+def _xml(*params):
+    body = "".join(f"<parameter={k}>{v}</parameter>" for k, v in params)
+    return f"<tool_call><function=read>{body}</function></tool_call>"
 
-    # Malformed bodies are dropped; when nothing parses the markup is returned as text.
-    assert _split(sc, "<tool_call>{not json}</tool_call>") == (
-        "<tool_call>{not json}</tool_call>",
-        [],
-    )
-    assert _split(sc, '<tool_call>{"arguments": {}}</tool_call>')[1] == []  # no name
-    assert _split(sc, "<tool_call></tool_call>")[1] == []
-    # One bad block does not sink the good one.
-    text = "<tool_call>{bad}</tool_call><tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</function>\n</tool_call>"
-    content, calls = _split(sc, text)
-    assert content == "" and args(calls) == [{"path": "x"}] and calls[0]["index"] == 0
-    # Cut off by max_tokens mid-call: what arrived is still parsed.
-    assert args(_split(sc, "<tool_call>\n<function=read>\n<parameter=path>\nab")[1]) == [
-        {"path": "ab"}
-    ]
-    # Non-string parameter that is not valid JSON stays a string; string params never get coerced.
-    body = "<tool_call><function=read><parameter=n>ten</parameter><parameter=path>007</parameter></function></tool_call>"
-    assert args(_split(sc, body)[1]) == [{"n": "ten", "path": "007"}]
-    # Multi-line value keeps inner newlines, trims the wrapping ones.
-    body = "<tool_call><function=read><parameter=path>\na\nb\n</parameter></function></tool_call>"
-    assert args(_split(sc, body)[1]) == [{"path": "a\nb"}]
-    # JSON form with arguments already a string; tool unknown to the schema still parses.
+
+@pytest.mark.parametrize(
+    "text, content, args",
+    [
+        (
+            "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n42\n</parameter>\n"
+            "<parameter=n>\n10\n</parameter>\n</function>\n</tool_call>",
+            "Reading.",
+            [{"path": "42", "n": 10}],
+        ),
+        (
+            '<tool_call>{"name": "read", "arguments": {"path": "a"}}</tool_call>',
+            "",
+            [{"path": "a"}],
+        ),
+        # Nothing parses: the markup comes back as text.
+        ("<tool_call>{not json}</tool_call>", "<tool_call>{not json}</tool_call>", []),
+        ("<tool_call>junk", "<tool_call>junk", []),
+        (
+            '<tool_call>{"arguments": {}}</tool_call>',
+            '<tool_call>{"arguments": {}}</tool_call>',
+            [],
+        ),
+        ("<tool_call></tool_call>", "<tool_call></tool_call>", []),
+        # One bad block does not sink the good one.
+        ("<tool_call>{bad}</tool_call>" + _xml(("path", "\nx\n")), "", [{"path": "x"}]),
+        # Cut off by max_tokens mid-call: what arrived is still parsed.
+        ("<tool_call>\n<function=read>\n<parameter=path>\nab", "", [{"path": "ab"}]),
+        # Non-string param that is not JSON stays a string; string params are never coerced.
+        (_xml(("n", "ten"), ("path", "007")), "", [{"n": "ten", "path": "007"}]),
+        # Multi-line value keeps inner newlines, trims the wrapping ones.
+        (_xml(("path", "\na\nb\n")), "", [{"path": "a\nb"}]),
+        # Look-alike text is not a tag, including a partial "<tool" at the very end.
+        ("use <tools> or <tool_calls x", "use <tools> or <tool_calls x", []),
+        ("ends with <tool_ca", "ends with <tool_ca", []),
+    ],
+)
+def test_tool_splitter(sc, text, content, args):
+    for step in (1, 3):
+        out, calls = _split(sc, text, step = step)
+        assert (
+            out.strip() == content
+            and [json.loads(c["function"]["arguments"]) for c in calls] == args
+        )
+
+
+def test_tool_call_ids_names_and_odd_tool_lists(sc):
+    calls = _split(sc, _xml() * 2)[1]
+    assert [c["index"] for c in calls] == [0, 1] and calls[0]["id"] != calls[1]["id"]
+    # JSON form with arguments already a string; a tool unknown to the schema still parses.
     body = '<tool_call>{"name": "other", "arguments": "{\\"q\\": 1}"}</tool_call>'
     assert [c["function"] for c in _split(sc, body)[1]] == [
         {"name": "other", "arguments": '{"q": 1}'}
     ]
-    # Ids are unique across calls.
-    two = "<tool_call><function=read></function></tool_call>" * 2
-    calls = _split(sc, two)[1]
-    assert (
-        len(calls) == 2
-        and calls[0]["id"] != calls[1]["id"]
-        and [c["index"] for c in calls] == [0, 1]
-    )
-    # Look-alike text is not a tag, including a partial "<tool" left at the very end.
-    assert _split(sc, "use <tools> or <tool_calls x") == ("use <tools> or <tool_calls x", [])
-    assert _split(sc, "ends with <tool_ca") == ("ends with <tool_ca", [])
     # No tools offered: markup passes through untouched.
     assert _split(sc, "<tool_call>{}</tool_call>", tools = []) == ("<tool_call>{}</tool_call>", [])
-    # Garbage tool definitions do not crash the parser.
     junk = [
         None,
         "x",
@@ -308,89 +273,85 @@ def test_tool_parsing_negative_and_edge_cases(monkeypatch):
         {"function": {"parameters": None}},
         {"function": {"name": "read"}},
     ]
-    assert args(
-        _split(
-            sc,
-            "<tool_call><function=read><parameter=n>3</parameter></function></tool_call>",
-            tools = junk,
-        )[1]
-    ) == [{"n": 3}]
+    assert _split(sc, _xml(("n", "3")), tools = junk)[1][0]["function"]["arguments"] == '{"n": 3}'
 
 
-def test_history_and_content_edge_cases(monkeypatch):
-    sc = _sidecar(monkeypatch)
+def test_history_messages(sc):
     assert sc.flatten_content(None) == ""
-    assert (
-        sc.flatten_content(
-            [{"type": "image_url", "image_url": {}}, {"type": "text", "text": "a"}, 5]
-        )
-        == "a"
-    )
+    parts = [{"type": "image_url", "image_url": {}}, {"type": "text", "text": "a"}, 5]
+    assert sc.flatten_content(parts) == "a"
     assert sc.history_message({"content": "q"}) == {"role": "user", "content": "q"}
     # Bad or empty arguments become {} instead of breaking the template.
+    calls = [
+        {"function": {"name": n, "arguments": a}}
+        for n, a in (("a", "{oops"), ("b", ""), ("c", {"k": 1}), ("d", '{"a": 1}'))
+    ]
     msg = sc.history_message(
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {"function": {"name": "a", "arguments": "{oops"}},
-                {"function": {"name": "b", "arguments": ""}},
-                {"function": {"name": "c", "arguments": {"k": 1}}},
-                {"id": "x"},
-            ],
-        }
+        {"role": "assistant", "content": None, "tool_calls": calls + [{"id": "x"}]}
     )
-    assert [c["function"].get("arguments") for c in msg["tool_calls"]] == [{}, {}, {"k": 1}, None]
-    tool = sc.history_message(
-        {
-            "role": "tool",
-            "tool_call_id": "c1",
-            "content": [{"type": "text", "text": "r"}],
-            "junk": 1,
-        }
-    )
-    assert tool == {"role": "tool", "tool_call_id": "c1", "content": "r"}
+    assert msg["content"] == ""
+    assert [c["function"].get("arguments") for c in msg["tool_calls"]] == [
+        {},
+        {},
+        {"k": 1},
+        {"a": 1},
+        None,
+    ]
+    tool = {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": [{"type": "text", "text": "r"}],
+        "junk": 1,
+    }
+    assert sc.history_message(tool) == {"role": "tool", "tool_call_id": "c1", "content": "r"}
     assert sc.chat_history([]) == []
-    assert sc.chat_history([{"role": "system", "content": "s"}]) == [
-        {"role": "system", "content": "s"}
+    msgs = [
+        {"role": "system", "content": "a"},
+        {"role": "user", "content": "q"},
+        {"role": "system", "content": "b"},
+    ]
+    assert sc.chat_history(msgs) == [
+        {"role": "system", "content": "a\n\nb"},
+        {"role": "user", "content": "q"},
     ]
 
 
-def test_think_splitter_edge_cases(monkeypatch):
-    sc = _sidecar(monkeypatch)
-    run = lambda s, pieces: [p for x in pieces for p in s.feed(x)] + s.flush()
-    assert run(sc.ThinkSplitter(True), []) == []
-    assert run(sc.ThinkSplitter(False), [""]) == []
-    # Thinking on but the reply never closes the block: all of it is reasoning.
-    assert run(sc.ThinkSplitter(True), ["still ", "thinking"]) == [
-        ("reasoning", "still "),
-        ("reasoning", "thinking"),
-    ]
-    # Thinking off, model obeys: content only, released at the end.
-    assert run(sc.ThinkSplitter(False), ["Par", "is"]) == [("content", "Paris")]
-    # Thinking off, explicit <think>...</think> block.
-    out = run(sc.ThinkSplitter(False), ["<think>r</think>A"])
+def test_finish_reason_and_errors(sc):
+    res = lambda *r: types.SimpleNamespace(finish_reasons = list(r))
+    assert sc.finish_reason(res(2), []) == "length"
+    assert sc.finish_reason(res(1), []) == "stop"
+    assert sc.finish_reason(None, []) == "stop"
+    assert sc.finish_reason(res(2), [{"id": "c"}]) == "tool_calls"
+    assert sc.finish_reason(res(1), [], out_of_room = True) == "length"
     assert (
-        "".join(t for k, t in out if k == "reasoning") == "r"
-        and "".join(t for k, t in out if k == "content") == "A"
+        sc.generation_error(RuntimeError("request did not fit in the available cache budget"))[0]
+        == 400
     )
-    # Thinking off, stray reasoning longer than the window: released as content, tag dropped.
-    long = "x" * (sc._STRAY_THINK_WINDOW + 1)
-    out = run(sc.ThinkSplitter(False), [long, "</think>tail"])
-    assert all(k == "content" for k, _ in out) and "".join(t for _, t in out) == long + "tail"
-    # Thinking off, bare </think> with nothing before it.
-    assert run(sc.ThinkSplitter(False), ["</think>\n\nA"]) == [("content", "A")]
+    assert sc.generation_error(RuntimeError("boom")) == (500, "Generation failed: boom")
 
 
-def test_model_context_reads_config(monkeypatch, tmp_path):
-    sc = _sidecar(monkeypatch)
+def test_model_context_reads_config(sc, tmp_path):
     assert sc.model_context(str(tmp_path)) is None  # no config.json
-    (tmp_path / "config.json").write_text("{broken")
-    assert sc.model_context(str(tmp_path)) is None
-    (tmp_path / "config.json").write_text('{"max_position_embeddings": 4096}')
-    assert sc.model_context(str(tmp_path)) == 4096
-    (tmp_path / "config.json").write_text('{"text_config": {"max_position_embeddings": 262144}}')
-    assert sc.model_context(str(tmp_path)) == 262144
+    cfg = tmp_path / "config.json"
+    for text, want in (
+        ("{broken", None),
+        ('{"max_position_embeddings": 4096}', 4096),
+        ('{"text_config": {"max_position_embeddings": 262144}}', 262144),
+    ):
+        cfg.write_text(text)
+        assert sc.model_context(str(tmp_path)) == want
+    # The KV cache caps it: 1 GiB / (2 layers * K+V * 2 heads * 64 dim * f16 bytes) * 0.85.
+    cfg.write_text(
+        json.dumps(
+            {
+                "max_position_embeddings": 10**7,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 2,
+                "hidden_size": 128,
+            }
+        )
+    )
+    assert sc.model_context(str(tmp_path), 1) == 891289
 
 
 def test_split_layout_ir_is_a_model_directory(tmp_path):
@@ -420,17 +381,3 @@ def test_an_ir_beside_safetensors_needs_a_sidecar_python(tmp_path, monkeypatch):
     assert ovb.is_openvino_model_path(str(_ir(tmp_path / "ir_only")))
     monkeypatch.setattr(ovb.importlib.util, "find_spec", lambda name: object())
     assert ovb.is_openvino_model_path(str(both))
-
-
-def test_think_splitter_drops_the_open_tag_the_model_writes(monkeypatch):
-    # Qwen3's template ends the prompt at "assistant\n"; the model itself writes "<think>\n".
-    sc = _sidecar(monkeypatch)
-    run = lambda s, pieces: [p for x in pieces for p in s.feed(x)] + s.flush()
-    for pieces in (
-        ["<think>\nplan</think>\n\nA"],
-        ["<th", "ink>", "\nplan", "</think>A"],
-        ["\n<think>plan</think>A"],
-    ):
-        out = run(sc.ThinkSplitter(True), pieces)
-        assert "".join(t for k, t in out if k == "reasoning").strip() == "plan", pieces
-        assert "".join(t for k, t in out if k == "content") == "A", pieces

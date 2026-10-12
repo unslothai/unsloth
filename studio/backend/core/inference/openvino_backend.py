@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat on an OpenVINO IR (Intel Arc / Core Ultra) through a private OpenAI-compatible sidecar.
-
-Shaped like ``npu_backend``: the routes load, unload and proxy chat through a ``ManagedUpstream``.
-The sidecar (``openvino_sidecar.py``) runs in a Python with ``openvino_genai``: the one in
-``UNSLOTH_OPENVINO_PYTHON``, else Studio's own when it has the package.
-"""
+"""Chat on an OpenVINO IR (Intel Arc / Core Ultra) through a private OpenAI-compatible sidecar,
+proxied like ``npu_backend`` through a ``ManagedUpstream``."""
 
 from __future__ import annotations
 
@@ -59,11 +55,7 @@ class OpenVinoLoadCancelled(OpenVinoError):
 class OpenVinoModel:
     id: str
     model_path: str
-    directory: str
-    vision: bool
-    reasoning: bool = True
-    tools: bool = True
-    max_context_length: Optional[int] = None
+    reasoning: bool
 
 
 @dataclass(frozen = True)
@@ -185,9 +177,9 @@ class OpenVinoBackend:
         return self._resident is not None
 
     @property
-    def loaded_model(self) -> Optional[OpenVinoModel]:
+    def loaded_path(self) -> Optional[str]:
         resident = self._resident
-        return resident.model if resident is not None else None
+        return resident.model.model_path if resident is not None else None
 
     def resident(self) -> Optional[OpenVinoResident]:
         return self._resident
@@ -262,15 +254,8 @@ class OpenVinoBackend:
                 self._drain_thread.start()
                 base_url = f"http://127.0.0.1:{port}"
                 served_context = self._wait_ready(proc, base_url)
-                model = OpenVinoModel(
-                    id = model_id,
-                    model_path = model_path,
-                    directory = str(directory),
-                    vision = (directory / "openvino_vision_embeddings_model.xml").is_file(),
-                    reasoning = _template_reasons(directory),
-                )
                 self._resident = OpenVinoResident(
-                    model = model,
+                    model = OpenVinoModel(model_id, model_path, _template_reasons(directory)),
                     context_length = served_context or requested_context_length,
                     requested_context_length = requested_context_length,
                     base_url = base_url,
@@ -330,7 +315,7 @@ class OpenVinoBackend:
             model = model.id,
             public_model = model.model_path,
             supports_vision = False,  # the sidecar flattens messages to text
-            supports_tools = model.tools,
+            supports_tools = True,
             supports_reasoning = model.reasoning,
             context_length = resident.context_length,
         )

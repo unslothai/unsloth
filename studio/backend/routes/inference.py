@@ -11855,8 +11855,7 @@ def _loaded_slot_ident() -> Optional[str]:
     from core.inference.openvino_backend import peek_openvino_backend
 
     ov = peek_openvino_backend()
-    ov_model = ov.loaded_model if ov is not None else None
-    return ov_model.model_path if ov_model is not None else None
+    return ov.loaded_path if ov is not None else None
 
 
 def release_chat_gpu_claim() -> bool:
@@ -18221,6 +18220,38 @@ async def _unload_npu_before_local_load(*, include_openvino: bool = True) -> Non
         await asyncio.to_thread(npu.unload)
 
 
+async def _vacate_seat_for_managed_load(
+    request: LoadRequest,
+    *,
+    current_request_counted: bool,
+    on_reload_confirmed,
+    unload_peer,
+    target: str,
+) -> None:
+    """Free the primary seat for a sidecar model (NPU, OpenVINO): every other local model leaves."""
+    from core.inference.llama_keepwarm import note_model_unloaded
+
+    if on_reload_confirmed is not None:
+        on_reload_confirmed(cancel = True)
+        if request.force_cancel_active:
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+            )
+    _set_preview_resident(None)
+    await _unload_llama_before_standard_load(get_llama_cpp_backend())
+    await unload_peer()
+    backend = _peek_inference_backend()
+    if backend is not None and backend.active_model_name:
+        logger.info(
+            f"Unloading Unsloth model '{backend.active_model_name}' before loading {target}"
+        )
+        await asyncio.to_thread(backend.unload_model, backend.active_model_name)
+    # Nothing to reload once idle: this model is not the one the idle stash names.
+    note_model_unloaded()
+    await asyncio.to_thread(release_chat_gpu_claim)
+
+
 async def _load_npu_model(
     request: LoadRequest,
     *,
@@ -18235,7 +18266,6 @@ async def _load_npu_model(
         get_npu_backend,
         model_id_from_path,
     )
-    from core.inference.llama_keepwarm import note_model_unloaded
 
     if account_access.managed_account():
         raise HTTPException(
@@ -18266,25 +18296,13 @@ async def _load_npu_model(
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
-    if on_reload_confirmed is not None:
-        on_reload_confirmed(cancel = True)
-        if request.force_cancel_active:
-            await _wait_for_model_switch_idle(
-                current_request_counted = current_request_counted,
-                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
-            )
-    _set_preview_resident(None)
-    await _unload_llama_before_standard_load(get_llama_cpp_backend())
-    await _unload_openvino_before_local_load()
-    backend = _peek_inference_backend()
-    if backend is not None and backend.active_model_name:
-        logger.info(
-            f"Unloading Unsloth model '{backend.active_model_name}' before loading on the NPU"
-        )
-        await asyncio.to_thread(backend.unload_model, backend.active_model_name)
-    # Nothing to reload once idle: this model is not the one the idle stash names.
-    note_model_unloaded()
-    await asyncio.to_thread(release_chat_gpu_claim)
+    await _vacate_seat_for_managed_load(
+        request,
+        current_request_counted = current_request_counted,
+        on_reload_confirmed = on_reload_confirmed,
+        unload_peer = _unload_openvino_before_local_load,
+        target = "on the NPU",
+    )
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     try:
@@ -18316,7 +18334,7 @@ def _openvino_load_response(resident, status: str) -> LoadResponse:
         context_length = resident.context_length,
         supports_reasoning = model.reasoning,
         reasoning_style = "enable_thinking",
-        supports_tools = model.tools,
+        supports_tools = True,
     )
 
 
@@ -18343,7 +18361,6 @@ async def _load_openvino_model(
         OpenVinoLoadCancelled,
         get_openvino_backend,
     )
-    from core.inference.llama_keepwarm import note_model_unloaded
 
     if account_access.managed_account():
         raise HTTPException(
@@ -18362,24 +18379,13 @@ async def _load_openvino_model(
     ):
         account_access.join_resident("chat")
         return _openvino_load_response(resident, "already_loaded")
-    if on_reload_confirmed is not None:
-        on_reload_confirmed(cancel = True)
-        if request.force_cancel_active:
-            await _wait_for_model_switch_idle(
-                current_request_counted = current_request_counted,
-                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
-            )
-    _set_preview_resident(None)
-    await _unload_llama_before_standard_load(get_llama_cpp_backend())
-    await _unload_npu_before_local_load(include_openvino = False)
-    backend = _peek_inference_backend()
-    if backend is not None and backend.active_model_name:
-        logger.info(
-            f"Unloading Unsloth model '{backend.active_model_name}' before loading OpenVINO"
-        )
-        await asyncio.to_thread(backend.unload_model, backend.active_model_name)
-    note_model_unloaded()
-    await asyncio.to_thread(release_chat_gpu_claim)
+    await _vacate_seat_for_managed_load(
+        request,
+        current_request_counted = current_request_counted,
+        on_reload_confirmed = on_reload_confirmed,
+        unload_peer = functools.partial(_unload_npu_before_local_load, include_openvino = False),
+        target = "OpenVINO",
+    )
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     try:
@@ -21447,31 +21453,26 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
 
     try:
         _ov = peek_openvino_backend()
-        if _ov is not None and request.model_path in (
-            _ov.loading_model,
-            getattr(_ov.loaded_model, "model_path", None),
-        ):
-            if await asyncio.to_thread(_ov.cancel_load, request.model_path):
+        if _ov is not None and request.model_path in (_ov.loading_model, _ov.loaded_path):
+            if _ov.cancel_load(request.model_path):
                 logger.info(f"Cancelled in-flight OpenVINO load: {request.model_path}")
-                return UnloadResponse(status = "unloaded", model = request.model_path)
-            if request.cancel_load_request_id is not None:
-                # A late "stop loading" for a load that already finished leaves the resident alone.
-                return UnloadResponse(status = "unloaded", model = request.model_path)
-            async with inference_lifecycle_gate():
-                if getattr(_ov.loaded_model, "model_path", None) == request.model_path:
-                    _raise_or_cancel_active_generations(
-                        force = request.force_cancel_active, action = "Unloading the model"
-                    )
-                    await _drain_and_recancel_before_teardown(
-                        force = request.force_cancel_active, action = "Unloading the model"
-                    )
-                    await asyncio.to_thread(_ov.unload)
-                    note_model_unloaded()
-                    account_access.clear_resident("chat")
-                    api_monitor.record_lifecycle(
-                        event = "unload", model = request.model_path, reason = "manual"
-                    )
-                    logger.info(f"Unloaded OpenVINO model: {request.model_path}")
+            # A late "stop loading" for a load that already finished leaves the resident alone.
+            elif request.cancel_load_request_id is None:
+                async with inference_lifecycle_gate():
+                    if _ov.loaded_path == request.model_path:
+                        _raise_or_cancel_active_generations(
+                            force = request.force_cancel_active, action = "Unloading the model"
+                        )
+                        await _drain_and_recancel_before_teardown(
+                            force = request.force_cancel_active, action = "Unloading the model"
+                        )
+                        await asyncio.to_thread(_ov.unload)
+                        note_model_unloaded()
+                        account_access.clear_resident("chat")
+                        api_monitor.record_lifecycle(
+                            event = "unload", model = request.model_path, reason = "manual"
+                        )
+                        logger.info(f"Unloaded OpenVINO model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
         if is_npu_model_path(request.model_path):
             if account_access.managed_account():
@@ -22357,7 +22358,7 @@ async def _slot_status(current_subject: str):
                 requested_context_length = _ov_resident.requested_context_length,
                 supports_reasoning = _ov_model.reasoning,
                 reasoning_style = "enable_thinking",
-                supports_tools = _ov_model.tools,
+                supports_tools = True,
                 llama_cpp_supports_mtp = _supports_mtp,
             )
 
@@ -29849,16 +29850,6 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
     return await _relay_managed_chat(payload, request, current_subject, upstream)
 
 
-def upstream_accepts_request(upstream, payload) -> bool:
-    """The OpenVINO sidecar flattens messages to text and has no tool calling."""
-    return not (
-        _request_has_video(payload)
-        or payload.audio_base64
-        or _messages_have_input_audio(payload.messages)
-        or (not upstream.supports_vision and _request_has_attached_image(payload))
-    )
-
-
 async def _relay_managed_chat(payload, request: Request, current_subject: str, upstream):
     """Proxy chat to a managed local sidecar (NPU, OpenVINO): always stream upstream, and
     collect the stream into one completion for JSON callers."""
@@ -30794,15 +30785,17 @@ async def produce_openai_chat_completions(
             _ov_upstream = _ov.upstream()
         except OpenVinoError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from None
-        if not upstream_accepts_request(_ov_upstream, payload):
+        # The sidecar flattens messages to text.
+        if (
+            _request_has_video(payload)
+            or payload.audio_base64
+            or _messages_have_input_audio(payload.messages)
+            or _request_has_attached_image(payload)
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = "OpenVINO models take text only: no images, audio or video.",
             )
-        if payload.tools and not _ov_upstream.supports_tools:
-            # Agents (opencode) always send tools; answer in plain text instead of refusing.
-            logger.info("OpenVINO has no tool calling; dropping %d tools", len(payload.tools))
-            payload.tools = None
         return await _relay_managed_chat(payload, request, current_subject, _ov_upstream)
 
     llama_backend = get_llama_cpp_backend()

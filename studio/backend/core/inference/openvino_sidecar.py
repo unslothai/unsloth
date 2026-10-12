@@ -3,10 +3,9 @@
 
 """OpenAI-compatible /v1/chat/completions over OpenVINO GenAI, one model, one generation at a time.
 
-Spawned by ``openvino_backend.OpenVinoBackend`` in a Python that has ``openvino_genai``. Kept free
-of Studio imports so it runs in any such interpreter. Reasoning (``<think>...</think>``) is
-returned as ``reasoning_content``, the field Studio's chat already renders. ``tools`` go into the
-chat template and ``<tool_call>`` blocks come back as OpenAI ``tool_calls``.
+Spawned by ``openvino_backend.OpenVinoBackend`` in a Python that has ``openvino_genai``, so it
+imports nothing from Studio. ``<think>`` output is returned as ``reasoning_content`` and
+``<tool_call>`` blocks as OpenAI ``tool_calls``.
 """
 
 import argparse
@@ -23,12 +22,12 @@ import openvino_genai as ov_genai
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from starlette.concurrency import iterate_in_threadpool
 from pydantic import BaseModel, ConfigDict
+from starlette.concurrency import iterate_in_threadpool
 
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
-# ponytail: fixed hold-back window for models that reason despite enable_thinking=false; longer
-# stray reasoning leaks into content (without the tag).
+# ponytail: models that reason despite enable_thinking=false are held back this long waiting for
+# their </think>; longer stray reasoning leaks into content (without the tag).
 _STRAY_THINK_WINDOW = 4000
 TOOL_OPEN = "<tool_call>"
 _FUNC_RE = re.compile(r"<function=([^>\s]+)>(.*?)(?:</function>|$)", re.DOTALL)
@@ -55,41 +54,32 @@ class ChatRequest(BaseModel):
 
 
 def flatten_content(content: Any) -> str:
-    """OpenAI clients send content as a string or a list of parts; the template wants a string."""
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
     if isinstance(content, list):
         return "".join(
             p if isinstance(p, str) else str(p.get("text") or "")
             for p in content
             if isinstance(p, (str, dict))
         )
-    return str(content)
+    return "" if content is None else str(content)
 
 
-def thinking_enabled(req: ChatRequest) -> bool:
-    kwargs = req.chat_template_kwargs or {}
-    if "enable_thinking" in kwargs:
-        return bool(kwargs["enable_thinking"])
-    return True if req.enable_thinking is None else req.enable_thinking
+def _partial_tag(buf: str, tags) -> int:
+    """Length of the longest tag prefix ``buf`` ends with: held back until the next piece."""
+    return max(
+        (k for t in tags for k in range(len(t) - 1, 0, -1) if buf.endswith(t[:k])), default = 0
+    )
 
 
 class ThinkSplitter:
-    """Splits a token stream into (reasoning, content) pieces at ``</think>``.
-
-    With thinking on, the template leaves ``<think>`` open, so everything up to the close tag is
-    reasoning. A tag split across two pieces is held back until it can be decided.
-    """
+    """Splits a token stream into ("reasoning" | "content", text) pieces at the think tags."""
 
     def __init__(self, thinking: bool) -> None:
         self.in_think = thinking
         # Qwen3-style templates leave the generation prompt bare and the model writes <think> itself.
         self.leading_open = thinking
         self.buf = ""
-        # With thinking off the template closes the think block, but some finetunes reason anyway
-        # and end with a bare ``</think>``; the start is held back until that can be told apart.
+        # With thinking off some finetunes reason anyway and end with a bare </think>: hold the
+        # start until that can be told apart.
         self.held: Optional[str] = None if thinking else ""
 
     def feed(self, piece: str) -> list[tuple[str, str]]:
@@ -123,26 +113,21 @@ class ThinkSplitter:
         while self.buf:
             # Outside a block a bare </think> is stray reasoning's end: dropped, not shown.
             tags = (THINK_CLOSE,) if self.in_think else (THINK_OPEN, THINK_CLOSE)
+            kind = "reasoning" if self.in_think else "content"
             idx, tag = min(((self.buf.find(t), t) for t in tags if t in self.buf), default = (-1, ""))
-            if idx >= 0:
-                if idx:
-                    out.append(("reasoning" if self.in_think else "content", self.buf[:idx]))
-                self.buf = self.buf[idx + len(tag) :]
-                if tag == THINK_CLOSE:
-                    self.buf = self.buf.lstrip("\n")
-                if tag == THINK_OPEN or self.in_think:
-                    self.in_think = not self.in_think
-                continue
-            # Keep a possible partial tag at the end.
-            keep = max(
-                (k for t in tags for k in range(len(t) - 1, 0, -1) if self.buf.endswith(t[:k])),
-                default = 0,
-            )
-            emit = self.buf[: len(self.buf) - keep]
-            if emit:
-                out.append(("reasoning" if self.in_think else "content", emit))
-            self.buf = self.buf[len(emit) :]
-            break
+            if idx < 0:
+                emit = self.buf[: len(self.buf) - _partial_tag(self.buf, tags)]
+                if emit:
+                    out.append((kind, emit))
+                self.buf = self.buf[len(emit) :]
+                break
+            if idx:
+                out.append((kind, self.buf[:idx]))
+            self.buf = self.buf[idx + len(tag) :]
+            if tag == THINK_CLOSE:
+                self.buf = self.buf.lstrip("\n")
+            if tag == THINK_OPEN or self.in_think:
+                self.in_think = not self.in_think
         return out
 
     def flush(self) -> list[tuple[str, str]]:
@@ -151,15 +136,6 @@ class ThinkSplitter:
             return self._split(held) + self.flush()
         rest, self.buf = self.buf, ""
         return [("reasoning" if self.in_think else "content", rest)] if rest else []
-
-
-def _param_value(raw: str, schema: dict) -> Any:
-    if schema.get("type") == "string":
-        return raw
-    try:
-        return json.loads(raw)
-    except ValueError:
-        return raw
 
 
 def parse_tool_calls(text: str, tools: list[dict]) -> list[dict]:
@@ -174,9 +150,14 @@ def parse_tool_calls(text: str, tools: list[dict]) -> list[dict]:
         body = block.split("</tool_call>")[0].strip()
         if m := _FUNC_RE.search(body):
             name, schema = m.group(1), props.get(m.group(1), {})
-            args = {
-                k: _param_value(v, schema.get(k) or {}) for k, v in _PARAM_RE.findall(m.group(2))
-            }
+            args = {}
+            for k, raw in _PARAM_RE.findall(m.group(2)):
+                args[k] = raw
+                if (schema.get(k) or {}).get("type") != "string":
+                    try:
+                        args[k] = json.loads(raw)
+                    except ValueError:
+                        pass
         else:
             try:
                 obj = json.loads(body)
@@ -216,10 +197,8 @@ class ToolSplitter:
         if idx >= 0:
             out, self.captured, self.buf = self.buf[:idx], self.buf[idx:], ""
             return out.rstrip()
-        keep = next(
-            (k for k in range(len(TOOL_OPEN) - 1, 0, -1) if self.buf.endswith(TOOL_OPEN[:k])), 0
-        )
-        out, self.buf = self.buf[: len(self.buf) - keep], self.buf[len(self.buf) - keep :]
+        cut = len(self.buf) - _partial_tag(self.buf, (TOOL_OPEN,))
+        out, self.buf = self.buf[:cut], self.buf[cut:]
         return out
 
     def finish(self, tools: list[dict]) -> tuple[str, list[dict]]:
@@ -237,7 +216,7 @@ def history_message(m: dict) -> dict:
     out.setdefault("role", "user")
     out["content"] = flatten_content(m.get("content"))
     if m.get("tool_calls"):
-        calls = []
+        out["tool_calls"] = []
         for c in m["tool_calls"]:
             fn = dict(c.get("function") or {})
             if isinstance(fn.get("arguments"), str):
@@ -245,14 +224,12 @@ def history_message(m: dict) -> dict:
                     fn["arguments"] = json.loads(fn["arguments"] or "{}")
                 except ValueError:
                     fn["arguments"] = {}
-            calls.append({**c, "function": fn})
-        out["tool_calls"] = calls
+            out["tool_calls"].append({**c, "function": fn})
     return out
 
 
 def chat_history(messages: list[dict]) -> list[dict]:
-    """Template-ready history. Qwen-style templates allow one system message, first; agents such
-    as opencode send several, so they are joined into one."""
+    """Qwen-style templates allow one system message, first; agents such as opencode send several."""
     history = [history_message(m) for m in messages]
     system = [m["content"] for m in history if m["role"] == "system"]
     rest = [m for m in history if m["role"] != "system"]
@@ -273,39 +250,34 @@ def finish_reason(
     return "length" if hit or out_of_room else "stop"
 
 
-def _text_config(model_dir: str) -> dict:
+def model_context(model_dir: str, cache_gb: Optional[float] = None) -> Optional[int]:
+    """Tokens a request may use: ``max_position_embeddings`` capped by what the KV cache holds.
+    OpenVINO silently generates nothing for a request the cache cannot fit."""
     try:
         cfg = json.loads((Path(model_dir) / "config.json").read_text())
     except (OSError, ValueError):
-        return {}
-    return cfg.get("text_config") or cfg
-
-
-def model_context(model_dir: str, cache_gb: Optional[float] = None) -> Optional[int]:
-    """Tokens a request may use: the model's ``max_position_embeddings``, capped by what the KV
-    cache holds. OpenVINO silently generates nothing for a request the cache cannot fit."""
-    cfg = _text_config(model_dir)
+        return None
+    cfg = cfg.get("text_config") or cfg
     context = cfg.get("max_position_embeddings")
+    if not cache_gb:
+        return context
     try:
         # Hybrid models (Qwen3-Next style) keep KV only in their full-attention layers.
-        types_ = cfg.get("layer_types") or []
-        layers = sum("full" in str(t) for t in types_) or cfg["num_hidden_layers"]
+        layers = (
+            sum("full" in str(t) for t in cfg.get("layer_types") or []) or cfg["num_hidden_layers"]
+        )
         heads = cfg.get("num_key_value_heads") or cfg["num_attention_heads"]
         head_dim = cfg.get("head_dim") or cfg["hidden_size"] // cfg["num_attention_heads"]
     except (KeyError, TypeError, ZeroDivisionError):
         return context
-    if not cache_gb:
-        return context
     # ponytail: f16 K+V per token and a 15% margin, measured on Arc B60 (3 GB held ~140k tokens
-    # of Ornith 35B; with prefix caching the linear-attention checkpoints take the rest). Use
-    # OpenVINO's own figure once it exposes one: openvino.genai#4545.
+    # of Ornith 35B). Use OpenVINO's own figure once it exposes one: openvino.genai#4545.
     capacity = int(cache_gb * 2**30 / (layers * 2 * heads * head_dim * 2) * 0.85)
     return min(context, capacity) if context else capacity
 
 
 def generation_error(exc: Exception) -> tuple[int, str]:
-    """Status and message for a failed generate(). OpenVINO drops a request the cache cannot hold
-    and raises about it; that is the caller's prompt being too long, so a 400."""
+    """OpenVINO drops a request the cache cannot hold and raises about it: the prompt's fault, a 400."""
     message = str(exc)
     if "did not fit in the available cache budget" in message:
         return 400, (
@@ -322,29 +294,6 @@ def build_app(
     tok = pipe.get_tokenizer()
     lock = threading.Lock()
     app = FastAPI()
-
-    def config(req: ChatRequest, prompt_tokens: int):
-        cfg = ov_genai.GenerationConfig()
-        wanted = req.max_completion_tokens or req.max_tokens or 4096
-        # Never ask for more than the context has left; the reply then ends with "length".
-        cfg.max_new_tokens = min(wanted, context - prompt_tokens) if context else wanted
-        temp = 0.6 if req.temperature is None else req.temperature
-        cfg.do_sample = temp > 0
-        cfg.temperature = max(temp, 1e-4)
-        cfg.top_p = req.top_p or 0.95
-        cfg.top_k = req.top_k or 20
-        return cfg
-
-    def prompt(req: ChatRequest, thinking: bool) -> str:
-        return tok.apply_chat_template(
-            chat_history(req.messages),
-            add_generation_prompt = True,
-            tools = tools_for(req) or None,
-            extra_context = {"enable_thinking": thinking},
-        )
-
-    def tools_for(req: ChatRequest) -> list[dict]:
-        return [] if req.tool_choice == "none" else (req.tools or [])
 
     @app.get("/health")
     def health():
@@ -366,11 +315,21 @@ def build_app(
 
     @app.post("/v1/chat/completions")
     def chat(req: ChatRequest):
-        thinking = thinking_enabled(req)
+        kwargs = req.chat_template_kwargs or {}
+        if "enable_thinking" in kwargs:
+            thinking = bool(kwargs["enable_thinking"])
+        else:
+            thinking = True if req.enable_thinking is None else req.enable_thinking
         if not req.messages:
             raise HTTPException(400, "'messages' must not be empty.")
+        tools = [] if req.tool_choice == "none" else (req.tools or [])
         try:
-            text_prompt = prompt(req, thinking)
+            text_prompt = tok.apply_chat_template(
+                chat_history(req.messages),
+                add_generation_prompt = True,
+                tools = tools or None,
+                extra_context = {"enable_thinking": thinking},
+            )
         except Exception as exc:  # the template's raise_exception, e.g. a misplaced system message
             raise HTTPException(400, f"The chat template rejected the messages: {exc}") from exc
         prompt_tokens = tok.encode(text_prompt, add_special_tokens = False).input_ids.shape[-1]
@@ -381,12 +340,15 @@ def build_app(
                 f"cache size), but the messages use {prompt_tokens}. Shorten the conversation "
                 "or the tool list.",
             )
-        cfg = config(req, prompt_tokens)
-
-        def finish(res: Any, calls: list) -> str:
-            done = usage(res)["completion_tokens"]
-            full = context is not None and prompt_tokens + done >= context
-            return finish_reason(res, calls, done >= cfg.max_new_tokens or full)
+        cfg = ov_genai.GenerationConfig()
+        wanted = req.max_completion_tokens or req.max_tokens or 4096
+        # Never ask for more than the context has left; the reply then ends with "length".
+        cfg.max_new_tokens = min(wanted, context - prompt_tokens) if context else wanted
+        temp = 0.6 if req.temperature is None else req.temperature
+        cfg.do_sample = temp > 0
+        cfg.temperature = max(temp, 1e-4)
+        cfg.top_p = req.top_p or 0.95
+        cfg.top_k = req.top_k or 20
 
         def usage(res: Any) -> dict:
             metrics = getattr(res, "perf_metrics", None)
@@ -397,22 +359,15 @@ def build_app(
                 "total_tokens": prompt_tokens + done,
             }
 
-        rid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
+        def finish(res: Any, calls: list) -> str:
+            total = usage(res)["total_tokens"]
+            out_of_room = total - prompt_tokens >= cfg.max_new_tokens or (
+                context is not None and total >= context
+            )
+            return finish_reason(res, calls, out_of_room)
 
-        def chunk(
-            delta: dict,
-            finish: Optional[str] = None,
-            **extra,
-        ) -> str:
-            body = {
-                "id": rid,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_id,
-                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-                **extra,
-            }
-            return f"data: {json.dumps(body)}\n\n"
+        rid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
+        think, tool_splitter = ThinkSplitter(thinking), ToolSplitter(bool(tools))
 
         if not req.stream:
             try:
@@ -420,44 +375,58 @@ def build_app(
                     res = generate(text_prompt, generation_config = cfg)
             except Exception as exc:
                 raise HTTPException(*generation_error(exc)) from exc
-            splitter = ThinkSplitter(thinking)
-            parts = splitter.feed(res.texts[0]) + splitter.flush()
-            tool_splitter = ToolSplitter(bool(tools_for(req)))
+            parts = think.feed(res.texts[0]) + think.flush()
             content = tool_splitter.feed("".join(t for k, t in parts if k == "content"))
-            rest, calls = tool_splitter.finish(tools_for(req))
+            rest, calls = tool_splitter.finish(tools)
             message = {"role": "assistant", "content": (content + rest) or None}
             if calls:
                 message["tool_calls"] = [
                     {k: v for k, v in c.items() if k != "index"} for c in calls
                 ]
-            reasoning = "".join(t for k, t in parts if k == "reasoning")
-            if reasoning:
+            if reasoning := "".join(t for k, t in parts if k == "reasoning"):
                 message["reasoning_content"] = reasoning
             return {
                 "id": rid,
                 "object": "chat.completion",
                 "created": created,
                 "model": model_id,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": message,
-                        "finish_reason": finish(res, calls),
-                    }
-                ],
+                "choices": [{"index": 0, "message": message, "finish_reason": finish(res, calls)}],
                 "usage": usage(res),
             }
 
+        def chunk(
+            delta: dict,
+            finish_reason: Optional[str] = None,
+            **extra,
+        ) -> str:
+            body = {
+                "id": rid,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_id,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+                **extra,
+            }
+            return f"data: {json.dumps(body)}\n\n"
+
         # Set when the client goes away, so the model stops instead of finishing an unread reply.
         cancelled = threading.Event()
+        pieces: "queue.Queue[Optional[str]]" = queue.Queue()
 
         def streamer(piece: str):
             pieces.put(piece)
-            if cancelled.is_set():
-                return ov_genai.StreamingStatus.CANCEL
-            return ov_genai.StreamingStatus.RUNNING
+            return (
+                ov_genai.StreamingStatus.CANCEL
+                if cancelled.is_set()
+                else ov_genai.StreamingStatus.RUNNING
+            )
 
-        pieces: "queue.Queue[Optional[str]]" = queue.Queue()
+        def deltas(parts):
+            for kind, text in parts:
+                if kind == "reasoning":
+                    yield chunk({"reasoning_content": text})
+                elif text := tool_splitter.feed(text):
+                    yield chunk({"content": text})
 
         def events():
             result: dict = {}
@@ -466,9 +435,7 @@ def build_app(
                 try:
                     with lock:
                         result["res"] = generate(
-                            text_prompt,
-                            generation_config = cfg,
-                            streamer = streamer,
+                            text_prompt, generation_config = cfg, streamer = streamer
                         )
                 except Exception as exc:  # re-raised to the client below, not lost in the thread
                     result["error"] = exc
@@ -477,31 +444,22 @@ def build_app(
 
             threading.Thread(target = run, daemon = True).start()
             yield chunk({"role": "assistant"})
-            splitter = ThinkSplitter(thinking)
-            tool_splitter = ToolSplitter(bool(tools_for(req)))
-
-            def deltas(parts):
-                for kind, text in parts:
-                    if kind == "reasoning":
-                        yield chunk({"reasoning_content": text})
-                    elif text := tool_splitter.feed(text):
-                        yield chunk({"content": text})
-
             while (piece := pieces.get()) is not None:
-                yield from deltas(splitter.feed(piece))
+                yield from deltas(think.feed(piece))
             if "error" in result:
                 status, message = generation_error(result["error"])
                 error = {"message": message, "type": "server_error", "code": status}
                 yield f"data: {json.dumps({'error': error})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
-            yield from deltas(splitter.flush())
-            rest, calls = tool_splitter.finish(tools_for(req))
+            yield from deltas(think.flush())
+            rest, calls = tool_splitter.finish(tools)
             if rest:
                 yield chunk({"content": rest})
             if calls:
                 yield chunk({"tool_calls": calls})
-            yield chunk({}, finish(result.get("res"), calls), usage = usage(result.get("res")))
+            res = result.get("res")
+            yield chunk({}, finish(res, calls), usage = usage(res))
             yield "data: [DONE]\n\n"
 
         async def guarded():
