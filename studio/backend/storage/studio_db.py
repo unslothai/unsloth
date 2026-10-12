@@ -3003,7 +3003,11 @@ def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
     identity = (project or {}).get("workingFolderIdentity")
     if identity and identity != f"{st.st_dev}:{st.st_ino}":
         return None
-    return os.path.realpath(path)
+    real = os.path.realpath(path)
+    # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
+    if os.path.normcase(real) != os.path.normcase(path):
+        return None
+    return real
 
 
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:

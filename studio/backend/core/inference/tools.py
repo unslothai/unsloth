@@ -21584,8 +21584,24 @@ def materialize_sandbox_attachments(
                     logger.warning(
                         "could not copy attachment %s into the sandbox", sha256, exc_info = True
                     )
+            if _is_user_project_folder(session_id, workdir):
+                _git_ignore_dir(os.path.join(workdir, _ATTACHMENTS_DIR))
         finally:
             _call_finished(token)
+
+
+def _git_ignore_dir(directory: str) -> None:
+    """Keep Studio's copies out of the user's repository: a `*` .gitignore inside the directory, only if absent."""
+    try:
+        fd = os.open(
+            os.path.join(directory, ".gitignore"),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+        )
+    except OSError:
+        return
+    with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        f.write("*\n")
 
 
 def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
@@ -22889,14 +22905,15 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC. So does a chosen project folder in
-    # Auto, which runs with software safeguards (_prepare_tool_launch); cmd_isolated would force Required instead.
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC. A chosen project folder in Auto runs
+    # with software safeguards (_prepare_tool_launch), and cmd_isolated would force Required instead.
     chosen_folder = tool_execution_mode == "auto" and _is_user_project_folder(
         session_id, _project_workdir_for(session_id) or ""
     )
-    profile = _terminal_profile(
-        disable_sandbox or tool_execution_mode == "software" or chosen_folder
-    )
+    profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
+    if chosen_folder and profile == "cmd_isolated":
+        # Still cmd, which is what the request advertised to the model, but on the host.
+        profile = "cmd_fallback"
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()

@@ -162,18 +162,59 @@ def test_tools_in_the_users_folder_skip_the_isolation_scan(env, monkeypatch):
     assert os.path.realpath(env.repo) in ran
 
 
-def test_terminal_keeps_the_host_shell_for_the_users_folder(env, monkeypatch):
-    # On Windows cmd_isolated would turn Auto into Required and bring the scan back.
-    host_shell = []
-    monkeypatch.setattr(
-        env.tools,
-        "_terminal_profile",
-        lambda keep_host = False: host_shell.append(keep_host) or "bash",
-    )
-    env.tools.execute_tool("terminal", {"command": "pwd"}, session_id = "project-p1")
+def test_a_folder_reached_through_a_new_ancestor_link_is_not_followed(env):
     _use_repo(env)
-    env.tools.execute_tool("terminal", {"command": "pwd"}, session_id = "project-p1")
-    assert host_shell == [False, True]
+    parent = env.repo.parent
+    moved = parent.with_name(parent.name + "-moved")
+    parent.rename(moved)
+    try:
+        parent.symlink_to(moved, target_is_directory = True)
+    except OSError:
+        moved.rename(parent)
+        pytest.skip("symlinks unavailable")
+    try:
+        workdir = env.tools._get_project_workdir("project-p1")
+        assert workdir == os.path.realpath(env.project["sandboxPath"])
+        assert workdir != os.path.realpath(env.repo)
+    finally:
+        parent.unlink()
+        moved.rename(parent)
+
+
+def test_attachment_copies_are_git_ignored_in_the_users_folder(env, monkeypatch):
+    from core import chat_originals
+
+    originals = env.repo.parent / "originals"
+    originals.mkdir()
+    (originals / ("a" * 64)).write_bytes(b"data")
+    monkeypatch.setattr(chat_originals, "originals_dir", lambda: originals)
+    _use_repo(env)
+    env.tools.materialize_sandbox_attachments("project-p1", [("a" * 64, "notes.txt")])
+    copies = env.repo / env.tools._ATTACHMENTS_DIR
+    assert (copies / ".gitignore").read_text() == "*\n"
+    # Idempotent, and never over a file of the user's.
+    (copies / ".gitignore").write_text("mine\n")
+    env.tools.materialize_sandbox_attachments("project-p1", [("a" * 64, "notes.txt")])
+    assert (copies / ".gitignore").read_text() == "mine\n"
+
+
+def test_windows_cmd_isolated_runs_on_host_cmd_for_the_users_folder(env, monkeypatch):
+    from core.inference import os_sandbox
+
+    seen = []
+
+    def stop(plan, **kw):
+        seen.append((plan.requested_mode, kw.get("user_folder")))
+        raise os_sandbox.SandboxUnavailableError("stop here")
+
+    monkeypatch.setattr(env.tools, "_terminal_profile", lambda keep_host = False: "cmd_isolated")
+    monkeypatch.setattr(env.tools, "_windows_system_cmd", lambda: "cmd.exe", raising = False)
+    monkeypatch.setattr(env.tools, "_prepare_tool_launch", stop)
+    env.tools.execute_tool("terminal", {"command": "dir"}, session_id = "project-p1")
+    _use_repo(env)
+    env.tools.execute_tool("terminal", {"command": "dir"}, session_id = "project-p1")
+    # Managed: isolated cmd forces Required. Chosen folder: host cmd in Auto, the syntax the model was told.
+    assert seen == [("required", False), ("auto", True)]
 
 
 def test_project_delete_never_touches_the_users_folder(env):
