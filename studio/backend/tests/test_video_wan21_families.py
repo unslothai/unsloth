@@ -314,6 +314,25 @@ def test_comfy_folder_hides_refused_names_with_a_t2v_header(tmp_path):
     assert names == {"wan2.1_t2v_1.3B_bf16.safetensors"}
 
 
+def test_comfy_folder_hides_variant_names_without_the_family_token(tmp_path):
+    # The header resolves these to Wan2.1 1.3B; the loader then judges the file name with that context and refuses
+    # it, so the listing must too.
+    from hub.utils import comfy_models
+
+    folder = tmp_path / "diffusion_models"
+    folder.mkdir()
+    shapes = _row("wan2.1_t2v_1.3B_bf16.safetensors")["shapes"]
+    for name in (
+        "renamed-1.3b_bf16.safetensors",
+        "fun-inp-1.3b.safetensors",
+        "vace-1.3b.safetensors",
+        "i2v-1.3b.safetensors",
+    ):
+        _write_safetensors(folder / name, shapes)
+    names = {p.name for p in comfy_models.loose_diffusion_checkpoints(folder)}
+    assert names == {"renamed-1.3b_bf16.safetensors"}
+
+
 def test_comfy_folder_lists_wan21_t2v_files(tmp_path):
     from hub.utils import comfy_models
 
