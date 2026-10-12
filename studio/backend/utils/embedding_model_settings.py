@@ -335,6 +335,8 @@ EMBEDDING_DEVICE_SETTING_KEY = "rag_embedding_device"
 EMBEDDING_DEVICE_CHOICES = ("auto", "cpu", "gpu")
 # One embedder per process, so the device is installation-wide: read from the owner's store whoever is asking.
 _device_cached: list = []  # [(monotonic time, value)]
+# Same guard as _generation: a read that overlapped a write must not cache the pre-write value.
+_device_generation = 0
 
 
 def get_stored_embedding_device() -> str:
@@ -343,6 +345,7 @@ def get_stored_embedding_device() -> str:
     with _lock:
         if _device_cached and now - _device_cached[0][0] < _CACHE_TTL_S:
             return _device_cached[0][1]
+        gen = _device_generation
     from utils.account_context import OWNER, bind_account, reset_account
 
     token = bind_account(OWNER)
@@ -355,13 +358,16 @@ def get_stored_embedding_device() -> str:
         reset_account(token)
     device = value if value in EMBEDDING_DEVICE_CHOICES else "auto"
     with _lock:
-        _device_cached[:] = [(now, device)]
+        if _device_generation == gen:
+            _device_cached[:] = [(now, device)]
     return device
 
 
 def forget_cached_embedding_device() -> None:
+    global _device_generation
     with _lock:
         _device_cached.clear()
+        _device_generation += 1
 
 
 def set_embedding_device(device: str) -> bool:

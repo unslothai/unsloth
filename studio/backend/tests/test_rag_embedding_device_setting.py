@@ -118,3 +118,20 @@ def test_an_unrecognized_stored_value_reads_as_auto():
     assert ems.get_stored_embedding_device() == "auto"
     with pytest.raises(ValueError):
         ems.set_embedding_device("banana")
+
+
+def test_a_read_overlapping_a_save_does_not_cache_the_old_device(monkeypatch, released):
+    """A settings poll that read the old value before a PUT landed must not pin it in the cache."""
+    real_get = studio_db.get_app_setting
+
+    def slow_get(key, fallback = None):
+        value = real_get(key, fallback)
+        if key == ems.EMBEDDING_DEVICE_SETTING_KEY and value is None:
+            # The PUT commits between this reader's DB read and its cache fill.
+            monkeypatch.setattr(studio_db, "get_app_setting", real_get)
+            _put("gpu")
+        return value
+
+    monkeypatch.setattr(studio_db, "get_app_setting", slow_get)
+    assert ems.get_stored_embedding_device() == "auto"
+    assert config.embed_device_preference() == "gpu"
