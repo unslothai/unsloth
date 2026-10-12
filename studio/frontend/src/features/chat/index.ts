@@ -27,6 +27,7 @@ export {
   notifyChatHistoryUpdated,
   notifyChatProjectsUpdated,
   removeScanFolder,
+  subscribeChatHistoryUpdated,
   revealCachedModel,
   revealFineTunedModel,
   validateModel,
@@ -355,7 +356,6 @@ export {
   forkChatRow,
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
-  regenerateChatTitle,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";

@@ -715,3 +715,41 @@ test("a throttled multiline tail matches the previous plugin", async () => {
     ...expectedTail,
   ]);
 });
+
+test("cover reports what the cache leaves untokenized, and never tokenizes", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const streamedTo = PYTHON.lastIndexOf("\n", PYTHON.length - 2) + 1;
+  await highlightOnce(plugin, { code: PYTHON.slice(0, streamedTo), language, themes: THEMES });
+  const settled = `${PYTHON}value = 1`;
+  const cover = plugin.cover({ code: settled, language, themes: THEMES });
+  assert.equal(cover.uncovered, settled.length - streamedTo, "only the text past the last line the stream committed");
+  const full = await reference(settled, "python");
+  const covered = PYTHON.slice(0, streamedTo).split("\n").length - 1;
+  assert.deepEqual(cover.result?.tokens.slice(0, covered), full.tokens.slice(0, covered), "the committed lines carry their real colours");
+  assert.deepEqual(
+    cover.result?.tokens.slice(covered).map((line) => line.map((token) => token.content).join("")),
+    settled.slice(streamedTo).split("\n"),
+    "the rest is every remaining line, plain",
+  );
+  assert.equal(cover.result?.tokens.length, full.tokens.length, "the same lines as the finished fence, so its body keeps its shape");
+  assert.equal(plugin.cached({ code: settled, language, themes: THEMES }), null, "asking created no cache entry");
+  const exact = await highlightOnce(plugin, { code: settled, language, themes: THEMES });
+  assert.deepEqual(plugin.cover({ code: settled, language, themes: THEMES }), { uncovered: 0, result: exact });
+  const other = "def unrelated():\n    return 2\n";
+  assert.deepEqual(plugin.cover({ code: other, language, themes: THEMES }), { uncovered: other.length, result: null });
+  assert.deepEqual(
+    plugin.cover({ code: settled, language: "typescript" as HighlightOptions["language"], themes: THEMES }),
+    { uncovered: settled.length, result: null },
+    "another grammar's tokens are never offered",
+  );
+});
+
+test("cover never offers a worker's seeded result as a prefix to resume from", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const seeded = await reference(PYTHON, "python");
+  plugin.seed({ code: PYTHON, language, themes: THEMES }, seeded as unknown as HighlightResult);
+  const grown = `${PYTHON}value = 1\n`;
+  assert.deepEqual(plugin.cover({ code: grown, language, themes: THEMES }), { uncovered: grown.length, result: null });
+});
