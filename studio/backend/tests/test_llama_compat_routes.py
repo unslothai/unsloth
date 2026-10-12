@@ -1088,33 +1088,48 @@ QWEN = "unsloth/Qwen3.8-27B-GGUF"
 
 
 def _management(load_status = 200, catalog = None):
-    """The routes double plus Studio's /load and /unload, recording what they were asked."""
+    """The routes double plus Studio's load and unload lifecycle, recording what they were asked."""
     mod = _load(catalog = catalog)
     double = mod._inference()
     calls = []
 
-    async def _load_route(request, fastapi_request, current_subject):
+    async def _load_gated(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
         calls.append(("load", request.model_path, request.gguf_variant, request._advertised_id))
         if load_status != 200:
             raise HTTPException(status_code = load_status, detail = "busy")
         return {"status": "loaded", "model": request.model_path}
 
-    async def _unload_route(request, current_subject):
-        from models.inference import UnloadResponse
+    async def _unload_impl(request, current_subject):
         calls.append(("unload", request.model_path))
-        return UnloadResponse(status = "unloaded", model = request.model_path)
+        return {"status": "unloaded", "model": request.model_path}
 
-    double.load_model = _load_route
-    double.unload_model = _unload_route
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    async def _gpu_ids_resolve(gpu_ids, kind):
+        return True
+
+    double.load_model_gated = _load_gated
+    double._unload_model_impl = _unload_impl
+    double._tunnel_safe_json = _tunnel_safe_json
+    double._override_gpu_ids_still_resolve = _gpu_ids_resolve
     return mod, calls
 
 
 @pytest.fixture
 def _no_local_gguf(monkeypatch):
     import core.inference.local_model_resolver as resolver
+    import utils.openai_auto_switch_settings as overrides
 
     monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(overrides, "resolve_override_for_load", lambda *a, **k: (None, {}))
     return resolver
 
 
@@ -1145,8 +1160,47 @@ def test_management_load_keeps_the_listed_alias_advertised(monkeypatch, _no_loca
     )
     mod, calls = _management()
     with _client(mod) as c:
-        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+        r = c.post("/models/load", json = {"model": QWEN})
+    assert r.status_code == 200
+    # The answer names the listed row, never the on-disk path.
+    assert r.json() == {"success": True, "model": QWEN}
     assert calls == [("load", "/models/qwen", "UD-Q4_K_XL", "lmstudio-community/qwen")]
+
+
+def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gguf):
+    """The settings auto-switch would launch this row with, looked up by path then alias."""
+    import utils.openai_auto_switch_settings as overrides
+
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/qwen", "UD-Q4_K_XL", QWEN),
+    )
+    asked = []
+
+    def _override(
+        load_id,
+        alias_id = None,
+        variant = None,
+    ):
+        asked.append((load_id, alias_id, variant))
+        return load_id, {"n_parallel": 2, "kv_cache_dtype": "q8_0"}
+
+    monkeypatch.setattr(overrides, "resolve_override_for_load", _override)
+    mod, _ = _management()
+    seen = []
+    double = mod._inference()
+    original = double.load_model_gated
+
+    async def _capture(request, *args, **kwargs):
+        seen.append((request.n_parallel, request.cache_type_kv))
+        return await original(request, *args, **kwargs)
+
+    double.load_model_gated = _capture
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+    assert asked == [("/models/qwen", QWEN, "UD-Q4_K_XL")]
+    assert seen == [(2, "q8_0")]
 
 
 def test_management_unload_maps_the_advertised_alias_to_the_resident():
@@ -1156,7 +1210,7 @@ def test_management_unload_maps_the_advertised_alias_to_the_resident():
         r = c.post("/models/unload", json = {"model": QWEN.lower()})
         assert r.status_code == 200
         # The answer names the listed id, never the resident's path.
-        assert r.json()["model"] == QWEN
+        assert r.json() == {"success": True, "model": QWEN}
         assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
     assert calls == [("unload", "/media/models/qwen/model.gguf"), ("unload", CATALOG[1]["id"])]
 

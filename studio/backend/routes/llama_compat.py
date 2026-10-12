@@ -352,13 +352,18 @@ def _resident_identifier(model_id: str) -> str:
 
 
 async def _resolve_load_target(model_id: str):
-    """A ``LoadRequest`` for /load, from the on-disk copy auto-switch would use when there is one."""
+    """``(LoadRequest, listed id)``, from the on-disk copy and saved launch settings auto-switch would use."""
     from core.inference.local_model_resolver import (
         resolve_local_gguf,
         resolve_trusted_cached_local_gguf,
     )
     from core.inference.openai_auto_download import split_model_ref
     from models.inference import LoadRequest
+    from utils.openai_auto_switch_settings import (
+        model_override_load_kwargs,
+        resolve_override_for_load,
+        stored_gpu_index_kind,
+    )
 
     public_id = await _catalog_model_id(model_id)
     resolved = resolve_trusted_cached_local_gguf(public_id) or await asyncio.to_thread(
@@ -366,14 +371,37 @@ async def _resolve_load_target(model_id: str):
     )
     if resolved is None:
         model_path, variant = split_model_ref(public_id)
-        return LoadRequest(model_path = model_path, gguf_variant = variant)
+        return LoadRequest(model_path = model_path, gguf_variant = variant), public_id
     model_path, variant, loader_id = resolved[:3]
-    request = LoadRequest(model_path = model_path, gguf_variant = variant)
-    # As auto-switch does: launch overrides keyed by the listed id, which stays the advertised id.
     alias = loader_id or split_model_ref(public_id)[0]
+    _, override = resolve_override_for_load(model_path, alias, variant)
+    kwargs = model_override_load_kwargs(override, is_gguf = variant is not None)
+    # A stale pin (GPU removed or renumbered) is dropped, as auto-switch does, rather than 400 the load.
+    if kwargs.get("gpu_ids") and not await _inference()._override_gpu_ids_still_resolve(
+        kwargs["gpu_ids"], stored_gpu_index_kind(override)
+    ):
+        kwargs.pop("gpu_ids", None)
+        kwargs.pop("tensor_split", None)
+    request = LoadRequest(model_path = model_path, gguf_variant = variant, **kwargs)
     request._override_alias_id = alias
     request._advertised_id = alias
-    return request
+    return request, public_id
+
+
+async def _lifecycle_answer(work, model_id: str, *, label: str):
+    """Studio's /load and /unload wrapping (GPU-busy 409, tunnel padding), answered as llama-server does."""
+    from hub.services.models.account_access import gpu_busy_route
+
+    async def _answer():
+        await work
+        # The listed id, never the resident's path; a padded reply serializes this after the stream starts.
+        return {"success": True, "model": model_id}
+
+    @gpu_busy_route
+    async def _padded():
+        return await _inference()._tunnel_safe_json(_answer(), label = label)
+
+    return await _padded()
 
 
 # Outside /v1: Open WebUI strips it for management calls (MODEL_MANAGEMENT_ENDPOINTS).
@@ -383,7 +411,6 @@ async def manage_list_models(current_subject: str = Depends(get_current_subject)
     return {"object": "list", "data": await _chat_catalog()}
 
 
-# Delegate to Studio's own /load and /unload routes: same gates, account checks and tunnel padding.
 @router.post("/models/load", include_in_schema = False)
 @router.post("/models/load/", include_in_schema = False)
 async def manage_load_model(
@@ -391,8 +418,11 @@ async def manage_load_model(
     fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    request = await _resolve_load_target(body.model)
-    return await _inference().load_model(request, fastapi_request, current_subject)
+    request, public_id = await _resolve_load_target(body.model)
+    work = _inference().load_model_gated(
+        request, fastapi_request, current_subject, user_initiated = True
+    )
+    return await _lifecycle_answer(work, public_id, label = "Model load")
 
 
 @router.post("/models/unload", include_in_schema = False)
@@ -403,12 +433,9 @@ async def manage_unload_model(
     from models.inference import UnloadRequest
 
     model_id = await _catalog_model_id(body.model)
-    resident = _resident_identifier(model_id)
-    response = await _inference().unload_model(UnloadRequest(model_path = resident), current_subject)
-    # Answer with the id the client named, never the resident's on-disk path.
-    if resident != model_id and getattr(response, "model", None) == resident:
-        response = response.model_copy(update = {"model": model_id})
-    return response
+    request = UnloadRequest(model_path = _resident_identifier(model_id))
+    work = _inference()._unload_model_impl(request, current_subject)
+    return await _lifecycle_answer(work, model_id, label = "Model unload")
 
 
 async def _probe_not_found():
