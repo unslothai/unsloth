@@ -1159,7 +1159,8 @@ def fit_target_margin_in(
     load-mode fit that credits VRAM has to price it.
 
     Returns the LARGEST value in the list, because the fit charges one margin to every device it
-    credits and understating would claim a fit that is not there. ``None`` when nothing readable is
+    credits and understating would claim a fit that is not there; ``device`` reads that one
+    device's entry instead. ``None`` when nothing readable is
     set, which leaves the caller on llama.cpp's own default rather than on a guess. Last-wins over
     argv, and the env twin only when argv sets nothing, the same precedence
     ``fit_is_effectively_on`` uses.
@@ -1182,7 +1183,6 @@ def fit_target_margin_in(
             return None
     if not values:
         return None
-    # One known child device: its own entry, a single value being broadcast.
     if device is not None and len(values) > 1:
         return values[device] if 0 <= device < len(values) else None
     return max(values)

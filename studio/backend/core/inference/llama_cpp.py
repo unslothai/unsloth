@@ -27874,18 +27874,12 @@ class LlamaCppBackend:
                     # unpriced larger buffer could OOM, so they are left alone. A GPU-only -ot
                     # does not count for the same reason. A user --device none / cpu runs on
                     # the CPU with nothing to stream, like the CPU fallback.
-                    #
-                    # use_fit alone is not a spill: it says Unsloth could not pin the load
-                    # inside ITS budget (the VRAM-fraction reserve, the flat MTP reserve),
-                    # while llama.cpp's fitter keeps every layer on the card whenever the
-                    # footprint fits free VRAM less its --fit-target margin. So a --fit on
-                    # load counts only when that same footprint overflows the fitter's
-                    # budget, and stays counted when it cannot be priced.
+                    # use_fit is not a spill: the fitter keeps every layer on the card while the
+                    # footprint fits free VRAM less --fit-target; unpriceable counts as a spill.
                     def _fitter_keeps_model_resident() -> bool:
                         if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
                             return False
-                        # The smart-offload planner below may still pin experts to CPU
-                        # with --fit off against Unsloth's tighter budget: unpriced here.
+                        # Smart offload may still pin experts to CPU against Unsloth's budget.
                         from core.inference.offload_planner import smart_offload_enabled
 
                         if smart_offload_enabled(os.environ):
@@ -27894,14 +27888,9 @@ class LlamaCppBackend:
                         if _flat_mtp_engages:
                             return False
                         _on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
-                        # One card only: over several, llama.cpp's fitter places whole
-                        # layers and expert fractions per device (common/fit.cpp), so a
-                        # pooled total can fit while one device still spills experts.
+                        # Per-device placement (common/fit.cpp) can spill despite a pooled fit.
                         if len(_on) != 1:
                             return False
-                        # What the child really gets: a gpu_ids pin strips the device
-                        # flags and their env twins, while a pass-through --device,
-                        # --split-mode none or fixed layer count re-places the load.
                         _child_extras = (
                             self._strip_device_extra_args(extra_args)
                             if _gpu_ids_own_device_flags
@@ -27918,10 +27907,7 @@ class LlamaCppBackend:
                             gpu_indices = gpu_indices,
                         ):
                             return False
-                        # A projector Studio never resolved but the child loads: unsized here.
-                        # Vision off scrubs the env projectors and appends --no-mmproj-auto
-                        # at launch, keeping only an audio-only LLAMA_ARG_MMPROJ. One kept
-                        # on the CPU (--no-mmproj-offload or its env twin) takes no VRAM.
+                        # A GPU projector Studio never sized; Vision off keeps only audio-only.
                         _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
                         if _resolved_mmproj_offload(_child_extras, _child_env) is False:
                             pass
@@ -27937,9 +27923,7 @@ class LlamaCppBackend:
                             )
                         ):
                             return False
-                        # Effective --fit-target, last wins: a pass-through value, else the
-                        # one _ctx_integrity_flags emits (it beats the env twin), else
-                        # LLAMA_ARG_FIT_TARGET, else llama.cpp's default.
+                        # --fit-target precedence: argv, Studio's emitted value, env, default.
                         _supports_fit_target = bool(server_caps.get("supports_fit_target"))
                         _auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
                         _managed_mib = self._fit_target_margin_mib(
@@ -27947,7 +27931,7 @@ class LlamaCppBackend:
                             fit_target_delta_mib = _fit_target_delta_mib,
                             supports_fit_target = _supports_fit_target,
                         )
-                        # The child sees one device, so a per-device list applies entry 0.
+                        # One child device: a per-device list applies entry 0.
                         _margin_mib = fit_target_margin_in(_child_extras or (), None, device = 0)
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
@@ -27960,7 +27944,6 @@ class LlamaCppBackend:
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
                         _need = (
                             model_size_fit
-                            # --no-kv-offload keeps the KV cache in host RAM.
                             + (
                                 _kv_bytes(effective_ctx)
                                 if _kv_offload_from_args(_child_extras, _child_env)

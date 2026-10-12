@@ -4013,11 +4013,8 @@ def test_a_fully_resident_moe_keeps_the_default_micro_batch(tmp_path, _discrete_
 def test_a_fit_on_load_raises_the_micro_batch_only_when_the_fitter_spills(
     tmp_path, _discrete_linux_host, footprint_mib, expect_ub
 ):
-    """--fit on is not a spill: llama.cpp's fitter keeps every layer on the card while
-    the footprint fits free VRAM less its 1024 MiB --fit-target, a wider budget than
-    the 3% reserve Unsloth pins against (2940 MiB here). Only an overflow of the
-    fitter's own budget puts experts in host RAM (#12951 report: -ub 2048 on a
-    fully resident 8k load)."""
+    """--fit on spills only past free VRAM less the 1024 MiB --fit-target, not Unsloth's
+    3% reserve (#12951: -ub 2048 on a fully resident 8k load)."""
     _mib = 1024 * 1024
     # Weights + compute buffer (512) + CUDA context (320) + KV (256) = footprint_mib.
     size_mib = footprint_mib - 512 - 320 - 256
@@ -4028,7 +4025,6 @@ def test_a_fit_on_load_raises_the_micro_batch_only_when_the_fitter_spills(
     backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
     cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1)["cmd"]
 
-    # Over Unsloth's pin budget either way, so both hand placement to the fitter.
     assert cmd[cmd.index("--fit") + 1] == "on", cmd
     assert _ubatch_values(cmd) == expect_ub, cmd
 
@@ -4074,8 +4070,7 @@ def _fit_on_moe(
 def test_a_lower_fit_target_is_the_fitters_margin(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
 ):
-    """A pass-through (or inherited) --fit-target below the 1024 MiB default is what the
-    fitter keeps free, so a footprint inside free less 512 MiB stays resident."""
+    """A pass-through or inherited --fit-target is the margin the fitter keeps."""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     backend, gguf = _fit_on_moe(tmp_path, 89_200)
@@ -4097,8 +4092,7 @@ def test_a_lower_fit_target_is_the_fitters_margin(
 def test_a_host_only_kv_cache_is_not_charged_to_the_fitter(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
 ):
-    """--no-kv-offload keeps the KV cache in host RAM, so it cannot push an otherwise
-    resident MoE over the fitter's VRAM budget."""
+    """--no-kv-offload keeps the KV cache off the fitter's VRAM budget."""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     backend, gguf = _fit_on_moe(tmp_path, 90_000, kv_mib = 2048)
@@ -4121,9 +4115,7 @@ def test_a_host_only_kv_cache_is_not_charged_to_the_fitter(
 def test_a_pass_through_device_restriction_is_not_pooled(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
 ):
-    """Free memory pooled over every card is not what a pass-through --device or
-    --split-mode none child can use, and even unrestricted the fitter places whole layers
-    and expert fractions per device, so a pooled total cannot vouch for residency."""
+    """A pooled multi-card total cannot vouch for per-device residency."""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     backend, gguf = _fit_on_moe(tmp_path, 88_700, memory = [(0, 46_000, 49_000), (1, 46_000, 49_000)])
@@ -4137,8 +4129,7 @@ def test_a_pass_through_device_restriction_is_not_pooled(
 def test_an_inherited_projector_keeps_a_fit_on_moe_counted_as_spilled(
     tmp_path, _discrete_linux_host, monkeypatch, name
 ):
-    """A projector the child loads from the environment is VRAM the footprint never
-    sized (llama.cpp reserves it before fitting the model), so residency is unproven."""
+    """An env projector is VRAM the footprint never sized."""
     monkeypatch.setenv(name, "https://example.invalid/mmproj.gguf")
     backend, gguf = _fit_on_moe(tmp_path, 88_000)
     seen = []
@@ -4151,8 +4142,7 @@ def test_an_inherited_projector_keeps_a_fit_on_moe_counted_as_spilled(
     backend._moe_cache_auto_eligible = spy
     _launch(backend, gguf, n_ctx = 8192, n_parallel = 1)
 
-    # The projector's own micro-batch floor emits 2048 either way, so read the verdict
-    # the spill raise and the MoE cache offer both follow.
+    # The projector's micro-batch floor emits 2048 either way: read the verdict instead.
     assert seen == [True]
 
 
@@ -4164,8 +4154,7 @@ def test_an_inherited_projector_keeps_a_fit_on_moe_counted_as_spilled(
 def test_an_auto_discovered_projector_keeps_a_fit_on_moe_counted_as_spilled(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
 ):
-    """--mmproj-auto lets the child find an adjacent projector Studio never resolved or
-    sized, so the footprint cannot vouch for residency either."""
+    """--mmproj-auto can load a projector Studio never sized."""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     backend, gguf = _fit_on_moe(tmp_path, 88_000)
@@ -4193,8 +4182,7 @@ def test_an_auto_discovered_projector_keeps_a_fit_on_moe_counted_as_spilled(
 def test_vision_off_drops_the_projector_from_the_residency_check(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
 ):
-    """Vision off scrubs the env projector and appends --no-mmproj-auto at launch, so
-    the child loads none and a model that fits stays resident."""
+    """Vision off loads no projector, so a model that fits stays resident."""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     backend, gguf = _fit_on_moe(tmp_path, 88_000)
@@ -4229,8 +4217,7 @@ def test_vision_off_drops_the_projector_from_the_residency_check(
 def test_a_projector_kept_on_the_cpu_does_not_block_residency(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
 ):
-    """A projector pinned to the CPU takes no VRAM from the fitter, so it cannot make
-    the experts spill and the check need not abstain for it."""
+    """A projector pinned to the CPU takes no VRAM from the fitter."""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     backend, gguf = _fit_on_moe(tmp_path, 88_000)
@@ -4248,8 +4235,7 @@ def test_a_projector_kept_on_the_cpu_does_not_block_residency(
 
 
 def test_an_unsized_drafter_keeps_a_fit_on_moe_counted_as_spilled(tmp_path, _discrete_linux_host):
-    """With the draft KV unsized the placement covers MTP with a flat cushion this
-    footprint has no term for, so the residency check abstains."""
+    """An unsized draft KV has no term in the footprint, so the check abstains."""
     backend, gguf = _fit_on_moe(tmp_path, 88_000)
     backend.probe_server_capabilities = lambda _binary = None: {
         "mtp_token": "draft-mtp",
@@ -4273,8 +4259,7 @@ def test_an_unsized_drafter_keeps_a_fit_on_moe_counted_as_spilled(tmp_path, _dis
 def test_smart_offload_keeps_a_fit_on_moe_counted_as_spilled(
     tmp_path, _discrete_linux_host, monkeypatch
 ):
-    """UNSLOTH_SMART_OFFLOAD can pin experts to CPU with --fit off against Unsloth's
-    tighter budget after this decision, so the fitter's budget does not vouch for it."""
+    """Smart offload can still pin experts to CPU against Unsloth's tighter budget."""
     monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
     backend, gguf = _fit_on_moe(tmp_path, 88_000)
     cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1)["cmd"]
