@@ -2423,6 +2423,15 @@ _SERVER_PARK_COMMENTS = (
 _PREEMPT_KEEPALIVE_S = 2.0
 
 
+def _preempt_ram_option(token) -> tuple[bool, Optional[str]]:
+    """Whether ``token`` is ``--preempt-ram`` as llama.cpp reads it (a long option's underscores
+    are hyphens to it), and the value attached with ``=``, if any."""
+    name, sep, value = str(token).partition("=")
+    if name.replace("_", "-") != "--preempt-ram":
+        return False, None
+    return True, (value if sep else None)
+
+
 def _preempt_ram_disabled_in(args, env: Optional[Mapping[str, str]] = None) -> bool:
     """True when this launch leaves the server parking nothing: a zero RAM budget, or no budget
     named at all.
@@ -2439,13 +2448,13 @@ def _preempt_ram_disabled_in(args, env: Optional[Mapping[str, str]] = None) -> b
     disabled = named and _preempt_ram_value_is_zero(value)
     tokens = [str(a) for a in (args or ())]
     for i, tok in enumerate(tokens):
-        if tok == "--preempt-ram":
-            value = tokens[i + 1] if i + 1 < len(tokens) else ""
-            disabled = _preempt_ram_value_is_zero(value)
-            named = True
-        elif tok.startswith("--preempt-ram="):
-            disabled = _preempt_ram_value_is_zero(tok.split("=", 1)[1])
-            named = True
+        is_flag, attached = _preempt_ram_option(tok)
+        if not is_flag:
+            continue
+        if attached is None:
+            attached = tokens[i + 1] if i + 1 < len(tokens) else ""
+        disabled = _preempt_ram_value_is_zero(attached)
+        named = True
     return disabled or not named
 
 
@@ -2528,7 +2537,7 @@ def _exact_parking_budget_mib(
     the unsized figure and judged after launch, not left silent."""
     if "LLAMA_ARG_PREEMPT_RAM" in env:
         return None
-    if any(str(a).startswith("--preempt-ram") for a in (args or ())):
+    if any(_preempt_ram_option(a)[0] for a in (args or ())):
         return None
     if kv_bytes <= 0:
         return _PREEMPT_RAM_UNSIZED_MIB
@@ -2692,10 +2701,11 @@ def _named_preempt_ram_mib(args, env: Mapping[str, str]) -> Optional[int]:
     candidates: list[str] = [] if raw is None else [str(raw)]
     tokens = [str(a) for a in (args or ())]
     for i, tok in enumerate(tokens):
-        if tok == "--preempt-ram":
-            candidates.append(tokens[i + 1] if i + 1 < len(tokens) else "")
-        elif tok.startswith("--preempt-ram="):
-            candidates.append(tok.split("=", 1)[1])
+        is_flag, attached = _preempt_ram_option(tok)
+        if is_flag:
+            candidates.append(
+                attached if attached is not None else (tokens[i + 1] if i + 1 < len(tokens) else "")
+            )
     for text in candidates:
         try:
             named = int(str(text).strip())
@@ -2901,18 +2911,20 @@ def _stand_down_child_parking(
         overridden.append(f"LLAMA_ARG_PREEMPT_RAM={inherited}")
     for i in range(len(args or ())):
         token = str(args[i])
-        if token == "--preempt-ram" and i + 1 < len(args):
+        is_flag, attached = _preempt_ram_option(token)
+        if not is_flag:
+            continue
+        if attached is None and i + 1 < len(args):
             named_anywhere = True
             value = str(args[i + 1])
             if value.strip() != "0":
-                overridden.append(f"--preempt-ram {value}")
+                overridden.append(f"{token} {value}")
             args[i + 1] = "0"
-        elif token.startswith("--preempt-ram="):
+        elif attached is not None:
             named_anywhere = True
-            value = token.split("=", 1)[1]
-            if value.strip() != "0":
-                overridden.append(f"--preempt-ram={value}")
-            args[i] = "--preempt-ram=0"
+            if attached.strip() != "0":
+                overridden.append(token)
+            args[i] = token.split("=", 1)[0] + "=0"
     if named_anywhere or probe_inconclusive or _preemption.preemption_enabled():
         # Somebody named a budget the child would park on, the probe could not say what the
         # binary is, or Studio's own preemptor is armed (``studio`` mode, or a probe that could

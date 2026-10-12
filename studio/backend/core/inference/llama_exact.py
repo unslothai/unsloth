@@ -191,7 +191,9 @@ def _places_tensors_on_cpu(value: Optional[str]) -> bool:
 
 
 def _flag_name(token: str) -> str:
-    return token.split("=", 1)[0]
+    """The option as llama.cpp looks it up: a long option's underscores read as hyphens."""
+    name = token.split("=", 1)[0]
+    return name.replace("_", "-") if name.startswith("--") else name
 
 
 def _flag_value(token: str, following: Optional[str]) -> Optional[str]:
