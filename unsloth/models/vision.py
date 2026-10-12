@@ -846,6 +846,53 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     return True
 
 
+def _host_offloaded_embeddings(model):
+    return [
+        module
+        for module in model.modules()
+        if getattr(module, "_unsloth_offload_hooks_installed", False)
+        and getattr(getattr(module, "weight", None), "device", None) is not None
+        and module.weight.device.type == "cpu"
+    ]
+
+
+def _wrap_move_keeps_host_embeddings(owner, name):
+    original = getattr(owner, name, None)
+    if original is None or getattr(original, "_unsloth_keeps_host_embeddings", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(self, model, *args, **kwargs):
+        pinned = _host_offloaded_embeddings(model) if isinstance(model, torch.nn.Module) else []
+        for module in pinned:
+            # nn.Module._apply recurses through module._apply, so an instance attribute skips just this subtree.
+            module._apply = lambda fn, recurse = True, _module = module: _module
+        try:
+            return original(self, model, *args, **kwargs)
+        finally:
+            for module in pinned:
+                module.__dict__.pop("_apply", None)
+
+    wrapped._unsloth_keeps_host_embeddings = True
+    setattr(owner, name, wrapped)
+
+
+def _patch_trainer_move_keeps_host_embeddings():
+    # Trainer.train() (under bf16/fp16 full eval, Unsloth's default) and Accelerator.prepare_model both call
+    # model.to(device) when no hf_device_map is set, as on a block swap load; that pulled offloaded tables back onto
+    # the card at the first step (the 4.4 GB Gemma 4 E2B per-layer table, unslothai/unsloth#7055).
+    try:
+        from transformers.trainer import Trainer
+        _wrap_move_keeps_host_embeddings(Trainer, "_move_model_to_device")
+    except Exception:
+        pass
+    try:
+        from accelerate import Accelerator
+        _wrap_move_keeps_host_embeddings(Accelerator, "prepare_model")
+    except Exception:
+        pass
+
+
 def _pin_device_to_decoder(model):
     # `model.device` is the device of the first parameter, and the embedding we offload is it, so
     # the documented `inputs.to(model.device)` hands a CUDA model CPU ids. The lookup itself still
@@ -891,6 +938,12 @@ def _offload_embedding_unsupported_platform():
         return "WSL"
     if os.name == "nt":
         return "Windows"
+    # Docker on WSL2 has no WSL_* variables but shares the *-microsoft-standard-WSL2 kernel (unslothai/unsloth#3511).
+    try:
+        if "microsoft" in os.uname().release.lower():
+            return "WSL"
+    except Exception:
+        pass
     return None
 
 
@@ -1021,6 +1074,7 @@ def offload_input_embedding(model, embeddings = None):
             embedding.to("cpu")
         nbytes += weight.numel() * weight.element_size()
         _install_offload_embedding_hooks(embedding, out_embed, _embed_device)
+    _patch_trainer_move_keeps_host_embeddings()
     print(f"Unsloth: Offloading embeddings to RAM to save {round(nbytes / 1024**3, 2)} GB.")
     # The transformers model, not a PEFT wrapper: its `device` property is the one callers read.
     _pin_device_to_decoder(model.get_base_model() if hasattr(model, "get_base_model") else model)
@@ -1435,6 +1489,129 @@ def _dynamic_cache_choice(kwargs):
     return requested
 
 
+@functools.lru_cache(maxsize = None)
+def _default_generation_config():
+    return GenerationConfig()
+
+
+@functools.lru_cache(maxsize = None)
+def _static_cache_preallocates():
+    from transformers import StaticCache
+    return "max_batch_size" in inspect.signature(StaticCache.__init__).parameters
+
+
+def _static_cache_bytes(
+    model,
+    input_ids,
+    kwargs,
+    exact = True,
+):
+    """Bytes the static KV cache transformers preallocates for this call, or None when it cannot
+    be sized. Worst case length (prompt + max_new_tokens), whatever length the reply turns out.
+    exact = False skips the layer plan and counts every layer full length: an upper bound."""
+    from transformers import StaticCache
+
+    config = model.config
+    if getattr(config, "is_encoder_decoder", False) or kwargs.get("past_key_values") is not None:
+        return None
+    text_config = config.get_text_config(decoder = True)
+    # transformers fills a caller config's unset fields from the model's before its defaults.
+    configs = (kwargs.get("generation_config"), getattr(model, "generation_config", None))
+
+    def option(name, default = None):
+        if kwargs.get(name) is not None:
+            return kwargs[name]
+        caller, own = configs
+        value = getattr(caller, name, None)
+        # transformers 4.x fills unset caller fields with the global default, not None.
+        if value is not None and value != getattr(_default_generation_config(), name, None):
+            return value
+        if getattr(own, name, None) is not None:
+            return getattr(own, name)
+        return default if value is None else value
+
+    prompt = input_ids.shape[1]
+    max_new_tokens = option("max_new_tokens")
+    if max_new_tokens is not None:
+        length = prompt + max_new_tokens
+    elif kwargs.get("max_length") is not None:
+        length = kwargs["max_length"]
+    else:
+        # Upper bound of _prepare_generated_length: a default max_length counts new tokens.
+        max_length = option("max_length", 20)
+        length = max_length + prompt
+        max_positions = getattr(text_config, "max_position_embeddings", None)
+        if type(max_positions) is int and max_length <= max_positions:
+            length = min(length, max_positions)
+    if type(length) is not int:
+        return None
+    # transformers sizes the cache max_length - 1: the last token is never cached.
+    length = max(length - 1, getattr(model, "_previous_max_cache_length", -1))
+    if _compiles_decode(model):
+        length = _decode_cache_bucket(length)
+    copies = max(option("num_beams", 1), option("num_return_sequences", 1))
+    if not exact or _static_cache_preallocates():
+        # Before transformers 4.56 constructing one allocates it, so count every layer as full.
+        tokens = text_config.num_hidden_layers * length
+    else:
+        # transformers' own layer plan: sliding / chunked windows, shared-KV and linear layers.
+        layers = StaticCache(config = text_config, max_cache_len = length).layers
+        tokens = sum(
+            layer.max_cache_len
+            for layer in layers
+            if type(getattr(layer, "max_cache_len", None)) is int
+        )
+    n_heads = text_config.num_attention_heads
+    kv_heads = getattr(text_config, "num_key_value_heads", None) or n_heads
+    head_dim = getattr(text_config, "head_dim", None) or text_config.hidden_size // n_heads
+    # MLA (DeepSeek) caches keys of nope + rope dims and values of v_head_dim.
+    nope = getattr(text_config, "qk_nope_head_dim", None)
+    rope = getattr(text_config, "qk_rope_head_dim", None)
+    key_dim = nope + rope if type(nope) is int and type(rope) is int else head_dim
+    value_dim = getattr(text_config, "v_head_dim", None) or head_dim
+    itemsize = torch.empty((), dtype = model.dtype).element_size()
+    return input_ids.shape[0] * copies * kv_heads * (key_dim + value_dim) * itemsize * tokens
+
+
+def _static_cache_does_not_fit(model, input_ids, kwargs):
+    """True when the preallocated static cache would take over half the memory this device has
+    left; the rest is for prefill activations and logits. Fails open: unknown keeps static."""
+    try:
+        device = model.device
+        backend = {"cuda": torch.cuda, "xpu": getattr(torch, "xpu", None)}.get(device.type)
+        if backend is None:
+            return False
+        device_map = getattr(model, "hf_device_map", None)
+        if isinstance(device_map, dict) and len(set(map(str, device_map.values()))) > 1:
+            return False
+        # The upper bound settles the common case without building the layer plan (~0.3 ms).
+        need = _static_cache_bytes(model, input_ids, kwargs, exact = False)
+        if need is None:
+            return False
+        # mem_get_info is a driver call (p90 7-10 ms on a busy host), so a cache under 1/16
+        # of the card never pays it.
+        if need * 16 <= backend.get_device_properties(device).total_memory:
+            return False
+        free = backend.mem_get_info(device)[0]
+        if need <= free // 2:
+            return False
+        need = _static_cache_bytes(model, input_ids, kwargs)
+        if need <= free // 2:
+            return False
+        # memory_stats is slow, so allocator-held free blocks are read only when needed.
+        free += backend.memory_reserved(device) - backend.memory_allocated(device)
+    except Exception:
+        return False
+    if need <= free // 2:
+        return False
+    logger.warning_once(
+        f"Unsloth: A static KV cache for this generate call needs {need / 1024**3:.1f} GB, "
+        f"but only {free / 1024**3:.1f} GB is free. Using a dynamic cache instead; "
+        "lower max_new_tokens to keep the static cache."
+    )
+    return True
+
+
 def _uses_flash_attention_for_generation(config):
     language_config_names = (
         "text_config",
@@ -1674,7 +1851,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if kwargs.get("past_key_values") is None:
             kwargs["cache_implementation"] = "dynamic"
         try:
-            with torch.inference_mode(), autocaster:
+            with _get_inference_mode_context_manager(self), autocaster:
                 return self._old_generate(*args, **kwargs)
         finally:
             _clear_generation_caches(self)
@@ -1717,6 +1894,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     force_dynamic_cache = kwargs.get(
         "past_key_values"
     ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
+    # A static cache is sized for the longest reply up front, so on a tight or unified memory
+    # device it can OOM where a growing cache would not (#2590).
+    if not force_dynamic_cache and cache_implementation is not None:
+        force_dynamic_cache = _static_cache_does_not_fit(self, input_ids, kwargs)
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
@@ -1756,7 +1937,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with decode_scope, eager_scope, torch.inference_mode(), autocaster:
+        with decode_scope, eager_scope, _get_inference_mode_context_manager(self), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
@@ -4301,6 +4482,30 @@ class FastBaseModel:
             skip = _vllm_unmovable_embedding_modules(model, target_modules),
         )
         _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        # add_new_tokens rows stay frozen at their mean init otherwise, and on a padded vocab PEFT saves neither matrix, so reload drops them (#1343). Matches FastLanguageModel; skipped under vLLM, which cannot train them, and when trainable_token_indices already trains the rows.
+        if (
+            getattr(model, "_need_to_train_embeddings", False)
+            and finetune_language_layers
+            and getattr(model, "vllm_engine", None) is None
+            and not kwargs.get("trainable_token_indices")
+        ):
+            if modules_to_save is None:
+                modules_to_save = []
+            elif isinstance(modules_to_save, str):
+                modules_to_save = [modules_to_save]
+            else:
+                modules_to_save = list(modules_to_save)
+            _missing = [
+                m
+                for m in ("embed_tokens", "lm_head")
+                if m not in _embedding_leaves(modules_to_save)
+            ]
+            if _missing:
+                print(
+                    "Unsloth: You added new tokens but did not specify if you wanted to "
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
+                )
+                modules_to_save.extend(_missing)
         ensure_weight_tying = _effective_weight_tying(
             model,
             modules_to_save,
@@ -4848,6 +5053,10 @@ class FastBaseModel:
 
         # Returning hidden states must be disabled for GRPO, and returning logits enabled.
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        # Remember what the forced "1" replaced, for for_training() to put back (#3071).
+        _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        if _return_logits != "1":
+            os.environ["_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"] = _return_logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
@@ -4899,19 +5108,18 @@ class FastBaseModel:
             embeddings = _embeddings_or_none(model, _getter)
             if hasattr(embeddings, "training"):
                 embeddings.training = True
-        # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored it; the record only exists after a disable.
-        if (
-            use_gradient_checkpointing
-            and getattr(model, "_unsloth_use_cache_originals", None) is not None
-        ):
-            # Auto-enable grouped-GEMM MoE (transformers<5 ModuleList experts); see llama.py.
-            try:
-                from unsloth_zoo.training_utils import disable_use_cache
-                disable_use_cache(model)
-            except ImportError:
-                pass
+        # Not only under GC: with a KV cache transformers drops the packed-sequence mask (padding-free rows leak).
+        try:
+            from unsloth_zoo.training_utils import disable_use_cache
+            disable_use_cache(model)
+        except ImportError:
+            pass
 
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        # Undo only for_inference()'s "1": forcing "0" here wiped a user's UNSLOTH_RETURN_LOGITS=1 (#3071).
+        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
+        if _return_logits is None:
+            _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model

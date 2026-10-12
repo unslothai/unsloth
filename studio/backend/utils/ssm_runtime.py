@@ -8,6 +8,7 @@ the inference-path counterpart of the training worker's install.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -26,10 +27,12 @@ from utils.kernel_install import (
     install_prebuilt,
     source_build_command,
     source_build_run_kwargs,
+    uninstall_command,
 )
 from utils.wheel_utils import (
     direct_wheel_url,
     install_wheel,
+    is_windows_wheel_env,
     probe_torch_wheel_env,
     url_exists,
 )
@@ -263,7 +266,7 @@ def _install_kernel(
     status_cb: StatusCb,
     run: Callable[..., Any],
 ) -> bool:
-    """Install one kernel wheel-first, then a HIP-aware PyPI source build. Returns True iff importable afterwards; idempotent (no-op when already installed)."""
+    """Install one kernel wheel-first, then a HIP-aware PyPI source build (never on Windows). Returns True iff importable afterwards; idempotent (no-op when already installed)."""
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
         return True
@@ -274,7 +277,8 @@ def _install_kernel(
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
-    env = probe_torch_wheel_env(timeout = 30)
+    env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     wheel_url = direct_wheel_url(
         filename_prefix = import_name,
         package_version = package_version,
@@ -308,10 +312,31 @@ def _install_kernel(
                 logger.info("Installed prebuilt %s wheel", display_name)
                 return True
             if outcome == "rejected":
+                if wheel_only:
+                    removed = (
+                        run(
+                            uninstall_command(pypi_name, use_uv = bool(shutil.which("uv"))),
+                            stdout = subprocess.DEVNULL,
+                            stderr = subprocess.DEVNULL,
+                        ).returncode
+                        == 0
+                    )
+                    logger.warning(
+                        "%s wheel installed but not importable; %s",
+                        display_name,
+                        "removed it" if removed else f"uninstall {pypi_name} manually",
+                    )
+                    return False
                 logger.warning(
                     "%s wheel installed but not importable; building from source",
                     display_name,
                 )
+    elif wheel_only:
+        logger.info(
+            "No prebuilt %s wheel for this Windows environment (%s); using the torch fallback",
+            display_name,
+            wheel_url,
+        )
     elif wheel_available is None:
         _emit(
             status_cb,
@@ -323,6 +348,9 @@ def _install_kernel(
             display_name,
             wheel_url,
         )
+
+    if wheel_only:
+        return False
 
     # Source build (slow). ROCm has no prebuilt wheel and needs hipcc + a gcc-install-dir shim.
     spec = f"{pypi_name}=={package_version}"
@@ -372,18 +400,17 @@ def ensure_ssm_runtime(
     if not (wants_causal_conv1d or is_ssm):
         return
 
-    # No prebuilt Windows wheel: skip causal-conv1d on win32 (mirrors training) rather than dropping a chat load into a multi-minute source build for an optional fast path.
-    if wants_causal_conv1d and sys.platform == "win32":
-        logger.info(
-            "Skipping causal-conv1d on Windows (no prebuilt wheel); using the torch fallback"
-        )
-        wants_causal_conv1d = False
-
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
     if wants_causal_conv1d and not _install_kernel(
         **_pinned_kwargs(CAUSAL_CONV1D), status_cb = status_cb, run = run
     ):
         logger.warning("causal-conv1d unavailable; continuing on the model's torch fallback")
 
+    if is_ssm and sys.platform == "win32" and importlib.util.find_spec("triton") is None:
+        # mamba_ssm imports triton at load and the wheel goes in --no-deps.
+        raise RuntimeError(
+            "mamba-ssm, required by this Mamba model, needs Triton on Windows "
+            "(the triton-windows package); install it and reload the model."
+        )
     if is_ssm and not _install_kernel(**_pinned_kwargs(MAMBA_SSM), status_cb = status_cb, run = run):
         raise RuntimeError("Could not install mamba-ssm, required by this Mamba model.")

@@ -441,6 +441,61 @@ def test_runtime_gate_blocks_another_thread_and_recovers():
         assert acquired is True
 
 
+class _SecurityAttributes(ctypes.Structure):
+    _fields_ = [
+        ("length", wintypes.DWORD),
+        ("descriptor", ctypes.c_void_p),
+        ("inherit", wintypes.BOOL),
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows named mutexes are required")
+def test_runtime_gate_reads_a_holder_it_cannot_fully_open_as_busy(tmp_path):
+    # The access an elevated holder's mutex grants a non-elevated opener (#9928).
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error = True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    convert = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+    ]
+    convert.restype = wintypes.BOOL
+    descriptor = ctypes.c_void_p()
+    assert convert("D:(A;;0x00100001;;;WD)", 1, ctypes.byref(descriptor), None)
+    attributes = _SecurityAttributes(ctypes.sizeof(_SecurityAttributes), descriptor, False)
+    name = gate.runtime_mutex_name_for_studio_home(tmp_path)
+    holder = kernel32.CreateMutexW(ctypes.byref(attributes), True, name)
+    assert holder
+    observed: list[str] = []
+
+    def contend() -> None:
+        try:
+            with gate.studio_runtime_launch_guard(tmp_path):
+                observed.append("acquired")
+        except gate.StudioRuntimeGateBusy:
+            observed.append("blocked")
+        except OSError as exc:
+            observed.append(f"winerror {exc.winerror}")
+
+    try:
+        contender = threading.Thread(target = contend)
+        contender.start()
+        contender.join(timeout = 10)
+        assert observed == ["blocked"]
+    finally:
+        assert kernel32.ReleaseMutex(holder)
+        assert kernel32.CloseHandle(holder)
+        kernel32.LocalFree(descriptor)
+
+
 @pytest.mark.skipif(os.name != "nt", reason = "Windows named mutexes are required")
 def test_custom_root_runtime_gate_blocks_another_thread(tmp_path):
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)

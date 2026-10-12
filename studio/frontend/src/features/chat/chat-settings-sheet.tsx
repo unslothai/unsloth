@@ -86,6 +86,7 @@ import {
   parseExternalModelId,
   promptCacheTtlAppliesToModel,
   promptCachingAppliesToModel,
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import {
   BUILTIN_PRESETS,
@@ -825,6 +826,15 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  // Budget, duration and dedupe are knobs of Unsloth's own tool loop, which external turns run
+  // only when the provider supports Unsloth tools (`=== true`, the same test the request uses).
+  const showStudioToolLoopControls =
+    !isExternalModel ||
+    providerModelSupportsStudioTools(
+      externalProviderType,
+      externalSelection?.modelId,
+    ) === true;
+
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
       promptCacheTtlAppliesToModel(
@@ -1697,19 +1707,27 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-            {isExternalModel ? null : (
+            {showStudioToolLoopControls ? (
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5">
-              <AutoHealToolCallsToggle />
-              <NudgeToolCallsToggle />
+              {isExternalModel ? null : (
+                <>
+                  <AutoHealToolCallsToggle />
+                  <NudgeToolCallsToggle />
+                </>
+              )}
               <DeduplicateToolCallsToggle />
-              <ConfirmToolCallsToggle />
-              <BypassPermissionsToggle />
+              {isExternalModel ? null : (
+                <>
+                  <ConfirmToolCallsToggle />
+                  <BypassPermissionsToggle />
+                </>
+              )}
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
           </CollapsibleSection>
-            )}
+            ) : null}
 
             {isExternalModel ? null : (
           <CollapsibleSection label="Retrieval">

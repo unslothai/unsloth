@@ -17,6 +17,9 @@ const COMPACTION_NOTICE = readSrc("components/assistant-ui/compaction-notice.tsx
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 const DERIVED = readSrc("components/assistant-ui/message-derived.ts");
 const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const RUNTIME_PROVIDER = readSrc("features/chat/runtime-provider.tsx");
+const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
+const CONTEXT_USAGE_BAR = readSrc("features/chat/components/context-usage-bar.tsx");
 
 const adapter = readSrc("features/chat/api/chat-adapter.ts");
 const transport = readSrc("features/chat/api/chat-api.ts");
@@ -261,6 +264,20 @@ test("a boundary that goes BACKWARDS does not re-announce", () => {
   // A rollback leaves a shorter branch needing less eviction. Less is missing than
   // before, so there is nothing to say and the baseline must not be dragged down.
   assert.deepStrictEqual(noticeTurns([52, 20, 20, 20]), [0]);
+});
+
+test("the context meter counts exactly the compaction notices the thread renders", () => {
+  assert.match(
+    RUNTIME_PROVIDER,
+    /compactionNoticeMessageIds\(thread\.messages\)\.size/,
+  );
+  assert.match(RUNTIME_PROVIDER, /<CompactionCountRegistrar onCountChange=/);
+  // Project views show the meter for a chat started on the landing page too.
+  assert.match(CHAT_PAGE, /onCompactionCountChange=\{handleCompactionCountChange\}/);
+  assert.match(CHAT_PAGE, /compactionCount=\{compactionCount\}/);
+  // A chat that never compacted keeps the tooltip it had.
+  assert.match(CONTEXT_USAGE_BAR, /\(input\.compactionCount \?\? 0\) > 0 && \(/);
+  assert.match(CONTEXT_USAGE_BAR, />Compactions</);
 });
 
 /** The source of one function, by brace matching from its declaration. */

@@ -734,6 +734,7 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
         ("kimi", True),
         ("llama_cpp", True),
         ("ollama", True),
+        ("qwen", True),
         # user-supplied base_url endpoints may reject the unknown field with a 400.
         ("custom", False),
         # "openai" is absent because /v1/responses reports usage.

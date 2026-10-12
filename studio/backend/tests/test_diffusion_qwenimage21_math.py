@@ -176,3 +176,85 @@ def test_empty_prefix_matches_full_attention():
         expected = qmod.QwenImage21AttnProcessor()(attn, states, segments = [])
         actual = bounded._processor_class()()(attn, states, segments = [])
     torch.testing.assert_close(actual, expected)
+
+
+def test_mps_installs_bounded_attention_without_trusting_the_probe(monkeypatch):
+    from core.inference.diffusion import _quadratic_attention
+
+    pipe, modules = make_pipe()
+    target = SimpleNamespace(backend = "mps", device = "mps", dtype = torch.bfloat16)
+    # MPS SDPA ignores sdpa_kernel, so the probe reports fused kernels it does not run.
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: False)
+    warned = []
+    monkeypatch.setattr(attention, "warn_if_sdpa_math_only", lambda *a, **k: warned.append(a))
+    attention.apply_attention_backend(pipe, None, target = target)
+    assert all(type(m.processor) is bounded._processor_class() for m in modules)
+    assert bounded.bounded_math_attention(pipe)
+    assert not _quadratic_attention(target, None, pipe)
+    assert not warned
+
+
+@pytest.mark.parametrize(
+    "target, math_only, expected",
+    [
+        (SimpleNamespace(backend = "mps", device = "mps"), False, True),
+        (SimpleNamespace(backend = "rocm", device = "cuda"), True, True),
+        (SimpleNamespace(backend = "rocm", device = "cuda"), False, False),
+        (SimpleNamespace(backend = "cuda", device = "cuda"), True, False),
+        (SimpleNamespace(backend = "cpu", device = "cpu"), True, False),
+    ],
+)
+def test_bounded_attention_targets(monkeypatch, target, math_only, expected):
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: math_only)
+    assert bounded.needs_bounded_attention(target) is expected
+
+
+def test_mps_budget_keeps_one_call_per_segment_when_the_scores_fit():
+    torch.manual_seed(3)
+    attn = qmod.QwenImage21Attention(dim = 16, heads = 2, dim_head = 8)
+    stock, patched = qmod.QwenImage21AttnProcessor(), bounded._processor_class()()
+    patched._unsloth_score_budget = 2**30
+    states = torch.randn(1, 1800, 16)
+    segments = [(0, 600, True), (600, 1130, False)]
+    with torch.inference_mode():
+        expected = stock(attn, states, segments = segments)
+        actual = patched(attn, states, segments = segments)
+    assert torch.equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "budget, rows",
+    [(None, 512), (0, 512), (2 * 2 * 4096 * 4 * 700, 700), (2**40, 2**28 // (2 * 2 * 4096))],
+)
+def test_query_rows_follow_the_score_budget(budget, rows):
+    q, k = torch.empty(2, 4096, 2, 8), torch.empty(2, 4096, 2, 8)
+    assert bounded._query_rows(q, k, budget) == rows
+
+
+def test_batched_2048_stays_under_the_mps_element_cap():
+    q, k = (
+        torch.empty(2, 16384, 32, 1, dtype = torch.bfloat16),
+        torch.empty(2, 16640, 32, 1, dtype = torch.bfloat16),
+    )
+    rows = bounded._query_rows(q, k, 2**34)
+    assert (
+        1 <= rows < bounded.QUERY_CHUNK_SIZE and rows * 2 * 32 * 16640 <= bounded.MPS_SCORE_ELEMENTS
+    )
+
+
+def test_mps_score_budget_reads_the_override(monkeypatch):
+    monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, "256")
+    assert bounded.mps_score_budget() == 256 * 2**20
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 16 * 2**30, raising = False)
+    for unusable in ("", "inf", "1e309", "nan", "x"):
+        monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, unusable)
+        assert bounded.mps_score_budget() == 2 * 2**30
+
+
+def test_qwen_image_21_1024_splits_below_the_mps_element_cap():
+    # One 32 x 4096 x 4352 call returned wrong values on macOS 15; 768x768 (2304 tokens) stays one call.
+    k = torch.empty(1, 4352, 32, 1, dtype = torch.bfloat16)
+    rows = bounded._query_rows(torch.empty(1, 4096, 32, 1, dtype = torch.bfloat16), k, 2**34)
+    assert rows < 4096 and rows * 32 * 4352 <= bounded.MPS_SCORE_ELEMENTS
+    k = torch.empty(1, 2560, 32, 1, dtype = torch.bfloat16)
+    assert bounded._query_rows(torch.empty(1, 2304, 32, 1, dtype = torch.bfloat16), k, 2**34) >= 2304

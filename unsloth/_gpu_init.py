@@ -716,7 +716,10 @@ elif DEVICE_TYPE == "xpu":
         )
         bnb = None
 
-    pass
+    from .import_fixes import patch_bitsandbytes_triton_quantize_fallback
+
+    patch_bitsandbytes_triton_quantize_fallback("xpu")
+    del patch_bitsandbytes_triton_quantize_fallback
 
 # After the bitsandbytes import above, never before: it only patches an already-imported bitsandbytes.
 from .import_fixes import patch_bitsandbytes_paged_optimizer_resume
