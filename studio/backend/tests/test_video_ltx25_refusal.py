@@ -344,3 +344,25 @@ def test_inference_name_guard_is_scoped_to_ltx():
     assert fam is not None and fam.name == "wan2.2-ti2v-5b"
     with pytest.raises(ValueError, match = "LTX-2.5"):
         _detect_load_family("someone/wan-ltx-2.5-style", "wan-ltx-2.5-style.safetensors", "ltx-2", None, "single_file")
+
+
+def test_ltx25_companion_base_is_refused(tmp_path, monkeypatch):
+    import core.inference.diffusion as diffusion
+    from core.inference.video import get_video_backend
+
+    # Isolate the LTX-2.5 check from the pipeline-completeness check on the stub folder.
+    monkeypatch.setattr(diffusion, "_assert_local_base_is_pipeline", lambda *a, **k: None)
+
+    backend = get_video_backend()
+    pick = dict(gguf_filename = "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf", model_kind = "gguf")
+    with pytest.raises(ValueError, match = "LTX-2.5"):
+        backend.validate_load_request("unsloth/LTX-2.3-GGUF", base_repo = "unsloth/LTX-2.5-Diffusers", **pick)
+    folder = tmp_path / "my-base"
+    folder.mkdir()
+    index = {
+        "_class_name": "LTX2Pipeline",
+        "text_encoder": ["transformers", "Gemma4UnifiedForConditionalGeneration"],
+    }
+    (folder / "model_index.json").write_text(json.dumps(index), encoding = "utf-8")
+    with pytest.raises(ValueError, match = r"by its model_index\.json\) is LTX-2\.5"):
+        backend.validate_load_request("unsloth/LTX-2.3-GGUF", base_repo = str(folder), **pick)

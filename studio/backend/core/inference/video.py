@@ -2849,6 +2849,10 @@ class VideoBackend:
                 f"base_repo is limited to unsloth/* repos, the official family base "
                 f"repos, and local paths; '{base_repo}' is neither."
             )
+        if base_repo and base_repo.strip():
+            # The companion supplies the text encoder / VAE, so an LTX-2.5 base is refused like an LTX-2.5 pick.
+            assert_ltx_pick_supported(fam.name, base_repo)
+            assert_local_pipeline_not_ltx25(base_repo)
         # A local base_repo loads as a full pipeline (needs model_index.json); reject a non-pipeline one here, before
         # the load.
         from core.inference.diffusion import _assert_local_base_is_pipeline
