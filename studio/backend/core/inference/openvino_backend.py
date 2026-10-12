@@ -127,8 +127,27 @@ def _template_reasons(directory: Path) -> bool:
     return False
 
 
+def _has_standard_weights(directory: Path) -> bool:
+    patterns = ("*.safetensors", "*.gguf", "pytorch_model*.bin")
+    return any(next(directory.glob(pattern), None) is not None for pattern in patterns)
+
+
 def is_openvino_model_path(model_path: Optional[str]) -> bool:
-    return resolve_openvino_dir(model_path) is not None
+    """Whether ``/load`` should serve *model_path* through the sidecar.
+
+    Some repos ship an IR beside safetensors (yujiepan/llama-2-tiny-random); without a sidecar
+    Python those keep loading as they did before OpenVINO support. ``openvino:`` always routes here.
+    """
+    directory = resolve_openvino_dir(model_path)
+    if directory is None:
+        return False
+    if model_path.strip().startswith(MODEL_PREFIX) or not _has_standard_weights(directory):
+        return True
+    try:
+        sidecar_python()
+    except OpenVinoError:
+        return False
+    return True
 
 
 def sidecar_python() -> str:

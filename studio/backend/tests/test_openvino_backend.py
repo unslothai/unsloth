@@ -407,3 +407,16 @@ def test_split_layout_ir_is_a_model_directory(tmp_path):
     assert _is_weight_bin("openvino_language_model.bin") and not _is_weight_bin(
         "openvino_tokenizer.bin"
     )
+
+
+def test_an_ir_beside_safetensors_needs_a_sidecar_python(tmp_path, monkeypatch):
+    both = _ir(tmp_path / "both")
+    (both / "model.safetensors").write_text("")
+    monkeypatch.delenv(ovb.PYTHON_ENV, raising = False)
+    monkeypatch.setattr(ovb.importlib.util, "find_spec", lambda name: None)
+    # Without openvino-genai the checkpoint keeps its standard load; an explicit prefix still routes.
+    assert not ovb.is_openvino_model_path(str(both))
+    assert ovb.is_openvino_model_path(f"openvino:{both}")
+    assert ovb.is_openvino_model_path(str(_ir(tmp_path / "ir_only")))
+    monkeypatch.setattr(ovb.importlib.util, "find_spec", lambda name: object())
+    assert ovb.is_openvino_model_path(str(both))
