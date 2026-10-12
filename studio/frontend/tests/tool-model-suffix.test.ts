@@ -45,3 +45,24 @@ test("only a noted card replays extra_content", () => {
     },
   );
 });
+
+test("empty and non-string suffixes do not create replay metadata", () => {
+  for (const model_suffix of ["", null, undefined, false, 0, [], {}]) {
+    assert.deepEqual(toolModelSuffixExtraContent({ model_suffix }), {});
+  }
+});
+
+test("a new suffix replaces invalid legacy metadata without mutating provenance", () => {
+  const original = Object.freeze({
+    source: "local",
+    round_id: 3,
+    model_suffix: 7,
+  });
+  const suffix = "\n\nUse what you have.";
+  const updated = withToolModelSuffix(original, suffix);
+  assert.deepEqual(updated, { source: "local", round_id: 3, model_suffix: suffix });
+  assert.deepEqual(original, { source: "local", round_id: 3, model_suffix: 7 });
+  assert.deepEqual(toolModelSuffixExtraContent(updated), {
+    extra_content: { studio_model_suffix: suffix },
+  });
+});
