@@ -4950,13 +4950,15 @@ export function ChatPage({
                     runtimeReady={projectRuntimeReady}
                   />
                 ) : (
-                  <NativeAttachmentDragContext.Provider value={nativeModelDropState.status === "attach"}>
-                  <NativeAttachmentTargetContext.Provider
-                    value={baseAttachmentTargetKey}
+                  <NativeAttachmentDragContext.Provider
+                    value={nativeModelDropState.status === "attach"}
                   >
-                    <TemporaryChatSaveBridge />
-                    <SingleContent threadId={baseView.threadId} />
-                  </NativeAttachmentTargetContext.Provider>
+                    <NativeAttachmentTargetContext.Provider
+                      value={baseAttachmentTargetKey}
+                    >
+                      <TemporaryChatSaveBridge />
+                      <SingleContent threadId={baseView.threadId} />
+                    </NativeAttachmentTargetContext.Provider>
                   </NativeAttachmentDragContext.Provider>
                 )}
               </ChatRuntimeProvider>

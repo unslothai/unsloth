@@ -156,11 +156,11 @@ import {
   DeepResearchWebsiteAccessDialog,
 } from "@/features/chat/components/deep-research-composer-button";
 import {
+  NativeAttachmentDragContext,
   type NativeIntent,
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
 } from "@/features/native-intents";
-import { NativeAttachmentDragContext } from "@/features/native-intents/attachment-target";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
 import {
   attachLibraryChatFiles,
