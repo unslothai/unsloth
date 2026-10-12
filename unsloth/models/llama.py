@@ -3181,10 +3181,9 @@ class FastLlamaModel:
                     extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
                 ),
             )
-            # Marked only when the resolver planned: a veto (None) loads every layer, as before.
             _ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None
             if _ddp_auto_swap:
-                # DDP refuses a module with a CPU parameter: the embedding stays on this rank's card.
+                # DDP refuses a CPU parameter.
                 offload_embedding = _offload_embedding_mode = False
         # Here, not in loader.py: the mapper there can still substitute the repo (a -bnb-4bit name
         # resolving to its 16-bit twin), so a plan sized for the caller's name is the wrong plan.
@@ -3980,7 +3979,6 @@ class FastLlamaModel:
                     prefetch_depth = prefetch_depth,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                 )
-                # After the swap: get_peft_model(offload_layers = "auto") marks the model only now.
                 _ignore_block_swap_params_for_ddp(model)
                 skip_checkpointing(model, checkpoint_skip_layers)
                 return model
@@ -4392,8 +4390,7 @@ class FastLlamaModel:
         # otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        # Here, not at load: only after get_peft_model is the frozen set the same on every rank, and a
-        # custom loop may hand the model to DistributedDataParallel without a Trainer.
+        # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
         _ignore_block_swap_params_for_ddp(model)
         return model
 

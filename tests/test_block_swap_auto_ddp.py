@@ -11,15 +11,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""from_pretrained(offload_layers = "auto") under a DDP launch. No GPU needed.
-
-Each rank of a torchrun launch loads one whole model onto its own card, so "auto" can plan that
-card exactly like a single-GPU load. FSDP / DeepSpeed and multi-GPU splits stay refused, and the
-embedding stays on the card (DDP refuses a module with CPU parameters). Ranks may plan different
-counts and never talk to each other while loading, so the frozen decoder weights are kept out of
-DDP's init-time broadcast on every rank alike: after get_peft_model (custom loops) and at Trainer init.
-A Trainer that turns out to run FSDP / DeepSpeed refuses the swap. Extracted with ast so nothing imports torch's CUDA stack.
-"""
+"""from_pretrained(offload_layers = "auto") under a DDP launch. No GPU needed; extracted with ast."""
 
 import ast
 import importlib.util
@@ -226,8 +218,7 @@ def test_a_single_process_still_offers_the_embedding(resolve):
 
 
 def test_planning_never_runs_a_collective(resolve, monkeypatch):
-    """Even with a process group up, from_pretrained must not wait on the other ranks: a loader only
-    some ranks reach would hang. Each rank keeps its own plan."""
+    """No collective at load: a loader only some ranks reach would hang."""
     import torch.distributed as dist
 
     calls = []
@@ -251,9 +242,6 @@ def test_planning_never_runs_a_collective(resolve, monkeypatch):
     resolve.distributed = True
     assert resolve.fn({"": "cuda:1"}) == (6, {"": 1}, False)
     assert calls == []
-
-
-# Trainer side: the DDP ignore list.
 
 
 def _ignore_helpers(monkeypatch, distributed = True):
@@ -313,7 +301,6 @@ def _tiny_peft_model(mark = True):
 def test_ignore_list_names_the_frozen_decoder_weights_of_the_wrapped_model(monkeypatch):
     ns = _ignore_helpers(monkeypatch)
     model = _tiny_peft_model()
-    # A swapped block between uses: 0-element weights, same Parameter objects.
     layer = model.base_model.model.model.layers[2]
     for p in layer.parameters():
         if not p.requires_grad:
@@ -333,7 +320,6 @@ def test_ignore_list_names_the_frozen_decoder_weights_of_the_wrapped_model(monke
     )
     ignored = model._ddp_params_and_buffers_to_ignore
     assert "model.rotary_emb.inv_freq" in ignored and set(added) <= set(ignored)
-    # Idempotent: a second Trainer on the same model adds nothing twice.
     assert ns["_ignore_block_swap_params_for_ddp"](model) == []
     assert len(model._ddp_params_and_buffers_to_ignore) == len(set(ignored))
 
@@ -367,8 +353,7 @@ def test_mark_follows_the_loaders_ddp_decision(monkeypatch):
 
 
 def test_ddp_auto_launch_needs_ddp_and_one_card(resolve, monkeypatch):
-    """The loaders' switch for the DDP plan, the embedding veto and the marker. A launch that already
-    shows FSDP / DeepSpeed keeps main's fallback (load every layer, no marker, no Trainer refusal)."""
+    """A launch already showing FSDP / DeepSpeed keeps main's fallback."""
     launch = resolve.ns["ddp_auto_block_swap_launch"]
     assert not launch({"": "cuda:0"})
     resolve.distributed = True
@@ -379,8 +364,7 @@ def test_ddp_auto_launch_needs_ddp_and_one_card(resolve, monkeypatch):
 
 
 def test_loaders_keep_the_embedding_on_the_card_for_a_ddp_plan():
-    """resolve_auto_block_swap only returns embedding = False; the loaders hold the caller's
-    offload_embedding, so they must drop it themselves before offload_input_embedding runs."""
+    """The loaders must drop the caller's offload_embedding themselves."""
     for name, var, veto in (
         ("llama.py", "offload_layers", "offload_embedding = _offload_embedding_mode = False"),
         ("vision.py", "_offload_layers", "offload_embedding = False"),
@@ -429,17 +413,14 @@ def _swapped_model(
 
 @pytest.mark.parametrize("backend", ["fsdp", "deepspeed"])
 def test_a_sharded_trainer_refuses_an_auto_swap(monkeypatch, backend):
-    """TrainingArguments(fsdp / deepspeed = ...) under torchrun leaves no trace at from_pretrained, so
-    "auto" planned for DDP; the sharding backend must not wrap 0-element placeholders."""
+    """FSDP / DeepSpeed invisible at load must not wrap 0-element placeholders."""
     ns = _ignore_helpers(monkeypatch)
     check = ns["_block_swap_for_trainer_backend"]
     with pytest.raises(ValueError, match = "offload_layers = 0"):
         check(_swapped_model(**{backend: True}))
-    # A rank whose own plan swapped nothing refuses too: a peer may have swapped, and a one-sided
-    # refusal would leave the other ranks hanging in the backend's collectives.
+    # Zero-swap ranks refuse too, else peers hang.
     with pytest.raises(ValueError, match = "swapped 0 decoder layers"):
         check(_swapped_model(swapped = (), **{backend: True}))
-    # No "auto": nothing to refuse.
     assert check(_swapped_model(mark = False, **{backend: True})) == []
     # get_peft_model(offload_layers = "auto") alone: every rank refuses, also a zero-swap one.
     peft_auto = _swapped_model(mark = False, **{backend: True})
@@ -452,8 +433,7 @@ def test_a_sharded_trainer_refuses_an_auto_swap(monkeypatch, backend):
 
 
 def test_auto_declines_up_front_on_a_launch_that_shows_a_sharded_backend():
-    """Neither loader marks a resolver veto, and get_peft_model(offload_layers = "auto") neither swaps
-    nor marks on a launch that already shows FSDP / DeepSpeed: such jobs load every layer, as before."""
+    """A resolver veto or an FSDP / DeepSpeed launch neither swaps nor marks."""
     for name in ("llama.py", "vision.py"):
         src = open(os.path.join(MODELS, name), encoding = "utf-8").read()
         veto = src.index("_ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None")
@@ -478,9 +458,7 @@ def test_get_peft_auto_declines_on_a_launch_that_shows_a_sharded_backend(resolve
 
 
 def test_ignore_list_is_applied_at_the_end_of_get_peft_model():
-    """A custom loop hands the PeftModel to DistributedDataParallel / accelerator.prepare directly, so
-    both get_peft_model paths apply the list on return. Not at load: before get_peft_model only the
-    swapped host-built layers are frozen, so the list would differ between ranks."""
+    """Custom loops skip the Trainer, so both get_peft_model paths apply the list."""
     for name, owner in (("llama.py", "FastLlamaModel"), ("vision.py", "FastBaseModel")):
         src = open(os.path.join(MODELS, name), encoding = "utf-8").read()
         cls = next(
@@ -515,15 +493,13 @@ def test_load_time_frozen_set_is_rank_dependent(monkeypatch):
         for layer in model.model.layers[3 - swapped :]:
             layer.requires_grad_(False)
         frozen.append({n for n, p in model.named_parameters() if not p.requires_grad})
-        # So the helper leaves a model PEFT has not wrapped alone.
         assert ns["_ignore_block_swap_params_for_ddp"](model) == []
         assert not getattr(model, "_ddp_params_and_buffers_to_ignore", None)
     assert frozen[0] != frozen[1]
 
 
 def test_ignore_list_is_applied_when_from_pretrained_loads_an_adapter():
-    """An existing adapter returns through patch_peft_model / post_patch_model, not get_peft_model:
-    both loader return paths apply the list after the rope pass."""
+    """Loaded adapters skip get_peft_model: both loader returns apply the list."""
     src = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
     rope = "model = _exclude_rope_inv_freq_from_ddp(model)\n"
     assert src.count(rope) == 2
@@ -532,8 +508,7 @@ def test_ignore_list_is_applied_when_from_pretrained_loads_an_adapter():
 
 
 def test_full_finetuning_never_ignores_a_trainable_weight(monkeypatch):
-    """Trainable decoder weights are never put on the ignore list: the helper refuses instead (the
-    loaders already refuse offload_layers with full_finetuning, so only PEFT extras reach this)."""
+    """Trainable decoder weights are refused, never ignored."""
     ns = _ignore_helpers(monkeypatch)
     model = _tiny_peft_model()
     for p in model.parameters():
@@ -545,8 +520,7 @@ def test_full_finetuning_never_ignores_a_trainable_weight(monkeypatch):
 
 @pytest.mark.parametrize("bias, refused", [("none", False), ("lora_only", True), ("all", True)])
 def test_trainable_decoder_biases_are_refused_on_every_rank(monkeypatch, bias, refused):
-    """PEFT bias = "all" / "lora_only" unfreezes biases the swap may already hold as placeholders on
-    some ranks only. The refusal reads the PEFT config, so a rank that swapped nothing refuses too."""
+    """PEFT bias refusal reads the config, so zero-swap ranks refuse too."""
     ns = _ignore_helpers(monkeypatch)
     transformers = pytest.importorskip("transformers")
     peft = pytest.importorskip("peft")

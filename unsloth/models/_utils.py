@@ -7668,23 +7668,16 @@ def _replan_auto_offload_safely(trainer):
 
 
 def mark_auto_offload_for_ddp(model, ddp_auto):
-    """Record that from_pretrained(offload_layers = "auto") planned this rank's card for DDP, on every
-    rank, also ranks whose plan swapped nothing, so each builds the same DDP ignore list and a late
-    FSDP / DeepSpeed Trainer refuses on every rank. Not set when the launch already showed a sharded
-    backend: "auto" then declined and loaded every layer, as before."""
+    """Mark an "auto" DDP plan on every rank, even zero-swap ones, so all build the same ignore list."""
     if ddp_auto and model is not None:
         model._unsloth_offload_layers_auto_ddp = True
     return model
 
 
 def _ignore_block_swap_params_for_ddp(model):
-    """offload_layers = "auto" plans each rank on its own free memory, so under DDP ranks can swap
-    different layers, and a swapped weight is a 0-element tensor between uses. DDP broadcasts every
-    parameter it does not ignore from rank 0 when it wraps the model, which needs equal shapes on
-    every rank: keep the frozen decoder weights out of it (they load identically on every rank and
-    DDP never syncs frozen weights afterwards). The list must be the same on every rank, so it
-    follows the request and the architecture, never this rank's plan. Names are relative to the
-    model the Trainer wraps (the PeftModel). Returns the names added."""
+    """Keep frozen decoder weights out of DDP's init broadcast: ranks may swap different layers to
+    0-element placeholders. The list must match on every rank, so it follows the request and
+    architecture, never this rank's plan. Returns the names added."""
     from .loader_utils import is_distributed
 
     if model is None or find_decoder_layers is None or not is_distributed():
@@ -7693,17 +7686,14 @@ def _ignore_block_swap_params_for_ddp(model):
         getattr(model, "_unsloth_offload_layers_auto", None) is None
     ):
         return []
-    # Only once PEFT froze the base: before that only the swapped layers are frozen, so the list
-    # would differ between ranks.
+    # Before PEFT froze the base only swapped layers are frozen, so the list would differ per rank.
     if getattr(model, "peft_config", None) is None:
         return []
     try:
         layer_params = {id(p) for p in find_decoder_layers(model).parameters()}
     except Exception:
         return []
-    # A decoder weight PEFT made trainable after the swap captured it (bias = "all" / "lora_only",
-    # modules_to_save inside a layer) can be a placeholder on one rank and full on another, and DDP
-    # must sync its gradient. Decided from the PEFT config alone, so every rank refuses alike.
+    # Trainable decoder weights (bias, modules_to_save) need DDP sync; refuse on every rank alike.
     trainable = [
         name
         for name, p in model.named_parameters()
@@ -7732,10 +7722,8 @@ def _ignore_block_swap_params_for_ddp(model):
 
 
 def _block_swap_for_trainer_backend(trainer):
-    """DDP: keep the swapped weights out of its init-time broadcast. FSDP / DeepSpeed: refuse an
-    offload_layers = "auto" swap. TrainingArguments(fsdp = ...) / (deepspeed = ...) under torchrun
-    leaves no trace at from_pretrained, so "auto" planned for DDP, and a sharding backend would
-    flatten or partition the 0-element placeholders."""
+    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load, so "auto" planned for DDP):
+    refuse, since sharding would flatten the 0-element placeholders."""
     model = getattr(trainer, "model", None)
     backend = (
         "FSDP"
@@ -7748,9 +7736,7 @@ def _block_swap_for_trainer_backend(trainer):
         return _ignore_block_swap_params_for_ddp(model)
     swapper = getattr(model, "_unsloth_block_swap", None) if model is not None else None
     swapped = len(getattr(swapper, "indices", None) or ())
-    # "auto" planned per rank (from_pretrained or get_peft_model): every rank refuses, also one whose
-    # own plan swapped nothing, since a peer may have swapped and a one-sided refusal would hang the
-    # others. A launch that already showed FSDP / DeepSpeed never planned, so it never gets here.
+    # Every auto rank refuses, even zero-swap ones: a one-sided refusal would hang the peers.
     auto = model is not None and (
         getattr(model, "_unsloth_offload_layers_auto_ddp", False)
         or getattr(model, "_unsloth_offload_layers_auto", None) is not None

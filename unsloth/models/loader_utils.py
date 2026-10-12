@@ -779,7 +779,6 @@ def _sharded_data_parallel_launch():
 
 
 def _single_card_device_map(device_map):
-    """True for a map placing the whole model on one CUDA card, as a distributed launch gives each rank."""
     if isinstance(device_map, dict):
         if set(device_map) != {""}:
             return False
@@ -792,8 +791,6 @@ def _single_card_device_map(device_map):
 
 
 def ddp_auto_block_swap_launch(device_map):
-    """True when offload_layers = "auto" plans this rank's own card for DDP: a distributed launch that
-    does not show FSDP / DeepSpeed and loads onto one card."""
     return (
         is_distributed()
         and _sharded_data_parallel_launch() is None
@@ -802,8 +799,7 @@ def ddp_auto_block_swap_launch(device_map):
 
 
 def auto_offload_for_launch(offload_layers):
-    """get_peft_model(offload_layers = "auto") on a launch that shows FSDP / DeepSpeed: no swap (the
-    backend shards the weights itself), so no marker, and the Trainer starts as before."""
+    """No "auto" swap on a launch that already shows FSDP / DeepSpeed."""
     if (
         offload_layers == "auto"
         and is_distributed()
@@ -855,13 +851,12 @@ def resolve_auto_block_swap(
         return _none("block swap needs a CUDA or ROCm GPU")
     distributed = is_distributed()
     if distributed:
-        # DDP only: one whole model per rank on its own card. FSDP / DeepSpeed shard the weights themselves.
         sharded = _sharded_data_parallel_launch()
         if sharded is not None:
             return _none(f"{sharded} shards the weights across the ranks itself")
         if not _single_card_device_map(device_map):
             return _none("each rank of a distributed launch owns its own device")
-        # A host-RAM embedding puts a CPU parameter inside the module DDP wraps, which it refuses.
+        # DDP refuses a CPU parameter.
         offload_embedding = False
     try:
         from unsloth_zoo.device_map_planner import plan_block_swap
@@ -942,8 +937,7 @@ def resolve_auto_block_swap(
     )
     embedding = bool(getattr(plan, "offload_embedding", False))
     if distributed:
-        # No collective here: a loader only some ranks run would hang on it. Each rank keeps its own
-        # plan; the counts may differ, which `_ignore_block_swap_params_for_ddp` makes safe for DDP.
+        # No collective: a loader only some ranks run would hang. Plans may differ per rank.
         layers = int(plan.layers or 0)
         print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
         return layers, ({"": target} if layers else device_map), False

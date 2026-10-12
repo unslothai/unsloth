@@ -1782,7 +1782,7 @@ class FastLanguageModel(FastLlamaModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        # A loaded adapter returns here, not through get_peft_model. No-op without PEFT.
+        # Loaded adapters skip get_peft_model.
         _ignore_block_swap_params_for_ddp(model)
         # This path never sets UNSLOTH_FORCE_FLOAT32, so answer False rather than let the trainer read whatever a later load writes to the environment.
         model = _mark_forced_float32(model, False)
@@ -3092,7 +3092,7 @@ class FastModel(FastBaseModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        # A loaded adapter returns here, not through get_peft_model. No-op without PEFT.
+        # Loaded adapters skip get_peft_model.
         _ignore_block_swap_params_for_ddp(model)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)

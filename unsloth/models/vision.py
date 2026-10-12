@@ -3517,10 +3517,9 @@ class FastBaseModel:
                     extra_skip_modules = _architecture_skip_modules(model_types) or None,
                 ),
             )
-            # Marked only when the resolver planned: a veto (None) loads every layer, as before.
             _ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None
             if _ddp_auto_swap:
-                # DDP refuses a module with a CPU parameter: the embedding stays on this rank's card.
+                # DDP refuses a CPU parameter.
                 offload_embedding = False
         _block_swap_device = block_swap_load_device(device_map)
         if (_offload_layers or _embedding_needed) and _block_swap_device is not None:
@@ -4811,8 +4810,7 @@ class FastBaseModel:
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        # Here, not at load: only after get_peft_model is the frozen set the same on every rank, and a
-        # custom loop may hand the model to DistributedDataParallel without a Trainer.
+        # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
         _ignore_block_swap_params_for_ddp(model)
         return model
 
