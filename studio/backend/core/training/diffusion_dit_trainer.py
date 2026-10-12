@@ -444,7 +444,10 @@ def _convert_fp8(transformer, family: Optional[str] = None) -> bool:
     outliers (Z-Image ~2.7e6) crush a tensorwise one."""
     from core.training.diffusion_frozen_fp8 import convert_frozen_fp8
 
-    convert_frozen_fp8(transformer, {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)})
+    _, failed = convert_frozen_fp8(
+        transformer, {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+    )
+    transformer._studio_fp8_failed = failed
     return _require_lowp_modules(transformer, "fp8")
 
 
@@ -491,6 +494,9 @@ def _apply_fp8_training(
     try:
         _probe_lowp(_convert_fp8, transformer)
         converted = _convert_fp8(transformer, family)
+        failed = getattr(transformer, "_studio_fp8_failed", 0)
+        if failed:
+            _emit(on_event, "warning", message = f"fp8: {failed} layer(s) could not be converted and stay bf16.")
         import torch
 
         if torch.cuda.is_available():

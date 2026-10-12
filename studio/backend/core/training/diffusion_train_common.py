@@ -410,9 +410,9 @@ def has_functional_torchao() -> bool:
 
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4 always works;
-    bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/fp8/mxfp8 additionally need a
+    bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/mxfp8 additionally need a
     FUNCTIONAL torchao (their explicit paths import it with no fallback, and the Windows-ROCm
-    stub only looks installed). fp8 also needs sm89+; mxfp8 needs the Blackwell tensor cores
+    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 needs the Blackwell tensor cores
     (sm100+) its cuBLAS kernels target. The dense modes all train in bf16 compute, which the DiT
     trainer requires, so a non-bf16 CUDA GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise
     /info would advertise a start that evicts resident models and then fails the trainer's bf16
@@ -424,11 +424,12 @@ def train_precision_modes() -> tuple[list[str], str]:
         if flow_bf16_trainable():
             modes.append("bf16")
             # ROCm capability values are gfx versions, not the NVIDIA SM levels checked below.
-            torchao_ok = has_functional_torchao() and not torch_is_rocm()
+            rocm = torch_is_rocm()
+            torchao_ok = has_functional_torchao() and not rocm
             if torchao_ok:
                 modes.append("int8")
             major, minor = torch.cuda.get_device_capability()
-            if torchao_ok and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
+            if not rocm and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
             if torchao_ok and (major, minor) >= (10, 0):
                 modes.append("mxfp8")

@@ -28,6 +28,16 @@ def _rowwise_quant(x2d):
     return q, amax / _E4M3_MAX
 
 
+@torch.no_grad()
+def _quantize_weight(w, rows = 2048):
+    # Row chunks bound the fp32 transient (a full copy of FLUX.2-dev's largest weight is ~1.5 GB).
+    q = torch.empty(w.shape, dtype = _E4M3, device = w.device)
+    s = torch.empty((w.shape[0], 1), dtype = torch.float32, device = w.device)
+    for i in range(0, w.shape[0], rows):
+        q[i : i + rows], s[i : i + rows] = _rowwise_quant(w[i : i + rows])
+    return q, s
+
+
 def _unit_scaled_mm(a, b):
     one = torch.ones((), device = a.device, dtype = torch.float32)  # a fresh scalar: a buffer view fails to lower
     out = torch._scaled_mm(a, b, scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
@@ -64,8 +74,7 @@ class FrozenFp8Linear(nn.Module):
         if in_f % 16 or out_f % 16:
             raise ValueError(f"fp8 needs 16-aligned dims, got {out_f}x{in_f}")
         self.in_features, self.out_features = in_f, out_f
-        with torch.no_grad():
-            q, s = _rowwise_quant(linear.weight.detach())
+        q, s = _quantize_weight(linear.weight.detach())
         # Buffers: never trainable, never in an optimizer or PEFT's trainable scans.
         self.register_buffer("weight", q)
         self.register_buffer("weight_scale", s.reshape(1, out_f).contiguous())
@@ -83,17 +92,23 @@ class FrozenFp8Linear(nn.Module):
         return f"in_features={self.in_features}, out_features={self.out_features}, fp8"
 
 
-def convert_frozen_fp8(model: nn.Module, names) -> int:
-    """Swap the frozen nn.Linear modules at ``names`` (fully qualified) for FrozenFp8Linear; returns the count."""
-    count = 0
+def convert_frozen_fp8(model: nn.Module, names) -> tuple[int, int]:
+    """Swap the frozen nn.Linear modules at ``names`` (fully qualified) for FrozenFp8Linear, one at a time so each
+    frees its bf16 weight before the next quantizes. A layer that fails (out of memory) stays bf16 and the rest still
+    convert, so the model is never left half-converted behind a raise. Returns (converted, failed)."""
+    done = failed = 0
     for fqn in sorted(names):
         parent_name, _, child = fqn.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
         old = getattr(parent, child)
         if type(old) is not nn.Linear or old.weight.requires_grad:
             continue
-        new = FrozenFp8Linear(old)
+        try:
+            new = FrozenFp8Linear(old)
+        except (RuntimeError, ValueError):
+            failed += 1
+            continue
         new._studio_lowp = "fp8"
         setattr(parent, child, new)
-        count += 1
-    return count
+        done += 1
+    return done, failed

@@ -832,6 +832,38 @@ def test_fp8_quantizes_each_frozen_base_weight_once():
     assert not any(n.endswith("ff.weight") for n, _ in m.named_parameters())
 
 
+def test_fp8_layer_that_fails_stays_bf16_and_the_rest_convert(monkeypatch):
+    import core.training.diffusion_frozen_fp8 as ff
+
+    real = ff._quantize_weight
+    calls = []
+
+    def flaky(w, rows = 2048):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("CUDA out of memory")
+        return real(w, rows)
+
+    monkeypatch.setattr(ff, "_quantize_weight", flaky)
+    m = _block_model().requires_grad_(False)
+    events = []
+    assert dit._apply_fp8_training(m, events.append, "flux.1") is True
+    kinds = sorted(type(b.ff).__name__ for b in m.blocks)
+    assert kinds == ["FrozenFp8Linear", "Linear"]
+    assert any("1 layer(s)" in e.get("message", "") for e in events)
+
+
+def test_fp8_chunked_quantization_matches_one_shot():
+    import torch
+
+    from core.training.diffusion_frozen_fp8 import _quantize_weight, _rowwise_quant
+
+    w = torch.randn(300, 64, dtype = torch.bfloat16) * torch.logspace(-3, 3, 300).unsqueeze(1).bfloat16()
+    q1, s1 = _rowwise_quant(w)
+    q2, s2 = _quantize_weight(w, rows = 64)
+    assert torch.equal(q1.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(s1, s2)
+
+
 def test_fp8_conversion_needs_no_torchao(monkeypatch):
     import sys
 
@@ -929,24 +961,22 @@ def test_train_precision_modes_no_cuda(monkeypatch):
 
 
 def test_train_precision_modes_gates_int8_fp8_on_torchao(monkeypatch):
-    # int8/fp8 are only advertised when torchao is FUNCTIONAL: their explicit paths import it with no fallback.
+    # int8/mxfp8 are only advertised when torchao is FUNCTIONAL: their explicit paths import it with no fallback.
+    # fp8 runs on torch's own _scaled_mm, so only the GPU decides.
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (10, 0))
 
-    # No functional torchao (absent or stub): bf16 + auto only, int8/fp8 dropped.
     monkeypatch.setattr(common, "has_functional_torchao", lambda: False)
     modes, recommended = train_precision_modes()
-    assert modes == ["nf4", "bf16", "auto"]
-    assert "int8" not in modes and "fp8" not in modes
+    assert modes == ["nf4", "bf16", "fp8", "auto"]
     assert recommended == "auto"
 
-    # With a functional torchao on an fp8-capable GPU, int8 + fp8 are advertised again.
     monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
     modes2, _ = train_precision_modes()
-    assert "int8" in modes2 and "fp8" in modes2
+    assert modes2 == ["nf4", "bf16", "int8", "fp8", "mxfp8", "auto"]
 
 
 def test_train_precision_modes_gates_dense_on_bf16_support(monkeypatch):
