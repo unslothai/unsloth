@@ -42,7 +42,13 @@ class _Backend:
         self.planned_mib = planned_mib
         self._parking_reserving_mib = None
 
-    def _planned_host_weights_mib(self, cmd, detected_gpus, env = None, **kwargs) -> int:
+    def _planned_host_weights_mib(
+        self,
+        cmd,
+        detected_gpus,
+        env = None,
+        **kwargs,
+    ) -> int:
         return self.planned_mib
 
 
@@ -54,7 +60,14 @@ def host(monkeypatch):
     monkeypatch.setattr(llama_mod, "_parking_backends", weakref.WeakSet())
 
 
-def _namespace(backend, *, exact_wanted = True, budget = 40_000, done = None, reserved = None):
+def _namespace(
+    backend,
+    *,
+    exact_wanted = True,
+    budget = 40_000,
+    done = None,
+    reserved = None,
+):
     namespace = dict(vars(llama_mod))
     namespace.update(
         self = backend,
@@ -83,9 +96,9 @@ class TestTheRetryPricesItsOwnWeights:
         backend = _Backend(planned_mib = 90_000)
         cmd = ["llama-server", "--kv-unified", "--preempt-ram", "40000"]
         _bound(backend)(cmd)
-        assert "--preempt-ram" not in cmd, (
-            f"the plain retry still pins parks past its own weights: {cmd}"
-        )
+        assert (
+            "--preempt-ram" not in cmd
+        ), f"the plain retry still pins parks past its own weights: {cmd}"
 
     def test_the_weights_come_off_what_it_may_pin(self, host):
         # What the retry pinned before: the host-bounded budget with no weights taken off.

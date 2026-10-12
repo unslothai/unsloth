@@ -21,7 +21,7 @@ import pytest
 
 pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
-_START = "_exact_writes_now = getattr(self, \"_exact_parking_writes\", None)"
+_START = '_exact_writes_now = getattr(self, "_exact_parking_writes", None)'
 _END = "_host_ram_msg = _offload_msg"
 
 
@@ -53,7 +53,13 @@ def host(monkeypatch):
     monkeypatch.setattr(llama_mod, "_parking_backends", weakref.WeakSet())
 
 
-def _run(backend, *, setting, weights, budget = 40_000):
+def _run(
+    backend,
+    *,
+    setting,
+    weights,
+    budget = 40_000,
+):
     cmd = ["llama-server", "--preempt-ram", str(budget)]
     namespace = dict(vars(llama_mod))
     namespace.update(
