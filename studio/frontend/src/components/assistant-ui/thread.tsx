@@ -356,7 +356,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
-import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/composer-toggle";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
 import {
   BranchNextIcon,
   BranchPrevIcon,
