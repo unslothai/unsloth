@@ -22,7 +22,7 @@ import {
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
-import { CompactionDivider } from "@/components/assistant-ui/compaction-notice";
+import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
 import {
   compactionDividers,
   memoOnArrayByKey,

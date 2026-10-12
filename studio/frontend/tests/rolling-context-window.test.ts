@@ -14,7 +14,7 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-const COMPACTION_NOTICE = readSrc("components/assistant-ui/compaction-notice.tsx");
+const COMPACTION_DIVIDER = readSrc("components/assistant-ui/compaction-divider.tsx");
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 const DERIVED = readSrc("components/assistant-ui/message-derived.ts");
 const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
@@ -151,8 +151,8 @@ test("a rescued turn cannot silence the compactions that follow it", () => {
 });
 
 test("the notice and the toast read the same predicate as the boundary", () => {
-  assert.match(COMPACTION_NOTICE, /promptWasShortened\(truncation\)/);
-  assert.doesNotMatch(COMPACTION_NOTICE, /truncation\?\.fits/);
+  assert.match(COMPACTION_DIVIDER, /promptWasShortened\(truncation\)/);
+  assert.doesNotMatch(COMPACTION_DIVIDER, /truncation\?\.fits/);
   assert.match(adapter, /promptWasShortened\(chunk\.context_truncated\)/);
 });
 
@@ -223,7 +223,7 @@ test("the compaction notice renders from persisted metadata, not from a message"
     THREAD,
     /<CompactionDivider truncation=\{contextTruncation\} placement="inside"/,
   );
-  assert.match(COMPACTION_NOTICE, /Context compacted/);
+  assert.match(COMPACTION_DIVIDER, /Context compacted/);
 });
 
 test("the compaction notice uses the shared boundary/checkpoint predicate", () => {
