@@ -151,7 +151,8 @@ function onHistoryUpdated() {
     refreshTimer = null;
     fullListEpoch += 1;
     for (const pager of livePagers) {
-      if (pager.getState().loaded) void pager.refresh();
+      const { loaded, loading } = pager.getState();
+      if (loaded || loading) void pager.refresh();
     }
   }, SIDEBAR_REFRESH_DEBOUNCE_MS);
 }
@@ -294,7 +295,8 @@ export function useSidebarRowPages(
       parts.push(state.rows);
       lists[name] = {
         ...state,
-        loadMore: () => pager.loadMore(),
+        // nothing renders `error`, so the next scroll is the retry
+        loadMore: () => (state.error ? pager.retry() : pager.loadMore()),
         loadAll: () => pager.loadAll(),
         retry: () => pager.retry(),
       };

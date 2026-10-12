@@ -56,6 +56,8 @@ export class RowPager<Q, T extends { id: string }> {
   private cursor: string | null = null;
   private generation = 0;
   private pending: Promise<void> | null = null;
+  // the rows on screen are not this query's top window (a refresh failed), so retry re-reads
+  private stale = false;
   private readonly listeners = new Set<() => void>();
   private readonly maxRequestLimit: number;
   private readonly fetchPage: FetchRowPage<Q, T>;
@@ -80,10 +82,6 @@ export class RowPager<Q, T extends { id: string }> {
     return this.state;
   }
 
-  getQuery(): Q {
-    return this.query;
-  }
-
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -97,6 +95,7 @@ export class RowPager<Q, T extends { id: string }> {
   private async read(
     cursor: string | null,
     count: number,
+    generation: number,
   ): Promise<{
     rows: T[];
     cursor: string | null;
@@ -107,7 +106,7 @@ export class RowPager<Q, T extends { id: string }> {
     let next = cursor;
     let hasMore = true;
     let total: number | null = null;
-    while (rows.length < count && hasMore) {
+    while (rows.length < count && hasMore && generation === this.generation) {
       const limit = Math.min(this.maxRequestLimit, count - rows.length);
       const page = await this.fetchPage(this.query, limit, next);
       rows = dedupeAppend(rows, page.rows);
@@ -140,9 +139,10 @@ export class RowPager<Q, T extends { id: string }> {
     this.patch({ loading: true });
     const run = (async () => {
       try {
-        const result = await this.read(null, window);
+        const result = await this.read(null, window, generation);
         if (generation !== this.generation) return;
         this.cursor = result.cursor;
+        this.stale = false;
         this.patch({
           rows: result.rows,
           hasMore: result.hasMore,
@@ -153,6 +153,7 @@ export class RowPager<Q, T extends { id: string }> {
         });
       } catch (error) {
         if (generation !== this.generation) return;
+        this.stale = true;
         this.patch({ loaded: true, loading: false, error });
       }
     })();
@@ -169,7 +170,7 @@ export class RowPager<Q, T extends { id: string }> {
     this.patch({ loading: true });
     const run = (async () => {
       try {
-        const result = await this.read(this.cursor, count);
+        const result = await this.read(this.cursor, count, generation);
         if (generation !== this.generation) return;
         this.cursor = result.cursor;
         this.patch({
@@ -211,7 +212,7 @@ export class RowPager<Q, T extends { id: string }> {
 
   retry(): Promise<void> {
     if (!this.state.error) return Promise.resolve();
-    if (this.state.rows.length === 0) return this.refresh();
+    if (this.stale || this.state.rows.length === 0) return this.refresh();
     this.patch({ error: null });
     return this.loadMore();
   }
