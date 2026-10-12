@@ -2469,7 +2469,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "ensure_converter_scripts",
-        lambda install_dir, llama_tag: ensured_tags.append(llama_tag),
+        lambda install_dir, llama_tag, **kwargs: ensured_tags.append(llama_tag),
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -3741,7 +3741,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "ensure_converter_scripts",
-        lambda install_dir, llama_tag: None,
+        lambda install_dir, llama_tag, **kwargs: None,
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")

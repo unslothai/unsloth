@@ -104,6 +104,7 @@ export interface ExportRunPanelProps {
   destination: ExportDestination;
   onDestinationChange: (v: ExportDestination) => void;
   saveDirectory: string;
+  saveDirectoryInput: string;
   defaultSaveDirectory: string;
   saveDirectoryOverridden: boolean;
   onSaveDirectoryChange: (v: string | null) => void;
@@ -133,6 +134,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     destination,
     onDestinationChange,
     saveDirectory,
+    saveDirectoryInput,
     defaultSaveDirectory,
     saveDirectoryOverridden,
     onSaveDirectoryChange,
@@ -289,7 +291,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               <div className="flex items-stretch gap-2">
                 <Input
                   className="min-w-0 flex-1 font-mono text-ui-12"
-                  value={saveDirectory}
+                  value={saveDirectoryInput}
                   onChange={(e) => onSaveDirectoryChange(e.target.value)}
                   spellCheck={false}
                   title={saveDirectory}

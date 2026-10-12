@@ -77,7 +77,6 @@ import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
-  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
@@ -89,7 +88,7 @@ import {
 import {
   ChevronLeftIcon,
 } from "lucide-react";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -851,7 +850,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 "archived-audio",
                 "archivedAudio",
                 "shell.navigation.audio",
-                AudioWave01Icon,
+                AiSpeechIcon,
               ],
             ] as const).map(([page, label, shortLabel, icon]) => (
               <button

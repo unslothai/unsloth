@@ -13,10 +13,16 @@ from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 
+import unsloth
+
+# The torch backend: on Apple Silicon unsloth serves decision models from decision_mlx instead.
+if unsloth._IS_MLX:
+    pytest.skip("the torch backend", allow_module_level = True)
+
 from transformers import TrainerCallback, TrainingArguments
 
 from unsloth import DecisionTrainer, FastDecisionModel
-from unsloth.models import decision
+from unsloth.models import _decision_common, decision
 from unsloth.models.decision import (
     DecisionDataCollator,
     DecisionDataError,
@@ -171,7 +177,7 @@ def test_laya_is_the_copy_vendored_with_unsloth(monkeypatch, fresh_laya):
 
 
 def test_missing_vendored_laya_is_a_clear_error(monkeypatch, tmp_path, fresh_laya):
-    monkeypatch.setattr(decision, "_VENDORED_LAYA", tmp_path / "laya" / "__init__.py")
+    monkeypatch.setattr(_decision_common, "_VENDORED_LAYA", tmp_path / "laya" / "__init__.py")
     with pytest.raises(ImportError, match = "Unsloth: decision models need laya"):
         decision._laya()
 

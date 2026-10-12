@@ -65,6 +65,7 @@ export function applyPerModelConfigToRuntime(
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
     specDraftCacheDtype: config.specDraftCacheDtype ?? null,
+    specDraftModel: config.specDraftModel ?? null,
     nParallel: config.nParallel ?? null,
     reasoningBudget: options.isDiffusion ? -1 : config.reasoningBudget,
     reasoningBudgetMessage: options.isDiffusion
@@ -133,6 +134,7 @@ export function currentRuntimePerModelConfig(
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
+    specDraftModel: s.specDraftModel ?? null,
     nParallel: s.nParallel ?? null,
     reasoningBudget:
       s.reasoningBudget === s.loadedReasoningBudget
@@ -184,6 +186,7 @@ export function perModelConfigsEqual(
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
+    (a.specDraftModel ?? null) === (b.specDraftModel ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
     a.reasoningBudget === b.reasoningBudget &&
     a.reasoningBudgetMessage === b.reasoningBudgetMessage &&

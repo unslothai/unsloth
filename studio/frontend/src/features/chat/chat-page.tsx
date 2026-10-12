@@ -211,6 +211,7 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsPreserveThinking,
   getProviderCapabilities,
+  kimiSearchExcludesThinking,
   modelCatalogVersion,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
@@ -284,7 +285,9 @@ import {
   createAnnotationsFile,
 } from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { savedBranchHead } from "./utils/branch-head";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
@@ -1278,7 +1281,8 @@ function CompareShell({
         {/* Symmetric: the extra right inset mirrored the viewport's one-sided
             scrollbar gutter, which is now reserved on both edges. */}
         <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
+          {/* unsloth-composer-shell: the size container the single composer's narrow layout queries. */}
+          <div className="unsloth-composer-shell mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.
@@ -3102,7 +3106,10 @@ export function ChatPage({
     );
     // Kimi's k2.6/k2.5 default to thinking enabled server-side, so the Think pill comes up clicked. Search stays
     // off; the composer's mutual-exclusion handlers flip the two. Per https://platform.kimi.ai/docs/models.
-    const isKimi = provider?.providerType === "kimi";
+    const isKimi = kimiSearchExcludesThinking(
+      provider?.providerType,
+      selection.modelId,
+    );
     // Web search on by default only for Anthropic and OpenAI, both with structured citations.
     // OpenRouter and Kimi work on opt-in but are less reliable.
     const searchOnByDefault =
@@ -3888,7 +3895,10 @@ export function ChatPage({
         );
         // See sibling useEffect: Kimi's k2.x default to thinking enabled. Search stays off; the
         // composer's mutual exclusion flips them.
-        const isKimi = selectedProvider?.providerType === "kimi";
+        const isKimi = kimiSearchExcludesThinking(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+        );
         // Mirror of sibling useEffect: Anthropic/OpenAI get Search on by default; others stay off.
         const searchOnByDefault =
           supportsBuiltinWebSearch &&
@@ -4254,10 +4264,9 @@ export function ChatPage({
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    // Prefer the explicit save; fall back to the last non-compare view so the composer + menu path
-    // also returns where the user started.
+    // the composer and menu exit paths rely on the last non-compare view.
     const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
-    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    // direct compare URLs have no saved view, so return to a fresh chat.
     if (!saved) {
       navigate({ to: "/chat" });
       return;
@@ -4270,10 +4279,13 @@ export function ChatPage({
       void listStoredChatMessages(threadId)
         .then((messages) => {
           const store = useChatRuntimeStore.getState();
-          const usage = savedUsageFor(messages, store) ?? estimateContextUsage(messages);
+          const branch = orderBySelectedBranch(
+            messages,
+            savedBranchHead(threadId, messages),
+          );
+          const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
           if (!usage) return;
-          // Key by the thread this restore read, like the history loader: the await above can outlast a
-          // switch away, and an unkeyed write would file this usage under the incoming thread.
+          // key usage by the restored thread because this read can outlast a thread switch.
           store.setThreadContextUsage(threadId, usage);
           if (store.activeThreadId === threadId) {
             store.setContextUsage(usage);
@@ -4783,7 +4795,8 @@ export function ChatPage({
           </div>
           <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
-            view.mode === "single" &&
+            (view.mode === "single" ||
+              (view.mode === "project" && activeThreadId != null)) &&
             (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}

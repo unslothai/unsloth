@@ -2707,6 +2707,50 @@ def _split_parallel_tool_calls(messages: list) -> list:
     return out
 
 
+def _repair_orphan_tool_results(messages: list) -> list:
+    """Placeholder call before each tool result lacking one (gpt-oss refuses orphans). Fallback only:
+    the model reads it. A text turn takes the calls, since a second assistant turn breaks alternation."""
+    mutated = False
+    out: list = []
+    linked = False
+    repaired_at = None
+
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else None
+        if role != "tool":
+            linked = role == "assistant" and bool(message.get("tool_calls"))
+            repaired_at = None
+            out.append(message)
+            continue
+        if linked and repaired_at is None:
+            out.append(message)
+            continue
+
+        call_id = message.get("tool_call_id") or f"replayed_tool_{len(out)}"
+        call = {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": message.get("name") or "tool", "arguments": {}},
+        }
+        if repaired_at is not None:
+            calls = out[repaired_at]["tool_calls"]
+            if all(c.get("id") != call_id for c in calls):
+                out[repaired_at] = {**out[repaired_at], "tool_calls": [*calls, call]}
+        elif out and isinstance(out[-1], dict) and out[-1].get("role") == "assistant":
+            out[-1] = {**out[-1], "tool_calls": [call]}
+            repaired_at = len(out) - 1
+        else:
+            out.append({"role": "assistant", "content": "", "tool_calls": [call]})
+            repaired_at = len(out) - 1
+        if not message.get("tool_call_id"):
+            message = {**message, "tool_call_id": call_id}
+        out.append(message)
+        linked = True
+        mutated = True
+
+    return out if mutated else messages
+
+
 _MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
@@ -3375,6 +3419,14 @@ def apply_chat_template_for_generation(
                 return _render_with_fallback(candidate)
             except Exception:
                 continue
+        # Last and lazy: a history an earlier candidate renders never pays for the scan.
+        repaired = _repair_orphan_tool_results(split)
+        if repaired is not split:
+            try:
+                # Split again: gpt-oss renders only tool_calls[0] and names every later result after it.
+                return _render_with_fallback(_split_parallel_tool_calls(repaired))
+            except Exception:
+                pass
         raise
 
 
@@ -3501,7 +3553,7 @@ def render_native_template(
             exc,
         )
         return None
-    if with_tools == no_tools:
+    if tools and with_tools == no_tools:
         return None
     if return_metadata:
         return ChatTemplateRenderResult(
@@ -3509,11 +3561,7 @@ def render_native_template(
             _detect_reasoning_channel_markers_from_templates(
                 _selected_template_strings_from_value(native_tpl, tools)
             ),
-            # The NATIVE profile decided this render's catalog: it can drop a tool the active profile kept, so callers
-            # must gate healing and tool execution on this list rather than on the one they sanitized themselves. With
-            # *tools*, matching the render above: a named native template selects "tool_use" for a tool-calling turn,
-            # and profiling it without them read "default" instead, so a tool the render dropped was reported as
-            # advertised (#7066).
+            # gate healing and execution on NATIVE: "default" can advertise tools dropped by "tool_use" (#7066).
             neutralize_tool_descriptions(
                 tools, None, markup_for_tokenizer(render_tokenizer, tools)
             ),

@@ -23,6 +23,7 @@ export {
   detectResultFormat,
   isUnslothFinetunable,
   matchesFormat,
+  matchesRecommended,
 } from "./format-filters";
 export {
   formatLocalUpdated,
@@ -47,6 +48,7 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
   label: string;
 }> = [
   { value: "all", label: "All formats" },
+  { value: "recommended", label: "Recommended" },
   { value: "gguf", label: "GGUF" },
   { value: "checkpoint", label: "Safetensors" },
   { value: "mlx", label: "MLX" },
