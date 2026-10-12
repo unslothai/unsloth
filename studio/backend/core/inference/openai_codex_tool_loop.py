@@ -126,6 +126,7 @@ def stream_codex_with_studio_tools(
             nudge_tool_calls = policy.nudge_tool_calls,
             deduplicate_tool_calls = policy.deduplicate_tool_calls,
             sandbox_level = policy.sandbox_level,
+            parallel_tool_calls = policy.parallel_tool_calls,
         ),
         cancel_event = cancel_event,
         mcp_image = mcp_image,
