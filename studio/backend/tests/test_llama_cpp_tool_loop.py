@@ -7455,3 +7455,55 @@ def test_budget_notice_folded_into_a_result_is_reported_for_replay(monkeypatch):
     }
     sent = [m for m in payloads[1]["messages"] if m.get("role") == "tool"][-1]
     assert restore_replayed_tool_results([replayed])[0]["content"] == sent["content"]
+
+
+def test_restored_replay_is_the_branch_the_tools_are_given(monkeypatch):
+    # Restored results are new dicts and the live branch is accumulated by identity, so seeding it
+    # from the unrestored messages handed a tool the same replayed result twice.
+    history = [
+        {"role": "user", "content": "build it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_old",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": {"query": "x"}},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_old",
+            "name": "web_search",
+            "content": "Error: offline",
+        },
+        {"role": "assistant", "content": "It failed."},
+        {"role": "user", "content": "try again"},
+    ]
+    backend, _payloads = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_tool_call_sse("web_search", {"query": "y"}, "call_new"), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    branches: list[list[dict]] = []
+
+    def execute_tool(
+        name,
+        arguments,
+        conversation_branch = None,
+        **_kwargs,
+    ):
+        branches.append(list(conversation_branch or ()))
+        return "sunny"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    _run_tool_loop(backend, copy.deepcopy(history), [_web_search_tool()])
+
+    assert branches
+    replayed = [m for m in branches[0] if m.get("tool_call_id") == "call_old"]
+    assert len(replayed) == 1

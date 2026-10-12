@@ -38033,14 +38033,15 @@ class LlamaCppBackend:
         # injected into `conversation`. The archive is keyed by thread and the stored rows
         # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
         # has to be told which branch is live, and the client's messages are the answer.
-        _request_branch: list[dict] = list(messages)
+        # `conversation`, not `messages`: restored results are new dicts, and both lists are matched by identity.
+        _request_branch: list[dict] = list(conversation)
         # ...and everything this request adds to it. A long agent run can evict its own
         # earlier tool exchange, which is archived; filtered against the messages the
         # client sent, that document looks like an abandoned branch and is refused, so the
         # model cannot get back a tool result it still needs to answer. Accumulated rather
         # than read off `conversation`, which has already lost what earlier fits evicted.
-        _live_branch: list[dict] = list(messages)
-        _live_branch_ids: set[int] = {id(message) for message in messages}
+        _live_branch: list[dict] = list(conversation)
+        _live_branch_ids: set[int] = {id(message) for message in conversation}
 
         def _extend_live_branch(current: list[dict]) -> list[dict]:
             for message in current:
@@ -41423,7 +41424,7 @@ class LlamaCppBackend:
             try:
                 _before_final_fit = conversation
                 # Withheld, not `tools`: this is the synthesised final answer and
-                # `stream_payload` below sends no tools array at all, so the request's
+                # `stream_payload` below sends tool_choice "none", so the request's
                 # catalogue answers a question it does not pose and would let a NEW epoch
                 # start on the one pass that can never call `search_conversation`.
                 # Replaying an epoch already in force is unaffected.
@@ -41471,9 +41472,9 @@ class LlamaCppBackend:
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
                         thread_id = thread_id,
-                        # Inline, not tool: this final-answer request is counted and sent
-                        # with no tools array, so a forged tool role has no catalogue to
-                        # match and breaks strict templates.
+                        # Inline, not tool: this final-answer request is sent with
+                        # tool_choice "none", so a forged tool role answers a call the
+                        # model could not have made and breaks strict templates.
                         style = "inline",
                         # Checkpoint mode recalls once, on the turn that reset; rolling has no
                         # such key and keeps recalling on every turn that evicted anything.
@@ -41627,7 +41628,7 @@ class LlamaCppBackend:
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
-                        # The final pass again, so again no tools array is sent.
+                        # The final pass again, so again tool_choice is "none".
                         tools_withheld = True,
                     ),
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),

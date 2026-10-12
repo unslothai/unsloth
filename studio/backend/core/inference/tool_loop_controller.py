@@ -884,11 +884,17 @@ def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
         extra = message.get("extra_content")
         suffix = extra.get(TOOL_MODEL_SUFFIX_KEY) if isinstance(extra, dict) else None
         suffix = suffix if isinstance(suffix, str) else ""
-        body = content[: -len(suffix)] if suffix and content.endswith(suffix) else content
         # `in`, not endswith: an already restored message may carry folded feedback after it.
-        if is_tool_error(body) and TOOL_ERROR_NUDGE not in body:
-            body += TOOL_ERROR_NUDGE
-        restored = {**message, "content": body + suffix}
+        nudge = (
+            TOOL_ERROR_NUDGE if is_tool_error(content) and TOOL_ERROR_NUDGE not in content else ""
+        )
+        restored = dict(message)
+        if nudge or suffix:
+            # Before any frontend envelope, as the live loop placed it: text after the image
+            # array breaks its parse and ships the base64 as prompt text.
+            from core.inference.tools import _split_frontend_suffix
+            body, envelope = _split_frontend_suffix(content, message.get("name"))
+            restored["content"] = body + nudge + suffix + envelope
         if isinstance(extra, dict) and TOOL_MODEL_SUFFIX_KEY in extra:
             rest = {k: v for k, v in extra.items() if k != TOOL_MODEL_SUFFIX_KEY}
             if rest:

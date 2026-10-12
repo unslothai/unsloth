@@ -682,7 +682,8 @@ def run_safetensors_tool_loop(
     # switch to safetensors, so search_conversation is advertised here too and needs the
     # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
     # response in them.
-    _live_branch = list(messages)
+    # `conversation`: restored results are new dicts, and the branch is matched by identity.
+    _live_branch = list(conversation)
     # ...and the replies and tool results the loop adds to it: a fit can evict this request's
     # own earlier tool exchange into the archive, where the client's messages alone would
     # refuse it. Not the loop's user turns: those are its own notices, and recall searches

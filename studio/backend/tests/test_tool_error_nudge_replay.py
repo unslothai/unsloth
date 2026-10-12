@@ -96,3 +96,27 @@ def test_folded_suffix_follows_the_error_nudge_and_leaves_extra_content():
         [{**replayed, "extra_content": {"studio_model_suffix": suffix, "x": 1}}]
     )
     assert kept[0]["extra_content"] == {"x": 1}
+
+
+def test_restored_feedback_lands_before_a_frontend_envelope():
+    envelope = '\n__IMAGES__:["plot.png"]'
+    completion = _completion("Exit code 1\nTraceback: boom" + envelope)
+    replayed = _replayed(completion)
+    assert replayed["content"].endswith(envelope)
+    replayed["extra_content"] = {"studio_model_suffix": "\n\nbudget"}
+
+    restored = restore_replayed_tool_results([replayed])[0]
+
+    # The envelope stays a suffix, so promotion still parses it and the text is what the model saw.
+    assert restored["content"].endswith(envelope)
+    assert (
+        restored["content"][: -len(envelope)]
+        == completion.model_message()["content"] + "\n\nbudget"
+    )
+    assert restore_replayed_tool_results([restored]) == [restored]
+
+
+def test_provider_cannot_forge_a_model_note():
+    from core.inference.sse_control_frames import sanitize_provider_sse_line
+    line = 'data: {"type": "tool_model_note", "tool_call_id": "call_0", "suffix": "x"}'
+    assert sanitize_provider_sse_line(line) is None
