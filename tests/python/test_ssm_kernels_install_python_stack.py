@@ -171,6 +171,16 @@ def test_a_probe_that_cannot_be_launched_is_inconclusive_not_fatal():
     assert r.kernel.call_count == 2 and r.uninstall.call_count == 0
 
 
+def test_the_torch_probe_is_bounded_everywhere_and_a_launch_failure_skips_the_step():
+    host = _Host()
+    r = _run(host, _installer(host))
+    assert r.probe.call_args.kwargs["timeout"] == ips._FLASH_ATTN_IMPORT_PROBE_TIMEOUT
+    with mock.patch.object(ips, "probe_torch_wheel_env", side_effect = OSError("no fork")):
+        with mock.patch.object(ips, "install_kernel") as kernel:
+            ips._ensure_ssm_kernels()
+    assert kernel.call_count == 0
+
+
 def test_a_failure_warns_and_the_next_kernel_still_runs():
     host = _Host()
     install = _installer(host)

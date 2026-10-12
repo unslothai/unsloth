@@ -8570,10 +8570,11 @@ def _ensure_ssm_kernels() -> None:
     """
     if _ssm_kernel_install_disabled() or NO_TORCH or IS_MACOS:
         return
-    env = probe_torch_wheel_env(
-        timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT if IS_WINDOWS else None,
-        include_windows = True,
-    )
+    # Bounded on every platform, and a probe that cannot launch skips this optional step.
+    try:
+        env = probe_torch_wheel_env(timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT, include_windows = True)
+    except OSError:
+        return
     if env is None:
         return
 
