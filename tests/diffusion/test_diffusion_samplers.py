@@ -458,6 +458,11 @@ def test_get_peft_model_keeps_an_existing_adapter():
     assert again is model
     kept = next(p for n, p in again.named_parameters() if "lora_B" in n)
     assert torch.all(kept == 0.75) and kept.requires_grad
+    layer = next(m for m in model.modules() if hasattr(m, "lora_A"))
+    layer.gradient_checkpointing = True
+    FastDiffusionModel.get_peft_model(model, r = 4, use_gradient_checkpointing = False)
+    assert layer.gradient_checkpointing is False
+    assert model._unsloth_gradient_checkpointing is False
 
 
 def test_cancellation_hooks_every_embedding_and_restores_attention_modes():

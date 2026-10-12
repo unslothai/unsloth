@@ -504,8 +504,10 @@ def generate_text(
     input_ids, attention_mask = _encode(tokenizer, prompt, messages, device)
     eos_ids = _eos_ids(base, tokenizer)
     mask_id = _profile_mask_id(base, tokenizer, name)
+    # manual_seed reseeds every CUDA device, so snapshot every device a sharded model uses.
+    cuda_devices = sorted({p.device.index for p in base.parameters() if p.device.type == "cuda"})
     rng = (
-        torch.random.fork_rng(devices = [device] if device.type == "cuda" else [])
+        torch.random.fork_rng(devices = cuda_devices)
         if seed is not None
         else contextlib.nullcontext()
     )

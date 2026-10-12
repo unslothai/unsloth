@@ -8,8 +8,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
-from trl import SFTConfig, SFTTrainer
+from trl import SFTConfig
 
+from ..trainer import UnslothTrainer
 from .diffusion_loss import compile_backbone_layers, diffusion_compile_mode
 from .diffusion_profiles import resolve_diffusion_profile, unwrap_diffusion_model
 
@@ -48,6 +49,12 @@ class DiffusionConfig(SFTConfig):
         default = None,
         metadata = {"help": "Family-specific prediction parameterisation (e.g. 'mean', 'mean_loo')."},
     )
+    embedding_learning_rate: Optional[float] = field(
+        default = None,
+        metadata = {
+            "help": "Learning rate for embed_tokens / lm_head in modules_to_save (continued pretraining)."
+        },
+    )
     diffusion_compile: Optional[str] = field(
         default = "auto",
         metadata = {
@@ -74,7 +81,7 @@ def _unwrap_config(model):
     return None
 
 
-class DiffusionTrainer(SFTTrainer):
+class DiffusionTrainer(UnslothTrainer):
     def __init__(
         self,
         model = None,

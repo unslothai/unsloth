@@ -233,3 +233,26 @@ def test_chunked_ce_ignored_overflow_rows_do_not_poison_grads():
     weighted, _, _ = chunked_cross_entropy(hidden, targets)
     weighted.backward()
     assert torch.isfinite(hidden.grad).all()
+
+
+def test_embedding_learning_rate_gets_its_own_optimizer_group(tmp_path):
+    import torch.nn as nn
+    from unsloth.models.diffusion_trainer import DiffusionConfig, DiffusionTrainer
+
+    class _Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Module()
+            self.embed.modules_to_save = nn.ModuleDict({"default": nn.Embedding(8, 4)})
+            self.lora_A = nn.Linear(4, 4, bias = False)
+
+    trainer = DiffusionTrainer.__new__(DiffusionTrainer)
+    trainer.model, trainer.optimizer = _Model(), None
+    trainer.args = DiffusionConfig(
+        output_dir = str(tmp_path), learning_rate = 1e-3, embedding_learning_rate = 1e-5, report_to = []
+    )
+    groups = trainer.create_optimizer().param_groups
+    embedding = trainer.model.embed.modules_to_save["default"].weight
+    lrs = {group["lr"] for group in groups if any(p is embedding for p in group["params"])}
+    assert lrs == {1e-5}
+    assert any(group["lr"] == 1e-3 for group in groups)

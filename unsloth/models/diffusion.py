@@ -539,6 +539,8 @@ class FastDiffusionModel:
                 model.gradient_checkpointing_enable()
                 if hasattr(model, "enable_input_require_grads"):
                     model.enable_input_require_grads()
+            else:
+                _disable_gradient_checkpointing(model)
             model._unsloth_slow_diffusion = True
             model._unsloth_gradient_checkpointing = use_gradient_checkpointing
             return model
