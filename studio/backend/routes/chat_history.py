@@ -368,19 +368,17 @@ class ChatProjectListResponse(BaseModel):
     projects: list[ChatProject]
 
 
-_SIDEBAR_ID_LIST_MAX = 10_000
-
-
 class ChatSidebarRowsRequest(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     archived: bool = False
     projectId: Optional[str] = None
     unfiledOnly: bool = False
-    includeIds: Optional[list[str]] = Field(default = None, max_length = _SIDEBAR_ID_LIST_MAX)
-    excludeIds: list[str] = Field(default_factory = list, max_length = _SIDEBAR_ID_LIST_MAX)
+    # uncapped: a long history's pins, filed chats or saved order are all sent, as main kept them all
+    includeIds: Optional[list[str]] = None
+    excludeIds: list[str] = Field(default_factory = list)
     sort: Literal["updated", "manual"] = "updated"
-    manualOrder: Optional[list[str]] = Field(default = None, max_length = _SIDEBAR_ID_LIST_MAX)
+    manualOrder: Optional[list[str]] = None
     limit: int = Field(default = 20, ge = 1, le = SIDEBAR_ROWS_MAX_LIMIT)
     cursor: Optional[str] = Field(default = None, max_length = 4096)
 

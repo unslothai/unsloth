@@ -344,6 +344,21 @@ def test_malformed_cursor_is_400(client, cursor):
     assert raised.value.status_code == 400
 
 
+def test_id_lists_past_ten_thousand_are_accepted(client):
+    # a manual order spanning a long history, or that many filed chats, still pages
+    _insert_threads(_singles(30))
+    order = [f"t{i:04d}" for i in reversed(range(30))] + [f"gone{i}" for i in range(20_000)]
+    exclude = ["t0000"] + [f"gone{i}" for i in range(20_000)]
+    response = client.post(
+        "/api/chat/sidebar/rows",
+        json = {"sort": "manual", "manualOrder": order, "excludeIds": exclude, "limit": 5},
+    )
+    assert response.status_code == 200
+    page = response.json()
+    assert [row["id"] for row in page["rows"]] == ["t0029", "t0028", "t0027", "t0026", "t0025"]
+    assert page["total"] == 29
+
+
 @pytest.mark.parametrize("limit", [0, 201])
 def test_limit_is_bounded(client, limit):
     assert client.post("/api/chat/sidebar/rows", json = {"limit": limit}).status_code == 422
