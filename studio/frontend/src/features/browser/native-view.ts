@@ -645,6 +645,11 @@ function pruneViews(shown: string | null): void {
   }
 }
 
+/** A page view on screen has the keys: the app's document lost focus to it, not to another window. */
+export function nativePageHasKeys(): boolean {
+  return shownView !== null && !document.hasFocus();
+}
+
 function setShownView(tabId: string | null): void {
   shownView = tabId;
   for (const wake of [...shownWaiters]) wake();
