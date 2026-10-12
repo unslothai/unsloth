@@ -31714,7 +31714,9 @@ class LlamaCppBackend:
                     # The user's extras are appended last and win by last-arg, so name the flag ourselves.
                     _exact_conflicts = _exact.contradicting_args(
                         extra_args
-                    ) + _exact.contradicting_env(_exact_preflight_env(os.environ, gpu_memory_mode), extra_args)
+                    ) + _exact.contradicting_env(
+                        _exact_preflight_env(os.environ, gpu_memory_mode), extra_args
+                    )
                     if _exact_conflicts:
                         self._record_load_warning(
                             "Exact concurrency was requested, but the extra arguments "
