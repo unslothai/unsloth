@@ -318,7 +318,6 @@ def _weight_quant_state_dict_hook(module, state_dict, prefix, local_metadata):
 
 
 def _weight_quant_load_state_dict_hook(module, state_dict, prefix, *args):
-    """Restore parameter storage and invalidate quantized weights before loading."""
     for name, p in module.named_parameters(recurse = False, remove_duplicate = False):
         if prefix + name in state_dict:
             _restore_dense_weight(p)
