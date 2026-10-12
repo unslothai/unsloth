@@ -1100,8 +1100,9 @@ def _management(load_status = 200, catalog = None):
         return {"status": "loaded", "model": request.model_path}
 
     async def _unload_route(request, current_subject):
+        from models.inference import UnloadResponse
         calls.append(("unload", request.model_path))
-        return {"status": "unloaded", "model": request.model_path}
+        return UnloadResponse(status = "unloaded", model = request.model_path)
 
     double.load_model = _load_route
     double.unload_model = _unload_route
@@ -1152,7 +1153,10 @@ def test_management_unload_maps_the_advertised_alias_to_the_resident():
     """/unload matches the resident's identifier, not an alias such as an LM Studio name."""
     mod, calls = _management()
     with _client(mod) as c:
-        assert c.post("/models/unload", json = {"model": QWEN.lower()}).status_code == 200
+        r = c.post("/models/unload", json = {"model": QWEN.lower()})
+        assert r.status_code == 200
+        # The answer names the listed id, never the resident's path.
+        assert r.json()["model"] == QWEN
         assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
     assert calls == [("unload", "/media/models/qwen/model.gguf"), ("unload", CATALOG[1]["id"])]
 

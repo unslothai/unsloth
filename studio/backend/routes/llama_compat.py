@@ -401,8 +401,14 @@ async def manage_unload_model(
     body: _ModelManageBody, current_subject: str = Depends(get_current_subject)
 ):
     from models.inference import UnloadRequest
-    model_id = _resident_identifier(await _catalog_model_id(body.model))
-    return await _inference().unload_model(UnloadRequest(model_path = model_id), current_subject)
+
+    model_id = await _catalog_model_id(body.model)
+    resident = _resident_identifier(model_id)
+    response = await _inference().unload_model(UnloadRequest(model_path = resident), current_subject)
+    # Answer with the id the client named, never the resident's on-disk path.
+    if resident != model_id and getattr(response, "model", None) == resident:
+        response = response.model_copy(update = {"model": model_id})
+    return response
 
 
 async def _probe_not_found():
