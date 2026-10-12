@@ -27,7 +27,9 @@ def orchestrator(monkeypatch, tmp_path):
     loaded = tmp_path / "run" / "checkpoint-30"
     loaded.mkdir(parents = True)
     orch.current_checkpoint = str(loaded)
-    return orch, sent, loaded, orchestrator_module
+    yield orch, sent, loaded, orchestrator_module
+    # The orchestrator's atexit cleanup would otherwise try to shut down a fake worker.
+    orch._proc = None
 
 
 def test_an_export_of_a_replaced_checkpoint_sends_nothing(orchestrator, tmp_path):
