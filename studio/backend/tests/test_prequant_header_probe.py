@@ -922,3 +922,121 @@ def test_many_requested_bases_keep_the_memo_bounded(hub, monkeypatch, tmp_path):
     for i in range(pq._HEADER_PROBE_MAX + 50):
         pq.hosted_prequant_refusal(_source("unsloth/x", "c-INT8.pt"), "int8", base = f"org/b{i}")
     assert len(pq._HEADER_PROBE_MEMO) <= pq._HEADER_PROBE_MAX
+
+
+# -- a memo index the pickler never wrote is unknown before the unpickler sizes its table for it --
+
+
+def test_a_huge_memo_index_is_rejected_before_unpickling():
+    import struct
+
+    from core.inference.prequant_header_probe import _pickle_ops_within
+
+    # PROTO 2, NONE, LONG_BINPUT 2**31, STOP: four opcodes, one of which asks for a 2**31-slot memo.
+    bomb = b"\x80\x02Nr" + struct.pack("<I", 2**31) + b"."
+    assert _pickle_ops_within(bomb) is False
+    # LONG_BINGET of an index nothing wrote.
+    assert _pickle_ops_within(b"\x80\x02j" + struct.pack("<I", 2**20) + b".") is False
+    real = __import__("pickle").dumps({"a": [1, 2], "b": {"c": "d"}}, protocol = 2)
+    assert _pickle_ops_within(real) is True
+
+
+def test_a_huge_memo_index_checkpoint_is_unknown_with_bounded_memory(tmp_path):
+    """Run in a child capped at 1 GB of address space, so a regression fails here instead of taking the
+    test runner down with a multi-GB memo table."""
+    import struct
+    import subprocess
+    import sys
+    import textwrap
+
+    bomb = _pickle_zip(
+        tmp_path / "memo.pt", _metadata_pickle(b"Nr" + struct.pack("<I", 2**31 - 1) + b"0N")
+    )
+    code = textwrap.dedent(
+        f"""
+        import resource, sys, time, tracemalloc
+        resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
+        sys.path.insert(0, {os.getcwd()!r})
+        from core.inference import prequant_header_probe as probe
+        tracemalloc.start()
+        started = time.monotonic()
+        header = probe.read_local_checkpoint_header({str(bomb)!r})
+        peak = tracemalloc.get_traced_memory()[1]
+        print(header is None, peak, round(time.monotonic() - started, 2))
+        """
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, timeout = 120
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    is_none, peak, took = out.stdout.split()
+    assert is_none == "True"
+    assert int(peak) < 16 * 1024 * 1024, peak
+    assert float(took) < 10
+
+
+# -- an unauthenticated 401 is not memoised over the authenticated probe --
+
+
+def test_an_anonymous_401_does_not_answer_for_a_token_probe(hub, monkeypatch):
+    import huggingface_hub
+
+    real = huggingface_hub.get_hf_file_metadata
+
+    def gated(url, token = None, **kwargs):
+        if not token:
+            err = Exception("401")
+            err.response = types.SimpleNamespace(status_code = 401)
+            raise err
+        return real(url, token = token, **kwargs)
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", gated)
+    repo = "unsloth/Qwen-Image-2512-FP8"
+    _write_pt(_repo_file(hub, repo, "g-INT8.pt"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    source = _source(repo, "g-INT8.pt")
+    assert pq.hosted_prequant_refusal(source, "int8") is None  # unknown: never a refusal
+    reason = pq.hosted_prequant_refusal(source, "int8", hf_token = "hf_secret")
+    assert reason is not None and "txt_in" in reason
+    # The key carries a one-way tag, never the token.
+    assert all("hf_secret" not in repr(key) for key in pq._HEADER_PROBE_MEMO)
+
+
+# -- a video plan never stages a hosted denoiser its loader would refuse --
+
+
+_WAN_TI2V = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+
+
+def _wan_int8(hub, base_model_id):
+    from core.inference.diffusion_transformer_quant import (
+        DEFAULT_MIN_LINEAR_FEATURES,
+        exclude_tokens_for_scheme,
+    )
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family(_WAN_TI2V)
+    src = pq.resolve_prequant_source(fam, "int8", base_repo = _WAN_TI2V)
+    meta = {
+        "scheme": "int8",
+        "family": fam.name,
+        "base_model_id": base_model_id,
+        "min_features": DEFAULT_MIN_LINEAR_FEATURES,
+        "exclude_name_tokens": list(exclude_tokens_for_scheme("int8", fam.name)),
+        "component": "transformer",
+    }
+    _write_safetensors(_repo_file(hub, src.location, pq.candidate_filenames_of(src)[0]), meta)
+    return fam
+
+
+@pytest.mark.parametrize("base_model_id, usable", [(_WAN_TI2V, True), ("Other/Model", False)])
+def test_a_video_plan_drops_a_hosted_denoiser_its_loader_would_refuse(hub, base_model_id, usable):
+    from core.inference.video import VideoBackend
+    from core.inference.video_denoiser_prequant import denoiser_prequant_sources
+
+    fam = _wan_int8(hub, base_model_id)
+    assert (denoiser_prequant_sources(fam, "int8", _WAN_TI2V) is not None) is usable
+    staged = VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V)
+    assert bool(staged) is usable
+    # Refused: the dense shards stay in the plan, and the prefetch has nothing to download.
+    assert VideoBackend._denoiser_prequant_covered(fam, "int8", _WAN_TI2V) is usable
+    assert hub.downloads == [] and hub.server.full_gets == 0

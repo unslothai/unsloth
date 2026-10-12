@@ -1737,6 +1737,15 @@ def _memo_put(key: Any, value: Any, now: float) -> None:
         del _HEADER_PROBE_MEMO[next(iter(_HEADER_PROBE_MEMO))]
 
 
+def _token_fingerprint(token: Optional[str]) -> str:
+    """A short one-way tag for ``token`` (empty when none), so memo keys never hold the secret."""
+    if not token:
+        return ""
+    import hashlib
+
+    return hashlib.sha256(str(token).encode("utf-8", "replace")).hexdigest()[:16]
+
+
 def _said_first(said: Any) -> bool:
     """Whether ``said`` is new (warn) rather than a repeat (info); remembers at most ``_HEADER_PROBE_MAX``.
     Caller holds the lock."""
@@ -1837,6 +1846,9 @@ def hosted_prequant_refusal(
         if local is None and offline:
             return None
         request = (scheme, base or "", min_features, fast_accum, component or "")
+        # Which credentials asked, never the token itself: a gated repo answers an anonymous probe with a 401
+        # (unknown, None), and that None must not stand in for the authenticated probe that can read it.
+        auth = _token_fingerprint(hf_token)
         if local is not None:
             try:
                 st = os.stat(local)
@@ -1849,11 +1861,12 @@ def hosted_prequant_refusal(
                     st.st_size,
                     st.st_mtime_ns,
                     request,
+                    "" if offline else auth,
                 )
             except OSError:
                 return None
         else:
-            key = ("hub", source.location, tuple(names), request)
+            key = ("hub", source.location, tuple(names), request, auth)
         now = time.monotonic()
         with _HEADER_PROBE_LOCK:
             hit = _memo_get(key, now)
@@ -1863,6 +1876,9 @@ def hosted_prequant_refusal(
         from .prequant_header_probe import read_hub_checkpoint_header, read_local_checkpoint_header
 
         header, name = None, None
+        # False once the Hub could not answer at all (401/403, network): nothing is memoised then, so the
+        # next probe (with a token, or once the network is back) asks again.
+        answered = True
         hub_names = names
         if local is not None and not offline:
             if _cached_snapshot_current(source.location, local, hf_token) is False:
@@ -1877,6 +1893,7 @@ def hosted_prequant_refusal(
                 )
                 if exists is False:
                     continue
+                answered = exists is not None
                 name = candidate
                 break
         reason = None
@@ -1915,7 +1932,8 @@ def hosted_prequant_refusal(
                     reason,
                 )
         with _HEADER_PROBE_LOCK:
-            _memo_put(key, (now, reason), now)
+            if answered:
+                _memo_put(key, (now, reason), now)
         return reason
     except Exception:  # noqa: BLE001 - a probe that cannot answer leaves today's behaviour
         return None

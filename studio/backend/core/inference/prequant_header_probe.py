@@ -133,16 +133,39 @@ _PLAIN_GLOBALS = {
 MAX_PICKLE_OPS = 4_000_000
 
 
+# Memo indices a pickle may use beyond the writes it has made. A pickler numbers its memo sequentially
+# (index = writes so far), so a real pickle never needs any slack; this is only tolerance.
+_MEMO_SLACK = 1024
+_MEMO_PUTS = frozenset(("PUT", "BINPUT", "LONG_BINPUT"))
+_MEMO_GETS = frozenset(("GET", "BINGET", "LONG_BINGET"))
+
+
 def _pickle_ops_within(raw: bytes, limit: Optional[int] = None) -> bool:
-    """Whether ``raw`` holds at most ``limit`` (default ``MAX_PICKLE_OPS``) opcodes. Only walks the bytes
-    (nothing is built), and stops at ``limit + 1``, so an oversized pickle costs a bounded scan rather
-    than an unbounded unpickle."""
+    """Whether ``raw`` holds at most ``limit`` (default ``MAX_PICKLE_OPS``) opcodes and only memo indices
+    a real pickler would write. Only walks the bytes (nothing is built), and stops at the first breach,
+    so a hostile pickle costs a bounded scan rather than an unbounded unpickle.
+
+    The memo check matters because ONE opcode can be enough: the C unpickler grows its memo table to
+    the index a ``LONG_BINPUT`` names (2**31 is tens of GB) before any opcode budget could apply."""
     limit = MAX_PICKLE_OPS if limit is None else limit
     count = 0
-    for _ in pickletools.genops(raw):
+    writes = 0
+    for opcode, arg, _ in pickletools.genops(raw):
         count += 1
         if count > limit:
             return False
+        name = opcode.name
+        if name == "MEMOIZE":
+            writes += 1
+        elif name in _MEMO_PUTS or name in _MEMO_GETS:
+            try:
+                index = int(arg)
+            except (TypeError, ValueError):
+                return False
+            if index < 0 or index > writes + _MEMO_SLACK:
+                return False
+            if name in _MEMO_PUTS:
+                writes += 1
     return True
 
 

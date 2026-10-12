@@ -4561,7 +4561,14 @@ class VideoBackend:
             if scheme is None or scheme == TQ_AUTO:
                 return False
             if getattr(fam, "modular_workflow", None):
-                return video_family_prequant_available(fam, scheme, task = h3_task, base_repo = base)
+                if not video_family_prequant_available(fam, scheme, task = h3_task, base_repo = base):
+                    return False
+                # Covered only by a checkpoint the loader will accept: a stale header keeps the dense shards.
+                from .diffusion_prequant import resolve_prequant_source
+                from .video_denoiser_prequant import hosted_denoiser_refused
+
+                source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
+                return source is None or not hosted_denoiser_refused(source, scheme, base)
             if kind != "pipeline":
                 return False
             from .video_denoiser_prequant import denoiser_prequant_sources
@@ -4583,11 +4590,14 @@ class VideoBackend:
             return []
         try:
             from .diffusion_prequant import resolve_prequant_source
-            from .video_denoiser_prequant import denoiser_prequant_sources
+            from .video_denoiser_prequant import denoiser_prequant_sources, hosted_denoiser_refused
 
             if getattr(fam, "modular_workflow", None):
                 source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
-                return [source] if source is not None else []
+                # The modular loader checks no component; a header it would refuse is never staged.
+                if source is None or hosted_denoiser_refused(source, scheme, base):
+                    return []
+                return [source]
             resolved = denoiser_prequant_sources(fam, scheme, base)
             return list(resolved.values()) if resolved else []
         except Exception as exc:  # noqa: BLE001 -- a bad registry entry must not sink the plan
