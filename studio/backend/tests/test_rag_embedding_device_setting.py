@@ -5,6 +5,7 @@
 
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,5 +134,7 @@ def test_a_read_overlapping_a_save_does_not_cache_the_old_device(monkeypatch, re
         return value
 
     monkeypatch.setattr(studio_db, "get_app_setting", slow_get)
+    # Frozen clock: the stale entry must still be inside its TTL when the next reader asks.
+    monkeypatch.setattr(ems, "time", SimpleNamespace(monotonic = lambda: 1000.0))
     assert ems.get_stored_embedding_device() == "auto"
     assert config.embed_device_preference() == "gpu"
