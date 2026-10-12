@@ -2371,6 +2371,21 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             lm_head = output_embeddings.weight
             lm_head_bias = getattr(output_embeddings, "bias", None)
             if lm_head_bias is not None:
+                import inspect
+                import warnings
+
+                # An unsloth_zoo older than unslothai/unsloth-zoo#1685 has no bias argument: score without it rather than raise.
+                if (
+                    "lm_head_bias"
+                    not in inspect.signature(chunked_hidden_states_selective_log_softmax).parameters
+                ):
+                    warnings.warn(
+                        "Unsloth: this model's output head has a bias, which GRPO scoring needs "
+                        "a newer unsloth_zoo to include. Please upgrade: pip install -U unsloth_zoo",
+                        stacklevel = 2,
+                    )
+                    lm_head_bias = None
+            if lm_head_bias is not None:
                 from functools import partial
                 chunked_hidden_states_selective_log_softmax = partial(
                     chunked_hidden_states_selective_log_softmax,
