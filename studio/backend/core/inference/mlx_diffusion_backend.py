@@ -469,10 +469,7 @@ def resolve_variant_base(
 
 
 def _cached_variant_base(
-    repo_id: str,
-    fam: DiffusionFamily,
-    gguf_filename: Optional[str],
-    fallback: str,
+    repo_id: str, fam: DiffusionFamily, gguf_filename: Optional[str], fallback: str
 ) -> str:
     candidates = {
         b.lower()
@@ -485,7 +482,6 @@ def _cached_variant_base(
     }
     try:
         from hub.utils.companion_assets import read_companion_links
-
         recorded = read_companion_links().get(repo_id.strip().lower(), ())
     except Exception as exc:  # noqa: BLE001 -- no record: the name decides
         logger.debug("mlx_diffusion.companion_links_unreadable: %s", exc)
@@ -494,7 +490,9 @@ def _cached_variant_base(
     for base in reversed(recorded):
         upstream = canonical_base(base)
         # A recorded family default may be an earlier offline fallback, so it cannot overrule a name.
-        if upstream.lower() in candidates and not (named and upstream.lower() == fam.base_repo.lower()):
+        if upstream.lower() in candidates and not (
+            named and upstream.lower() == fam.base_repo.lower()
+        ):
             return upstream
     return named or named_variant_base(fam, repo_id, gguf_filename) or fallback
 
@@ -509,7 +507,10 @@ def _named_mlx_base(fam: DiffusionFamily, *names: Optional[str]) -> Optional[str
 
     keyed = [
         (b, fold(b.rsplit("/", 1)[-1]))
-        for b in (fam.base_repo, *(b for b, _name in getattr(fam, "mlx_model_config_by_base", ()) or ()))
+        for b in (
+            fam.base_repo,
+            *(b for b, _name in getattr(fam, "mlx_model_config_by_base", ()) or ()),
+        )
         if b
     ]
     found = None

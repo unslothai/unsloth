@@ -485,7 +485,9 @@ def test_a_cache_only_undistilled_pick_with_no_record_builds_the_base_config(env
         ("someone/z-image-turbo", "model-Q4_K_M.gguf", BASE),
     ],
 )
-def test_the_name_resolves_the_z_image_variant_offline(monkeypatch, repo_id, gguf_filename, expected):
+def test_the_name_resolves_the_z_image_variant_offline(
+    monkeypatch, repo_id, gguf_filename, expected
+):
     import hub.utils.companion_assets as companion
 
     fam = ZIMAGE
@@ -506,9 +508,10 @@ def test_a_recorded_default_does_not_overrule_an_undistilled_name(monkeypatch):
         "Tongyi-MAI/Z-Image"
     )
     links["unsloth/z-image-turbo-gguf"] = ["Tongyi-MAI/Z-Image"]
-    assert mb._cached_variant_base(
-        "unsloth/Z-Image-Turbo-GGUF", fam, "z-image-turbo-Q4_0.gguf", BASE
-    ) == "Tongyi-MAI/Z-Image"
+    assert (
+        mb._cached_variant_base("unsloth/Z-Image-Turbo-GGUF", fam, "z-image-turbo-Q4_0.gguf", BASE)
+        == "Tongyi-MAI/Z-Image"
+    )
 
 
 def test_a_local_undistilled_gguf_resolves_without_the_hub(tmp_path, monkeypatch):
@@ -819,13 +822,19 @@ def test_the_anonymous_token_sentinel_reaches_every_fetch(env, monkeypatch):
     seen = []
     real_fetch_gguf, real_fetch_base = mb.fetch_gguf, mb.fetch_base_snapshot
     monkeypatch.setattr(
-        mb, "fetch_gguf", lambda r, f, tok, **k: (seen.append(tok), real_fetch_gguf(r, f, tok, **k))[1]
+        mb,
+        "fetch_gguf",
+        lambda r, f, tok, **k: (seen.append(tok), real_fetch_gguf(r, f, tok, **k))[1],
     )
     monkeypatch.setattr(
-        mb, "fetch_base_snapshot", lambda b, tok, **k: (seen.append(tok), real_fetch_base(b, tok, **k))[1]
+        mb,
+        "fetch_base_snapshot",
+        lambda b, tok, **k: (seen.append(tok), real_fetch_base(b, tok, **k))[1],
     )
     monkeypatch.setattr(
-        mb, "resolve_variant_base", lambda r, f, tok, *a, fallback, **k: (seen.append(tok), fallback)[1]
+        mb,
+        "resolve_variant_base",
+        lambda r, f, tok, *a, fallback, **k: (seen.append(tok), fallback)[1],
     )
     assert _load(backend, hf_token = False)["phase"] == "ready"
     assert seen == [False, False, False]
@@ -920,7 +929,9 @@ def test_status_reports_the_engaged_mlx_quantization(env):
 def test_derived_batch_seeds_stay_json_safe(env):
     backend, runtime, _calls = env
     _load(backend)
-    result = backend.generate(prompt = "x", steps = 1, width = 256, height = 256, seed = 2**53 - 1, batch_size = 2)
+    result = backend.generate(
+        prompt = "x", steps = 1, width = 256, height = 256, seed = 2**53 - 1, batch_size = 2
+    )
     assert result["seeds"] == [2**53 - 1, 0]
     assert [g["seed"] for g in runtime.generates] == [2**53 - 1, 0]
 
@@ -1012,7 +1023,13 @@ def test_cache_only_companions_read_the_mirror_and_the_live_cache_root(monkeypat
     )
     asked = []
 
-    def _snapshot(repo, *, cache_dir = None, local_files_only = False, **_k):
+    def _snapshot(
+        repo,
+        *,
+        cache_dir = None,
+        local_files_only = False,
+        **_k,
+    ):
         assert local_files_only
         asked.append((repo, cache_dir))
         if (repo, cache_dir) == ("unsloth/Z-Image-Turbo", live):
@@ -1046,9 +1063,7 @@ def _mlx_route_stubs(monkeypatch, *, predicted = "mlx"):
         "select_and_activate_engine",
         lambda *a, **k: touched.append("select"),
     )
-    monkeypatch.setattr(
-        arbiter, "acquire_for_request", lambda *a, **k: touched.append("acquire")
-    )
+    monkeypatch.setattr(arbiter, "acquire_for_request", lambda *a, **k: touched.append("acquire"))
     monkeypatch.setattr("routes.inference._guard_diffusion_load_against_training", lambda: None)
     monkeypatch.setattr("routes.inference._training_is_active", lambda: False)
 
@@ -1125,7 +1140,9 @@ def test_a_concurrent_unload_waits_for_the_active_teardown(env):
     second = threading.Thread(target = lambda: (backend.unload(), done.set()))
     second.start()
     try:
-        assert not done.wait(0.5), "a second unload returned while the first was still joining the build"
+        assert not done.wait(
+            0.5
+        ), "a second unload returned while the first was still joining the build"
     finally:
         gate.set()
         first.join(5)
@@ -1157,7 +1174,15 @@ def test_online_companions_land_under_one_cache_root(monkeypatch, tmp_path):
     )
     roots = []
 
-    def _download(repo, fn, tok, *, cache_dir = None, reuse_other_cache_root = False, **k):
+    def _download(
+        repo,
+        fn,
+        tok,
+        *,
+        cache_dir = None,
+        reuse_other_cache_root = False,
+        **k,
+    ):
         root = old if reuse_other_cache_root and fn == files[0] else (cache_dir or live)
         roots.append(root)
         return f"{root}/snapshots/abc/{fn}"

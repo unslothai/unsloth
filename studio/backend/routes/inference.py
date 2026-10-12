@@ -46298,6 +46298,7 @@ async def diffusion_download_plan(
             _refuse_native_component_files(request)
             _refuse_mlx_loras(request)
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
+
             planner = get_mlx_diffusion_backend()
         if fam is not None and not training:
             if planner is backend:

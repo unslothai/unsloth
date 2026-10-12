@@ -211,7 +211,6 @@ _MLX_RUNTIME_REQUIREMENTS: tuple[str, ...] = (
 def _installed_version(name: str) -> Optional[str]:
     try:
         from importlib.metadata import PackageNotFoundError, version
-
         return version(name)
     except (PackageNotFoundError, ValueError):
         return None
@@ -226,13 +225,10 @@ def _mlx_runtime_refusal() -> Optional[str]:
 
     try:
         from packaging.requirements import Requirement
-
         for spec in (f"mflux=={MFLUX_VERSION}", *_MLX_RUNTIME_REQUIREMENTS):
             requirement = Requirement(spec)
             installed = _installed_version(requirement.name)
-            if installed is None or not requirement.specifier.contains(
-                installed, prereleases = True
-            ):
+            if installed is None or not requirement.specifier.contains(installed, prereleases = True):
                 return f"the MLX engine needs {spec} (found {installed or 'none'})"
     except Exception as exc:  # noqa: BLE001 -- no packaging, or a version it cannot parse
         return f"could not verify the MLX runtime versions ({exc})"
