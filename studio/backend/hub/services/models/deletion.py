@@ -130,34 +130,40 @@ def _unlink_snapshot_entry(snap: Path) -> int:
     return removed
 
 
+def _revision_file_matches(revision, predicate) -> list[tuple[Path, Optional[Path], str]]:
+    matches: list[tuple[Path, Optional[Path], str]] = []
+    snapshot = getattr(revision, "snapshot_path", None)
+    for f in getattr(revision, "files", ()):
+        name = str(getattr(f, "file_name", ""))
+        file_path = getattr(f, "file_path", None)
+        if snapshot and file_path:
+            try:
+                name = Path(file_path).relative_to(Path(snapshot)).as_posix()
+            except ValueError:
+                pass
+        if not predicate(name):
+            continue
+        if not file_path:
+            continue
+        # Every predicate here keys on the name, which a sidecar answers exactly as its neighbour does. Proven metadata only: anything else carrying this key is a file to delete.
+        if is_appledouble_metadata(Path(file_path)):
+            continue
+        blob_path = getattr(f, "blob_path", None)
+        matches.append(
+            (
+                Path(file_path),
+                Path(blob_path) if blob_path else None,
+                name,
+            )
+        )
+    return matches
+
+
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
     """Files whose snapshot-relative path satisfies *predicate*. Relative, not the bare ``file_name``: huggingface_hub sets that to ``file_path.name`` (and our own recovery scan to ``entry.name``), so a companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a root file. Every predicate below keys on the directory for at least one supported layout, and the quant labels they extract are unchanged by the prefix."""
     matches: list[tuple[Path, Optional[Path], str]] = []
-    for rev in getattr(target_repo, "revisions", ()):
-        snapshot = getattr(rev, "snapshot_path", None)
-        for f in getattr(rev, "files", ()):
-            name = str(getattr(f, "file_name", ""))
-            file_path = getattr(f, "file_path", None)
-            if snapshot and file_path:
-                try:
-                    name = Path(file_path).relative_to(Path(snapshot)).as_posix()
-                except ValueError:
-                    pass
-            if not predicate(name):
-                continue
-            if not file_path:
-                continue
-            # Every predicate here keys on the name, which a sidecar answers exactly as its neighbour does. Proven metadata only: anything else carrying this key is a file to delete.
-            if is_appledouble_metadata(Path(file_path)):
-                continue
-            blob_path = getattr(f, "blob_path", None)
-            matches.append(
-                (
-                    Path(file_path),
-                    Path(blob_path) if blob_path else None,
-                    name,
-                )
-            )
+    for revision in getattr(target_repo, "revisions", ()):
+        matches.extend(_revision_file_matches(revision, predicate))
     return matches
 
 
@@ -245,16 +251,18 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
     return removed, failures
 
 
-def _main_gguf_variant_keys(target_repo) -> dict[str, str]:
-    """``name -> key`` for *target_repo*'s main GGUFs, from ``gguf_variant_keys_by_checkpoint``: a build published beside the listed one at the same quant is not that row's to delete."""
-    return gguf_variant_keys_by_checkpoint(
-        {name for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)}
-    )
+def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
+    """``snapshot file -> key`` for each revision's main GGUFs, using the same per-snapshot choice as the lister."""
+    keys: dict[Path, str] = {}
+    for revision in getattr(target_repo, "revisions", ()):
+        matches = _revision_file_matches(revision, _is_main_gguf_filename)
+        revision_keys = gguf_variant_keys_by_checkpoint(name for _snap, _blob, name in matches)
+        keys.update({snap: revision_keys[name] for snap, _blob, name in matches})
+    return keys
 
 
-def _main_key(name: str, main_keys: dict[str, str]) -> str:
-    """*name*'s lowercased key from ``_main_gguf_variant_keys``. The predicates see a name before ``_repo_file_matches`` drops a sidecar or a pathless entry, which the map leaves out."""
-    return (main_keys.get(name) or gguf_variant_key(name)).lower()
+def _main_key(snap: Path, main_keys: dict[Path, str]) -> str:
+    return (main_keys.get(snap) or "").lower()
 
 
 def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
@@ -316,9 +324,9 @@ def _delete_gguf_variant_from_repos(
             match
             for match in _repo_file_matches(
                 target_repo,
-                lambda name, keys = wanted_keys: name in package_files
-                or (_is_main_gguf_filename(name) and _main_key(name, main_keys) in keys),
+                lambda name: name in package_files or _is_main_gguf_filename(name),
             )
+            if match[2] in package_files or _main_key(match[0], main_keys) in wanted_keys
             # A component another downloaded mix still loads (MiniMax's Q4_0 and Q8_0 share one
             # depth decoder) stays.
             if match[2] not in protected
@@ -536,10 +544,11 @@ def reclaim_replaced_gguf_variant(
         stale_matches: list[tuple[Path, Optional[Path], str]] = []
         # Another build at the same quant has its own hashes, which would read as stale copies of this one.
         main_keys = _main_gguf_variant_keys(target_repo)
-        matches = _repo_file_matches(
-            target_repo,
-            lambda name: _is_main_gguf_filename(name) and _main_key(name, main_keys) == variant_key,
-        )
+        matches = [
+            match
+            for match in _repo_file_matches(target_repo, _is_main_gguf_filename)
+            if _main_key(match[0], main_keys) == variant_key
+        ]
         for snap, blob, name in matches:
             # Prune only a file we can identify as a real, stale cache blob: a no-symlink snapshot file has no identifiable blob hash, so keep it.
             blob_hash = (

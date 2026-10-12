@@ -96,6 +96,80 @@ def test_copies_of_the_listed_build_still_go_with_it(tmp_path):
     assert not (snap / "Model.Q4_K_M.gguf").is_symlink()
 
 
+def test_an_unnamed_checkpoint_is_not_a_wildcard_for_named_builds(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    names = ["Q4_K_M.gguf", "model-a-Q4_K_M.gguf", "model-b-Q4_K_M.gguf"]
+    repo, snap = _cache_repo(tmp_path, names)
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snap / names[0]).is_symlink()
+    assert (snap / names[1]).is_symlink()
+    assert (snap / names[2]).is_symlink()
+
+
+def test_hidden_big_endian_file_cannot_take_the_visible_rows_key(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    for index, hidden in enumerate(("model-Q4_K_M-be.gguf", "0-F16-be-checkpoint-Q4_K_M.gguf")):
+        root = tmp_path / str(index)
+        visible = "model-Q4_K_M.gguf"
+        repo, snap = _cache_repo(root, [hidden, visible])
+        _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = root)
+        assert (snap / hidden).is_symlink()
+        assert not (snap / visible).is_symlink()
+
+
+def test_each_cache_revision_uses_the_checkpoint_its_lister_exposes(tmp_path):
+    from hub.services.models.companion_cleanup import (
+        _remaining_main_gguf_variants,
+        _variant_bytes,
+    )
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo_dir = tmp_path / "models--org--Model-GGUF"
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents = True)
+    revisions = []
+    names_by_revision = (
+        ("old", ["alpha-Q4_K_M.gguf", "zeta-Q4_K_M.gguf"]),
+        ("new", ["beta-Q4_K_M.gguf", "gamma-Q4_K_M.gguf"]),
+    )
+    for revision_name, names in names_by_revision:
+        snapshot = repo_dir / "snapshots" / revision_name
+        snapshot.mkdir(parents = True)
+        files = []
+        for name in names:
+            blob = blobs / f"{revision_name}-{name}"
+            blob.write_bytes(b"x" * 64)
+            link = snapshot / name
+            link.symlink_to(blob)
+            files.append(
+                SimpleNamespace(
+                    file_name = name,
+                    file_path = str(link),
+                    blob_path = str(blob),
+                    size_on_disk = 64,
+                )
+            )
+        revisions.append(SimpleNamespace(files = files, snapshot_path = str(snapshot)))
+    repo = SimpleNamespace(
+        repo_id = "org/Model-GGUF",
+        repo_type = "model",
+        repo_path = repo_dir,
+        revisions = revisions,
+    )
+
+    assert _variant_bytes(repo, "Q4_K_M") == 128
+    assert _remaining_main_gguf_variants(repo, excluding = "Q4_K_M") == {
+        "zeta-q4_k_m",
+        "gamma-q4_k_m",
+    }
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (repo_dir / "snapshots/old/alpha-Q4_K_M.gguf").is_symlink()
+    assert (repo_dir / "snapshots/old/zeta-Q4_K_M.gguf").is_symlink()
+    assert not (repo_dir / "snapshots/new/beta-Q4_K_M.gguf").is_symlink()
+    assert (repo_dir / "snapshots/new/gamma-Q4_K_M.gguf").is_symlink()
+
+
 def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
     from hub.services.models.companion_cleanup import (
         _remaining_main_gguf_variants,

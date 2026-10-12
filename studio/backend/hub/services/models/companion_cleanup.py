@@ -19,18 +19,16 @@ from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.utils import companion_assets
-from hub.utils.gguf import gguf_variant_keys_by_checkpoint
 from hub.services.models import cache_inventory
 from hub.services.models.common import _is_main_gguf_filename
 from hub.utils.paths import is_valid_gguf_variant as _is_valid_gguf_variant
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
-from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
 
 def _repo_blob_bytes(repo_info, *, only = None) -> int:
-    """On-disk bytes of *repo_info*, deduped by blob so a file shared across revisions counts once. ``only`` is an optional predicate on the snapshot-relative file name."""
+    """On-disk bytes of *repo_info*, deduped by blob so a file shared across revisions counts once. ``only`` is an optional predicate on the snapshot-relative name and file path."""
     unique: dict[str, int] = {}
     for revision in getattr(repo_info, "revisions", ()) or ():
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
@@ -43,7 +41,7 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
                     name = Path(path).relative_to(Path(snapshot)).as_posix()
                 except ValueError:
                     pass
-            if only is not None and not only(name):
+            if only is not None and not only(name, Path(path) if path else None):
                 continue
             from hub.services.models.cache_inventory import _blob_key
 
@@ -94,35 +92,23 @@ def _variant_bytes(repo_info, variant: str) -> int:
     wanted = _variant_keys(repo_info, variant)
     main_keys = _main_gguf_variant_keys(repo_info)
 
-    def _matches(name: str) -> bool:
-        return _is_main_gguf_filename(name) and _main_key(name, main_keys) in wanted
+    def _matches(name: str, path: Optional[Path]) -> bool:
+        return (
+            path is not None
+            and _is_main_gguf_filename(name)
+            and _main_key(path, main_keys) in wanted
+        )
 
     return _repo_blob_bytes(repo_info, only = _matches)
 
 
 def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None) -> set[str]:
+    from hub.services.models.deletion import _main_gguf_variant_keys
     skip = _variant_keys(repo_info, excluding) if excluding else set()
-    names: set[str] = set()
-    for revision in getattr(repo_info, "revisions", ()) or ():
-        snapshot = getattr(revision, "snapshot_path", None)
-        for f in getattr(revision, "files", ()) or ():
-            name = str(getattr(f, "file_name", "") or "")
-            path = getattr(f, "file_path", None)
-            if path and snapshot:
-                try:
-                    name = Path(path).relative_to(Path(snapshot)).as_posix()
-                except ValueError:
-                    pass
-            if not _is_main_gguf_filename(name):
-                continue
-            # The delete this previews ignores proven metadata, so counting it here would report a checkpoint as surviving that the deletion itself does not see.
-            if path and is_appledouble_metadata(Path(path)):
-                continue
-            names.add(name)
     # Keyed like the delete: a build beside the deleted one at the same quant survives it.
     return {
         key.lower()
-        for key in gguf_variant_keys_by_checkpoint(names).values()
+        for key in _main_gguf_variant_keys(repo_info).values()
         if key and key.lower() not in skip
     }
 

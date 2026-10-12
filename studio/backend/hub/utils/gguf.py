@@ -439,17 +439,22 @@ def gguf_variant_keys_by_checkpoint(paths: Iterable[str]) -> dict[str, str]:
 
     A row is one checkpoint: the listers keep the shard set holding the first file under each key. A repo publishing several different builds at one bare quant (``...-GSQ-RCO-IQ3_S-mtp`` beside ``...-Swift-1.5-GSQ-RCO-IQ3_S-mtp``, #13327) is not supported, so only the first is listed, but the others can still be in the cache, fetched with ``hf download``. Matching on :func:`gguf_variant_key` alone deleted them with the listed row, and a stale reclaim after an update read their blobs as old copies of it. A second COPY of the listed checkpoint (``QwQ-32B-BF16`` beside ``QwQ-32B.BF16``, the same quant both whole and split) is the same checkpoint and keeps the key.
     """
+    from utils.models.model_config import _extract_quant_label as _loader_quant
+
     by_key: dict[str, list[str]] = {}
     for path in paths:
         by_key.setdefault(gguf_variant_key(path).lower(), []).append(path)
     keys: dict[str, str] = {}
     for members in by_key.values():
         members.sort(key = lambda path: path.replace("\\", "/"))
-        listed = _checkpoint_identity(members[0])
+        selectable = [
+            path for path in members if not is_big_endian_gguf_path(path, _loader_quant(path))
+        ]
+        listed = _checkpoint_identity((selectable or members)[0])
         for path in members:
             identity = _checkpoint_identity(path)
             normalized = path.replace("\\", "/")
-            if listed is None or identity is None or identity == listed:
+            if identity == listed:
                 keys[path] = gguf_variant_key(normalized)
             else:
                 keys[path] = gguf_variant_family(normalized)
