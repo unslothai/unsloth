@@ -39977,11 +39977,9 @@ class LlamaCppBackend:
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
-                # The tools run next, possibly for minutes, so refresh the context meter now from the
-                # usage llama-server already reported (no recount).
-                _context_usage = _context_usage_event(_iter_usage, _iter_timings)
-                if _context_usage is not None:
-                    yield _context_usage
+                # Refreshes the context meter from the usage llama-server already reported (no
+                # recount). Sent once the first tool is running, so it never delays a tool.
+                _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
@@ -40181,6 +40179,10 @@ class LlamaCppBackend:
                             ),
                         }
                         yield start_event
+                        if needs_confirm and _pending_context_usage is not None:
+                            # Nothing runs while a human decides, so the meter need not wait for it.
+                            yield _pending_context_usage
+                            _pending_context_usage = None
 
                         _decision = (
                             wait_tool_decision(
@@ -40819,12 +40821,17 @@ class LlamaCppBackend:
                         # Without this the handler below re-raises and a bad
                         # argument kills the whole answer. A raising tool is the
                         # tool's failure; the other two loops hand it back.
+                        _started_events = (
+                            (_pending_context_usage,) if _pending_context_usage is not None else ()
+                        )
+                        _pending_context_usage = None
                         try:
                             result = yield from stream_tool_execution(
                                 _invoke_tool,
                                 tool_name = decision.tool_name,
                                 tool_call_id = decision.tool_call_id,
                                 cancel_event = cancel_event,
+                                started_events = _started_events,
                             )
                         except _LlamaStreamCancelled:
                             # Subclasses Exception, so the arm below would eat
@@ -41136,6 +41143,11 @@ class LlamaCppBackend:
                             "result": "",
                             "provenance": provisional_tool_provenance(_pname),
                         }
+
+                # No call in the batch ran (denied, duplicate, capped), so nothing was waiting on it.
+                if _pending_context_usage is not None:
+                    yield _pending_context_usage
+                    _pending_context_usage = None
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}

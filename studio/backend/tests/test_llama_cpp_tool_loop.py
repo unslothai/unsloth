@@ -4666,10 +4666,54 @@ def test_context_usage_frame_precedes_each_tool_run(monkeypatch):
             "cached_tokens": 0,
         },
     ]
-    # Each frame lands before its own pass's tool finishes, i.e. while the sandbox works.
-    order = [e["type"] for e in events if e.get("type") in ("context_usage", "tool_end")]
-    assert order == ["context_usage", "tool_end", "context_usage", "tool_end"], order
+    # Each frame lands once its pass's tool has started and before it finishes.
+    order = [
+        e["type"] for e in events if e.get("type") in ("context_usage", "tool_start", "tool_end")
+    ]
+    assert order == ["tool_start", "context_usage", "tool_end"] * 2, order
     assert [e for e in events if e.get("type") == "metadata"][-1]["usage"]["context_tokens"] == 180
+
+
+def test_context_usage_frame_never_delays_the_tool(monkeypatch):
+    """The frame goes out while the tool is already executing, so the tool never waits on the
+    consumer: hold the generator at the frame and the tool still starts."""
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "cats"}, "call_1"),
+            _usage_done({"prompt_tokens": 100, "completion_tokens": 30}, "tool_calls"),
+            _done(),
+        ],
+        [
+            _sse({"content": "Found cats."}),
+            _usage_done({"prompt_tokens": 140, "completion_tokens": 10}),
+            _done(),
+        ],
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, streams)
+    # No window: the result budget is priced through a template render the fake server lacks.
+    backend._effective_context_length = None
+    tool_started = threading.Event()
+    release_tool = threading.Event()
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        tool_started.set()
+        release_tool.wait(timeout = 10)
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    gen = backend.generate_chat_completion_with_tools(
+        messages = [{"role": "user", "content": "search cats"}],
+        tools = [_web_search_tool()],
+        max_tool_iterations = 2,
+    )
+    for event in gen:
+        if event.get("type") == "context_usage":
+            break
+    # The consumer has not pulled again, yet the tool is already running.
+    assert tool_started.wait(timeout = 5)
+    release_tool.set()
+    rest = list(gen)
+    assert [e["type"] for e in rest if e.get("type") == "tool_end"] == ["tool_end"]
 
 
 def test_context_usage_frame_absent_on_a_single_pass(monkeypatch):
