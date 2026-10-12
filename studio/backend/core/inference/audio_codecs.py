@@ -157,9 +157,8 @@ def spark_tts_adapter_load_target(
 ):
     """Yield a path FastModel.from_pretrained can load a Spark-TTS checkpoint from.
 
-    Adapters trained from a pinned cache snapshot before #13411 record the repo id as their base, whose root has no
-    config.json (the LLM lives in LLM/). Those load through a temporary copy whose adapter_config.json names that
-    LLM/ directory; the checkpoint itself is never modified. Anything else is yielded unchanged.
+    Adapters saved before #13411 name the repo root (no config.json) as their base; they load through a temporary
+    copy whose adapter_config.json names LLM/, leaving the checkpoint untouched.
     """
     checkpoint = Path(checkpoint_path).expanduser()
     llm = None
