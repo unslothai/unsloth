@@ -279,7 +279,7 @@ def test_reused_padding_free_collator_still_scopes_the_new_trainer(fake):
 
 @pytest.mark.parametrize("native_gqa", [True, False])
 def test_probe_repeats_kv_heads_without_enable_gqa(monkeypatch, native_gqa):
-    import torch.nn.attention.varlen as varlen
+    varlen = pytest.importorskip("torch.nn.attention.varlen")
 
     seen = []
 
