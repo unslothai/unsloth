@@ -99,6 +99,7 @@ def _fake_torch(
     base_bf16 = True,
     count_raises = False,
     props_raises_on = (),
+    cuda_capability = (9, 0),
 ):
     def device_count():
         if count_raises:
@@ -121,7 +122,7 @@ def _fake_torch(
             get_device_properties = get_device_properties,
             is_bf16_supported = is_bf16_supported,
             is_available = lambda: True,
-            get_device_capability = lambda: (9, 0),
+            get_device_capability = lambda: cuda_capability,
         ),
         xpu = types.SimpleNamespace(is_bf16_supported = lambda: True),
     )
@@ -264,10 +265,15 @@ def test_the_gate_does_not_leak_off_hip(monkeypatch, device_type):
         assert fake.cuda.is_bf16_supported(including_emulation = False) is True
 
 
-@pytest.mark.parametrize("common_dtype, expected", [("fp16", False), ("bf16", True)])
-def test_cuda_ddp_common_dtype_reaches_gpu_probe(monkeypatch, common_dtype, expected):
+@pytest.mark.parametrize(
+    "common_dtype,cuda_capability,expected",
+    [("fp16", (9, 0), False), ("bf16", (7, 5), True)],
+)
+def test_cuda_ddp_common_dtype_reaches_gpu_probe(
+    monkeypatch, common_dtype, cuda_capability, expected
+):
     monkeypatch.setenv("UNSLOTH_DDP_COMMON_DTYPE", common_dtype)
-    fake = _fake_torch(["gfx1100"])
+    fake = _fake_torch(["gfx1100"], cuda_capability = cuda_capability)
     namespace = _run_chain(monkeypatch, fake, "cuda")
     assert namespace["SUPPORTS_BFLOAT16"] is expected
     assert fake.cuda.is_bf16_supported(including_emulation = False) is expected
