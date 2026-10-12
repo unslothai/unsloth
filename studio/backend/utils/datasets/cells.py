@@ -3,6 +3,7 @@
 
 """Turning raw dataset cells into the text we are willing to train on."""
 
+import json
 from pathlib import Path
 
 # Feature ids tagging each column of a CSV read by `csv_as_text_kwargs`.
@@ -39,6 +40,8 @@ def cell_text(value):
         return value
     if isinstance(value, float) and value != value:
         return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii = False, default = str)
     return str(value)
 
 
