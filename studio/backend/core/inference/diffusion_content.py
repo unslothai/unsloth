@@ -46,6 +46,7 @@ SAME_ARCH_VARIANTS: dict[str, frozenset[str]] = {
 _VIDEO_FAMILIES = frozenset(
     {
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
         "wan2.1-t2v-1.3b",
@@ -332,13 +333,12 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         or "audio_caption_projection" in tops
     ):
         if is_ltx25_dit_keys(keys):
-            # No family: the ltx-2 name must not revive it.
+            # Its own family: the LTX-2 assembly cannot build this DiT (no FFN bias), so the name never routes it there.
             return CheckpointInfo(
                 ROLE_DIT,
-                None,
-                None,
-                "an LTX-2.5 audio-video diffusion transformer, which Studio does not support yet "
-                "(use LTX-2.3 for now)",
+                LTX25_VARIANT,
+                family_page(LTX25_VARIANT),
+                "an LTX-2.5 audio-video diffusion transformer",
                 "diffusers" if "proj_in" in tops else "comfy",
                 LTX25_VARIANT,
             )

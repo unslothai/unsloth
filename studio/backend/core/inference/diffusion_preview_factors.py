@@ -21,6 +21,8 @@ FAMILY_FACTORS = {
     "hunyuanvideo-1.5": "hv15",
     "hunyuanvideo-1.5-720p": "hv15",
     "ltx-2": "ltx2",
+    # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
+    "ltx-2.5": "ltx2",
 }
 
 FACTORS: dict = {

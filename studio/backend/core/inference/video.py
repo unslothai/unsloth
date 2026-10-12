@@ -200,8 +200,12 @@ from .video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
-    assert_local_pipeline_not_ltx25,
+    LTX_FAMILIES,
+    assert_local_pipeline_family,
     assert_ltx_pick_supported,
+    assert_supported_ltx_version,
+    ltx_family_by_name,
+    local_ltx_pipeline_family,
     pipeline_available_video_families,
     VideoFamily,
     default_video_generation_params,
@@ -273,6 +277,9 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         "lightricks/ltx-2",
         "lightricks/ltx-2.3",
         "lightricks/ltx-2.3-fp8",
+        # LTX-2.5: the Diffusers pack (safetensors + configs, no remote code) and the split single-file repo.
+        "lightricks/ltx-2.5-diffusers",
+        "lightricks/ltx-2.5",
         # Wan2.2 official diffusers base repos: safetensors-only, no remote code.
         "wan-ai/wan2.2-ti2v-5b-diffusers",
         "wan-ai/wan2.2-t2v-a14b-diffusers",
@@ -1088,11 +1095,6 @@ def assert_first_frame_pipeline_available(fam: VideoFamily) -> None:
         )
 
 
-def _refuse_local_ltx25_pipeline(repo_id: str, gguf_filename: Optional[str]) -> None:
-    if not gguf_filename:
-        assert_local_pipeline_not_ltx25(repo_id)
-
-
 def _detect_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -1102,10 +1104,21 @@ def _detect_load_family(
 ) -> Optional[VideoFamily]:
     # An explicit pipeline load never opens the filename, so it must not vouch for the repo.
     ltx_file = None if str(model_kind or "").strip().lower() == "pipeline" else gguf_filename
-    _refuse_local_ltx25_pipeline(repo_id, ltx_file)
-    fam = _resolve_load_family(repo_id, gguf_filename, family_override, display_repo_id)
-    # After resolution: family_override="ltx-2" must not load LTX-2.5, and a non-LTX pick never trips on the name.
-    assert_ltx_pick_supported(fam.name if fam else None, repo_id, ltx_file, display_repo_id)
+    fam, by_content = _resolve_load_family_with_source(
+        repo_id, gguf_filename, family_override, display_repo_id, ltx_file = ltx_file
+    )
+    if fam is not None and fam.name in LTX_FAMILIES:
+        # A local diffusers folder's model_index.json outranks its name, as a file's header does.
+        by_content = by_content or (not ltx_file and local_ltx_pipeline_family(repo_id) is not None)
+        # After resolution: an LTX family never loads the other release's weights (LTX-2.5 never reaches the 2.3
+        # assembly), and a release after 2.5 is refused. A local diffusers folder answers by its model_index.json.
+        if not ltx_file:
+            assert_local_pipeline_family(repo_id, fam.name)
+        if by_content:
+            # The header decided the family; only an unknown release named by the pick is still refused.
+            assert_supported_ltx_version(repo_id, ltx_file, display_repo_id)
+        else:
+            assert_ltx_pick_supported(fam.name, repo_id, ltx_file, display_repo_id)
     return fam
 
 
@@ -1119,8 +1132,22 @@ def _resolve_load_family(
     repo id first, then the picked filename -- a local directory or generically
     named repo often carries the family token only in the checkpoint filename,
     and the worker must resolve the same family the validator accepted."""
+    return _resolve_load_family_with_source(
+        repo_id, gguf_filename, family_override, display_repo_id, ltx_file = gguf_filename
+    )[0]
+
+
+def _resolve_load_family_with_source(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    family_override: Optional[str],
+    display_repo_id: Optional[str] = None,
+    *,
+    ltx_file: Optional[str] = None,
+) -> tuple[Optional[VideoFamily], bool]:
+    """``_resolve_load_family`` plus whether a local file's header decided the family."""
     if family_override:
-        return detect_video_family(repo_id, family_override)
+        return detect_video_family(repo_id, family_override), False
     fam = (
         (display_repo_id and detect_video_family(display_repo_id))
         or detect_video_family(repo_id)
@@ -1133,6 +1160,14 @@ def _resolve_load_family(
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
+    if fam is not None and fam.name in LTX_FAMILIES:
+        # Both LTX families share the "ltx" tokens, so the release decides: a local diffusers folder by its
+        # model_index.json, else the picked file's own version token, else the display / repo id.
+        named = (
+            local_ltx_pipeline_family(repo_id) if not ltx_file else None
+        ) or ltx_family_by_name(repo_id, ltx_file, display_repo_id)
+        if named is not None and named != fam.name:
+            fam = detect_video_family("", override = named) or fam
     from .diffusion_content import SAME_ARCH_VARIANTS, local_pick_file, resolve_family_with_content
 
     # Same layout, different model: the picked file's own name outranks its repo or folder (a Wan2.1 14B GGUF in a
@@ -1154,17 +1189,18 @@ def _resolve_load_family(
     path = local_pick_file(repo_id, gguf_filename)
     if path:
         file_fam = detect_video_family(os.path.basename(path))
-        name, _ = resolve_family_with_content(
+        name, by_content = resolve_family_with_content(
             fam.name if fam else None,
             path,
             "video",
             file_family = file_fam.name if file_fam else None,
         )
         if name is None:
-            return None
+            return None, by_content
         if fam is None or fam.name != name:
             fam = detect_video_family("", override = name)
-    return fam
+        return fam, by_content
+    return fam, False
 
 
 def _ensure_mp4_encoder_available() -> None:
@@ -2701,6 +2737,8 @@ class VideoBackend:
         self._load_token = 0
         self._cancel_event = threading.Event()
         self._active_generate_cancel: Optional[threading.Event] = None
+        # An LTX-2.5 Gemma 4 encoder worker started by a load that has not committed yet; a failed load stops it.
+        self._ltx25_pending_encoder: Any = None
         # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation queued
         # behind the active one holds no cancel event yet, so without this fence it could win the lock after an eject
         # and denoise a whole new clip against a pipeline being freed. A count, so concurrent teardowns each own their
@@ -2934,9 +2972,9 @@ class VideoBackend:
                 f"repos, and local paths; '{base_repo}' is neither."
             )
         if base_repo and base_repo.strip():
-            # The companion supplies the text encoder / VAE, so an LTX-2.5 base is refused like an LTX-2.5 pick.
+            # The companion supplies the text encoder / VAE, so it must be the picked release's own base.
             assert_ltx_pick_supported(fam.name, base_repo)
-            assert_local_pipeline_not_ltx25(base_repo)
+            assert_local_pipeline_family(base_repo, fam.name)
         # A local base_repo loads as a full pipeline (needs model_index.json); reject a non-pipeline one here, before
         # the load.
         from core.inference.diffusion import _assert_local_base_is_pipeline
@@ -3016,7 +3054,11 @@ class VideoBackend:
         normalize_transformer_quant(transformer_quant)
         # Reject a malformed text_encoder_quant the same way. Every kind: an unsupported scheme is a bad request
         # regardless of whether this family has a hosted quantized encoder for it.
-        normalize_te_quant(text_encoder_quant)
+        if normalize_te_quant(text_encoder_quant) is not None and fam.name == "ltx-2.5":
+            raise ValueError(
+                "LTX-2.5's Gemma 4 text encoder runs in its own worker at bf16, so a text encoder "
+                "precision cannot be applied to it yet. Leave the text encoder precision unset."
+            )
         _ensure_mp4_encoder_available()
         return fam
 
@@ -3128,7 +3170,10 @@ class VideoBackend:
             self._cancel_event = cancel_event
             self._loading = _VideoLoadingState(
                 repo_id = repo_id,
-                base_repo = fam.base_repo,
+                # A split LTX-2.5 single-file pick reads its companions from its own repo, not the pack.
+                base_repo = resolve_video_base_repo(fam, base_repo, repo_id)
+                if fam.name == "ltx-2.5" and resolve_video_model_kind(gguf_filename, model_kind) != "pipeline"
+                else fam.base_repo,
                 asset_repos = claimed_assets,
             )
 
@@ -3210,7 +3255,7 @@ class VideoBackend:
             base = (
                 kwargs["repo_id"]
                 if kind == "pipeline"
-                else resolve_video_base_repo(fam, kwargs.get("base_repo"))
+                else resolve_video_base_repo(fam, kwargs.get("base_repo"), kwargs.get("repo_id"))
             )
             kwargs["base_repo"] = base
             # Before the plan: it stages the partition the file serves (transformer_ref/ for ref2va).
@@ -3495,6 +3540,7 @@ class VideoBackend:
             # A failed/cancelled load never commits _VideoLoadState, so roll back the process-wide speed globals here
             # (token-scoped).
             self._rollback_precommit_globals(token)
+            self._close_pending_ltx25_encoder()
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
@@ -4077,6 +4123,15 @@ class VideoBackend:
             # against a newer load that took ownership already.
             from .gpu_arbiter import VIDEO, release_if
             release_if(VIDEO, lambda: token is None or token == self._load_token)
+
+    def _close_pending_ltx25_encoder(self) -> None:
+        """Stop an LTX-2.5 encoder worker whose load never committed (failed, cancelled or superseded)."""
+        client, self._ltx25_pending_encoder = self._ltx25_pending_encoder, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception as exc:  # noqa: BLE001 -- cleanup is best-effort
+                logger.warning("video.ltx25_te: could not stop a pending encoder worker: %s", exc)
 
     def _rollback_precommit_globals(self, token: Optional[int]) -> None:
         """Restore process-wide speed globals (cudnn.benchmark / TF32 / the compiled
@@ -4957,6 +5012,7 @@ class VideoBackend:
         skip_transformer_weights: bool = False,
         skip_transformer_components: tuple[str, ...] = (),
         h3_task: Optional[str] = None,
+        ltx25_shards: Optional[dict[str, frozenset[str]]] = None,
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
@@ -5042,6 +5098,19 @@ class VideoBackend:
             if skip_te_components and is_prequant_covered_weight(name, skip_te_components):
                 continue
             files.append((name, int(size)))
+        from .video_ltx25 import (
+            is_ltx25_pack,
+            is_ltx25_single_file_listing,
+            ltx25_pack_files,
+            ltx25_single_file_companions,
+        )
+
+        if is_ltx25_single_file_listing(s.rfilename for s in siblings):
+            # The split single-file release as a base: only the companion files beside the picked DiT.
+            return ltx25_single_file_companions(files)
+        if is_ltx25_pack(s.rfilename for s in siblings):
+            # Unused components and the duplicate shard sets the LTX-2.5 pack ships (see ltx25_pack_files).
+            files = ltx25_pack_files(files, ltx25_shards)
         return files
 
     def _estimate_download_bytes(
@@ -5156,7 +5225,7 @@ class VideoBackend:
 
         if is_h3_native(fam, kind):
             return self._h3_native_download_plan(repo_id, gguf_filename or "", hf_token = hf_token)
-        base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
+        base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo, repo_id)
         h3_task = _h3_single_file_task(fam, kind, gguf_filename, h3_task)
         # The same resolution the load makes, so an H3 auto pick the loader will serve from a hosted checkpoint is not
         # staged dense here first: that is 66.3 GB the panel downloads and the load never opens, and the replacement
@@ -5727,9 +5796,42 @@ class VideoBackend:
                 skip_transformer_components = skip_transformer_components,
                 h3_task = h3_task,
             )
-            if not any(name == "model_index.json" for name, _ in files):
+            from .video_ltx25 import (
+                is_ltx25_pack,
+                is_ltx25_single_file_listing,
+                ltx25_shards_from_indexes,
+            )
+
+            single_file_base = is_ltx25_single_file_listing(sib.rfilename for sib in (info.siblings or []))
+            if not single_file_base and not any(name == "model_index.json" for name, _ in files):
                 return None
             from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+            if is_ltx25_pack(name for name, _ in files) or is_ltx25_pack(
+                sib.rfilename for sib in (info.siblings or [])
+            ):
+                import json
+
+                # Read the shard indexes first so only the indexed copy of each duplicated weight set is fetched.
+                indexes: dict[str, Any] = {}
+                for name, _ in files:
+                    if name.endswith(".safetensors.index.json"):
+                        if cancel.is_set():
+                            raise RuntimeError(VIDEO_CANCELLED_MSG)
+                        local_index = hf_hub_download_with_xet_fallback(
+                            base, name, hf_token, cancel_event = cancel, reuse_other_cache_root = True
+                        )
+                        indexes[name] = json.loads(Path(local_index).read_text(encoding = "utf-8"))
+                files = self._base_download_files(
+                    info,
+                    kind,
+                    ltx23 = ltx23,
+                    skip_te_components = skip_te_components,
+                    skip_transformer_weights = skip_transformer_weights,
+                    skip_transformer_components = skip_transformer_components,
+                    h3_task = h3_task,
+                    ltx25_shards = ltx25_shards_from_indexes(indexes),
+                )
 
             snapshot_root: Optional[str] = None
             roots: set[str] = set()
@@ -5754,7 +5856,7 @@ class VideoBackend:
                 except (IndexError, ValueError, OSError):
                     root = ""
                 roots.add(root)
-                if name == "model_index.json":
+                if name == "model_index.json" or single_file_base:
                     snapshot_root = root or None
             # Only hand back a snapshot the WHOLE set lives in. reuse_other_cache_root resolves per file, so a moved
             # cache can serve the manifest from the old root while the rest land in the live one, pointing
@@ -5945,7 +6047,7 @@ class VideoBackend:
         except Exception:  # noqa: BLE001 - never let log tidying stop a load
             pass
 
-        base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
+        base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo, repo_id)
 
         with self._lock:
             if _load_token is not None and _load_token != self._load_token:
@@ -6119,6 +6221,9 @@ class VideoBackend:
             if fam.name == "ltx-2":
                 # The file also bundles VAE / audio VAE / vocoder, priced as companions; connectors stay in.
                 from .video_ltx2 import ltx23_is_dit_or_connector_key as ltx_keys
+            if fam.name == "ltx-2.5":
+                # Only the DiT: the pack's shared connectors are priced as companions.
+                from .video_ltx2 import ltx23_is_dit_key as ltx_keys
 
             def _price_checkpoint(path: Any) -> tuple[Optional[int], Any]:
                 """Resident MiB of one checkpoint file's DiT and its ComfyUI quant scan (None: a plain file)."""
@@ -6441,6 +6546,26 @@ class VideoBackend:
         # above and before any weight is materialised, on the plan the build actually peaks at.
         raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
+        # ── LTX-2.5: its Gemma 4 encoder loads in a sidecar worker, overlapping the DiT load below.
+        ltx25_client = None
+        ltx25_dev = False
+        if fam.name == "ltx-2.5":
+            from .video_families import ltx25_is_dev
+            from .video_ltx25 import start_text_encoder
+
+            ltx25_dev = kind != "pipeline" and ltx25_is_dev(gguf_filename, repo_id)
+            self._close_pending_ltx25_encoder()
+            ltx25_client = start_text_encoder(
+                repo = _base_local_dir or (repo_id if kind == "pipeline" else base),
+                hf_token = hf_token,
+                cache_dir = hub_cache_dir(),
+                local_files_only = local_files_only,
+                device = str(target.torch_device),
+                dtype = str(dtype).replace("torch.", ""),
+                resident = plan.offload_policy == OFFLOAD_NONE,
+            )
+            self._ltx25_pending_encoder = ltx25_client
+
         # ── build the pipeline.
         from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
 
@@ -6553,6 +6678,11 @@ class VideoBackend:
                 )
                 or _base_local_dir
             )
+        if ltx25_client is not None:
+            from .video_ltx25 import LTX25_NONE_COMPONENTS
+
+            # The encoder runs in the worker; the enhancer, processor and duration head are never used.
+            pipe_kwargs.update({name: None for name in LTX25_NONE_COMPONENTS})
         if kind == "pipeline":
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
             pipe = pipeline_cls.from_pretrained(_base_local_dir or repo_id, **pipe_kwargs)
@@ -6686,6 +6816,65 @@ class VideoBackend:
                     device = ltx23_device,
                     text_encoder_device = ltx23_te_device,
                 )
+            elif fam.name == "ltx-2.5":
+                # The split 2.5 DiT (bf16, int8-convrot or GGUF); connectors, VAEs, vocoder and upsampler come from the
+                # pack, the encoder from the worker.
+                from .video_ltx25 import (
+                    is_ltx25_single_file_base,
+                    load_ltx25_comfy_transformer,
+                    load_ltx25_transformer,
+                )
+
+                if comfy_scan is not None and is_ltx25_single_file_base(_base_local_dir or base):
+                    # The int8-convrot files quantize the text connectors too, and the pack-free assembly reads them from
+                    # the DiT file: refuse before the DiT is read.
+                    raise ValueError(
+                        "This LTX-2.5 file stores its text connectors quantized, which the single-file assembly does "
+                        "not dequantize. Load it on the Lightricks/LTX-2.5-Diffusers base (base_repo), or pick the "
+                        "bf16 DiT or a GGUF quant."
+                    )
+                if comfy_scan is not None:
+                    ltx25_transformer = load_ltx25_comfy_transformer(
+                        checkpoint_path,
+                        comfy_scan,
+                        base_repo = _base_local_dir or base,
+                        torch_dtype = dtype,
+                        hf_token = hf_token,
+                        cache_dir = hub_cache_dir(),
+                        local_files_only = local_files_only,
+                        **_video_comfy_backends(
+                            fam, base, target, plan, bf16_plan, keep = comfy_keep
+                        ),
+                        family = fam.name,
+                        target = target,
+                        logger = logger,
+                    )
+                else:
+                    ltx25_transformer = load_ltx25_transformer(
+                        checkpoint_path,
+                        base_repo = _base_local_dir or base,
+                        torch_dtype = dtype,
+                        is_gguf = kind == "gguf",
+                        hf_token = hf_token,
+                        cache_dir = hub_cache_dir(),
+                        local_files_only = local_files_only,
+                    )
+                from .video_ltx25 import assemble_ltx25_single_file_pipeline, is_ltx25_single_file_base
+
+                if is_ltx25_single_file_base(_base_local_dir or base):
+                    # The split single-file release: every component from the files beside the DiT, no pack.
+                    pipe = assemble_ltx25_single_file_pipeline(
+                        ltx25_transformer,
+                        checkpoint_path,
+                        base = _base_local_dir or base,
+                        torch_dtype = dtype,
+                        hf_token = hf_token,
+                        local_files_only = local_files_only,
+                    )
+                else:
+                    pipe = pipeline_cls.from_pretrained(
+                        _base_local_dir or base, **{**pipe_kwargs, "transformer": ltx25_transformer}
+                    )
             else:
 
                 def _load_expert(path: Any, scan: Any, subfolder: str) -> Any:
@@ -6729,6 +6918,20 @@ class VideoBackend:
             vae = getattr(pipe, "vae", None)
             if vae is not None and getattr(vae, "dtype", None) is not torch.float32:
                 vae.to(torch.float32)
+
+        if ltx25_client is not None:
+            from .video_ltx25 import attach_to_pipeline
+
+            attach_to_pipeline(
+                pipe,
+                ltx25_client,
+                dev = ltx25_dev,
+                base_repo = _base_local_dir or (repo_id if kind == "pipeline" else base),
+                torch_dtype = dtype,
+                hf_token = hf_token,
+                cache_dir = hub_cache_dir(),
+                local_files_only = local_files_only,
+            )
 
         if _load_token is not None and _load_token != self._load_token:
             del pipe
@@ -7046,6 +7249,7 @@ class VideoBackend:
                 repo_id,
                 base,
                 fallback = (fam.default_steps, fam.default_guidance),
+                family = fam.name,
             )
             static_plan = auto_static_skip_plan(
                 (repo_id, base), skip_tier(speed_mode, effective_speed), default_cache_steps
@@ -7167,7 +7371,7 @@ class VideoBackend:
                 # quadratic math backend.
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
             )
-            if fam.name == "ltx-2":
+            if fam.name in LTX_FAMILIES:
                 # Token counts depend only on (w, h, frames), so static compile: one recompile per shape, ~1.3x faster.
                 ltx_dit = getattr(view, fam.denoiser_attr, None)
                 if ltx_dit is not None:
@@ -7187,7 +7391,7 @@ class VideoBackend:
                 offload_active = plan.offload_policy != "none",
                 cuda_graph_default = False,
             )
-            if fam.name == "ltx-2" and applied.get("compiled"):
+            if fam.name in LTX_FAMILIES and applied.get("compiled"):
                 from .video_ltx2 import install_stg_compile_adapter
                 install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
             if not getattr(fam, "cudnn_benchmark", True) and applied.get("cudnn_benchmark"):
@@ -7242,6 +7446,10 @@ class VideoBackend:
                 placement_device = target.torch_device,
                 logger = logger,
             )
+            ltx25_upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None)
+            if ltx25_upsampler is not None and offload_policy == OFFLOAD_NONE:
+                # ~1 GB; resident with the rest, else render() moves it in for the upsample only.
+                ltx25_upsampler.to(target.torch_device)
             if (
                 offload_policy == plan.offload_policy
                 and vram_floor_mib is not None
@@ -7381,6 +7589,9 @@ class VideoBackend:
             )
 
             apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
+            if ltx25_client is not None:
+                # The worker loaded the Gemma 4 encoder while the DiT loaded; a failure there fails this load.
+                ltx25_client.wait_ready(self._cancel_event if _load_token is not None else None)
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.install(
@@ -7471,6 +7682,8 @@ class VideoBackend:
                     bg_compile = load_bg_compile,
                 )
                 self._precommit_globals = None
+                if ltx25_client is not None:
+                    self._ltx25_pending_encoder = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,
@@ -9261,6 +9474,7 @@ class VideoBackend:
                     state.repo_id,
                     state.base_repo,
                     fallback = (fam.default_steps, fam.default_guidance),
+                    family = fam.name,
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
@@ -9554,12 +9768,13 @@ class VideoBackend:
                 if fam.modular_workflow:
                     kwargs["output"] = ["videos", "audio", "sampling_rate"]
                 # Auto-blocks distinguish omitted conditioning from empty conditioning.
-                if first_pil is not None:
+                # LTX-2.5 conditions through its own render (LTX2ConditionPipeline), not an image kwarg.
+                if first_pil is not None and fam.name != "ltx-2.5":
                     kwargs["image"] = first_pil
                     for key, value in i2v_extra.items():
                         if key in call_params:
                             kwargs[key] = value
-                if last_pil is not None:
+                if last_pil is not None and video_family_accepts_last_frame(fam):
                     kwargs["last_image"] = last_pil
                 if references:
                     from .video_minimax_h3 import h3_diffusers_references
@@ -9572,6 +9787,28 @@ class VideoBackend:
                     setter = getattr(getattr(pipe, component, None), "set_shift", None)
                     if callable(setter) and value is not None:
                         setter(float(value))
+
+                # What the clip records; LTX-2.5's two-stage render reports its stage-2 steps in the progress below.
+                recorded_steps = steps
+                ltx25_render_call = None
+                if fam.name == "ltx-2.5":
+                    from .video_ltx2 import ensure_recompile_limit as ltx25_recompile_limit
+                    from .video_ltx25 import render as ltx25_render, stage_steps
+
+                    ltx25_dev = bool(getattr(pipe, "_unsloth_ltx25_dev", False))
+                    steps = sum(stage_steps(steps, dev = ltx25_dev))
+                    ltx25_recompile_limit()
+
+                    def ltx25_render_call() -> Any:
+                        return ltx25_render(
+                            pipe,
+                            kwargs,
+                            dev = ltx25_dev,
+                            image = first_pil,
+                            upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None),
+                            on_step = kwargs.get("callback_on_step_end"),
+                            cancel = cancel,
+                        )
 
                 started = time.monotonic()
                 self._gen = {
@@ -9792,7 +10029,12 @@ class VideoBackend:
                 )
                 try:
                     with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
-                        output = render_thread.run("video", lambda: pipe(**kwargs))
+                        output = render_thread.run(
+                            "video",
+                            ltx25_render_call
+                            if ltx25_render_call is not None
+                            else (lambda: pipe(**kwargs)),
+                        )
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
                     # stay on the GPU.
@@ -9879,7 +10121,7 @@ class VideoBackend:
                     "duration_s": duration_s,
                     "has_audio": bool(audio_track is not None),
                     "conditioning": conditioning,
-                    "steps": steps,
+                    "steps": recorded_steps,
                     "guidance": guidance,
                     # The EFFECTIVE negative prompt, like guidance beside it: a guidance-distilled family normalises it
                     # away above, so the sidecar records what conditioned the clip instead of what the caller happened
@@ -9940,6 +10182,8 @@ class VideoBackend:
             has_keyframes = bool(first_frame or last_frame),
             has_last_frame = bool(last_frame),
         )
+        if fam.name == "ltx-2.5":
+            return VideoBackend._resolve_ltx25_first_frame(fam, first_frame, last_frame, width, height)
         first = last = None
         if first_frame or last_frame:
             from .diffusion import decode_b64_image
@@ -9976,6 +10220,35 @@ class VideoBackend:
             last = fit_h3_keyframe(last, width, height, anchor = H3_ANCHOR_LAST)
         conditioning = h3_conditioning_mode(has_first = first is not None, has_last = last is not None)
         return first, last, width, height, conditioning
+
+    @staticmethod
+    def _resolve_ltx25_first_frame(
+        fam: VideoFamily,
+        first_frame: Optional[str],
+        last_frame: Optional[str],
+        width: Optional[int],
+        height: Optional[int],
+    ) -> tuple[Any, Any, int, int, str]:
+        """LTX-2.5 image-to-video: a first frame only, on a "match source" canvas when no size is given."""
+        from .video_ltx25 import fit_ltx25_first_frame, ltx25_canvas_for_aspect
+
+        if last_frame:
+            raise ValueError(
+                "LTX-2.5 animates from a start frame only; it takes no end frame. Remove the end frame."
+            )
+        first = None
+        if first_frame:
+            from .diffusion import decode_b64_image
+
+            first = decode_b64_image(first_frame, mode = "RGB")
+        if (width is None or height is None) and first is not None:
+            width, height = ltx25_canvas_for_aspect(*first.size)
+        else:
+            default_w, default_h = fam.resolution_presets[0]
+            width, height = snap_video_size(fam, width or default_w, height or default_h)
+        if first is not None:
+            first = fit_ltx25_first_frame(first, width, height)
+        return first, None, width, height, h3_conditioning_mode(has_first = first is not None)
 
     @staticmethod
     def _resolve_flow_shifts(
@@ -10586,6 +10859,10 @@ class VideoBackend:
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.release(getattr(state, "pipe", None))
+            if getattr(getattr(state, "family", None), "name", None) == "ltx-2.5":
+                from .video_ltx25 import close_encoder
+
+                close_encoder(getattr(state, "pipe", None))
             # A pinner still copying would hold its chunks past release_pinned_host_memory().
             stop_background_pins(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
@@ -10700,6 +10977,7 @@ class VideoBackend:
             state.repo_id,
             state.base_repo,
             fallback = (fam.default_steps, fam.default_guidance),
+            family = fam.name,
         )
         return {
             "loaded": True,
@@ -10764,8 +11042,8 @@ class VideoBackend:
                 "resolution_multiple": fam.resolution_multiple,
                 "resolution_presets": [list(p) for p in fam.resolution_presets],
                 # Let the frontend preview the backend-owned "match source" rule.
-                "canvas_short_edge": H3_CANVAS_SHORT_EDGE if fam.supports_keyframes else None,
-                "canvas_max_pixels": H3_CANVAS_MAX_PIXELS if fam.supports_keyframes else None,
+                "canvas_short_edge": _keyframe_canvas(fam)[0],
+                "canvas_max_pixels": _keyframe_canvas(fam)[1],
                 "canvas_from_presets": video_family_uses_i2v_pipeline(fam),
                 "flow_shift": fam.default_flow_shift,
                 "audio_flow_shift": fam.default_audio_flow_shift,
@@ -10775,6 +11053,17 @@ class VideoBackend:
             },
             "resolved": resolved,
         }
+
+
+def _keyframe_canvas(fam: Any) -> tuple[Optional[int], Optional[int]]:
+    """(short edge, max pixels) of the family's "match source" keyframe canvas, or (None, None)."""
+    if not getattr(fam, "supports_keyframes", False):
+        return None, None
+    if getattr(fam, "name", None) == "ltx-2.5":
+        from .video_ltx25 import LTX25_CANVAS_MAX_PIXELS, LTX25_CANVAS_SHORT_EDGE
+
+        return LTX25_CANVAS_SHORT_EDGE, LTX25_CANVAS_MAX_PIXELS
+    return H3_CANVAS_SHORT_EDGE, H3_CANVAS_MAX_PIXELS
 
 
 def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
