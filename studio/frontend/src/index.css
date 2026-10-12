@@ -4280,6 +4280,55 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	/* "Generating..." glint: a band of the page colour slides over the label. Only `transform`
+	   animates, so it runs on the compositor with no per-frame style or paint work (a
+	   background-clip: text sweep restyles every frame). Lighten in light mode and darken in dark
+	   are no-ops over the background, so only the letters dim as it passes. */
+	.generating-glint {
+		position: relative;
+		display: inline-block;
+		overflow: hidden;
+		vertical-align: bottom;
+		white-space: nowrap;
+	}
+
+	.generating-glint::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background: linear-gradient(
+			100deg,
+			transparent 30%,
+			color-mix(in oklab, var(--background) 60%, transparent) 50%,
+			transparent 70%
+		);
+		mix-blend-mode: lighten;
+		transform: translateX(-100%);
+		animation: generating-glint 5s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+	}
+
+	.dark .generating-glint::after {
+		mix-blend-mode: darken;
+	}
+
+	/* One pass, then rest past the end for the rest of the 5 s cycle. */
+	@keyframes generating-glint {
+		0% {
+			transform: translateX(-100%);
+		}
+		48%,
+		100% {
+			transform: translateX(100%);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		html:not(.force-motion) .generating-glint::after {
+			display: none;
+		}
+	}
+
 	/* Indeterminate loading bar: a 1/3-width segment sweeping the track. */
 	.loading-bar-slide {
 		animation: loading-bar-slide 1.3s ease-in-out infinite;
