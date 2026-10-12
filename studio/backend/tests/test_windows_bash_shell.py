@@ -440,9 +440,7 @@ def _windows_backstop(monkeypatch, _windows_blocklist):
 @pytest.mark.parametrize(
     "command",
     [
-        # #12054: the drive prefix stopped at the dot before the extension and
-        # read it as `.` (source), so these were refused as "Blocked command(s)
-        # for safety: .".
+        # #12054: each was refused as "Blocked command(s) for safety: .".
         r"C:\flutter\bin\flutter.bat create C:\src\my_app",
         "C:/flutter/bin/flutter.bat create my_app",
         r"C:\Python312\python.exe -m pip list",
