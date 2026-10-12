@@ -319,7 +319,7 @@ test("menu items for web shortcuts follow a mounted handler, and honour claims",
   // Backdrops portal to body, and Radix skips aria-hidden on anything holding aria-live.
   assert.match(hook, /modalObserver\.observe\(document\.body, \{ childList: true \}\)/);
   for (const id of ["toggleSidebar", "findInPage", "previousChat", "nextChat"]) {
-    assert.ok(ROOT.includes(`useShortcutAvailable("${id}", isTauri)`), `${id} enables its item`);
+    assert.ok(ROOT.includes(`useShortcutAvailable("${id}", hasAppMenus)`), `${id} enables its item`);
   }
 });
 

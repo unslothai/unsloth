@@ -839,10 +839,11 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
 def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     """The route is only real if the binary the installer pins understands the architecture.
 
-    The tag STRING cannot answer this: every mirror build resolves to the same master-813 base, so
-    the August build and the current one are indistinguishable by name. What is asserted here is the
-    pin itself, against the release verified to render this family (26.9s at 1024 on one B200,
-    Q4_K_M denoiser, bf16 VAE, Q4_K_M Qwen3-VL encoder). Bump both together or not at all.
+    The tag STRING cannot answer this: two mirror builds can share an upstream base, so the name does
+    not say whether a build carries the architecture. What is asserted here is the pin itself,
+    against the release verified to render this family through Studio's native engine (512x512,
+    12 steps, Q4_K_M, one B200: cuda12 and cuda13 bundles, 26s / 36s, identical images). Bump both
+    together or not at all.
     """
     import importlib.util
     from pathlib import Path
@@ -852,7 +853,7 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.DEFAULT_TAG == "master-813-bfbef5b-u1d02858", (
+    assert module.DEFAULT_TAG == "master-951-f89d9b1-uafac7a7", (
         "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
         f"{module.DEFAULT_TAG} is not"
     )
