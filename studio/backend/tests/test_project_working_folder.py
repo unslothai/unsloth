@@ -143,6 +143,25 @@ def test_a_folder_cleared_mid_resolve_still_keeps_its_mode(env, monkeypatch):
     assert stat.S_IMODE(os.stat(env.repo).st_mode) == before
 
 
+def test_tools_in_the_users_folder_skip_the_isolation_scan(env, monkeypatch):
+    from core.inference import os_sandbox
+
+    # An isolation host whose workdir scan refuses the folder (an external hard link, say).
+    def refuse(plan):
+        raise os_sandbox.WorkdirUnsafeError(f"the session workdir {plan.workdir} is unsafe")
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", refuse)
+    managed = env.tools.execute_tool("terminal", {"command": "pwd"}, session_id = "project-p1")
+    assert "unsafe" in managed
+    _use_repo(env)
+    out = env.tools.execute_tool("terminal", {"command": "pwd"}, session_id = "project-p1")
+    assert os.path.realpath(env.repo) in out and "unsafe" not in out
+    ran = env.tools.execute_tool(
+        "python", {"code": "import os; print(os.getcwd())"}, session_id = "project-p1"
+    )
+    assert os.path.realpath(env.repo) in ran
+
+
 def test_project_delete_never_touches_the_users_folder(env):
     _use_repo(env)
     project = studio_db.get_chat_project("p1")

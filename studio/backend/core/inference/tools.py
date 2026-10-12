@@ -10082,10 +10082,20 @@ def _reaches_host_paths(kind: str, text: str) -> bool:
     return False
 
 
-def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
+def _prepare_tool_launch(
+    plan,
+    *,
+    host_access_approved: bool = False,
+    user_folder: bool = False,
+):
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if host_access_approved and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_approved_host_access")
+    # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
+    # repositories (hard links from git clone --local, pnpm, uv) and walk large trees on every call. Decided up front,
+    # never after a scan finding, which tool code could plant to drop its own boundary.
+    if user_folder and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_working_folder")
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
         if plan.preexec_fn is not None and prepared.preexec_fn is None:
@@ -10847,6 +10857,18 @@ def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
         project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
         sandbox = (project or {}).get("sandboxPath")
         return bool(sandbox) and os.path.realpath(sandbox) == workdir
+    except Exception:
+        return False
+
+
+def _is_user_project_folder(session_id: "str | None", workdir: str) -> bool:
+    """Whether *workdir* is the owner's chosen folder for this project; False when unsure, which keeps isolation."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        return available_project_working_folder(project) == os.path.realpath(workdir)
     except Exception:
         return False
 
@@ -22716,6 +22738,7 @@ def _python_exec(
                     cancel_event = cancel_event,
                 ),
                 host_access_approved = host_access_approved and _reaches_host_paths("python", code),
+                user_folder = _is_user_project_folder(session_id, workdir),
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
@@ -22976,6 +22999,7 @@ def _bash_exec(
                     cancel_event = cancel_event,
                 ),
                 host_access_approved = host_reach_approved,
+                user_folder = _is_user_project_folder(session_id, workdir),
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
