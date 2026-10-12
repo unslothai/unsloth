@@ -153,7 +153,9 @@ _frontend_can_build_in_background() {
     _cpus=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) || return 1
     [ "$_cpus" -ge 4 ] 2>/dev/null || return 1
     _mb=$(_usable_ram_mb)
-    [ "${_mb:-0}" -ge 12288 ] 2>/dev/null
+    [ "${_mb:-0}" -ge 12288 ] 2>/dev/null || return 1
+    # A rerun waits for a build still being stopped by the identity in its marker.
+    [ -n "$(_frontend_proc_id "$$")" ]
 }
 
 # Put back an ancestor .gitignore a killed build hid.

@@ -248,5 +248,11 @@ assert_eq "verbose stays serial" "no" "$(UNSLOTH_VERBOSE=1 STAGE_ROOT= gate)"
 assert_eq "Desktop install stays serial" "no" "$(UNSLOTH_TAURI_MODE=1 STAGE_ROOT= gate)"
 assert_eq "Desktop update stays serial" "no" "$(UNSLOTH_TAURI_UPDATE=true STAGE_ROOT= gate)"
 assert_eq "staged update stays serial" "no" "$(STAGE_ROOT=/tmp/stage gate)"
+assert_eq "no usable ps stays serial" "no" "$(SCRIPT_DIR="$WORK/outer/studio" STAGE_ROOT= bash -c "$STUBS
+. '$HELPERS'
+nproc() { echo 16; }
+_usable_ram_mb() { printf 65536; }
+ps() { return 1; }
+if _frontend_can_build_in_background; then echo yes; else echo no; fi" 2>/dev/null)"
 
 summary
