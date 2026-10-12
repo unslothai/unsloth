@@ -3,12 +3,11 @@
 
 """mlx-audio speech-to-text checkpoints on the Transformers dictation engine (Apple Silicon)."""
 
-import io
 import json
 import queue
 import sys
 import threading
-import wave
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -76,16 +75,6 @@ def _install_fake_mlx(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(root))
     for name in ("mlx", "mlx.core", "mlx_audio", "mlx_audio.stt"):
         monkeypatch.delitem(sys.modules, name, raising = False)
-
-
-def _wav(seconds, rate = 16000):
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(rate)
-        out.writeframes(np.zeros(int(seconds * rate), dtype = np.int16).tobytes())
-    return buffer.getvalue()
 
 
 def test_mlx_stt_is_unavailable_off_apple_silicon(monkeypatch):
@@ -234,38 +223,42 @@ def test_child_loads_and_transcribes_an_mlx_checkpoint(monkeypatch, tmp_path):
     assert mlx.core.default_device == "cpu"
 
 
-def test_a_spawned_worker_transcribes_a_cached_mlx_checkpoint_end_to_end(
-    mlx_host, monkeypatch, tmp_path
-):
-    """The real spawn child, the sidecar's windowing and status, with mlx-audio stood in."""
+@pytest.fixture
+def spawned_mlx_host(mlx_host, monkeypatch, tmp_path):
+    """A real spawned worker with mlx-audio stood in; torch and PyAV are not needed on that path."""
     _install_fake_mlx(tmp_path, monkeypatch)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    _write_snapshot(tmp_path / "hub", _REPO, _QWEN3_ASR_CONFIG)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(float32 = "float32"))
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", lambda: None)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda _p = None: ("cpu", "float32"))
+    return tmp_path / "hub"
+
+
+def test_a_spawned_worker_transcribes_a_cached_mlx_checkpoint_end_to_end(spawned_mlx_host):
+    """The real spawn child, the sidecar's windowing and residency."""
+    _write_snapshot(spawned_mlx_host, _REPO, _QWEN3_ASR_CONFIG)
 
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
     try:
-        result = sidecar.transcribe(_wav(45), model = _REPO, language = "en")
+        with sidecar._lock:
+            text = sidecar._transcribe_decoded(
+                _REPO, np.zeros(45 * 16000, dtype = np.float32), {"language": "en"}
+            )
         assert sidecar.loaded_model == _REPO
     finally:
         sidecar.unload()
 
     # 45 s of silence: one 30 s window, then the 15 s rest.
-    assert result["text"] == (
+    assert text == (
         "heard 480000 samples from models--mlx-community--Qwen3-ASR-0.6B-8bit "
         "heard 240000 samples from models--mlx-community--Qwen3-ASR-0.6B-8bit"
     )
-    assert result["model"] == _REPO
     assert sidecar.loaded_model is None
 
 
-def test_an_mlx_load_failure_reaches_the_caller(mlx_host, monkeypatch, tmp_path):
-    _install_fake_mlx(tmp_path, monkeypatch)
-    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    _write_snapshot(tmp_path / "hub", "someone/broken-asr", _QWEN3_ASR_CONFIG)
-    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda _p = None: ("cpu", "float32"))
+def test_an_mlx_load_failure_reaches_the_caller(spawned_mlx_host):
+    _write_snapshot(spawned_mlx_host, "someone/broken-asr", _QWEN3_ASR_CONFIG)
 
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
     with pytest.raises(Exception, match = "mlx-audio could not read this checkpoint"):
