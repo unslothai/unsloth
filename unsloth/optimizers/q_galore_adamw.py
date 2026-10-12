@@ -176,14 +176,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 has_weight_quant = self._has_weight_quant(p, group)
 
                 if has_weight_quant:
-                    if p._q_scales is not None:
-                        float_weight = _dequantize(
-                            p._q_data,
-                            p._q_scales,
-                            p._q_zeros,
-                            p._q_shape,
-                        )
-                        p.data = float_weight
+                    _restore_dense_weight(p)
 
                 if "rank" in group:
                     if "projector" not in state:
@@ -293,17 +286,26 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 p._weight_group_size = group_size
 
 
+def _restore_dense_weight(p):
+    """Dequantize into ``p.data`` and drop the INT8 copy so it cannot overwrite later writes."""
+    if getattr(p, "_q_scales", None) is None:
+        return
+    p.data = _dequantize(p._q_data, p._q_scales, p._q_zeros, p._q_shape).to(p.device)
+    p._q_scales = None
+    p._q_zeros = None
+    del p._q_data
+
+
 def _weight_quant_pre_hook(module, args):
     """Forward pre-hook: dequantize INT8 weights to float before forward."""
     for p in module.parameters(recurse = False):
-        if hasattr(p, "_q_scales") and p._q_scales is not None:
-            float_weight = _dequantize(
-                p._q_data,
-                p._q_scales,
-                p._q_zeros,
-                p._q_shape,
-            )
-            p.data = float_weight.to(p.data.device)
+        _restore_dense_weight(p)
+
+
+def _weight_quant_model_pre_hook(module, args, kwargs):
+    # Runs outside torch.compile'd submodules, whose own pre-hooks never see the placeholder.
+    for p in module.parameters():
+        _restore_dense_weight(p)
 
 
 def _weight_quant_state_dict_hook(module, state_dict, prefix, local_metadata):
@@ -318,11 +320,8 @@ def _weight_quant_state_dict_hook(module, state_dict, prefix, local_metadata):
 def _weight_quant_load_state_dict_hook(module, state_dict, prefix, *args):
     """Restore parameter storage and invalidate quantized weights before loading."""
     for name, p in module.named_parameters(recurse = False, remove_duplicate = False):
-        if prefix + name in state_dict and getattr(p, "_q_scales", None) is not None:
-            p.data = _dequantize(p._q_data, p._q_scales, p._q_zeros, p._q_shape).to(p.device)
-            p._q_scales = None
-            p._q_zeros = None
-            del p._q_data
+        if prefix + name in state_dict:
+            _restore_dense_weight(p)
 
 
 def install_weight_quant_hooks(model: torch.nn.Module) -> list:
@@ -330,12 +329,15 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
 
     Returns a list of hook handles so the caller can remove them if needed.
     """
-    handles = []
+    handles = [
+        model.register_forward_pre_hook(
+            _weight_quant_model_pre_hook, prepend = True, with_kwargs = True
+        )
+    ]
     for module in model.modules():
         has_quant_param = any(hasattr(p, "_q_scales") for p in module.parameters(recurse = False))
         if has_quant_param:
-            h = module.register_forward_pre_hook(_weight_quant_pre_hook)
-            handles.append(h)
+            handles.append(module.register_forward_pre_hook(_weight_quant_pre_hook))
             handles.append(module.register_state_dict_post_hook(_weight_quant_state_dict_hook))
             handles.append(
                 module.register_load_state_dict_pre_hook(_weight_quant_load_state_dict_hook)

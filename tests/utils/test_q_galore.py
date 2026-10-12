@@ -810,3 +810,23 @@ def test_weight_quant_state_dict_after_step_holds_full_weights():
     model.load_state_dict(target)
     fresh.load_state_dict(target)
     torch.testing.assert_close(model(x), fresh(x))
+
+
+class _HookBypassingBlock(_TinyBlock):
+    # Calls forward directly, like a torch.compile'd parent that never runs submodule pre-hooks.
+    def forward(self, x):
+        return torch.einsum("bh,eho->bo", self.q_proj.forward(x), self.down_proj)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_weight_quant_root_hook_restores_weights_for_bypassed_submodules():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    model = _HookBypassingBlock().to(device)
+    _q_galore_step(model, device, weight_quant = True, targets = ["q_proj"])
+    weight = model.q_proj.weight
+    expected = _dequantize(weight._q_data, weight._q_scales, weight._q_zeros, weight._q_shape)
+    model(torch.randn(2, 32, device = device))
+    torch.testing.assert_close(weight.data, expected)
+    assert weight._q_scales is None and not hasattr(weight, "_q_data")
