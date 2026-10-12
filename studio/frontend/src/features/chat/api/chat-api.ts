@@ -1017,7 +1017,8 @@ export async function fetchSidebarRows(
   };
 }
 
-const SIDEBAR_THREAD_ROWS_MAX = 500;
+// under the route's 500 cap: 500 ids make a ~24 KB request line, past h11's 16 KiB head limit
+const SIDEBAR_THREAD_ROWS_MAX = 200;
 
 export async function fetchSidebarThreadRows(
   threadIds: string[],
