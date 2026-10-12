@@ -194,3 +194,52 @@ def test_failed_merge_keeps_the_generated_batches(tmp_path: Path, monkeypatch) -
         "batch_00001.parquet",
     ]
     assert not list(tmp_path.glob("*.merging"))
+
+
+@pytest.mark.parametrize(
+    "first, second, expected",
+    [
+        ({"o": {"d": True}}, {"o": "x"}, [{"o": '{"d": true}'}, {"o": "x"}]),
+        (1, 1.5, [1.0, 1.5]),
+        (None, "s", [None, "s"]),
+        ({"a": "x"}, {"a": "y", "b": "z"}, [{"a": "x", "b": None}, {"a": "y", "b": "z"}]),
+    ],
+)
+def test_batches_with_different_schemas_load_as_one_dataset(
+    tmp_path: Path, first, second, expected
+) -> None:
+    from core.data_recipe.jobs.worker import _unify_batch_schemas
+
+    parquet_dir = tmp_path / "parquet-files"
+    parquet_dir.mkdir()
+    pd.DataFrame({"r": [first], "n": [0]}).to_parquet(
+        parquet_dir / "batch_00000.parquet", index = False
+    )
+    pd.DataFrame({"r": [second], "n": [1]}).to_parquet(
+        parquet_dir / "batch_00001.parquet", index = False
+    )
+
+    _unify_batch_schemas(tmp_path)
+
+    assert sorted(p.name for p in parquet_dir.iterdir()) == [
+        "batch_00000.parquet",
+        "batch_00001.parquet",
+    ]
+    table = pq.read_table(parquet_dir)
+    assert table.column("r").to_pylist() == expected
+    assert table.column("n").to_pylist() == [0, 1]
+
+
+def test_batches_that_already_agree_are_not_rewritten(tmp_path: Path) -> None:
+    from core.data_recipe.jobs.worker import _unify_batch_schemas
+
+    parquet_dir = _write_shards(tmp_path)
+    for path in parquet_dir.iterdir():
+        path.unlink()
+    pd.DataFrame({"r": ["a"]}).to_parquet(parquet_dir / "batch_00000.parquet", index = False)
+    pd.DataFrame({"r": ["b"]}).to_parquet(parquet_dir / "batch_00001.parquet", index = False)
+    before = {p.name: p.read_bytes() for p in parquet_dir.iterdir()}
+
+    _unify_batch_schemas(tmp_path)
+
+    assert {p.name: p.read_bytes() for p in parquet_dir.iterdir()} == before

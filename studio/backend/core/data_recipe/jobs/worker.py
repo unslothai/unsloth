@@ -20,6 +20,7 @@ from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import (
     build_config_builder,
     create_data_designer,
+    _unify_cell_types,
     install_public_egress_guard,
     write_parquet_with_unified_types,
 )
@@ -186,6 +187,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         else:
             results = designer.create(builder, num_records = rows, dataset_name = dataset_name)
             analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
+            _unify_batch_schemas(results.artifact_storage.base_dataset_path)
             if merge_batches:
                 _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
             artifact_path = str(results.artifact_storage.base_dataset_path)
@@ -207,6 +209,57 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
                 "stack": _sanitize_log_message(traceback.format_exc(limit = 20)),
             }
         )
+
+
+def _unify_batch_schemas(base_dataset_path: Path) -> None:
+    """Give every batch file one schema. Each batch infers its own, so a field stored as JSON text in one
+    batch and as an object in another (or float vs int, all-null vs text) left a folder that training
+    could not load as one dataset."""
+    parquet_dir = base_dataset_path / "parquet-files"
+    parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
+    if len(parquet_files) <= 1:
+        return
+
+    import pyarrow
+    import pyarrow.parquet as pyarrow_parquet
+
+    schemas = [pyarrow_parquet.read_schema(path).remove_metadata() for path in parquet_files]
+    if all(schema.equals(schemas[0]) for schema in schemas[1:]):
+        return
+
+    staged = [path.with_name(path.name + ".unifying") for path in parquet_files]
+    try:
+        tables = [pyarrow_parquet.read_table(path) for path in parquet_files]
+        names = list(dict.fromkeys(name for table in tables for name in table.column_names))
+        columns = {}
+        for name in names:
+            values = [
+                value
+                for table in tables
+                for value in (
+                    table.column(name).to_pylist()
+                    if name in table.column_names
+                    else [None] * table.num_rows
+                )
+            ]
+            try:
+                columns[name] = pyarrow.array(values, from_pandas = True)
+            except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError):
+                columns[name] = pyarrow.array(_unify_cell_types(values), from_pandas = True)
+        unified = pyarrow.table(columns)
+        offset = 0
+        for table, path in zip(tables, staged):
+            pyarrow_parquet.write_table(unified.slice(offset, table.num_rows), path)
+            offset += table.num_rows
+    except Exception as exc:
+        for path in staged:
+            path.unlink(missing_ok = True)
+        logging.getLogger("data_designer.unsloth").warning(
+            "Batch files kept their own column types: %s", exc
+        )
+        return
+    for path, final in zip(staged, parquet_files):
+        path.replace(final)
 
 
 def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
