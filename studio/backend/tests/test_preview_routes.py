@@ -290,6 +290,7 @@ def test_chat_payload_sanitized(client, captured):
             "use_adapter": False,
             "confirm_tool_calls": True,
             "session_id": "abc",
+            "thread_id": "someone-elses-thread",
             "rag_scope": {"project_id": "x"},
             "enable_thinking": True,
             "reasoning_effort": "high",
@@ -308,6 +309,7 @@ def test_chat_payload_sanitized(client, captured):
     # Tool-loop levers neutralized regardless of the tool gate.
     assert p.confirm_tool_calls is False
     assert p.session_id is None
+    assert p.thread_id is None
     assert p.rag_scope is None
     # Provider routing stripped so /p can't proxy an arbitrary endpoint.
     assert p.provider_id is None

@@ -15,14 +15,35 @@ Run with: python tests/studio/playwright_chat_width.py
 """
 
 import os
+import sys
 import time
 import uuid
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _playwright_robust import (  # noqa: E402
+    install_wall_clock_watchdog,
+    report_failing_step,
+    step_budget_s,
+    wait_for_settled,
+)
 
 BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8888")
 PASSWORD = os.environ.get("STUDIO_NEW_PW") or os.environ.get("STUDIO_PW", "")
 TIMEOUT_MS = 60_000
+# A step that runs past its budget stops the run with its name, instead of the next steps
+# waiting out their own timeouts. Sized on the waits each step chains at TIMEOUT_MS; a
+# hosted runner does each in seconds.
+STEP_BUDGET_S = step_budget_s(360)
+_watchdog = None
+
+
+def step(name):
+    print(f"[chat-width] STEP {name}", flush = True)
+    if _watchdog is not None:
+        _watchdog.begin_step(name, STEP_BUDGET_S)
 
 
 def api(
@@ -148,6 +169,7 @@ def check_widths(page):
     thread_url = page.url
     measurements = {}
     for preset in ("Standard", "Wide", "Full width"):
+        step(f"measure the {preset!r} preset across 7 viewports")
         page.set_viewport_size({"width": 1440, "height": 900})
         page.keyboard.press("Control+,")
         page.get_by_role("dialog").get_by_role("button", name = "Appearance", exact = True).click()
@@ -157,7 +179,9 @@ def check_widths(page):
         measurements[preset] = {}
         for width in (390, 768, 900, 1280, 1536, 1920, 2560):
             page.set_viewport_size({"width": width, "height": 900})
-            page.wait_for_timeout(300)
+            # Measure once both surfaces have reflowed to the new viewport, not 300 ms after it.
+            wait_for_settled(page.locator(".aui-assistant-message-root"))
+            wait_for_settled(page.locator(".unsloth-composer-shell"))
             measurements[preset][width] = page.evaluate(
                 """() => {
                     const width = selector => document.querySelector(selector).getBoundingClientRect().width;
@@ -173,11 +197,12 @@ def check_widths(page):
             page.goto(thread_url.split("?")[0] + "?new=width-transition")
             shell = page.locator(".unsloth-composer-shell")
             shell.wait_for()
-            page.wait_for_timeout(300)
+            wait_for_settled(shell)
             welcome_width = shell.bounding_box()["width"]
             assert abs(welcome_width - measurements[preset][1920]["composer"]) <= 1
             page.goto(thread_url)
             page.locator(".aui-assistant-message-root").wait_for()
+    step("compare the presets")
     for width, full in measurements["Full width"].items():
         standard = measurements["Standard"][width]
         wide = measurements["Wide"][width]
@@ -206,9 +231,14 @@ def check_widths(page):
 
 
 if __name__ == "__main__":
+    _watchdog = install_wall_clock_watchdog(
+        float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "600")), label = "chat-width"
+    )
+    report_failing_step(_watchdog, label = "chat-width")
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport = {"width": 1440, "height": 900}, reduced_motion = "reduce")
+        step("sign in and seed a thread")
         token = sign_in(page)
         thread_id = os.environ.get("CHAT_THREAD_ID") or seed_thread(page, token)
         page.goto(
@@ -217,3 +247,4 @@ if __name__ == "__main__":
         page.locator(".aui-assistant-message-root").wait_for(timeout = TIMEOUT_MS)
         print(check_widths(page))
         browser.close()
+    _watchdog.cancel()

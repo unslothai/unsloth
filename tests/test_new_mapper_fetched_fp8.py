@@ -18,7 +18,13 @@ import types
 
 _MODELS = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "models")
 
-_WANTED = {"__get_model_name", "_resolve_with_mappers", "_get_new_mapper", "get_model_name"}
+_WANTED = {
+    "__get_model_name",
+    "_resolve_with_mappers",
+    "_get_new_mapper",
+    "_prefer_legacy_lowercase_cache",
+    "get_model_name",
+}
 
 # An fp8 ("8") model, spliced into the FETCHED mapper only.
 _NEW_KEY = "unsloth/Zeta-9B-Only-On-Main"

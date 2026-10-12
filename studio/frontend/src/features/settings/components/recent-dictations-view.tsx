@@ -37,13 +37,13 @@ import { toast } from "@/lib/toast";
 import {
   Copy01Icon,
   Delete02Icon,
-  Message01Icon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
 } from "lucide-react";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -196,7 +196,7 @@ export function RecentDictationsView({
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex items-center gap-2">
         <button
           type="button"
@@ -216,7 +216,7 @@ export function RecentDictationsView({
       </header>
 
       <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold">
+        <h2 className="settings-heading text-sm font-semibold">
           {selected
             ? t("settings.voice.recents.detailTitle")
             : t("settings.voice.recents.sectionTitle")}
@@ -243,7 +243,7 @@ export function RecentDictationsView({
                 onClick={() => openChat(selected.chatId as string)}
               >
                 <HugeiconsIcon
-                  icon={Message01Icon}
+                  icon={MessageCircleIcon}
                   className="mr-1.5 size-3.5"
                 />
                 {t("settings.voice.recents.openChat")}
@@ -376,7 +376,7 @@ export function RecentDictationsView({
                       <span className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground sm:hidden">
                         {dictation.chatId ? (
                           <HugeiconsIcon
-                            icon={Message01Icon}
+                            icon={MessageCircleIcon}
                             className="size-3"
                           />
                         ) : null}
@@ -389,7 +389,7 @@ export function RecentDictationsView({
                       <span className="flex size-3.5 shrink-0 items-center justify-center">
                         {dictation.chatId ? (
                           <HugeiconsIcon
-                            icon={Message01Icon}
+                            icon={MessageCircleIcon}
                             className="size-3.5"
                             aria-label={t("settings.voice.recents.openChat")}
                           />

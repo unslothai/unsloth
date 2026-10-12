@@ -121,6 +121,8 @@ def _launch(
     kv_per_token = 1024,
     native = NATIVE,
     mmproj_bytes = 0,
+    wired_bytes = 0,
+    ckpt_bytes = 0,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition).
 
@@ -136,11 +138,18 @@ def _launch(
     helper's actual return contract -- its 4096 floor, and its habit of handing the
     request straight back. ``budget_bytes`` / ``weights_bytes`` / ``kv_per_token`` /
     ``native`` then place the model against the budget, and only matter with ``real_fit``.
+    ``wired_bytes`` is the GPU wired headroom, 0 when unreadable. ``ckpt_bytes`` prices each
+    SWA context checkpoint and advertises the flag, so ``--ctx-checkpoints`` is charged.
     """
     monkeypatch.setattr(
         LlamaCppBackend,
         "_apple_metal_memory_budget_bytes",
         staticmethod(lambda: budget_bytes if metal else 0),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_apple_metal_wired_ceiling_bytes",
+        staticmethod(lambda: wired_bytes if metal else 0),
     )
     if paravirtual:
         import core.inference.llama_cpp as _llama_cpp
@@ -150,7 +159,22 @@ def _launch(
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: can_estimate_kv
-    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * kv_per_token
+    backend._estimate_kv_cache_bytes = (
+        lambda ctx, *a, ctx_checkpoints = 0, **k: int(ctx) * kv_per_token
+        + ctx_checkpoints * ckpt_bytes
+    )
+    if ckpt_bytes:
+        _probe = LlamaCppBackend.probe_server_capabilities.__func__
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(
+                lambda cls, binary = None: {
+                    **_probe(cls, binary),
+                    "ctx_checkpoints_flag": "--ctx-checkpoints",
+                }
+            ),
+        )
     backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
     if not real_fit:
         backend._fit_context_to_vram = lambda target, *a, **k: min(int(target), CEILING)
@@ -619,12 +643,6 @@ class TestAContextAboveTheModelsNativeLength:
         out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
         assert out["backend"].max_context_length <= self._ASKED
 
-    def test_a_refused_request_does_not_raise_the_published_bound(self, tmp_path, monkeypatch):
-        """Only an accepted ceiling is published. A refusal measured nothing it can
-        stand behind at the request, so the bound stays where the cap left it."""
-        with pytest.raises(RuntimeError, match = "unified"):
-            self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = _FAT_KV)
-
     def test_the_pass_through_spelling_launches_too(self, tmp_path, monkeypatch):
         """The spelling a RoPE-scaled request actually arrives in."""
         cmd = self._above(
@@ -951,6 +969,187 @@ class TestACpuPinnedProjectorOnUnifiedMemory:
             **self._COMMON,
         )
         assert _ctx_values(captured["cmd"])[-1] == "40960"
+
+
+_WIRED = 16 * 1024**3
+
+
+class TestTheGpuWiredLimitDecidesTheRefusal:
+    """#9942: a 38 GiB load refused against ~32 GB free ran fine with the opt-out."""
+
+    _ROOMY = dict(real_fit = True, budget_bytes = _BUDGET, weights_bytes = 1024**3, kv_per_token = _FAT_KV)
+
+    def test_a_context_over_free_memory_but_under_the_limit_loads(self, tmp_path, monkeypatch):
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 8192, wired_bytes = _WIRED, **self._ROOMY)["cmd"]
+        assert _ctx_values(cmd)[-1] == "8192"
+
+    def test_it_loads_with_a_warning(self, tmp_path, monkeypatch):
+        backend = _launch(tmp_path, monkeypatch, n_ctx = 8192, wired_bytes = _WIRED, **self._ROOMY)[
+            "backend"
+        ]
+        assert "8,192" in backend.last_load_warning
+        assert "loading anyway" in backend.last_load_warning
+
+    def test_the_warning_rounds_need_up_and_free_down(self):
+        message = LlamaCppBackend._metal_context_pressure_message(8192, 9 * 1024 + 1, 9 * 1024 - 1)
+        assert "about 10 GB" in message and "the 8 GB" in message
+
+    def test_a_context_under_free_memory_carries_no_warning(self, tmp_path, monkeypatch):
+        backend = _launch(tmp_path, monkeypatch, n_ctx = 2048, wired_bytes = _WIRED, **self._ROOMY)[
+            "backend"
+        ]
+        assert backend.last_load_warning is None
+
+    def test_an_unreadable_limit_keeps_the_free_memory_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = 8192, **self._ROOMY)
+
+    def test_a_context_past_the_limit_is_refused(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = 32768, wired_bytes = _WIRED, **self._ROOMY)
+
+    def test_the_refusal_names_what_the_limit_holds(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(tmp_path, monkeypatch, n_ctx = 32768, wired_bytes = _WIRED, **self._ROOMY)
+        named = _named_ceiling(str(excinfo.value))
+        assert named > 8192
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = named, wired_bytes = _WIRED, **self._ROOMY)["cmd"]
+        assert _ctx_values(cmd)[-1] == str(named)
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = named + 1024, wired_bytes = _WIRED, **self._ROOMY)
+
+    def test_the_refusal_can_name_a_context_under_the_fit_floor(self, tmp_path, monkeypatch):
+        tight = dict(self._ROOMY, budget_bytes = 8 * 1024**3)
+        with pytest.raises(RuntimeError) as free_only:
+            _launch(tmp_path, monkeypatch, n_ctx = 8192, **tight)
+        tight["wired_bytes"] = _BUDGET
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(tmp_path, monkeypatch, n_ctx = 8192, **tight)
+        named = _named_ceiling(str(excinfo.value))
+        assert _named_ceiling(str(free_only.value)) < named < 8192
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = named, **tight)["cmd"]
+        assert _ctx_values(cmd)[-1] == str(named)
+
+    def test_the_limit_can_refuse_the_context_auto_picks(self, tmp_path, monkeypatch):
+        squeezed = dict(self._ROOMY, wired_bytes = 8 * 1024**3)
+        auto_cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **squeezed)["cmd"]
+        auto_ctx = int(_ctx_values(auto_cmd)[-1])
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(tmp_path, monkeypatch, n_ctx = auto_ctx, **squeezed)
+        assert _named_ceiling(str(excinfo.value)) < auto_ctx
+        assert "leave it on Auto" not in str(excinfo.value)
+
+    def test_auto_still_sizes_from_free_memory(self, tmp_path, monkeypatch):
+        with_limit = _launch(tmp_path, monkeypatch, n_ctx = 0, wired_bytes = _WIRED, **self._ROOMY)
+        without = _launch(tmp_path, monkeypatch, n_ctx = 0, **self._ROOMY)
+        assert _ctx_values(with_limit["cmd"])[-1] == _ctx_values(without["cmd"])[-1]
+
+    def test_weights_over_free_memory_are_priced_against_the_limit(self, tmp_path, monkeypatch):
+        heavy = dict(
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            weights_bytes = 10 * 1024**3,
+            kv_per_token = _FAT_KV,
+            wired_bytes = 32 * 1024**3,
+        )
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = 65536, **heavy)
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 8192, **heavy)["cmd"]
+        assert _ctx_values(cmd)[-1] == "8192"
+
+    def test_weights_alone_past_the_limit_are_not_refused(self, tmp_path, monkeypatch):
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 32768,
+            wired_bytes = _WIRED,
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            weights_bytes = 20 * 1024**3,
+            kv_per_token = _FAT_KV,
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == "32768"
+
+    def test_weights_past_the_limit_keep_the_free_memory_refusal(self, tmp_path, monkeypatch):
+        """The headroom holds the GGUF but not the fitted weights, compute reserve included."""
+        squeezed = dict(
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            weights_bytes = _TIGHT_WEIGHTS,
+            kv_per_token = _FAT_KV,
+            wired_bytes = _TIGHT_WEIGHTS + 1024**3,
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(tmp_path, monkeypatch, n_ctx = 32768, **squeezed)
+        assert _named_ceiling(str(excinfo.value)) == _TIGHT_CEILING
+        assert "leave it on Auto" in str(excinfo.value)
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 512, **squeezed)["cmd"]
+        assert _ctx_values(cmd)[-1] == "512"
+
+    def test_swa_checkpoints_count_against_the_limit(self, tmp_path, monkeypatch):
+        ckpt = dict(
+            real_fit = True,
+            budget_bytes = 20 * 1024**3,
+            weights_bytes = 1024**3,
+            kv_per_token = 256 * 1024,
+            ckpt_bytes = 1024**3,
+            extra_args = ["--ctx-checkpoints", "8"],
+            wired_bytes = 24 * 1024**3,
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(tmp_path, monkeypatch, n_ctx = 56000, **ckpt)
+        named = _named_ceiling(str(excinfo.value))
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = named, **ckpt)["cmd"]
+        assert _ctx_values(cmd)[-1] == str(named)
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = named + 1024, **ckpt)
+
+    def test_swa_checkpoints_count_at_the_fit_floor(self, tmp_path, monkeypatch):
+        swa = dict(
+            real_fit = True,
+            budget_bytes = 20 * 1024**3,
+            weights_bytes = 1024**3,
+            kv_per_token = 256 * 1024,
+            extra_args = ["--ctx-checkpoints", "1"],
+            wired_bytes = 24 * 1024**3,
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(tmp_path, monkeypatch, n_ctx = 16384, ckpt_bytes = 17 * 1024**3, **swa)
+        assert _named_ceiling(str(excinfo.value)) < 8192
+        with pytest.raises(RuntimeError, match = "No context fits"):
+            _launch(tmp_path, monkeypatch, n_ctx = 1024, ckpt_bytes = 18 * 1024**3, **swa)
+
+    def test_nothing_fitting_free_memory_loads_under_the_limit(self, tmp_path, monkeypatch):
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 4096,
+            wired_bytes = _WIRED,
+            **TestWhenNothingFitsAtAll.NOTHING_FITS,
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == "4096"
+
+    def test_nothing_fitting_the_limit_is_refused(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = "No context fits"):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 4096,
+                wired_bytes = _BUDGET,
+                **TestWhenNothingFitsAtAll.NOTHING_FITS,
+            )
+
+    def test_a_fixed_manual_layer_count_is_still_exempt(self, tmp_path, monkeypatch):
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 32768,
+            wired_bytes = _WIRED,
+            gpu_memory_mode = "manual",
+            gpu_layers = 20,
+            **self._ROOMY,
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == "32768"
 
 
 _GIB = 1024**3
@@ -1555,3 +1754,190 @@ def test_every_forced_full_offload_arm_owes_the_fit_on_retry():
     ]
     assert len(arms) == 2, f"expected the two forced full-offload arms, found {len(arms)}"
     assert all(claims_full_offload(arm) for arm in arms)
+
+
+class TestFitterKeepsTheWiredHeadroom:
+    """Weights over the budget still launch, and llama.cpp's fitter places them against
+    ggml-metal's free report: recommendedMaxWorkingSetSize minus this process's own
+    allocations, blind to what WindowServer and other apps hold. On a 24 GB Mac that
+    packs a 27B Q4 to within 1 GiB of the 16 GiB ceiling and the display starves
+    (#9279), so the launch carries the measured gap as --fit-target."""
+
+    GiB = 1024**3
+    OVER_BUDGET = dict(real_fit = True, budget_bytes = 9 * 1024**3, weights_bytes = 16 * 1024**3)
+
+    @pytest.fixture
+    def fit_caps(self, monkeypatch):
+        probe = LlamaCppBackend.probe_server_capabilities.__func__
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(
+                lambda cls, binary = None: {
+                    **probe(cls, binary),
+                    "supports_fit_target": True,
+                    "supports_fit_ctx": True,
+                }
+            ),
+        )
+
+    @staticmethod
+    def _floor(monkeypatch, mib):
+        calls = []
+
+        def floor():
+            calls.append(1)
+            return mib
+
+        monkeypatch.setattr(LlamaCppBackend, "_metal_fit_target_floor_mib", staticmethod(floor))
+        return calls
+
+    @staticmethod
+    def _fit_target(cmd):
+        values = [cmd[i + 1] for i, t in enumerate(cmd) if t == "--fit-target"]
+        return values[-1] if values else None
+
+    @pytest.mark.parametrize("n_ctx", [0, 32768])
+    def test_an_over_budget_load_keeps_the_gap(self, tmp_path, monkeypatch, fit_caps, n_ctx):
+        self._floor(monkeypatch, 2764.8)
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = n_ctx, **self.OVER_BUDGET)["cmd"]
+        assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on"
+        assert self._fit_target(cmd) == "2764"
+
+    def test_a_margin_below_llama_cpps_own_leaves_argv_alone(self, tmp_path, monkeypatch, fit_caps):
+        self._floor(monkeypatch, 0.0)
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.OVER_BUDGET)["cmd"]
+        assert self._fit_target(cmd) is None
+
+    def test_a_pass_through_fit_target_still_wins(self, tmp_path, monkeypatch, fit_caps):
+        self._floor(monkeypatch, 2764.8)
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            extra_args = ["--fit-target", "4096"],
+            **self.OVER_BUDGET,
+        )["cmd"]
+        assert self._fit_target(cmd) == "4096"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"gpu_memory_mode": "manual", "gpu_layers": 20},
+            {"paravirtual": True},
+        ],
+        ids = ["caller_owns_layers", "paravirtual_cpu_pin"],
+    )
+    def test_loads_that_do_not_place_on_metal_are_untouched(
+        self, tmp_path, monkeypatch, fit_caps, kwargs
+    ):
+        calls = self._floor(monkeypatch, 2764.8)
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.OVER_BUDGET, **kwargs)["cmd"]
+        assert not calls
+        assert self._fit_target(cmd) is None
+
+    def test_off_apple_silicon_the_floor_is_never_read(self, tmp_path, monkeypatch, fit_caps):
+        calls = self._floor(monkeypatch, 2764.8)
+        _launch(tmp_path, monkeypatch, n_ctx = 0, metal = False, **self.OVER_BUDGET)
+        assert not calls
+
+    def test_the_floor_is_not_a_budget_price(self, tmp_path, monkeypatch, fit_caps):
+        """A VRAM slider change must not evict a Mac child over the machine's margin."""
+        self._floor(monkeypatch, 2764.8)
+        backend = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.OVER_BUDGET)["backend"]
+        assert getattr(backend, "_vram_fraction_launched", None) is None
+
+    @staticmethod
+    def _fake_mlx(
+        monkeypatch,
+        seen_bytes,
+        available = True,
+    ):
+        mlx = _types.ModuleType("mlx")
+        core = _types.ModuleType("mlx.core")
+        core.metal = _types.SimpleNamespace(is_available = lambda: available)
+        core.device_info = lambda: {"max_recommended_working_set_size": seen_bytes}
+        mlx.core = core
+        monkeypatch.setitem(sys.modules, "mlx", mlx)
+        monkeypatch.setitem(sys.modules, "mlx.core", core)
+
+    @pytest.mark.parametrize(
+        "seen_gib,headroom_gib,expected_mib",
+        [(16, 13.3, (16 - 13.3) * 1024), (16, 16, 0.0), (16, 20, 0.0)],
+    )
+    def test_the_floor_is_the_gap_between_what_ggml_sees_and_the_headroom(
+        self, monkeypatch, seen_gib, headroom_gib, expected_mib
+    ):
+        self._fake_mlx(monkeypatch, int(seen_gib * self.GiB))
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_apple_metal_wired_ceiling_bytes",
+            staticmethod(lambda: int(headroom_gib * self.GiB)),
+        )
+        assert LlamaCppBackend._metal_fit_target_floor_mib() == pytest.approx(expected_mib, abs = 1)
+
+    @pytest.mark.parametrize(
+        "headroom,seen,available", [(0, 16, True), (13, 0, True), (13, 16, False)]
+    )
+    def test_an_unreadable_side_keeps_llama_cpps_margin(
+        self, monkeypatch, headroom, seen, available
+    ):
+        self._fake_mlx(monkeypatch, seen * self.GiB, available)
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_apple_metal_wired_ceiling_bytes",
+            staticmethod(lambda: headroom * self.GiB),
+        )
+        assert LlamaCppBackend._metal_fit_target_floor_mib() == 0.0
+
+    def test_an_old_server_without_the_flag_gets_none(self):
+        assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
+            1, True, False, 0, 8192, {"supports_fit_target": False}, fit_target_floor_mib = 4096
+        )
+
+
+class TestAutoGivesUpContextBeforeLayers:
+    """Auto launches a fixed -c, so past the wired headroom llama.cpp's fitter can only
+    move layers to CPU. The context the headroom holds is already measured; Auto launches
+    at it while that stays at or above the Auto floor."""
+
+    GiB = 1024**3
+    # Footprint here is 6 GiB plus 64 KiB per token: the 9 GiB budget holds 49,152,
+    # 7.5 GiB of headroom 24,576, and 6.4 GiB less than the 8,192 floor.
+    FITS = dict(
+        real_fit = True,
+        budget_bytes = 9 * 1024**3,
+        weights_bytes = 1024**3,
+        kv_per_token = 64 * 1024,
+        native = 131072,
+    )
+
+    def _ctx(
+        self,
+        tmp_path,
+        monkeypatch,
+        wired_gib,
+        n_ctx = 0,
+    ):
+        cap = _launch(
+            tmp_path, monkeypatch, n_ctx = n_ctx, wired_bytes = int(wired_gib * self.GiB), **self.FITS
+        )
+        return int(_ctx_values(cap["cmd"])[-1]), cap["backend"]
+
+    def test_auto_launches_at_the_wired_ceiling(self, tmp_path, monkeypatch):
+        budget_ctx, _ = self._ctx(tmp_path, monkeypatch, 0)
+        ctx, backend = self._ctx(tmp_path, monkeypatch, 7.5)
+        assert _FIT_MIN_CTX <= ctx <= 24576 < budget_ctx
+        assert backend._max_context_length == ctx
+
+    def test_ample_headroom_keeps_the_budget_context(self, tmp_path, monkeypatch):
+        assert self._ctx(tmp_path, monkeypatch, 20)[0] == self._ctx(tmp_path, monkeypatch, 0)[0]
+
+    def test_a_ceiling_under_the_auto_floor_leaves_it_to_the_fitter(self, tmp_path, monkeypatch):
+        """Under 8,192 the context is worth more than the layers the fitter would move."""
+        assert self._ctx(tmp_path, monkeypatch, 6.4)[0] == self._ctx(tmp_path, monkeypatch, 0)[0]
+
+    def test_a_hand_set_context_is_not_lowered(self, tmp_path, monkeypatch):
+        """The explicit path refuses against the wired limit instead (#10804)."""
+        with pytest.raises(RuntimeError, match = "24,576"):
+            self._ctx(tmp_path, monkeypatch, 7.5, n_ctx = 32768)

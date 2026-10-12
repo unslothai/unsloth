@@ -18,17 +18,20 @@ pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64" or python_
 pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and python_version >= "3.11"
 nest_asyncio==1.6.0
 datasets==4.3.0
-pyjwt==2.13.0
+pyjwt==2.15.1
 # gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
-huggingface-hub>=1.23.0,<2.0; python_version >= "3.10"
+huggingface-hub>=1.32.0,<2.0; python_version >= "3.10"
 huggingface-hub==0.36.2; python_version < "3.10"
+# Matches no-torch-runtime.txt, the file that actually needs it; see there for the arch gate.
+hf-xet>=1.5.2,<2.0; python_version >= "3.10" and (platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "arm64" or platform_machine == "aarch64" or platform_machine == "ARM64")
 # truststore is vendored at backend/vendor/, deliberately not a dependency.
 # Transitive via requests, pinned here for one reason: the GGUF header range-read
 # preflight bounds itself by half-closing the socket, and HTTPResponse.shutdown is
 # the only thing that wakes a read parked inside iter_content. It landed in 2.3.0;
 # below that the read is uninterruptible. The preflight abandons the reader either
 # way, so this is defence in depth, not the bound itself.
-urllib3>=2.3.0
+urllib3>=2.8.0; python_version >= "3.10"
+urllib3>=2.3.0; python_version < "3.10"
 # The safetensors reasoning-prefill probe renders chat templates in a Jinja sandbox. Transitive
 # via torch and transformers, declared because the route imports it directly and this set is
 # installed in every mode: without it the probe cannot render, falls back to always-prefill,

@@ -159,7 +159,14 @@ try {
     $iTrack = $src.IndexOf('$script:TorchOverridesFile = $f')
     $iWrite = $src.IndexOf('[System.IO.File]::WriteAllText(')
     Check "the path is tracked BEFORE the write that can throw" (($iTrack -ge 0) -and ($iTrack -lt $iWrite))
-    Check "a failed write removes the file it created" ($src -match 'catch \{\s*\r?\n\s*Remove-Item -LiteralPath \$f')
+    Check "a failed write removes the file it created" ($src -match 'catch \{\s*\r?\n\s*Remove-UnslothTempFileQuietly -Path \$f')
+    # Space-free is not sufficient for an 8.3 alias: a volume can hand back a name that does not
+    # resolve, and this alias is both uv's --overrides argument and the caller's delete target, so
+    # an unresolvable one fails the install and then throws on the way out (#11290).
+    Check "the 8.3 alias is accepted only once it resolves" (
+        $src -match 'Test-Path -LiteralPath \$short -PathType Leaf')
+    Check "the give-up branch clears the path it just deleted" (
+        ([regex]::Matches($src, '\$script:TorchOverridesFile = \$null')).Count -eq 2)
 
     # Get-Content decodes a BOM-less file with the ANSI code page on PS 5.1, which is where the
     # mojibake came from. pwsh on Linux defaults to UTF-8, so the round trip cannot fail here
@@ -176,6 +183,30 @@ try {
     Check "the inherited ACL is replaced rather than kept" (
         ($src -match 'SetAccessRuleProtection\(\$true, \$false\)') -and ($src -match 'Set-Acl -LiteralPath \$f')
     )
+
+    Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
+    # `python` first on Windows: `python3` there can be the Microsoft Store alias stub.
+    $pyNames = if ($onWindows) { @("python", "python3") } else { @("python3", "python") }
+    $hostPy = (Get-Command $pyNames -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $hostPy) { throw "no python on PATH for the PYTHONPATH shadow case" }
+    $venv = Join-Path $work "venv"
+    & $hostPy -m venv --without-pip $venv
+    $venvPy = if ($onWindows) { Join-Path $venv "Scripts\python.exe" } else { Join-Path $venv "bin/python" }
+    $site = (& $venvPy -I -c "import sysconfig; print(sysconfig.get_paths()['purelib'])").Trim()
+    $shadow = Join-Path $work "shadow"
+    foreach ($d in @(@($site, "torch", "2.11.0+cu130"), @($site, "torchvision", "0.26.0+cu130"), @($shadow, "torch", "2.9.0a0+50eac811a6.nv25.9"))) {
+        $info = Join-Path $d[0] "$($d[1])-$($d[2]).dist-info"
+        New-Item -ItemType Directory -Path $info -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $info "METADATA"), "Metadata-Version: 2.1`nName: $($d[1])`nVersion: $($d[2])`n")
+    }
+    $savedPythonPath = $env:PYTHONPATH
+    $env:PYTHONPATH = $shadow
+    try { $shadowed = New-UnslothTorchOverridesFile -PythonExe $venvPy }
+    finally { if ($null -eq $savedPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } else { $env:PYTHONPATH = $savedPythonPath } }
+    $made += $shadowed
+    $pins = if ($shadowed) { [System.IO.File]::ReadAllText($shadowed) } else { "" }
+    Check "PYTHONPATH shadow: the venv's torch is frozen" ($pins -match '(?m)^torch==2\.11\.0\+cu130\r?$')
+    Check "PYTHONPATH shadow: the shadowing torch is not" ($pins -notmatch 'nv25\.9')
 }
 finally {
     if ($null -eq $savedOverride) { Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue }

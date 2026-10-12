@@ -26,7 +26,8 @@ import {
 } from "@/features/chat";
 import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { Delete02Icon, Message01Icon } from "@hugeicons/core-free-icons";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -254,7 +255,7 @@ export function ArchivedChatsView() {
               onOpen={() => openChat(item)}
               leading={
                 <HugeiconsIcon
-                  icon={Message01Icon}
+                  icon={MessageCircleIcon}
                   className="size-4 shrink-0 text-muted-foreground"
                 />
               }

@@ -142,6 +142,7 @@ def _plan(
         "fit": flag("--fit", "off"),
         "spec": flag("--spec-type", "-"),
         "ceiling": backend._max_context_length,
+        "warning": backend.last_load_warning or "",
         "devices": (launched["env"] or {}).get("CUDA_VISIBLE_DEVICES"),
     }
 
@@ -308,6 +309,8 @@ class TestWhatMustNotMove:
         assert (got["ctx"], got["slots"], got["fit"]) == (32768, 2, "off")
         # The measured ceiling still follows the final slot count.
         assert got["ceiling"] == 36_096
+        # Re-pinned after the reduction, so no "does not fit" notice may survive.
+        assert "does not fit in this GPU" not in got["warning"]
 
     def test_an_explicit_context_that_forces_offload_is_unchanged(self, tmp_path):
         """An explicit context that requires offload is unchanged."""

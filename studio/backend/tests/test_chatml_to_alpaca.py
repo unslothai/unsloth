@@ -186,5 +186,5 @@ def test_alpaca_format_trains_on_every_sharegpt_exchange():
     assert len(texts) == 6
     assert texts[5].endswith(
         "### Instruction:\nQ3-2\n\n### Input:\nSYS-2\n\nUser: Q1-2\nAssistant: A1-2\n"
-        "User: Q2-2\nAssistant: A2-2\n\n### Response:\nA3-2"
+        "User: Q2-2\nAssistant: A2-2\n\n### Response:\nA3-2</s>"
     )

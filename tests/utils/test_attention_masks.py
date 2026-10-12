@@ -60,6 +60,66 @@ def test_sdpa_packed_attention_mask_sliding_window():
     assert mask[0, 0, 0, 6].item() == float("-inf")
 
 
+def test_sdpa_packed_attention_mask_covers_a_padded_flattened_row():
+    seq_info = _make_seq_info([3, 4])
+    mask = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        total_tokens = 8,
+    )
+
+    assert mask.shape == (1, 1, 8, 8)
+
+    assert torch.all(mask[0, 0, :7, 7] == float("-inf"))
+    assert torch.all((mask[0, 0] > -math.inf).any(dim = -1))
+
+    query = torch.randn(1, 1, 8, 4)
+    out = torch.nn.functional.scaled_dot_product_attention(
+        query,
+        torch.randn(1, 1, 8, 4),
+        torch.randn(1, 1, 8, 4),
+        attn_mask = mask,
+    )
+    assert out.shape == (1, 1, 8, 4)
+    assert not torch.isnan(out).any()
+
+
+def test_sdpa_packed_attention_mask_unpadded_is_unchanged():
+    seq_info = _make_seq_info([3, 4])
+    without = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+    )
+    packing_utils._SDPA_MASK_CACHE.clear()
+    exact = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        total_tokens = 7,
+    )
+
+    assert without.shape == (1, 1, 7, 7)
+    assert torch.equal(without, exact)
+
+
+def test_sdpa_packed_attention_mask_keeps_the_window_when_padded():
+    seq_info = _make_seq_info([5, 3])
+    mask = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        sliding_window = 3,
+        total_tokens = 10,
+    )
+
+    assert mask.shape == (1, 1, 10, 10)
+    assert mask[0, 0, 3, 0].item() == float("-inf")
+    assert mask[0, 0, 4, 2].item() > -math.inf
+    assert torch.all((mask[0, 0] > -math.inf).any(dim = -1))
+
+
 def test_xformers_block_mask_sliding_window(monkeypatch):
     class _FakeMask:
         def __init__(
@@ -318,6 +378,8 @@ def test_real_xformers_packed_mask_validates_on_each_device():
 def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
     seq_info = _make_seq_info([3, 2])
     sliding_window = 2
+    # Dense-mask path (UNSLOTH_SDPA_PACKED_SEGMENTS=0).
+    monkeypatch.setattr(attention_dispatch, "_SDPA_PACKED_SEGMENTS", False)
 
     original_builder = attention_dispatch.build_sdpa_packed_attention_mask
     captured = {}
@@ -328,6 +390,7 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
         dtype,
         device,
         sliding_window = None,
+        total_tokens = None,
     ):
         captured["window"] = sliding_window
         return original_builder(
@@ -335,6 +398,7 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
             dtype = dtype,
             device = device,
             sliding_window = sliding_window,
+            total_tokens = total_tokens,
         )
 
     monkeypatch.setattr(
@@ -404,6 +468,7 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
         *,
         sliding_window = None,
         base_mask = None,
+        total_tokens = None,
     ):
         captured["window"] = sliding_window
         captured["base"] = base_mask
@@ -518,6 +583,61 @@ def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):
 
     assert captured["kwargs"]["softcap"] == softcap
     assert captured["kwargs"]["window_size"] == window_tuple
+
+
+def test_run_attention_flash_varlen_covers_a_padded_flattened_row(monkeypatch):
+    packing_utils.clear_packed_caches()
+    seq_info = _make_seq_info([3, 4])
+    total = 8
+
+    def _fake_flash_varlen(Q, K, V, cu_q, cu_k, max_q, max_k, **kwargs):
+        # Like flash-attn: rows outside cu_seqlens are never written.
+        out = torch.full_like(Q, float("nan"))
+        bounds = cu_q.tolist()
+        for start, end in zip(bounds[:-1], bounds[1:]):
+            assert end - start <= max_q
+            q = Q[start:end].transpose(0, 1)
+            k = K[start:end].transpose(0, 1)
+            v = V[start:end].transpose(0, 1)
+            out[start:end] = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, is_causal = True
+            ).transpose(0, 1)
+        return out
+
+    monkeypatch.setattr(attention_dispatch, "flash_attn_varlen_func", _fake_flash_varlen)
+    monkeypatch.setattr(attention_dispatch, "HAS_FLASH_ATTENTION", True)
+
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.FLASH_VARLEN,
+        n_kv_heads = 1,
+        n_groups = 1,
+        flash_varlen_kwargs = {"causal": True},
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = total,
+        kv_seq_len = total,
+        n_heads = 1,
+        head_dim = 4,
+        requires_grad = False,
+        seq_info = seq_info,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    Q = torch.randn(1, 1, total, 4)
+    K = torch.randn(1, 1, total, 4)
+    V = torch.randn(1, 1, total, 4)
+
+    out = attention_dispatch.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+    assert not torch.isnan(out).any()
+    first = torch.nn.functional.scaled_dot_product_attention(
+        Q[..., :3, :], K[..., :3, :], V[..., :3, :], is_causal = True
+    )
+    assert torch.allclose(out[0, :3, 0].float(), first[0, 0], atol = 2e-2)
+
+    cu_seqlens, max_seqlen = packing_utils.cover_padded_cu_seqlens(seq_info, 7)
+    assert cu_seqlens is seq_info[1] and max_seqlen == 4
 
 
 """Unit tests for packed-attention mask helpers with sliding-window logic."""
@@ -719,3 +839,38 @@ def test_the_outgoing_window_mask_is_freed_before_its_replacement(monkeypatch):
         cached_during_build
     ), "the previous mask was still alive while its replacement was allocated"
     attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+
+@pytest.mark.skipif(
+    not has_real_cuda() or not attention_dispatch.HAS_XFORMERS, reason = "needs xformers on CUDA"
+)
+def test_real_xformers_without_mask_is_causal():
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.XFORMERS, n_kv_heads = 2, n_groups = 2
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 2,
+        q_len = 8,
+        kv_seq_len = 8,
+        n_heads = 4,
+        head_dim = 64,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    dtype = torch.bfloat16 if attention_dispatch.SUPPORTS_BFLOAT16 else torch.float16
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    Q = torch.randn(2, 4, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    K = torch.randn(2, 2, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    V = torch.randn(2, 2, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    got = attention_dispatch.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+    keep = torch.ones(8, 8, dtype = torch.bool, device = "cuda").tril()
+    want = torch.nn.functional.scaled_dot_product_attention(
+        Q.float(),
+        K.float().repeat_interleave(2, 1),
+        V.float().repeat_interleave(2, 1),
+        attn_mask = keep,
+    ).transpose(1, 2)
+    torch.testing.assert_close(got.float().reshape(want.shape), want, atol = 2e-2, rtol = 2e-2)

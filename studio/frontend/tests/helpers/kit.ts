@@ -16,6 +16,19 @@ export function readSrc(relative: string): string {
   return readFileSync(new URL(`../../src/${relative}`, import.meta.url), "utf8");
 }
 
+const UI_SPACE_SCALE =
+  /calc\(\s*(-?[\d.]+(?:px|rem|em))\s*\*\s*var\(--ui-space-scale\s*,\s*1\)\s*\)/g;
+
+/**
+ * Source with --ui-space-scale collapsed to the length it resolves to at the
+ * default UI font size. Shape assertions reason in px, and every length in such
+ * a comparison moves by the same factor, so reading the authored base keeps
+ * them true at any font size.
+ */
+export function atDefaultUiScale(source: string): string {
+  return source.replace(UI_SPACE_SCALE, "$1");
+}
+
 /** A repository file read as text, relative to `studio/frontend/tests` like the `new URL` it replaces. Prefer `readSrc` under `src`. */
 export function readText(relative: string): string {
   return readFileSync(new URL(`../${relative}`, import.meta.url), "utf8");

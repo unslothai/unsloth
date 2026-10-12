@@ -4,16 +4,7 @@
 import { ShieldBanIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { AlertDialog } from "@/components/ui/alert-dialog";
 import {
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -21,29 +12,26 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
-  FULL_ACCESS_WARNING,
+  FullAccessConfirmContent,
+  PermissionMenuLabel,
   PermissionModeMenuItems,
 } from "./permission-mode-select";
 
 // Dictation-only "+" menu fallback: the composer pill is the normal control, but it is hidden
 // while recording, so this is the sole way to reach permission mode then.
 export function BypassPermissionsMenuItem() {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
 
   return (
     <DropdownMenuSub>
-      <DropdownMenuSubTrigger
-        className={
-          permissionMode === "full" ? "text-bypass font-medium" : undefined
-        }
-      >
+      <DropdownMenuSubTrigger>
         <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
         Tool permissions
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="unsloth-plus-menu w-[300px]">
+      <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(330px*var(--ui-space-scale,1))]">
+        <PermissionMenuLabel sandboxControls />
         <PermissionModeMenuItems
           // Defer past Radix's menu-close focus restoration, or the dropdown grabs focus back
           // and breaks the dialog's focus trap.
@@ -66,27 +54,13 @@ export function BypassPermissionsConfirmDialog() {
 
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogContent size="sm">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
-          <AlertDialogDescription>
-            {FULL_ACCESS_WARNING}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
-            onClick={() => {
-              setPermissionMode("full");
-              setOpen(false);
-            }}
-          >
-            I understand
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
+      <FullAccessConfirmContent
+        onConfirm={() => {
+          setPermissionMode("full");
+          setOpen(false);
+        }}
+        onClose={() => setOpen(false)}
+      />
     </AlertDialog>
   );
 }

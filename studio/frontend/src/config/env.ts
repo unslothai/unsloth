@@ -10,6 +10,13 @@ import {
 } from "@/config/hardware-verdict";
 import { create } from "zustand";
 
+// Backend routes, so same origin: the page CSP already allows them whatever endpoint is saved later.
+const MODELSCOPE_HUB_PATH = "/api/hub/modelscope";
+
+function backendUrl(path: string): string {
+  return new URL(apiUrl(path), window.location.href).href;
+}
+
 export const env = {
   MODE: import.meta.env.MODE,
   DEV: import.meta.env.DEV,
@@ -21,6 +28,8 @@ export const env = {
 
 export type DeviceType = "mac" | "windows" | "linux" | string;
 
+export type FileManager = "finder" | "explorer" | "files" | null;
+
 interface PlatformState {
   deviceType: DeviceType;
   // Unified memory: GPU and system draw on one pool, so an over-committed load has
@@ -28,33 +37,25 @@ interface PlatformState {
   // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
   // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
   appleSilicon: boolean;
+  fileManager: FileManager | undefined;
   chatOnly: boolean;
-  // Why chatOnly is set (null when training is enabled), from /api/health.
-  // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
-  // Train/Export instead of silently disabling them.
+  // /api/health reason for chatOnly; null while training is enabled.
   chatOnlyReason: string | null;
-  // What specifically blocked that reason, when the backend can name it. Today only the
-  // MLX gate does: it is all-or-nothing across mlx, mlx-lm and mlx-vlm, so without this
-  // the greyed-out Train row can only repeat "run `unsloth studio update`".
+  // MLX gate covers mlx, mlx-lm, and mlx-vlm together; record the blocker when known.
   chatOnlyDetail: string | null;
-  // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
-  // whether the server was launched with --secure.
+  // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
   secure: boolean;
+  lanUrls: string[];
   fetched: boolean;
-  // Last verdict came from a deferred reply (torch-warm kill switch): nothing settles
-  // until a first-use operation detects, so the sidebar polls on this.
+  // torch-warm kill switch defers detection to first use; the sidebar polls.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
-  // True until /api/health has answered with a server-measured verdict. Before that `chatOnly`
-  // is the browser-platform seed below, not an answer, so anything that would gray a
-  // capability out has to treat it as unknown: rendering the guess blacks out Train and Video
-  // on every Mac from first paint, visually identical to a measured "unsupported".
+  // true until /api/health returns a verdict; guesses cannot gate features.
   capabilitiesUnknown: () => boolean;
 }
 
-// Client-side fallback when backend isn't ready yet.
 function detectLocalPlatform(): DeviceType {
   if (typeof navigator === "undefined") return "linux";
   const platform = navigator.platform.toLowerCase();
@@ -69,22 +70,19 @@ const localDeviceType = detectLocalPlatform();
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
   appleSilicon: false,
-  // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
-  // that must decide something before /api/health answers. Capability gating must read
-  // capabilitiesUnknown() first and hold, not gray a tab out on this.
+  fileManager: undefined,
+  // user-agent guess for redirects; capability gates await the server.
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
   chatOnlyDetail: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
+  lanUrls: [],
   fetched: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
-  // `fetched` already means "a server-reported verdict is stored" (see fetchDeviceType), so it
-  // is the unknown/known line; no second flag to keep in step with it. A deferred reply counts
-  // as settled even though it carries no device_type: under the torch-warm kill switch nothing
-  // else is coming this session, so treating it as unknown would spin the tabs forever.
+  // deferred detection is settled because no verdict will arrive this session.
   capabilitiesUnknown: () => {
     const state = get();
     return !state.fetched && !state.detectionDeferred;
@@ -160,6 +158,7 @@ export async function fetchDeviceType(options?: {
       const data = (await res.json()) as {
         device_type?: string;
         apple_silicon?: boolean;
+        file_manager?: FileManager;
         chat_only?: boolean;
         chat_only_reason?: string | null;
         hardware_detecting?: boolean;
@@ -168,6 +167,9 @@ export async function fetchDeviceType(options?: {
         secure?: boolean;
         hf_endpoint?: string;
         hf_datasets_server?: string;
+        hub_source?: string;
+        hub_proxy?: string | null;
+        datasets_server_proxy?: string | null;
       };
       // Once the store holds an authoritative (server-reported) platform, a non-forced response
       // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
@@ -177,7 +179,19 @@ export async function fetchDeviceType(options?: {
       // Before the authoritative-platform guard below: unauthenticated and
       // idempotent, and a mirror whose first authoritative reply already landed
       // would otherwise never route its Hub calls.
-      setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
+      const hubProxy = typeof data.hub_proxy === "string" ? data.hub_proxy : null;
+      const datasetsProxy =
+        typeof data.datasets_server_proxy === "string" ? data.datasets_server_proxy : null;
+      setHfEndpoints(
+        data.hub_source === "modelscope"
+          ? backendUrl(MODELSCOPE_HUB_PATH)
+          : hubProxy
+            ? backendUrl(hubProxy)
+            : data.hf_endpoint,
+        datasetsProxy ? backendUrl(datasetsProxy) : data.hf_datasets_server,
+        data.hub_source,
+        { endpoint: hubProxy !== null, datasetsServer: datasetsProxy !== null },
+      );
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }
@@ -194,6 +208,12 @@ export async function fetchDeviceType(options?: {
       // on an Intel Mac, and on a Mac browser pointed at a Linux host.
       const appleSilicon =
         data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
+      const fileManager =
+        data.device_type !== undefined
+          ? data.file_manager
+          : keepPlatform
+            ? previous.fileManager
+            : undefined;
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
       const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
         data,
@@ -205,6 +225,7 @@ export async function fetchDeviceType(options?: {
       usePlatformStore.setState({
         deviceType,
         appleSilicon,
+        fileManager,
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,

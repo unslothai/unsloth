@@ -1,0 +1,23 @@
+# Optional Linux x86_64, Python 3.13, CUDA 13.0 serving environment for a Studio on torch 2.13
+# (new installs on the cu130 route). The torch pins match that install, so the engine can share them.
+sglang==0.5.20
+torch==2.13.0
+torchvision==0.28.0
+torchaudio==2.11.0
+transformers==5.12.1
+# SGLang 0.5.20 requires kernels <0.15.
+kernels==0.14.1
+# SGLang requires this beta dependency; other packages use stable releases.
+flash-attn-4==4.0.0b18
+
+# Load-time 4-bit and prequantized BitsAndBytes checkpoints.
+bitsandbytes==0.49.2
+
+# SGLang online INT8 weight quantization; the configs Studio's adapters build use its API.
+torchao==0.17.0
+
+# nvcc for FlashInfer JIT kernels (vLLM compiles trtllm fmha on Blackwell) on hosts with only the driver.
+nvidia-cuda-nvcc==13.0.88
+nvidia-nvvm==13.0.88
+nvidia-cuda-cccl==13.0.85
+nvidia-cuda-crt==13.0.88

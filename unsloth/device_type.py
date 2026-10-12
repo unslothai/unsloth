@@ -182,6 +182,52 @@ if DEVICE_TYPE == "hip":
             "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
             "(community-maintained legacy GCN path)."
         )
+
+
+# Pre-Volta NVIDIA (Maxwell / Pascal, sm < 7.0): Inductor refuses to emit Triton for these
+# (GPUTooOldForTriton mid-training), while Unsloth's own Triton kernels still run, so train eagerly.
+def apply_pre_volta_compile_workaround(
+    major,
+    environ = None,
+    dynamo_config = None,
+) -> bool:
+    """Turn torch.compile off for compute capability < 7. An explicit TORCHDYNAMO_DISABLE wins.
+
+    The env vars alone miss regions torch.compile already wrapped while unsloth_zoo imported:
+    those read the Dynamo config per call, the env var only at wrap time (MoE hit this).
+    """
+    if major is None or major >= 7:
+        return False
+    if environ is None:
+        environ = os.environ
+    if environ.get("TORCHDYNAMO_DISABLE", "1") != "1":
+        return False
+    environ["TORCHDYNAMO_DISABLE"] = "1"
+    environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+    environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+    if dynamo_config is None:
+        import torch._dynamo
+        dynamo_config = torch._dynamo.config
+    dynamo_config.disable = True
+    # torch >= 2.12 keeps that assignment per thread, and backward (checkpoint recompute) runs on
+    # autograd worker threads, so also set the process-wide default those threads fall back to.
+    entry = getattr(dynamo_config, "_config", {}).get("disable", None)
+    if entry is not None and hasattr(entry, "default"):
+        entry.default = True
+    return True
+
+
+if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
+    try:
+        _cuda_major = torch.cuda.get_device_capability()[0]
+    except Exception:
+        _cuda_major = None
+    if apply_pre_volta_compile_workaround(_cuda_major):
+        print(
+            "Unsloth: GPUs older than Volta (compute capability < 7.0) cannot run "
+            "torch.compile - training without it."
+        )
+    del _cuda_major
 if DEVICE_TYPE == "hip":
     try:
         import bitsandbytes
@@ -218,6 +264,63 @@ def arch_lacks_bf16(gcn_arch):
     """gfx10 (RDNA 1/2) claims bf16 it lacks, and Triton's dot then kills the process in LLVM
     with no Python exception (issue 7922). gfx11 has bf16, so the prefix must stay 5 chars."""
     return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+
+
+def arch_lacks_buffer_ops(gcn_arch):
+    """RDNA1 reads Triton's gfx10.3-layout buffer descriptors wrongly: kernels launch and write
+    nothing. gfx103x (RDNA2) is fine and must not match (#11614)."""
+    return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx101")
+
+
+_GFX101X_TRITON_WORKAROUND_APPLIED = False
+
+
+def gfx101x_triton_workaround_applied():
+    return _GFX101X_TRITON_WORKAROUND_APPLIED
+
+
+def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
+    """Turn Triton's buffer ops off and give Triton and Inductor separate caches: Inductor's cache
+    key ignores the knob, so stale buffer-op kernels gave -inf/nan. A user-set value that Triton
+    reads as on is left alone; user-chosen cache dirs are kept. Returns whether ops end up off."""
+    global _GFX101X_TRITON_WORKAROUND_APPLIED
+    is_process_env = environ is None
+    environ = os.environ if environ is None else environ
+    current = environ.get("AMDGCN_USE_BUFFER_OPS")
+    # Triton's getenv_bool: only these spellings mean on, anything else is off.
+    if current is not None and current.strip().lower() in ("1", "true", "on", "yes", "y"):
+        return False
+    environ.setdefault("AMDGCN_USE_BUFFER_OPS", "0")
+    if "TRITON_CACHE_DIR" not in environ:
+        home = triton_home or environ.get("TRITON_HOME") or os.path.expanduser("~")
+        environ["TRITON_CACHE_DIR"] = os.path.join(home, ".triton", "cache-no-buffer-ops")
+    default_inductor = _default_inductor_cache_dir()
+    inductor = environ.get("TORCHINDUCTOR_CACHE_DIR")
+    # `import torch._dynamo` already wrote the shared default into os.environ; not a user choice.
+    if inductor is None or os.path.abspath(inductor) == os.path.abspath(default_inductor):
+        environ["TORCHINDUCTOR_CACHE_DIR"] = default_inductor + "_no_buffer_ops"
+    if is_process_env:
+        _GFX101X_TRITON_WORKAROUND_APPLIED = True
+    return True
+
+
+def _default_inductor_cache_dir():
+    try:
+        from torch._inductor.runtime.cache_dir_utils import default_cache_dir
+        return default_cache_dir()
+    except Exception:
+        pass
+    import getpass
+    import tempfile
+
+    # getuser raises for a uid with no passwd entry (containers); same fallback as torch.
+    try:
+        user = getpass.getuser()
+    except (KeyError, ModuleNotFoundError, OSError):
+        getuid = getattr(os, "getuid", None)
+        user = f"uid_{getuid()}" if callable(getuid) else "unknown_user"
+    user = re.sub(r'[\\/:*?"<>|]', "_", user)
+    return os.path.join(tempfile.gettempdir(), "torchinductor_" + user)
 
 
 def hip_visible_archs():

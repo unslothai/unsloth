@@ -7,8 +7,10 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from _playwright_robust import stop_process
 
@@ -24,8 +26,46 @@ def main():
     output = (root / args.output).resolve()
     output.relative_to(root)
     output.mkdir(parents = True, exist_ok = True)
-    temp = root / "temp/queue-validation/tmp"
-    temp.mkdir(parents = True, exist_ok = True)
+    temp = browser_tmpdir()
+    try:
+        return _run(args, root, output, temp)
+    finally:
+        shutil.rmtree(temp, ignore_errors = True)
+
+
+# Branded Chrome and Edge put `$TMPDIR/<vendor dir>/SingletonSocket` at launch and abort
+# when that does not fit sockaddr_un.sun_path, less its terminating NUL: 108 bytes on Linux, 104 on
+# macOS and the BSDs.
+# Edge names its directory `com.microsoft.Edge.XXXXXX`, one byte longer than Chrome's, and the
+# runner launches both, so the longest one is what has to fit.
+BROWSER_SOCKETS = (
+    "/com.google.Chrome.XXXXXX/SingletonSocket",
+    "/com.microsoft.Edge.XXXXXX/SingletonSocket",
+)
+LONGEST_SOCKET = max(BROWSER_SOCKETS, key = len)
+
+
+def sun_path_max() -> int:
+    return 107 if sys.platform.startswith("linux") else 103
+
+
+def browser_tmpdir() -> Path:
+    """A fresh TMPDIR short enough for Chrome's socket, never under the checkout.
+
+    The system temp dir is used when it fits. An inherited TMPDIR that is too long, or that sits
+    inside the checkout, falls back to /tmp, the one short path every POSIX host has."""
+    root = Path(__file__).resolve().parents[2]
+    made = Path(tempfile.mkdtemp(prefix = "uqv-"))
+    if os.name == "nt" or (
+        len(os.fsencode(made)) + len(LONGEST_SOCKET) <= sun_path_max()
+        and root not in made.resolve().parents
+    ):
+        return made
+    made.rmdir()
+    return Path(tempfile.mkdtemp(prefix = "uqv-", dir = "/tmp"))
+
+
+def _run(args, root: Path, output: Path, temp: Path) -> int:
     env = {**os.environ, "TMPDIR": str(temp), "TMP": str(temp), "TEMP": str(temp)}
     verdicts = []
     for browser in args.browsers:

@@ -11,6 +11,7 @@ import {
   type DownloadRequest,
   type JobListeners,
   downloadManager,
+  findActiveScopedJobForRepo,
   jobKeyOf,
   repoKeyOf,
   selectActiveJob,
@@ -58,6 +59,8 @@ export interface RepoDownloadConfig {
   onError?: JobListeners["onError"];
   // Attach to a no-variant backend download already running (GGUF surfaces adopt their own variant).
   autoAdopt?: boolean;
+  /** Non-GGUF scoped jobs only: a GGUF file job's progress and stop control belong to the GGUF card. */
+  includeScopedJobs?: boolean;
 }
 
 /**
@@ -74,6 +77,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     onCancelled,
     onError,
     autoAdopt,
+    includeScopedJobs = false,
   } = config;
 
   const handlersRef = useLatestRef<JobListeners>({
@@ -105,7 +109,11 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
           repoPeerActive: false,
         };
       }
-      const active = selectActiveJob(state, kind, repoId, activeVariant);
+      const active =
+        selectActiveJob(state, kind, repoId, activeVariant) ??
+        (includeScopedJobs && activeVariant === null
+          ? findActiveScopedJobForRepo(state.jobs, kind, repoId, "model")
+          : null);
       const repoActive = selectActiveJob(state, kind, repoId);
       return {
         active,

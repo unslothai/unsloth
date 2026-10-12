@@ -28,6 +28,34 @@ HostInfo = M.HostInfo
 PrebuiltFallback = M.PrebuiltFallback
 
 
+@pytest.fixture(autouse = True)
+def _no_ambient_node_mirror(monkeypatch):
+    monkeypatch.delenv(M.NODE_MIRROR_ENV, raising = False)
+
+
+@pytest.mark.parametrize("content_length", ["2097152", None])
+def test_download_file_reports_progress(tmp_path, monkeypatch, capsys, content_length):
+    from io import BytesIO
+
+    payload = b"x" * (2 * 1024 * 1024)
+    response = BytesIO(payload)
+    response.headers = {"Content-Length": content_length}
+    monkeypatch.setattr(M.urllib.request, "urlopen", lambda *args, **kwargs: response)
+    monkeypatch.setattr(M, "_LOG_TO_STDOUT", True)
+    destination = tmp_path / "node.zip"
+    M.download_file("https://nodejs.org/node.zip", destination)
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert "Downloading node.zip:" in output.out
+    if content_length:
+        assert "50.0% (1.0 MiB/2.0 MiB)" in output.out
+        assert "100.0% (2.0 MiB/2.0 MiB)" in output.out
+    else:
+        assert "2.0 MiB downloaded at" in output.out
+        assert "%" not in output.out
+    assert destination.read_bytes() == payload
+
+
 def _host(node_os: str, node_arch: str) -> HostInfo:
     ext = ".zip" if node_os == "win" else ".tar.gz"
     return HostInfo(
@@ -87,6 +115,27 @@ def test_asset_windows_is_zip():
 
 def test_shasums_url():
     assert M.node_shasums_url("24.17.0") == "https://nodejs.org/dist/v24.17.0/SHASUMS256.txt"
+
+
+@pytest.mark.parametrize("value", ["https://mirror.example/node/", " https://mirror.example/node "])
+def test_node_mirror_env_rebases_every_url(monkeypatch, value):
+    monkeypatch.setenv(M.NODE_MIRROR_ENV, value)
+    assert M.node_dist_index_url() == "https://mirror.example/node/index.json"
+    assert M.node_shasums_url("24.17.0") == "https://mirror.example/node/v24.17.0/SHASUMS256.txt"
+    assert (
+        M.node_download_url("24.17.0", "node-v24.17.0-linux-x64.tar.gz")
+        == "https://mirror.example/node/v24.17.0/node-v24.17.0-linux-x64.tar.gz"
+    )
+
+
+def test_blank_node_mirror_env_keeps_nodejs_org(monkeypatch):
+    monkeypatch.setenv(M.NODE_MIRROR_ENV, "  ")
+    assert M.node_dist_index_url() == "https://nodejs.org/dist/index.json"
+    assert M.node_shasums_url("24.17.0") == "https://nodejs.org/dist/v24.17.0/SHASUMS256.txt"
+    assert (
+        M.node_download_url("24.17.0", "node-v24.17.0-linux-x64.tar.gz")
+        == "https://nodejs.org/dist/v24.17.0/node-v24.17.0-linux-x64.tar.gz"
+    )
 
 
 def test_binary_layout_is_host_aware():
@@ -481,6 +530,127 @@ def test_install_prebuilt_reraises_download_failure_without_existing(tmp_path: P
         M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
 
 
+def _swap_stays_denied(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    recorded: str,
+    runs: bool,
+    real_swap: bool = False,
+) -> Path:
+    # real_swap runs the real _swap_into_place against a refused rename.
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    M.write_metadata(install_dir, version = recorded, asset = "old", sha256 = "old")
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: recorded if runs else None)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(
+        M, "download_file_verified", lambda url, path, **kw: path.write_bytes(b"zip")
+    )
+
+    def fake_extract(_archive, extract_dir):
+        (extract_dir / "node-v24").mkdir(parents = True)
+
+    def reported_acl_denial(_extracted, _install_dir):
+        exc = _oserror(5)
+        # Literal, so the parity cases also run against a module without the helper.
+        exc._unsloth_acl_recovery_lines = [f'  takeown /F "{install_dir}" /R /D Y']
+        raise exc
+
+    monkeypatch.setattr(M, "extract_archive", fake_extract)
+    monkeypatch.setattr(M, "_ensure_npm_floor", lambda d, h: None)
+    if not real_swap:
+        monkeypatch.setattr(M, "_swap_into_place", reported_acl_denial)
+        return install_dir
+
+    real_os = M.os
+
+    class _WindowsRenames:
+        # Module-local only: a real os.name = "nt" makes Path() a WindowsPath, unusable on Linux.
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(real_os, attr)
+
+        @staticmethod
+        def replace(src, dst):
+            if Path(src).is_dir():
+                exc = PermissionError(13, "Access is denied", str(src), None, str(dst))
+                exc.winerror = 5
+                raise exc
+            return real_os.replace(src, dst)
+
+    monkeypatch.setattr(M, "os", _WindowsRenames())
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    return install_dir
+
+
+def test_install_prebuilt_keeps_existing_when_a_reported_denial_blocks_the_swap(
+    tmp_path: Path, monkeypatch, capsys
+):
+    install_dir = _swap_stays_denied(tmp_path, monkeypatch, recorded = "24.9.0", runs = True)
+
+    rc = M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
+
+    assert rc == M.EXIT_SUCCESS
+    output = "".join(capsys.readouterr())
+    assert "could not be replaced" in output
+    assert "keeping existing isolated Node" in output
+    assert "download failed" not in output
+
+
+@pytest.mark.parametrize(
+    "runs, force, recorded_is_pinned",
+    [
+        pytest.param(False, False, False, id = "node-does-not-run"),
+        pytest.param(True, True, False, id = "force"),
+        pytest.param(True, False, True, id = "recorded-digest-is-not-the-pin"),
+    ],
+)
+def test_install_prebuilt_reraises_a_reported_denial_it_cannot_keep_existing_through(
+    tmp_path: Path, monkeypatch, runs, force, recorded_is_pinned
+):
+    recorded = M.pinned_default_version(M.load_pins()) if recorded_is_pinned else "24.9.0"
+    install_dir = _swap_stays_denied(tmp_path, monkeypatch, recorded = recorded, runs = runs)
+
+    with pytest.raises(OSError) as excinfo:
+        M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = force)
+
+    assert excinfo.value.winerror == 5
+
+
+def test_a_denial_that_cannot_keep_node_leaves_the_repair_to_setup(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # Exit 4: setup.ps1 prints its own repair (#10533); ours too would show two sets.
+    install_dir = _swap_stays_denied(
+        tmp_path, monkeypatch, recorded = "24.9.0", runs = False, real_swap = True
+    )
+
+    rc = M.main(["--install-dir", str(install_dir)])
+
+    output = capsys.readouterr().out
+    assert rc == M.EXIT_DENIED
+    assert "rename still blocked (5)" in output
+    assert f"{M.DENIED_SCOPE_MARKER}{M.DENIED_SCOPE_INSTALL_DIR}" in output
+    assert "takeown" not in output, output
+
+
+def test_a_kept_node_prints_the_repair_setup_relays(tmp_path: Path, monkeypatch, capsys):
+    install_dir = _swap_stays_denied(
+        tmp_path, monkeypatch, recorded = "24.9.0", runs = True, real_swap = True
+    )
+
+    rc = M.main(["--install-dir", str(install_dir)])
+
+    output = capsys.readouterr().out
+    assert rc == M.EXIT_SUCCESS
+    assert f'takeown /F "{install_dir}" /R /D Y' in output
+    assert f'takeown /F "{install_dir.parent}"' in output
+    assert output.index("takeown") < output.index("existing Node could not be replaced")
+
+
 # ── Isolation invariant: the installer only writes inside its own install_dir ──
 def test_run_node_pins_npm_prefix_to_install_dir(tmp_path: Path, monkeypatch):
     # Every node/npm call the installer makes redirects npm's global prefix into
@@ -845,6 +1015,80 @@ def test_replace_gives_up_and_reports_the_real_error(monkeypatch, tmp_path):
     with pytest.raises(OSError) as excinfo:
         M._replace_with_retry(tmp_path / "src", tmp_path / "dst", attempts = 3)
     assert excinfo.value.winerror == 5
+
+
+def test_replace_names_acl_recovery_when_access_denied_persists(monkeypatch, tmp_path, capsys):
+    """A WinError 5 that outlasts the budget names the ACL recovery (#9928)."""
+    source = tmp_path / "node"
+    source.mkdir()
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
+
+    with pytest.raises(OSError) as excinfo:
+        M._replace_with_retry(
+            source, tmp_path / "node.old", attempts = 3, access_denied_paths = ((source, True),)
+        )
+
+    recovery = getattr(excinfo.value, "_unsloth_acl_recovery_lines", [])
+    assert any("takeown" in line for line in recovery), recovery
+    assert any("icacls" in line for line in recovery), recovery
+    assert any("elevated PowerShell" in line for line in recovery), recovery
+    assert any(str(source) in line for line in recovery), recovery
+    assert not any("takeown" in line and "icacls" in line for line in recovery), recovery
+    assert "takeown" not in "".join(capsys.readouterr())
+
+
+def test_a_denied_marker_write_offers_no_repair_for_its_temp_file(monkeypatch, tmp_path, capsys):
+    # The source is a temp file about to be removed: nothing to repair.
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
+    marker = M.metadata_path(tmp_path)
+    temp = marker.with_name(marker.name + ".tmp-denied")
+    temp.write_text("{}", encoding = "utf-8")
+
+    with pytest.raises(OSError) as excinfo:
+        M.atomic_replace_from_tempfile(temp, marker)
+
+    assert excinfo.value.winerror == 5
+    assert not getattr(excinfo.value, "_unsloth_acl_recovery_lines", None)
+    assert "takeown" not in "".join(capsys.readouterr())
+
+
+def test_replace_does_not_blame_a_scanner_for_access_denied(monkeypatch, tmp_path, capsys):
+    """The per-retry line for a 5 offers both causes rather than asserting the scanner."""
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
+
+    with pytest.raises(OSError):
+        M._replace_with_retry(tmp_path / "src", tmp_path / "dst", attempts = 2)
+
+    retry_lines = [
+        line for line in "".join(capsys.readouterr()).splitlines() if "retrying in" in line
+    ]
+    assert retry_lines, "the retry itself must still be logged"
+    for line in retry_lines:
+        assert "is likely still holding" not in line, line
+        assert "ACLs" in line, line
+
+
+def test_replace_keeps_the_scanner_message_for_a_sharing_violation(monkeypatch, tmp_path, capsys):
+    """WinError 32 is unambiguous, so its wording is untouched.
+
+    Parity guard: passes with and without the #9928 change.
+    """
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(32)))
+
+    with pytest.raises(OSError):
+        M._replace_with_retry(tmp_path / "src", tmp_path / "dst", attempts = 2)
+
+    output = "".join(capsys.readouterr())
+    assert "a scanner is likely still holding the extracted files" in output
+    assert "takeown" not in output
 
 
 def test_replace_does_not_retry_a_genuine_error(monkeypatch, tmp_path):
@@ -1452,3 +1696,53 @@ def test_a_tree_replaced_under_the_lock_is_still_not_a_match(tmp_path, monkeypat
         is False
     )
     assert recorded == [], "a record was written over another installer's tree"
+
+
+def test_swap_into_place_reports_the_managed_parent_on_destination_denial(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    extracted = tmp_path / "staging" / "node-v24"
+    extracted.mkdir(parents = True)
+    install_dir = tmp_path / "managed" / "node"
+
+    def destination_denied(src, dst):
+        assert src == extracted
+        assert dst == install_dir
+        raise _oserror(5)
+
+    monkeypatch.setattr(M.os, "replace", destination_denied)
+    with pytest.raises(OSError) as excinfo:
+        M._swap_into_place(extracted, install_dir)
+
+    recovery = excinfo.value._unsloth_acl_recovery_lines
+    assert any(f'takeown /F "{extracted}"' in line for line in recovery), recovery
+    assert any(f'takeown /F "{install_dir.parent}"' in line for line in recovery), recovery
+    assert any("elevated PowerShell" in line for line in recovery), recovery
+
+
+def test_swap_into_place_reports_the_managed_parent_when_aside_is_denied(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    extracted = tmp_path / "staging" / "node-v24"
+    extracted.mkdir(parents = True)
+    install_dir = tmp_path / "managed" / "node"
+    install_dir.mkdir(parents = True)
+
+    def aside_denied(src, dst):
+        assert src == install_dir
+        assert dst.parent == install_dir.parent
+        raise _oserror(5)
+
+    monkeypatch.setattr(M.os, "replace", aside_denied)
+    with pytest.raises(OSError) as excinfo:
+        M._swap_into_place(extracted, install_dir)
+
+    recovery = excinfo.value._unsloth_acl_recovery_lines
+    assert f'  takeown /F "{install_dir}" /R /D Y' in recovery
+    parent_takeown = f'takeown /F "{install_dir.parent}"'
+    assert any(parent_takeown in line for line in recovery), recovery
+    assert not any(parent_takeown in line and " /R " in line for line in recovery), recovery

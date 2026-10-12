@@ -6,6 +6,17 @@
 // common row shape. Pure and React-free so node --test can import them; the types
 // come from each feature's own module because the indexes re-export their pages.
 
+import {
+  AUDIO_CPP_AUDIO_TYPES,
+  audioCppDictationModelFor,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../audio/audio-cpp-catalog.ts";
+import {
+  type AudioWorkflowId,
+  audioWorkflowForAudioType,
+  isAudioWorkflowId,
+} from "../audio/workflows.ts";
 import type { InferenceStatusResponse } from "@/features/chat/types/api";
 import type { DiffusionStatus } from "@/features/images/api";
 import type { VideoStatus } from "@/features/video/api";
@@ -17,7 +28,7 @@ export type LoadedModelKind = "text" | "tts" | "image" | "video" | "stt";
 export type LoadedModelSource = "chat" | "image" | "video" | "stt";
 
 /** The dictation sidecars, as /audio/stt/status names them. */
-export type SttEngine = "transformers" | "mtmd" | "gguf";
+export type SttEngine = "transformers" | "mtmd" | "gguf" | "audiocpp";
 
 export type LoadedModelEntry = {
   /** Stable across polls, so a row does not remount mid-eject. */
@@ -28,6 +39,8 @@ export type LoadedModelEntry = {
   name: string;
   /** One short line: quantisation, family, device. */
   detail: string;
+  /** Only on a `tts` row: the Audio page workflows that run the model, first one first. */
+  workflows?: AudioWorkflowId[];
   /** Only on `source: "stt"`: its unload takes an engine, not a model id. */
   sttEngine?: SttEngine;
   /** Cached by the chat runtime but not active, so no status flags describe it. */
@@ -49,12 +62,15 @@ export type SttStatusResponse = SttEngineStatus & {
   transformers?: SttEngineStatus | null;
   mtmd?: SttEngineStatus | null;
   gguf?: SttEngineStatus | null;
+  audiocpp?: SttEngineStatus | null;
 };
 
 const STT_ENGINE_LABELS: Record<SttEngine, string> = {
   transformers: "Transformers",
   mtmd: "llama.cpp",
   gguf: "whisper.cpp",
+  // The GGUF audio runtime; its engine name stays out of the UI like the model's.
+  audiocpp: "GGUF",
 };
 
 /**
@@ -62,14 +78,37 @@ const STT_ENGINE_LABELS: Record<SttEngine, string> = {
  * runtime holding the weights rather than the kind: a Whisper checkpoint in the
  * chat slot belongs to Chat, while the dictation sidecars belong to Voice.
  *
- * Dictation has no page of its own yet, so it opens the settings tab that
- * drives it. Point it at the Audio page once that lands.
+ * An audio model in the chat slot opens the Audio page on its workflow, since
+ * Chat refuses it. The dictation sidecars are shared with chat dictation, so
+ * they open the settings tab that drives them.
  */
 export type LoadedModelTarget =
-  | { open: "route"; to: "/chat" | "/images" | "/video"; label: string }
+  | {
+      open: "route";
+      to: "/chat" | "/images" | "/video" | "/audio";
+      search?: { workflow: AudioWorkflowId };
+      label: string;
+    }
   | { open: "settings"; tab: "voice"; label: string };
 
-export function loadedModelTarget(source: LoadedModelSource): LoadedModelTarget {
+export function loadedModelTarget(
+  source: LoadedModelSource,
+  workflows?: readonly AudioWorkflowId[],
+  currentAudioWorkflow?: AudioWorkflowId,
+): LoadedModelTarget {
+  if (source === "chat" && workflows?.length) {
+    // An Audio page already on a workflow this model runs stays there: switching it would
+    // also stop a generation running on that workflow.
+    if (currentAudioWorkflow && workflows.includes(currentAudioWorkflow)) {
+      return { open: "route", to: "/audio", label: "Audio" };
+    }
+    return {
+      open: "route",
+      to: "/audio",
+      search: { workflow: workflows[0] },
+      label: "Audio",
+    };
+  }
   switch (source) {
     case "image":
       return { open: "route", to: "/images", label: "Images" };
@@ -90,6 +129,22 @@ export const LOADED_MODEL_KIND_LABELS: Record<LoadedModelKind, string> = {
   stt: "Dictation",
 };
 
+const AUDIO_WORKFLOW_KIND_LABELS: Partial<Record<AudioWorkflowId, string>> = {
+  music: "Music",
+  separate: "Separation",
+  convert: "Voice conversion",
+};
+
+export function loadedModelKindLabel(
+  entry: Pick<LoadedModelEntry, "kind" | "workflows">,
+): string {
+  const workflow = entry.workflows?.[0];
+  return (
+    (workflow && AUDIO_WORKFLOW_KIND_LABELS[workflow]) ??
+    LOADED_MODEL_KIND_LABELS[entry.kind]
+  );
+}
+
 /**
  * Join the known parts, so no row shows a stray separator, and drop repeats:
  * the llama.cpp and whisper.cpp dictation sidecars report their engine name as
@@ -108,8 +163,12 @@ function joinDetail(...parts: (string | null | undefined)[]): string {
   return kept.join(" · ");
 }
 
-/** Keep a path's last two segments; a repo id is already short. */
+/** Keep a path's last two segments; a repo id is already short. A package folder of the shared
+ *  GGUF audio repo is its folder name, and a saved dictation key the folder it names. */
 export function shortModelLabel(name: string): string {
+  const dictation = audioCppDictationModelFor(name);
+  if (dictation) return audioCppDisplayName(dictation.id);
+  if (isAudioCppFolderId(name)) return audioCppDisplayName(name);
   const normalized = name.replace(/[\\/]+$/, "");
   const segments = normalized.split(/[\\/]+/).filter(Boolean);
   if (segments.length <= 2) return normalized;
@@ -135,15 +194,29 @@ export function describeInferenceStatus(
       audioType !== "whisper" &&
       audioType !== "audio_vlm";
     const isStt = Boolean(status.is_audio) && audioType === "whisper";
-    const runtime = status.is_gguf
-      ? "GGUF"
-      : status.is_mlx
-        ? "MLX"
-        : "Transformers";
+    const audioWorkflows = (status.audio_workflows ?? []).filter(
+      isAudioWorkflowId,
+    );
+    // The GGUF audio runtime reports is_gguf false, but it serves GGUFs too.
+    const runtime =
+      status.is_gguf || AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "")
+        ? "GGUF"
+        : status.is_mlx
+          ? "MLX"
+          : "Transformers";
     entries.push({
       id: `chat:${active}`,
       kind: isTts ? "tts" : isStt ? "stt" : "text",
       source: "chat",
+      // An older backend sends no workflows: the audio type still tells Music from Speak.
+      ...(isTts
+        ? {
+            workflows:
+              audioWorkflows.length > 0
+                ? audioWorkflows
+                : [audioWorkflowForAudioType(audioType)],
+          }
+        : {}),
       name: active,
       detail: joinDetail(
         runtime,
@@ -198,6 +271,18 @@ export function precisionLabel(value: string | null | undefined): string | null 
   return known[value] ?? value.toUpperCase();
 }
 
+/** NVFP4 kernel path label; unrecognised values pass through as sent. */
+export function quantBackendLabel(
+  value: string | null | undefined,
+): string | null {
+  if (!value) return null;
+  const known: Record<string, string> = {
+    flashinfer: "FlashInfer",
+    torchao: "torchao",
+  };
+  return known[value.toLowerCase()] ?? value;
+}
+
 export function describeDiffusionStatus(
   status: DiffusionStatus | null,
 ): LoadedModelEntry[] {
@@ -225,6 +310,7 @@ export function describeDiffusionStatus(
         precisionLabel(status.transformer_quant) ??
           precisionLabel(status.gguf_variant) ??
           precisionLabel(status.dtype),
+        quantBackendLabel(status.transformer_quant_backend),
         status.device,
       ),
     },
@@ -249,6 +335,7 @@ export function describeVideoStatus(
         precisionLabel(status.gguf_variant) ??
           precisionLabel(status.transformer_quant) ??
           precisionLabel(status.dtype),
+        quantBackendLabel(status.transformer_quant_backend),
         status.device,
       ),
     },
@@ -272,7 +359,7 @@ export function describeSttStatus(
   status: SttStatusResponse | null,
 ): LoadedModelEntry[] {
   if (!status) return [];
-  const engines: SttEngine[] = ["transformers", "mtmd", "gguf"];
+  const engines: SttEngine[] = ["transformers", "mtmd", "gguf", "audiocpp"];
   const entries: LoadedModelEntry[] = [];
   for (const engine of engines) {
     const block = sttEngineStatus(status, engine);
@@ -294,7 +381,13 @@ export function describeSttStatus(
       kind: "stt",
       source: "stt",
       name: block.loaded_model,
-      detail: joinDetail(STT_ENGINE_LABELS[engine], block.device),
+      // The audio runtime reports its own name and version as the device, which is not one.
+      detail: joinDetail(
+        STT_ENGINE_LABELS[engine],
+        engine === "audiocpp" && block.device?.startsWith("audio.cpp")
+          ? null
+          : block.device,
+      ),
       sttEngine: engine,
     });
   }

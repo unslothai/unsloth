@@ -25,6 +25,15 @@ export function useHostClass(): HostClass {
   );
 }
 
+export function useNvfp4Diffusion(): boolean {
+  return useGpuInfo().nvfp4Diffusion;
+}
+
+/** Whether `/api/system` answered, so a false `useNvfp4Diffusion()` is not just the unloaded default. */
+export function useNvfp4DiffusionKnown(): boolean {
+  return useGpuInfo().budgetKnown;
+}
+
 /** The dense quant schemes this host can run, best first. */
 export function useDenseQuantSchemes(): readonly string[] {
   return useGpuInfo().denseQuantSchemes;

@@ -125,6 +125,9 @@ export function useRagDocuments(
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
+  // The scope an upload begun with none resolved to. Leaving the null scope keeps its jobs only
+  // when this is where it lands; landing anywhere else is a navigation.
+  const materializedKeyRef = useRef<string | null>(null);
   const uploadGenerationRef = useRef(0);
   const activeUploadsRef = useRef(new Set<object>());
   useEffect(
@@ -373,7 +376,17 @@ export function useRagDocuments(
     const jobs = trackedJobs.current;
     const prev = prevScopeKeyRef.current;
     prevScopeKeyRef.current = scopeKey;
-    if (prev !== null && prev !== scopeKey) {
+    const materialized = materializedKeyRef.current;
+    if (scopeKey !== null) materializedKeyRef.current = null;
+    // Leaving the null scope for a chat other than the one its upload materialized: the cleanup
+    // below kept that upload's jobs, so drop them here as any other switch would.
+    const leftForAnotherChat =
+      prev === null &&
+      scopeKey !== null &&
+      !uploadInFlightRef.current &&
+      (jobs.size > 0 || materialized !== null) &&
+      materialized !== scopeKey;
+    if ((prev !== null && prev !== scopeKey) || leftForAnotherChat) {
       for (const controller of jobs.values()) controller.abort();
       jobs.clear();
       sigByDocId.current.clear();
@@ -409,8 +422,11 @@ export function useRagDocuments(
     }
     return () => {
       // Preserve in-flight tracking when cleanup is the materialization flip,
-      // not a real switch/unmount.
-      if (uploadInFlightRef.current) return;
+      // not a real switch/unmount. Leaving no scope may be that flip even once
+      // the upload has finished, since React can commit the new id after the POST
+      // returned, so the next setup decides: it keeps the jobs only for the scope
+      // the upload materialized. An unmount aborts in the unmount effect.
+      if (uploadInFlightRef.current || scopeKey === null) return;
       for (const controller of jobs.values()) controller.abort();
       jobs.clear();
     };
@@ -659,6 +675,11 @@ export function useRagDocuments(
           const tempIds = new Set(fresh.map((f) => f.tempId));
           setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
           return;
+        }
+        // Whenever the hook itself has no scope yet, passed in or materialized alike: the job this
+        // starts may be running before React commits the scope it belongs to.
+        if (liveKey === null) {
+          materializedKeyRef.current = resolvedKey;
         }
 
         for (const { tempId, item } of fresh) {

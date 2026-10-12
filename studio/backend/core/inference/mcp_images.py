@@ -44,8 +44,35 @@ MAX_IMAGE_EDGE = 1024
 MAX_IMAGE_PIXELS = 40_000_000
 
 
+def is_image_tool(name: str) -> bool:
+    return name == "view_image" or name.startswith(MCP_TOOL_PREFIX)
+
+
+# The tool loop's own notes, which results saved before #11367 carry after the array (#11358).
+_LOOP_NOTE = re.compile(
+    r"\[(?:No room in the window for this result, so "
+    r"|[^\n\]]+ returned exactly this \d+ times; it will not change)[^\n]*\]"
+)
+
+
 def split_images(result: str) -> tuple[str, list[dict]]:
     """Validated, so tool text that merely mentions the marker is not truncated."""
+    end = len(result)
+    # At most the starved note and then the repeat note; peeled first so the array parses once.
+    for _ in range(2):
+        if not result.endswith("]", 0, end):
+            break
+        cut = result.rfind("\n\n[", max(0, end - 512), end)
+        if cut == -1 or not _LOOP_NOTE.fullmatch(result, cut + 2, end):
+            break
+        end = cut
+    if end == len(result):
+        return _split_images(result)
+    text, images = _split_images(result[:end])
+    return (text + result[end:], images) if images else (result, [])
+
+
+def _split_images(result: str) -> tuple[str, list[dict]]:
     head, sep, payload = result.rpartition("\n" + SENTINEL)
     if not sep:
         return result, []
@@ -251,7 +278,7 @@ def eligible_replay_images(
         if not isinstance(content, str):
             return None
         name = messages[position].get("name") or call_names.get(position)
-        if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+        if isinstance(name, str) and name and not is_image_tool(name):
             return None
         _text, images = split_images(content)
         return images or None
@@ -319,15 +346,15 @@ def png_payloads_per_result(
     return []
 
 
-def flattened_rgb(image):
-    """RGB with any transparency composited onto white, not simply dropped.
+def flattened_rgb(image, background = None):
+    """RGB with any transparency composited onto white (black for light ink), not dropped.
 
     ``convert("RGB")`` keeps whatever colour sits UNDER the alpha, and a tool that
     never painted a background leaves that black -- so a transparent screenshot's
     dark text or line art converts to black on black and the model is handed a
     blank rectangle. Only images that actually carry alpha take the composite.
     """
-    from PIL import Image
+    from PIL import Image, ImageChops, ImageStat
 
     # Match routes/inference.py's _image_bytes_to_png_b64: scale declared I;16
     # values to 8-bit before RGB conversion clips them. I;16B/I;16L must pass
@@ -336,14 +363,24 @@ def flattened_rgb(image):
         if image.mode != "I;16":
             image = image.convert("I")
         image = image.point(lambda v: v * (1.0 / 257), mode = "L")
-    has_alpha = image.mode in ("RGBA", "LA", "PA") or (
-        image.mode == "P" and "transparency" in image.info
-    )
+        # A 16-bit tRNS key would match the wrong 8-bit samples; drop it, as convert("RGB") did.
+        image.info.pop("transparency", None)
+    # "transparency" also keys a colour out of L / RGB PNGs (tRNS), not just P.
+    has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
     if not has_alpha:
         return image.convert("RGB")
-    rgba = image.convert("RGBA")
-    canvas = Image.new("RGB", rgba.size, (255, 255, 255))
-    canvas.paste(rgba, mask = rgba.getchannel("A"))
+    rgba = image if image.mode == "RGBA" else image.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    # Browser canvas exports are RGBA even when opaque; skip the composite (same pixels).
+    if alpha.getextrema()[0] == 255:
+        return rgba.convert("RGB")
+    if background is None:
+        # Alpha-weighted: light ink (dark-mode logos, white text) goes onto black, not white.
+        ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
+        light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0
+        background = (0, 0, 0) if light else (255, 255, 255)
+    canvas = Image.new("RGB", rgba.size, background)
+    canvas.paste(rgba, mask = alpha)
     return canvas
 
 
@@ -1165,7 +1202,7 @@ def _promote(
             # IMAGE input: a named non-MCP tool that happens to end in a valid
             # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
-            if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+            if isinstance(name, str) and name and not is_image_tool(name):
                 # A non-MCP result sitting between the images and their turn makes
                 # "the tool call above" name web_search or read_file.
                 if pending:

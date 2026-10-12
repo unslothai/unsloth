@@ -58,6 +58,7 @@ class ExportOrchestrator:
         self.current_checkpoint: Optional[str] = None
         self.is_vision: bool = False
         self.is_peft: bool = False
+        self.decision: Optional[Dict[str, Any]] = None
 
         # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
@@ -87,6 +88,7 @@ class ExportOrchestrator:
     def _clear_account_result(self):
         self.current_checkpoint = None
         self.is_vision = self.is_peft = False
+        self.decision = None
         self._last_op = None
         self.clear_logs()
 
@@ -207,6 +209,12 @@ class ExportOrchestrator:
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
+        # Export does not evict loaded models; at least free an idle resident H3 sd-server.
+        try:
+            from core.inference.video_minimax_h3 import release_h3_native_servers
+            release_h3_native_servers("export subprocess starting")
+        except Exception as exc:  # noqa: BLE001 - never block an export on this
+            logger.warning("Could not release the idle video sd-server for export: %s", exc)
         # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
         # would kill the export for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress
@@ -470,7 +478,7 @@ class ExportOrchestrator:
         self,
         checkpoint_path: str,
         max_seq_length: int = 2048,
-        load_in_4bit: bool = True,
+        load_in_4bit: Optional[bool] = True,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
         hf_token: HfTokenArg = None,
@@ -483,8 +491,18 @@ class ExportOrchestrator:
         Always spawns a fresh subprocess to ensure a clean Python interpreter.
         ``base_model`` pins an already authorized adapter base; the worker then ignores the
         adapter config, which its owner can rewrite after the check.
+        ``load_in_4bit = None`` picks 16-bit for an unquantized full fine-tune, else 4-bit.
         """
         validate_job_paths({"checkpoint_path": checkpoint_path})
+        if load_in_4bit is None:
+            from utils.models.checkpoints import is_unquantized_full_finetune
+            load_in_4bit = not is_unquantized_full_finetune(checkpoint_path, hf_token)
+            if not load_in_4bit:
+                logger.info(
+                    "Full fine-tune checkpoint %s has no quantization_config - "
+                    "loading in 16-bit for export",
+                    checkpoint_path,
+                )
         sub_config = {
             "checkpoint_path": checkpoint_path,
             "base_model": base_model,
@@ -496,6 +514,11 @@ class ExportOrchestrator:
             "hf_token": hf_token,
             "allow_ambient": allow_ambient,
         }
+        from utils.hardware import get_device, gpu_ids_with_torch_kernels
+
+        # Prevent export from sharding onto GPUs with missing kernels (#11870).
+        sub_config["resolved_gpu_ids"] = gpu_ids_with_torch_kernels()
+        sub_config["device_backend"] = get_device().value
 
         with self._lock:
             # Fresh log buffer so the UI sees only this run's output.
@@ -538,6 +561,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     raise
 
                 try:
@@ -547,6 +571,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     op_success, op_message = False, str(exc)
                     return False, str(exc)
 
@@ -554,6 +579,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = resp.get("checkpoint")
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
+                    self.decision = resp.get("decision")
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
                     op_success, op_message = True, resp.get("message", "Loaded successfully")
                     return True, op_message
@@ -563,6 +589,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     op_success, op_message = False, error
                     return False, error
             finally:
@@ -579,6 +606,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
+        install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -590,6 +618,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "private": private,
                 "compressed_method": compressed_method,
+                "install_missing_dependencies": install_missing_dependencies,
             },
         )
 
@@ -623,7 +652,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
-        gguf_shard_size: Optional[str] = None,
+        npu_q4nx: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -636,7 +665,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "imatrix_file": imatrix_file,
                 "private": private,
-                "gguf_shard_size": gguf_shard_size,
+                "npu_q4nx": npu_q4nx,
             },
         )
 
@@ -649,6 +678,7 @@ class ExportOrchestrator:
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
+        adapter_format: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
@@ -661,6 +691,7 @@ class ExportOrchestrator:
                 "private": private,
                 "gguf": gguf,
                 "gguf_outtype": gguf_outtype,
+                "adapter_format": adapter_format,
             },
         )
 
@@ -728,6 +759,7 @@ class ExportOrchestrator:
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
+                self.decision = None
                 return True
 
             self._active_op_kind = "cleanup"
@@ -750,6 +782,7 @@ class ExportOrchestrator:
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
+                self.decision = None
                 return success
             finally:
                 self._record_op_finished(success, "", None)

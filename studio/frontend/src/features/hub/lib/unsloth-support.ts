@@ -96,13 +96,6 @@ const FORMAT_NAME_PATTERNS: ReadonlyArray<{ key: string; pattern: RegExp }> = [
   { key: "ctranslate2", pattern: /(?:^|[-_./])ctranslate2(?:$|[-_./])/i },
 ];
 
-const SUPPORTED_QUANT_METHODS: ReadonlySet<string> = new Set([
-  "bitsandbytes",
-  "bnb",
-  "bnb_4bit",
-  "bnb_8bit",
-]);
-
 const UNSUPPORTED_QUANT_METHODS: Record<string, string> = {
   awq: "AWQ quantization",
   gptq: "GPTQ quantization",
@@ -132,9 +125,18 @@ export type UnslothSupportStatus = "supported" | "unsupported";
 export interface UnslothSupport {
   status: UnslothSupportStatus;
   reason: string | null;
-  /** Set when Unsloth runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. */
-  supportedIn?: "images" | "video";
+  /** Set when Unsloth runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. "vllm": only the optional vLLM engine can (#11728). */
+  supportedIn?: "images" | "video" | "vllm";
 }
+
+const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
+  "compressed-tensors",
+  "awq",
+  "gptq",
+]);
+const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
+// Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
+const VLLM_CHAT_TASKS: ReadonlySet<string> = new Set(["text-generation", "image-text-to-text"]);
 
 // Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video picker's tasks; image-to-video is included for LTX-2.3.
 const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
@@ -178,22 +180,39 @@ function repoLeaf(modelId: string): string {
   return parts.at(-1) ?? modelId;
 }
 
-function detectFormatKey(
+// A hub repo's format tags describe every artifact it ships, and native checkpoints
+// routinely coexist with optional ONNX/OpenVINO/TF Lite/Core ML exports
+// (openai-community/gpt2 carries both pytorch and tflite). Those export tags alone must not
+// hide the repo, while quantization, runtime formats and export-only repos stay rejected.
+const EXPORT_FORMAT_TAGS: ReadonlySet<string> = new Set([
+  "onnx",
+  "openvino",
+  "tflite",
+  "coreml",
+]);
+
+function detectUnsupportedFormatKey(
   modelId: string | null | undefined,
   lowerTags: ReadonlySet<string>,
+  excludedFormats: ReadonlySet<string>,
 ): string | null {
+  const hasNativeWeights = lowerTags.has("pytorch") || lowerTags.has("safetensors");
   for (const tag of lowerTags) {
-    if (FORMAT_TAG_LABEL[tag]) return tag;
+    if (hasNativeWeights && EXPORT_FORMAT_TAGS.has(tag)) continue;
+    if (FORMAT_TAG_LABEL[tag]) {
+      if (excludedFormats.has(tag)) return tag;
+      continue;
+    }
     const alias = FORMAT_ALIAS_TAGS[tag];
-    if (alias) return alias;
+    if (alias && excludedFormats.has(alias)) return alias;
   }
   if (modelId) {
     // Owner implies format even when local metadata lacks tags; mirrors the
     // backend's _looks_like_mlx_repo heuristic.
-    if (modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
+    if (excludedFormats.has("mlx") && modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {
-      if (pattern.test(name)) return key;
+      if (excludedFormats.has(key) && pattern.test(name)) return key;
     }
   }
   return null;
@@ -206,6 +225,7 @@ export function classifyUnslothSupport({
   libraryName,
   deviceType,
   quantMethod,
+  vllmAvailable = false,
 }: {
   modelId?: string | null;
   pipelineTag?: string | null;
@@ -213,6 +233,7 @@ export function classifyUnslothSupport({
   libraryName?: string | null;
   deviceType?: string | null;
   quantMethod?: string | null;
+  vllmAvailable?: boolean;
 }): UnslothSupport {
   const pipeline = pipelineTag?.toLowerCase().trim() || null;
   const lowerTags = new Set(
@@ -221,6 +242,7 @@ export function classifyUnslothSupport({
   const library = libraryName?.toLowerCase().trim() || null;
   const formatTags = excludedFormatTagsForDevice(deviceType);
   const normalizedQuant = normalizeQuantMethod(quantMethod);
+  const vllmRuns = vllmAvailable && (!pipeline || VLLM_CHAT_TASKS.has(pipeline));
 
   // GGUF runs through llama.cpp regardless of the base model's quant config, so
   // the HF quant_method must not disqualify a GGUF repo.
@@ -230,14 +252,16 @@ export function classifyUnslothSupport({
     (modelId ? /(?:^|[-_.])gguf$/i.test(repoLeaf(modelId)) : false);
 
   if (normalizedQuant && !isGguf) {
-    if (SUPPORTED_QUANT_METHODS.has(normalizedQuant)) {
-      return { status: "supported", reason: null };
-    }
     if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
-      return {
-        status: "unsupported",
-        reason: `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`,
-      };
+      const reason = `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`;
+      // vLLM excuses only the quantization; any other rejection keeps the old answer.
+      if (vllmRuns && VLLM_QUANT_METHODS.has(normalizedQuant)) {
+        const rest = classifyUnslothSupport({ modelId, pipelineTag, tags, libraryName, deviceType, vllmAvailable });
+        if (rest.status === "supported" || rest.supportedIn === "vllm") {
+          return { status: "unsupported", reason, supportedIn: "vllm" };
+        }
+      }
+      return { status: "unsupported", reason };
     }
   }
 
@@ -263,13 +287,24 @@ export function classifyUnslothSupport({
       reason: `Library: ${library}.`,
     };
   }
-  const formatKey = detectFormatKey(modelId, lowerTags);
-  if (formatKey && formatTags.has(formatKey)) {
+  const formatKey = detectUnsupportedFormatKey(modelId, lowerTags, formatTags);
+  if (formatKey) {
     const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
-    return {
-      status: "unsupported",
-      reason: `Detected ${label}.`,
-    };
+    const reason = `Detected ${label}.`;
+    // AWQ / GPTQ must be the only format objection, else tag order would decide.
+    if (
+      vllmRuns &&
+      !isGguf &&
+      VLLM_FORMAT_KEYS.has(formatKey) &&
+      !detectUnsupportedFormatKey(
+        modelId,
+        lowerTags,
+        new Set([...formatTags].filter((tag) => !VLLM_FORMAT_KEYS.has(tag))),
+      )
+    ) {
+      return { status: "unsupported", reason, supportedIn: "vllm" };
+    }
+    return { status: "unsupported", reason };
   }
   return { status: "supported", reason: null };
 }

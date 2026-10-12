@@ -31,7 +31,14 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.2-klein": ("--llm",),
     "flux.2-dev": ("--llm",),
     "qwen-image": ("--qwen2vl",),
+    "qwen-image-edit": ("--qwen2vl",),
+    "qwen-image-layered": ("--qwen2vl",),
+    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
+    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
+    # reach the same field.
+    "qwen-image-2.1": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
+    "flux.1-kontext": ("--clip_l", "--t5xxl"),
 }
 
 
@@ -88,6 +95,8 @@ class SdCppGenParams:
     ref_images: tuple[str, ...] = ()
     lora_dir: Optional[str] = None
     lora_apply_mode: Optional[str] = None
+    # Qwen-Image-Layered layer count; sd.cpp returns layers + 1 images (first = input reconstruction). None = its default 3.
+    qwen_image_layers: Optional[int] = None
 
 
 @dataclass(frozen = True)
@@ -328,6 +337,7 @@ def build_sd_cpp_command(
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
         ("--llm", files.llm),
+        ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
     ):
         if value:
@@ -344,6 +354,8 @@ def build_sd_cpp_command(
         cmd += ["--mask", params.mask]
     for ref in params.ref_images:
         cmd += ["--ref-image", ref]
+    if params.qwen_image_layers is not None:
+        cmd += ["--qwen-image-layers", str(int(params.qwen_image_layers))]
     # LoRA: the directory to scan; individual LoRAs are <lora:name:w> tags in prompt.
     if params.lora_dir:
         cmd += ["--lora-model-dir", params.lora_dir]
@@ -547,10 +559,13 @@ def build_sd_cpp_server_command(
     cmd: list[str] = [binary, "--diffusion-model", files.diffusion_model]
     for flag, value in (
         ("--vae", files.vae),
+        # Without it a resident H3 vid_gen server renders a silent clip.
+        ("--audio-vae", files.audio_vae),
         ("--clip_l", files.clip_l),
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
         ("--llm", files.llm),
+        ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
     ):
         if value:
@@ -598,6 +613,9 @@ def build_img_gen_request(
     distilled_guidance: Optional[float] = None,
     output_format: str = "png",
     lora: Optional[list[dict]] = None,
+    ref_images: Optional[list[str]] = None,
+    qwen_image_layers: Optional[int] = None,
+    custom_sigmas: Optional[list[float]] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -621,6 +639,9 @@ def build_img_gen_request(
         sample_params["sample_method"] = str(sample_method)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
+    if custom_sigmas:
+        # Same key the server's sample_params parser reads for sd-cli's --sigmas.
+        sample_params["custom_sigmas"] = [float(s) for s in custom_sigmas]
     if guidance:
         sample_params["guidance"] = guidance
 
@@ -640,6 +661,76 @@ def build_img_gen_request(
     # ``<lora:>`` tags are unsupported server-side), so LoRAs are staged here.
     if lora:
         req["lora"] = lora
+    # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
+    if ref_images:
+        req["ref_images"] = list(ref_images)
+    if qwen_image_layers is not None:
+        req["qwen_image_layers"] = int(qwen_image_layers)
+    return req
+
+
+def sd_cli_output_paths(output_path: str, num_results: int) -> list[str]:
+    """The files one ``sd-cli`` image run writes for ``--output output_path``: the path itself for a
+    single result, else ``<stem>_<i><ext>`` from 0 (``examples/cli/main.cpp`` ``save_results``).
+    A layered generation is the multi-result case: layers + 1 images from one run."""
+    if num_results <= 1:
+        return [output_path]
+    stem, dot, ext = output_path.rpartition(".")
+    if not dot or "/" in ext or "\\" in ext:
+        stem, ext = output_path, "png"
+    return [f"{stem}_{i}.{ext}" for i in range(num_results)]
+
+
+def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
+    """False for reference videos / audio: path-only sd-cli flags with no ``vid_gen`` JSON field."""
+    return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
+
+
+def build_vid_gen_request(
+    params: "SdCppVideoGenParams",
+    *,
+    images_b64: Optional[dict[str, str]] = None,
+    ref_images_b64: Optional[list[str]] = None,
+    output_compression: int = 90,
+) -> dict:
+    """``POST /sdcpp/v1/vid_gen`` body equivalent to ``build_sd_cpp_video_command`` (same pixels for the same seed).
+
+    AVI: needs no WebM build, as the CUDA prebuilt's sd-cli writes. ``--rng cpu`` is a server context flag, passed at
+    spawn."""
+    if not (params.prompt or "").strip():
+        raise ValueError("prompt is required")
+    if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
+        raise ValueError("width, height, and num_frames must be positive")
+    if not h3_server_eligible(params):
+        raise ValueError("reference videos and audio are not accepted by the sd-server vid_gen API")
+    images = dict(images_b64 or {})
+    if (images.get("init_image") or images.get("end_image")) and ref_images_b64:
+        raise ValueError(
+            "MiniMax-H3 keyframes and references cannot be combined: they run against "
+            "different denoiser partitions."
+        )
+    sample_params: dict = {"guidance": {"txt_cfg": float(params.cfg_scale)}}
+    if params.steps is not None:
+        sample_params["sample_steps"] = int(params.steps)
+    if params.flow_shift is not None:
+        sample_params["flow_shift"] = float(params.flow_shift)
+    req: dict = {
+        "prompt": params.prompt,
+        "width": int(params.width),
+        "height": int(params.height),
+        "video_frames": int(params.num_frames),
+        "fps": int(params.fps),
+        "sample_params": sample_params,
+        "output_format": "avi",
+        "output_compression": int(output_compression),
+    }
+    if params.seed is not None:
+        req["seed"] = int(params.seed)
+    for key in ("init_image", "end_image"):
+        if images.get(key):
+            req[key] = images[key]
+    if ref_images_b64:
+        req["ref_images"] = list(ref_images_b64)
     return req
 
 

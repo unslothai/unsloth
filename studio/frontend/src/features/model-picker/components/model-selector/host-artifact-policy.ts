@@ -25,16 +25,15 @@ export function classifyHost({
   /** Backend-reported dense quant capability. */
   denseQuantSupported?: boolean;
 }): HostClass {
-  // Mac outranks the backend string. Apple GPUs report as available and Unsloth may name the
-  // backend mlx or cpu, but no Mac can place a Modular Diffusers workflow: it needs
-  // mem_get_info, which torch.mps does not expose, and video.py refuses the load.
-  if (deviceType === "mac") return "gguf-only";
   const backend = (deviceBackend ?? "").trim().toLowerCase();
-  if (!(backend && budgetKnown)) return "unknown";
-  if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
-  if (ACCELERATED_BACKENDS.has(backend)) {
+  // Backend outranks the OS: no Mac reports one of these, but deviceType can be the BROWSER's platform (config/env.ts).
+  if (backend && budgetKnown && ACCELERATED_BACKENDS.has(backend)) {
     return denseQuantSupported ? "dense-quant" : "accelerated";
   }
+  // No Mac can place a Modular Diffusers workflow: it needs mem_get_info, which torch.mps lacks.
+  if (deviceType === "mac") return "gguf-only";
+  if (!(backend && budgetKnown)) return "unknown";
+  if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
   // An unrecognised backend is a new accelerator, not a CPU. Show what we show today.
   return "unknown";
 }

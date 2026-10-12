@@ -40,6 +40,13 @@ WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
+# The desktop card also stops below the window chrome.
+CARD_CAP = {
+    WEB_BANNER: "max-h-[calc(100dvh_-_2rem)]",
+    TAURI_BANNER: "max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))]",
+}
+
+
 # An apostrophe in JSX text is prose, not the start of a string: "We're ready"
 # in a banner's copy would otherwise run a scanner to the next apostrophe or off
 # the end of the file, and a copy edit would fail these tests. The frontend is
@@ -945,8 +952,21 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     src = PANEL.read_text(encoding = "utf-8")
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
-    # Lighter than the card behind it, rather than a darker inset.
-    assert "dark:bg-white/[0.06]" in layout
+    # Lighter than the card behind it, rather than a darker inset. #11459 respelled the
+    # shorthand as an rgb() whose alpha scales with --contrast-wash-gain, which is the same
+    # 0.06 white at the default gain of 1, so read the white and the amount rather than one
+    # spelling. A darker inset, or a different amount, still fails. The class also has to end
+    # where the match does, and start where it starts. Anything else and Tailwind reads a
+    # different candidate than the one named here: `-broken` names no utility at all, `/50`
+    # is a different lift, `:broken` is a variant on nothing, and a `hover:` in front paints
+    # the lift only under the pointer instead of on the dark surface.
+    assert re.search(
+        r"(?:(?<=[\s\"'`])|^)"
+        r"dark:bg-(?:white/\[0\.06\]"
+        r"|\[rgb\(255_255_255_/_calc\(0\.06\*var\(--contrast-wash-gain,\s*1\)\)\)\])"
+        r"(?=[\s\"'`]|$)",
+        layout,
+    ), "the dark notes surface is no longer a 0.06 white lift"
     # Streamdown's mt-6 clips the first heading against the scroller edge.
     assert "[&>*>*:first-child]:mt-0" in src
     # Shared utility: thumb hidden until the notes are hovered.
@@ -992,15 +1012,36 @@ def test_preview_highlights_the_leading_sentence():
     assert "item.rest" in panel
 
 
+def _max_widths(source: str) -> set[str]:
+    """Every `max-w-[...]` in *source*, read at the default UI scale.
+
+    #11648 wrapped these lengths in `calc(Npx*var(--ui-space-scale,1))` so they follow the interface size, which is
+    Npx at the default scale. Read back that way, the contract stays about the width rather than its spelling.
+    """
+    return {_SCALED_PX.sub(r"\1", width) for width in re.findall(r"max-w-\[([^\]\s\"]+)\]", source)}
+
+
+_SCALED_PX = re.compile(r"calc\((\d+(?:\.\d+)?px)\*var\(--ui-space-scale,1\)\)")
+# The notes width as written: `_max_widths` reads a bare 448px identically, so the scale is pinned raw.
+_NOTES_WIDTH_SCALED = "max-w-[calc(448px*var(--ui-space-scale,1))]"
+
+
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_update_popups_share_the_notes_width(banner):
     """Every update popup uses the same width for its notes and action rows."""
-    assert "max-w-[448px]" in banner.read_text(encoding = "utf-8")
+    source = banner.read_text(encoding = "utf-8")
+    assert "448px" in _max_widths(source)
+    assert (
+        _NOTES_WIDTH_SCALED in source and "max-w-[448px]" not in source
+    ), "the notes width stopped scaling"
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
-    assert "max-w-[400px]" not in provider, "stack must not cap overlay width"
+    assert "400px" not in _max_widths(provider), "stack must not cap overlay width"
     llama = (FRONTEND / "components/llama-update-banner.tsx").read_text(encoding = "utf-8")
-    assert "max-w-[448px]" in llama
-    assert "max-w-[400px]" not in llama
+    assert "448px" in _max_widths(llama)
+    assert (
+        _NOTES_WIDTH_SCALED in llama and "max-w-[448px]" not in llama
+    ), "the notes width stopped scaling"
+    assert "400px" not in _max_widths(llama)
 
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
@@ -1197,7 +1238,7 @@ def test_expanded_popup_fits_a_short_viewport(banner):
     # The notes region shrinks inside the capped card, so header and actions stay on screen.
     assert "min-h-0 flex-1" in panel, "notes height must follow the viewport"
     src = banner.read_text(encoding = "utf-8")
-    assert "max-h-[calc(100dvh_-_2rem)]" in src, "card is the backstop on tiny viewports"
+    assert CARD_CAP[banner] in src, "card is the backstop on tiny viewports"
 
 
 def test_relative_release_body_links_point_at_the_repository():
@@ -1322,16 +1363,29 @@ def test_notes_repair_the_shared_previews_width_reset():
 def test_only_the_notes_region_scrolls(banner):
     """The dismiss control sits inside the card, so the card must not scroll."""
     src = banner.read_text(encoding = "utf-8")
-    # The painted surface: capped, clipping, and able to give up height itself
-    # so that the region inside it is the one that scrolls.
-    _assert_classes(
-        _card_surface(src),
-        "flex",
-        "max-h-[calc(100dvh_-_2rem)]",
-        "min-h-0",
-        "flex-col",
-        "overflow-hidden",
-    )
+    surface = _card_surface(src)
+    # The painted surface: capped, and a column, so the region inside it is the
+    # one that scrolls.
+    _assert_classes(surface, "flex", CARD_CAP[banner], "flex-col")
+    # Neither card scrolls. Asserted as the absence of a scrolling overflow
+    # rather than as the presence of `overflow-hidden`, because those are two
+    # different claims: the browser card now clips nothing at all, and reading
+    # the clip as the no-scroll guarantee is what tied this contract to a
+    # mechanism instead of to what it is for.
+    assert not re.search(
+        r"(?<![\w-])overflow-(?:y-)?(?:auto|scroll)(?![\w-])", surface
+    ), "the card scrolls, so its dismiss control can leave the viewport"
+    if banner == WEB_BANNER:
+        # This surface floors itself at header + notes + actions, which is only
+        # true while it declares neither of the two things that set a flex
+        # item's automatic minimum size to zero. Either one back and the rail
+        # squeezes the card until the action row is cut.
+        for zeroes_the_floor in ("min-h-0", "overflow-hidden"):
+            assert (
+                zeroes_the_floor not in surface.split()
+            ), f"{zeroes_the_floor} puts the browser card's floor back to nothing"
+    else:
+        _assert_classes(surface, "min-h-0", "overflow-hidden")
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     _assert_classes(
         _class_const(layout, "UPDATE_NOTES_ROOT_CLASS"),
@@ -1547,19 +1601,12 @@ def test_code_span_closers_ignore_backslashes():
     assert '!== "`" || escaped(' in calls[0]
 
 
-# The card's incompressible height, a fixed part plus a part that follows
-# Settings > Appearance rather than one number measured at the default 15px: at
-# the 20px maximum the action row wraps at every card width. The two cards have
-# their own constants because the desktop one carries an extra status line;
-# scaling one whole box for both asked 256px where 209 was needed, and a floor
-# nothing can meet makes the stack cover the composer for no gain.
-_SCALED_FLOOR_WEB = "min-h-[calc(109px+80px*var(--ui-font-scale,1))]"
-# Below 384px the action pair wraps onto its own row and the card needs a
-# whole extra one: 259px at the 20px setting where the wide card needs 209.
-# Named as the utility alone and asserted under `max-[383px]` through
-# `_applies`, because the floor also carries a `has-[...]` gate since #10229
-# and a run of variants has no fixed order.
-_NARROW_FLOOR_WEB = "min-h-[calc(139px+96px*var(--ui-font-scale,1))]"
+# The desktop card's incompressible height, a fixed part plus a part that
+# follows Settings > Appearance rather than one number measured at the default
+# 15px: at the 20px maximum the action row wraps at every card width. The
+# browser card used to carry the same pair of constants and now floors itself
+# off its own content instead (see _assert_floors_itself); this one still names
+# the height, and the same staleness is waiting for it.
 _SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
 _NARROW_FLOOR_TAURI = "min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
 _NARROW = "max-[383px]"
@@ -1676,6 +1723,37 @@ def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
     ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
 
 
+def _assert_floors_itself(source: str, card: str) -> None:
+    """The card keeps room for its header and buttons without naming a height.
+
+    The written-out floor it replaces was a constant against one type size, and
+    #11458 made the spacing inside the card follow the interface font size too,
+    so at the 20px setting the constant came to 209px while the content needed
+    about 301px and the action row was cut. A measured floor cannot go stale
+    that way, but it only exists while the surface declares neither `min-h-0`
+    nor `overflow-hidden`: each of those sets a flex item's automatic minimum
+    size to zero, which is what made a hand-written floor necessary at all.
+    """
+    root = _card_slot(source)
+    surface = _card_surface(source)
+    for zeroes_the_floor in ("min-h-0", "overflow-hidden"):
+        assert (
+            zeroes_the_floor not in surface.split()
+        ), f"{zeroes_the_floor} leaves the {card} card with no floor at all"
+    assert not re.search(
+        r"(?<![\w-])min-h-\[", surface + root
+    ), f"the {card} card names a height again, which goes stale at the next type size"
+    # Unchanged from the written-floor days: the rail may only take the height
+    # the notes are there to give up.
+    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
+    assert _only_under(
+        root, "shrink", _NOTES_GATE
+    ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
+    assert not _applies(
+        root, "min-h-0"
+    ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
+
+
 RAIL_TESTID = "overlay-rail"
 
 
@@ -1771,7 +1849,9 @@ def _capped_rails(provider: str) -> int:
     """
     # _only_under and not a substring: `md:max-h-[100dvh]` contains the utility while leaving
     # every smaller viewport uncapped, which is the spill this test exists to prevent.
-    return sum(1 for rail in _corner_rails(provider) if _only_under(rail, "max-h-[100dvh]"))
+    # The desktop rail stops below the window chrome; there is none in the browser.
+    caps = ("max-h-[100dvh]", "max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))]")
+    return sum(1 for rail in _corner_rails(provider) if any(_only_under(rail, c) for c in caps))
 
 
 def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
@@ -1868,9 +1948,9 @@ def test_the_overlay_stack_fits_the_viewport():
     # The download list scrolls internally, so it can give up height.
     assert "flex min-h-0" in panel
     # The update card cannot: its header and buttons are fixed and only its
-    # notes yield, so it floors instead.
-    web = WEB_BANNER.read_text(encoding = "utf-8")
-    _assert_floored(web, _SCALED_FLOOR_WEB, _NARROW_FLOOR_WEB, "browser")
+    # notes yield, so it floors instead. The browser card floors itself off its
+    # own content; the desktop card still states the floor as a constant.
+    _assert_floors_itself(WEB_BANNER.read_text(encoding = "utf-8"), "browser")
     # Those floors can add up to more than the cap at a large type size, so the
     # rail scrolls. Without this the overflow lands below the bottom of the
     # screen with no way to reach it.
@@ -1928,8 +2008,12 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         "paddingTop": "STACK_SHADOW_GUTTER_TOP",
         "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM",
         "paddingLeft": "STACK_SHADOW_GUTTER_LEFT",
-        "paddingRight": "STACK_CARD_INSET_RIGHT",
+        "paddingRight": "STACK_CARD_INSET_RIGHT_PAST_PANEL",
     }
+    assert re.search(
+        r"const STACK_CARD_INSET_RIGHT_PAST_PANEL =\s*`calc\(\$\{STACK_CARD_INSET_RIGHT\}px \+ var\(",
+        provider,
+    ), "the rail's right padding is no longer the px card inset plus the panel width"
     openings = _rail_openings(provider)
     assert len(openings) == 2, f"expected the browser and desktop rails, found {len(openings)}"
     for tag in openings:
@@ -2861,3 +2945,112 @@ def test_a_paragraph_install_block_does_not_swallow_deeper_headings(notes_module
     )
     stripped = notes_module.strip_release_body(body)
     assert stripped == "Intro.\n\n###### Deeply nested announcement\n\n- a real change"
+
+
+@pytest.fixture(autouse=True)
+def github_lockout(notes_module):
+    from utils.prebuilt import freshness_flow
+
+    freshness_flow._api_rate_limited_until = 0.0
+    notes_module.reset_release_notes_cache()
+    yield freshness_flow
+    freshness_flow._api_rate_limited_until = 0.0
+    notes_module.reset_release_notes_cache()
+
+
+@pytest.mark.parametrize(
+    ("url_override", "env", "expected"),
+    [
+        (None, {"GH_TOKEN": "ghp_gh", "GITHUB_TOKEN": "ghp_github"}, "Bearer ghp_github"),
+        (None, {"GH_TOKEN": "ghp_gh"}, "Bearer ghp_gh"),
+        ("https://mirror.example/releases", {"GH_TOKEN": "ghp_gh"}, None),
+        ("http://api.github.com/repos/x/releases", {"GITHUB_TOKEN": "ghp_secret"}, None),
+    ],
+)
+def test_where_the_release_notes_token_may_travel(
+    notes_module, github_lockout, monkeypatch, url_override, env, expected
+):
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout=None):
+        seen.append(request)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    notes_module._fetch_latest_release()
+    assert seen[0].get_header("Authorization") == expected
+    assert "Authorization" not in seen[0].headers
+
+
+@pytest.mark.parametrize(
+    ("url_override", "status", "remaining", "body", "shared", "reported"),
+    [
+        (None, 403, "0", b"", True, True),
+        (None, 429, "4998", b"", True, True),
+        (None, 403, "4998", b'{"message": "secondary rate limit"}', True, True),
+        (None, 403, "4998", b"", False, False),
+        ("https://mirror.example/releases", 429, "0", b"", False, True),
+    ],
+)
+def test_which_release_note_refusals_reach_the_shared_lockout(
+    notes_module,
+    github_lockout,
+    monkeypatch,
+    url_override,
+    status,
+    remaining,
+    body,
+    shared,
+    reported,
+):
+    import email.message
+    import io
+    import urllib.error
+
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = remaining
+    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
+
+    def refuse(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, status, "refused", headers, io.BytesIO(body))
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    result = notes_module.get_latest_release()
+    assert (github_lockout.github_rate_limit_remaining() > 0) is shared
+    assert ("rate limit" in (result.error or "").lower()) is reported
+
+
+@pytest.mark.parametrize("url_override", [None, "https://mirror.example/releases"])
+def test_the_shared_lockout_parks_only_the_github_api(
+    notes_module, github_lockout, monkeypatch, url_override
+):
+    import urllib.error
+
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    github_lockout.hold_github_api(60)
+    calls = []
+
+    def capture(request, timeout=None):
+        calls.append(request.full_url)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    notes_module.get_latest_release(refresh=True)
+    assert calls == ([] if url_override is None else [url_override])

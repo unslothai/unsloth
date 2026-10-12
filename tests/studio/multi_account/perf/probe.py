@@ -58,6 +58,25 @@ def measure_cost(operation, warm = None) -> dict:
     return dict(counters)
 
 
+def steady_cost(
+    operation,
+    warm = None,
+    repeats = 5,
+) -> dict:
+    """The per-counter minimum of `repeats` warm measurements of the same operation.
+
+    One warm reading is not steady state. The keyless-access settings cache holds its
+    answer for one second from when it was filled, not from its last hit, so now and then
+    the warm-up hits it just before it expires and the measured request refills it,
+    opening a second sqlite connection: about 3 readings in 1500 with eight probes running
+    at once, and a full backend run under xdist read authenticated_get at 2 connections
+    where 1 is pinned. Noise like that only ever adds work, so the minimum of each counter
+    is the cost with nothing refilling, while a cost that really grew grew in every repeat.
+    """
+    readings = [measure_cost(operation, warm = warm) for _ in range(repeats)]
+    return {key: min(reading[key] for reading in readings) for key in readings[0]}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description = __doc__)
     parser.add_argument("--backend", type = Path, required = True)
@@ -100,13 +119,13 @@ def main() -> None:
         assert len(listing.json()["threads"]) == 100
         if args.mode == "cost":
             measurements = {
-                "status": measure_cost(
+                "status": steady_cost(
                     lambda: get("/api/auth/status"), warm = lambda: get("/api/auth/status")
                 ),
-                "authenticated_get": measure_cost(
+                "authenticated_get": steady_cost(
                     lambda: get("/account-probe"), warm = lambda: get("/account-probe")
                 ),
-                "workspace_1000": measure_cost(lambda: [workspace_root() for _ in range(1000)]),
+                "workspace_1000": steady_cost(lambda: [workspace_root() for _ in range(1000)]),
             }
         else:
             measurements = {}

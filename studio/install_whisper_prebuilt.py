@@ -1932,7 +1932,9 @@ def _api_newest_release_tag_for_upstream(
             or packaged.startswith(wanted + _PACKAGING_SUFFIX)
         ):
             matching.append(release)
-    return llama._newest_release_tag_from_releases(matching)
+    # Repo-aware selectability: whisper is never ggml-org/llama.cpp, so this is the
+    # plain drafts-and-prereleases-dropped rule it has always had.
+    return llama._newest_release_tag_from_releases(repo, matching)
 
 
 def existing_install_current_without_plan(

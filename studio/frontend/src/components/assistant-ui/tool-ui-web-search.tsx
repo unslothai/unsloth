@@ -3,19 +3,22 @@
 
 "use client";
 
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { GlobeIcon } from "lucide-react";
 
 import {
   isSearchImagesToolResult,
   useToolAwaitingApproval,
 } from "@/features/chat";
+import { escapeBidiControls } from "@/lib/escape-bidi-controls";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { openLink } from "@/lib/open-link";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
+import { ScrollPane } from "./scroll-pane";
 import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
 import {
@@ -151,12 +154,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
 
   // Collapse when LLM starts generating text after the tool call
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (p) =>
-        p.type === "text" &&
-        "text" in p &&
-        (p as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
   // Ask permission gates every local tool call, and what is being approved
   // lives inside the content while Allow/Deny render outside it.
@@ -184,9 +182,29 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={toolName}
         status={status}
-        icon={GlobeIcon}
+        icon={InternetGlyph}
       />
       <ToolFallbackContent>
+        {/* The trigger shows only the host; Allow/Deny needs the full url. Inert text: untrusted. */}
+        {isRunning && url ? (
+          <div
+            data-slot="tool-web-fetch-url"
+            className="flex min-w-0 items-start gap-2 text-xs"
+          >
+            <span className="shrink-0 font-medium text-muted-foreground">
+              URL:
+            </span>
+            {/* Capped so a huge url cannot push Allow/Deny off screen. */}
+            <ScrollPane
+              className="min-w-0 rounded bg-muted/50 px-2 py-1"
+              scrollerClassName="max-h-24 overflow-auto whitespace-pre-wrap break-all text-foreground/85"
+            >
+              <code dir="ltr" className="break-all text-foreground/85">
+                {escapeBidiControls(url)}
+              </code>
+            </ScrollPane>
+          </div>
+        ) : null}
         {isRunning ? (
           <div className="flex items-center text-sm text-muted-foreground">
             <span>
@@ -247,9 +265,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                   ))}
                 </div>
                 {resultText && (
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                  <ScrollPane
+                    className="rounded bg-muted/50 p-2"
+                    scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+                  >
                     {resultText}
-                  </pre>
+                  </ScrollPane>
                 )}
               </div>
             ) : sources.length > 0 ? (
@@ -284,9 +305,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                 )}
               </div>
             ) : resultText ? (
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+              <ScrollPane
+                className="rounded bg-muted/50 p-2"
+                scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+              >
                 {resultText}
-              </pre>
+              </ScrollPane>
             ) : null}
           </div>
         )}

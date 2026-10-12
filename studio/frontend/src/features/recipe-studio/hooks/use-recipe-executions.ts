@@ -2,7 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
-import { getInferenceStatus, loadModel, validateModel } from "@/features/chat";
+import {
+  getInferenceStatus,
+  loadModel,
+  offloadCountsFrom,
+  offloadWarning,
+  validateModel,
+} from "@/features/chat";
 import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { isOllamaModelId } from "@/features/hub/lib/model-identity";
@@ -338,7 +344,7 @@ async function loadLocalModelSelection(
     // A recipe's own target loads the way an unpinned chat model does; restoring the
     // model it displaced replays what that model's own load asked for.
     const platform = usePlatformStore.getState();
-    await loadModel({
+    const loadResp = await loadModel({
       // biome-ignore lint/style/useNamingConvention: api schema
       model_path: target,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -372,15 +378,18 @@ async function loadLocalModelSelection(
       // biome-ignore lint/style/useNamingConvention: api schema
       tensor_parallel: false,
     });
+    const offloadNotice = offloadWarning(offloadCountsFrom(loadResp));
     const successOptions = {
-      description: undefined,
-      duration: 2000,
+      description: offloadNotice?.description,
+      duration: offloadNotice ? 8000 : 2000,
       icon: undefined,
     };
+    const title = `Loaded ${modelLabel}${offloadNotice?.titleSuffix ?? ""}`;
+    const showToast = offloadNotice ? toast.warning : toast.success;
     if (loadToastDismissed) {
-      toast.success(`Loaded ${modelLabel}`, successOptions);
+      showToast(title, successOptions);
     } else {
-      toast.success(`Loaded ${modelLabel}`, { ...successOptions, id: toastId });
+      showToast(title, { ...successOptions, id: toastId });
     }
     return null;
   } catch (error) {

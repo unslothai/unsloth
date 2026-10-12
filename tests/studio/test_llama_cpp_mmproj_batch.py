@@ -113,13 +113,15 @@ class TestLaunchNeedsBiggerUbatch:
         path = projector("gemma4uv")
         assert _launch_required_ubatch(path, 3840, ["--no-mmproj"], env = {}) == 0
 
-    def test_a_pass_through_projector_survives_both(self, projector):
-        # Appended after the managed flags and stripped by neither the switch nor
-        # --no-mmproj, so this opens an image tower regardless.
+    def test_a_pass_through_projector_obeys_both(self, projector):
+        # The launch emits it as the managed projector, so the switch and --no-mmproj drop it.
         path = projector("gemma4uv")
-        for extra_kwargs in ({}, {"vision_off": True}):
-            got = _launch_required_ubatch(None, 3840, ["--mmproj", path], env = {}, **extra_kwargs)
-            assert got == _GEMMA4
+        assert _launch_required_ubatch(None, 3840, ["--mmproj", path], env = {}) == _GEMMA4
+        assert _launch_required_ubatch(None, 3840, ["-mm", path], env = {}) == _GEMMA4
+        got = _launch_required_ubatch(None, 3840, ["--mmproj", path], env = {}, vision_off = True)
+        assert got == 0
+        got = _launch_required_ubatch(None, 3840, ["--mmproj", path, "--no-mmproj"], env = {})
+        assert got == 0
 
     def test_a_pass_through_projector_is_still_classified(self, projector):
         path = projector("qwen3vl_merger")

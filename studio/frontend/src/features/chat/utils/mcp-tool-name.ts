@@ -33,9 +33,20 @@ export function formatMcpToolName(
   mcpServer?: string,
   mcpTool?: string,
 ): string | null {
+  const parts = splitMcpToolName(toolName);
+  return parts
+    ? `${mcpServer || parts.serverId} · ${mcpTool || parts.tool}`
+    : null;
+}
+
+/** mcp__<serverId>__<tool> split into its parts, else null. */
+export function splitMcpToolName(
+  toolName: string,
+): { serverId: string; tool: string } | null {
   if (!toolName.startsWith(MCP_TOOL_PREFIX)) return null;
   const rest = toolName.slice(MCP_TOOL_PREFIX.length);
   const sep = rest.indexOf("__");
-  if (sep <= 0) return null;
-  return `${mcpServer || rest.slice(0, sep)} · ${mcpTool || rest.slice(sep + 2)}`;
+  return sep > 0
+    ? { serverId: rest.slice(0, sep), tool: rest.slice(sep + 2) }
+    : null;
 }

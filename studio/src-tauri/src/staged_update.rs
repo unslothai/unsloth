@@ -25,7 +25,7 @@ const RUNTIME_ENTRIES: [&str; 4] = [
     ".venv_t5_550",
     ".venv_t5_510",
 ];
-const HELPER_RUNTIME_ENTRIES: [&str; 3] = ["node", "llama.cpp", "whisper.cpp"];
+const HELPER_RUNTIME_ENTRIES: [&str; 4] = ["node", "llama.cpp", "whisper.cpp", "audio.cpp"];
 
 fn all_runtime_entries() -> impl Iterator<Item = &'static str> {
     RUNTIME_ENTRIES.into_iter().chain(HELPER_RUNTIME_ENTRIES)

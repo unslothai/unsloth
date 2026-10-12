@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import json
 import os
+from fnmatch import fnmatchcase
 import sqlite3
 import sys
 import threading
@@ -21,10 +22,11 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, constants as hf_constants
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+from storage.studio_db import connect_studio_db
 from utils.paths import storage_roots
 from utils.paths.storage_roots import project_workspaces_root, studio_db_path, workspace_root
 
@@ -180,9 +182,10 @@ def foreign_media_generations(account_id: str) -> int:
             total += sum(count for account, count in counts.items() if account != account_id)
         for holders in _generation_holders.values():
             total += sum(1 for holder in holders if holder != account_id)
-    # sys.modules, not an import: no video job is in flight before its module loads.
+    # sys.modules, not an import: no job is in flight before (or while) its module loads.
     video = sys.modules.get("core.inference.video")
-    reserved = video.generation_account_in_flight() if video is not None else None
+    in_flight = getattr(video, "generation_account_in_flight", None) if video is not None else None
+    reserved = in_flight() if callable(in_flight) else None
     if reserved is not None and reserved != account_id:
         total += 1
     return total
@@ -266,8 +269,22 @@ def join_resident(modality: str) -> None:
     if not policy.installation_has_managed_accounts():
         return
     require_live_account()
+    # Seed the loader only with no record (pre-accounts); an empty one means it was retired.
+    loader = _resident_loader(modality)
     with _sharers_lock:
+        if modality not in _resident_sharers and loader is not None:
+            _resident_sharers[modality] = {loader}
         _resident_sharers.setdefault(modality, set()).add(current_account_id())
+
+
+def _resident_loader(modality: str) -> str | None:
+    """The publish record (zero-VRAM residents drop the GPU claim), else the GPU claim."""
+    recorded = _resident_accounts.get(modality)
+    if recorded is not None:
+        return recorded[0]
+    from core.inference import gpu_arbiter
+
+    return gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
 
 
 def release_shared_resident(modality: str) -> bool:
@@ -346,9 +363,25 @@ def restore_resident_metadata(modality: str) -> bool:
     return restored
 
 
+def _resident_outside_allowlist(modality: str | None) -> bool:
+    """A resident the owner has since taken off the caller's list is no longer the caller's."""
+    if modality is None or model_allowlist() is None:
+        return False
+    recorded = _resident_accounts.get(modality)
+    for reference in recorded[1] if recorded is not None else ():
+        # Labels without a slash name a native local file, not a Hub repo.
+        if isinstance(reference, str) and "/" in reference:
+            repo_id = _reference_repo_id(reference.strip())
+            if repo_id is not None and not model_allowed(repo_id):
+                return True
+    return False
+
+
 def resident_hidden(modality: str | None = None, reference: str | None = None) -> bool:
     if not managed_account():
         return False
+    if _resident_outside_allowlist(modality):
+        return True
     if modality is not None and resident_shared_with(modality, current_account_id()):
         return False
     from core.inference import gpu_arbiter
@@ -364,6 +397,15 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
                 account, references = prior
         return account != current_account_id() or reference not in references
     return False
+
+
+def joins_resident_runtime(modality: str, reference: str | None = None) -> bool:
+    """A managed caller that did not load the resident: an ordinary load joins it (#12365)."""
+    if resident_hidden(modality, reference):
+        return True
+    if not managed_account() or not resident_shared_with(modality, current_account_id()):
+        return False
+    return _resident_loader(modality) != current_account_id()
 
 
 def hidden_resident_response():
@@ -450,9 +492,9 @@ def require_installation_owner() -> None:
 
 _PUBLIC_TTL = 300.0
 _PRIVATE_TTL = 30.0
-_public_repos: dict[tuple[str, str], tuple[float, bool]] = {}
+_public_repos: dict[tuple[str, str, str], tuple[float, bool]] = {}
 _public_lock = threading.Lock()
-_public_flights: dict[tuple[str, str], Future] = {}
+_public_flights: dict[tuple[str, str, str], Future] = {}
 _PROBE_FANOUT = 8
 
 
@@ -489,6 +531,22 @@ def _remember_public_verdict(name: str, public: bool) -> None:
         del verdicts[name]
     else:
         return
+    _write_public_verdicts(verdicts)
+
+
+def adopt_unnamed_public_proofs(endpoint: str) -> None:
+    """Name proofs recorded before proofs carried their endpoint after the one that recorded them."""
+    with _public_lock:
+        verdicts = _load_public_verdicts()
+        unnamed = [name for name in verdicts if "|" not in name]
+        if not unnamed:
+            return
+        for name in unnamed:
+            verdicts.setdefault(f"{endpoint.rstrip('/')}|{name}", verdicts.pop(name))
+        _write_public_verdicts(verdicts)
+
+
+def _write_public_verdicts(verdicts: dict[str, float]) -> None:
     path = _public_verdicts_path()
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -499,10 +557,17 @@ def _remember_public_verdict(name: str, public: bool) -> None:
         pass
 
 
-def _hub_public_answer(repo_id: str, repo_type: str) -> bool | None:
+def _hub_public_answer(
+    repo_id: str,
+    repo_type: str,
+    *,
+    endpoint: str | None = None,
+) -> bool | None:
     """True when the Hub says public, False for private/gated/missing, None when unaskable."""
     try:
-        info = HfApi().repo_info(repo_id, repo_type = repo_type, token = False, timeout = 5.0)
+        info = HfApi(endpoint = endpoint).repo_info(
+            repo_id, repo_type = repo_type, token = False, timeout = 5.0
+        )
     except Exception as exc:  # noqa: BLE001 - classified below, never trusted as public
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status in _DEFINITIVE_HUB_STATUSES:
@@ -511,21 +576,40 @@ def _hub_public_answer(repo_id: str, repo_type: str) -> bool | None:
     return getattr(info, "private", None) is False and not getattr(info, "gated", False)
 
 
+def _public_key(repo_id: str, repo_type: str) -> tuple[str, str, str]:
+    # A repo public on one Hub may be private, or someone else's, on another.
+    return (hf_constants.ENDPOINT.rstrip("/"), repo_type, repo_id.lower())
+
+
 def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
-    key = (repo_type, repo_id.lower())
+    key = _public_key(repo_id, repo_type)
     with _public_lock:
         cached = _public_repos.get(key)
     return cached[1] if cached is not None and cached[0] > time.monotonic() else None
 
 
-def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
+def _source_speaks_for_the_cache() -> bool:
+    from utils.hub_settings import MODELSCOPE, active_source
+    return active_source() != MODELSCOPE
+
+
+def repo_is_public(
+    repo_id: str,
+    repo_type: str = "model",
+    *,
+    offline: bool = False,
+) -> bool:
     """Only an anonymous Hub answer proves a shared-cache repo public."""
-    key = (repo_type, repo_id.lower())
-    name = f"{repo_type}:{repo_id.lower()}"
+    if not _source_speaks_for_the_cache():
+        return False
+    key = _public_key(repo_id, repo_type)
+    name = f"{key[0]}|{repo_type}:{repo_id.lower()}"
     with _public_lock:
         cached = _public_repos.get(key)
         if cached is not None and cached[0] > time.monotonic():
             return cached[1]
+        if offline:
+            return name in _load_public_verdicts()
         flight = _public_flights.get(key)
         leading = flight is None
         if leading:
@@ -533,7 +617,7 @@ def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
     if not leading:
         return flight.result()
     try:
-        answer = _hub_public_answer(repo_id, repo_type)
+        answer = _hub_public_answer(repo_id, repo_type, endpoint = key[0])
         with _public_lock:
             if answer is None:
                 public = name in _load_public_verdicts()
@@ -584,7 +668,8 @@ def _hub_probe_targets(references, repo_type: str, grants: set[str]) -> set[str]
         unknown = {
             repo_id: reference
             for repo_id, reference in candidates.items()
-            if (entry := _public_repos.get((repo_type, repo_id.lower()))) is None or entry[0] <= now
+            if (entry := _public_repos.get(_public_key(repo_id, repo_type))) is None
+            or entry[0] <= now
         }
     # A local path that happens to spell a repo id resolves against the cache, not the Hub.
     return {
@@ -634,7 +719,7 @@ def model_grants() -> set[str]:
     if not path.is_file():
         return set()
     try:
-        with closing(sqlite3.connect(str(path))) as conn:
+        with closing(connect_studio_db(path)) as conn:
             row = conn.execute(
                 "SELECT value_json FROM app_settings WHERE key = 'model_grants'"
             ).fetchone()
@@ -665,7 +750,7 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
 
 
 def _write_grant(path: Path, key: str) -> None:
-    with closing(sqlite3.connect(str(path), timeout = 5.0)) as conn, conn:
+    with closing(connect_studio_db(path, timeout = 5.0)) as conn, conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS app_settings (key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
         )
@@ -688,18 +773,71 @@ def _write_grant(path: Path, key: str) -> None:
         )
 
 
+MODEL_NOT_ALLOWED = "This model is not enabled for your account. Ask the Studio owner to allow it."
+
+_allowlists: dict[str, tuple[int, tuple[str, ...] | None]] = {}
+_allowlists_lock = threading.Lock()
+
+
+def model_allowlist() -> tuple[str, ...] | None:
+    """The caller's owner-set allowlist (#11650); ``None`` = every model, as before."""
+    if not managed_account():
+        return None
+    account_id = current_account_id()
+    generation = policy.account_generation()
+    with _allowlists_lock:
+        cached = _allowlists.get(account_id)
+        if cached is not None and cached[0] == generation:
+            return cached[1]
+    from auth import storage
+
+    try:
+        allowlist = storage.account_model_allowlist(account_id)
+    except Exception:  # noqa: BLE001 - never cached, so a transient error does not stick
+        return ()
+    with _allowlists_lock:
+        if len(_allowlists) >= 256:
+            _allowlists.clear()
+        _allowlists[account_id] = (generation, allowlist)
+    return allowlist
+
+
+def model_allowed(repo_id: str) -> bool:
+    allowlist = model_allowlist()
+    if allowlist is None:
+        return True
+    repo_id = repo_id.strip().lower()
+    return any(fnmatchcase(repo_id, pattern) for pattern in allowlist)
+
+
+def _reference_repo_id(reference: str) -> str | None:
+    path = Path(reference).expanduser()
+    if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
+        cached = _cached_repo(path)
+        return cached[0] if cached is not None and cached[1] == "model" else None
+    parts = reference.split(":", 1)[0].split("/")
+    return "/".join(parts[:2]) if all(parts[:2]) else None
+
+
 def repo_visible(
     repo_id: str,
     repo_type: str = "model",
     *,
     grants: set[str] | None = None,
+    offline: bool = False,
 ) -> bool:
     if not managed_account():
         return True
     if not repo_id:
         return False
+    if repo_type == "model" and not model_allowed(repo_id):
+        return False
     granted = model_grants() if grants is None else grants
-    return _grant_key(repo_id, repo_type) in granted or repo_is_public(repo_id, repo_type)
+    return _grant_key(repo_id, repo_type) in granted or (
+        repo_is_public(repo_id, repo_type, offline = True)
+        if offline
+        else repo_is_public(repo_id, repo_type)
+    )
 
 
 def _cached_repo(path: Path) -> tuple[str, str] | None:
@@ -717,6 +855,7 @@ def model_visible(
     *,
     grants: set[str] | None = None,
     repo_type: str = "model",
+    offline: bool = False,
 ) -> bool:
     """Grants cover repo ids and cache snapshot/file spellings; other local paths stay private."""
     if not managed_account():
@@ -724,6 +863,7 @@ def model_visible(
     if not isinstance(reference, str) or not reference:
         return False
     reference = reference.strip()
+    access_options = {"offline": True} if offline else {}
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
         try:
@@ -739,7 +879,9 @@ def model_visible(
             if cached is not None:
                 # Snapshots point at their own repo's blobs; cross-repo links are refused.
                 actual = _cached_repo(resolved)
-                return actual == cached and repo_visible(cached[0], cached[1], grants = grants)
+                return actual == cached and repo_visible(
+                    cached[0], cached[1], grants = grants, **access_options
+                )
         except (OSError, RuntimeError, ValueError):
             return False
         return False
@@ -748,12 +890,29 @@ def model_visible(
     if not all(parts[:2]):
         return False
     repo_id = "/".join(parts[:2])
-    return repo_visible(repo_id, repo_type, grants = grants)
+    return repo_visible(repo_id, repo_type, grants = grants, **access_options)
 
 
-def require_model_access(reference: str, repo_type: str = "model") -> None:
-    if not model_visible(reference, repo_type = repo_type):
+def require_model_access(
+    reference: str,
+    repo_type: str = "model",
+    *,
+    offline: bool = False,
+) -> None:
+    access_options = {"offline": True} if offline else {}
+    if not model_visible(reference, repo_type = repo_type, **access_options):
+        if repo_type == "model":
+            require_model_allowed(reference)
         raise HTTPException(status_code = 404, detail = "Model not found")
+
+
+def require_model_allowed(reference) -> None:
+    """The allowlist alone, for routes that fetch a Hub model without the visibility gate."""
+    if not isinstance(reference, str) or model_allowlist() is None:
+        return
+    repo_id = _reference_repo_id(reference.strip())
+    if repo_id is not None and not model_allowed(repo_id):
+        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
 
 
 def _row_reference(row):
@@ -796,6 +955,13 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
     """A cache hit is not proof the requester may read private Hub content."""
     if not managed_account():
         return
+    if repo_type == "model" and not model_allowed(repo_id or ""):
+        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
+    if not _source_speaks_for_the_cache():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the installation owner can download while ModelScope is the model source",
+        )
     try:
         api = HfApi()
         token = account_hf_token(hf_token)
@@ -822,6 +988,46 @@ def require_media_references(request) -> None:
             raise HTTPException(status_code = 404, detail = "Model not found")
         elif Path(request.model_path).is_absolute():
             require_model_access(str(Path(request.model_path) / path))
+    for reference in media_component_file_references(request):
+        if reference is None:
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        require_model_access(reference)
+
+
+def media_component_file_references(request) -> list[str | None]:
+    """What each supplied text-encoder / VAE file loads: a resolved local path or the Hub ``owner/repo``. None for a
+    relative path with no local ``model_path`` to resolve against. Mirrors ``parse_component_file``."""
+    supplied = getattr(request, "text_encoder_file", None)
+    supplied = [supplied] if isinstance(supplied, str) else list(supplied or ())
+    vae_file = getattr(request, "vae_file", None)
+    if isinstance(vae_file, str) and vae_file:
+        supplied.append(vae_file)
+    root = None
+    try:
+        model_path = Path(str(getattr(request, "model_path", "") or "")).expanduser()
+        if model_path.is_absolute():
+            root = model_path if model_path.is_dir() else model_path.parent
+    except OSError:
+        root = None
+    references: list[str | None] = []
+    for reference in supplied:
+        if not isinstance(reference, str) or not reference.strip():
+            continue
+        spec = reference.strip()
+        path = Path(spec).expanduser()
+        if path.is_absolute():
+            references.append(str(path.resolve()))
+            continue
+        local = root / path if root is not None else None
+        if local is not None and (
+            spec.startswith(".") or "\\" in spec or len(path.parts) < 3 or local.is_file()
+        ):
+            references.append(str(local.resolve()))
+        elif local is None and (spec.startswith(".") or "\\" in spec or len(path.parts) < 3):
+            references.append(None)
+        else:
+            references.append("/".join(spec.replace("\\", "/").split("/")[:2]))
+    return references
 
 
 def resident_components(status: dict, modality: str | None = None) -> list[str]:
@@ -878,7 +1084,9 @@ def media_adapter_references(request) -> list[str]:
     groups = []
     if loras:
         from core.inference import diffusion_lora
-        groups.append((loras, diffusion_lora.list_loras()))
+
+        # Copies are hidden from the listing but resolve by id, so they must authorize by their path.
+        groups.append((loras, diffusion_lora.list_loras(include_copies = True)))
     if controlnet:
         from core.inference import diffusion_controlnet
         groups.append(([controlnet], diffusion_controlnet.list_controlnets()))

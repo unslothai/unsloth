@@ -9,6 +9,23 @@ on:
       - "studio/frontend/tests/rag-*"
       - "tests/studio/rag_upload*"
       - ".github/workflows/rag-upload-compatibility.yml"
+      # tests/studio/rag_upload_ci.py also runs test_conversation_archive.py, whose
+      # collection loads studio/backend/tests/conftest.py (which execs
+      # tests/_shared/compile_cache_isolation.py and imports loggers), and runs every
+      # project-attachment*.test.ts and project-source*.test.ts with node --test; those
+      # import the helpers kit and store stubs and three chat modules outside
+      # features/rag. The apt step shells out to retry-with-apt-lock.sh.
+      - 'studio/backend/tests/test_conversation_archive.py'
+      - 'studio/backend/tests/conftest.py'
+      - 'tests/_shared/compile_cache_isolation.py'
+      - 'studio/backend/loggers/**'
+      - 'studio/frontend/tests/project-attachment*'
+      - 'studio/frontend/tests/project-source*'
+      - 'studio/frontend/tests/helpers/**'
+      - 'studio/frontend/src/features/chat/utils/project-attachment-target.ts'
+      - 'studio/frontend/src/features/chat/utils/project-source-plan.ts'
+      - 'studio/frontend/src/features/chat/api/rag-context-length.ts'
+      - '.github/scripts/retry-with-apt-lock.sh'
 
 permissions:
   contents: read

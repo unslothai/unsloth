@@ -11,7 +11,14 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+
+from utils.prebuilt.freshness_flow import (
+    github_rate_limit_remaining,
+    hold_github_api,
+    rate_limit_wait,
+)
 from dataclasses import dataclass
 from typing import Any
 
@@ -587,6 +594,18 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
             RELEASES_FAILURE_TTL_SECONDS,
         )
 
+    if urllib.parse.urlparse(url).hostname == "api.github.com":
+        locked_out_for = github_rate_limit_remaining()
+        if locked_out_for > 0:
+            return (
+                ReleaseSource(
+                    release = None,
+                    source = None,
+                    error = "GitHub is rate limiting release note requests.",
+                ),
+                locked_out_for,
+            )
+
     headers = {
         "User-Agent": "unsloth-studio-update-check",
         "Accept": "application/vnd.github+json",
@@ -598,6 +617,11 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
         headers["If-None-Match"] = _remote_etag
 
     request = urllib.request.Request(url, headers = headers)
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    parsed = urllib.parse.urlparse(url)
+    # https only (the override accepts http://); unredirected, so a redirect off the API host drops it.
+    if token and parsed.scheme == "https" and parsed.hostname == "api.github.com":
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
     deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS
     try:
         with urllib.request.urlopen(request, timeout = RELEASES_TIMEOUT_SECONDS) as response:
@@ -634,7 +658,7 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
             )
         payload = json.loads(body.decode("utf-8", errors = "replace"))
     except urllib.error.HTTPError as error:
-        return _http_error_source(error)
+        return _http_error_source(error, url = url)
     except TimeoutError:
         return (
             ReleaseSource(
@@ -671,52 +695,33 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
     return source, RELEASES_SUCCESS_TTL_SECONDS
 
 
-def _http_error_source(error: urllib.error.HTTPError) -> tuple[ReleaseSource, float]:
-    """The answer and TTL for an HTTP status GitHub refused the request with."""
+def _http_error_source(
+    error: urllib.error.HTTPError, *, url: str = RELEASES_API_URL
+) -> tuple[ReleaseSource, float]:
     global _rate_limited_until
 
     if error.code == 304 and _remote_last_good is not None:
         # Nothing changed, so the release already held still stands.
         return _remote_last_good, RELEASES_SUCCESS_TTL_SECONDS
 
-    if error.code in (403, 429):
-        now = time.time()
-        # GitHub's order: Retry-After, which is how a secondary limit states its wait, then the primary limit's reset, then a plain back-off. Every one records a deadline, or Retry requests straight back into the limit.
-        after = _epoch_header(error.headers.get("Retry-After"))
-        reset = (
-            _epoch_header(error.headers.get("X-RateLimit-Reset"))
-            if error.headers.get("X-RateLimit-Remaining") == "0"
-            else None
-        )
-        if after is not None:
-            deadline = now + after
-        elif reset is not None:
-            deadline = reset
-        else:
-            deadline = now + RELEASES_RATE_LIMITED_TTL_SECONDS
-        # The deadline itself is bounded, not just the first wait on it: the next fetch answers from it, so capping only the TTL left a skewed header parking the popup for as long as it liked.
-        _rate_limited_until = min(deadline, now + RELEASES_RATE_LIMIT_MAX_SECONDS)
-        ttl = max(_rate_limited_until - now, 0.0)
+    wait = rate_limit_wait(error)
+    if wait is not None:
+        _rate_limited_until = time.time() + wait
+        if urllib.parse.urlparse(url).hostname == "api.github.com":
+            hold_github_api(wait)
         return (
             ReleaseSource(
                 release = None,
                 source = None,
                 error = "GitHub is rate limiting release note requests.",
             ),
-            ttl,
+            wait,
         )
 
     return (
         ReleaseSource(release = None, source = None, error = "Could not fetch release notes."),
         RELEASES_FAILURE_TTL_SECONDS,
     )
-
-
-def _epoch_header(value: str | None) -> float | None:
-    try:
-        return float((value or "").strip())
-    except ValueError:
-        return None
 
 
 def select_release(payload: Any) -> Release | None:

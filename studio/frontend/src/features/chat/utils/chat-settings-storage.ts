@@ -24,10 +24,6 @@ import {
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 import { MAX_SAMPLING_SEED } from "../types/runtime";
 import {
-  sanitizeCompactionHeadroomRatio,
-  sanitizeContextPolicy,
-} from "./auto-compaction";
-import {
   assignSanitizedMirroredSettings,
   hasNoMirroredSettings,
 } from "./mirrored-chat-settings";
@@ -302,11 +298,8 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   );
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
+  const deduplicateToolCalls = sanitizeBool(value.deduplicateToolCalls);
   const autoCompactEnabled = sanitizeBool(value.autoCompactEnabled);
-  const contextPolicy = sanitizeContextPolicy(value.contextPolicy);
-  const compactionHeadroomRatio = sanitizeCompactionHeadroomRatio(
-    value.compactionHeadroomRatio,
-  );
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 0);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
@@ -338,12 +331,11 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (nudgeToolCalls !== undefined) {
     settings.nudgeToolCalls = nudgeToolCalls;
   }
+  if (deduplicateToolCalls !== undefined) {
+    settings.deduplicateToolCalls = deduplicateToolCalls;
+  }
   if (autoCompactEnabled !== undefined) {
     settings.autoCompactEnabled = autoCompactEnabled;
-  }
-  if (contextPolicy) settings.contextPolicy = contextPolicy;
-  if (compactionHeadroomRatio !== undefined) {
-    settings.compactionHeadroomRatio = compactionHeadroomRatio;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
@@ -409,9 +401,8 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.allowArtifactNetworkAccess === undefined &&
     settings.autoHealToolCalls === undefined &&
     settings.nudgeToolCalls === undefined &&
+    settings.deduplicateToolCalls === undefined &&
     settings.autoCompactEnabled === undefined &&
-    settings.contextPolicy === undefined &&
-    settings.compactionHeadroomRatio === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined &&
     hasNoMirroredSettings(settings)

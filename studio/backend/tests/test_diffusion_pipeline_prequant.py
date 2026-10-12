@@ -27,7 +27,7 @@ MIB = 1024 * 1024
 
 Z_IMAGE_REPO = "Tongyi-MAI/Z-Image-Turbo"
 PREQUANT_REPO = "unsloth/Z-Image-Turbo-FP8"
-PREQUANT_FILE = "Z-Image-Turbo-FP8.pt"
+PREQUANT_FILE = "Z-Image-Turbo-FP8.safetensors"
 PREQUANT_BYTES = 6000 * MIB
 
 Z_IMAGE_INDEX = {
@@ -54,6 +54,23 @@ Z_IMAGE_FILES = [
 ]
 DENOISER_BYTES = 22_000 * MIB
 ALL_BYTES = sum(size for _name, size in Z_IMAGE_FILES)
+
+
+@pytest.fixture(autouse = True)
+def _unmeasured_torchao(monkeypatch):
+    """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
+    # Studio's diffusers pin, so tests that opt into a measured torchao do not depend on the runner.
+    monkeypatch.setattr(diffusion_memory, "_installed_diffusers_version", lambda: (0, 40))
+
+
+@pytest.fixture(autouse = True)
+def _safetensors_readable_regardless_of_the_installed_torchao(monkeypatch):
+    """Pin the torchao floor so planning tests ignore the installed release."""
+    import core.inference.prequant_safetensors as prequant_safetensors
+    monkeypatch.setattr(prequant_safetensors, "_torchao_version", lambda: None)
 
 
 def _family():
@@ -253,7 +270,9 @@ def test_a_gguf_pick_still_never_downloads_a_second_denoiser(monkeypatch):
 def test_a_planned_pipeline_pick_is_sized_from_the_hub(monkeypatch, hub):
     backend = DiffusionBackend()
     monkeypatch.setattr(backend, "_target_for_ordinal", lambda *_a, **_k: _target())
-    monkeypatch.setattr(pqmod, "restricted_prequant_load_supported", lambda _scheme: True)
+    monkeypatch.setattr(
+        pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
+    )
     assert backend._dit_prequant_plan_source(
         _family(),
         "pipeline",
@@ -288,9 +307,11 @@ def _settle_backend(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: scheme
     )
-    monkeypatch.setattr(pqmod, "restricted_prequant_load_supported", lambda _scheme: True)
+    monkeypatch.setattr(
+        pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
+    )
     monkeypatch.setattr(
         dmod,
         "resolve_dense_quant_candidate",
@@ -353,9 +374,66 @@ def test_a_baked_lora_keeps_the_dense_path(monkeypatch):
     assert _settle(backend, loras = [("adapter", 0.0)]) == "fp8"
 
 
-@pytest.mark.parametrize("mode", ["balanced", "low_vram"])
-def test_a_definite_offload_request_keeps_the_released_weights(monkeypatch, mode):
-    assert _settle(_settle_backend(monkeypatch), memory_mode = mode) is None
+def test_balanced_keeps_the_released_weights(monkeypatch):
+    """balanced streams through group-offload hooks the preflight refuses torchao weights under."""
+    assert _settle(_settle_backend(monkeypatch), memory_mode = "balanced") is None
+
+
+def _forced_offload_backend(
+    monkeypatch,
+    *,
+    scheme = "fp8",
+    survives = True,
+    native = None,
+):
+    """low_vram's whole-module plan: the denoiser is offloaded, and ``survives`` says whether its torchao weights
+    survive that placement. ``native`` is the scheme the loader would serve torchao-free under offload."""
+    backend = _settle_backend(monkeypatch, offload = "model", scheme = scheme)
+    monkeypatch.setattr(dmod, "torchao_survives_plan", lambda *_a, **_k: survives)
+    monkeypatch.setattr(
+        dmod,
+        "native_quant_scheme",
+        lambda target, requested, family = None, offload = False: (
+            requested if offload and requested == native else None
+        ),
+    )
+    return backend
+
+
+@pytest.mark.parametrize("request_kwargs", [{"memory_mode": "low_vram"}, {"cpu_offload": True}])
+def test_a_whole_module_offload_request_seeds_the_hosted_checkpoint(monkeypatch, request_kwargs):
+    """low_vram (and the legacy flag) offload whole modules, which the runtime fp8 quantise already runs torchao
+    under; the artifact is seeded on the host instead of quantising the released bf16 shards."""
+    assert _settle(_forced_offload_backend(monkeypatch), **request_kwargs) == "fp8"
+
+
+def test_a_whole_module_offload_request_never_seeds_a_torchao_free_rung(monkeypatch):
+    """A PINNED int8 under offload runs torchao-free (native kernels); a torchao artifact cannot feed that path."""
+    backend = _forced_offload_backend(monkeypatch, scheme = "int8", native = "int8")
+    assert _settle(backend, memory_mode = "low_vram", transformer_quant = "int8") is None
+
+
+def test_auto_under_a_whole_module_offload_seeds_the_winner_it_quantises(monkeypatch):
+    """AUTO under low_vram quantises its winner with torchao (the native path is for a pinned scheme only), so the
+    winner's artifact is seeded."""
+    backend = _forced_offload_backend(monkeypatch, scheme = "int8", native = "int8")
+    assert _settle(backend, memory_mode = "low_vram") == "int8"
+
+
+def test_auto_under_a_whole_module_offload_never_walks_to_a_lower_rung(monkeypatch):
+    """Under a forced offload a lower rung would change the scheme the runtime picks, so a winner whose artifact does
+    not survive the placement declines instead of seeding the next rung."""
+    from core.inference import diffusion_transformer_quant as tq
+
+    backend = _forced_offload_backend(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda *_a, **_k: ("int8", "fp8"))
+    monkeypatch.setattr(dmod, "torchao_survives_plan", lambda _plan, rung, **_k: rung == "fp8")
+    assert _settle(backend, memory_mode = "low_vram") == PIPELINE_SEED_DECLINED
+
+
+def test_a_whole_module_offload_request_declines_when_torchao_does_not_survive(monkeypatch):
+    backend = _forced_offload_backend(monkeypatch, survives = False)
+    assert _settle(backend, memory_mode = "low_vram") == PIPELINE_SEED_DECLINED
 
 
 def test_an_artifact_sized_plan_that_still_offloads_declines(monkeypatch):
@@ -371,13 +449,13 @@ def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple)
     from core.inference import diffusion_transformer_quant as tq
 
     backend = _settle_backend(monkeypatch, scheme = candidates[0])
-    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None: candidates)
+    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None, **_k: candidates)
     monkeypatch.setattr(
         dmod,
         "denoiser_prequant_source",
-        lambda fam, scheme, **_k: ("unsloth/Qwen-Image-FP8", f"{scheme}.pt")
-        if scheme in artifacts
-        else None,
+        lambda fam, scheme, **_k: (
+            ("unsloth/Qwen-Image-FP8", f"{scheme}.pt") if scheme in artifacts else None
+        ),
     )
     monkeypatch.setattr(
         dmod,
@@ -419,6 +497,57 @@ def test_a_walk_with_no_resident_rung_declines(monkeypatch):
     assert _settle(backend) == PIPELINE_SEED_DECLINED
 
 
+def test_auto_planning_passes_the_base_and_prequant_probe(monkeypatch):
+    """Without the base and a checkpoint probe AUTO drops nvfp4, so the plan must ask like the load."""
+    from core.inference import diffusion_transformer_quant as tq
+
+    backend = _settle_backend(monkeypatch)
+    seen: dict = {}
+
+    def _select(
+        target,
+        mode,
+        family = None,
+        *,
+        base_repo = None,
+        has_prequant = None,
+        **_k,
+    ):
+        seen["select"] = base_repo
+        if base_repo == Z_IMAGE_REPO and has_prequant is not None and has_prequant("nvfp4"):
+            return "nvfp4"
+        return "mxfp8"
+
+    def _candidates(
+        target,
+        family = None,
+        *,
+        base_repo = None,
+        has_prequant = None,
+        **_k,
+    ):
+        seen["candidates"] = base_repo
+        head = ("nvfp4",) if has_prequant is not None and has_prequant("nvfp4") else ()
+        return head + ("mxfp8",)
+
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", _select)
+    monkeypatch.setattr(tq, "auto_scheme_candidates", _candidates)
+    monkeypatch.setattr(
+        dmod,
+        "usable_prequant_source",
+        lambda fam, scheme, **_k: object() if scheme == "nvfp4" else None,
+    )
+    monkeypatch.setattr(
+        dmod,
+        "denoiser_prequant_source",
+        lambda fam, scheme, **_k: ("unsloth/Z-Image-Turbo-NVFP4", "z.safetensors")
+        if scheme == "nvfp4"
+        else None,
+    )
+    assert _settle(backend) == "nvfp4"
+    assert seen == {"select": Z_IMAGE_REPO, "candidates": Z_IMAGE_REPO}
+
+
 def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):
     """An explicit int8 that offloads declines; auto's walk is not offered to an explicit request."""
     backend = _settle_backend_walking(
@@ -429,7 +558,7 @@ def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):
 
 def test_a_family_with_no_hosted_artifact_falls_through(monkeypatch):
     """A scheme with no hosted artifact falls through to the in-memory quantise."""
-    assert _settle(_settle_backend(monkeypatch, scheme = "nvfp4")) is None
+    assert _settle(_settle_backend(monkeypatch, scheme = "mxfp8")) is None
 
 
 def test_a_base_with_no_hosted_artifact_falls_through(monkeypatch):
@@ -513,9 +642,11 @@ def _run_load_backend(
     monkeypatch.setattr(
         DiffusionBackend,
         "_dit_prequant_plan_source",
-        lambda *_a, **_k: (PREQUANT_REPO, PREQUANT_FILE, PREQUANT_BYTES)
-        if verified and planned not in (None, PIPELINE_SEED_DECLINED)
-        else None,
+        lambda *_a, **_k: (
+            (PREQUANT_REPO, PREQUANT_FILE, PREQUANT_BYTES)
+            if verified and planned not in (None, PIPELINE_SEED_DECLINED)
+            else None
+        ),
     )
     fetched: list = []
     monkeypatch.setattr(
@@ -685,13 +816,15 @@ def _load_backend(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(tqmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
     )
     monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe: None)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "stored_denoiser_precision", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "denoiser_modules", lambda pipe: [("transformer", object())])
-    monkeypatch.setattr(pqmod, "restricted_prequant_load_supported", lambda _scheme: True)
+    monkeypatch.setattr(
+        pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
+    )
 
     plans: list = []
 
@@ -940,3 +1073,778 @@ def test_the_rebuilt_fp8_artifacts_are_listed_for_both_schemes(family, repo):
     assert fam is not None
     for scheme in ("fp8", "int8"):
         assert family_prequant_repo(fam, scheme) == repo
+
+
+def _encoders_streamed(**_k):
+    return types.SimpleNamespace(offload_policy = "group", stream_transformer = False)
+
+
+def test_an_artifact_that_fits_once_the_encoders_stream_is_seeded(monkeypatch):
+    """An artifact-sized plan streaming only the encoders keeps the torchao seed."""
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", lambda *_a, **k: _encoders_streamed(**k))
+    assert _settle(backend) == "fp8"
+
+
+def test_an_artifact_plan_that_streams_the_transformer_still_declines(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(offload_policy = "group", stream_transformer = True),
+    )
+    assert _settle(backend) == PIPELINE_SEED_DECLINED
+
+
+@pytest.mark.parametrize("policy", ["group", "streaming"])
+def test_an_artifact_plan_that_streams_the_transformer_seeds_on_a_measured_torchao(
+    monkeypatch, policy
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(offload_policy = policy, stream_transformer = True),
+    )
+    assert _settle(backend) == "fp8"
+
+
+def test_a_resident_rung_still_beats_a_streamed_one(monkeypatch):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = _settle_backend_walking(
+        monkeypatch, artifacts = ("int8", "fp8"), candidates = ("int8", "fp8")
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = "group" if k["transformer_resident_override_mib"] >= 31_000 else "none",
+            stream_transformer = True,
+        ),
+    )
+    assert _settle(backend) == "fp8"
+    # no resident rung: the first streamed one is seeded
+    backend = _settle_backend_walking(monkeypatch, artifacts = ("int8",), candidates = ("int8", "fp8"))
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(offload_policy = "group", stream_transformer = True),
+    )
+    assert _settle(backend) == "int8"
+
+
+def test_a_seed_whose_load_plan_streams_only_the_encoders_is_kept(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch, offload = "group")
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **kwargs):
+        plan = real_plan(self, *a, **kwargs)
+        if kwargs.get("transformer_resident_override_mib") is not None:
+            plan.stream_transformer = False
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    status = _load(backend)
+
+    assert spy.seeds and spy.restored == []
+    assert status["transformer_quant"] == "fp8"
+
+
+_MEASURED = {"safe_device_budget_mib": 170_000, "resident_required_mib": 60_000}
+
+
+def _uncompilable(monkeypatch, *, measured = True):
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
+    monkeypatch.setattr(dmod, "family_bf16_components_gb", lambda *_a, **_k: (90.0, 10.0, 0.2))
+    inner = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **k):
+        plan = inner(self, *a, **k)
+        plan.estimates = dict(_MEASURED) if measured else {}
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+
+
+def _offload_when_bf16_sized(monkeypatch, bf16_policy):
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = bf16_policy
+            if (k.get("transformer_resident_override_mib") or 0) > 80_000
+            else "none"
+        ),
+    )
+
+
+def test_an_uncompilable_family_keeps_the_released_weights_that_fit(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    assert _settle(backend) is None
+
+
+def test_an_uncompilable_family_still_seeds_when_the_budget_is_unmeasured(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch, measured = False)
+    assert _settle(backend) == "fp8"
+
+
+def test_an_uncompilable_family_still_seeds_when_the_released_weights_would_offload(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "sequential")
+    _uncompilable(monkeypatch)
+    assert _settle(backend) == "fp8"
+
+
+def test_an_uncompilable_family_still_seeds_an_explicit_scheme(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    assert _settle(backend, transformer_quant = "fp8") == "fp8"
+
+
+def _operator_checkpoint(monkeypatch, tmp_path):
+    ckpt = tmp_path / "transformer_fp8.pt"
+    ckpt.write_bytes(b"x")
+    monkeypatch.setenv(pqmod.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    return str(ckpt)
+
+
+def test_an_uncompilable_family_still_plans_an_operators_checkpoint(monkeypatch, tmp_path):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    path = _operator_checkpoint(monkeypatch, tmp_path)
+    monkeypatch.setattr(pqmod, "local_prequant_scheme", lambda _path: "fp8")
+    assert _settle(backend, transformer_prequant_path = path) is not None
+    # An unloadable path is no ask: the released weights still win.
+    assert _settle(backend, transformer_prequant_path = str(tmp_path / "missing.pt")) is None
+
+
+def test_a_compilable_family_seeds_as_before(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    assert _settle(backend) == "fp8"
+
+
+def test_an_uncompilable_family_loads_auto_unquantised(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert spy.seeds == []
+    resolved = status["resolved"]["transformer_quant"]
+    assert (resolved["value"], resolved["source"], resolved["status"]) == ("off", "auto", "applied")
+    assert "cannot be regionally compiled" in resolved["reason"]
+
+
+def test_an_uncompilable_family_loads_an_operators_checkpoint_under_auto(
+    fake_runtime, monkeypatch, tmp_path
+):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    status = _load(
+        backend,
+        transformer_prequant_path = _operator_checkpoint(monkeypatch, tmp_path),
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == ["auto"]
+    assert "cannot be regionally compiled" not in str(status["resolved"]["transformer_quant"])
+
+
+def test_a_compilable_family_loads_without_the_bf16_replan(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    replans = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_bf16_resident_plan",
+        lambda self, plan, *a, **k: replans.append(1) or plan,
+    )
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert replans == []
+    assert spy.quantised == ["auto"]
+
+
+def test_an_uncompilable_family_quantises_auto_when_bf16_would_offload(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **k):
+        plan = real_plan(self, *a, **k)
+        if k.get("transformer_resident_override_mib") is None:
+            plan.offload_policy = "sequential"
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == ["auto"]
+
+
+def test_an_uncompilable_family_honours_an_explicit_scheme(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    _load(
+        backend,
+        transformer_quant = "fp8",
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == ["fp8"]
+
+
+def test_an_uncompilable_family_on_a_host_without_dense_quant_reports_as_before(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: False)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert "regionally compiled" not in status["resolved"]["transformer_quant"]["reason"]
+
+
+def test_an_uncompilable_family_quantises_auto_when_the_budget_is_unmeasured(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch, measured = False)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == ["auto"]
+
+
+def _measured_bf16_family(monkeypatch, *, measured = True):
+    _uncompilable(monkeypatch, measured = measured)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: "measured: no faster")
+
+
+def test_a_measured_bf16_family_keeps_the_released_weights_that_fit(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _measured_bf16_family(monkeypatch)
+    assert _settle(backend) is None
+
+
+def test_a_measured_bf16_family_seeds_when_the_released_weights_would_offload(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "sequential")
+    _measured_bf16_family(monkeypatch)
+    assert _settle(backend) == "fp8"
+
+
+def test_a_measured_bf16_family_loads_auto_unquantised_with_the_measured_reason(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _measured_bf16_family(monkeypatch)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == [] and spy.seeds == []
+    resolved = status["resolved"]["transformer_quant"]
+    assert (resolved["value"], resolved["source"]) == ("off", "auto")
+    assert "measured: no faster" in resolved["reason"]
+    assert "cannot be regionally compiled" not in resolved["reason"]
+
+
+def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _measured_bf16_family(monkeypatch, measured = False)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == ["auto"]
+
+
+@pytest.mark.parametrize(
+    "repo, kept",
+    [
+        ("Alpha-VLLM/Lumina-Image-2.0", True),
+        ("HiDream-ai/HiDream-I1-Full", True),
+        ("black-forest-labs/FLUX.1-dev", False),
+        ("Tongyi-MAI/Z-Image-Turbo", False),
+        ("Qwen/Qwen-Image", False),
+    ],
+)
+def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
+    fam = detect_family_for_pick(repo, None, None)
+    assert fam is not None
+    reason = dmod._auto_keeps_bf16_reason(fam)
+    assert (reason is not None) is kept
+    assert reason is None or "cannot be regionally compiled" not in reason
+    assert dmod._auto_keeps_bf16_reason(fam, "gguf") is None
+
+
+def test_an_uncompilable_family_keeps_its_reason_for_a_gguf_load(monkeypatch):
+    fam = detect_family_for_pick("Alpha-VLLM/Lumina-Image-2.0", None, None)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
+    assert "cannot be regionally compiled" in dmod._auto_keeps_bf16_reason(fam, "gguf")
+
+
+def test_a_resident_plan_whose_requirement_exceeds_the_budget_proves_no_fit():
+    fits = types.SimpleNamespace(
+        offload_policy = "none",
+        estimates = {"safe_device_budget_mib": 60_000, "resident_required_mib": 60_000},
+    )
+    over = types.SimpleNamespace(
+        offload_policy = "none",
+        estimates = {"safe_device_budget_mib": 50_000, "resident_required_mib": 60_000},
+    )
+    assert dmod._plan_proves_resident(fits)
+    assert not dmod._plan_proves_resident(over)
+
+
+def test_an_uncompilable_family_seeds_when_bf16_overflows_a_unified_pool(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
+    monkeypatch.setattr(dmod, "family_bf16_components_gb", lambda *_a, **_k: (90.0, 10.0, 0.2))
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(
+            offload_policy = "none",
+            estimates = {"safe_device_budget_mib": 50_000, "resident_required_mib": 60_000},
+        ),
+    )
+    assert _settle(backend) == "fp8"
+
+
+def test_an_uncompilable_family_prices_a_pre_cast_text_encoder(monkeypatch):
+    import core.inference.diffusion_te_prequant as teq
+
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        teq,
+        "te_prequant_budget_scale",
+        lambda _fam, *, te_quant_mode, target, base: 0.5 if te_quant_mode == "fp8" else 1.0,
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = "none"
+            if (k.get("companion_override_mib") or 0) < 6_000
+            or (k.get("transformer_resident_override_mib") or 0) < 80_000
+            else "sequential"
+        ),
+    )
+    _uncompilable(monkeypatch)
+    assert _settle(backend) == "fp8"
+    assert _settle(backend, text_encoder_quant = "fp8") is None
+
+
+def test_an_offline_uncompilable_pick_keeps_a_cached_seed_without_released_shards(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: False)
+    )
+    assert _settle(backend, local_files_only = True) == "fp8"
+    assert _settle(backend) is None
+    monkeypatch.setattr(
+        DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: True)
+    )
+    assert _settle(backend, local_files_only = True) is None
+
+
+def test_released_transformer_cached_reads_the_transformer_folder(tmp_path):
+    (tmp_path / "vae").mkdir()
+    (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached(str(tmp_path))
+    assert not DiffusionBackend._released_transformer_cached(None)
+
+
+def test_the_seed_planner_hears_the_encoder_choice_and_offline_flag(monkeypatch):
+    backend, _seen, _fetched = _run_load_backend(monkeypatch, planned = None)
+    heard: dict = {}
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_pipeline_planned_denoiser_scheme",
+        lambda _self, _fam, **k: heard.update(k),
+    )
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO, model_kind = "pipeline", local_files_only = True, _load_token = 1
+    )
+    assert heard["local_files_only"] is True
+    assert "text_encoder_quant" in heard
+
+
+def test_an_uncompilable_family_keeps_bf16_when_the_resident_table_fits(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+    overrides: list = []
+
+    def _plan(self, *a, **k):
+        plan = real_plan(self, *a, **k)
+        overrides.append(k.get("transformer_resident_override_mib"))
+        if k.get("transformer_resident_override_mib") is None:
+            plan.offload_policy = "sequential"
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resident_sized_plan",
+        lambda _s, plan, *_a, **_k: types.SimpleNamespace(**vars(plan)),
+    )
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert int(90.0 * 1000.0**3 / (1024.0 * 1024.0)) in overrides
+    assert status["resolved"]["transformer_quant"]["value"] == "off"
+
+
+def _write_index(folder, shards):
+    folder.mkdir(parents = True, exist_ok = True)
+    (folder / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {f"w{i}": shard for i, shard in enumerate(shards)}})
+    )
+
+
+def test_a_partial_sharded_transformer_is_not_a_cached_release(tmp_path):
+    shards = [f"diffusion_pytorch_model-0000{i}-of-00002.safetensors" for i in (1, 2)]
+    _write_index(tmp_path / "transformer", shards)
+    (tmp_path / "transformer" / shards[0]).write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    (tmp_path / "transformer" / shards[1]).write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+def test_a_complete_bin_set_does_not_cover_a_partial_safetensors_index(tmp_path):
+    # Diffusers loads the safetensors index when present and never a .bin index by default.
+    folder = tmp_path / "transformer"
+    bins = [f"diffusion_pytorch_model-0000{i}-of-00002.bin" for i in (1, 2)]
+    folder.mkdir()
+    (folder / "diffusion_pytorch_model.bin.index.json").write_text(
+        json.dumps({"weight_map": {"a": bins[0], "b": bins[1]}})
+    )
+    for shard in bins:
+        (folder / shard).write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    shards = [f"diffusion_pytorch_model-0000{i}-of-00002.safetensors" for i in (1, 2)]
+    _write_index(folder, shards)
+    (folder / shards[0]).write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    (folder / shards[1]).write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+def test_shards_scattered_across_revisions_are_not_a_cached_release(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--org--repo"
+    shards = [f"diffusion_pytorch_model-0000{i}-of-00002.safetensors" for i in (1, 2)]
+    for rev, shard in (("aaa", shards[0]), ("bbb", shards[1])):
+        folder = repo_dir / "snapshots" / rev / "transformer"
+        _write_index(folder, shards)
+        (folder / shard).write_bytes(b"x")
+    (repo_dir / "snapshots" / "aaa" / "model_index.json").write_text("{}")
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("aaa")
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_cache_repo_dirs", staticmethod(lambda _repo: [repo_dir])
+    )
+    assert not DiffusionBackend._released_transformer_cached("org/repo")
+    (repo_dir / "snapshots" / "aaa" / "transformer" / shards[1]).write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached("org/repo")
+
+
+def test_hidreams_pre_cast_fourth_encoder_is_priced_in_the_bf16_plan(monkeypatch):
+    import core.inference.diffusion_te_prequant as teq
+    from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
+
+    fam = detect_family_for_pick("HiDream-ai/HiDream-I1-Full", None, None)
+    assert fam is not None and fam.name == "hidream-i1"
+    monkeypatch.setattr(teq, "te_prequant_budget_scale", lambda *_a, **_k: 1.0)
+    monkeypatch.setattr(
+        teq,
+        "te_prequant_sources_for_base",
+        lambda _fam, _base, *, te_quant_mode, target, components = (), **_k: (
+            {"text_encoder_4": object()}
+            if te_quant_mode == "fp8" and tuple(components) == ("text_encoder_4",)
+            else {}
+        ),
+    )
+    seen: list = []
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", lambda _s, *_a, **k: seen.append(k) or k)
+    backend = DiffusionBackend()
+    kwargs = {"kind": "pipeline", "repo_id": "HiDream-ai/HiDream-I1-Full"}
+    backend._bf16_table_plan(_target(), fam, "HiDream-ai/HiDream-I1-Full", None, False, **kwargs)
+    backend._bf16_table_plan(
+        _target(),
+        fam,
+        "HiDream-ai/HiDream-I1-Full",
+        None,
+        False,
+        text_encoder_quant = "fp8",
+        **kwargs,
+    )
+    dense, pre_cast = seen[0]["text_encoder_override_mib"], seen[1]["text_encoder_override_mib"]
+    saved = HIDREAM_LLAMA_BF16_BYTES * (1.0 - teq.TE_PREQUANT_BUDGET_SCALE) / (1024 * 1024)
+    assert abs((dense - pre_cast) - saved) <= 2
+    assert seen[1]["companion_override_mib"] < seen[0]["companion_override_mib"]
+
+
+def test_a_lone_numbered_shard_without_its_index_is_not_a_cached_release(tmp_path):
+    folder = tmp_path / "transformer"
+    folder.mkdir()
+    (folder / "diffusion_pytorch_model-00001-of-00002.safetensors").write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    (folder / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+def test_an_offline_pick_budgets_the_encoder_dense(monkeypatch):
+    import core.inference.diffusion_te_prequant as teq
+
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        teq,
+        "te_prequant_budget_scale",
+        lambda _fam, *, te_quant_mode, target, base: 0.5 if te_quant_mode == "fp8" else 1.0,
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = "none"
+            if (k.get("companion_override_mib") or 0) < 6_000
+            or (k.get("transformer_resident_override_mib") or 0) < 80_000
+            else "sequential"
+        ),
+    )
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: True)
+    )
+    assert _settle(backend, text_encoder_quant = "fp8") is None
+    assert _settle(backend, text_encoder_quant = "fp8", local_files_only = True) == "fp8"
+
+
+def test_an_offline_pick_finds_released_shards_under_the_mirror(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda base, *_a, **_k: "unsloth/mirror")
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_released_transformer_cached",
+        staticmethod(lambda base: base == "unsloth/mirror"),
+    )
+    assert _settle(backend, local_files_only = True) is None
+
+
+def test_a_hidream_pipeline_is_repriced_with_its_standalone_encoder(monkeypatch):
+    fam = detect_family_for_pick("HiDream-ai/HiDream-I1-Dev", None, None)
+    assert fam is not None and fam.name == "hidream-i1"
+    as_built = types.SimpleNamespace(offload_policy = "none", estimates = {}, device_memory = None)
+    monkeypatch.setattr(DiffusionBackend, "_resident_sized_plan", lambda _s, plan, *_a, **_k: plan)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda _s, *_a, **k: types.SimpleNamespace(offload_policy = "group", overrides = k),
+    )
+    repriced = DiffusionBackend()._bf16_resident_plan(
+        as_built,
+        _target(),
+        fam,
+        "HiDream-ai/HiDream-I1-Dev",
+        None,
+        False,
+        kind = "pipeline",
+        repo_id = "HiDream-ai/HiDream-I1-Dev",
+    )
+    assert repriced is not as_built
+    table_gb = 34.2 + 28.8
+    total_mib = (
+        repriced.overrides["transformer_resident_override_mib"]
+        + repriced.overrides["companion_override_mib"]
+    )
+    assert total_mib >= int(table_gb * 1000.0**3 / (1024 * 1024)) - 2
+
+
+def test_the_offline_shard_check_reads_the_root_the_loader_reads(monkeypatch, tmp_path):
+    live, other = tmp_path / "live" / "models--org--repo", tmp_path / "other" / "models--org--repo"
+    for repo_dir, with_transformer in ((live, False), (other, True)):
+        snapshot = repo_dir / "snapshots" / "rev"
+        snapshot.mkdir(parents = True)
+        (snapshot / "model_index.json").write_text("{}")
+        if with_transformer:
+            (snapshot / "transformer").mkdir()
+            (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+        (repo_dir / "refs").mkdir()
+        (repo_dir / "refs" / "main").write_text("rev")
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_cache_repo_dirs", staticmethod(lambda _repo: [live, other])
+    )
+    assert not DiffusionBackend._released_transformer_cached("org/repo")
+    (live / "snapshots" / "rev" / "model_index.json").unlink()
+    assert DiffusionBackend._released_transformer_cached("org/repo")
+
+
+@pytest.mark.parametrize("resolved", [{}, {"text_encoder": ("repo", [("te.safetensors", 1)])}])
+def test_pre_cast_sizing_waits_for_a_resolved_encoder_artifact(monkeypatch, resolved):
+    backend, _seen, _fetched = _run_load_backend(monkeypatch, planned = None)
+    monkeypatch.setattr(DiffusionBackend, "_te_prequant_plan_files", lambda *_a, **_k: resolved)
+    heard: dict = {}
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_pipeline_planned_denoiser_scheme",
+        lambda _self, _fam, **k: heard.update(k),
+    )
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO, model_kind = "pipeline", text_encoder_quant = "fp8", _load_token = 1
+    )
+    assert heard["text_encoder_quant"] == ("fp8" if resolved else None)
+
+
+def test_a_dtype_variant_twin_is_not_a_cached_release(tmp_path):
+    folder = tmp_path / "transformer"
+    shards = [f"diffusion_pytorch_model-0000{i}-of-00002.fp16.safetensors" for i in (1, 2)]
+    folder.mkdir()
+    (folder / "diffusion_pytorch_model.fp16.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": shards[0], "b": shards[1]}})
+    )
+    for shard in shards:
+        (folder / shard).write_bytes(b"x")
+    (folder / "diffusion_pytorch_model.fp16.safetensors").write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+def test_an_offline_pick_checks_only_the_repo_the_load_reads(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda base, *_a, **_k: base)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_released_transformer_cached",
+        staticmethod(lambda base: base == "unsloth/mirror"),
+    )
+    assert _settle(backend, local_files_only = True) == "fp8"
+
+
+def test_an_auxiliary_checkpoint_is_not_a_cached_release(tmp_path):
+    folder = tmp_path / "transformer"
+    folder.mkdir()
+    (folder / "adapter_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": "adapter_model-00001-of-00001.safetensors"}})
+    )
+    (folder / "adapter_model-00001-of-00001.safetensors").write_bytes(b"x")
+    (folder / "adapter_model.safetensors").write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+@pytest.mark.parametrize("resolved", [{}, {"text_encoder": ("repo", [("te.safetensors", 1)])}])
+def test_the_load_hears_whether_the_pre_cast_encoder_resolved(monkeypatch, resolved):
+    backend, seen, _fetched = _run_load_backend(monkeypatch, planned = None)
+    monkeypatch.setattr(DiffusionBackend, "_te_prequant_plan_files", lambda *_a, **_k: resolved)
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO, model_kind = "pipeline", text_encoder_quant = "fp8", _load_token = 1
+    )
+    assert seen["_te_prequant_resolved"] is bool(resolved)
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_the_load_time_decision_budgets_an_unresolved_encoder_dense(
+    fake_runtime, monkeypatch, resolved
+):
+    backend, _spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    heard: list = []
+    real = DiffusionBackend._bf16_resident_plan
+
+    def _spy_plan(self, plan, *a, **k):
+        heard.append(k.get("text_encoder_quant"))
+        return real(self, plan, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_bf16_resident_plan", _spy_plan)
+    monkeypatch.setattr(dmod, "resolve_te_quant_request", lambda *_a, **_k: ("fp8", False))
+    _load(
+        backend,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+        _te_prequant_resolved = resolved,
+    )
+    assert heard == [("fp8" if resolved else None)]
+
+
+def test_the_kept_bf16_weights_are_placed_by_the_plan_that_proved_the_fit(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **k):
+        plan = real_plan(self, *a, **k)
+        if k.get("transformer_resident_override_mib") is None:
+            plan.offload_policy = "sequential"
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resident_sized_plan",
+        lambda _s, plan, *_a, **_k: types.SimpleNamespace(**vars(plan)),
+    )
+    placed: list = []
+    monkeypatch.setattr(
+        dmod,
+        "apply_memory_plan",
+        lambda _pipe, plan, *_a, **_k: placed.append(plan.offload_policy) or ("none", False),
+    )
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert placed == ["none"]
+
+
+@pytest.mark.parametrize("outgoing_host_mib, expected", [(0, False), (10_000, True)])
+def test_the_streamed_seed_credits_host_ram_the_outgoing_pipeline_frees(
+    monkeypatch, outgoing_host_mib, expected
+):
+    # The plan runs before the previous pipeline unloads, so its host weights must not veto the pin.
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_pinned_memory_capped", lambda: False)
+    monkeypatch.delenv(diffusion_memory.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(diffusion_memory, "_pin_budget_mib", lambda: 4_000)
+    monkeypatch.setattr(dmod, "pipeline_host_mib", lambda pipe: outgoing_host_mib)
+    backend = _settle_backend(monkeypatch)
+    backend._state = types.SimpleNamespace(pipe = object())
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(
+            offload_policy = "group",
+            stream_transformer = True,
+            estimates = {"model_dense_mib": 20_000, "companion_dense_mib": 8_000},
+        ),
+    )
+    assert (_settle(backend) == "fp8") is expected

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -22,11 +23,18 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 _logger = logging.getLogger(__name__)
 
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
+# Pinned wheels; utils.kernel_install wraps them for the training worker, SSM runtime and CLI.
+CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
+CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"
+MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
+MAMBA_SSM_RELEASE_TAG = "v2.3.1"
+MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
 
 # No arch gate, deliberately: has_blackwell_gpu() skipped flash-attn before sm_100+ wheels existed (#5420) and became the bug once they did (#6961), denying B200 hosts a working wheel. An arch gate encodes a snapshot of what upstream ships and goes stale silently both ways; the post-install import check catches a wheel that will not load whatever the cause.
 def wheel_platform_tag() -> str | None:
-    """pip platform tag for this host, or None where nothing we resolve is published. Windows is included because download.pytorch.org publishes CUDA-matched ``win_amd64`` xFormers wheels (see ``xformers_wheel_url``). It is NOT included for flash-attn / causal-conv1d / mamba-ssm, whose upstreams publish Linux assets only; ``probe_torch_wheel_env`` keeps that gate, not this function."""
+    """pip platform tag for this host, or None where nothing we resolve is published. Windows is included because download.pytorch.org publishes CUDA-matched ``win_amd64`` xFormers wheels (see ``xformers_wheel_url``), and flash-attn / causal-conv1d / mamba-ssm resolve only to the Windows wheels listed in this module; ``probe_torch_wheel_env`` keeps the per-caller opt-in, not this function."""
     machine = platform.machine().lower()
     if sys.platform.startswith("linux"):
         if machine in {"x86_64", "amd64"}:
@@ -36,7 +44,8 @@ def wheel_platform_tag() -> str | None:
     elif sys.platform == "win32":
         if machine in {"x86_64", "amd64"}:
             return "win_amd64"
-        # Windows on ARM: no CUDA, and no win_arm64 wheel on any index.
+        if machine in {"arm64", "aarch64"}:
+            return "win_arm64"
     # No prebuilt wheels published for macOS
     return None
 
@@ -44,11 +53,11 @@ def wheel_platform_tag() -> str | None:
 def probe_torch_wheel_env(
     *, timeout: int | None = None, include_windows: bool = False
 ) -> dict[str, str] | None:
-    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``: every existing caller resolves a flash-attn / causal-conv1d / mamba-ssm asset, and those projects publish no win_amd64 wheels at all, so returning an env there would only build 404s."""
+    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``, for callers whose every Windows URL names a published asset."""
     platform_tag = wheel_platform_tag()
     if platform_tag is None:
         return None
-    if platform_tag == "win_amd64" and not include_windows:
+    if platform_tag.startswith("win_") and not include_windows:
         return None
 
     try:
@@ -57,12 +66,14 @@ def probe_torch_wheel_env(
                 sys.executable,
                 "-c",
                 (
-                    "import json, sys, re, torch; "
+                    "import json, sys, sysconfig, re, torch; "
                     "parts = torch.__version__.split('+', 1)[0].split('.')[:2]; "
                     "minor = re.sub(r'[^0-9].*', '', parts[1]) if len(parts) > 1 else '0'; "
                     "torch_mm = parts[0] + '.' + minor; "
                     "print(json.dumps({"
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
+                    # Differs from python_tag only on a free-threaded build (cp314t).
+                    "'abi_tag': f'cp{sys.version_info.major}{sys.version_info.minor}' + ('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else ''), "
                     "'torch_mm': torch_mm, "
                     # xFormers publishes one wheel per exact torch PATCH and per CUDA MINOR, so 'torch_mm' / 'cuda_major' cannot pick between them. Full release + full CUDA version: cu126 and cu128 are different builds of the same version string.
                     "'torch_version': str(torch.__version__), "
@@ -105,6 +116,129 @@ def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
     return _PREBUILT_WHEEL_TORCH_MM.get(torch_mm, torch_mm)
 
 
+# ── Wheels we build ourselves ─────────────────────────────────────────────────
+# Upstream stops at torch 2.11 and the reuse window above stops at 2.12, because torch 2.13 broke the extension ABI again -- it changed c10::impl::cow::materialize_cow_storage and the signature of c10::cuda::c10_cuda_check_implementation, so an upstream wheel raises "undefined symbol" at import -- and 2.14 changed it once more. There is no upstream asset to point at and no older one that loads, so from 2.13 on we build the wheels and resolve to our own release. Built by .github/workflows/prebuilt-cuda-wheels.yml, one per (package, torch minor, interpreter), Sigstore-signed, on the tag below.
+UNSLOTH_PREBUILT_RELEASE_BASE_URL = "https://github.com/unslothai/unsloth/releases/download"
+UNSLOTH_PREBUILT_RELEASE_TAG = "prebuilt-wheels-cu13"
+
+# Keyed on the torch minor, and exact rather than a floor: a wheel is built against one minor and there is no evidence any future one will load it, which is exactly the assumption that made the upstream wheels stop working here. A new torch minor adds a row only after the workflow has built and smoke-tested it.
+_UNSLOTH_PREBUILT_TORCH_MM = frozenset({"2.13", "2.14"})
+
+# The package version published on that tag, which is not the version the upstream branches resolve: the builds are newer because they had to be cut from a source revision that compiles against torch 2.13 at all. flash-attn 2.8.4 in particular exists only as a commit upstream, carrying the c++20 switch from Dao-AILab/flash-attention#2899.
+_UNSLOTH_PREBUILT_VERSIONS = {
+    "flash_attn": "2.8.4",
+    "causal_conv1d": "1.7.0",
+    "mamba_ssm": "2.3.2.post1",
+}
+
+# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True; Windows publishes cp313 GIL builds only, and so does linux_aarch64 (upstream's aarch64 wheels stop at torch 2.10).
+_UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
+    "linux_x86_64": ("TRUE", None),
+    "win_amd64": ("TRUE", frozenset({"cp313"})),
+    "linux_aarch64": ("TRUE", frozenset({"cp313"})),
+    "win_arm64": ("TRUE", frozenset({"cp311", "cp312", "cp313"})),
+}
+
+# Windows on ARM has one CUDA torch, NVIDIA's 2.14.0+cu134 (CUDA 13.4, the first with a Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there.
+_UNSLOTH_WIN_ARM64_PREFIXES = frozenset({"causal_conv1d", "mamba_ssm"})
+_WIN_ARM64_TORCH_MM = "2.14"
+_WIN_ARM64_MIN_CUDA = (13, 4)
+
+
+def _cuda_at_least(env: dict[str, str], floor: tuple[int, int]) -> bool:
+    try:
+        major, minor = (int(part) for part in str(env.get("cuda_version") or "").split(".")[:2])
+    except ValueError:
+        return False
+    return (major, minor) >= floor
+
+
+# NVIDIA's flash-attn for Windows on ARM, built for the torch 2.14.0+cu134 the WoA installer takes. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
+NVIDIA_WOA_FLASH_ATTN_RELEASE_URL = (
+    "https://github.com/NVIDIA/pytorch-windows-ci/releases/download/Flash-Attention-for-WoA"
+)
+NVIDIA_WOA_FLASH_ATTN_VERSION = "2.8.4"
+NVIDIA_WOA_FLASH_ATTN_TORCH_MM = "2.14"
+NVIDIA_WOA_FLASH_ATTN_SHA256 = {
+    "cp311": "1995cf916142eeadf8474ec992b2215d3b0319dfbf0b2b57b627f1c3d2f907e4",
+    "cp312": "4be12d62df9e5adafc1be7451b9b3b2ea335d43ebd1b8288e642097144236de2",
+    "cp313": "54d1c98df04b133d227d5414a9d6d9d668e4b049246b96ecfd811b8272a9d926",
+    "cp314": "b016989f1d30a01edc9fff9ba5643170174c27cc12968fdaa33ca1c055eb17aa",
+    "cp314t": "c5269dc146c61a35e95df34aea81f35b85d7449d912325e4af00640f63cfcd5a",
+}
+
+
+def is_windows_wheel_env(env: dict[str, str] | None) -> bool:
+    """True for a Windows env, where a kernel comes from a listed wheel or not at all."""
+    return bool(env) and str(env.get("platform_tag") or "").startswith("win_")
+
+
+def nvidia_woa_flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
+    """NVIDIA's win_arm64 flash-attn for this env, with its pinned #sha256= fragment, else None."""
+    if env is None or env.get("platform_tag") != "win_arm64":
+        return None
+    if env.get("torch_mm") != NVIDIA_WOA_FLASH_ATTN_TORCH_MM or not _cuda_at_least(
+        env, _WIN_ARM64_MIN_CUDA
+    ):
+        return None
+    python_tag = env.get("python_tag") or ""
+    abi_tag = env.get("abi_tag") or python_tag
+    digest = NVIDIA_WOA_FLASH_ATTN_SHA256.get(abi_tag)
+    if not python_tag or digest is None or not abi_tag.startswith(python_tag):
+        return None
+    filename = (
+        f"flash_attn-{NVIDIA_WOA_FLASH_ATTN_VERSION}+cu13torch{NVIDIA_WOA_FLASH_ATTN_TORCH_MM}"
+        f"-{python_tag}-{abi_tag}-win_arm64.whl"
+    )
+    return f"{NVIDIA_WOA_FLASH_ATTN_RELEASE_URL}/{filename}#sha256={digest}"
+
+
+def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | None) -> str | None:
+    """Our own prebuilt wheel for this environment, or None to leave resolution unchanged.
+
+    Every gate here is narrower than it strictly has to be, because the cost of the two answers is not symmetric: returning None costs a source build the user was already facing, and returning a URL for a combination we did not publish costs a 404 and the same source build with a misleading log line in front of it. So it answers only for the exact cells the workflow builds, and the torch minor, CUDA major, ABI, interpreter and platform must all match (see _UNSLOTH_PREBUILT_PLATFORMS); macOS keeps whatever behaviour it has today.
+    """
+    if env is None:
+        return None
+    if env.get("torch_mm") not in _UNSLOTH_PREBUILT_TORCH_MM:
+        return None
+    # cu13 only. The workflow builds against the CUDA 13 toolkit and nothing else.
+    if env.get("cuda_major") != "13":
+        return None
+    platform_spec = _UNSLOTH_PREBUILT_PLATFORMS.get(str(env.get("platform_tag") or ""))
+    if platform_spec is None:
+        return None
+    cxx11abi, published_pythons = platform_spec
+    if env.get("platform_tag") == "win_arm64" and (
+        filename_prefix not in _UNSLOTH_WIN_ARM64_PREFIXES
+        or env.get("torch_mm") != _WIN_ARM64_TORCH_MM
+        or not _cuda_at_least(env, _WIN_ARM64_MIN_CUDA)
+    ):
+        return None
+    # Every Linux torch pip wheel from 2.7 on is built with _GLIBCXX_USE_CXX11_ABI=1, so there is no abiFALSE variant to publish. A torch built otherwise -- a source build, an NGC image -- is not something these wheels can serve.
+    if env.get("cxx11abi") != cxx11abi:
+        return None
+    python_tag = env.get("python_tag")
+    if not python_tag:
+        return None
+    if published_pythons is not None:
+        if python_tag not in published_pythons:
+            return None
+        if (env.get("abi_tag") or python_tag) != python_tag:
+            return None
+    package_version = _UNSLOTH_PREBUILT_VERSIONS.get(filename_prefix)
+    if package_version is None:
+        return None
+
+    filename = (
+        f"{filename_prefix}-{package_version}"
+        f"+cu{env['cuda_major']}torch{env['torch_mm']}"
+        f"cxx11abi{env['cxx11abi']}-{python_tag}-{python_tag}"
+        f"-{env['platform_tag']}.whl"
+    )
+    return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
+
+
 def direct_wheel_url(
     *,
     filename_prefix: str,
@@ -116,6 +250,14 @@ def direct_wheel_url(
     if env is None or not env.get("cuda_major"):
         return None
 
+    # Checked before the upstream filename is built, not after: for torch 2.13+ the upstream URL this would otherwise return names an asset that has never existed, so there is nothing to fall back to and no reason to prefer it. Every caller -- causal-conv1d and mamba-ssm on both the training and the inference path -- picks this up without changing its own arguments, which is why the override lives here rather than at each call site.
+    ours = unsloth_prebuilt_wheel_url(filename_prefix = filename_prefix, env = env)
+    if ours is not None:
+        return ours
+    # No upstream release has a Windows asset.
+    if is_windows_wheel_env(env):
+        return None
+
     filename = (
         f"{filename_prefix}-{package_version}"
         f"+cu{env['cuda_major']}torch{prebuilt_wheel_torch_mm(env['torch_mm'])}"
@@ -125,7 +267,7 @@ def direct_wheel_url(
     return f"{release_base_url}/{release_tag}/{filename}"
 
 
-# xformers/_C is linked against ONE exact (torch, CUDA) pair, and a mismatch is only a log warning, so the import "succeeds" with memory-efficient attention silently gone. PyPI publishes one win_amd64 flavour whose CUDA family churns across releases, which is why this resolves an exact download.pytorch.org URL instead of pinning a version. Keyed on the `torch` field of cpp_lib.json, not `cuda`, which is the NVCC toolkit version and does not separate flavours. Rows are exact, never interpolated: the extension ABI does not survive a torch minor bump, and an unlisted pair means "install nothing", the safe answer. cu118/cu121/cu124 are absent because they stop before the cp39-abi3 switch at 0.0.31, so one filename template cannot name them. The PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128 (0.0.32), cu130 (0.0.33) and cu128 again (0.0.33.post1 onward); download.pytorch.org's cu126 0.0.34 also reports 1208, so only the `torch` field ("2.10.0+cu128") separates flavours. Every row was HEAD-verified live, e.g. cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}. Keying on the CUDA MINOR is stricter than the ABI needs (cu126 and cu128 both link libcudart.so.12; only a major bump changes it), but it names a real directory, so torch 2.10.0+cu129 on Linux resolves to nothing. torch 2.11+ maps to 0.0.35, compiled against 2.10.0 and compatible with any later version since xFormers moved to the stable API/ABI in 0.0.34. Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in tests/python/test_windows_xformers_wheel_match.py.
+# xformers/_C is linked against ONE exact (torch, CUDA) pair, and a mismatch its declared torch requirement allows is only a log warning, so the import "succeeds" with memory-efficient attention silently gone. PyPI publishes one win_amd64 flavour whose CUDA family churns across releases, which is why this resolves an exact download.pytorch.org URL instead of pinning a version. Keyed on the `torch` field of cpp_lib.json, not `cuda`, which is the NVCC toolkit version and does not separate flavours. Rows are exact, never interpolated: the extension ABI does not survive a torch minor bump, and an unlisted pair means "install nothing", the safe answer. cu118/cu121/cu124 are absent because they stop before the cp39-abi3 switch at 0.0.31, so one filename template cannot name them. The PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128 (0.0.32), cu130 (0.0.33) and cu128 again (0.0.33.post1 onward); download.pytorch.org's cu126 0.0.34 also reports 1208, so only the `torch` field ("2.10.0+cu128") separates flavours. Every row was HEAD-verified live, e.g. cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}. Keying on the CUDA MINOR is stricter than the ABI needs (cu126 and cu128 both link libcudart.so.12; only a major bump changes it), but it names a real directory, so torch 2.10.0+cu129 on Linux resolves to nothing. torch 2.11+ maps to 0.0.35, compiled against 2.10.0 and compatible with any later version since xFormers moved to the stable API/ABI in 0.0.34. Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in tests/python/test_windows_xformers_wheel_match.py.
 # ── xFormers ──────────────────────────────────────────────────────────────────
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 
@@ -237,6 +379,35 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+def xformers_torch_requirement_unmet() -> tuple[str, str, str] | None:
+    """(xformers version, unmet torch specifier, torch version) from metadata, or None if unmet cannot be shown."""
+    try:
+        from importlib.metadata import requires, version
+
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        xformers_version = version("xformers")
+        torch_version = version("torch")
+        installed = Version(torch_version)
+        declared = requires("xformers") or []
+    except Exception:  # noqa: BLE001 -- either package absent, or no packaging
+        return None
+    for line in declared:
+        try:
+            requirement = Requirement(line)
+            if requirement.name.lower() != "torch":
+                continue
+            if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+                continue
+        except Exception:  # noqa: BLE001 -- a line packaging cannot parse is not a verdict
+            continue
+        # Local tags are ignored as pip ignores them, so "torch==2.6.0" accepts 2.6.0+cu124.
+        if not requirement.specifier.contains(installed, prereleases = True):
+            return xformers_version, str(requirement.specifier), torch_version
+    return None
+
+
 def join_wheel_url(base: str, path: str) -> str:
     """``base`` + ``path``, with any ?query / #fragment kept at the end. UNSLOTH_PYTORCH_MIRROR is allowed to authenticate by query string (``https://mirror/whl?token=abc``), and appending after the query put the wheel path INSIDE the token value, leaving the request path at /whl and the token unusable. The tokenized private mirror this setting exists for was the one shape that could not resolve a wheel."""
     cut = min([i for i in (base.find("?"), base.find("#")) if i >= 0], default = -1)
@@ -278,6 +449,12 @@ def flash_attn_package_version(torch_mm: str) -> str | None:
 def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     if env is None:
         return None
+    # flash-attn does not reach direct_wheel_url on torch 2.13+: flash_attn_package_version returns None there and this function bails before the URL is ever built, so the override has to be asked here too. It is the same predicate and the same table; only the entry point differs.
+    ours = unsloth_prebuilt_wheel_url(filename_prefix = "flash_attn", env = env)
+    if ours is not None:
+        return ours
+    if is_windows_wheel_env(env):
+        return nvidia_woa_flash_attn_wheel_url(env)
     package_version = flash_attn_package_version(prebuilt_wheel_torch_mm(env["torch_mm"]))
     if package_version is None:
         return None
@@ -296,6 +473,7 @@ def install_wheel(
     python_executable: str,
     use_uv: bool,
     uv_needs_system: bool = False,
+    reinstall: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
@@ -304,7 +482,11 @@ def install_wheel(
         uv_cmd = ["uv", "pip", "install"]
         if uv_needs_system:
             uv_cmd.append("--system")
-        uv_cmd.extend(["--python", python_executable, "--no-deps", wheel_url])
+        uv_cmd.extend(["--python", python_executable, "--no-deps"])
+        # Without it an installed same-version build (another CUDA, or a broken copy) is kept.
+        if reinstall:
+            uv_cmd.append("--reinstall")
+        uv_cmd.append(wheel_url)
         result = run(
             uv_cmd,
             stdout = subprocess.PIPE,
@@ -318,7 +500,10 @@ def install_wheel(
         if result.returncode == 0:
             return attempts
 
-    pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps", wheel_url]
+    pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps"]
+    if reinstall:
+        pip_cmd.append("--force-reinstall")
+    pip_cmd.append(wheel_url)
     result = run(
         pip_cmd,
         stdout = subprocess.PIPE,
@@ -333,13 +518,23 @@ def install_wheel(
     return attempts
 
 
-def url_exists(url: str) -> bool:
+def url_exists(url: str) -> bool | None:
+    """True if reachable, False on a 404, None when it cannot be checked: a refusal is no proof the wheel is unpublished."""
     try:
         request = urllib.request.Request(url, method = "HEAD")
         with urllib.request.urlopen(request, timeout = 10):
             return True
     except urllib.error.HTTPError as exc:
-        _logger.debug("url_exists(%s): HTTP %s", url, exc.code)
-    except (urllib.error.URLError, TimeoutError) as exc:
-        _logger.debug("url_exists(%s): %s", url, exc)
-    return False
+        if exc.code == 404:
+            return False
+        reason = f"HTTP {exc.code}"
+    except (OSError, http.client.HTTPException) as exc:
+        reason = str(exc)
+    shown = redact_url_credentials(url)
+    if shown != url:
+        # The error text can echo the userinfo (urllib reads `user:token@host` as a port).
+        reason = reason if reason.startswith("HTTP ") else "unreachable"
+    _logger.warning(
+        "url_exists(%s): %s; could not check prebuilt wheel availability", shown, reason
+    )
+    return None

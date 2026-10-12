@@ -131,14 +131,13 @@ def FalconH1Attention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
     window = (-1, -1)
     use_varlen = (
-        attention_mask is None
-        and seq_info is not None
-        and past_key_value is None
-        and window == (-1, -1)
+        attention_mask is None and seq_info is not None and not had_cache and window == (-1, -1)
     )
 
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
@@ -512,8 +511,11 @@ def _FalconH1_fast_forward_inference(
             attention_mask = None
 
         next_decoder_cache = []
+        block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
 
         for idx, decoder_layer in enumerate(self.model.layers):
+            if block_swap is not None:
+                block_swap.enter(idx)
             residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
@@ -559,6 +561,8 @@ def _FalconH1_fast_forward_inference(
                 down_multiplier = down_multiplier,
             )
             X += residual
+            if block_swap is not None:
+                block_swap.leave(idx)
 
             next_decoder_cache.append(present_key_value)
         X = fast_rms_layernorm_inference(
@@ -646,7 +650,7 @@ def fix_prepare_inputs_for_generation(module):
 
 
 class Unsloth_FalconH1RMSNorm(FalconH1RMSNorm):
-    """fast_rms_layernorm (compiler-disabled, fp32 eps) avoids the float64 torch.compile RMSNorm kernel that fails on Intel Arc DG2 (issue #6555)."""
+    """fast_rms_layernorm (compiler-disabled on XPU, fp32 eps) avoids the float64 torch.compile RMSNorm kernel that fails on Intel Arc DG2 (issue #6555)."""
 
     def forward(self, hidden_states):
         return fast_rms_layernorm(self, hidden_states, gemma = False)

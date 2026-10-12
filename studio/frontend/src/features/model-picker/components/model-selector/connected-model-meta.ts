@@ -5,6 +5,7 @@
 // gates), never from the model's name: a mark the request cannot honour is a promise the picker
 // breaks. An On Device badge may guess, since it describes a repo you have not fetched yet.
 
+import type { ProviderApiType } from "@/features/chat/api/providers-api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { providerModelSupportsVision } from "@/features/chat/external-providers";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
@@ -21,13 +22,15 @@ export interface ConnectedModelMarks {
 /** The badges one Connected row should draw.
  *
  *  `modelId` is the provider's own id (`gemini-2.5-flash-image`), not the `external::` id the
- *  picker selects by. `baseUrl` is the connection's and only image generation reads it. */
+ *  picker selects by. `baseUrl` and `apiType` are the connection's and only image generation
+ *  reads them. */
 export function connectedModelMarks(opts: {
   providerType: string | null | undefined;
   modelId: string | null | undefined;
   baseUrl?: string | null;
+  apiType?: ProviderApiType;
 }): ConnectedModelMarks {
-  const { providerType, modelId, baseUrl } = opts;
+  const { providerType, modelId, baseUrl, apiType } = opts;
   // null is unknown, drawn as no badge rather than as a promise.
   const vision = providerModelSupportsVision(providerType, modelId) === true;
   return {
@@ -43,6 +46,7 @@ export function connectedModelMarks(opts: {
         providerType,
         modelId,
         baseUrl,
+        apiType,
       ),
       // Nothing we connect to serves video generation through the chat route, so the name would
       // be the only evidence and a glyph resting on it promises what selecting the row cannot do.

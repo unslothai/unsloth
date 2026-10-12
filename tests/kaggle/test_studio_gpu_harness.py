@@ -56,6 +56,13 @@ build_kernel = _load("studio_ci_build_kernel", CI_DIR / "build_kernel.py")
 collect_evidence = _load("studio_ci_collect_evidence", CI_DIR / "collect_evidence.py")
 
 
+@pytest.fixture(autouse = True)
+def _no_caller_cuda_visible_devices(monkeypatch):
+    # The samplers scope nvidia-smi by it; a CPU-only run with it set to "" read as no card
+    # visible and failed the mocked-listing tests. Tests that need a value set it themselves.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+
+
 # --------------------------------------------------------------- nvidia-smi
 
 
@@ -1250,6 +1257,30 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     assert body.index("self.start_server()") < body.index(
         '"STUDIO_OLD_PW"'
     ), "the password must be read after the restart, or it is the old one"
+
+
+def test_the_driver_subprocess_timeout_does_not_track_the_ui_wall_budget():
+    """The parent must not out-race the watchdog it is a backstop for.
+
+    `ui_wall_timeout + 300` was the looser of the two only while that budget bounded the
+    whole run. It bounds silence now, so the backstop has to come from the total instead.
+
+    Asserted on the source because reaching the call needs a live server."""
+    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    body = source[source.index("def assert_chat_ui") :]
+    body = body[: body.index("\n    def ")] if "\n    def " in body else body
+    call = body[body.index("subprocess.run(") :]
+    call = call[: call.index("\n            )")]
+    assert "UI_DRIVER_PROC_TIMEOUT_S" in call, call
+    assert "ui_wall_timeout" not in call, call
+
+    module = _load_payload()
+    # A sum, not a guess: the driver is handed a total no progress report can move.
+    assert "STUDIO_UI_TOTAL_TIMEOUT_S" in body, body
+    assert module.UI_DRIVER_PROC_TIMEOUT_S > module.UI_DRIVER_TOTAL_TIMEOUT_S
+    # Six times the ~10 minute healthy pass, and inside the lane's 120 minute job.
+    assert module.UI_DRIVER_TOTAL_TIMEOUT_S >= 6 * 600
+    assert module.UI_DRIVER_PROC_TIMEOUT_S < 120 * 60
 
 
 # The llama.cpp install step.

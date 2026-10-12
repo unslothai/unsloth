@@ -1,5 +1,5 @@
 mod backend;
-mod managed;
+pub(crate) mod managed;
 mod pid_records;
 mod types;
 mod version;

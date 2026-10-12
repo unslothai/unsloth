@@ -107,6 +107,9 @@ function tab(
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),
     },
     "@/components/ui/spinner": { Spinner: "Spinner" },
+    "../components/managed-provider-urls-section": {
+      ManagedProviderUrlsSection: "ManagedProviderUrlsSection",
+    },
     "@/components/ui/dropdown-menu": Object.fromEntries(
       [
         "DropdownMenu",
@@ -119,6 +122,7 @@ function tab(
     "@/components/ui/button": { Button: "Button" },
     "@/components/ui/input": { Input: "Input" },
     "@/components/ui/label": { Label: "Label" },
+    "@/components/ui/textarea": { Textarea: "Textarea" },
     "@/components/ui/alert-dialog": Object.fromEntries(
       [
         "AlertDialog",
@@ -177,6 +181,13 @@ function tab(
       deleteAccount: async (accountId: string) => {
         calls.push(`delete:${accountId}`);
         accounts.splice(1);
+      },
+      setAccountModelAllowlist: async (
+        accountId: string,
+        allowlist: string[] | null,
+      ) => {
+        calls.push(`models:${accountId}:${JSON.stringify(allowlist)}`);
+        accounts[1].model_allowlist = allowlist;
       },
     },
   });
@@ -325,6 +336,8 @@ test("Accounts is registered, searchable, and filtered from managed navigation a
   assert.deepEqual(SETTINGS_SEARCH_INDEX.accounts, [
     "settings.accounts.title",
     "settings.accounts.create",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
   ]);
   const dialog = readFileSync(
     new URL("../src/features/settings/settings-dialog.tsx", import.meta.url),
@@ -481,4 +494,47 @@ test("an account the API reports without a creation date shows a dash, not the e
     /2026/,
     "a real timestamp must still render",
   );
+});
+
+test("model access edits one account's allowlist and an empty list restores every model", async () => {
+  const view = tab();
+  let tree = await view.initialize();
+  assert.ok(!content(tree).includes(en.settings.accounts.modelAccessLimited));
+  await click(tree, en.settings.accounts.modelAccess);
+  tree = view.render();
+  assert.ok(
+    content(tree).includes(
+      translate("settings.accounts.modelAccessTitle", { username: "alice" }),
+    ),
+  );
+  const textarea = () => nodes(view.render()).find((node) => node.type === "Textarea");
+  const submit = async () => {
+    const form = nodes(view.render()).find(
+      (node) =>
+        node.type === "form" &&
+        nodes(node.props.children).some((child) => child.type === "Textarea"),
+    );
+    assert.ok(form);
+    (form.props.onSubmit as (event: unknown) => void)({ preventDefault() {} });
+    await tick();
+    await tick();
+  };
+  (textarea()!.props.onChange as (event: unknown) => void)({
+    target: { value: " unsloth/* \nGoogle/gemma-3-1b-it, " },
+  });
+  await submit();
+  tree = view.render();
+  assert.ok(content(tree).includes(en.settings.accounts.modelAccessLimited));
+  await click(tree, en.settings.accounts.modelAccess);
+  assert.equal(textarea()!.props.value, "unsloth/*\nGoogle/gemma-3-1b-it");
+  (textarea()!.props.onChange as (event: unknown) => void)({ target: { value: "  " } });
+  await submit();
+  assert.deepEqual(
+    view.calls.filter((call) => call.startsWith("models:")),
+    [
+      'models:alice-id:["unsloth/*","Google/gemma-3-1b-it"]',
+      "models:alice-id:null",
+    ],
+  );
+  assert.ok(!content(view.render()).includes(en.settings.accounts.modelAccessLimited));
 });

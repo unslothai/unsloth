@@ -113,7 +113,23 @@ def build_install(
             binary = directory / name
             binary.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
             binary.chmod(0o755)
-    for dylib in ("libllama.0.dylib", "libggml.0.dylib", "libmtmd.0.dylib"):
+    # The libraries a real macos-arm64 bundle carries, one per group in
+    # runtime_payload_health_groups: libllama-common and the split ggml libraries ship
+    # beside libllama, so a fixture with only three of them is thinner than any install
+    # this code grades. Verified against llama-b11030-mix-5ff778e-bin-macos-arm64.tar.gz.
+    for dylib in (
+        "libllama-common.0.dylib",
+        "libllama.0.dylib",
+        "libggml.0.dylib",
+        "libggml-base.0.dylib",
+        "libggml-cpu.0.dylib",
+        "libmtmd.0.dylib",
+        # The entrypoints carry no entry code of their own since the upstream split, and
+        # the release tag here does not parse as a build number, which is the strict side
+        # of the same gate Windows has used all along.
+        "libllama-server-impl.dylib",
+        "libllama-quantize-impl.dylib",
+    ):
         (runtime_dir / dylib).write_bytes(b"DYLIB")
     (install_dir / "convert_hf_to_gguf.py").write_text("#!/usr/bin/env python3\n", encoding = "utf-8")
     (install_dir / "gguf-py" / "gguf").mkdir(parents = True)

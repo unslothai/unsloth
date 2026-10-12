@@ -42,6 +42,7 @@ function Draft() {
             const intent = composerSubmitIntent(
               { ...e, isComposing: e.nativeEvent.isComposing },
               prefs.sendShortcut,
+              text,
             );
             if (!intent) return;
             e.preventDefault();

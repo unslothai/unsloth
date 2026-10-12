@@ -15,6 +15,7 @@ from auth.authentication import get_current_subject
 from models.auth import (
     AccountActiveRequest,
     AccountListResponse,
+    AccountModelAccessRequest,
     AccountResponse,
     AccountSetupResponse,
     CreateAccountRequest,
@@ -48,6 +49,11 @@ def retire_account_roots(account: AccountContext):
     active_generations.fence(account.account_id)
     active_generations.cancel_all(account.account_id)
     account_access.retire_resident_shares(account.account_id)
+    from core.inference.external_provider import retire_account_clients
+
+    # Its provider clients hold a cookie jar and idle sockets, and the cache they sit in is
+    # keyed by account, so nothing else would ever drop them.
+    retire_account_clients(account.account_id)
     from core.inference.mcp_client import close_mcp_sessions, invalidate_tool_cache
     from core.training.account_jobs import retire_account_jobs
 
@@ -141,8 +147,11 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
         result = storage.set_account_active(account_id, payload.is_active)
         if payload.is_active:
             # A delete that failed after retiring the jobs left the id tombstoned in-process.
+            from core.inference.external_provider import restore_account_clients
             from core.training.account_jobs import restore_account_jobs
+
             restore_account_jobs(account_id)
+            restore_account_clients(account_id)
             active_generations.lift_fence(account_id)
         else:
             from routes.inference import retire_account_loads
@@ -153,6 +162,15 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             retire_account_loads(account_id)
             account_access.retire_resident_shares(account_id)
         return result
+
+
+@router.put("/{account_id}/model-access", response_model = AccountResponse)
+def set_account_model_access(account_id: str, payload: AccountModelAccessRequest):
+    with _account_errors():
+        result = storage.set_account_model_allowlist(account_id, payload.model_allowlist)
+    # A shared resident it may no longer use needs a fresh, gated load to join again.
+    account_access.retire_resident_shares(account_id)
+    return result
 
 
 @router.delete("/{account_id}", status_code = status.HTTP_204_NO_CONTENT)

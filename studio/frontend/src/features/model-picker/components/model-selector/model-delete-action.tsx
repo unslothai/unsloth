@@ -63,9 +63,9 @@ export function ModelDeleteAction({
         disabled={disabled}
         className={cn(
           // Fixed box, matching the gear and dots menu it sits beside.
-          "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
+          "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-destructive/10 hover:text-destructive",
           disabled &&
-            "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/60",
+            "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/80",
           buttonClassName,
         )}
       >

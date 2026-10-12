@@ -87,7 +87,7 @@ def test_wsl_file_is_selected_in_explorer(linux_host, spawned, monkeypatch, tmp_
     target.write_bytes(b"gguf")
     path_utils.reveal_in_file_manager(target)
     assert spawned.run == [["wslpath", "-w", str(target)]]
-    assert spawned.popen == [["explorer.exe", f"/select,{_WINDOWS_PATH}"]]
+    assert spawned.popen == [["explorer.exe", "/select,", _WINDOWS_PATH]]
 
 
 def test_wsl_directory_opens_in_explorer(linux_host, spawned, monkeypatch, tmp_path):

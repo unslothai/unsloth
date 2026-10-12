@@ -31,7 +31,7 @@ const SERVER_MANAGED_LINK_KEYS = new Set<string>([
 // untrusted input, not a saved preference. These are the only keys a restored chat
 // carries. Everything else in ThreadScopedSettings either turns a capability on
 // (toolsEnabled, codeToolsEnabled, mcpEnabledForChat, webFetchToolsEnabled,
-// deepResearchEnabled, artifactsEnabled, the rag* group), silences the approval
+// deepResearchEnabled, the rag* group), silences the approval
 // prompt (permissionMode "off" sets confirm_tool_calls false and never pauses) or
 // injects text the sender chose (systemPrompt, systemVariables). Restoring those
 // together lets a sent backup arm a chat that runs tools unattended under the
@@ -206,6 +206,10 @@ export function studioBackupToConversations(
         record.attachments = raw.attachments as MessageRecord["attachments"];
       }
       if (isDict(raw.metadata)) record.metadata = detachMetadata(raw.metadata);
+      // Ordering adjustments are not exact send times.
+      if (num(raw.createdAt) === null || ts !== createdAt) {
+        record.metadata = { ...record.metadata, createdAtEstimated: true };
+      }
       return record;
     });
 
@@ -213,6 +217,14 @@ export function studioBackupToConversations(
     const forkedFromMessageId = messageIds.get(
       str(thread.forkedFromMessageId) ?? "",
     );
+    // Points into this thread's own messages, so it remaps like any other id. Dropping it
+    // would restore the fork without its "Continued from chat" divider.
+    const forkBoundaryMessageId = messageIds.get(
+      str(thread.forkBoundaryMessageId) ?? "",
+    );
+    // A name, not an id, so it restores as it stands. Without it the restored fork numbers
+    // its own forks from its whole title, giving "Notes (1) (1)".
+    const forkTitleBase = str(thread.forkTitleBase);
     const projectId = str(thread.projectId);
     const pairId = str(thread.pairId);
     const modelId = str(thread.modelId);
@@ -241,6 +253,8 @@ export function studioBackupToConversations(
               ...(forkedFromMessageId ? { forkedFromMessageId } : {}),
             }
           : {}),
+        ...(forkBoundaryMessageId ? { forkBoundaryMessageId } : {}),
+        ...(forkTitleBase ? { forkTitleBase } : {}),
         ...(isDict(thread.settings) &&
         Object.keys(restorableSettings(thread.settings)).length > 0
           ? {

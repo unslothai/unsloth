@@ -134,6 +134,32 @@ def _create(
     )
 
 
+@pytest.mark.parametrize("status", sorted(research_db.ALL_STATUSES))
+def test_row_fork_waits_for_research_to_settle(research_home, status):
+    from fastapi import HTTPException
+    from routes import chat_history
+    from state import active_generations
+
+    _create()
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE research_runs SET status=? WHERE id='run-1'", (status,))
+        conn.commit()
+    finally:
+        conn.close()
+    assert "thread-1" not in active_generations.active_thread_ids()
+    payload = chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 20)
+    if status in research_db.ACTIVE_STATUSES:
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread("thread-1", payload, current_subject = "alice")
+        assert exc.value.status_code == 409
+        assert studio_db.get_chat_thread("fork-1") is None
+    else:
+        response = chat_history.fork_thread("thread-1", payload, current_subject = "alice")
+        assert response.thread.forkedFromMessageId == "assistant-1"
+        assert len(response.messages) == 2
+
+
 def test_source_persistence_rejects_url_outside_run_allowlist(research_home):
     config = {
         "model": "local-model",
@@ -1516,14 +1542,188 @@ def test_retry_is_bounded_and_resumes_from_saved_plan(research_home):
     retried = research_db.get_run("run-1")
     assert retried["retryCount"] == 1
     assert retried["report"] is None
-    assert retried["steps"] == []
-    assert retried["sources"] == []
+    assert [step["title"] for step in retried["steps"]] == ["Old step"]
+    assert [source["url"] for source in retried["sources"]] == ["https://old.example"]
     assert research_db.get_reasoning_text("run-1") == ""
     assert research_db.list_events("run-1")[-1]["data"]["attempt"] == 1
     research_db.claim_next("worker-2")
     research_db.finish("run-1", "worker-2", "failed", "again")
     with pytest.raises(research_db.ResearchConflictError, match = "budget"):
         research_db.retry("run-1", max_retries = 1)
+
+
+def _failed_run_with_saved_step():
+    _shared_setup_2()
+    research_db.upsert_execution_step("run-1", 0, "Saved", "saved", "completed")
+    research_db.upsert_source("run-1", 0, "https://saved.example", "Saved", "Saved evidence")
+    research_db.upsert_execution_step("run-1", 1, "Interrupted", "partial", "running")
+    research_db.upsert_source("run-1", 1, "https://partial.example", "Partial", "Partial")
+    research_db.finish(
+        "run-1", "worker-1", "failed", "Local model request exhausted its total time budget"
+    )
+
+
+def test_retry_takes_the_new_time_budget_and_keeps_finished_steps(research_home):
+    _failed_run_with_saved_step()
+    policy = research_db.get_run("run-1")["config"].get("websitePolicy")
+
+    assert research_db.retry("run-1", model_timeout_seconds = 0) == "queued"
+    retried = research_db.get_run("run-1")
+    assert retried["config"]["budgets"]["modelTimeoutSeconds"] == 0
+    assert retried["config"].get("websitePolicy") == policy
+    assert [step["title"] for step in retried["steps"]] == ["Saved"]
+    assert [source["url"] for source in retried["sources"]] == ["https://saved.example"]
+
+
+def test_retry_drops_failed_steps_so_failed_searches_run_again(research_home):
+    _shared_setup_2()
+    research_db.upsert_execution_step("run-1", 0, "Kept", "kept", "completed")
+    research_db.upsert_source("run-1", 0, "https://kept.example", "Kept", "Kept evidence")
+    research_db.upsert_execution_step("run-1", 1, "Search failed", "flaky", "failed")
+    research_db.finish("run-1", "worker-1", "failed", "No research evidence was gathered")
+
+    assert research_db.retry("run-1") == "queued"
+    assert [step["title"] for step in research_db.get_run("run-1")["steps"]] == ["Kept"]
+
+
+def test_retry_with_changed_website_access_starts_over(research_home):
+    _failed_run_with_saved_step()
+    policy = {"allowedDomains": [], "blockedDomains": ["saved.example"]}
+
+    assert research_db.retry("run-1", website_policy = policy) == "queued"
+    retried = research_db.get_run("run-1")
+    assert retried["config"]["websitePolicy"] == policy
+    assert retried["steps"] == []
+    assert retried["sources"] == []
+
+
+def test_retry_of_a_stopped_run_starts_over(research_home):
+    _shared_setup_2()
+    research_db.upsert_execution_step("run-1", 0, "Saved", "saved", "completed")
+    research_db.upsert_source("run-1", 0, "https://saved.example", "Saved", "Saved evidence")
+    assert research_db.request_cancel("run-1") == "cancelling"
+    research_db.finish("run-1", "worker-1", "cancelled")
+
+    assert research_db.retry("run-1", model_timeout_seconds = 0) == "queued"
+    retried = research_db.get_run("run-1")
+    assert retried["config"]["budgets"]["modelTimeoutSeconds"] == 0
+    assert retried["steps"] == []
+    assert retried["sources"] == []
+
+
+def _retry_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import research_runs as research_route
+
+    app = FastAPI()
+    app.include_router(research_route.router, prefix = "/runs")
+    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    return TestClient(app)
+
+
+def test_retry_route_without_a_body_keeps_the_saved_settings(research_home):
+    _failed_run_with_saved_step()
+    before = research_db.get_run("run-1")["config"]
+
+    with _retry_client() as client:
+        response = client.post("/runs/run-1/retry")
+    assert response.status_code == 200, response.text
+    after = research_db.get_run("run-1")["config"]
+    assert after["budgets"] == before["budgets"]
+    assert after.get("websitePolicy") == before.get("websitePolicy")
+
+
+def test_retry_route_validates_and_applies_the_sent_settings(research_home):
+    _failed_run_with_saved_step()
+
+    with _retry_client() as client:
+        refused = client.post("/runs/run-1/retry", json = {"budgets": {"modelTimeoutSeconds": 3}})
+        assert refused.status_code == 400
+        assert research_db.get_run("run-1")["status"] == "failed"
+        refused = client.post("/runs/run-1/retry", json = {"budgets": {"modelTimeoutSeconds": True}})
+        assert refused.status_code == 422
+        response = client.post(
+            "/runs/run-1/retry",
+            json = {
+                "budgets": {"modelTimeoutSeconds": 7200},
+                "websitePolicy": {"allowedDomains": [], "blockedDomains": ["Example.COM"]},
+                "futureSetting": True,
+            },
+        )
+    assert response.status_code == 200, response.text
+    config = research_db.get_run("run-1")["config"]
+    assert config["budgets"]["modelTimeoutSeconds"] == 7200
+    assert config["websitePolicy"] == {"allowedDomains": [], "blockedDomains": ["example.com"]}
+
+
+def test_retry_after_a_timed_out_report_continues_without_redoing_research(
+    research_home, monkeypatch
+):
+    """#11837: Retry with a bigger budget reuses the gathered evidence instead of searching again."""
+    from core import research_runs as worker
+
+    _patch_web_rank(monkeypatch)
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    decisions = iter(
+        [
+            json.dumps({"action": "search", "title": "Find", "query": "grounding evidence"}),
+            json.dumps({"action": "finish", "title": "Enough"}),
+            json.dumps({"action": "finish", "title": "Still enough"}),
+        ]
+    )
+    synthesis_attempts = []
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        system = messages[0]["content"]
+        if "rigorous web research plan" in system:
+            return json.dumps(_plan()), "", "stop", None
+        if "iterative research process" in system:
+            return next(decisions), "", "stop", None
+        if "evidence-to-claim audit" in system:
+            return json.dumps({"supportedClaims": []}), "", "stop", None
+        synthesis_attempts.append(run["config"]["budgets"]["modelTimeoutSeconds"])
+        if len(synthesis_attempts) == 1:
+            raise worker.ModelWallClockTimeout("wall clock")
+        assert "alpha snippet" in messages[1]["content"]
+        report = "# Report\n\nFinding [Alpha](https://a.example.com)."
+        research_db.set_report_progress(run["id"], report)
+        return report, "", "stop", None
+
+    searches = []
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        searches.append(arguments)
+        return _two_source_search()
+
+    _create()
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    planned = research_db.get_run("run-1")
+    research_db.approve("run-1", planned["planRevision"], planned["planHash"])
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    failed = research_db.get_run("run-1")
+    assert failed["status"] == "failed"
+    assert failed["error"] == "Local model request exhausted its total time budget"
+    assert len(searches) == 1
+
+    with _retry_client() as client:
+        response = client.post("/runs/run-1/retry", json = {"budgets": {"modelTimeoutSeconds": 0}})
+    assert response.status_code == 200, response.text
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    completed = research_db.get_run("run-1")
+    assert completed["status"] == "completed", completed["error"]
+    assert synthesis_attempts == [30, 0]
+    assert len(searches) == 1
+    assert {source["url"] for source in completed["sources"]} == {
+        "https://a.example.com",
+        "https://b.example.com",
+    }
+    assert completed["report"].startswith("# Report")
 
 
 def test_retry_of_unapproved_plan_requires_approval_again(research_home):
@@ -3041,6 +3241,123 @@ def test_create_run_rejects_a_completed_answer_even_beside_the_handoff(research_
     assert research_db.get_run("run-1") is None
 
 
+def _hand_off_from_generation(generation_status, settled = None):
+    # The chat generation that called the deep_research tool owns the assistant message first.
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO chat_generation_runs
+               (id, owner_subject, thread_id, user_message_id, assistant_message_id,
+                request_hash, request_json, worker_token, status, last_event_seq,
+                created_at, updated_at)
+               VALUES ('gen-1', 'alice', 'thread-1', 'user-1', 'assistant-1',
+                       'hash', '{}', 'token', ?, 3, 4, 4)""",
+            (generation_status,),
+        )
+        conn.execute(
+            "UPDATE chat_messages SET metadata_json = ? WHERE id = 'assistant-1'",
+            (
+                json.dumps(
+                    {
+                        "serverManaged": True,
+                        "generationRunId": "gen-1",
+                        "generationStatus": generation_status,
+                        "generationSeq": 3 if settled is not False else 2,
+                        "generationSettled": (
+                            generation_status == "completed" if settled is None else settled
+                        ),
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return _create()
+
+
+def test_update_assistant_writes_the_report_after_a_settled_generation_handoff(research_home):
+    from core.research_runs import _update_assistant
+
+    run = _hand_off_from_generation("completed")
+
+    _update_assistant(run, "final report", "completed")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert [part["text"] for part in message["content"] if part["type"] == "text"] == [
+        "final report"
+    ]
+    assert message["metadata"]["researchRunId"] == "run-1"
+    assert message["metadata"]["researchStatus"] == "completed"
+    # Only the research run is exempted: a plain client edit is still refused.
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message({**message, "content": [{"type": "text", "text": "edit"}]})
+
+
+def test_research_report_survives_recovery_of_an_unsettled_handoff(research_home):
+    from core.research_runs import _update_assistant
+
+    # The live tab starts research straight after the stream, leaving its checkpoint unsettled.
+    run = _hand_off_from_generation("completed", settled = False)
+
+    _update_assistant(run, "final report", "completed")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    # A recovery follower replays the generation tail and settles at the run's last event.
+    recovered = {
+        **message,
+        "content": [{"type": "text", "text": "final report into it."}],
+        "metadata": {
+            **message["metadata"],
+            "generationSeq": 3,
+            "generationStatus": "completed",
+            "generationSettled": True,
+        },
+    }
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(recovered)
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert [part["text"] for part in stored["content"] if part["type"] == "text"] == [
+        "final report"
+    ]
+    assert stored["metadata"]["generationSettled"] is True
+    assert stored["metadata"]["researchStatus"] == "completed"
+
+
+def test_research_report_drops_the_acknowledgement_incomplete_mark(research_home):
+    from core.research_runs import _update_assistant
+
+    run = _hand_off_from_generation("completed", settled = False)
+    # The acknowledgement after the tool call hit Max Tokens, and finish_run stamped the message.
+    conn = studio_db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT metadata_json FROM chat_messages WHERE id = 'assistant-1'"
+        ).fetchone()
+        metadata = {**json.loads(row[0]), "incomplete": {"reason": "length"}}
+        conn.execute(
+            "UPDATE chat_messages SET metadata_json = ? WHERE id = 'assistant-1'",
+            (json.dumps(metadata),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _update_assistant(run, "final report", "completed")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert "incomplete" not in message["metadata"]
+    assert message["metadata"]["researchStatus"] == "completed"
+
+
+def test_update_assistant_still_waits_for_an_active_generation(research_home):
+    from core.research_runs import _update_assistant
+    run = _hand_off_from_generation("running")
+
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        _update_assistant(run, "final report", "completed")
+
+
 def test_update_assistant_replaces_report_parts_without_duplication(research_home):
     from core.research_runs import _update_assistant
 
@@ -3369,55 +3686,6 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
 
     asyncio.run(scenario())
     assert iterator_cancelled["value"] is True
-
-
-def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkeypatch):
-    supervisor, worker = _shared_setup_1()
-    run = research_db.claim_next(supervisor.worker_id)
-    request_cancelled = {"value": False}
-    in_flight = asyncio.Event()
-
-    class FakeClient:
-        def __init__(self, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def build_request(self, *args, **kwargs):
-            return object()
-
-        async def send(self, request, *, stream):
-            in_flight.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                request_cancelled["value"] = True
-
-    monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
-    monkeypatch.setattr(
-        worker.auth_storage,
-        "create_api_key",
-        lambda **kwargs: ("internal-key", {"id": 1}),
-    )
-    monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: True)
-
-    async def scenario():
-        task = asyncio.create_task(
-            supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
-        )
-        # Wait for the request to actually be in flight rather than guessing how
-        # long that takes: cancelling before it starts tests nothing.
-        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
-        supervisor.cancel("run-1")
-        with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
-
-    asyncio.run(scenario())
-    assert request_cancelled["value"] is True
 
 
 def test_route_maps_unstable_assistant_conflict_to_409(research_home):

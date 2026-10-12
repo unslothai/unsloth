@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { forgetThreadReads } from "../api/thread-read-cache.ts";
+import type { ImageDisclosure } from "../api/mcp-image";
 import {
   mirrorHfTokenInto,
   useHfTokenStore,
@@ -11,7 +13,10 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
-import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
+import {
+  loadedContextFields,
+  type MlxKvQuant,
+} from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
   reconcileCachedGpuSelection,
@@ -50,16 +55,19 @@ import {
   type ExternalReasoningCapabilities,
   externalReasoningTakesEffort,
   getExternalMaxOutputTokens,
+  kimiSearchExcludesThinking,
   resolveExternalReasoningEffort,
 } from "../provider-capabilities";
 import {
   PERSISTED_INFERENCE_PARAM_KEYS,
   REMEMBERED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_MAX_TOKENS_MAX,
   type PersistedInferenceParamKey,
   getRememberedParamsPatch,
   getReplayedParams,
   pickRememberedChanges,
   pickRememberedParams,
+  recordMaxTokensAsMax,
   setInferenceParam,
 } from "../lib/per-model-params";
 import {
@@ -77,6 +85,7 @@ import {
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
+  normalizeResearchMcpSources,
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
   MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
   normalizeStoredPermissionMode,
@@ -88,12 +97,7 @@ import {
   migrateLegacyQwenDefaults,
   type QwenDefaultsMigration,
 } from "../utils/qwen-defaults-migration";
-import {
-  DEFAULT_AUTO_COMPACT_ENABLED,
-  DEFAULT_COMPACTION_HEADROOM_RATIO,
-  DEFAULT_CONTEXT_POLICY,
-  type LocalContextPolicy,
-} from "../utils/auto-compaction";
+import { DEFAULT_AUTO_COMPACT_ENABLED } from "../utils/auto-compaction";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -113,13 +117,15 @@ import {
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { MmprojFallbackReason } from "../types/api";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 import {
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
 } from "./chat-runtime-keys";
 import { useExternalProvidersStore } from "./external-providers-store";
-import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
 export {
   CHAT_GPU_MEMORY_MODE_KEY,
@@ -136,9 +142,9 @@ export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
   "unsloth_chat_deep_research_website_policy";
 export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
   "unsloth_chat_deep_research_model_timeout";
-export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
-export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
-  "unsloth_chat_show_canvas_menu_item";
+export const CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY =
+  "unsloth_chat_deep_research_mcp_sources";
+export { MAX_RESEARCH_MCP_SOURCES } from "../utils/mirrored-chat-settings";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -155,10 +161,13 @@ export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
+export const CHAT_SANDBOX_LEVEL_KEY = "unsloth_chat_sandbox_level";
 
 /** Local tool-call gate: "ask" every call, "auto" only high-risk ones, "off" never but keeps the
  *  sandbox, "full" drops both and is session-only. */
 export type PermissionMode = "ask" | "auto" | "off" | "full";
+/** "high" adds the OS sandbox (bubblewrap, Seatbelt, MXC) to the software safeguards; "low" uses only those. */
+export type SandboxLevel = "high" | "low";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -247,6 +256,19 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
     };
   } catch {
     return DEFAULT_RESEARCH_WEBSITE_POLICY;
+  }
+}
+
+function loadResearchMcpSources(): ResearchMcpSource[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return normalizeResearchMcpSources(
+      JSON.parse(
+        window.localStorage.getItem(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY) || "[]",
+      ),
+    );
+  } catch {
+    return [];
   }
 }
 
@@ -703,23 +725,13 @@ const MIRRORED_SETTINGS = {
     storageKey: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
     ...JSON_SETTING,
   },
+  researchMcpSources: {
+    storageKey: CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
+    ...JSON_SETTING,
+  },
   researchModelTimeoutSeconds: {
     storageKey: CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
     ...NUMBER_SETTING,
-  },
-  artifactsEnabled: {
-    storageKey: CHAT_ARTIFACTS_ENABLED_KEY,
-    ...BOOLEAN_SETTING,
-  },
-  showCanvasMenuItem: {
-    storageKey: CHAT_SHOW_CANVAS_MENU_ITEM_KEY,
-    ...BOOLEAN_SETTING,
-    // A profile predating the visibility flag keeps Canvas shown through its plus-menu pin.
-    readForBackfill: () =>
-      readStorageValue(CHAT_SHOW_CANVAS_MENU_ITEM_KEY) !== null ||
-      readStorageValue(PLUS_MENU_PINS_STORAGE_KEY) !== null
-        ? loadShowCanvasMenuItem()
-        : undefined,
   },
   collapseHtmlArtifacts: {
     storageKey: CHAT_COLLAPSE_HTML_ARTIFACTS_KEY,
@@ -745,6 +757,7 @@ const MIRRORED_SETTINGS = {
         ? loadPermissionMode()
         : undefined,
   },
+  sandboxLevel: { storageKey: CHAT_SANDBOX_LEVEL_KEY, ...STRING_SETTING },
   ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
   ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },
   ragTopK: { storageKey: CHAT_RAG_TOP_K_KEY, ...NUMBER_SETTING },
@@ -870,6 +883,24 @@ function readThreadScopedSettings(
   }
   // Drops "full" with it: a stored bypass would come back without the warning dialog.
   return sanitizeThreadScopedSettings(source);
+}
+
+/** What a chat whose snapshot omits `key` runs with: applyThreadScopedSettings falls back to these. */
+export function threadScopedDefault<K extends ThreadScopedSettingKey>(
+  key: K,
+): ThreadScopedSettings[K] | undefined {
+  // No chat paired, so the store holds the installation's values, except a held edit, which is
+  // the pairing chat's: resolved the way applyThreadScopedSettings captures the defaults.
+  if (threadScopedSettingsThreadId === null) {
+    if (!isHeldThreadScopedField(key)) {
+      return readThreadScopedSettings(useChatRuntimeStore.getState())[key];
+    }
+    if (hydratedDefaultsByHeldField.has(key)) {
+      return hydratedDefaultsByHeldField.get(key) as ThreadScopedSettings[K];
+    }
+    return (pairingWindowDefaults ?? globalThreadScopedDefaults)?.[key];
+  }
+  return globalThreadScopedDefaults?.[key];
 }
 
 // Keeps a model load from re-applying the global default over the pills the chat is running with.
@@ -1211,7 +1242,10 @@ export function replayUnconfirmedThreadSettings(): void {
       body: JSON.stringify(body),
       signal: timeout.signal,
     })
-      .finally(() => clearTimeout(timer))
+      .finally(() => {
+        clearTimeout(timer);
+        forgetThreadReads([threadId]);
+      })
       // Only an ok response means it landed: authFetch resolves for 404 and 5xx too, and the
       // missing-row case this exists for is exactly the one that 404s.
       .then((res) => {
@@ -1289,7 +1323,9 @@ function sendThreadScopedSettingsBeacon(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     keepalive: true,
-  }).catch(() => undefined);
+  })
+    .finally(() => forgetThreadReads([threadId]))
+    .catch(() => undefined);
 }
 
 // One chain per thread: the write REPLACES settings_json, so two unordered writes pick a
@@ -1845,25 +1881,18 @@ export function resolvePreserveThinkingOnLoad(resp: {
   return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
 }
 
-// The visibility flag shipped after the menu pins, so when absent an explicit Canvas pin wins.
-function loadShowCanvasMenuItem(): boolean {
-  const stored = loadOptionalBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY);
-  if (stored !== null) return stored;
-  if (!canUseStorage()) return false;
-  try {
-    const raw = localStorage.getItem(PLUS_MENU_PINS_STORAGE_KEY);
-    if (raw === null) return false;
-    const parsed = JSON.parse(raw) as {
-      state?: { pins?: { canvas?: boolean } };
-    };
-    return parsed.state?.pins?.canvas === true;
-  } catch {
-    return false;
-  }
-}
 
 /** "full" is never restored: it disables the sandbox and every confirmation gate, so it needs
  *  the warning dialog each session. First run derives from the legacy confirm toggle. */
+/** Anything but an explicit "low" (missing, garbled, a newer value) reads as the default, "high". */
+export function normalizeSandboxLevel(raw: unknown): SandboxLevel {
+  return raw === "low" ? "low" : "high";
+}
+
+export function loadSandboxLevel(): SandboxLevel {
+  return normalizeSandboxLevel(readStorageValue(CHAT_SANDBOX_LEVEL_KEY));
+}
+
 function loadPermissionMode(): PermissionMode {
   return normalizeStoredPermissionMode(
     readStorageValue(CHAT_PERMISSION_MODE_KEY),
@@ -1877,6 +1906,35 @@ function savePermissionMode(mode: PermissionMode): void {
 }
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
+
+/** Re-picking the level already in force is not a fresh grant, so a manual Code-off stands. */
+function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
+  return state.permissionMode === "full"
+    ? state.codeToolsDeclinedUnderFullAccess
+    : false;
+}
+
+/** Effective Code setting. Full access auto-enables it only for local models.
+ *  Read the level live, never a flag armed on entry: Full access outlives a chat switch
+ *  (applyThreadScopedSettings) but codeToolsEnabled does not, so a snapshotted grant missed
+ *  every chat opened afterwards. */
+export function codeToolsOn(
+  state: Pick<
+    ChatRuntimeStore,
+    | "codeToolsEnabled"
+    | "codeToolsDeclinedUnderFullAccess"
+    | "permissionMode"
+    | "supportsTools"
+  > & { params: { checkpoint: string } },
+): boolean {
+  return (
+    state.codeToolsEnabled ||
+    (!state.codeToolsDeclinedUnderFullAccess &&
+      state.permissionMode === "full" &&
+      state.supportsTools &&
+      !isExternalModelId(state.params.checkpoint))
+  );
+}
 
 function loadString(key: string, fallback: string): string {
   return readStorageValue(key) ?? fallback;
@@ -1908,6 +1966,7 @@ export function normalizeSpeculativeType(
     return "ngram";
   }
   if (s === "mtp+ngram") return "mtp+ngram";
+  if (s === "eagle3") return s;
   // Comma-chained legacy values (e.g. from older backend echoes).
   const parts = s
     .split(",")
@@ -1927,21 +1986,27 @@ export function normalizeSpeculativeType(
 export function resolveLoadedSpeculativeSettings(response: {
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
 }): {
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  specDraftModel: string | null;
+  loadedSpecDraftModel: string | null;
 } {
   const loadedSpeculativeType = normalizeSpeculativeType(
     response.speculative_type,
   );
   const loadedSpecDraftNMax = response.spec_draft_n_max ?? null;
+  const loadedSpecDraftModel = response.spec_draft_model ?? null;
   return {
     speculativeType: loadedSpeculativeType,
     loadedSpeculativeType,
     specDraftNMax: loadedSpecDraftNMax,
     loadedSpecDraftNMax,
+    specDraftModel: loadedSpecDraftModel,
+    loadedSpecDraftModel,
   };
 }
 
@@ -2074,6 +2139,7 @@ export function requestedGpuIdsFromResponse(resp: {
 // Store fields derived from a load/status response's GPU-memory settings, shared by every
 // load path so the manual-knob round-trip cannot drift.
 export function loadedGpuMemoryFields(resp: {
+  engine?: "auto" | "vllm" | "sglang";
   is_gguf?: boolean;
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
@@ -2093,11 +2159,16 @@ export function loadedGpuMemoryFields(resp: {
     // Clear the GPU pick / offload baseline a prior GGUF load left, else a stale loadedGpuIds reads as
     // dirty. gpuIdsDirty is ungated, so Reset would restore it while the picker is hidden. gpuMemoryMode
     // is kept as the standing preference, but its loaded baseline clears to null.
+    const managed = resp.engine === "vllm" || resp.engine === "sglang";
+    const gpuIds = managed
+      ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
+      : null;
+    const indexKind = managed ? ("physical" as const) : null;
     return {
-      selectedGpuIds: null,
-      selectedGpuIndexKind: null,
-      loadedGpuIds: null,
-      loadedGpuIndexKind: null,
+      selectedGpuIds: gpuIds,
+      selectedGpuIndexKind: indexKind,
+      loadedGpuIds: gpuIds,
+      loadedGpuIndexKind: indexKind,
       loadedGpuMemoryMode: null,
       loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
@@ -2201,9 +2272,13 @@ type ContextUsageSnapshot = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  // Studio tool loops only: what the context holds (totalTokens re-counts earlier passes' output).
+  contextTokens?: number;
   cachedTokens: number;
   // Anthropic-only; optional so pre-cache-stats persisted entries load.
   cacheWriteTokens?: number;
+  // a text-length guess from storage, replaced by any count
+  estimated?: boolean;
 };
 
 /** One live run behind `runningByThreadId[id]`, with the `local` flag it started with so the
@@ -2218,6 +2293,8 @@ type ToolStatusEntry = {
   startedAt: number;
   owner?: () => void;
 };
+
+export type LoadedModelSummary = { id: string; quant?: string | null; checkpoint?: string };
 
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
@@ -2255,10 +2332,15 @@ type ChatRuntimeStore = {
   /** What /api/inference/status says is resident, as opposed to what the picker selected.
    *  undefined until the first read, so the header does not flash "not loaded". */
   residentCheckpoint: string | null | undefined;
+  loadedModels: LoadedModelSummary[];
   activeModelIsLocal: boolean;
   loadedContextLength: number | null;
   maxContextLength: number | null;
   nativeContextLength: number | null;
+  /** The resident's own engine launch settings, which a failed switch rolls back to. */
+  loadedEngine: "auto" | "vllm" | "sglang";
+  loadedEnginePrecision: NonNullable<InferenceParams["enginePrecision"]>;
+  loadedEngineParallelism: NonNullable<InferenceParams["engineParallelism"]>;
   /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
    *  loadedContextLength is, so a context never arrives unattributed. */
   loadedIsGguf: boolean | null;
@@ -2268,6 +2350,9 @@ type ChatRuntimeStore = {
   /** Whether loadedContextLength actually bounds the cache. Null where the backend does
    *  not answer, which is not the same as a confirmed false. */
   loadedContextEnforced: boolean | null;
+  loadedContextUnboundedWhenBatched: boolean;
+  loadedParallelSlots: number | null;
+  loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -2291,27 +2376,30 @@ type ChatRuntimeStore = {
   /** Whether the provider exposes server-side image generation (OpenAI Responses API).
    *  Local models never receive it. */
   supportsBuiltinImageGeneration: boolean;
-  /** Whether the provider exposes server-side web_fetch (Anthropic `web_fetch_*`). Gates the
-   *  composer's Fetch pill, independent of Search. */
+  /** Anthropic server-side web_fetch_* gates Fetch independently of Search. */
   supportsBuiltinWebFetch: boolean;
+  /** mirrors the backend Settings switch "Keep multiple models loaded". */
+  keepModelsLoaded: boolean;
   toolsEnabled: boolean;
+  /** persisted Code preference; codeToolsOn() gives the effective value. */
   codeToolsEnabled: boolean;
+  /** session-only Code opt-out under Full access; cleared on level changes. */
+  codeToolsDeclinedUnderFullAccess: boolean;
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
   researchModelTimeoutSeconds: number;
-  artifactsEnabled: boolean;
-  // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
-  showCanvasMenuItem: boolean;
+  researchMcpSources: ResearchMcpSource[];
+  // offers the Canvas toggle in the composer + menu; hidden by default.
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
-  // web_search also returns images the model can place inline; read by the backend per call.
+  // backend reads per call: web_search returns images for inline model output.
   searchImages: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
   projectAttachmentTarget: ProjectAttachmentTarget;
-  /** Per-chat override of that default, so a pick in one chat does not redirect the rest. Session-only. */
+  /** session-only per-chat target override; leaves other chats unchanged. */
   projectAttachmentTargetByThread: Record<string, ProjectAttachmentTarget>;
   ragMode: RagMode;
   ragTopK: number;
@@ -2330,6 +2418,7 @@ type ChatRuntimeStore = {
   /** Permission level. Single source of truth for the bypass dropdowns; bypassPermissions and
    *  confirmToolCalls mirror it. "full" is session-only. */
   permissionMode: PermissionMode;
+  sandboxLevel: SandboxLevel;
   /** Whether the bypass warning dialog is open. Lifted out of the composer menu so confirming
    *  it does not leave the menu frozen. */
   bypassConfirmOpen: boolean;
@@ -2341,7 +2430,12 @@ type ChatRuntimeStore = {
    *  `autoAllowKey` scopes "Always allow" per chat. Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
-    { approvalId: string; sessionId: string; autoAllowKey: string }
+    {
+      approvalId: string;
+      sessionId: string;
+      autoAllowKey: string;
+      imageDisclosure?: ImageDisclosure;
+    }
   >;
   /** Fetch pill state, independent of `toolsEnabled` (Search). Read only when the provider
    *  supports builtin web_fetch. */
@@ -2359,18 +2453,18 @@ type ChatRuntimeStore = {
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
+  deduplicateToolCalls: boolean;
   autoCompactEnabled: boolean;
-  contextPolicy: LocalContextPolicy;
-  compactionHeadroomRatio: number;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
-  mlxKvBits: number | null;
-  /** Width the backend was last asked for; the verdict belongs beside it. */
-  loadedMlxKvBitsRequested: number | null;
+  mlxKvQuant: MlxKvQuant | null;
+  loadedMlxKvQuantRequested: MlxKvQuant | null;
   mlxKvQuantReason: string | null;
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
+  mlxInt8Prefill: boolean;
+  loadedMlxInt8PrefillRequested: boolean;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
@@ -2385,8 +2479,12 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
-  /** --parallel slots override for GGUF loads (null = server default). Never re-seeded from an
-   *  echo: the resolved count would pin a blank control. */
+  /** MLX companion drafter, a repo id or local path (null = discovery). */
+  specDraftModel: string | null;
+  loadedSpecDraftModel: string | null;
+  /** User reply-width override, for either backend (null = server default). GGUF spends it
+   *  on llama-server's --parallel slots; MLX on how many replies decode together.
+   *  Never re-seeded from an echo: the resolved count would pin a blank control. */
   nParallel: number | null;
   /** Slots the last successful load sent (null = default); a rollback re-sends them so a failed
    *  switch cannot lose the override. */
@@ -2587,16 +2685,13 @@ type ChatRuntimeStore = {
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
+  setKeepModelsLoaded: (keep: boolean) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
   setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
   setResearchModelTimeoutSeconds: (seconds: number) => void;
-  setArtifactsEnabled: (
-    enabled: boolean,
-    options?: { persist?: boolean },
-  ) => void;
-  setShowCanvasMenuItem: (enabled: boolean) => void;
+  setResearchMcpSources: (sources: ResearchMcpSource[]) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setSearchImages: (enabled: boolean) => void;
@@ -2604,6 +2699,7 @@ type ChatRuntimeStore = {
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  setSandboxLevel: (level: SandboxLevel) => void;
   setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
@@ -2611,6 +2707,7 @@ type ChatRuntimeStore = {
     approvalId: string,
     sessionId: string,
     autoAllowKey: string,
+    imageDisclosure?: ImageDisclosure,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -2654,9 +2751,8 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
+  setDeduplicateToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
-  setContextPolicy: (policy: LocalContextPolicy) => void;
-  setCompactionHeadroomRatio: (ratio: number) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2701,9 +2797,8 @@ type ScalarSettingKey =
   | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
+  | "deduplicateToolCalls"
   | "autoCompactEnabled"
-  | "contextPolicy"
-  | "compactionHeadroomRatio"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -2713,12 +2808,12 @@ type ScalarSettingKey =
   | "webFetchToolsEnabled"
   | "deepResearchEnabled"
   | "researchWebsitePolicy"
+  | "researchMcpSources"
   | "researchModelTimeoutSeconds"
-  | "artifactsEnabled"
-  | "showCanvasMenuItem"
   | "mcpEnabledForChat"
   | "confirmToolCalls"
   | "permissionMode"
+  | "sandboxLevel"
   | "ragSource"
   | "ragMode"
   | "ragTopK"
@@ -2754,9 +2849,8 @@ const SCALAR_SETTING_KEYS = [
   "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "autoCompactEnabled",
-  "contextPolicy",
-  "compactionHeadroomRatio",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -2766,12 +2860,12 @@ const SCALAR_SETTING_KEYS = [
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
-  "artifactsEnabled",
-  "showCanvasMenuItem",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "permissionMode",
+  "sandboxLevel",
   "ragSource",
   "ragMode",
   "ragTopK",
@@ -3017,7 +3111,13 @@ function getParamsByModelAfterEdit(
       changedParams,
       // Same filter as the outgoing snapshot: an edit to a key the memory keeps but the chat does
       // not still records the WHOLE snapshot, riding the chat's sampling into the entry.
-      pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
+      recordMaxTokensAsMax(
+        pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
+        rememberedWindow(nextParams.checkpoint),
+        changedParams.maxTokens === undefined
+          ? (outgoing ?? state.paramsByModel)[nextParams.checkpoint]?.maxTokens
+          : undefined,
+      ),
     ),
     nextParams.checkpoint,
   );
@@ -3032,8 +3132,13 @@ function rememberOutgoingModel(
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
   }
-  const snapshot = pickRememberedParams(
+  const picked = pickRememberedParams(
     withoutActiveThreadParams(state, outgoing),
+  );
+  const snapshot = recordMaxTokensAsMax(
+    picked,
+    rememberedWindow(outgoing.checkpoint),
+    state.paramsByModel[outgoing.checkpoint]?.maxTokens,
   );
   // Only to seed a model with no entry: later changes are written key by key, and a full
   // snapshot would put this browser's copy of untouched keys over another tab's.
@@ -3069,7 +3174,10 @@ function persistParamEdit(
   }
   // Only what moved: the server merges per key, so sending the rest would overwrite another
   // tab's copy of every other key.
-  const rememberedChanges = pickRememberedChanges(changedParams);
+  const rememberedChanges = recordMaxTokensAsMax(
+    pickRememberedChanges(changedParams),
+    modelId ? rememberedWindow(modelId) : null,
+  );
   saveSettingsPatch({
     inferenceParams: changedParams,
     ...(paramsByModel && modelId && hasKeys(rememberedChanges)
@@ -3157,6 +3265,13 @@ function loadedContextFor(checkpoint: string): number | null {
   return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
 }
 
+/** The window a memory entry's "Max" is measured against. Keyed by checkpoint, never
+ *  loadedContextLength: a switch records the outgoing model after the incoming one may have
+ *  published its own. An external model's cap is the provider's, not a window. */
+function rememberedWindow(checkpoint: string): number | null {
+  return isExternalModelId(checkpoint) ? null : loadedContextFor(checkpoint);
+}
+
 function capParamsToLoadedContext(
   state: ChatRuntimeStore,
   params: InferenceParams,
@@ -3165,6 +3280,10 @@ function capParamsToLoadedContext(
     ? null
     : state.loadedContextLength;
   const cap = loadedContextFor(params.checkpoint) ?? residentContextCap;
+  // A migrated row can carry the Max marker; on screen it is this load's window.
+  if (params.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+    return { ...params, maxTokens: cap ?? state.params.maxTokens };
+  }
   return cap !== null && params.maxTokens > cap
     ? { ...params, maxTokens: cap }
     : params;
@@ -3218,11 +3337,12 @@ function externalCheckpointRefusesDeepResearch(
 function isKimiCheckpoint(checkpoint: string | null | undefined): boolean {
   const parsed = parseExternalModelId(checkpoint);
   if (!parsed) return false;
-  return (
+  return kimiSearchExcludesThinking(
     useExternalProvidersStore
       .getState()
       .providers.find((candidate) => candidate.id === parsed.providerId)
-      ?.providerType === "kimi"
+      ?.providerType,
+    parsed.modelId,
   );
 }
 
@@ -3297,7 +3417,10 @@ function getHydratedSettingsState(
     // The entry arriving for this model predates the fenced edit, so lay the edit over it or the
     // next defaults update replays the stale one.
     if (checkpoint) {
-      const edited = pickLocallyEditedParams(params, versions);
+      const edited = recordMaxTokensAsMax(
+        pickLocallyEditedParams(params, versions),
+        rememberedWindow(checkpoint),
+      );
       if (hasKeys(edited)) {
         hydrated[checkpoint] = { ...hydrated[checkpoint], ...edited };
       }
@@ -3306,7 +3429,10 @@ function getHydratedSettingsState(
   } else if (checkpoint) {
     // No map in the response: an install upgraded from before this feature. With no entry the
     // next defaults update puts the recommendation back over the fenced edit.
-    const edited = pickLocallyEditedParams(params, versions);
+    const edited = recordMaxTokensAsMax(
+      pickLocallyEditedParams(params, versions),
+      rememberedWindow(checkpoint),
+    );
     if (hasKeys(edited)) {
       nextState.paramsByModel = {
         ...state.paramsByModel,
@@ -3333,7 +3459,10 @@ function getHydratedSettingsState(
       }
     }
     if (hasKeys(inherited)) {
-      nextState.paramsByModel = { ...byModel, [left]: inherited };
+      nextState.paramsByModel = {
+        ...byModel,
+        [left]: recordMaxTokensAsMax(inherited, rememberedWindow(left)),
+      };
     }
   }
   // Same fence as the scalar loop: a click made while this response was out is the newer
@@ -3427,6 +3556,15 @@ function getHydratedSettingsState(
       ) {
         setInferenceParam(replayed, key, value);
       }
+    }
+    // "Max" is the window this model is on; with none known, what is on screen stands.
+    if (replayed.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+      replayed.maxTokens =
+        rememberedWindow(params.checkpoint) ??
+        (isExternalModelId(params.checkpoint)
+          ? null
+          : state.loadedContextLength) ??
+        params.maxTokens;
     }
     // The same cap the load and status replays apply.
     nextState.params = replayed;
@@ -3531,6 +3669,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   checkpoint: string;
   caps: ExternalReasoningCapabilities;
   providerType: string | null | undefined;
+  apiType?: "chat_completions" | "responses";
 }): void {
   const state = useChatRuntimeStore.getState();
   if (state.params.checkpoint !== opts.checkpoint) return;
@@ -3541,6 +3680,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   const next = resolveExternalReasoningEffort({
     caps: opts.caps,
     providerType: opts.providerType,
+    apiType: opts.apiType,
     current: pinned
       ? state.reasoningEffort
       : (takeEffortDisplacedByPin() ?? state.reasoningEffort),
@@ -3795,7 +3935,10 @@ function adoptMigratedFieldsAfterLocalEdit(
     return {
       // As the normal application path does: applying a thread pin advances no
       // mutation version, so nothing above would have noticed it.
-      params: restoreThreadScopedParams(nextParams),
+      params: capParamsToLoadedContext(
+        state,
+        restoreThreadScopedParams(nextParams),
+      ),
       ...(storedRow
         ? {
             paramsByModel: {
@@ -4073,13 +4216,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   lastModelLoadError: null,
   activeGgufVariant: null,
   residentCheckpoint: undefined,
+  loadedModels: [],
   activeModelIsLocal: false,
   loadedContextLength: null,
   maxContextLength: null,
   nativeContextLength: null,
+  loadedEngine: "auto",
+  loadedEnginePrecision: "auto",
+  loadedEngineParallelism: "tensor",
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,
+  loadedContextUnboundedWhenBatched: false,
+  loadedParallelSlots: null,
+  loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -4097,13 +4247,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinImageGeneration: false,
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  keepModelsLoaded: false,
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
+  codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
   researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
-  artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
-  showCanvasMenuItem: loadShowCanvasMenuItem(),
+  researchMcpSources: loadResearchMcpSources(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -4111,13 +4262,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
-  // Mirrors permissionMode (gate requested for ask/auto) so both controls agree on load.
+  // mirrors permissionMode so both controls agree on load.
   confirmToolCalls:
     INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
-  // Never restore Bypass Permissions from storage: it disables the sandbox and the
-  // confirmation gate, so it needs the warning dialog each session.
+  // no stored bypass: sandbox and gate removal needs a warning each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
+  sandboxLevel: loadSandboxLevel(),
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
@@ -4144,17 +4295,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
+  deduplicateToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
-  contextPolicy: DEFAULT_CONTEXT_POLICY,
-  compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
-  mlxKvBits: null,
-  loadedMlxKvBitsRequested: null,
+  mlxKvQuant: null,
+  loadedMlxKvQuantRequested: null,
   mlxKvQuantReason: null,
   chatTemplateOverrideReason: null,
   mlxKvQuantNote: null,
+  mlxInt8Prefill: false,
+  loadedMlxInt8PrefillRequested: false,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
@@ -4163,6 +4315,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  specDraftModel: null,
+  loadedSpecDraftModel: null,
   nParallel: null,
   loadedNParallel: null,
   reasoningBudget: -1,
@@ -4741,7 +4895,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged && options?.persist !== false
           ? rememberOutgoingModel(state, state.params)
           : null;
-      const baseParams = getReplayedParams(
+      // A compare pane's load reaches the store only here.
+      const previousWindow = rememberedWindow(modelId);
+      noteLoadedContext(modelId, options?.maxTokensCap);
+      let baseParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
         state.params,
@@ -4749,6 +4906,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged,
         options?.maxTokensCap,
       );
+      // The same model reloaded at a new context replays nothing, so Max has to follow the window here.
+      if (
+        !checkpointChanged &&
+        options?.maxTokensCap !== undefined &&
+        ((previousWindow !== null && state.params.maxTokens >= previousWindow) ||
+          (state.rememberParamsPerModel &&
+            state.paramsByModel[modelId]?.maxTokens ===
+              REMEMBERED_MAX_TOKENS_MAX))
+      ) {
+        baseParams = { ...baseParams, maxTokens: options.maxTokensCap };
+      }
       // Clamp maxTokens to the new model's cap when switching into an external model, so a value
       // carried over from a local session cannot exceed the slider's max.
       let nextMaxTokens = baseParams.maxTokens;
@@ -5088,7 +5256,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       codeToolsEnabled: false,
       imageToolsEnabled: false,
       deepResearchEnabled: false,
-      artifactsEnabled: false,
       mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
       // Only the per-session enable pill resets; source/mode/top_k persist.
@@ -5098,11 +5265,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
-      mlxKvBits: null,
-      loadedMlxKvBitsRequested: null,
+      mlxKvQuant: null,
+      loadedMlxKvQuantRequested: null,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
+      mlxInt8Prefill: false,
+      loadedMlxInt8PrefillRequested: false,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
@@ -5111,6 +5280,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      specDraftModel: null,
+      loadedSpecDraftModel: null,
       nParallel: null,
       loadedNParallel: null,
       reasoningBudget: -1,
@@ -5281,6 +5452,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setKeepModelsLoaded: (keepModelsLoaded) => set({ keepModelsLoaded }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
@@ -5289,6 +5461,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(codeToolsEnabled
           ? { codeToolsEnabled, deepResearchEnabled: false }
           : { codeToolsEnabled }),
+        codeToolsDeclinedUnderFullAccess:
+          !codeToolsEnabled && state.permissionMode === "full",
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5313,7 +5487,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, false);
-        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, false);
         saveBool(CHAT_MCP_ENABLED_KEY, false);
         saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false);
       }
@@ -5322,8 +5495,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             deepResearchEnabled,
             toolsEnabled: false,
             codeToolsEnabled: false,
+            codeToolsDeclinedUnderFullAccess: false,
             imageToolsEnabled: false,
-            artifactsEnabled: false,
             mcpEnabledForChat: false,
             webFetchToolsEnabled: false,
             bypassPermissions: false,
@@ -5358,23 +5531,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
-  setArtifactsEnabled: (artifactsEnabled, options) =>
+  setResearchMcpSources: (researchMcpSources) =>
     set((state) => {
-      if (options?.persist !== false) {
-        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
-      }
-      if (artifactsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      const sources = normalizeResearchMcpSources(researchMcpSources);
+      persistSetting(
+        CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
+        JSON.stringify(sources),
+      );
       return {
-        ...(artifactsEnabled
-          ? { artifactsEnabled, deepResearchEnabled: false }
-          : { artifactsEnabled }),
+        researchMcpSources: sources,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
-  setShowCanvasMenuItem: (showCanvasMenuItem) =>
-    set(() => {
-      saveBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, showCanvasMenuItem);
-      return { showCanvasMenuItem };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set(() => {
@@ -5423,6 +5590,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setSandboxLevel: (sandboxLevel) =>
+    set((state) => {
+      saveString(CHAT_SANDBOX_LEVEL_KEY, sandboxLevel);
+      return { sandboxLevel, queuedSettingsEpoch: state.queuedSettingsEpoch + 1 };
+    }),
   setPermissionMode: (permissionMode) =>
     set((state) => {
       // "full" is session-only (see init); ask/auto/off persist and keep the legacy confirm toggle in sync.
@@ -5436,6 +5608,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5446,6 +5619,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         permissionMode,
         bypassPermissions: false,
         confirmToolCalls,
+        codeToolsDeclinedUnderFullAccess: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5461,6 +5635,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           permissionMode: "full" as PermissionMode,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5471,6 +5646,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions,
         permissionMode,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+        codeToolsDeclinedUnderFullAccess: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5484,11 +5660,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next.set(sessionId, new Set(current ?? []).add(toolName));
       return { alwaysAllowToolsBySession: next };
     }),
-  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+  setToolConfirmation: (
+    toolCallId,
+    approvalId,
+    sessionId,
+    autoAllowKey,
+    imageDisclosure,
+  ) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+        [toolCallId]: { approvalId, sessionId, autoAllowKey, imageDisclosure },
       },
     })),
   clearToolConfirmation: (toolCallId) =>
@@ -5583,14 +5765,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const snapshot = pickRememberedParams(
         withoutActiveThreadParams(state, state.params),
       );
+      // The global set keeps the number; only the model's entry records "Max".
+      const remembered = recordMaxTokensAsMax(
+        snapshot,
+        rememberedWindow(state.params.checkpoint),
+        state.paramsByModel[state.params.checkpoint]?.maxTokens,
+      );
       const paramsByModel = trackParamsByModel(
         state,
         getRememberedParamsPatch(
           rememberParamsPerModel,
           state.paramsByModel,
           state.params.checkpoint,
-          snapshot,
-          snapshot,
+          remembered,
+          remembered,
         ),
         state.params.checkpoint,
       );
@@ -5769,6 +5957,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setDeduplicateToolCalls: (deduplicateToolCalls) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "deduplicateToolCalls",
+        deduplicateToolCalls,
+        state.deduplicateToolCalls,
+      );
+      return {
+        deduplicateToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   setAutoCompactEnabled: (autoCompactEnabled) =>
     set((state) => {
       setScalarSettingVersion(
@@ -5778,30 +5978,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         autoCompactEnabled,
-        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      };
-    }),
-  setContextPolicy: (contextPolicy) =>
-    set((state) => {
-      setScalarSettingVersion(
-        "contextPolicy",
-        contextPolicy,
-        state.contextPolicy,
-      );
-      return {
-        contextPolicy,
-        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      };
-    }),
-  setCompactionHeadroomRatio: (compactionHeadroomRatio) =>
-    set((state) => {
-      setScalarSettingVersion(
-        "compactionHeadroomRatio",
-        compactionHeadroomRatio,
-        state.compactionHeadroomRatio,
-      );
-      return {
-        compactionHeadroomRatio,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

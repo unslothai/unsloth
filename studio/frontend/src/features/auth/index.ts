@@ -16,6 +16,7 @@ export {
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
+  hasSettledAuthSession,
   mustChangePassword,
   setMustChangePassword,
   storeAuthTokens,
@@ -25,4 +26,10 @@ export {
   getTauriAuthFailure,
   tauriAutoAuth,
 } from "./tauri-auto-auth";
-export { sessionAccount, useIsAccountOwner, useLoginMode } from "./account-session";
+export {
+  OWNER_USERNAME,
+  isAccountOwner,
+  sessionAccount,
+  useIsAccountOwner,
+  useLoginMode,
+} from "./account-session";

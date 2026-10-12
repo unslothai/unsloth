@@ -194,7 +194,7 @@ export function ExecutionOverviewTab({
                     <TableBody>
                       {modelUsageRows.map((usage) => (
                         <TableRow key={usage.model}>
-                          <TableCell className="max-w-[320px] truncate">{usage.model}</TableCell>
+                          <TableCell className="max-w-[calc(320px*var(--ui-space-scale,1))] truncate">{usage.model}</TableCell>
                           <TableCell className="text-right">
                             {formatMetricValue(usage.input)}
                           </TableCell>

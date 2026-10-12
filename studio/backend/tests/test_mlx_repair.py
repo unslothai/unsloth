@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -45,8 +47,7 @@ def _reset_attempt_guard(monkeypatch):
     # against the next test's globals.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
-            assert not thread.is_alive(), (
+            assert join_when_started(thread, timeout = 5), (
                 "an mlx-autorepair worker outlived its test; once these stubs are "
                 "restored it runs the real repair and detection against another test"
             )
@@ -61,9 +62,9 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # mlx-vlm keeps a floor so the resolver cannot backtrack to an old one that
     # imports but breaks VLM Train/Export, and a ceiling so this unattended
     # install cannot cross a major line on its own.
-    assert "mlx-vlm>=0.4.4,<=0.7.1" in cmd
+    assert "mlx-vlm>=0.4.4,<=0.7.4" in cmd
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
-    assert "mlx==0.32.2" in cmd
+    assert "mlx==0.32.3" in cmd
     assert "mlx-lm==0.31.3" in cmd
     # Look the requirement up by name rather than by prefix. Asserting on
     # startswith("mlx==") could only ever be checked on a spec that already
@@ -86,7 +87,7 @@ def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch)
     assert "<0.7.0" in vlm
     # mlx and mlx-lm are pinned at both ends, so they are left alone: intersecting them with a
     # zoo one patch release behind would empty the range and break every self-heal.
-    assert "mlx==0.32.2" in packages
+    assert "mlx==0.32.3" in packages
     assert "mlx-lm==0.31.3" in packages
 
 
@@ -257,7 +258,7 @@ def test_repair_rejects_inadequate_stack(monkeypatch):
 def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypatch):
     # The gate this message reports on is mlx_stack_available(), which tests the
     # floors. Quoting the install pins instead would tell an operator running a
-    # perfectly usable mlx 0.33 that they need exactly 0.32.2.
+    # perfectly usable mlx 0.33 that they need exactly 0.32.3.
     warnings = []
     # Pin both, or this test measures the host. attempt_mlx_repair returns early
     # when _uv_executable() finds nothing, long before the message under test, so
@@ -402,7 +403,7 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
     # Join the daemon thread deterministically.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
+            join_when_started(thread, timeout = 5)
 
     assert repaired["called"] is True
     assert redetected["called"] is True
@@ -596,8 +597,7 @@ def _recorded_announcements(monkeypatch):
 def _join_the_repair_worker():
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
-            assert not thread.is_alive()
+            assert join_when_started(thread, timeout = 5)
 
 
 def test_a_stack_that_measures_usable_overturns_the_verdict(monkeypatch):
