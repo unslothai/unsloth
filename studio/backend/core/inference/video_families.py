@@ -36,11 +36,12 @@ VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
 VIDEO_MODEL_CHANGED_MSG = "The requested video model changed before generation was reserved."
 
-# One LTX version token: ltx / ltxv / ltx-video, optional separator, major 2, then ".N" / "_N" (minor), "N" ending the
+# One LTX version token: ltx / ltxv / ltx-video, optional separator, major 2, then ".N" / "_N" (minor, any digits, so
+# "ltx-2.10" reads as 2.10), "N" ending the
 # token ("ltx25"), or nothing ("ltx-2-19b" = 2.0). Anything else ("ltx-24fps", "ltx-transformer") is no name evidence,
 # as is a bare "ltx23" / "ltx-23" (no release uses that spelling, so it cannot outrank the repo).
 _LTX_VERSION = re.compile(
-    r"(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9])(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))"
+    r"(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9]+)(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))"
 )
 
 
@@ -51,22 +52,77 @@ def ltx_name_version(name: Optional[str]) -> Optional[str]:
     return None
 
 
+# Family per LTX release: 2.0 / 2.3 run the LTX-2 assembly, 2.5 (diffusers called its pre-release "2.4") its own family.
+LTX2_FAMILY = "ltx-2"
+LTX25_FAMILY = "ltx-2.5"
+LTX_FAMILIES = (LTX2_FAMILY, LTX25_FAMILY)
+
+
+def ltx_family_for_version(version: Optional[str]) -> Optional[str]:
+    """``ltx-2`` for 2.0-2.3, ``ltx-2.5`` for 2.4 / 2.5, None for a release Studio does not know (2.6+)."""
+    if not version:
+        return None
+    minor = int(version[2:])
+    if minor <= 3:
+        return LTX2_FAMILY
+    if minor <= 5:
+        return LTX25_FAMILY
+    return None
+
+
 def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
-    # LTX > 2.3 (diffusers calls the 2.5 pre-release "2.4") is not drop-in LTX-2.
+    # Releases after 2.5 are unknown: neither LTX family can claim their weights.
     for name in names:
         version = ltx_name_version(name)
-        if version is not None and int(version[2:]) >= 4:
+        if version is not None and ltx_family_for_version(version) is None:
             return version
     return None
 
 
 def unsupported_ltx_message(version: str, subject: str) -> str:
     return (
-        f"{subject} is LTX-{version}, which Studio does not support yet. LTX-{version} is not a drop-in LTX-2.3: "
-        "it uses a new Gemma 4 text encoder, a new video decoder and its own sampling schedule, so loading it as "
-        "LTX-2 would fail or produce a broken video. Use LTX-2.3 (Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) "
-        "for now."
+        f"{subject} is LTX-{version}, which Studio does not support yet. Studio runs LTX-2.0 / LTX-2.3 "
+        "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers)."
     )
+
+
+def wrong_ltx_family_message(version: str, family: str, subject: str) -> str:
+    expected = ltx_family_for_version(version)
+    return (
+        f"{subject} is LTX-{version}, which loads as the '{expected}' family, not '{family}'. "
+        "LTX-2.5 is not a drop-in LTX-2.3 (Gemma 4 text encoder, no video FFN bias, keyframe position "
+        "embedding), so one family cannot load the other's weights. Pick the "
+        f"'{expected}' family, or leave the family on Auto."
+    )
+
+
+def _ltx_leaf(name: Optional[str]) -> str:
+    # Last segment only: a local parent folder must not decide.
+    return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
+
+
+def ltx_pick_version(
+    repo_id: Optional[str],
+    filename: Optional[str] = None,
+    display_repo_id: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
+    """``(version, shown)`` the pick's names declare. A file whose own name has a versioned LTX token decides alone
+    (an ltx-2.3 file in an ``ltx-2.5-tests`` folder is 2.3); any other file name (``model``, ``ltx-transformer``)
+    defers to the display id, then the repo id."""
+    base = _ltx_leaf(filename)
+    if ltx_name_version(base) is not None:
+        picks: tuple[tuple[str, Optional[str]], ...] = ((base, filename),)
+    else:
+        picks = (
+            (base, filename),
+            (_ltx_leaf(display_repo_id), display_repo_id),
+            (_ltx_leaf(repo_id), repo_id),
+        )
+    for name, shown in picks:
+        version = ltx_name_version(name)
+        if version is not None:
+            return version, str(shown)
+    return None
 
 
 def assert_supported_ltx_version(
@@ -74,26 +130,20 @@ def assert_supported_ltx_version(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """A file whose own name has a versioned LTX token decides alone (an ltx-2.3 file in an ``ltx-2.5-tests`` folder
-    loads); any other file name (``model``, ``ltx-transformer``) defers to the repo / display id."""
+    """Refuse a pick whose names declare an LTX release no family supports (2.6 and later)."""
+    found = ltx_pick_version(repo_id, filename, display_repo_id)
+    if found is not None and ltx_family_for_version(found[0]) is None:
+        raise ValueError(unsupported_ltx_message(found[0], f"'{found[1]}'"))
 
-    def leaf(name: Optional[str]) -> str:
-        # Last segment only: a local parent folder must not decide.
-        return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
 
-    base = leaf(filename)
-    if ltx_name_version(base) is not None:
-        picks: tuple[tuple[str, Optional[str]], ...] = ((base, filename),)
-    else:
-        picks = (
-            (base, filename),
-            (leaf(display_repo_id), display_repo_id),
-            (leaf(repo_id), repo_id),
-        )
-    for name, shown in picks:
-        version = unsupported_ltx_version(name)
-        if version is not None:
-            raise ValueError(unsupported_ltx_message(version, f"'{shown}'"))
+def ltx_family_by_name(
+    repo_id: Optional[str],
+    filename: Optional[str] = None,
+    display_repo_id: Optional[str] = None,
+) -> Optional[str]:
+    """The LTX family the pick's names declare, or None (no versioned LTX token, or an unknown release)."""
+    found = ltx_pick_version(repo_id, filename, display_repo_id)
+    return ltx_family_for_version(found[0]) if found is not None else None
 
 
 def assert_ltx_pick_supported(
@@ -102,32 +152,72 @@ def assert_ltx_pick_supported(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """Name guard for a pick already resolved to ``family``; a non-LTX family never trips on an ltx-2.5 token."""
-    if family == "ltx-2":
-        assert_supported_ltx_version(repo_id, filename, display_repo_id)
+    """Name guard for a pick already resolved to ``family``: an LTX family never loads another release's weights
+    (LTX-2.5 never reaches the 2.3 assembly, and the reverse), and a release after 2.5 is refused. A non-LTX family
+    never trips on an LTX token."""
+    if family not in LTX_FAMILIES:
+        return
+    found = ltx_pick_version(repo_id, filename, display_repo_id)
+    if found is None:
+        return
+    version, shown = found
+    expected = ltx_family_for_version(version)
+    if expected is None:
+        raise ValueError(unsupported_ltx_message(version, f"'{shown}'"))
+    if expected != family:
+        raise ValueError(wrong_ltx_family_message(version, family, f"'{shown}'"))
 
 
-def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
-    """Refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
+def local_ltx_pipeline_family(path: Optional[str]) -> Optional[str]:
+    """The LTX family a local diffusers folder's ``model_index.json`` declares: ``ltx-2.5`` for a Gemma 4 encoder or a
+    ``diffusion_decoder`` / ``duration_head`` component, ``ltx-2`` for any other LTX2 pipeline; None when the folder
+    has no readable LTX2 index."""
     import json
     from pathlib import Path
 
     try:
         index = Path(str(path or "")).expanduser() / "model_index.json"
         if not path or not index.is_file():
-            return
+            return None
         spec = json.loads(index.read_text(encoding = "utf-8"))
     except (OSError, ValueError, TypeError):
-        return
+        return None
     if not isinstance(spec, dict) or not str(spec.get("_class_name", "")).startswith("LTX2"):
-        return
+        return None
     encoder = spec.get("text_encoder")
     encoder_class = encoder[1] if isinstance(encoder, list) and len(encoder) == 2 else ""
+    # An empty or null component entry is absent, like a malformed text_encoder above.
     if str(encoder_class).startswith("Gemma4") or any(
-        isinstance(spec.get(k), list) and spec.get(k)[0]
+        isinstance(spec.get(k), list) and bool(spec.get(k)) and spec.get(k)[0]
         for k in ("diffusion_decoder", "duration_head")
     ):
-        raise ValueError(unsupported_ltx_message("2.5", f"'{path}' (by its model_index.json)"))
+        return LTX25_FAMILY
+    return LTX2_FAMILY
+
+
+def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> None:
+    """Refuse a local diffusers LTX folder whose ``model_index.json`` declares the other LTX family."""
+    if family not in LTX_FAMILIES:
+        return
+    declared = local_ltx_pipeline_family(path)
+    if declared is not None and declared != family:
+        version = "2.5" if declared == LTX25_FAMILY else "2.3"
+        raise ValueError(
+            wrong_ltx_family_message(version, family, f"'{path}' (by its model_index.json)")
+        )
+
+
+def ltx25_training_message(subject: str) -> str:
+    return (
+        f"{subject} is LTX-2.5, which Studio can run on the Video page but cannot train yet. "
+        "Train on LTX-2 (Lightricks/LTX-2) instead."
+    )
+
+
+def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
+    """Training guard: refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
+    if local_ltx_pipeline_family(path) == LTX25_FAMILY:
+        raise ValueError(ltx25_training_message(f"'{path}' (by its model_index.json)"))
 
 
 @dataclass(frozen = True)
@@ -238,6 +328,8 @@ class VideoFamily:
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
+    # False for a keyframe family that takes a first frame only (LTX-2.5); MiniMax-H3 takes both.
+    accepts_last_frame: bool = True
     # Diffusers class serving a first-frame request over the loaded pipeline's components (video_i2v).
     i2v_pipeline_class: Optional[str] = None
     i2v_pipeline_config: tuple[tuple[str, object], ...] = field(default_factory = tuple)
@@ -373,6 +465,35 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         supports_keyframes = True,
         supports_references = True,
         supports_cfg = False,
+    ),
+    # LTX-2.5 (diffusers >= 0.40): the 22B LTX-2.3 DiT without the video FFN bias plus a keyframe position embedding,
+    # conditioned by a fine-tuned Gemma 4 12B (Gemma4UnifiedForConditionalGeneration, transformers >= 5.10.1). That
+    # encoder runs in a spawned worker on the .venv_t5_510 sidecar (video_ltx25_te_worker); everything else runs here.
+    # Defaults are the reference two-stage distilled recipe (video_ltx25): 8 distilled sigmas at half resolution, x2
+    # latent upsample, 3 sigmas at full resolution, CFG 1. Two stages need a 64 px canvas (32 px per stage), so the
+    # reference 1280x720 resolves to the 1280x704 latent canvas it actually renders.
+    VideoFamily(
+        name = "ltx-2.5",
+        pipeline_class = "LTX2Pipeline",
+        transformer_class = "LTX2VideoTransformer3DModel",
+        base_repo = "Lightricks/LTX-2.5-Diffusers",
+        aliases = ("ltx2.5", "ltx25", "ltxv-2.5", "ltx-video-2.5"),
+        has_audio = True,
+        default_steps = 8,
+        default_guidance = 1.0,
+        default_num_frames = 121,
+        default_fps = 24,
+        frame_step = 8,
+        resolution_multiple = 64,
+        resolution_presets = ((1280, 704), (704, 1280), (960, 512), (768, 512)),
+        # transformer 42.0 bf16 (both DiT files are 42,018,190,584 bytes); Gemma 4 12B 23.9 (text_encoder/ shards),
+        # held by the encoder worker; VAE 1.45 + connectors 6.34 + latent upsampler 1.0 + audio VAE / vocoder 0.37.
+        bf16_components_gb = (42.0, 23.9, 9.2),
+        supports_keyframes = True,
+        accepts_last_frame = False,
+        # Same DiT layout as LTX-2.3, so the same measured knobs.
+        cudnn_benchmark = False,
+        filter_reduction_configs = True,
     ),
     # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio + video in one pass. The
     # Gemma3-12B encoder is stored fp32 on the hub (~49 GB download, ~24 GB resident bf16). The base repo carries the
@@ -735,9 +856,17 @@ def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[
     )
 
 
-def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:
-    """The companion diffusers repo: caller-supplied if given, else the family fallback."""
+def resolve_video_base_repo(
+    fam: VideoFamily,
+    base_repo: Optional[str],
+    repo_id: Optional[str] = None,
+) -> str:
+    """The companion diffusers repo: caller-supplied if given, else the family fallback. An LTX-2.5 DiT picked from the
+    split single-file release (or a local copy of it) defaults to that release, whose companion files sit beside it."""
     base = (base_repo or "").strip()
+    if not base and fam.name == LTX25_FAMILY and repo_id:
+        from .video_ltx25 import ltx25_default_base
+        base = ltx25_default_base(repo_id) or ""
     return base or fam.base_repo
 
 
@@ -1001,7 +1130,9 @@ def video_family_accepts_first_frame(fam: VideoFamily) -> bool:
 
 
 def video_family_accepts_last_frame(fam: VideoFamily) -> bool:
-    return bool(getattr(fam, "supports_keyframes", False))
+    return bool(getattr(fam, "supports_keyframes", False)) and bool(
+        getattr(fam, "accepts_last_frame", True)
+    )
 
 
 def video_family_uses_i2v_pipeline(fam: VideoFamily) -> bool:
@@ -1044,6 +1175,34 @@ def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict
         except (re.error, TypeError, ValueError):
             continue
     return {}
+
+
+def snap_canvas_within_cap(
+    width: float, height: float, multiple: int, max_pixels: int
+) -> tuple[int, int]:
+    """Snap a "match source" canvas to ``multiple`` without leaving ``max_pixels``: each side rounds to the nearest
+    multiple, and when that rounding pushes the area past the cap a side rounds down instead (the largest area under
+    the cap, then the aspect nearest the unsnapped one). The frontend's matchedCanvas mirrors this."""
+    import math
+
+    def down(value: float) -> int:
+        return max(multiple, math.floor(value / multiple) * multiple)
+
+    def near(value: float) -> int:
+        return max(multiple, math.floor(value / multiple + 0.5) * multiple)
+
+    w, h = near(width), near(height)
+    if w * h <= max_pixels:
+        return w, h
+    target = math.log(width / height)
+    fits = [
+        (cw, ch)
+        for cw, ch in ((down(width), h), (w, down(height)), (down(width), down(height)))
+        if cw * ch <= max_pixels
+    ]
+    if not fits:
+        return down(width), down(height)
+    return max(fits, key = lambda wh: (wh[0] * wh[1], -abs(math.log(wh[0] / wh[1]) - target)))
 
 
 def first_frame_canvas(
@@ -1201,18 +1360,43 @@ _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
 
 
 def default_video_generation_params(
-    *identifiers: Optional[str], fallback: tuple[int, float] = (40, 4.0)
+    *identifiers: Optional[str],
+    fallback: tuple[int, float] = (40, 4.0),
+    family: Optional[str] = None,
 ) -> tuple[int, float]:
     """Default ``(steps, guidance)`` for a loaded video model; the first identifier
     naming a known variant wins, so a GGUF filename ('...distilled...Q4_K_M.gguf')
     beats the family base repo. ``fallback`` is used when no identifier names a variant --
     callers pass the resolved family's own default so a Wan model loaded from an opaque local
     path under an explicit family_override still gets 50/5.0, not the hardcoded LTX 40/4.0."""
+    if family == LTX25_FAMILY:
+        # The generic table's "ltx" key is the LTX-2 dev recipe, and 2.5's Diffusers pack names no variant at all.
+        return LTX25_DEV_DEFAULTS if ltx25_is_dev(*identifiers) else LTX25_DISTILLED_DEFAULTS
     variant = video_generation_variant(*identifiers)
     for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
         if key == variant:
             return steps, guidance
     return fallback
+
+
+# LTX-2.5 defaults: distilled = the reference two-stage recipe's 8 stage-1 sigmas at CFG 1; dev = the diffusers pipeline's
+# SFT recipe (30 steps, CFG 3).
+LTX25_DISTILLED_DEFAULTS: tuple[int, float] = (8, 1.0)
+LTX25_DEV_DEFAULTS: tuple[int, float] = (30, 3.0)
+_LTX25_DEV = re.compile(r"(?<![a-z0-9])(?:dev|full|sft)(?![a-z0-9])|transformer_full")
+_LTX25_DISTILLED = re.compile(r"(?<![a-z0-9])distill")
+
+
+def ltx25_is_dev(*identifiers: Optional[str]) -> bool:
+    """The first identifier naming a variant decides (selected file before repo); unnamed means distilled, which is
+    what the Diffusers pack's default ``transformer/`` and the reference workflow ship."""
+    for identifier in identifiers:
+        leaf = _ltx_leaf(identifier).lower()
+        if _LTX25_DISTILLED.search(leaf):
+            return False
+        if _LTX25_DEV.search(leaf):
+            return True
+    return False
 
 
 def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
