@@ -1425,7 +1425,8 @@ def round_call_keys(controller: Any, calls: Any) -> list:
     keys = []
     for item in calls or ():
         fn = (item or {}).get("function") or {}
-        name = fn.get("name", "")
+        # Named as `prepare_call` names them, so a padded name is the same tool.
+        name = str(fn.get("name") or "").strip()
         try:
             keys.append((name, "healed:" + str(key_of(item))))
         except Exception:
