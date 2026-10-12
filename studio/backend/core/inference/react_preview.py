@@ -206,15 +206,14 @@ async def compile_react_preview_async(source: str, lang: str) -> dict[str, Any]:
     cached = _cache_get(_cache_key(source, _normalize_lang(lang)))
     if cached is not None:
         return cached
-    async with _semaphore():
+    semaphore = _semaphore()
+    await semaphore.acquire()
+    try:
         task = asyncio.ensure_future(asyncio.to_thread(compile_react_preview, source, lang))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            # Hold the slot until Node exits (the cap counts compilers); anyio re-cancels every await.
-            while not task.done():
-                try:
-                    await asyncio.wait({task})
-                except asyncio.CancelledError:
-                    pass
-            raise
+    except BaseException:
+        semaphore.release()
+        raise
+    # The permit follows the worker, not the request: a cancelled request returns at once (anyio
+    # re-cancels every await, so waiting here spins) while its Node child still holds the slot.
+    task.add_done_callback(lambda done: (semaphore.release(), done.cancelled() or done.exception()))
+    return await asyncio.shield(task)

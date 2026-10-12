@@ -428,6 +428,46 @@ def test_a_cancelled_request_keeps_its_slot_until_node_exits(monkeypatch):
     asyncio.run(main())
 
 
+def test_an_anyio_cancelled_request_returns_without_spinning(monkeypatch):
+    # anyio's cancellation is level-triggered: waiting for the worker inside the cancelled scope
+    # re-raised at once on every await and spun the event loop until Node exited.
+    import anyio
+
+    release = threading.Event()
+    started = []
+
+    def blocking(source, lang):
+        started.append(source)
+        release.wait(10)
+        return {"status": "ok", "code": source, "deps": []}
+
+    monkeypatch.setattr(rp, "compile_react_preview", blocking)
+    monkeypatch.setattr(rp, "MAX_CONCURRENT", 1)
+
+    async def main():
+        with anyio.CancelScope() as scope:
+
+            async def cancel_soon():
+                while not started:
+                    await anyio.sleep(0.01)
+                scope.cancel()
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(cancel_soon)
+                await rp.compile_react_preview_async("a", "tsx")
+        assert scope.cancelled_caught
+        # Returned while the worker still runs, and the worker still holds the only slot.
+        second = asyncio.ensure_future(rp.compile_react_preview_async("b", "tsx"))
+        await asyncio.sleep(0.2)
+        assert started == ["a"]
+        release.set()
+        assert (await second)["code"] == "b"
+
+    started_at = time.monotonic()
+    anyio.run(main)
+    assert time.monotonic() - started_at < 5
+
+
 def test_a_slot_survives_repeated_cancellation(monkeypatch):
     # anyio cancel scopes (Starlette on disconnect) re-deliver cancellation at every await.
     release = threading.Event()
