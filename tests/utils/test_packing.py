@@ -2301,9 +2301,9 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     assert labels.reshape(-1).tolist() == list(range(seq))
 
 
-# 3. the collator wrappers mask boundary targets like TRL >= 0.23.1; the zoo count still sees each real target once
+# wrappers match TRL >= 0.23.1 masking; the zoo count includes each real target once
 class _UnmaskedPackingCollator:
-    """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.23.1."""
+    """padding-free collator with unmasked boundaries, like TRL < 0.23.1."""
 
     def __init__(self):
         self.padding_free = True
@@ -2347,7 +2347,7 @@ def test_collator_masks_boundary_targets_and_num_items_counts_them_once(wrapper)
         {"input_ids": [13, 14, 15], "seq_lengths": [3]},
     ]
     batch = trainer.data_collator.torch_call(examples)
-    # docs [10,11] [12] [13,14,15]: same labels as TRL >= 0.23.1
+    # boundary labels match TRL >= 0.23.1
     assert batch["labels"].reshape(-1).tolist() == [-100, 11, -100, -100, 14, 15]
     assert batch["input_ids"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
     assert _zoo_num_items_in_batch(batch) == 3
@@ -2397,14 +2397,13 @@ def test_collator_boundary_mask_leaves_unflattened_rows_alone():
     assert batch["labels"].tolist() == [[10, 11, 12], [13, 14, 15]]
 
 
-# 4. idempotence, discriminating (an identity helper must not pass)
 def test_guard_is_idempotent_and_actually_masks():
     lengths = torch.tensor([2, 1, 3], dtype = torch.int32)
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     once = mask_packed_boundary_labels(labels, lengths)
     twice = mask_packed_boundary_labels(once, lengths)
     assert torch.equal(twice, once)
-    # idempotence alone is trivial for an identity helper, so pin the values
+    # an identity helper would also pass the idempotence check
     assert once.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
 
 

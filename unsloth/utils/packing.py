@@ -189,14 +189,13 @@ def configure_sample_packing(config):
 
 
 def configure_padding_free(config):
-    """Mutate an ``SFTConfig`` so TRL enables padding-free batching without packing."""
     _ensure_trl_warning_filter()
     setattr(config, "padding_free", True)
     setattr(config, "remove_unused_columns", False)
 
 
 def _enable_hf_packed_attention() -> None:
-    # Packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
+    # packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
     try:
         from .hf_packed_attention import enable_hf_packed_attention
         enable_hf_packed_attention()
@@ -205,7 +204,7 @@ def _enable_hf_packed_attention() -> None:
 
 
 def _mask_padding_free_boundary_labels(batch) -> None:
-    """TRL < 0.23.1 leaves each document's first token a target; the zoo count excludes it. Single row only."""
+    """TRL < 0.23.1 targets document starts; the zoo count excludes them; single row only."""
     labels = batch.get("labels") if isinstance(batch, Mapping) else None
     if not isinstance(labels, torch.Tensor) or labels.dim() != 2 or labels.shape[0] != 1:
         return
@@ -218,7 +217,6 @@ def enable_sample_packing(
     *,
     sequence_lengths_key: str = "seq_lengths",
 ) -> None:
-    """Enable runtime support for packed batches on an existing trainer."""
     if model is None or trainer is None:
         raise ValueError("model and trainer must not be None")
 
@@ -249,7 +247,6 @@ def enable_sample_packing(
                 lengths = example.get(sequence_lengths_key)
                 if isinstance(lengths, Iterable):
                     seq_lengths.extend(int(length) for length in lengths)
-            # Fallback: infer lengths from tokenized inputs when metadata is absent.
             if not seq_lengths:
                 for example in examples:
                     ids = example.get("input_ids")
@@ -267,7 +264,7 @@ def enable_sample_packing(
 
 
 def enable_padding_free_metadata(model, trainer):
-    """Inject seq-length metadata when padding-free batching is enabled without packing."""
+    """supply sequence lengths for padding-free batches without packing."""
     collator = getattr(trainer, "data_collator", None)
     if (
         collator is None
@@ -296,7 +293,7 @@ def enable_padding_free_metadata(model, trainer):
                     if ids is None:
                         continue
                     lengths = [len(ids)]
-                    # TRL's collator keys seq_lengths off examples[0] and reads every row: pass a copy, not the caller's row.
+                    # TRL reads all seq_lengths if examples[0] has them; copies preserve inputs.
                     if collated is examples:
                         collated = list(examples)
                     collated[index] = {**example, "seq_lengths": lengths}
@@ -315,9 +312,9 @@ def enable_padding_free_metadata(model, trainer):
     collator._unsloth_padding_free_lengths_wrapped = True
 
 
-# Experimental packing for hybrid linear-attention (Qwen3.5 / Qwen3-Next gated-delta, Nemotron-H Mamba2):
-# a flattened batch leaks recurrent + conv state across sequences unless seq_idx / cu_seqlens reach the
-# accelerated kernels, so this is env-gated and fails closed on the pure-torch fallbacks.
+# experimental hybrid packing: Qwen3.5 / Qwen3-Next gated-delta and Nemotron-H Mamba2.
+# recurrent and conv state leak unless seq_idx / cu_seqlens reach accelerated kernels.
+# env-gated; pure-torch fallbacks fail closed to prevent cross-sequence state leaks.
 _MAMBA2_FUSED_NAMES = (
     "mamba2_split_conv1d_scan_combined",
     "mamba_split_conv1d_scan_combined",
