@@ -104,11 +104,11 @@ def test_step_matches_stock_and_drops_only_non_paged_syncs(optim_name):
     patched = _run("patched", optim_name)
     if not patched["wrapped"]:
         pytest.skip("this bitsandbytes inlines torch.cuda.synchronize; the patch leaves it alone")
-    assert patched["params"] == stock["params"]  # bit-identical, every element, after 10 steps
+    assert patched["params"] == stock["params"]
     if stock["is_paged"]:
         assert patched["syncs"] == stock["syncs"]
     else:
-        assert min(stock["syncs"]) >= 4  # the stock step syncs once per parameter
+        assert min(stock["syncs"]) >= 4
         assert patched["syncs"] == [0] * 10
 
 
@@ -135,7 +135,7 @@ def _fake_bnb(monkeypatch, tmp_path, source):
     path.write_text(textwrap.dedent(source))
     spec = importlib.util.spec_from_file_location("bitsandbytes.optim.optimizer", path)
     optimizer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(optimizer)  # from a file, so inspect.getsource sees the step body
+    spec.loader.exec_module(optimizer)
     package, optim = types.ModuleType("bitsandbytes"), types.ModuleType("bitsandbytes.optim")
     package.optim, optim.optimizer = optim, optimizer
     for name, module in (

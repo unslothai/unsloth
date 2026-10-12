@@ -5220,13 +5220,8 @@ def patch_bitsandbytes_paged_optimizer_resume():
 
 
 def patch_bitsandbytes_optimizer_step_sync():
-    """Skip bitsandbytes' per-parameter device sync when the optimizer is not paged.
-    Optimizer8bit.step calls sync_gpu (torch.cuda.synchronize) after every parameter's update kernel; it
-    serialises the per-parameter prefetch of paged (unified-memory) state ("Changed prefetching", 41a9c708).
-    Non-paged state updates run in order on one stream, so there each sync only stalls the host: one per LoRA
-    tensor per step (1120 on SDXL), the step bit-identical without them. Paged optimizers, and steps run off the
-    default CUDA stream, keep every sync.
-    Older bitsandbytes inlines torch.cuda.synchronize() instead of sync_gpu and is left as is."""
+    """Skip Optimizer8bit.step's per-parameter sync_gpu for non-paged optimizers on the default stream.
+    Paged state needs it to order prefetch (bnb 41a9c708); non-paged it only stalls the host, output bit-identical."""
     if "bitsandbytes" not in sys.modules:
         return
     try:
@@ -5256,8 +5251,7 @@ def patch_bitsandbytes_optimizer_step_sync():
     import torch
 
     def _on_default_streams(optimizer):
-        # bitsandbytes launches its CUDA optimizer kernels on the legacy default stream (no stream argument), and
-        # PyTorch's side streams are non-blocking, so off the default stream the sync is the only ordering.
+        # bnb kernels run on the legacy default stream; off it the sync is the only ordering.
         devices = {p.device for group in optimizer.param_groups for p in group["params"]}
         return bool(devices) and all(
             d.type == "cuda" and torch.cuda.current_stream(d) == torch.cuda.default_stream(d)
