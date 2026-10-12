@@ -86,13 +86,28 @@ const knownHosts = new Set<string>();
 const reachedHosts = new Set<string>();
 let pageLinks = new Set<string>();
 let scope: string | undefined;
+// Where the agent's own moves in this chat landed: a native view's Back or Forward doesn't say where
+// it goes, so this is how it is checked before it loads.
+let trail: string[] = [];
+let at = -1;
 
 function enterScope(next: string | undefined): void {
   if (next === scope) return;
   knownHosts.clear();
   reachedHosts.clear();
   pageLinks = new Set();
+  trail = [];
+  at = -1;
   scope = next;
+}
+
+function record(op: string, url: string): void {
+  if (op === "back" && trail[at - 1] === url) at -= 1;
+  else if (op === "forward" && trail[at + 1] === url) at += 1;
+  else if (op !== "reload" || trail[at] !== url) {
+    trail = [...trail.slice(0, at + 1), url];
+    at = trail.length - 1;
+  }
 }
 
 function admit(url: string, gate: Gate): void {
@@ -207,6 +222,7 @@ const AGENT_ERRORS = [
   /^r\d{1,9} is not a text field\.$/,
   /^r\d{1,9} is disabled or read-only\.$/,
   /^r\d{1,9} is a radio button; select another option in its group instead\.$/,
+  /^that key does nothing in this field; click or type instead\.$/,
   /^r\d{1,9} has no such option; snapshot it to see its options\.$/,
   /^r\d{1,9} is not a dropdown or checkbox; click it, then click the option\.$/,
   /^r\d{1,9} is no longer on the page; call browser_snapshot for fresh refs\.$/,
@@ -370,6 +386,8 @@ async function open(url: string, signal?: AbortSignal): Promise<BrowserTab | nul
   const tabId = useBrowserStore.getState().activeTabId;
   if (!tabId) return null;
   useBrowserAgentStore.setState({ tabId });
+  trail = [];
+  at = -1;
   return waitForLoad(tabId, signal);
 }
 
@@ -393,6 +411,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (signal?.aborted) return { ok: false, error: "the action expired before it could run." };
   if (!browserPanelAvailable()) {
     return { ok: false, error: "the browser panel can't be shown in this window; ask the user to widen it or open the chat." };
+  }
+  const owner = useBrowserAgentStore.getState().runKey;
+  if (owner && owner !== context.runKey) {
+    return { ok: false, error: "Another chat is using the browser right now. Wait for it to finish, or tell the user." };
   }
   useBrowserAgentStore.setState({ working: true, runKey: context.runKey });
   enterScope(context.scope);
@@ -418,20 +440,32 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (action.op === "back" || action.op === "forward" || action.op === "reload") {
     const native = useNativeBrowser.getState().enabled;
     const store = useBrowserStore.getState();
-    // A native view's own history doesn't say where it leads; arrive() checks those on landing.
-    const nativeMove = native && (action.op === "reload" || Boolean(tab.nativeHistory?.[action.op]));
+    const nativeMove = native && action.op !== "reload" && Boolean(tab.nativeHistory?.[action.op]);
     const step = action.op === "back" ? -1 : action.op === "forward" ? 1 : 0;
-    const target = nativeMove ? null : tab.history[tab.index + step];
-    if (target?.kind === "web") {
-      const blocked = navigationBlocks(target.url, action.policy, permissions());
+    const entry = tab.history[tab.index + step];
+    const destination =
+      action.op === "reload"
+        ? before
+        : nativeMove
+          ? (trail[at] === before && trail[at + step]) || ""
+          : entry?.kind === "web"
+            ? entry.url
+            : "";
+    if (destination) {
+      const blocked = navigationBlocks(destination, action.policy, permissions());
       const gate: Gate = blocked
         ? { kind: "block", reason: blocked }
-        : hostOfUrl(target.url) === hostOfUrl(before)
+        : hostOfUrl(destination) === hostOfUrl(before) && reachedHosts.has(hostOfUrl(before))
           ? { kind: "allow" }
-          : gateNavigation(target.url, navigationContext(action, context));
+          : gateNavigation(destination, navigationContext(action, context));
       const refused = await pass(gate, signal);
       if (refused) return { ok: false, error: refused };
-      admit(target.url, gate);
+      admit(destination, gate);
+    } else if (nativeMove) {
+      // History from before this chat, or from the user browsing in the tab: where it leads is unknown.
+      const where = action.op === "back" ? "the previous page" : "the next page";
+      const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, signal);
+      if (refused) return { ok: false, error: refused };
     }
     if (native && action.op !== "reload" && tab.nativeHistory?.[action.op]) nativeAction(tab.id, action.op);
     else if (native && action.op === "reload") nativeAction(tab.id, "reload");
@@ -574,6 +608,7 @@ async function arrive(
       admit(url, gate);
     }
     if (host) reachedHosts.add(host);
+    record(action.op, url);
   }
   return observeLoaded(tab, note);
 }

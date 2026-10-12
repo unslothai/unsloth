@@ -80,6 +80,8 @@ export function installPageAgent(): PageAgent {
   const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "number", "password", ""]);
   const BUTTON_INPUTS = new Set(["button", "submit", "reset", "image"]);
   const NOT_TEXT = new Set([...BUTTON_INPUTS, "checkbox", "radio", "range", "file", "color", "hidden"]);
+  const EDITABLE_TAGS = new Set(["input", "textarea"]);
+  const CARET_KEYS = new Set(["ArrowLeft", "ArrowRight", "Home", "End"]);
 
   class AgentError extends Error {}
   const refs = new WeakMap<Element, number>();
@@ -636,6 +638,21 @@ export function installPageAgent(): PageAgent {
       const [from, to] = start !== end ? [start, end] : name === "Backspace" ? [Math.max(0, start - 1), end] : [start, Math.min(field.value.length, end + 1)];
       setValue(field, field.value.slice(0, from) + field.value.slice(to));
       field.setSelectionRange?.(from, from);
+    } else if ((name === "Backspace" || name === "Delete") && (target as HTMLElement).isContentEditable) {
+      document.execCommand(name === "Backspace" ? "delete" : "forwardDelete");
+    } else if (CARET_KEYS.has(name) && (tag === "input" || tag === "textarea")) {
+      // A synthetic key doesn't move the caret, so move it as the key would on one line.
+      const field = target as HTMLInputElement;
+      const at = field.selectionStart ?? 0;
+      const to = name === "Home" ? 0 : name === "End" ? field.value.length : Math.max(0, Math.min(field.value.length, at + (name === "ArrowLeft" ? -1 : 1)));
+      try {
+        field.setSelectionRange(to, to);
+      } catch {
+        return { ok: false, error: "that key does nothing in this field; click or type instead." };
+      }
+    } else if (active && (EDITABLE_TAGS.has(tag) || (target as HTMLElement).isContentEditable) && name !== "Escape" && name !== "Tab") {
+      // Not a field key we can act out: say so rather than report a change that didn't happen.
+      return { ok: false, error: "that key does nothing in this field; click or type instead." };
     } else if (name === "Tab") {
       const focusable = Array.from(
         document.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])"),
