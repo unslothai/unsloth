@@ -177,6 +177,21 @@ def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
     }
 
 
+def test_the_delete_preview_excludes_a_blob_retained_by_a_sibling_build(tmp_path):
+    from hub.services.models.companion_cleanup import _variant_bytes
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(tmp_path, [LISTED, SWIFT])
+    shared_blob = repo.repo_path / "blobs" / "sha0"
+    (snap / SWIFT).unlink()
+    (snap / SWIFT).symlink_to(shared_blob)
+    repo.revisions[0].files[1].blob_path = str(shared_blob)
+
+    assert _variant_bytes(repo, "IQ3_S") == 0
+    _delete_gguf_variant_from_repos(repo.repo_id, "IQ3_S", [repo], None, root = tmp_path)
+    assert shared_blob.exists()
+
+
 def test_deleting_from_a_local_folder_keeps_the_other_builds(tmp_path):
     from routes.models import _delete_gguf_variant_files
 

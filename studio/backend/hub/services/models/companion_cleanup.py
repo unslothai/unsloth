@@ -23,8 +23,9 @@ logger = get_logger(__name__)
 
 
 def _repo_blob_bytes(repo_info, *, only = None) -> int:
-    """return deduplicated on-disk bytes; ``only`` receives the snapshot-relative name and path."""
+    """return deduplicated bytes; filtered blobs count only if every snapshot reference matches."""
     unique: dict[str, int] = {}
+    retained: set[str] = set()
     for revision in getattr(repo_info, "revisions", ()) or ():
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         snapshot = getattr(revision, "snapshot_path", None)
@@ -36,12 +37,14 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
                     name = Path(path).relative_to(Path(snapshot)).as_posix()
                 except ValueError:
                     pass
-            if only is not None and not only(name, Path(path) if path else None):
-                continue
             from hub.services.models.cache_inventory import _blob_key
 
-            unique[_blob_key(f, f"{rev_id}:{name}")] = int(getattr(f, "size_on_disk", 0) or 0)
-    return sum(unique.values())
+            key = _blob_key(f, f"{rev_id}:{name}")
+            if only is not None and not only(name, Path(path) if path else None):
+                retained.add(key)
+                continue
+            unique[key] = int(getattr(f, "size_on_disk", 0) or 0)
+    return sum(size for key, size in unique.items() if key not in retained)
 
 
 # one shared predicate keeps orphan listings and delete previews consistent
