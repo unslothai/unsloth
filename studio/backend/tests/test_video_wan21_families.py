@@ -78,6 +78,8 @@ _TABLE = [
         "wan2.1-t2v-14b",
     ),
     ("Kijai/WanVideo_comfy/Wan2_1-T2V-1_3B_bf16.safetensors", "wan2.1-t2v-1.3b"),
+    ("someone/wan21-14b-gguf", "wan2.1-t2v-14b"),
+    ("someone/wan21-1.3b-gguf/wan21-1.3b-Q8_0.gguf", "wan2.1-t2v-1.3b"),
     ("Kijai/WanVideo_comfy/Wan2_1-T2V-14B_fp8_e4m3fn.safetensors", "wan2.1-t2v-14b"),
     ("Wan-AI/Wan2.1-I2V-14B-480P-Diffusers", None),
     ("Wan-AI/Wan2.1-I2V-14B-720P-Diffusers", None),
