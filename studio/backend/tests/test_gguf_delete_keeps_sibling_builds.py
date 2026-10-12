@@ -262,6 +262,53 @@ def test_readiness_ranking_selects_the_healthy_rows_build(tmp_path):
     assert (snapshots / new_revision / beta).is_symlink()
 
 
+def test_scoped_source_path_selects_the_rows_build(tmp_path):
+    from hub.services.models.companion_cleanup import _variant_bytes
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils.gguf_sources import cached_gguf_action_path
+
+    alpha = "alpha-Q4_K_M.gguf"
+    beta = "beta-Q4_K_M.gguf"
+    repo, snapshots = _revisioned_repo(
+        tmp_path, (("old", [alpha]), ("new", [beta]))
+    )
+    beta_entry = repo.revisions[1].files[0]
+    Path(beta_entry.blob_path).write_bytes(b"x" * 128)
+    beta_entry.size_on_disk = 128
+    preferred_path = str(snapshots / "old" / alpha)
+
+    assert cached_gguf_action_path(
+        repo.repo_id, "Q4_K_M", preferred_path = preferred_path
+    ) == str(repo.repo_path)
+    assert _variant_bytes(repo, "Q4_K_M") == 128
+    assert _variant_bytes(repo, "Q4_K_M", preferred_path) == 64
+    _delete_gguf_variant_from_repos(
+        repo.repo_id,
+        "Q4_K_M",
+        [repo],
+        None,
+        root = tmp_path,
+        preferred_path = preferred_path,
+    )
+    assert not (snapshots / "old" / alpha).is_symlink()
+    assert (snapshots / "new" / beta).is_symlink()
+
+
+def test_delete_preview_counts_the_whole_audio_package(tmp_path):
+    from core.inference.audio_cpp_models import FAMILIES
+    from hub.services.models.companion_cleanup import (
+        _remaining_main_gguf_variants,
+        _variant_bytes,
+    )
+
+    package = next(
+        variant for variant in FAMILIES["minimax_music3"].package if variant.key == "Q8_0"
+    )
+    repo, _snap = _cache_repo(tmp_path, list(package.files))
+    assert _variant_bytes(repo, "Q8_0") == 64 * len(package.files)
+    assert _remaining_main_gguf_variants(repo, excluding = "Q8_0") == set()
+
+
 def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
     from hub.services.models.companion_cleanup import (
         _remaining_main_gguf_variants,

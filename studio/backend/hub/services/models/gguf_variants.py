@@ -2329,3 +2329,17 @@ async def get_gguf_variants_response(
         include_cache_locations = include_cache_locations,
     )
     return answer.response
+
+
+async def cached_gguf_variant_source_path(
+    repo_id: str,
+    variant: str,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """The exact cached file selected for a variant after online readiness checks."""
+    answer = await get_gguf_variants_answer(
+        repo_id,
+        hf_token = hf_token,
+        include_cache_locations = True,
+    )
+    return (answer.variant_context_sources or {}).get((variant or "").strip().lower())

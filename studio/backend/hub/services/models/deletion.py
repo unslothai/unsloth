@@ -282,7 +282,9 @@ def _rank_complete_snapshots(
     ]
 
 
-def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
+def _main_gguf_variant_keys(
+    target_repo, preferred_path: Optional[str] = None
+) -> dict[Path, str]:
     """use the lister's cross-snapshot readiness ranking so unlisted builds cannot claim the row."""
     revisions = sorted(
         getattr(target_repo, "revisions", ()), key = _revision_selection_key, reverse = True
@@ -299,6 +301,19 @@ def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
     if repo_id:
         complete = _rank_complete_snapshots(repo_id, revisions, complete)
     listed = gguf_listed_checkpoints(names, complete)
+    if preferred_path:
+        wanted_path = Path(preferred_path)
+        preferred_name = next(
+            (
+                name
+                for revision in matches
+                for snap, _blob, name in revision
+                if snap == wanted_path
+            ),
+            None,
+        )
+        if preferred_name is not None:
+            listed.update(gguf_listed_checkpoints(((preferred_name,),)))
     keys: dict[Path, str] = {}
     for revision, revision_names in zip(matches, names):
         revision_keys = gguf_variant_keys_by_checkpoint(revision_names, listed)
@@ -310,12 +325,17 @@ def _main_key(snap: Path, main_keys: dict[Path, str]) -> str:
     return (main_keys.get(snap) or "").lower()
 
 
-def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
+def _variant_keys_to_delete(
+    target_repo, variant: str, preferred_path: Optional[str] = None
+) -> set[str]:
     """return lowercase keys, accepting a bare-quant alias only for one path-qualified key."""
     wanted = (variant or "").strip().lower()
     if not wanted or "/" in wanted:
         return {wanted}
-    keys = {key.lower() for key in _main_gguf_variant_keys(target_repo).values()}
+    keys = {
+        key.lower()
+        for key in _main_gguf_variant_keys(target_repo, preferred_path).values()
+    }
     if wanted in keys:
         return {wanted}
     # use path-qualified keys, not is_qualified_gguf_variant_key; H3 bare quants span partitions.
@@ -347,6 +367,7 @@ def _delete_gguf_variant_from_repos(
     *,
     sibling_active: bool = False,
     root: Optional[Path] = None,
+    preferred_path: Optional[str] = None,
 ) -> dict:
     failures: list[str] = []
     removed_snapshots = 0
@@ -356,8 +377,8 @@ def _delete_gguf_variant_from_repos(
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
-        wanted_keys = _variant_keys_to_delete(target_repo, variant)
-        main_keys = _main_gguf_variant_keys(target_repo)
+        wanted_keys = _variant_keys_to_delete(target_repo, variant, preferred_path)
+        main_keys = _main_gguf_variant_keys(target_repo, preferred_path)
         package_files, protected = _audio_cpp_package_scope(target_repo, variant)
         matched = [
             match
@@ -1025,6 +1046,19 @@ async def delete_cached_model_response(
                 status_code = 400,
                 detail = blocks_detail,
             )
+        preferred_path = None
+        if variant is not None:
+            try:
+                preferred_path = await gguf_variants.cached_gguf_variant_source_path(
+                    repo_id, variant, hf_token
+                )
+            except Exception as exc:  # noqa: BLE001 -- local readiness is the offline fallback
+                logger.debug(
+                    "Could not resolve the scoped GGUF source for %s [%s]: %s",
+                    repo_id,
+                    variant,
+                    download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+                )
         result = await asyncio.to_thread(
             _delete_cached_model_blocking,
             repo_id,
@@ -1032,6 +1066,7 @@ async def delete_cached_model_response(
             hf_token,
             cache_path,
             only_if_orphan = only_if_orphan,
+            preferred_path = preferred_path,
         )
         # The audio.cpp link farm hardlinks the deleted blobs; without this they keep their disk space.
         # Any GGUF repo can be an audio.cpp model, and pruning an absent or current farm is a no-op.
@@ -1086,10 +1121,13 @@ def _delete_cached_model_blocking(
     cache_path: Optional[str] = None,
     *,
     only_if_orphan: bool = False,
+    preferred_path: Optional[str] = None,
 ) -> dict:
     from hub.utils.gguf_sources import cached_gguf_action_path
 
-    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
+    cache_path = cached_gguf_action_path(
+        repo_id, variant, cache_path, preferred_path
+    )
     # Free up space's list can be minutes old, and a background download finishing turns that orphan
     # into an installed checkpoint neither guard below catches.
     if only_if_orphan:
@@ -1235,6 +1273,7 @@ def _delete_cached_model_blocking(
                 hf_token,
                 sibling_active = sibling_active,
                 root = target_root,
+                preferred_path = preferred_path,
             )
 
         deleted_revisions = False

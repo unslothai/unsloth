@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import HTTPException
 from loggers import get_logger
 
-from hub.utils import companion_assets
+from hub.utils import companion_assets, download_registry
 from hub.services.models import cache_inventory
 from hub.services.models.common import _is_main_gguf_filename
 from hub.utils.paths import is_valid_gguf_variant as _is_valid_gguf_variant
@@ -78,36 +78,69 @@ def _repos_by_id(cache_scans) -> dict[str, list]:
     return out
 
 
-def _variant_keys(repo_info, variant: str) -> set[str]:
+def _variant_keys(
+    repo_info, variant: str, preferred_path: Optional[str] = None
+) -> set[str]:
     """use deletion keys because path-qualified checkpoints do not match bare quant labels."""
     from hub.services.models.deletion import _variant_keys_to_delete
-    return {key.lower() for key in _variant_keys_to_delete(repo_info, variant)}
+    return {
+        key.lower()
+        for key in _variant_keys_to_delete(repo_info, variant, preferred_path)
+    }
 
 
-def _variant_bytes(repo_info, variant: str) -> int:
-    from hub.services.models.deletion import _main_gguf_variant_keys, _main_key
+def _variant_bytes(
+    repo_info, variant: str, preferred_path: Optional[str] = None
+) -> int:
+    from hub.services.models.deletion import (
+        _audio_cpp_package_scope,
+        _main_gguf_variant_keys,
+        _main_key,
+    )
 
-    wanted = _variant_keys(repo_info, variant)
-    main_keys = _main_gguf_variant_keys(repo_info)
+    wanted = _variant_keys(repo_info, variant, preferred_path)
+    main_keys = _main_gguf_variant_keys(repo_info, preferred_path)
+    package_files, protected = _audio_cpp_package_scope(repo_info, variant)
 
     def _matches(name: str, path: Optional[Path]) -> bool:
         return (
             path is not None
-            and _is_main_gguf_filename(name)
-            and _main_key(path, main_keys) in wanted
+            and name not in protected
+            and (
+                name in package_files
+                or (_is_main_gguf_filename(name) and _main_key(path, main_keys) in wanted)
+            )
         )
 
     return _repo_blob_bytes(repo_info, only = _matches)
 
 
-def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None) -> set[str]:
-    from hub.services.models.deletion import _main_gguf_variant_keys
-    skip = _variant_keys(repo_info, excluding) if excluding else set()
+def _remaining_main_gguf_variants(
+    repo_info,
+    *,
+    excluding: Optional[str] = None,
+    preferred_path: Optional[str] = None,
+) -> set[str]:
+    from hub.services.models.deletion import (
+        _audio_cpp_package_scope,
+        _main_gguf_variant_keys,
+        _repo_file_matches,
+    )
+
+    skip = _variant_keys(repo_info, excluding, preferred_path) if excluding else set()
+    package_files, protected = (
+        _audio_cpp_package_scope(repo_info, excluding) if excluding else (frozenset(), frozenset())
+    )
+    removed_package_paths = {
+        snap
+        for snap, _blob, name in _repo_file_matches(repo_info, lambda name: name in package_files)
+        if name not in protected
+    }
     # deletion keys keep sibling builds with the same quant distinct
     return {
         key.lower()
-        for key in _main_gguf_variant_keys(repo_info).values()
-        if key and key.lower() not in skip
+        for path, key in _main_gguf_variant_keys(repo_info, preferred_path).items()
+        if path not in removed_package_paths and key and key.lower() not in skip
     }
 
 
@@ -133,6 +166,7 @@ def _delete_impact_blocking(
     repo_id: str,
     variant: Optional[str],
     cache_path: Optional[str] = None,
+    preferred_path: Optional[str] = None,
 ) -> dict:
     scans = _account_scans()
     by_id = _repos_by_id(scans)
@@ -140,7 +174,9 @@ def _delete_impact_blocking(
     all_copies = by_id.get(key, [])
     from hub.utils.gguf_sources import cached_gguf_action_path
 
-    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
+    cache_path = cached_gguf_action_path(
+        repo_id, variant, cache_path, preferred_path
+    )
     repos = all_copies
     surviving = []
     if cache_path:
@@ -159,14 +195,20 @@ def _delete_impact_blocking(
 
     reclaimed = 0
     for repo_info in repos:
-        reclaimed += _variant_bytes(repo_info, variant) if variant else _repo_blob_bytes(repo_info)
+        reclaimed += (
+            _variant_bytes(repo_info, variant, preferred_path)
+            if variant
+            else _repo_blob_bytes(repo_info)
+        )
 
     # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable;
     # while a sibling quant survives they stay in use.
     removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
     if variant:
         for repo_info in repos:
-            if _remaining_main_gguf_variants(repo_info, excluding = variant):
+            if _remaining_main_gguf_variants(
+                repo_info, excluding = variant, preferred_path = preferred_path
+            ):
                 removes_last_checkpoint = False
                 break
 
@@ -223,6 +265,7 @@ async def delete_impact_response(
     repo_id: str,
     variant: Optional[str] = None,
     cache_path: Optional[str] = None,
+    hf_token: Optional[str] = None,
 ) -> dict:
     """What a delete of *repo_id* (/*variant*) would reclaim, retain, and be blocked by."""
     if not _is_valid_repo_id(repo_id):
@@ -230,7 +273,24 @@ async def delete_impact_response(
     variant = (variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(status_code = 400, detail = f"Invalid gguf_variant: {variant!r}")
-    return await asyncio.to_thread(_delete_impact_blocking, repo_id, variant, cache_path)
+    preferred_path = None
+    if variant is not None:
+        try:
+            from hub.services.models import gguf_variants
+
+            preferred_path = await gguf_variants.cached_gguf_variant_source_path(
+                repo_id, variant, hf_token
+            )
+        except Exception as exc:  # noqa: BLE001 -- local readiness is the offline fallback
+            logger.debug(
+                "Could not resolve the scoped GGUF source for %s [%s]: %s",
+                repo_id,
+                variant,
+                download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+            )
+    return await asyncio.to_thread(
+        _delete_impact_blocking, repo_id, variant, cache_path, preferred_path
+    )
 
 
 def _orphan_companions_blocking() -> dict:

@@ -322,6 +322,7 @@ async def delete_impact(
     variant: Optional[str] = Body(None),
     # The copy the listing advertised, so the preview describes the delete that will follow.
     cache_path: Optional[str] = Body(None),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
@@ -334,7 +335,10 @@ async def delete_impact(
     # the inventory routes; an API-key caller gets the opaque reference instead.
     return redact_host_paths(
         await companion_cleanup.delete_impact_response(
-            repo_id, variant, resolve_host_path_reference(cache_path) or cache_path
+            repo_id,
+            variant,
+            resolve_host_path_reference(cache_path) or cache_path,
+            hf_token,
         ),
         via_api_key = via_api_key,
     )
