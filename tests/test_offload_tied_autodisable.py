@@ -516,6 +516,7 @@ def test_headless_streamed_table_returns_rows_to_the_decoder_card():
     hooked = []
     ns["_install_offload_embedding_hooks"] = lambda emb, out, device: hooked.append((emb, device))
     ns["_pin_device_to_decoder"] = ns["clean_gpu_cache"] = lambda *a: None
+    ns["_patch_trainer_move_keeps_host_embeddings"] = lambda: None
     ns["gc"] = types.SimpleNamespace(collect = lambda: None)
     model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
     model.per_layer.to("cpu")

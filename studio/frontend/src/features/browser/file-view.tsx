@@ -7,6 +7,7 @@ import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Spinner } from "@/components/ui/spinner";
 import {
   ArtifactHtmlFrame,
+  ReactPreview,
   attachmentTextLanguage,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
@@ -74,7 +75,9 @@ function TextFile({
   // HTML runs only once previewed, so opening to source does not run it.
   const [previewed, setPreviewed] = useState(view.mode === "preview");
   if (!previewed && view.mode === "preview") setPreviewed(true);
-  const kind = textFileKind(name, contentType, plainText);
+  const fileKind = textFileKind(name, contentType, plainText);
+  // A React preview runs only in a tab of its own; anywhere else it is just its code.
+  const kind = fileKind === "react" && !tabId ? "code" : fileKind;
   useEffect(() => {
     let active = true;
     // HTML runs whole: a cut document breaks its scripts and closing tags.
@@ -101,7 +104,7 @@ function TextFile({
   }, [text, name, kind]);
   if (text === null) return <Spinner className="m-auto size-6" />;
   const preview = truncateAttachmentPreviewText(text);
-  const source = (kind === "html" || kind === "markdown") && view.mode === "source";
+  const source = (kind === "html" || kind === "react" || kind === "markdown") && view.mode === "source";
   const sourceView = language ? (
     <div className={cn("size-full overflow-auto", view.wrap && WRAP_CLASS)} style={{ zoom: scale }}>
       <CodeSourceView code={preview.text} language={language} className="px-5 py-4" />
@@ -117,6 +120,27 @@ function TextFile({
       {preview.text}
     </pre>
   );
+  if (kind === "react") {
+    return (
+      <>
+        {previewed ? (
+          <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
+            <ReactPreview
+              source={text}
+              lang={/\.jsx$/i.test(name) ? "jsx" : "tsx"}
+              title={name}
+              reloadNonce={reloadNonce}
+              consoleOpen={view.consoleOpen}
+              onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
+              onOutputCountChange={tabId ? onOutputCountChange : undefined}
+              onFixWithModel={requestEdits ?? stageEditsPrompt}
+            />
+          </div>
+        ) : null}
+        {source ? sourceView : null}
+      </>
+    );
+  }
   // Same frame as the attachment preview: network stays off until the user allows it.
   if (kind === "html") {
     return (
