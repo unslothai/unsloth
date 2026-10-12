@@ -1463,7 +1463,12 @@ def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):
     # Serving (Studio's Decision API) and predict share this rule.
     from unsloth.models import clef
 
-    def encode(tokenizer, record, max_length):
+    def encode(
+        tokenizer,
+        record,
+        max_length,
+        processor = None,
+    ):
         # The state needs `natural` tokens; anything over max_length is cut to fit.
         return types.SimpleNamespace(input_ids = [0] * min(record["state"], max_length))
 
