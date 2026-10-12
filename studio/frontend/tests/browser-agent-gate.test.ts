@@ -55,6 +55,8 @@ test("an address the model made up for a new site asks first", () => {
   // Naming a shared host's brand doesn't approve its users' subdomains, nor a host hidden inside a longer one.
   assert.equal(gateNavigation("https://collector.github.io/x", navigation({ userText: "search GitHub for gguf" })).kind, "ask");
   assert.equal(gateNavigation("https://e.com/x", navigation({ userText: "open example.com" })).kind, "ask");
+  // The site's name alone approves only the big generic TLDs, not a lookalike the model made up.
+  assert.equal(gateNavigation("https://wikipedia.xyz/?d=secret", navigation({ userText: "search wikipedia" })).kind, "ask");
 });
 
 test("consequential labels ask in the languages Studio ships in", () => {
@@ -72,6 +74,10 @@ test("non-web schemes and the website policy are refused outright", () => {
   assert.equal(gateNavigation("https://example.com/", navigation({ policy, userText: "example.com" })).kind, "block");
   assert.equal(policyBlocks("https://de.wikipedia.org/", policy), null);
   assert.match(policyBlocks("https://x.evil.example/", { allowedDomains: [], blockedDomains: ["evil.example"] }) ?? "", /blocks/);
+  // A trailing dot is the same host to DNS.
+  assert.match(policyBlocks("https://evil.example./", { allowedDomains: [], blockedDomains: ["evil.example"] }) ?? "", /blocks/);
+  const never = permissions({ "never.example": rule("block") });
+  assert.equal(gateNavigation("https://never.example./", navigation({ permissions: never })).kind, "block");
 });
 
 test("password, payment and one-time-code fields are never typed into", () => {
@@ -139,6 +145,14 @@ test("site patterns are normalized hosts, and the most specific rule wins", () =
   assert.equal(ruleFor("https://admin.example.com/x", rules).rule.browsing, "block");
   assert.equal(ruleFor("https://cdn.org/", rules).site, null);
   assert.equal(ruleFor("https://a.cdn.org/", rules).site, "*.cdn.org");
+  // On a subdomain the wildcard is the narrower rule, whichever was saved first.
+  for (const sites of [
+    { "shop.example": rule("block"), "*.shop.example": rule("allow") },
+    { "*.shop.example": rule("allow"), "shop.example": rule("block") },
+  ]) {
+    assert.equal(ruleFor("https://a.shop.example/", permissions(sites)).site, "*.shop.example");
+    assert.equal(ruleFor("https://shop.example/", permissions(sites)).site, "shop.example");
+  }
 });
 
 test("site rules decide navigation before the new-site check", () => {

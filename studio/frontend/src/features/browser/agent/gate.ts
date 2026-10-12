@@ -24,7 +24,8 @@ export type SitePolicy = { allowedDomains: string[]; blockedDomains: string[] };
 
 export function hostOfUrl(url: string): string {
   try {
-    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    // "evil.com." is evil.com to DNS, so it meets evil.com's rules.
+    return new URL(url).hostname.toLowerCase().replace(/\.+$/, "").replace(/^www\./, "");
   } catch {
     return "";
   }
@@ -77,6 +78,8 @@ const SHARED_HOSTS = [
   "hf.space", "streamlit.app", "deno.dev", "googleusercontent.com", "sharepoint.com", "myshopify.com",
 ];
 
+const NAMED_TLDS = new Set(["com", "org", "net", "edu", "gov"]);
+
 function mentioned(host: string, text: string): boolean {
   const lower = text.toLowerCase();
   // example.com in "look at example.com", as a whole name (not e.com inside it).
@@ -84,8 +87,10 @@ function mentioned(host: string, text: string): boolean {
   if (new RegExp(`(^|[^a-z0-9.-])${escaped}($|[^a-z0-9-])`).test(lower)) return true;
   // The site's name ("search wikipedia" for en.wikipedia.org), but not on a shared host, where each
   // subdomain is someone else's: "github" must not approve collector.github.io.
+  // Only on the big generic TLDs: "wikipedia" must not approve a made-up wikipedia.xyz.
   if (SHARED_HOSTS.some((suffix) => host.endsWith(`.${suffix}`))) return false;
-  const name = host.split(".").slice(-2, -1)[0];
+  const [name, tld] = host.split(".").slice(-2);
+  if (!NAMED_TLDS.has(tld ?? "")) return false;
   return Boolean(name && name.length >= 4 && new RegExp(`\\b${name.replace(/[^a-z0-9-]/g, "")}\\b`).test(lower));
 }
 

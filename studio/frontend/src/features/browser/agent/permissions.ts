@@ -36,7 +36,7 @@ export function normalizeSitePattern(input: string): string | null {
 
 function hostOf(url: string): string {
   try {
-    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    return new URL(url).hostname.toLowerCase().replace(/\.+$/, "").replace(/^www\./, "");
   } catch {
     return "";
   }
@@ -48,14 +48,16 @@ export function patternMatches(pattern: string, host: string): boolean {
   return host === pattern || host.endsWith(`.${pattern}`);
 }
 
+// Longer is narrower. On a tie ("example.com" and "*.example.com" on a subdomain) the wildcard
+// wins, so the result doesn't depend on the order the rules were saved in.
+const specificity = (pattern: string) => pattern.replace("*.", "").length * 2 + (pattern.startsWith("*.") ? 1 : 0);
+
 /** The most specific site rule for `url`, else the default; `site` is the pattern that applied. */
 export function ruleFor(url: string, permissions: AgentPermissions): { rule: SiteRule; site: string | null } {
   const host = hostOf(url);
   let best: string | null = null;
   for (const pattern of Object.keys(permissions.sites)) {
-    if (host && patternMatches(pattern, host) && (!best || pattern.replace("*.", "").length > best.replace("*.", "").length)) {
-      best = pattern;
-    }
+    if (host && patternMatches(pattern, host) && (!best || specificity(pattern) > specificity(best))) best = pattern;
   }
   const site = best ? permissions.sites[best] : undefined;
   return site ? { rule: site, site: best } : { rule: permissions.defaults, site: null };

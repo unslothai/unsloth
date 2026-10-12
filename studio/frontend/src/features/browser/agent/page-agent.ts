@@ -521,7 +521,6 @@ export function installPageAgent(): void {
     }
     const over = covering(el);
     if (over) {
-      // No page words here: errors reach the model outside the untrusted-content fence.
       return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
     }
     mouse(el, "pointerover");
@@ -556,8 +555,24 @@ export function installPageAgent(): void {
   const press = (name: string, on?: Element): Record<string, unknown> => {
     const active = on ?? (document.activeElement && document.activeElement !== document.body ? document.activeElement : null);
     const target = active ?? document.body ?? document.documentElement;
-    const proceed = key(target, name);
-    if (!proceed) return { ok: true };
+    // WebKit acts on a synthetic keypress (implicit submit, a button's click), and so may the page's
+    // own key handler: acting again would send the form or click the button twice.
+    let acted = false;
+    let submitted = false;
+    const mark = (event: Event) => {
+      acted = true;
+      if (event.type === "submit") submitted = true;
+    };
+    window.addEventListener("submit", mark, true);
+    window.addEventListener("click", mark, true);
+    let proceed: boolean;
+    try {
+      proceed = key(target, name);
+    } finally {
+      window.removeEventListener("submit", mark, true);
+      window.removeEventListener("click", mark, true);
+    }
+    if (!proceed || acted) return submitted ? { ok: true, note: "Submitted the form." } : { ok: true };
     const tag = target.tagName.toLowerCase();
     if (name === "Enter") {
       const field = target as HTMLInputElement;
@@ -700,7 +715,8 @@ export function installPageAgent(): void {
     }
   };
 
-  // Not writable or configurable: once installed, a page script can't swap it out.
+  // Not writable or configurable once installed, but a page that defines KEY first still wins: the
+  // agent shares the page's world in the frame and native views alike, so its answers are untrusted.
   Object.defineProperty(host, KEY, { value: { run }, enumerable: false });
 }
 
