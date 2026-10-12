@@ -3324,10 +3324,16 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
+    # A background frontend build owns frontend/node_modules and prunes it itself.
     assert (
-        "_remove_agent_instruction_files \\\n"
-        '    "$SCRIPT_DIR/frontend/node_modules" \\\n'
-        '    "$_OXC_DIR/node_modules"'
+        'if [ -z "$_FRONTEND_BG_PID" ]; then\n'
+        '    _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"\n'
+        "fi\n"
+        '_remove_agent_instruction_files "$_OXC_DIR/node_modules"'
+    ) in setup_sh
+    assert (
+        "        _build_frontend\n"
+        '        _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"'
     ) in setup_sh
     assert '_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"' not in setup_sh
     assert '_remove_agent_instruction_files "$LLAMA_CPP_DIR"' in setup_sh

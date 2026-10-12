@@ -3,9 +3,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
 # setup.sh runs the frontend build in the background on a source install (#8818).
-# These run the real helpers against a stand-in _build_frontend: the join reports
-# the build's output and exit code, a setup that dies first takes the build with it,
-# and the gate keeps Desktop, staged updates, verbose and opted-out runs serial.
+# These run the real helpers (and the real setup_fail) against a stand-in _build_frontend:
+# the join reports the build's output and exit code, a setup that fails or is interrupted
+# first takes the whole build with it and undoes what it left behind, and the gate keeps
+# Desktop, staged updates, verbose, opted-out and small machines serial.
 set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
@@ -15,37 +16,42 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 HELPERS="$WORK/helpers.sh"
+FNS="setup_fail _remove_agent_instruction_files _frontend_can_build_in_background
+    _frontend_build_cleanup _frontend_bg_stop _frontend_bg_start _frontend_bg_cancel
+    _frontend_bg_join _frontend_bg_reap"
 {
     printf '_FRONTEND_BG_PID=""\n_FRONTEND_BG_WATCH=""\n_FRONTEND_BG_LOG=""\n'
-    for fn in _remove_agent_instruction_files _frontend_can_build_in_background \
-        _frontend_bg_start _frontend_bg_join _frontend_bg_reap _frontend_build_exit; do
+    for fn in $FNS; do
         sed -n "/^$fn() {/,/^}/p" "$SETUP_SH"
     done
 } > "$HELPERS"
-for fn in _frontend_can_build_in_background _frontend_bg_start _frontend_bg_join \
-    _frontend_bg_reap _frontend_build_exit; do
+for fn in $FNS; do
     grep -q "^$fn() {" "$HELPERS" || { echo "FAIL: $fn not found in setup.sh"; exit 1; }
 done
 
-# Stand-ins for setup.sh's output helpers; setup_fail exits like the real one.
 STUBS='
 set -euo pipefail
 step() { echo "step $*"; }
 substep() { echo "substep $*"; }
-setup_fail() { echo "setup_fail $1"; exit "$1"; }
 _is_verbose() { [ "${UNSLOTH_VERBOSE:-0}" = "1" ]; }
 '
 
+FE="$WORK/outer/studio/frontend"
 run_case() {
     # $1 = body appended after the helpers; prints the script output and "rc=N".
     local out rc=0
-    out=$(SCRIPT_DIR="$WORK/studio" STAGE_ROOT="" bash -c "$STUBS
+    out=$(SCRIPT_DIR="$WORK/outer/studio" STAGE_ROOT="" bash -c "$STUBS
 . '$HELPERS'
 $1" 2>&1) || rc=$?
     printf '%s\nrc=%s\n' "$out" "$rc"
 }
-
-mkdir -p "$WORK/studio/frontend/node_modules/pkg"
+wait_gone() {
+    # Wait up to $2 s for pid $1 to disappear; 0 when it did.
+    local _i=0
+    while kill -0 "$1" 2>/dev/null && [ "$_i" -lt "$(( $2 * 5 ))" ]; do sleep 0.2; _i=$((_i + 1)); done
+    ! kill -0 "$1" 2>/dev/null
+}
+mkdir -p "$FE/node_modules/pkg" "$FE/src"
 
 echo "== join reports a successful build after the parent's own steps =="
 out=$(run_case '
@@ -67,7 +73,6 @@ _frontend_bg_start
 _frontend_bg_join
 echo "not-reached"')
 assert_contains "build output is replayed" "$out" "npm error"
-assert_contains "setup_fail gets the build exit code" "$out" "setup_fail 7"
 assert_not_contains "setup stops" "$out" "not-reached"
 assert_contains "exit 7" "$out" "rc=7"
 
@@ -102,89 +107,97 @@ echo "not-reached"')
 assert_contains "exit 5" "$out" "rc=5"
 assert_not_contains "setup stops at the boundary" "$out" "not-reached"
 
-echo "== a setup that dies first stops the build and its children =="
-MARK="$WORK/mark"
-rm -f "$MARK"
-out=$(run_case "
-_build_frontend() {
-    trap 'echo cleaned > \"$MARK\"' EXIT
-    sleep 300 &
+# A build that ignores TERM, has hidden an ancestor .gitignore and written dist.
+STUBBORN="_build_frontend() {
+    mv '$WORK/outer/.gitignore' '$WORK/outer/.gitignore._twbuild'
+    mkdir -p '$FE/dist'
+    python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)' &
     echo \$! > '$WORK/grandchild'
     wait
+}"
+prime() {
+    printf '*\n' > "$WORK/outer/.gitignore"
+    rm -rf "$WORK/outer/.gitignore._twbuild" "$FE/dist" "$WORK/grandchild"
+    touch "$FE/src/app.tsx"
 }
-_frontend_bg_start
-sleep 1
-setup_fail 3")
-assert_contains "setup exits with its own code" "$out" "rc=3"
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    [ -f "$MARK" ] && break
-    sleep 1
-done
-assert_eq "build ran its EXIT trap" "cleaned" "$(cat "$MARK" 2>/dev/null)"
-gc=$(cat "$WORK/grandchild" 2>/dev/null || echo 0)
-for _ in 1 2 3 4 5; do kill -0 "$gc" 2>/dev/null || break; sleep 1; done
-if kill -0 "$gc" 2>/dev/null; then
-    bad "grandchild $gc still running"
-    kill "$gc" 2>/dev/null
-else
-    ok "grandchild process was stopped"
-fi
+check_aftermath() {
+    local gc
+    gc=$(cat "$WORK/grandchild" 2>/dev/null || echo 0)
+    if wait_gone "$gc" 10; then ok "$1: TERM-resistant child was killed"; else bad "$1: child $gc still running"; kill -KILL "$gc" 2>/dev/null; fi
+    assert_eq "$1: ancestor .gitignore is back" "*" "$(cat "$WORK/outer/.gitignore" 2>/dev/null)"
+    assert_eq "$1: sources are newer than dist, so the next run rebuilds" "$FE/src/app.tsx" \
+        "$(find "$FE/src" -type f -newer "$FE/dist" -print -quit 2>/dev/null)"
+}
 
-echo "== a SIGINT to setup stops the build too =="
-rm -f "$MARK"
-SCRIPT_DIR="$WORK/studio" STAGE_ROOT="" bash -c "$STUBS
-. '$HELPERS'
-_build_frontend() { trap 'echo cleaned > \"$MARK\"' EXIT; sleep 300; }
+echo "== setup_fail stops the build before it returns =="
+prime
+out=$(run_case "$STUBBORN
 _frontend_bg_start
-sleep 300" >/dev/null 2>&1 &
-parent=$!
 sleep 1
-kill -INT "$parent" 2>/dev/null; kill -TERM "$parent" 2>/dev/null
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    [ -f "$MARK" ] && break
-    sleep 1
-done
-assert_eq "interrupted setup leaves no build behind" "cleaned" "$(cat "$MARK" 2>/dev/null)"
-wait "$parent" 2>/dev/null
+echo \"log=\$_FRONTEND_BG_LOG\"
+setup_fail 3 boom")
+assert_contains "setup exits with its own code" "$out" "rc=3"
+gc=$(cat "$WORK/grandchild" 2>/dev/null || echo 0)
+if kill -0 "$gc" 2>/dev/null; then bad "build still running when setup_fail returned"; else ok "nothing of the build survives setup_fail"; fi
+log=$(printf '%s\n' "$out" | sed -n 's/^log=//p')
+if [ -n "$log" ] && [ ! -e "$log" ]; then ok "build log removed"; else bad "build log '$log' left behind"; fi
+check_aftermath "setup_fail"
+
+echo "== a setup killed by errexit is cleaned up by the watcher =="
+prime
+out=$(run_case "$STUBBORN
+_frontend_bg_start
+sleep 1
+false")
+assert_contains "errexit exit code" "$out" "rc=1"
+check_aftermath "errexit"
+
+echo "== Ctrl-C to setup's whole process group =="
+prime
+python3 - "$WORK/outer/studio" "$HELPERS" "$STUBS" "$STUBBORN" <<'PY'
+import os, signal, subprocess, sys, time
+script_dir, helpers, stubs, stubborn = sys.argv[1:]
+body = f"{stubs}\n. '{helpers}'\n{stubborn}\n_frontend_bg_start\nsleep 300\n"
+p = subprocess.Popen(["bash", "-c", body], env=dict(os.environ, SCRIPT_DIR=script_dir, STAGE_ROOT=""),
+                     start_new_session=True, stdin=subprocess.DEVNULL)
+time.sleep(1.5)
+os.killpg(p.pid, signal.SIGINT)
+p.wait()
+PY
+check_aftermath "Ctrl-C"
 
 echo "== background build cleans agent guide files out of node_modules =="
-touch "$WORK/studio/frontend/node_modules/pkg/AGENTS.md"
+touch "$FE/node_modules/pkg/AGENTS.md"
 out=$(run_case '
 _build_frontend() { :; }
 _frontend_bg_start
 _frontend_bg_join')
-if [ -e "$WORK/studio/frontend/node_modules/pkg/AGENTS.md" ]; then
-    bad "AGENTS.md left in node_modules"
-else
-    ok "AGENTS.md removed"
-fi
+if [ -e "$FE/node_modules/pkg/AGENTS.md" ]; then bad "AGENTS.md left in node_modules"; else ok "AGENTS.md removed"; fi
 
-echo "== a build that dies part way marks dist stale =="
-mkdir -p "$WORK/studio/frontend/dist" "$WORK/studio/frontend/src"
-touch "$WORK/studio/frontend/src/app.tsx"
-touch "$WORK/studio/frontend/dist"
-out=$(run_case '
-_HIDDEN_GITIGNORES=()
-_restore_gitignores() { :; }
-_frontend_build_exit')
-newer=$(find "$WORK/studio/frontend/src" -type f -newer "$WORK/studio/frontend/dist" -print -quit)
-assert_eq "sources are newer than dist, so the next run rebuilds" \
-    "$WORK/studio/frontend/src/app.tsx" "$newer"
+echo "== cleanup never replaces a .gitignore that exists =="
+printf 'mine\n' > "$WORK/outer/.gitignore"
+printf '*\n' > "$WORK/outer/.gitignore._twbuild"
+run_case '_frontend_build_cleanup' >/dev/null
+assert_eq "existing .gitignore kept" "mine" "$(cat "$WORK/outer/.gitignore")"
+rm -f "$WORK/outer/.gitignore._twbuild"
 
 echo "== gate =="
 gate() {
-    SCRIPT_DIR="$WORK/studio" bash -c "$STUBS
+    SCRIPT_DIR="$WORK/outer/studio" bash -c "$STUBS
 . '$HELPERS'
-getconf() { echo \"\${FAKE_CPUS-16}\"; }
+nproc() { [ -n \"\${FAKE_CPUS-16}\" ] && echo \"\${FAKE_CPUS-16}\"; }
+sysctl() { return 1; }
+_usable_ram_mb() { printf '%s' \"\${FAKE_MB-65536}\"; }
 if _frontend_can_build_in_background; then echo yes; else echo no; fi" 2>/dev/null
 }
-# The memory probe reads this host; the CPU count is stubbed.
-if [ -r /proc/meminfo ] && [ "$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)" -ge 8388608 ]; then
-    assert_eq "big box overlaps" "yes" "$(STAGE_ROOT= gate)"
-fi
+assert_eq "16 CPUs, 64 GiB usable overlaps" "yes" "$(STAGE_ROOT= gate)"
+assert_eq "4 CPUs, 12 GiB usable overlaps" "yes" "$(FAKE_CPUS=4 FAKE_MB=12288 STAGE_ROOT= gate)"
 assert_eq "2 CPUs stays serial" "no" "$(FAKE_CPUS=2 STAGE_ROOT= gate)"
 assert_eq "unreadable CPU count stays serial" "no" "$(FAKE_CPUS= STAGE_ROOT= gate)"
+assert_eq "8 GiB usable (cgroup or free) stays serial" "no" "$(FAKE_MB=8192 STAGE_ROOT= gate)"
+assert_eq "unreadable memory stays serial" "no" "$(FAKE_MB= STAGE_ROOT= gate)"
 assert_eq "opt-out stays serial" "no" "$(UNSLOTH_STUDIO_SERIAL_SETUP=1 STAGE_ROOT= gate)"
+assert_eq "opt-out (true) stays serial" "no" "$(UNSLOTH_STUDIO_SERIAL_SETUP=true STAGE_ROOT= gate)"
 assert_eq "verbose stays serial" "no" "$(UNSLOTH_VERBOSE=1 STAGE_ROOT= gate)"
 assert_eq "Desktop install stays serial" "no" "$(UNSLOTH_TAURI_MODE=1 STAGE_ROOT= gate)"
 assert_eq "Desktop update stays serial" "no" "$(UNSLOTH_TAURI_UPDATE=true STAGE_ROOT= gate)"
