@@ -272,7 +272,8 @@ test("the context meter counts exactly the compaction notices the thread renders
     /compactionNoticeMessageIds\(thread\.messages\)\.size/,
   );
   assert.match(RUNTIME_PROVIDER, /<CompactionCountRegistrar onCountChange=/);
-  assert.match(CHAT_PAGE, /onCompactionCountChange=\{/);
+  // Project views show the meter for a chat started on the landing page too.
+  assert.match(CHAT_PAGE, /onCompactionCountChange=\{handleCompactionCountChange\}/);
   assert.match(CHAT_PAGE, /compactionCount=\{compactionCount\}/);
   // A chat that never compacted keeps the tooltip it had.
   assert.match(CONTEXT_USAGE_BAR, /\(input\.compactionCount \?\? 0\) > 0 && \(/);
