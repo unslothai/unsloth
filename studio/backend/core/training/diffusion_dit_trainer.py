@@ -303,9 +303,9 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
 def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
     """Load the transformer alone in the resolved ``base_precision``. nf4: a prequant (bnb-4bit)
     repo carries its quantization config and loads 4-bit as-is, while a dense base is quantized
-    to nf4 on the fly; the memory floor. bf16 / fp8 / mxfp8: the dense transformer (fp8/mxfp8
-    convert its frozen linears to float8 training compute AFTER the LoRA attaches; storage stays
-    bf16). int8: the dense transformer quantized in place to torchao weight-only int8 (the
+    to nf4 on the fly; the memory floor. bf16 / fp8 / mxfp8: the dense transformer, converted AFTER the LoRA
+    attaches (fp8 stores its frozen linears in e4m3, about half the bf16 weight memory; mxfp8 keeps bf16 storage).
+    int8: the dense transformer quantized in place to torchao weight-only int8 (the
     PEFT-attachable scheme), roughly halving the bf16 weight footprint."""
     import torch
 
@@ -411,40 +411,6 @@ def _fp8_module_filter(
     return _lowp_module_filter(mod, fqn, 16, exclude_tokens)
 
 
-def _fp8_training_config():
-    """Rowwise float8 only: DiT activation outliers (Z-Image ~2.7e6) crush a tensorwise scale (Z-Image 18% output
-    error), so a torchao without the recipe raises and the caller keeps bf16 (Studio's floor 0.14 has it).
-    Float scales, not the recipe's power-of-2: compiled, pow2 scales tripled FLUX.2 single-block to_qkv_mlp_proj
-    error (eager was fine) and put fp8 at +5% loss vs bf16; float scales match mxfp8 (+0.8%)."""
-    import dataclasses
-
-    from torchao.float8 import Float8LinearConfig
-
-    config = Float8LinearConfig.from_recipe_name("rowwise")
-    return _with_hp_weight_grad(dataclasses.replace(config, round_scales_to_power_of_2 = False))
-
-
-def _with_hp_weight_grad(config):
-    """High-precision grad_weight GEMM: torchao computes it even for a frozen weight (no needs_input_grad
-    check) with the token count as inner dim, which _scaled_mm needs 16-aligned (LTX-2 192x320 = 60 raised).
-    The gradient is discarded, so precision is moot; same split as torchao's rowwise_with_gw_hp."""
-    import dataclasses
-
-    from torchao.float8.config import CastConfig, ScalingType
-
-    return dataclasses.replace(
-        config,
-        cast_config_input_for_grad_weight = CastConfig(
-            scaling_type = ScalingType.DISABLED,
-            target_dtype = config.cast_config_input.target_dtype,
-        ),
-        cast_config_grad_output_for_grad_weight = CastConfig(
-            scaling_type = ScalingType.DISABLED,
-            target_dtype = config.cast_config_grad_output.target_dtype,
-        ),
-    )
-
-
 def _in_repeated_blocks(transformer, module_filter):
     """Restrict the filter to the regionally compiled ``_repeated_blocks`` (if any)."""
     names = set(getattr(transformer, "_repeated_blocks", None) or ())
@@ -474,17 +440,11 @@ def _require_lowp_modules(transformer, mode: str) -> bool:
 
 
 def _convert_fp8(transformer, family: Optional[str] = None) -> bool:
-    from torchao.float8 import convert_to_float8_training
+    """Frozen base linears to weight-cached fp8 (``diffusion_frozen_fp8``): rowwise float scales, as DiT activation
+    outliers (Z-Image ~2.7e6) crush a tensorwise one."""
+    from core.training.diffusion_frozen_fp8 import convert_frozen_fp8
 
-    names = {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
-    convert_to_float8_training(
-        transformer,
-        module_filter_fn = lambda mod, fqn: fqn in names,
-        config = _fp8_training_config(),
-    )
-    for fqn, mod in transformer.named_modules():
-        if fqn in names:
-            mod._studio_lowp = "fp8"
+    convert_frozen_fp8(transformer, {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)})
     return _require_lowp_modules(transformer, "fp8")
 
 
@@ -527,10 +487,16 @@ def _apply_fp8_training(
     on_event,
     family: Optional[str] = None,
 ) -> bool:
-    """torchao float8 compute for the frozen base, after add_adapter. Never fatal: falls back to bf16."""
+    """fp8 compute + storage for the frozen base, after add_adapter. Never fatal: falls back to bf16."""
     try:
         _probe_lowp(_convert_fp8, transformer)
-        return _convert_fp8(transformer, family)
+        converted = _convert_fp8(transformer, family)
+        import torch
+
+        if torch.cuda.is_available():
+            # Hand the freed bf16 weights back to the driver, not just the allocator's cache.
+            torch.cuda.empty_cache()
+        return converted
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
@@ -547,8 +513,8 @@ def _mx_module_filter(
 
 
 def _mxfp8_training_config():
-    """RCEIL MX config: torchao 0.14-0.16 ``MXLinearConfig``, else 0.17+ with hp wgrad (the dim1 cast
-    asserts tokens % 32 == 0; see ``_with_hp_weight_grad``)."""
+    """RCEIL MX config: torchao 0.14-0.16 ``MXLinearConfig``, else 0.17+ with hp wgrad: torchao computes grad_weight
+    even for a frozen weight, and its dim1 cast asserts tokens % 32 == 0 (the gradient is discarded anyway)."""
     try:
         from torchao.prototype.mx_formats import MXLinearConfig
         return MXLinearConfig.from_recipe_name("mxfp8_cublas_rceil")
@@ -670,8 +636,8 @@ def _pick_auto_precision(
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
     decision time. bf16 + regional compile is the measured speed winner (2.3-2.6x over nf4 on
-    B200); fp8 stays an explicit opt-in because torchao float8's dynamic-scaling overhead made it
-    SLOWER than compiled bf16 at LoRA-training shapes on the same hardware. int8 must still
+    B200); fp8 stays an explicit opt-in: it trades e4m3 rounding (~0.5% loss vs bf16) for ~half the base weight
+    memory and only ~7% speed at LoRA-training shapes. int8 must still
     materialise the full bf16 transformer before ``quantize_`` shrinks it module-by-module, so
     its band requires the dense-load transient (1.15x dense) to fit -- what int8 buys in that
     band is steady-state headroom for activations and the latent cache, not load-time memory.

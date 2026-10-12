@@ -726,7 +726,7 @@ def test_mx_input_hook_mirrors_autocast():
         assert dit._autocast_mx_input(None, (xc.bfloat16(),)) is None
 
 
-@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+@pytest.mark.parametrize("mode", ["mxfp8"])
 def test_lowp_apply_without_torchao_is_a_noop_with_warning(monkeypatch, mode):
     import sys
 
@@ -812,18 +812,33 @@ def test_mxfp8_torchao_0_17_keeps_biased_linears_dense(monkeypatch):
     assert quantized == ["blocks.0.ff", "blocks.1.ff"]
 
 
-def test_fp8_config_runs_the_frozen_weight_grad_in_high_precision():
-    pytest.importorskip("torchao.float8")
-    from torchao.float8.config import ScalingGranularity, ScalingType
+def test_fp8_quantizes_each_frozen_base_weight_once():
+    import torch
 
-    c = dit._fp8_training_config()
-    # Only the discarded grad_weight GEMM (inner dim = tokens, _scaled_mm needs 16-aligned) is high precision.
-    assert c.cast_config_input.scaling_granularity is ScalingGranularity.AXISWISE
-    assert c.cast_config_input.scaling_type is ScalingType.DYNAMIC
-    assert c.cast_config_grad_output.scaling_type is ScalingType.DYNAMIC
-    assert c.cast_config_input_for_grad_weight.scaling_type is ScalingType.DISABLED
-    assert c.cast_config_grad_output_for_grad_weight.scaling_type is ScalingType.DISABLED
-    assert c.round_scales_to_power_of_2 is False
+    from core.training.diffusion_frozen_fp8 import FrozenFp8Linear
+
+    m = _block_model(bias = True).requires_grad_(False)
+    ref = {fqn: mod.weight.float().clone() for fqn, mod in m.named_modules() if isinstance(mod, nn.Linear)}
+    assert dit._convert_fp8(m, "flux.1") is True
+    swapped = {fqn: mod for fqn, mod in m.named_modules() if isinstance(mod, FrozenFp8Linear)}
+    # Only the repeated blocks' big linears; the AdaLN rows stay bf16 like the int8 / MX paths.
+    assert sorted(swapped) == ["blocks.0.ff", "blocks.1.ff"]
+    for fqn, mod in swapped.items():
+        assert mod.weight.dtype == torch.float8_e4m3fn and not isinstance(mod.weight, nn.Parameter)
+        assert mod._studio_lowp == "fp8" and mod.bias is not None and not mod.bias.requires_grad
+        deq = mod.weight.float() * mod.weight_scale.t()
+        assert ((deq - ref[fqn]).norm() / ref[fqn].norm()).item() < 0.04
+    # The bf16 weight is gone: no frozen base Parameter left on a converted path, so its memory is freed.
+    assert not any(n.endswith("ff.weight") for n, _ in m.named_parameters())
+
+
+def test_fp8_conversion_needs_no_torchao(monkeypatch):
+    import sys
+
+    for name in ("torchao", "torchao.float8", "torchao.quantization"):
+        monkeypatch.setitem(sys.modules, name, None)
+    m = _block_model().requires_grad_(False)
+    assert dit._apply_fp8_training(m, lambda e: None, "flux.1") is True
 
 
 def _lowp_gpu_ready(mode):
