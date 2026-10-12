@@ -11,7 +11,6 @@ import ntpath
 import os
 import platform
 import re
-import shutil
 import stat as stat_module
 import sys
 import threading
@@ -1286,16 +1285,24 @@ def parseable_cache_fallback(key: str, intended: str) -> str | None:
     return candidate
 
 
-def _expose_studio_uv() -> None:
-    """A custom-home install keeps its own uv in <studio>/bin, which is not on the user PATH.
-    On-demand installs look uv up on PATH, so append that directory when no uv is found."""
-    if shutil.which("uv"):
+def _use_studio_uv_tools() -> None:
+    """A custom-home install keeps its own uv in <studio>/bin, off the user PATH, and its
+    uv-managed Python in <studio>/python. Point on-demand installs at both. The installer only
+    places a uv there when PATH had none or one below its minimum, so it goes first."""
+    root = studio_root()
+    try:
+        if root.resolve() == (Path.home() / ".unsloth" / "studio").resolve():
+            return
+    except (OSError, RuntimeError, ValueError):
         return
-    bin_dir = studio_root() / "bin"
+    if not (os.environ.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+        os.environ["UV_PYTHON_INSTALL_DIR"] = str(root / "python")
+    bin_dir = root / "bin"
     if not (bin_dir / ("uv.exe" if os.name == "nt" else "uv")).is_file():
         return
     current = os.environ.get("PATH", "")
-    os.environ["PATH"] = current + os.pathsep + str(bin_dir) if current else str(bin_dir)
+    if str(bin_dir) not in current.split(os.pathsep):
+        os.environ["PATH"] = str(bin_dir) + os.pathsep + current if current else str(bin_dir)
 
 
 def _setup_cache_env() -> None:
@@ -1305,7 +1312,7 @@ def _setup_cache_env() -> None:
     stored location. Unsloth seeds import-time variables once, while each later
     worker receives its own captured cache location.
     """
-    _expose_studio_uv()
+    _use_studio_uv_tools()
     root = cache_root()
     from utils.hf_cache_settings import initialize_hf_cache_environment
 

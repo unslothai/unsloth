@@ -845,7 +845,7 @@ _configure_uv_cache() {
         esac
     fi
 
-    if [ "$_ISOLATE_UV_CACHE" = true ] || [ "$_STUDIO_KEEPS_TOOLS" = true ]; then
+    if [ "$_ISOLATE_UV_CACHE" = true ] || { [ "$_STUDIO_KEEPS_TOOLS" = true ] && _uv_cache_is_writable "$_uv_studio_cache"; }; then
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR

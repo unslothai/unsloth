@@ -7547,8 +7547,9 @@ exit 0
     # A custom UNSLOTH_STUDIO_HOME keeps its own uv in <home>\bin, off the user PATH: winget and
     # the default destination would put it in the profile and the registry PATH. A uv the
     # machine already has is still used. Re-runs find the private one first.
+    $script:StudioKeepsTools = (-not $studioUsesLegacyLayout) -and (Test-StudioHomeIsCustom)
     $script:StudioPrivateUvDir = $null
-    if (-not $studioUsesLegacyLayout -and
+    if ($script:StudioKeepsTools -and
         -not ($env:UV_INSTALL_DIR -or $env:UV_UNMANAGED_INSTALL -or $env:XDG_BIN_HOME)) {
         $script:StudioPrivateUvDir = Join-Path $StudioHome "bin"
         if (Test-Path -LiteralPath (Join-Path $script:StudioPrivateUvDir "uv.exe") -PathType Leaf) {
@@ -7609,7 +7610,10 @@ exit 0
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
     # A custom home also never borrows the shared cache: wheels uv adds would land on that drive.
-    if (-not $studioUsesLegacyLayout) { $IsolateUvCache = $true }
+    if ($script:StudioKeepsTools -and
+        (Test-StudioUvCacheUsable -Cache (Join-Path (Join-Path $StudioHome "cache") "uv"))) {
+        $IsolateUvCache = $true
+    }
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
@@ -7659,7 +7663,7 @@ exit 0
 
     if ($PythonFromUv) {
         # The venv is built on this interpreter, so a custom home keeps it too.
-        if (-not $studioUsesLegacyLayout -and [string]::IsNullOrWhiteSpace($env:UV_PYTHON_INSTALL_DIR)) {
+        if ($script:StudioKeepsTools -and [string]::IsNullOrWhiteSpace($env:UV_PYTHON_INSTALL_DIR)) {
             $env:UV_PYTHON_INSTALL_DIR = Join-Path $StudioHome "python"
         }
         $DetectedPython = Resolve-UvManagedPython

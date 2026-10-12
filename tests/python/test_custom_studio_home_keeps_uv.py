@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -32,68 +31,83 @@ def _between(source: str, start: str, end: str) -> str:
     return source[begin : source.index(end, begin)]
 
 
-# ── install.ps1 ──
+def _uv_stub(directory: Path) -> None:
+    name = "uv.exe" if os.name == "nt" else "uv"
+    directory.mkdir(parents = True, exist_ok = True)
+    (directory / name).write_text("#!/bin/sh\n")
+    (directory / name).chmod(0o755)
 
-PS1_PRIVATE_UV = _between(
-    INSTALL_PS1, "    $script:StudioPrivateUvDir = $null\n", "    if (-not (Test-UvVersionOk)) {"
-)
+
+# ── install.ps1 ──
 
 
 def _ps1_private_uv(
     shell,
     home: Path,
     *,
-    legacy: bool,
-    env_extra = None,
+    legacy = False,
+    profile_default = False,
+    env = None,
 ):
+    block = _between(
+        INSTALL_PS1,
+        "    $script:StudioKeepsTools = ",
+        "    if (-not (Test-UvVersionOk)) {",
+    )
     script = f"""
 $ErrorActionPreference = "Stop"
 $StudioHome = '{home}'
-$studioUsesLegacyLayout = ${'true' if legacy else 'false'}
-{PS1_PRIVATE_UV}
+$studioUsesLegacyLayout = ${str(legacy).lower()}
+function Test-StudioHomeIsCustom {{ return ${str(not profile_default).lower()} }}
+{block}
+"keeps=$($script:StudioKeepsTools)"
 "dir=$($script:StudioPrivateUvDir)"
 "path=$env:PATH"
 """
-    env = {
+    child_env = {
         k: v
         for k, v in os.environ.items()
         if k not in ("UV_INSTALL_DIR", "UV_UNMANAGED_INSTALL", "XDG_BIN_HOME")
     }
-    env.update(env_extra or {})
+    child_env.update(env or {})
     out = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
         text = True,
         encoding = "utf-8",
-        env = env,
+        env = child_env,
         timeout = 60,
     ).stdout
-    found = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
-    return found["dir"], found["path"]
+    return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
 
 @needs_pwsh
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_ps1_custom_home_installs_uv_into_its_own_bin(shell, tmp_path):
     bin_dir = str(tmp_path / "bin")
-    uv_dir, path = _ps1_private_uv(shell, tmp_path, legacy = False)
-    assert uv_dir.replace("/", "\\") == bin_dir.replace("/", "\\") or uv_dir == bin_dir
+    found = _ps1_private_uv(shell, tmp_path)
+    assert found["keeps"] == "True"
+    assert Path(found["dir"]) == Path(bin_dir)
     # Nothing there yet, so PATH is untouched until a uv lands in it.
-    assert bin_dir not in path
+    assert bin_dir not in found["path"]
 
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "uv.exe").write_bytes(b"")
-    _, path = _ps1_private_uv(shell, tmp_path, legacy = False)
-    assert path.startswith(str(Path(bin_dir)))
+    assert _ps1_private_uv(shell, tmp_path)["path"].startswith(bin_dir)
 
 
 @needs_pwsh
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_ps1_default_home_and_explicit_uv_dir_keep_the_old_destination(shell, tmp_path):
-    assert _ps1_private_uv(shell, tmp_path, legacy = True)[0] == ""
-    explicit = {"UV_INSTALL_DIR": str(tmp_path / "mine")}
-    assert _ps1_private_uv(shell, tmp_path, legacy = False, env_extra = explicit)[0] == ""
+def test_ps1_default_root_and_explicit_uv_dir_keep_the_old_layout(shell, tmp_path):
+    for found in (
+        _ps1_private_uv(shell, tmp_path, legacy = True),
+        # UNSLOTH_STUDIO_HOME naming the current USERPROFILE default is still the default.
+        _ps1_private_uv(shell, tmp_path, profile_default = True),
+    ):
+        assert (found["keeps"], found["dir"]) == ("False", "")
+    explicit = _ps1_private_uv(shell, tmp_path, env = {"UV_INSTALL_DIR": str(tmp_path / "mine")})
+    assert (explicit["keeps"], explicit["dir"]) == ("True", "")
 
 
 def test_ps1_private_uv_skips_winget_and_the_user_path():
@@ -106,52 +120,52 @@ def test_ps1_private_uv_skips_winget_and_the_user_path():
     assert "if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {" in INSTALL_PS1
 
 
-def test_ps1_custom_home_isolates_the_cache_and_python_store():
+def test_ps1_custom_home_isolates_a_usable_cache_and_the_python_store():
     configured = INSTALL_PS1.index(
         "Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache"
     )
-    isolate = INSTALL_PS1.index("if (-not $studioUsesLegacyLayout) { $IsolateUvCache = $true }")
-    assert 0 < configured - isolate < 200
+    isolate = INSTALL_PS1.rindex("if ($script:StudioKeepsTools -and", 0, configured)
+    # An unusable Studio cache falls through to the selector, as it does without the override.
+    assert "Test-StudioUvCacheUsable -Cache" in INSTALL_PS1[isolate:configured]
     python = _between(INSTALL_PS1, "    if ($PythonFromUv) {\n", "Resolve-UvManagedPython\n")
+    assert "$script:StudioKeepsTools" in python
     assert '$env:UV_PYTHON_INSTALL_DIR = Join-Path $StudioHome "python"' in python
-    assert "-not $studioUsesLegacyLayout" in python
     # Restored for `irm | iex`, where the session is the user's own.
-    finally_block = _between(
+    restore = _between(
         INSTALL_PS1,
         "    } finally {\n        Restore-StudioUvCacheEnvironment",
         "Restore-StudioTempEnvironment",
     )
-    assert "Env:UV_PYTHON_INSTALL_DIR" in finally_block
+    assert "Env:UV_PYTHON_INSTALL_DIR" in restore
 
 
 # ── install.sh ──
-
-SH_KEEPS_TOOLS = _between(INSTALL_SH, "_STUDIO_KEEPS_TOOLS=false\n", "# The PATH we inherited")
-SH_PRIVATE_UV = _between(INSTALL_SH, '_STUDIO_UV_DIR=""\n', "if ! command -v uv >/dev/null 2>&1")
 
 
 def _sh(
     home: Path,
     studio_home: Path,
     *,
-    redirect: str = "env",
-    env_extra = None,
+    redirect = "env",
+    env = None,
 ):
+    keeps = _between(INSTALL_SH, "_STUDIO_KEEPS_TOOLS=false\n", "# The PATH we inherited")
+    private = _between(INSTALL_SH, '_STUDIO_UV_DIR=""\n', "if ! command -v uv >/dev/null 2>&1")
     script = f"""
 set -e
 _STUDIO_HOME_REDIRECT={redirect}
 STUDIO_HOME='{studio_home}'
-{SH_KEEPS_TOOLS}
-{SH_PRIVATE_UV}
+{keeps}
+{private}
 echo "keeps=$_STUDIO_KEEPS_TOOLS"
 echo "uvdir=$_STUDIO_UV_DIR"
 echo "pydir=${{UV_PYTHON_INSTALL_DIR:-}}"
 echo "path=$PATH"
 """
-    env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-    env.update(env_extra or {})
+    child_env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    child_env.update(env or {})
     out = subprocess.run(
-        ["sh", "-c", script], check = True, capture_output = True, text = True, env = env
+        ["sh", "-c", script], check = True, capture_output = True, text = True, env = child_env
     ).stdout
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
@@ -161,14 +175,11 @@ def test_sh_custom_home_keeps_uv_and_python(tmp_path):
     studio = tmp_path / "drive" / "studio"
     studio.mkdir(parents = True)
     found = _sh(tmp_path / "home", studio)
-    assert found["keeps"] == "true"
-    assert found["uvdir"] == f"{studio}/bin"
+    assert (found["keeps"], found["uvdir"]) == ("true", f"{studio}/bin")
     assert found["pydir"] == f"{studio}/python"
     assert not found["path"].startswith(f"{studio}/bin")
 
-    (studio / "bin").mkdir()
-    (studio / "bin" / "uv").write_text("#!/bin/sh\n")
-    (studio / "bin" / "uv").chmod(0o755)
+    _uv_stub(studio / "bin")
     assert _sh(tmp_path / "home", studio)["path"].startswith(f"{studio}/bin:")
 
 
@@ -185,14 +196,17 @@ def test_sh_explicit_settings_and_the_default_root_win(tmp_path):
     found = _sh(
         home,
         studio,
-        env_extra = {"UV_PYTHON_INSTALL_DIR": "/mine/python", "UV_INSTALL_DIR": "/mine/bin"},
+        env = {"UV_PYTHON_INSTALL_DIR": "/mine/python", "UV_INSTALL_DIR": "/mine/bin"},
     )
     assert (found["keeps"], found["uvdir"], found["pydir"]) == ("true", "", "/mine/python")
 
 
-def test_sh_custom_home_isolates_the_cache_and_unmanaged_fallback():
+def test_sh_custom_home_isolates_a_usable_cache_and_unmanaged_fallback():
     cache = _between(INSTALL_SH, "_configure_uv_cache() {", "\n}\n")
-    assert 'if [ "$_ISOLATE_UV_CACHE" = true ] || [ "$_STUDIO_KEEPS_TOOLS" = true ]; then' in cache
+    assert (
+        'if [ "$_ISOLATE_UV_CACHE" = true ] || { [ "$_STUDIO_KEEPS_TOOLS" = true ] '
+        '&& _uv_cache_is_writable "$_uv_studio_cache"; }; then' in cache
+    )
     pinned = _between(INSTALL_SH, "_uv_install_pinned() {", "\n}\n")
     assert 'for _uip_candidate in "${_STUDIO_UV_DIR:-}" "${UV_INSTALL_DIR:-}"' in pinned
     assert (
@@ -201,38 +215,71 @@ def test_sh_custom_home_isolates_the_cache_and_unmanaged_fallback():
     )
 
 
-# ── backend ──
+# ── backend and CLI ──
 
 
-def test_backend_finds_the_private_uv_only_when_none_is_on_path(tmp_path, monkeypatch):
+def test_backend_points_on_demand_installs_at_the_home(tmp_path, monkeypatch):
     sys.path.insert(0, str(REPO_ROOT / "studio" / "backend"))
     try:
         from utils.paths import storage_roots
     finally:
         sys.path.pop(0)
 
-    studio = tmp_path / "studio"
-    monkeypatch.setattr(storage_roots, "studio_root", lambda: studio)
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
-    name = "uv.exe" if os.name == "nt" else "uv"
-
-    storage_roots._expose_studio_uv()
-    assert os.environ["PATH"] == str(empty)
-
-    (studio / "bin").mkdir(parents = True)
-    (studio / "bin" / name).write_text("#!/bin/sh\n")
-    (studio / "bin" / name).chmod(0o755)
-    storage_roots._expose_studio_uv()
-    storage_roots._expose_studio_uv()
-    assert os.environ["PATH"] == str(empty) + os.pathsep + str(studio / "bin")
-
-    # A uv the user already has wins and PATH is left alone.
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     mine = tmp_path / "mine"
-    mine.mkdir()
-    (mine / name).write_text("#!/bin/sh\n")
-    (mine / name).chmod(0o755)
+    _uv_stub(mine)
     monkeypatch.setenv("PATH", str(mine))
-    storage_roots._expose_studio_uv()
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising = False)
+
+    legacy = home / ".unsloth" / "studio"
+    _uv_stub(legacy / "bin")
+    monkeypatch.setattr(storage_roots, "studio_root", lambda: legacy)
+    storage_roots._use_studio_uv_tools()
     assert os.environ["PATH"] == str(mine)
+    assert "UV_PYTHON_INSTALL_DIR" not in os.environ
+
+    studio = tmp_path / "drive" / "studio"
+    monkeypatch.setattr(storage_roots, "studio_root", lambda: studio)
+    storage_roots._use_studio_uv_tools()
+    assert os.environ["PATH"] == str(mine)
+    assert os.environ["UV_PYTHON_INSTALL_DIR"] == str(studio / "python")
+
+    # The installer only places a uv here when PATH had none or an old one, so it goes first.
+    _uv_stub(studio / "bin")
+    storage_roots._use_studio_uv_tools()
+    storage_roots._use_studio_uv_tools()
+    assert os.environ["PATH"] == str(studio / "bin") + os.pathsep + str(mine)
+
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", "/mine/python")
+    storage_roots._use_studio_uv_tools()
+    assert os.environ["UV_PYTHON_INSTALL_DIR"] == "/mine/python"
+
+
+def test_cli_update_hands_setup_the_private_uv(tmp_path, monkeypatch):
+    # `unsloth studio update` runs setup directly, which installs uv into the profile when none
+    # is on PATH.
+    sys.path.insert(0, str(REPO_ROOT))
+    try:
+        from unsloth_cli.commands import studio as studio_cli
+    finally:
+        sys.path.pop(0)
+
+    home = tmp_path / "studio"
+    monkeypatch.setattr(studio_cli, "STUDIO_HOME", home)
+    monkeypatch.setattr(studio_cli, "_STUDIO_HOME_IS_CUSTOM", True)
+    mine = str(tmp_path / "mine")
+    env = {"PATH": mine}
+
+    assert studio_cli._with_studio_uv(env) == {
+        "PATH": mine,
+        "UV_PYTHON_INSTALL_DIR": str(home / "python"),
+    }
+    _uv_stub(home / "bin")
+    out = studio_cli._with_studio_uv(env)
+    assert out["PATH"] == str(home / "bin") + os.pathsep + mine
+    assert studio_cli._with_studio_uv(out)["PATH"] == out["PATH"]
+    assert env == {"PATH": mine}
+
+    monkeypatch.setattr(studio_cli, "_STUDIO_HOME_IS_CUSTOM", False)
+    assert studio_cli._with_studio_uv(env) is env
