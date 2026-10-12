@@ -395,28 +395,29 @@ def maybe_activate_flash_attention_impl(model = None):
         FLASH_IMPL_STATE["reason"] = f"no supported impl for devices sm{sorted(majors or [])}"
         deactivate_flash_attention_impl()
         return None
-    if requested == "auto":
-        # Take the first impl whose kernels are installed; none installed leaves torch untouched.
-        candidates = [impl for impl in candidates if _package_error(impl) is None] or candidates
-    impl, major = candidates[0], next(iter(majors))
-    error = _package_error(impl)
+    major = next(iter(majors))
     facts = model_facts(model) if model is not None else (False, [], None, None, None, None)
-    error = error or _model_gate(impl, major, facts)
     cases = _probe_cases(facts)
-    key = (impl, tuple(cases))
-    if error is None:
-        if key not in FLASH_IMPL_STATE["verdicts"]:
-            # The reference must run on the bundled kernels.
-            deactivate_flash_attention_impl()
-            error = _probe_error(impl, cases, activate, restore)
-            FLASH_IMPL_STATE["verdicts"][key] = error
-        else:
-            error = FLASH_IMPL_STATE["verdicts"][key]
-            if error is None and current() != impl:
-                try:
-                    activate(impl)
-                except Exception as exc:
-                    error = f"activate_flash_attention_impl({impl!r}) failed ({type(exc).__name__}: {exc})"
+    # auto falls through to the next impl when one is missing, refuses this model or fails its probe.
+    for impl in candidates:
+        error = _package_error(impl) or _model_gate(impl, major, facts)
+        key = (impl, tuple(cases))
+        if error is None:
+            if key not in FLASH_IMPL_STATE["verdicts"]:
+                # The reference must run on the bundled kernels.
+                deactivate_flash_attention_impl()
+                error = _probe_error(impl, cases, activate, restore)
+                FLASH_IMPL_STATE["verdicts"][key] = error
+            else:
+                error = FLASH_IMPL_STATE["verdicts"][key]
+                if error is None and current() != impl:
+                    try:
+                        activate(impl)
+                    except Exception as exc:
+                        error = f"activate_flash_attention_impl({impl!r}) failed ({type(exc).__name__}: {exc})"
+        if error is None:
+            break
+        deactivate_flash_attention_impl()
     if error is not None:
         FLASH_IMPL_STATE["reason"] = error
         deactivate_flash_attention_impl()

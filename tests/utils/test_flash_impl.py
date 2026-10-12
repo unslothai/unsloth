@@ -131,6 +131,23 @@ def test_hopper_auto_prefers_fa3_then_fa4(fake, monkeypatch):
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
 
 
+def test_hopper_auto_tries_fa4_when_fa3_fails_its_probe(fake, monkeypatch):
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    tried = []
+
+    def probe(impl, cases, activate, restore):
+        tried.append(impl)
+        if impl == "FA3":
+            return "FA3 output differs from bundled flash"
+        activate(impl)
+        return None
+
+    monkeypatch.setattr(fi, "_probe_error", probe)
+    assert fi.maybe_activate_flash_attention_impl(_model()) == "FA4"
+    assert tried == ["FA3", "FA4"] and fake.current_impl == "FA4"
+    fi.deactivate_flash_attention_impl()
+
+
 def test_impl_not_registered_or_package_missing_stays_off(fake, monkeypatch):
     fake.impls = ["FA3"]
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
