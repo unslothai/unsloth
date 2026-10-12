@@ -2213,10 +2213,9 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     assert labels.reshape(-1).tolist() == list(range(seq))
 
 
-# Wrappers must leave boundary targets: unsloth_zoo already deducts them in counts.
+# wrappers match TRL >= 0.23.1 masking; the zoo count includes each real target once
 class _UnmaskedPackingCollator:
-    """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.24 - a test
-    built on TRL 0.24+ output would pass either way."""
+    """padding-free collator with unmasked boundaries, like TRL < 0.23.1."""
 
     def __init__(self):
         self.padding_free = True
@@ -2231,16 +2230,23 @@ class _UnmaskedPackingCollator:
 
 
 def _zoo_num_items_in_batch(batch):
-    """The count unsloth_zoo._unsloth_get_batch_samples derives from a batch."""
-    count = int((batch["labels"][..., 1:] != -100).sum())
+    """unsloth_zoo._unsloth_get_batch_samples' count: boundary slots zeroed, not subtracted."""
+    token_count = batch["labels"][..., 1:] != -100
     lengths = batch.get("packed_seq_lengths")
     if lengths is not None:
-        count -= int(torch.count_nonzero(lengths > 0)) - 1
-    return count
+        n_shift = token_count.shape[-1]
+        n_rows = token_count.numel() // n_shift
+        starts = torch.cumsum(lengths.long(), dim = 0)[:-1]
+        rows = torch.div(starts, n_shift + 1, rounding_mode = "floor")
+        cols = starts - rows * (n_shift + 1)
+        keep = (cols > 0) & (rows < n_rows)
+        token_count = token_count.reshape(n_rows, n_shift).clone()
+        token_count[rows[keep], cols[keep] - 1] = False
+    return int(token_count.sum())
 
 
 @pytest.mark.parametrize("wrapper", [enable_sample_packing, enable_padding_free_metadata])
-def test_collator_keeps_boundary_targets_for_the_num_items_deduction(wrapper):
+def test_collator_masks_boundary_targets_and_num_items_counts_them_once(wrapper):
     model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
     trainer = SimpleNamespace(
         args = SimpleNamespace(remove_unused_columns = True),
@@ -2248,14 +2254,59 @@ def test_collator_keeps_boundary_targets_for_the_num_items_deduction(wrapper):
     )
     wrapper(model, trainer)
 
+    examples = [
+        {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]},
+        {"input_ids": [13, 14, 15], "seq_lengths": [3]},
+    ]
+    batch = trainer.data_collator.torch_call(examples)
+    # boundary labels match TRL >= 0.23.1
+    assert batch["labels"].reshape(-1).tolist() == [-100, 11, -100, -100, 14, 15]
+    assert batch["input_ids"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
+    assert _zoo_num_items_in_batch(batch) == 3
+    assert examples[0] == {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]}
+
+
+@pytest.mark.parametrize("wrapper", [enable_sample_packing, enable_padding_free_metadata])
+def test_collator_boundary_mask_is_a_no_op_on_trl_masked_labels(wrapper):
+    class _MaskedPackingCollator(_UnmaskedPackingCollator):
+        def torch_call(self, examples):
+            batch = super().torch_call(examples)
+            position_ids = torch.cat(
+                [torch.arange(n) for ex in examples for n in ex["seq_lengths"]]
+            ).view(1, -1)
+            batch["labels"][position_ids == 0] = -100
+            return batch
+
+    model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True), data_collator = _MaskedPackingCollator()
+    )
+    wrapper(model, trainer)
     batch = trainer.data_collator.torch_call(
         [
             {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]},
             {"input_ids": [13, 14, 15], "seq_lengths": [3]},
         ]
     )
-    assert batch["labels"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
+    assert batch["labels"].reshape(-1).tolist() == [-100, 11, -100, -100, 14, 15]
     assert _zoo_num_items_in_batch(batch) == 3
+
+
+def test_collator_boundary_mask_leaves_unflattened_rows_alone():
+    class _RowCollator(_UnmaskedPackingCollator):
+        def torch_call(self, examples):
+            rows = [ex["input_ids"] for ex in examples]
+            return {"input_ids": torch.tensor(rows), "labels": torch.tensor(rows)}
+
+    model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True), data_collator = _RowCollator()
+    )
+    enable_sample_packing(model, trainer)
+    batch = trainer.data_collator.torch_call(
+        [{"input_ids": [10, 11, 12]}, {"input_ids": [13, 14, 15]}]
+    )
+    assert batch["labels"].tolist() == [[10, 11, 12], [13, 14, 15]]
 
 
 def test_guard_is_idempotent_and_actually_masks():
@@ -2264,6 +2315,7 @@ def test_guard_is_idempotent_and_actually_masks():
     once = mask_packed_boundary_labels(labels, lengths)
     twice = mask_packed_boundary_labels(once, lengths)
     assert torch.equal(twice, once)
+    # an identity helper would also pass the idempotence check
     assert once.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
 
 

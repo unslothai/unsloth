@@ -1168,7 +1168,10 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if not any("rank" in group for group in param_groups):
-            # FSDP1 hands 1-D views, so dim() >= 2 selects nothing and Q-GaLore would silently be 8-bit AdamW.
+            # make_q_galore_param_groups selects on param.dim() == 2, and FSDP1 hands us 1-D
+            # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
+            # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
+            # quietly become ordinary 8-bit AdamW. Say so instead.
             raise ValueError(
                 "Unsloth: Q-GaLore was requested but no parameter matched, so the run would "
                 "silently be ordinary AdamW 8bit. Projection needs 2-D parameters; under FSDP "

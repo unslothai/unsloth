@@ -243,6 +243,31 @@ def _offload_frozen_module_for_training(
     module.original_module.requires_grad_(False)
 
 
+def _unfreeze_modules_to_save(model) -> None:
+    """Re-train each ModulesToSaveWrapper's active copy, as PEFT and FastModel do: kbit prep
+    froze it, so a reloaded adapter dropped embed_tokens / lm_head and resume_from_checkpoint
+    failed (#3108). Dtype only, never device."""
+    for module in model.modules():
+        if not isinstance(module, ModulesToSaveWrapper) or getattr(
+            module, "disable_adapters", False
+        ):
+            continue
+        active = getattr(module, "active_adapters", None)
+        if active is None:
+            active = [getattr(module, "active_adapter", "default")]
+        elif isinstance(active, str):
+            active = [active]
+        for adapter_name in active:
+            if adapter_name not in module.modules_to_save:
+                continue
+            trainable = module.modules_to_save[adapter_name]
+            # Any param, not .weight (a saved block has none); fp16 must train in fp32 (#1200).
+            if any(p.dtype == torch.float16 for p in trainable.parameters()):
+                trainable.to(dtype = torch.float32)
+            trainable.requires_grad_(True)
+        module.original_module.requires_grad_(False)
+
+
 def _ensure_cache_is_dynamic(past_key_values):
     if past_key_values is None:
         return None
@@ -4243,6 +4268,7 @@ class FastLlamaModel:
             use_reentrant = True,
         )
         freeze_peft_variant_weights(model)
+        _unfreeze_modules_to_save(model)
 
         for active_adapter in model.peft_config.keys():
             if False:

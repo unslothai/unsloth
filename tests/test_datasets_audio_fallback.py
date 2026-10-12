@@ -220,6 +220,39 @@ def test_a_wheel_that_raises_anything_at_import_is_disabled(
     assert said and "soundfile and PyAV" in said[0] and "reinstall torchcodec" in said[0]
 
 
+def test_a_codec_whose_native_library_fails_to_load_does_not_stop_import(
+    broken_torchcodec, monkeypatch, tmp_path
+):
+    # torchcodec 0.17 on torch 2.10 raises OSError from torch.ops.load_library (unslothai/notebooks#304).
+    # The AudioDecoder patch runs first at import, so it must let the disabler see the failure.
+    import sys
+
+    pkg = tmp_path / "torchcodec"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "raise OSError('Could not load this library: libtorchcodec_image.so')\n", encoding = "utf-8"
+    )
+    for name in [
+        n
+        for n in sys.modules
+        if n == "torchcodec" or n.startswith("torchcodec.") or n == "datasets.features._torchcodec"
+    ]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(import_fixes, "_torchcodec_version_mismatch_hint", lambda: None)
+    monkeypatch.setattr(import_fixes, "_torchcodec_provenance_hint", lambda: None)
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import_fixes.patch_torchcodec_audio_decoder()
+        import_fixes.disable_torchcodec_if_broken()
+    from datasets.features.audio import Audio
+
+    assert sys.modules["torchcodec"] is None
+    assert getattr(Audio, "_unsloth_audio_fallback", False) is True
+
+
 @pytest.mark.parametrize("hint_from", ["version", "provenance"])
 def test_a_broken_codec_with_a_remedy_is_reported_once(
     broken_torchcodec, monkeypatch, tmp_path, hint_from
