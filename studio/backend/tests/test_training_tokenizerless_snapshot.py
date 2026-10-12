@@ -81,6 +81,9 @@ def _fake_tokenizer(monkeypatch, size):
         def __len__(self):
             return size
 
+        def __call__(self, text, **kwargs):
+            return {"input_ids": list(range(2)) if size > 1 else []}
+
     class _Auto:
         @classmethod
         def from_pretrained(cls, *a, **kw):
@@ -101,6 +104,35 @@ def test_tokenizerless_snapshot_is_a_cache_artifact_error(tmp_path, monkeypatch,
         )
 
     # Transformers 4 raises its own TypeError here; either way the worker must retry from the Hub.
+    assert worker._is_model_cache_artifact_error(caught.value)
+
+
+def test_snapshot_with_only_tokenizer_config_is_a_cache_artifact_error(
+    tmp_path, monkeypatch, text_model
+):
+    # An interrupted tokenizer download keeps tokenizer_config.json and its special tokens, not the vocab.
+    snapshot = tmp_path / "snapshots" / "6834895"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(json.dumps(_QWEN2_CONFIG))
+    special = ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]
+    (snapshot / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "tokenizer_class": "Qwen2Tokenizer",
+                "eos_token": "<|im_end|>",
+                "added_tokens_decoder": {
+                    str(151643 + i): {"content": t, "special": True} for i, t in enumerate(special)
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    with pytest.raises(Exception) as caught:
+        UnslothTrainer().pre_detect_and_load_tokenizer(
+            "org/model", model_load_name = str(snapshot), local_files_only = True
+        )
+
     assert worker._is_model_cache_artifact_error(caught.value)
 
 

@@ -403,10 +403,11 @@ def _ignored_adapter_settings(
 
 
 def _tokenizer_is_empty(tokenizer) -> bool:
+    # Not a length check: a snapshot keeping tokenizer_config.json but no vocab still lists its special tokens.
     inner = getattr(tokenizer, "tokenizer", tokenizer)
     try:
-        return len(inner) <= 1
-    except TypeError:
+        return not inner("hello world", add_special_tokens = False)["input_ids"]
+    except Exception:
         return False
 
 
