@@ -1897,13 +1897,6 @@ def studio_default(
         "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
         "TLS interception. Direct fetches stay pinned to the validated IP.",
     ),
-    models_dir: Optional[List[Path]] = typer.Option(
-        None,
-        "--models-dir",
-        help = "Add a folder of local models to Studio (repeatable). It is saved as a "
-        "Custom Folder, so its models show up in the Chat and Train model pickers on this "
-        "and later launches; remove it from Custom Folders in the model picker.",
-    ),
     password: str = typer.Option(
         "",
         "--password",
@@ -1911,6 +1904,13 @@ def studio_default(
         "only when none is set yet. Also reads the UNSLOTH_STUDIO_PASSWORD env var, or "
         "`--password -` to read one line from stdin. A literal value is visible in the "
         "process list and shell history. Rotate later with `unsloth studio reset-password`.",
+    ),
+    models_dir: Optional[List[Path]] = typer.Option(
+        None,
+        "--models-dir",
+        help = "Add a folder of local models to Studio (repeatable). It is saved as a "
+        "Custom Folder, so its models show up in the Chat and Train model pickers on this "
+        "and later launches; remove it from Custom Folders in the model picker.",
     ),
 ):
     """Launch the Unsloth Studio server."""
