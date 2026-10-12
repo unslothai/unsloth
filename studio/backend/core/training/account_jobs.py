@@ -146,7 +146,9 @@ def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
     for key in ("model_name", "base_model", "base_model_id", "hf_dataset"):
         account_path(values.get(key), reference = True)
     for key in ("model_name", "base_model", "base_model_id"):
-        account_access.require_model_allowed(values.get(key))
+        # A local load names its weights by path, which the cached-path check below gates.
+        if key != "model_name" or not values.get("model_local_path"):
+            account_access.require_model_allowed(values.get(key))
     for key, repo_type in (
         ("model_local_path", "model"),
         ("dataset_local_path", "dataset"),

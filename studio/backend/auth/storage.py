@@ -618,7 +618,8 @@ def validate_account_username(username: str) -> str:
 
 
 MAX_MODEL_ALLOWLIST_ENTRIES = 500
-_MODEL_ALLOWLIST_ENTRY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9._*-]{1,96}")
+# ``org/name``, ``org/*``, or a legacy top-level id such as ``gpt2``.
+_MODEL_ALLOWLIST_ENTRY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}(?:/[A-Za-z0-9._*-]{1,96})?")
 _HUB_URL_PREFIX = re.compile(r"^(?:https?://)?(?:www\.)?(?:hf\.co|huggingface\.co)/", re.IGNORECASE)
 
 

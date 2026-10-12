@@ -800,7 +800,7 @@ def _reference_repo_id(reference: str) -> str | None:
         cached = _cached_repo(path)
         return cached[0] if cached is not None and cached[1] == "model" else None
     parts = reference.split(":", 1)[0].split("/")
-    return "/".join(parts[:2]) if len(parts) >= 2 and all(parts[:2]) else None
+    return "/".join(parts[:2]) if all(parts[:2]) else None
 
 
 def repo_visible(

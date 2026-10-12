@@ -100,9 +100,10 @@ def test_normalize_accepts_ids_urls_quants_and_patterns():
             "https://huggingface.co/unsloth/qwen3-4b-gguf",
             "unsloth/Qwen3-4B-GGUF:Q4_K_M",
             "meta-llama/*",
+            "GPT2",
         ]
-    ) == ["unsloth/qwen3-4b-gguf", "meta-llama/*"]
-    for bad in ("qwen3", "../etc/passwd", "*/model", "a/b/c", "org/na me"):
+    ) == ["unsloth/qwen3-4b-gguf", "meta-llama/*", "gpt2"]
+    for bad in ("*", "../etc/passwd", "*/model", "a/b/c", "org/na me"):
         with pytest.raises(ValueError):
             storage.normalize_model_allowlist([bad])
 
@@ -231,12 +232,24 @@ def test_training_jobs_refuse_a_base_model_outside_the_allowlist(env):
 
     put_access(env, "alice", ["unsloth/*"])
     as_user("alice", jobs.validate_job_paths, {"model_name": "unsloth/Qwen3-4B", "hf_token": "t"})
-    for key in ("model_name", "base_model", "base_model_id"):
+    for key, model in (
+        ("model_name", "meta-llama/Llama-3.2-1B"),
+        ("model_name", "gpt2"),
+        ("base_model", "meta-llama/Llama-3.2-1B"),
+        ("base_model_id", "meta-llama/Llama-3.2-1B"),
+    ):
         with pytest.raises(HTTPException) as refused:
-            as_user(
-                "alice", jobs.validate_job_paths, {key: "meta-llama/Llama-3.2-1B", "hf_token": "t"}
-            )
+            as_user("alice", jobs.validate_job_paths, {key: model, "hf_token": "t"})
         assert refused.value.status_code == 403
     as_user(
         "bob", jobs.validate_job_paths, {"model_name": "meta-llama/Llama-3.2-1B", "hf_token": "t"}
+    )
+    # A local load is named by its path; the display name is not a Hub fetch.
+    own = storage_roots.workspace_root
+    local = run_as(storage.get_account("alice"), own) / "outputs" / "run1"
+    local.mkdir(parents = True)
+    as_user(
+        "alice",
+        jobs.validate_job_paths,
+        {"model_name": "run1", "model_local_path": str(local), "hf_token": "t"},
     )
