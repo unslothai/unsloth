@@ -21012,6 +21012,26 @@ class LlamaCppBackend:
             return True
 
     @staticmethod
+    def _image_arch_is_pickable(
+        arch: Optional[str], gguf_path: Optional[str], model_identifier: Optional[str]
+    ) -> bool:
+        """Whether the Images page would actually OFFER this GGUF.
+
+        Asks ``_gguf_family_buildable``, the same predicate ``routes.models._arch_to_task``
+        gates ``_DIFFUSION_GGUF_ARCHS`` on, over the same evidence (repo id, filename, arch): a
+        family this host cannot build (Qwen-Image-2.1 on a diffusers too old for its pipeline)
+        is tagged unsupported and hidden there, so the refusal must not send the user to it.
+        Fails OPEN like that predicate, so an unresolved family still names the page."""
+        try:
+            from routes.models import _gguf_family_buildable
+            return _gguf_family_buildable(
+                (model_identifier, os.path.basename(gguf_path or "")), arch
+            )
+        except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
+            logger.debug("Family probe failed for image arch: %s", e)
+            return True
+
+    @staticmethod
     def _ambiguous_image_arch_is_pickable(
         gguf_path: Optional[str], model_identifier: Optional[str]
     ) -> bool:
@@ -21119,9 +21139,16 @@ class LlamaCppBackend:
                     "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
+                if self._image_arch_is_pickable(arch, gguf_path, self._model_identifier):
+                    return (
+                        f"This is an image-generation GGUF (architecture '{arch}'), which "
+                        "cannot run as a chat model. Open it from the Images page instead."
+                    )
                 return (
                     f"This is an image-generation GGUF (architecture '{arch}'), which "
-                    "cannot run as a chat model. Open it from the Images page instead."
+                    "cannot run as a chat model. No image engine installed here can build "
+                    "this model family, so the Images page does not list it either. "
+                    "Updating Unsloth may add support for it."
                 )
             if arch in self._AMBIGUOUS_IMAGE_ARCHES:
                 if self._ambiguous_image_arch_is_pickable(gguf_path, self._model_identifier):
@@ -21930,7 +21957,10 @@ class LlamaCppBackend:
                     "a chat/completion model. Unsloth cannot assemble this particular "
                     "model from a GGUF, so the Video page does not list it either."
                 )
-            if arch in LlamaCppBackend._IMAGE_ARCHES or (
+            if (
+                arch in LlamaCppBackend._IMAGE_ARCHES
+                and LlamaCppBackend._image_arch_is_pickable(arch, gguf_path, model_identifier)
+            ) or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
                 and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)
             ):
@@ -21939,6 +21969,13 @@ class LlamaCppBackend:
                     "llama-server cannot run as a chat/completion model. Use "
                     "Unsloth's Images page to generate with local diffusion "
                     "GGUFs such as FLUX and Qwen-Image."
+                )
+            if arch in LlamaCppBackend._IMAGE_ARCHES:
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. No image engine "
+                    "installed here can build this model family, so Unsloth's Images page "
+                    "does not list it either. Updating Unsloth may add support for it."
                 )
             if arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES:
                 # Same shared-arch resolution as the pre-launch refusal: unresolved means

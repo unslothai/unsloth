@@ -4471,7 +4471,9 @@ def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tm
     image.write_bytes(b"gguf")
     chat.write_bytes(b"gguf")
     monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: None)
-    monkeypatch.setattr(catalog_classification, "_gguf_family_buildable", lambda _hints: True)
+    monkeypatch.setattr(
+        catalog_classification, "_gguf_family_buildable", lambda _hints, _arch = None: True
+    )
 
     assert (
         catalog_classification._gguf_path_task(image, ("unsloth/Qwen-Image-2.1-GGUF",))

@@ -2725,6 +2725,36 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 
 
+def test_a_renamed_qwen_image21_gguf_resolves_from_its_cached_header(monkeypatch):
+    """The listing tags a cached Hub GGUF by its arch, so the image loader must resolve the same family from the header
+    when the repo id and filename say nothing, or the picker offers a file the load refuses with a 400."""
+    import core.inference.video as video_module
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(
+        video_module, "_picked_gguf_arch", lambda repo_id, gguf_filename: "qwen_image21"
+    )
+    fam = detect_family_for_pick("someone/mystery-gguf", "model-Q4_K_M.gguf")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+
+    # A shared arch is left to the name: "qwen_image" also covers Qwen-Image-Edit.
+    monkeypatch.setattr(
+        video_module, "_picked_gguf_arch", lambda repo_id, gguf_filename: "qwen_image"
+    )
+    assert detect_family_for_pick("someone/mystery-gguf", "model-Q4_K_M.gguf") is None
+
+
+def test_a_renamed_qwen_image21_gguf_is_hidden_where_its_family_cannot_build(monkeypatch):
+    """With names that resolve nothing, the arch decides buildability instead of failing open."""
+    import core.inference.diffusion_engine_router as router
+
+    hints = ("someone/mystery-gguf", "model-Q4_K_M.gguf")
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: False)
+    assert models_route._arch_to_task("qwen_image21", hints) == "image-diffusion-unsupported"
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: True)
+    assert models_route._arch_to_task("qwen_image21", hints) == "text-to-image"
+
+
 def test_local_model_task_classifies_suffix_only_gguf_from_architecture(tmp_path):
     def gguf_string(value: str) -> bytes:
         data = value.encode()

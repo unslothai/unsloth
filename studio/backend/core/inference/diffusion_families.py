@@ -972,6 +972,28 @@ def pipeline_index_contradicts_name(path: Optional[str]) -> bool:
     return fam is not None and _index_family_ruled_out(fam, path)
 
 
+# GGUF architectures that name exactly one family, so a renamed file can still be resolved from its header. A shared arch
+# ("qwen_image" also covers Qwen-Image-Edit, "flux" covers FLUX.1 and Kontext) is left to the name: guessing would hand a
+# variant the wrong pipeline.
+_SINGLE_FAMILY_GGUF_ARCHS = {"qwen_image21": "qwen-image-2.1", "qwenimage21": "qwen-image-2.1"}
+
+
+def family_for_gguf_arch(arch: Optional[str]) -> Optional[DiffusionFamily]:
+    """The family a GGUF's ``general.architecture`` pins down on its own, or None for a shared or unknown arch."""
+    name = _SINGLE_FAMILY_GGUF_ARCHS.get((arch or "").strip().lower())
+    return detect_family("", override = name) if name else None
+
+
+def _family_from_cached_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[DiffusionFamily]:
+    """Resolve a renamed GGUF pick from its header, local dir or cached Hub blob, the way the Video loader does. The
+    listing tags a cached Hub GGUF by its arch, so without this the loader refuses a file the picker offered."""
+    try:
+        from .video import _picked_gguf_arch
+        return family_for_gguf_arch(_picked_gguf_arch(repo_id, gguf_filename))
+    except Exception:  # noqa: BLE001 -- a header read glitch leaves the pick unresolved, as before
+        return None
+
+
 def detect_family_for_pick(
     repo_id: str,
     gguf_filename: Optional[str] = None,
@@ -1003,6 +1025,8 @@ def detect_family_for_pick(
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
     if not override:
         fam = _family_from_content(fam, repo_id, gguf_filename)
+    if fam is None and gguf_filename and not override:
+        fam = _family_from_cached_gguf_arch(repo_id, gguf_filename)
     return fam
 
 
