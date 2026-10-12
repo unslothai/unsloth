@@ -34,6 +34,8 @@ except ImportError:
 def _clean_env(monkeypatch):
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     monkeypatch.delenv("UNSLOTH_PROCESSOR_TEXT_PACKING", raising = False)
+    # The gate runs only on TRL 1.10+; the stub trainer stands in for whichever TRL is installed.
+    monkeypatch.setattr(trainer_module.trl, "__version__", "1.13.0")
     for name in ("enable_padding_free_metadata", "enable_sample_packing"):
         monkeypatch.setattr(trainer_module, name, lambda model, trainer: None)
 
@@ -161,16 +163,37 @@ def test_multimodal_rope_models_stay_blocked():
     assert not _uses_multimodal_rope(_Cfg(text_config = {"rope_parameters": {"rope_type": "default"}}))
 
 
+def test_a_transformed_dataset_stays_blocked():
+    """with_transform rows can add images the stored columns do not show."""
+    ds = TEXT.with_transform(lambda batch: batch)
+    assert not _is_text_only_dataset(ds)
+    assert _blocked(train_dataset = ds)
+
+
+@pytest.mark.parametrize("version", ["0.22.2", "0.24.0", "1.9.2"])
+def test_trl_before_1_10_never_tries_a_processor(monkeypatch, version):
+    """TRL < 1.10 refuses packing / padding-free for any processor: no doomed __init__ first."""
+    monkeypatch.setattr(trainer_module.trl, "__version__", version)
+    module, calls = _patched(raise_on = "Packing is not supported for vision-language models.")
+    t = module.SFTTrainer(model = _Model(), args = _config(True), train_dataset = TEXT, processing_class = _Proc())
+    assert calls == [(False, False)]
+    assert t.args.padding_free is False and t.args.packing is False
+
+
 @pytest.mark.parametrize(
     "message",
     [
         "Packing is not supported for vision-language models. Please set `packing=False` in the SFTConfig.",
         "Padding-free training is yet not supported for vision-language models. Please set "
         "`padding_free=False` in the `SFTConfig`.",
+        "Packing is not supported for vision datasets. Please set `packing=False` in the SFTConfig.",
+        "Padding-free training is yet not supported for vision datasets. Please set `padding_free=False` in "
+        "the `SFTConfig`.",
     ],
 )
-def test_trl_022_refusal_falls_back_to_the_old_block(message):
-    """TRL < 0.24 raises on `_is_vlm` alone; the gate then behaves exactly as before."""
+def test_a_trl_refusal_falls_back_to_the_old_block(message):
+    """A refusal TRL still raises (a processor on an unexpected version, or images the schema did not
+    show) falls back to exactly the old behaviour."""
     module, calls = _patched(raise_on = message)
     packing = message.startswith("Packing")
     t = module.SFTTrainer(model = _Model(), args = _config(packing), train_dataset = TEXT, processing_class = _Proc())

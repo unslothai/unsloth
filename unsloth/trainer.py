@@ -340,6 +340,9 @@ def _is_text_only_dataset(dataset) -> bool:
         return False
     if not _MULTIMODAL_DATASET_KEYS.isdisjoint(column_names):
         return False
+    # with_transform / set_transform rows can carry images the stored columns do not show.
+    if (getattr(dataset, "format", None) or {}).get("type") == "custom":
+        return False
     features = getattr(dataset, "features", None)
     if features is None:
         # A streaming dataset can name its columns but not their types; without types an
@@ -392,6 +395,9 @@ def _processor_text_only(
     and padding-free are as safe as with the tokenizer passed directly."""
     if os.environ.get("UNSLOTH_PROCESSOR_TEXT_PACKING", "1") == "0":
         return False
+    # TRL < 1.10 refuses packing / padding-free for any processor; skip a doomed __init__.
+    if Version(trl.__version__) < Version("1.10.0"):
+        return False
     if data_collator is not None:
         return False
     if _uses_multimodal_rope(model_config):
@@ -401,10 +407,13 @@ def _processor_text_only(
     return _is_text_only_dataset(train_dataset) and _is_text_only_eval_dataset(eval_dataset)
 
 
-# TRL < 0.24 raises these on `_is_vlm` (any processor) before it looks at the dataset.
+# TRL < 1.10 raises the first two on `_is_vlm` (any processor); 1.10+ raises the last two when the
+# first sample holds images (e.g. added by a dataset transform the schema does not show).
 _TRL_VLM_PACKING_REJECTIONS = (
     "packing is not supported for vision-language models",
     "padding-free training is yet not supported for vision-language models",
+    "packing is not supported for vision datasets",
+    "padding-free training is yet not supported for vision datasets",
 )
 
 
@@ -1805,7 +1814,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             original_init(self, *args, **kwargs)
         except ValueError as exc:
             if processor_text_only and not blocked and _is_trl_vlm_packing_rejection(exc):
-                # TRL < 0.24 refuses packing / padding-free for any processor, so fall back to
+                # TRL refused (a processor on TRL < 1.10, or images the schema did not show), so fall back to
                 # what this gate did before text-only processors were allowed through.
                 if requested_pack:
                     logger.warning(
