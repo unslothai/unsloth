@@ -66,6 +66,8 @@ export function useChatCreatedModel(
 }
 
 type ChatModelNoticeProps = {
+  /** Keep the history reader mounted while the chat route is hidden. */
+  active: boolean;
   /** The saved chat on screen, or undefined for an unsent New Chat. */
   threadId: string | undefined;
   /** The model the composer will actually send to. */
@@ -80,6 +82,7 @@ type ChatModelNoticeProps = {
  *  automatic switch: for a local model that would evict whatever is resident and spend a
  *  multi-gigabyte load on opening a chat. */
 export function ChatModelNotice({
+  active,
   threadId,
   checkpoint,
   activeGgufVariant,
@@ -87,6 +90,8 @@ export function ChatModelNotice({
   onSwitch,
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
+  // Drop the portaled UI off-route, retaining the successful read and history subscription.
+  if (!active) return null;
   if (!createdModel) return null;
   if (chatModelIsResident(createdModel, checkpoint, activeGgufVariant)) {
     return null;

@@ -273,7 +273,15 @@ test("a snapshot-path chat is labelled by its repo name, not the revision sha", 
 test("the original-model control sits beside the picker in the chat header", () => {
   const header = slice(page, "chat-header-fade", "{/* One provider shared");
   assert.match(header, /<ModelSelector[\s\S]*<ChatModelNotice/);
-  assert.match(header, /active && view\.mode === "single" && \(/);
+  assert.match(
+    header,
+    /\{view\.mode === "single" && \(\s*<ChatModelNotice\s+active=\{active\}/,
+  );
+  // Hide the portaled UI after the hook runs, keeping the saved model and subscription off-route.
+  assert.match(
+    notice,
+    /const createdModel = useChatCreatedModel\(threadId\);[\s\S]*?if \(!active\) return null;/,
+  );
   // A chat change must dismiss a portaled popover along with its old model details.
   assert.match(notice, /<Popover key=\{threadId\}>/);
 });

@@ -4717,8 +4717,9 @@ export function ChatPage({
                 className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
             )}
-            {active && view.mode === "single" && (
+            {view.mode === "single" && (
               <ChatModelNotice
+                active={active}
                 threadId={view.threadId ?? newChatThreadId ?? undefined}
                 checkpoint={inferenceParams.checkpoint}
                 activeGgufVariant={activeGgufVariant}
