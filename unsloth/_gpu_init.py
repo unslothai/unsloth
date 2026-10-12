@@ -81,8 +81,6 @@ configure_amdgpu_asic_id_table_path()
 # AttributeError at the first one of them to reach it (#8933). It imports torch, which is
 # why the ROCm table above comes first.
 patch_torch_missing_attribute_error()
-# Before anything brings up triton's driver, which compiles and caches cuda_utils (#2760).
-fix_triton_module_cache_python_key()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
 # Torch-only, so it can run first; torchao 0.18 on torch < 2.10 needs it before any torchao import.
@@ -103,6 +101,8 @@ propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 # Same reason: nothing has failed yet, and a run that launches no Triton kernel never will.
 check_triton_py_ssize_t_clean()
+# Before triton's driver first compiles and caches cuda_utils (#2760).
+fix_triton_module_cache_python_key()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 # Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
