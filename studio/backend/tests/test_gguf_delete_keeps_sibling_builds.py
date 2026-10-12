@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deleting a GGUF row removes the build it lists, not other builds at the same quant.
-
-``huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`` ships ``...-GSQ-RCO-IQ3_S-mtp.gguf`` beside
-``...-Swift-1.5-GSQ-RCO-IQ3_S-mtp.gguf`` and ``...-UD-DW-IQ3_S.gguf`` at the repo root. Every one
-keys to the bare ``IQ3_S``. Such repos are not supported (#13327), so only the first is listed, but
-the others can still be in the cache, fetched with ``hf download``. Deleting the ``IQ3_S`` row
-deleted all of them, and a stale reclaim after updating it deleted their blobs.
-"""
+"""GGUF repos list one build per quant (#13327), so deletion must preserve cached siblings."""
 
 from __future__ import annotations
 
@@ -25,7 +18,7 @@ BUILDS = [LISTED, SWIFT, UD_DW]
 
 
 def _cache_repo(tmp_path: Path, names: list[str]):
-    """An HF cache repo: snapshot symlinks pointing at blobs, as the deletion scan reads it."""
+    """model an HF cache whose snapshot symlinks match the deletion scan's input."""
     repo_dir = tmp_path / "models--huihui-ai--Model-GGUF"
     snap = repo_dir / "snapshots" / "rev1"
     blobs = repo_dir / "blobs"
@@ -60,13 +53,12 @@ def test_only_a_different_build_leaves_the_key():
     assert keys[LISTED] == "IQ3_S"
     assert keys[SWIFT] == SWIFT[: -len(".gguf")]
     assert keys[UD_DW] == UD_DW[: -len(".gguf")]
-    # Two spellings of one checkpoint, and a split, are not other builds.
+    # alternate spellings and split shards belong to the same checkpoint.
     assert keys["QwQ-32B-BF16.gguf"] == keys["QwQ-32B.BF16.gguf"] == "BF16"
     assert keys["model-Q6_K-00001-of-00002.gguf"] == "Q6_K"
 
 
 def test_the_listing_still_offers_one_build_per_quant(tmp_path):
-    """Unchanged: the row is the first build, and that is the one its delete removes."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     for name in BUILDS:
@@ -178,7 +170,7 @@ def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
 
     repo, _snap = _cache_repo(tmp_path, BUILDS)
     assert _variant_bytes(repo, "IQ3_S") == 64
-    # The other builds survive, so the companions they load with are retained, not freed.
+    # surviving builds retain their companions, so those bytes are not reclaimable.
     assert _remaining_main_gguf_variants(repo, excluding = "IQ3_S") == {
         SWIFT[: -len(".gguf")].lower(),
         UD_DW[: -len(".gguf")].lower(),
@@ -197,8 +189,7 @@ def test_deleting_from_a_local_folder_keeps_the_other_builds(tmp_path):
 
 
 def test_reclaiming_an_update_leaves_the_other_builds(monkeypatch, tmp_path):
-    """After the listed build is updated its stale blobs go. Another build at the same quant has
-    other hashes, which read as stale under the bare quant and were deleted with them."""
+    """stale reclaim must preserve sibling-build blobs that share the listed build's quant."""
     from hub.services.models import cache_inventory as CI
     from hub.services.models import deletion as D
 

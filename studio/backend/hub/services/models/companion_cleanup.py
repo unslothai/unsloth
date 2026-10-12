@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Delete preflight and orphaned-companion cleanup for image-model assets.
-
-Three answers live here, all derived from the cache scan at call time (see ``hub.utils.companion_assets`` for why nothing is counted): :func:`delete_impact_response` (what a pending delete reclaims and what it leaves behind), :func:`companion_dependents` (who still needs a companion base, used as a delete guard) and :func:`orphan_companions_response` (companion bases no installed model needs any more).
-
-Sizes are real on-disk blob bytes from the HF cache scan, deduped per blob, not Hub metadata: the number in a delete dialog has to be the number the disk gives back.
-"""
+"""delete previews and orphan cleanup report deduplicated HF cache blob bytes, not Hub metadata."""
 
 from __future__ import annotations
 
@@ -28,7 +23,7 @@ logger = get_logger(__name__)
 
 
 def _repo_blob_bytes(repo_info, *, only = None) -> int:
-    """On-disk bytes of *repo_info*, deduped by blob so a file shared across revisions counts once. ``only`` is an optional predicate on the snapshot-relative name and file path."""
+    """return deduplicated on-disk bytes; ``only`` receives the snapshot-relative name and path."""
     unique: dict[str, int] = {}
     for revision in getattr(repo_info, "revisions", ()) or ():
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
@@ -49,12 +44,12 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
     return sum(unique.values())
 
 
-# One definition, so the orphan listing and the delete preview cannot disagree about which cached repos are leftovers (see companion_assets.repo_holds_denoiser).
+# one shared predicate keeps orphan listings and delete previews consistent
 _repo_holds_denoiser = companion_assets.repo_holds_denoiser
 
 
 def _account_scans() -> list:
-    """A managed caller previews only the repos its grants cover; other accounts' downloads stay unseen."""
+    """managed callers see only repositories covered by their grants."""
     scans = cache_inventory.all_hf_cache_scans()
     access = cache_inventory._account_access()
     if not access.managed_account():
@@ -81,7 +76,7 @@ def _repos_by_id(cache_scans) -> dict[str, list]:
 
 
 def _variant_keys(repo_info, variant: str) -> set[str]:
-    """The variant keys *variant* names in *repo_info*, from the destructive path's own resolver. The inventory and the delete both identify a row by ``gguf_variant_key``, which for a path-qualified checkpoint (``distilled/ltx-2.3-22b-distilled-Q6_K``) is not the bare quant label. Comparing labels here made the preview miss the file entirely: 0 B reclaimed, and the last checkpoint of a repo read as if a sibling survived, so its companions were described as retained rather than freed."""
+    """use deletion keys because path-qualified checkpoints do not match bare quant labels."""
     from hub.services.models.deletion import _variant_keys_to_delete
     return {key.lower() for key in _variant_keys_to_delete(repo_info, variant)}
 
@@ -105,7 +100,7 @@ def _variant_bytes(repo_info, variant: str) -> int:
 def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None) -> set[str]:
     from hub.services.models.deletion import _main_gguf_variant_keys
     skip = _variant_keys(repo_info, excluding) if excluding else set()
-    # Keyed like the delete: a build beside the deleted one at the same quant survives it.
+    # deletion keys keep sibling builds with the same quant distinct
     return {
         key.lower()
         for key in _main_gguf_variant_keys(repo_info).values()

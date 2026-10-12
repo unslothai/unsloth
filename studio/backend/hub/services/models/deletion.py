@@ -121,7 +121,7 @@ def _path_exists_or_symlink(path: Path) -> bool:
 
 
 def _unlink_snapshot_entry(snap: Path) -> int:
-    """Unlink one snapshot entry, plus any AppleDouble sidecar beside it. Returns the entries removed, which never counts the sidecar: it is metadata about a file the caller asked to remove, not a second file."""
+    """unlink a snapshot entry and its AppleDouble sidecar, counting only the entry."""
     removed = 0
     if _path_exists_or_symlink(snap):
         snap.unlink()
@@ -145,7 +145,7 @@ def _revision_file_matches(revision, predicate) -> list[tuple[Path, Optional[Pat
             continue
         if not file_path:
             continue
-        # Every predicate here keys on the name, which a sidecar answers exactly as its neighbour does. Proven metadata only: anything else carrying this key is a file to delete.
+        # skip only proven AppleDouble metadata; any other matching name is a deletion target.
         if is_appledouble_metadata(Path(file_path)):
             continue
         blob_path = getattr(f, "blob_path", None)
@@ -160,7 +160,7 @@ def _revision_file_matches(revision, predicate) -> list[tuple[Path, Optional[Pat
 
 
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
-    """Files whose snapshot-relative path satisfies *predicate*. Relative, not the bare ``file_name``: huggingface_hub sets that to ``file_path.name`` (and our own recovery scan to ``entry.name``), so a companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a root file. Every predicate below keys on the directory for at least one supported layout, and the quant labels they extract are unchanged by the prefix."""
+    """match relative paths because bare names lose layouts such as ``dspark/`` and ``MTP/``."""
     matches: list[tuple[Path, Optional[Path], str]] = []
     for revision in getattr(target_repo, "revisions", ()):
         matches.extend(_revision_file_matches(revision, predicate))
@@ -178,8 +178,8 @@ def _has_remaining_main_gguf(target_repo) -> bool:
 
 
 def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, list[str]]:
-    """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the quant label names the folder); only empty dirs go, so siblings are safe. Returns (count removed, removal failures other than a concurrent refill)."""
-    # A qualified key names its own folder and must not reach for a <quant>/ dir it does not own; qualified means a path (distilled/...-Q6_K), an H3 root stem, or a bpw modifier (IQ4_XS-3.53bpw, whose token-only IQ4_XS/ folder is a different build's).
+    """remove empty variant folders and return their count plus non-concurrent failures."""
+    # qualified keys own only their exact folder because token-only folders can be another build.
     qualified = (
         is_qualified_gguf_variant_key(variant)
         or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
@@ -252,7 +252,7 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
 
 
 def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
-    """``snapshot file -> key`` for each revision's main GGUFs, using the same per-snapshot choice as the lister."""
+    """map each main GGUF snapshot file to the lister's per-snapshot variant key."""
     keys: dict[Path, str] = {}
     for revision in getattr(target_repo, "revisions", ()):
         matches = _revision_file_matches(revision, _is_main_gguf_filename)
@@ -266,26 +266,20 @@ def _main_key(snap: Path, main_keys: dict[Path, str]) -> str:
 
 
 def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
-    """The variant keys in *target_repo* that *variant* names, lowercased. Its own key, always, plus the unambiguous bare-quant alias the download side already admits (``gguf_plan.plan_for_variant``): a repo filing its sole Q4_K_M under a shared container (``weights/model-Q4_K_M.gguf``) qualifies that key, because the key is a pure function of the path and cannot know the directory disambiguates nothing, so every stored pin and every explicit ``repo:Q4_K_M`` names it by quant alone, and admitting the alias for the download and not for the delete answered "not found" and left the weights on disk. Only when it is unambiguous, exactly as the download side decides it: a repo that really does hold several checkpoints at one quant gets no fallback, because there the bare name genuinely does not name one of them and deleting the wrong one is unrecoverable."""
+    """return lowercase keys, accepting a bare-quant alias only for one path-qualified key."""
     wanted = (variant or "").strip().lower()
     if not wanted or "/" in wanted:
         return {wanted}
     keys = {key.lower() for key in _main_gguf_variant_keys(target_repo).values()}
     if wanted in keys:
         return {wanted}
-    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions, so it must not delete either.
+    # use path-qualified keys, not is_qualified_gguf_variant_key; H3 bare quants span partitions.
     aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
     return aliased if len(aliased) == 1 else {wanted}
 
 
 def _audio_cpp_package_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
-    """``(own files, protected files)`` of an audio.cpp package mix being deleted.
-
-    A package mix (MiniMax Music 3, YuE2) is several GGUFs plus configs, some of them shared with
-    other mixes, so the quant key alone neither finds all of its files nor knows which a sibling
-    still needs. Own files are the mix's whole file list; protected files are every file of the
-    other mixes still fully on disk. Both empty for any other repo.
-    """
+    """return audio.cpp mix files and files protected by complete sibling mixes, else empty sets."""
     try:
         from core.inference.audio_cpp_models import package_variant_files
     except Exception:  # noqa: BLE001 - no audio.cpp support, no package layout
@@ -327,8 +321,7 @@ def _delete_gguf_variant_from_repos(
                 lambda name: name in package_files or _is_main_gguf_filename(name),
             )
             if match[2] in package_files or _main_key(match[0], main_keys) in wanted_keys
-            # A component another downloaded mix still loads (MiniMax's Q4_0 and Q8_0 share one
-            # depth decoder) stays.
+            # keep components used by another downloaded mix, including MiniMax's shared decoder.
             if match[2] not in protected
         ]
 
@@ -542,7 +535,7 @@ def reclaim_replaced_gguf_variant(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         stale_matches: list[tuple[Path, Optional[Path], str]] = []
-        # Another build at the same quant has its own hashes, which would read as stale copies of this one.
+        # hashes from another build at this quant would look stale for this build.
         main_keys = _main_gguf_variant_keys(target_repo)
         matches = [
             match
@@ -550,7 +543,7 @@ def reclaim_replaced_gguf_variant(
             if _main_key(match[0], main_keys) == variant_key
         ]
         for snap, blob, name in matches:
-            # Prune only a file we can identify as a real, stale cache blob: a no-symlink snapshot file has no identifiable blob hash, so keep it.
+            # prune confirmed stale blobs only; non-symlink snapshot files lack identifiable hashes.
             blob_hash = (
                 _blob_hash_from_path(blob)
                 if cache_inventory._is_real_cache_blob(blob, repo_dir)

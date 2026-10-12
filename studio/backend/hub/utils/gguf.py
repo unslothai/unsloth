@@ -427,7 +427,7 @@ def gguf_checkpoint_family(filename: str) -> Optional[str]:
 
 
 def _checkpoint_identity(filename: str) -> Optional[str]:
-    """:func:`gguf_checkpoint_family` with case and separators folded, so two spellings of one checkpoint (``QwQ-32B-BF16`` and ``QwQ-32B.BF16``) compare equal. ``None`` when the name carries nothing beyond its quant."""
+    """fold case and separators so alternate spellings of one checkpoint compare equal."""
     family = gguf_checkpoint_family(filename)
     if family is None:
         return None
@@ -435,10 +435,7 @@ def _checkpoint_identity(filename: str) -> Optional[str]:
 
 
 def gguf_variant_keys_by_checkpoint(paths: Iterable[str]) -> dict[str, str]:
-    """``path -> key`` for the files a destructive path may act on, with a file of a different checkpoint than the one its key lists keyed by its own :func:`gguf_variant_family` instead.
-
-    A row is one checkpoint: the listers keep the shard set holding the first file under each key. A repo publishing several different builds at one bare quant (``...-GSQ-RCO-IQ3_S-mtp`` beside ``...-Swift-1.5-GSQ-RCO-IQ3_S-mtp``, #13327) is not supported, so only the first is listed, but the others can still be in the cache, fetched with ``hf download``. Matching on :func:`gguf_variant_key` alone deleted them with the listed row, and a stale reclaim after an update read their blobs as old copies of it. A second COPY of the listed checkpoint (``QwQ-32B-BF16`` beside ``QwQ-32B.BF16``, the same quant both whole and split) is the same checkpoint and keeps the key.
-    """
+    """prevent destructive grouping of different checkpoints that share a variant key."""
     from utils.models.model_config import _extract_quant_label as _loader_quant
 
     by_key: dict[str, list[str]] = {}
@@ -462,7 +459,7 @@ def gguf_variant_keys_by_checkpoint(paths: Iterable[str]) -> dict[str, str]:
 
 
 def local_path_physical_identity(raw_path: str) -> str:
-    """Identity for an existing local path without folding valid filename characters."""
+    """identify an existing local path without folding valid filename characters."""
     try:
         path = os.path.realpath(os.path.expanduser(raw_path))
         stat = os.stat(path)

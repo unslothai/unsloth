@@ -3387,8 +3387,7 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        # Counted as a model if left in, so the reported count would follow the walk order; it still goes
-        # below, as metadata of the file it belongs to. Proven metadata only.
+        # proven AppleDouble metadata is not a model but is removed with its weight below.
         if is_appledouble_metadata(path):
             continue
         try:
@@ -3396,8 +3395,7 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
         except ValueError:
             relative = path.name
         weights.append((path, relative))
-    # Keyed on the path, not the basename: a repo holding several checkpoints at one quant would otherwise
-    # delete every one of them for a single row. By checkpoint too, for builds side by side at one quant.
+    # key by path and checkpoint so one quant row cannot delete other checkpoints or builds.
     keys = gguf_variant_keys_by_checkpoint(relative for _path, relative in weights)
     for path, relative in weights:
         if keys[relative].lower() != variant.lower():
@@ -3407,8 +3405,7 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
         except OSError:
             pass
         path.unlink()
-        # Skipped by the walk above, so this is its only chance to be reclaimed. Its bytes count
-        # toward what was freed even though it is not counted as a model.
+        # include the filtered sidecar's bytes in freed storage without counting it as a model.
         deleted_bytes += remove_appledouble_sidecar(path)
         deleted_count += 1
     return deleted_count, deleted_bytes
