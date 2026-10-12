@@ -111,20 +111,42 @@ def test_unsloth_cpu_threads_wins_over_the_default_and_the_quota(monkeypatch, va
 
 
 _TOPOLOGIES = {
-    "m1pro": {"hw.nperflevels": 2, "hw.perflevel0.name": "Performance", "hw.perflevel0.physicalcpu": 8,
-              "hw.perflevel1.name": "Efficiency", "hw.perflevel1.physicalcpu": 2, "hw.physicalcpu": 10},
+    "m1pro": {
+        "hw.nperflevels": 2,
+        "hw.perflevel0.name": "Performance",
+        "hw.perflevel0.physicalcpu": 8,
+        "hw.perflevel1.name": "Efficiency",
+        "hw.perflevel1.physicalcpu": 2,
+        "hw.physicalcpu": 10,
+    },
     # ggml-org/llama.cpp#29782
-    "m5max": {"hw.nperflevels": 2, "hw.perflevel0.name": "Super", "hw.perflevel0.physicalcpu": 6,
-              "hw.perflevel1.name": "Performance", "hw.perflevel1.physicalcpu": 12, "hw.physicalcpu": 18},
-    "vm": {"hw.nperflevels": 1, "hw.perflevel0.name": "Performance", "hw.perflevel0.physicalcpu": 3,
-           "hw.physicalcpu": 3},
+    "m5max": {
+        "hw.nperflevels": 2,
+        "hw.perflevel0.name": "Super",
+        "hw.perflevel0.physicalcpu": 6,
+        "hw.perflevel1.name": "Performance",
+        "hw.perflevel1.physicalcpu": 12,
+        "hw.physicalcpu": 18,
+    },
+    "vm": {
+        "hw.nperflevels": 1,
+        "hw.perflevel0.name": "Performance",
+        "hw.perflevel0.physicalcpu": 3,
+        "hw.physicalcpu": 3,
+    },
     "intel": {"hw.physicalcpu": 6},
-    "unnamed": {"hw.nperflevels": 2, "hw.perflevel0.physicalcpu": 4, "hw.perflevel1.physicalcpu": 6,
-                "hw.physicalcpu": 10},
+    "unnamed": {
+        "hw.nperflevels": 2,
+        "hw.perflevel0.physicalcpu": 4,
+        "hw.perflevel1.physicalcpu": 6,
+        "hw.physicalcpu": 10,
+    },
 }
 
 
-@pytest.mark.parametrize("topology, expected", [("m1pro", 8), ("m5max", 18), ("vm", 3), ("intel", 6), ("unnamed", 4)])
+@pytest.mark.parametrize(
+    "topology, expected", [("m1pro", 8), ("m5max", 18), ("vm", 3), ("intel", 6), ("unnamed", 4)]
+)
 def test_apple_cores_count_every_tier_but_efficiency(monkeypatch, topology, expected):
     table = _TOPOLOGIES[topology]
     monkeypatch.setattr(bk.sys, "platform", "darwin")

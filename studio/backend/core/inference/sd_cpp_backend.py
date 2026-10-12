@@ -289,11 +289,19 @@ def _sysctl(name: str, as_str: bool = False) -> Any:
         if as_str:
             buf = ctypes.create_string_buffer(64)
             size = ctypes.c_size_t(len(buf))
-            ok = libc.sysctlbyname(name.encode(), buf, ctypes.byref(size), None, ctypes.c_size_t(0)) == 0
+            ok = (
+                libc.sysctlbyname(name.encode(), buf, ctypes.byref(size), None, ctypes.c_size_t(0))
+                == 0
+            )
             return buf.value.decode(errors = "replace") if ok else None
         value = ctypes.c_int(0)
         size = ctypes.c_size_t(ctypes.sizeof(value))
-        ok = libc.sysctlbyname(name.encode(), ctypes.byref(value), ctypes.byref(size), None, ctypes.c_size_t(0)) == 0
+        ok = (
+            libc.sysctlbyname(
+                name.encode(), ctypes.byref(value), ctypes.byref(size), None, ctypes.c_size_t(0)
+            )
+            == 0
+        )
         return int(value.value) if ok and value.value > 0 else None
     except Exception:  # noqa: BLE001
         return None
