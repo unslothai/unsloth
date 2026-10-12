@@ -325,16 +325,46 @@ def test_autoregressive_detection_is_a_no_op(monkeypatch):
 def test_worker_turns_packing_off_once_and_only_for_diffusion():
     from core.training.worker import _apply_diffusion_lm_overrides
 
-    config = {"packing": True}
+    config = {"packing": True, "learning_rate": 1e-4}
     _apply_diffusion_lm_overrides(SimpleNamespace(diffusion_lm_profile = "sdar"), config)
-    assert config == {"packing": False, "diffusion_lm_profile": "sdar"}
+    assert config == {"packing": False, "diffusion_lm_profile": "sdar", "learning_rate": 1e-4}
     _apply_diffusion_lm_overrides(SimpleNamespace(diffusion_lm_profile = "sdar"), config)
-    assert config == {"packing": False, "diffusion_lm_profile": "sdar"}
+    assert config == {"packing": False, "diffusion_lm_profile": "sdar", "learning_rate": 1e-4}
     ar = {"packing": True}
     _apply_diffusion_lm_overrides(SimpleNamespace(diffusion_lm_profile = None), ar)
     assert ar == {"packing": True}
     _apply_diffusion_lm_overrides(SimpleNamespace(), ar)
     assert ar == {"packing": True}
+
+
+def test_default_lora_learning_rate_is_lowered_only_for_dream_and_sdar():
+    from core.training.worker import _apply_diffusion_lm_overrides
+
+    for profile in ("dream", "sdar"):
+        for default in ("2e-4", 0.0002, None):
+            config = {} if default is None else {"learning_rate": default}
+            _apply_diffusion_lm_overrides(SimpleNamespace(diffusion_lm_profile = profile), config)
+            assert config["learning_rate"] == 5e-5
+            _apply_diffusion_lm_overrides(SimpleNamespace(diffusion_lm_profile = profile), config)
+            assert config["learning_rate"] == 5e-5
+        for chosen in ("1e-4", 3e-4, 2e-5):
+            config = {"learning_rate": chosen}
+            _apply_diffusion_lm_overrides(SimpleNamespace(diffusion_lm_profile = profile), config)
+            assert config["learning_rate"] == chosen
+    for profile in (
+        "llada",
+        "llada_moe",
+        "llada2",
+        "nemotron_labs_diffusion",
+        "diffusion_gemma",
+        None,
+    ):
+        config = {"learning_rate": "2e-4"}
+        _apply_diffusion_lm_overrides(SimpleNamespace(diffusion_lm_profile = profile), config)
+        assert config["learning_rate"] == "2e-4"
+    config = {"learning_rate": "not a number"}
+    _apply_diffusion_lm_overrides(SimpleNamespace(diffusion_lm_profile = "dream"), config)
+    assert config["learning_rate"] == "not a number"
 
 
 @_needs_torch

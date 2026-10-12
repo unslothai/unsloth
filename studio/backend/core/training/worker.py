@@ -831,6 +831,12 @@ def _pre_detect_training_model(
     _apply_diffusion_lm_overrides(trainer, config)
 
 
+_LORA_DEFAULT_LR = 2e-4
+# Their output-head rows for <|im_end|>, <tool_call>, <|fim_pad|> ... are near-duplicates (cosine 0.97): at 2e-4
+# a LoRA run swaps them, so chat replies end in <tool_call> or come back empty. Clean at 5e-5.
+_DIFFUSION_LM_LORA_LR = {"dream": 5e-5, "sdar": 5e-5}
+
+
 def _apply_diffusion_lm_overrides(trainer, config: dict) -> None:
     """Text-diffusion runs never pack: packed rows would share one bidirectional attention window. Set before
     the row bound and online tokenization read the flag, so their accounting matches what trains."""
@@ -841,6 +847,18 @@ def _apply_diffusion_lm_overrides(trainer, config: dict) -> None:
     if config.get("packing"):
         config["packing"] = False
         logger.info("Text-diffusion model (%s): sequence packing turned off", profile)
+    lowered = _DIFFUSION_LM_LORA_LR.get(profile)
+    try:
+        at_default = float(config.get("learning_rate", _LORA_DEFAULT_LR)) == _LORA_DEFAULT_LR
+    except (TypeError, ValueError):
+        at_default = False  # the trainer reports the invalid value itself
+    if lowered is not None and at_default:
+        config["learning_rate"] = lowered
+        logger.info(
+            "Text-diffusion model (%s): learning rate 2e-4 lowered to %g; set any other value to override",
+            profile,
+            lowered,
+        )
 
 
 _NOTHING_TO_TRAIN = (
