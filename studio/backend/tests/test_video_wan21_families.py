@@ -79,7 +79,6 @@ _TABLE = [
     ),
     ("Kijai/WanVideo_comfy/Wan2_1-T2V-1_3B_bf16.safetensors", "wan2.1-t2v-1.3b"),
     ("Kijai/WanVideo_comfy/Wan2_1-T2V-14B_fp8_e4m3fn.safetensors", "wan2.1-t2v-14b"),
-    # refused (no family) with a named reason
     ("Wan-AI/Wan2.1-I2V-14B-480P-Diffusers", None),
     ("Wan-AI/Wan2.1-I2V-14B-720P-Diffusers", None),
     ("city96/Wan2.1-I2V-14B-480P-gguf/wan2.1-i2v-14b-480p-Q4_K_M.gguf", None),
@@ -122,13 +121,10 @@ def test_unsupported_wan21_checkpoints_name_their_reason(identifier, reason):
 
 @pytest.mark.parametrize("identifier, expected", [row for row in _TABLE if row[1] is not None])
 def test_supported_names_carry_no_refusal(identifier, expected):
-    # Includes every currently supported Wan2.2 / LTX / HunyuanVideo / MiniMax-H3 spelling.
     assert vf.unsupported_video_checkpoint_reason(identifier) is None
 
 
 def test_comfyui_template_defaults():
-    # ComfyUI text_to_video_wan (wan2.1_t2v_1.3B_fp16): 832x480, length 33, CreateVideo 16 fps, KSampler 30 steps,
-    # CFG 6, uni_pc / simple, ModelSamplingSD3 shift 8.
     for name, presets in (
         ("wan2.1-t2v-1.3b", ((832, 480), (480, 832))),
         ("wan2.1-t2v-14b", ((832, 480), (1280, 720), (480, 832), (720, 1280))),
@@ -141,7 +137,6 @@ def test_comfyui_template_defaults():
         assert fam.comfy_flow_shift == 8.0
         assert (fam.default_num_frames, fam.default_fps, fam.frame_step) == (33, 16, 4)
         assert fam.resolution_presets == presets and fam.resolution_multiple == 16
-        # Wan VAE decodes in float32, like every Wan family.
         assert fam.vae_force_fp32 and not fam.cudnn_benchmark
         vf.validate_video_request_shape(fam, 832, 480, 33)
         with pytest.raises(vf.VideoShapeError):
@@ -158,7 +153,6 @@ def test_comfyui_template_defaults():
         (("Wan-AI/Wan2.1-T2V-1.3B-Diffusers",), (30, 6.0)),
         (("wan2.1-t2v-14b-Q4_K_M.gguf", "city96/Wan2.1-T2V-14B-gguf"), (30, 6.0)),
         (("Wan2_1-T2V-1_3B_bf16.safetensors",), (30, 6.0)),
-        # unchanged rows
         ((None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers"), (20, 5.0)),
         ((None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers"), (20, 3.5)),
         (("wan2.2-ti2v-5b-Q4_K_M.gguf",), (20, 5.0)),
@@ -175,11 +169,6 @@ def test_registry_lists_the_new_families_after_the_existing_ones():
     assert "wan2.1-t2v-1.3b" in names and "wan2.1-t2v-14b" in names
     for fam in ("wan2.1-t2v-1.3b", "wan2.1-t2v-14b"):
         assert dc.family_page(fam) == dc.PAGE_VIDEO
-
-
-# --------------------------------------------------------------------------------------------
-# Header classification on real Hub headers
-# --------------------------------------------------------------------------------------------
 
 
 def _row(suffix: str) -> dict:
@@ -242,7 +231,6 @@ def test_name_picks_wan21_14b_over_the_a14b_header(tmp_path):
     )[0]
     assert resolve("wan2.1_t2v_14B_fp8_scaled.safetensors") == "wan2.1-t2v-14b"
     assert resolve("wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors") == "wan2.2-t2v-a14b"
-    # Unnamed: unchanged from main (the header's A14B answer).
     assert resolve("renamed.safetensors") == "wan2.2-t2v-a14b"
 
 
@@ -276,11 +264,6 @@ def test_comfy_folder_lists_wan21_t2v_files(tmp_path):
     assert names == {"wan2.1_t2v_1.3B_bf16.safetensors", "wan2.1_t2v_14B_fp8_scaled.safetensors"}
 
 
-# --------------------------------------------------------------------------------------------
-# Listing and load validation
-# --------------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "hints, video",
     [
@@ -288,7 +271,6 @@ def test_comfy_folder_lists_wan21_t2v_files(tmp_path):
         (("samuelchristlie/Wan2.1-T2V-1.3B-GGUF", "Wan2.1-T2V-1.3B-Q8_0.gguf"), True),
         (("city96/Wan2.1-I2V-14B-480P-gguf", "wan2.1-i2v-14b-480p-Q4_K_M.gguf"), False),
         (("QuantStack/Wan2.1_T2V_14B_FusionX_VACE-GGUF", "x-Q4_K_M.gguf"), False),
-        # unchanged
         (("unsloth/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf"), True),
         (("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf"), True),
     ],
@@ -313,7 +295,6 @@ def test_load_validation_refuses_with_the_named_reason():
         )
     with pytest.raises(ValueError, match = _FASTWAN):
         backend.validate_load_request("FastVideo/FastWan2.1-T2V-1.3B-Diffusers")
-    # Unrelated names keep the generic refusal.
     with pytest.raises(ValueError, match = "not a supported text-to-video model"):
         backend.validate_load_request("someorg/some-image-model")
 

@@ -365,8 +365,7 @@ def _offer_loose_checkpoint(path: Path) -> bool:
             return False
         if info.page == diffusion_content.PAGE_VIDEO:
             family = info.family
-            # Same keys, different model: the name picks the variant, as the loader's resolve_family_with_content does
-            # (wan2.1_t2v_14B_*.safetensors reads as an A14B expert by header alone, which a single file cannot load).
+            # Same keys, different model: the name picks the variant (wan2.1_t2v_14B reads as an A14B expert by header).
             named = detect_video_family(path.name)
             if named is not None and named.name in diffusion_content.SAME_ARCH_VARIANTS.get(
                 family, frozenset()

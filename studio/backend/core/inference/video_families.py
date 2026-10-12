@@ -373,18 +373,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
         # (video_moe_pair)
     ),
-    # Wan2.1-T2V-1.3B (diffusers >= 0.33): single-stream 1.3B DiT (dim 1536, 30 blocks), the Wan2.1 VAE (8x spatial,
-    # 4x temporal, the one A14B uses) and the same UMT5 encoder as Wan2.2. Defaults are ComfyUI's text_to_video_wan
-    # template (wan2.1_t2v_1.3B: 832x480, 33 frames at 16 fps, 30 steps, CFG 6, uni_pc / simple, ModelSamplingSD3 8);
-    # the diffusers repo ships flow_shift 3.0, so comfy_flow_shift replaces it. A 480P checkpoint: upstream lists 720P as
-    # unstable for 1.3B, so only the 480P pair is offered.
+    # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
         name = "wan2.1-t2v-1.3b",
-        comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (text_to_video_wan template, WAN21_T2V default)
+        comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-        # Comfy-Org/Kijai/city96 spellings (wan2.1_t2v_1.3B_*, Wan2_1-T2V-1_3B_*) normalise onto the name already.
         aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b"),
         has_audio = False,
         default_steps = 30,
@@ -394,18 +389,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         resolution_multiple = 16,
         resolution_presets = ((832, 480), (480, 832)),
-        # bf16-RESIDENT. The transformer ships FP32 (5.68 GB = 1.42B x 4), so ~2.8 bf16; UMT5 TE bf16 (11.4); VAE fp32
-        # (0.5, the A14B VAE).
         bf16_components_gb = (2.8, 11.4, 0.5),
         vae_force_fp32 = True,
         cudnn_benchmark = False,
     ),
-    # Wan2.1-T2V-14B: the same 14B block stack as one Wan2.2 A14B expert (dim 5120, 40 blocks, identical keys), run as
-    # a single denoiser. Same VAE / encoder and ComfyUI template as the 1.3B entry (the template names the 14B file as
-    # the drop-in); 480P and 720P checkpoint, 480P first because that is the template's size.
+    # Wan2.1-T2V-14B: same keys as one Wan2.2 A14B expert, run as a single denoiser.
     VideoFamily(
         name = "wan2.1-t2v-14b",
-        comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (text_to_video_wan template, WAN21_T2V default)
+        comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.1-T2V-14B-Diffusers",
@@ -418,7 +409,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         resolution_multiple = 16,
         resolution_presets = ((832, 480), (1280, 720), (480, 832), (720, 1280)),
-        # bf16-RESIDENT. FP32 on disk (57.15 GB = 14.3B x 4), ~28.6 bf16; UMT5 TE bf16 (11.4); VAE fp32 (0.5).
         bf16_components_gb = (28.6, 11.4, 0.5),
         vae_force_fp32 = True,
         cudnn_benchmark = False,
@@ -487,10 +477,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 )
 
 
-# Wan 2.1 checkpoints that share the T2V families' architecture or name tokens but that no family can serve, judged on
-# the separator-normalised name (``Wan2_1-I2V`` == ``wan2.1_i2v``). Each carries the refusal a load names instead of the
-# generic "not a supported text-to-video model". Kept to Wan2.1 / FastWan spellings so no Wan2.2, LTX, HunyuanVideo or
-# MiniMax-H3 name can ever match.
+# Wan2.1 / FastWan names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan spellings so no other
+# family's name can match.
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
 _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
     (
@@ -520,8 +508,7 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
 
 
 def unsupported_video_checkpoint_reason(*identifiers: Optional[str]) -> Optional[str]:
-    """Why a Wan 2.1 / FastWan pick cannot load, or None. Each identifier (repo id, display id,
-    file name) is judged alone, after separator normalisation. Pure, never raises."""
+    """Why a Wan 2.1 / FastWan pick cannot load, or None."""
     for identifier in identifiers:
         if not identifier:
             continue
@@ -555,9 +542,7 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    # A Wan2.1 image-to-video / conditioning / FastWan name can carry a T2V family token
-    # (QuantStack/Wan2.1_T2V_14B_FusionX_VACE-GGUF): it belongs to no family, so listings hide it and the load names
-    # unsupported_video_checkpoint_reason instead of building a text-to-video pipeline over the wrong weights.
+    # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None
     needle = repo_id.lower()
@@ -965,7 +950,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # T2V-A14B before the generic Wan key.
     ("a14b", 20, 3.5),
     ("wan2.2-14b", 20, 3.5),
-    # Wan2.1 T2V (1.3B and 14B) before the generic Wan key: ComfyUI's text_to_video_wan template runs 30 steps, CFG 6.
+    # Before the generic Wan key.
     ("wan2.1", 30, 6.0),
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),

@@ -39,8 +39,7 @@ SAME_ARCH_VARIANTS: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({"qwen-image", "qwen-image-edit"}),
     "qwen-image-edit": frozenset({"qwen-image-edit"}),
     "hunyuanvideo-1.5": frozenset({"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"}),
-    # Wan2.1-T2V-14B and one Wan2.2 A14B expert are the same 14B stack with identical keys: the name decides, and a
-    # name naming neither keeps the header's A14B answer.
+    # A name naming neither keeps the header's A14B answer.
     "wan2.2-t2v-a14b": frozenset({"wan2.2-t2v-a14b", "wan2.1-t2v-14b"}),
 }
 

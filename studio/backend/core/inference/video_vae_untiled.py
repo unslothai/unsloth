@@ -16,7 +16,6 @@ UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 _BYTES_PER_LATENT_PIXEL = {
     "wan2.2-ti2v-5b": 2.5 * 2**20,
     "wan2.2-t2v-a14b": 0.6 * 2**20,
-    # Wan2.1 T2V: the same Wan2.1 VAE as A14B.
     "wan2.1-t2v-1.3b": 0.6 * 2**20,
     "wan2.1-t2v-14b": 0.6 * 2**20,
 }
