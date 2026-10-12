@@ -222,6 +222,7 @@ import { translate, useT } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  kimiSearchExcludesThinking,
   modelCatalogVersion,
   subscribeModelCatalog,
 } from "@/features/chat/provider-capabilities";
@@ -6019,7 +6020,10 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const supportsPreserveThinking = useChatRuntimeStore(
@@ -6320,7 +6324,10 @@ const WebSearchToggle: FC = () => {
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
@@ -6621,7 +6628,10 @@ const ComposerToolsMenu: FC<{
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the pill logic above.
   const searchDisabled =
