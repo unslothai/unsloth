@@ -845,7 +845,7 @@ _configure_uv_cache() {
         esac
     fi
 
-    if [ "$_ISOLATE_UV_CACHE" = true ]; then
+    if [ "$_ISOLATE_UV_CACHE" = true ] || [ "$_STUDIO_KEEPS_TOOLS" = true ]; then
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR
@@ -1062,6 +1062,12 @@ _prepare_studio_uv_cache_for_launch() {
     export UV_CACHE_DIR
 }
 _resolve_studio_destinations
+# A custom UNSLOTH_STUDIO_HOME / STUDIO_HOME keeps uv, its cache and the uv-managed Python inside the home, so nothing large lands on the home drive. Not the legacy root, which shares the default layout.
+_STUDIO_KEEPS_TOOLS=false
+if [ "$_STUDIO_HOME_REDIRECT" = "env" ] && [ "$STUDIO_HOME" != "$(CDPATH= cd -P -- "$HOME/.unsloth/studio" 2>/dev/null && pwd -P)" ]; then
+    _STUDIO_KEEPS_TOOLS=true
+    [ -n "${UV_PYTHON_INSTALL_DIR:-}" ] || export UV_PYTHON_INSTALL_DIR="$STUDIO_HOME/python"
+fi
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it several times (uv bootstrap, venv), so testing $PATH there answers yes for a shell that would answer no and the profile entry never gets written. astral's installer used to write that line for us; the pinned path does not.
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
@@ -4030,7 +4036,7 @@ _uv_install_pinned() {
 
     # astral's destination priority, so an existing uv is replaced in place and the PATH lines below still find it.
     _uip_dest=""
-    for _uip_candidate in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}"; do
+    for _uip_candidate in "${_STUDIO_UV_DIR:-}" "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}"; do
         if [ -n "$_uip_candidate" ]; then _uip_dest="$_uip_candidate"; break; fi
     done
     if [ -z "$_uip_dest" ] && [ -n "${XDG_DATA_HOME:-}" ]; then _uip_dest="$XDG_DATA_HOME/../bin"; fi
@@ -4124,6 +4130,12 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     return "$_uip_rc"
 }
 
+# A custom home keeps its own uv in <home>/bin, which is never written to a shell profile. A uv the host already has is still used; re-runs find the private one first.
+_STUDIO_UV_DIR=""
+if [ "$_STUDIO_KEEPS_TOOLS" = true ] && [ -z "${UV_INSTALL_DIR:-}${UV_UNMANAGED_INSTALL:-}${XDG_BIN_HOME:-}" ]; then
+    _STUDIO_UV_DIR="$STUDIO_HOME/bin"
+    [ -x "$_STUDIO_UV_DIR/uv" ] && export PATH="$_STUDIO_UV_DIR:$PATH"
+fi
 if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     # Raising the floor pulled every 0.8.16-0.9.2 host into this block, and those installs used to succeed without touching the network, so a download failure must not be fatal for them. An unreadable version counts as present: that is a minimal image without awk, not an old uv.
     _uv_present_before=false
@@ -4153,6 +4165,13 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
                 if [ -n "$_uv_inst_sum" ] && [ "$_uv_inst_sum" != "$UV_INSTALLER_SH_SHA256" ]; then
                     substep "uv installer script failed its sha256 check; not running it"
                     _uv_refreshed=false
+                elif [ -n "$_STUDIO_UV_DIR" ]; then
+                    # astral's unmanaged mode: that directory only, no profile edits, no receipt.
+                    if (export UV_UNMANAGED_INSTALL="$_STUDIO_UV_DIR"; run_maybe_quiet sh "$_uv_tmp" </dev/null); then
+                        _UNSLOTH_UV_BIN_DIR="$_STUDIO_UV_DIR"
+                    else
+                        _uv_refreshed=false
+                    fi
                 else
                     run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
                 fi

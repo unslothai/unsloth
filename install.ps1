@@ -6536,6 +6536,7 @@ exit 0
     $studioAutoStartProcess = $null
     $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
     $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
+    $previousUvPythonInstallDir = $env:UV_PYTHON_INSTALL_DIR
     try {
         if ($studioNeedsRuntimeLock) {
             try {
@@ -7413,8 +7414,8 @@ exit 0
 
         # Same destination priority as astral's installer, so an existing uv is
         # replaced in place and the PATH probe further below still finds it.
-        $destDir = $null
-        foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
+        $destDir = $script:StudioPrivateUvDir
+        foreach ($candidate in @($destDir, $env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
             if ($candidate) { $destDir = $candidate; break }
         }
         if (-not $destDir -and $env:XDG_DATA_HOME) { $destDir = Join-Path $env:XDG_DATA_HOME "../bin" }
@@ -7533,7 +7534,7 @@ exit 0
 
         # Same PATH treatment and opt-outs astral's installer uses: an unmanaged
         # install forces no-modify-path there, so it must here too.
-        if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL) {
+        if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL -and -not $script:StudioPrivateUvDir) {
             Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
         }
         $env:PATH = "$destDir;$env:PATH"
@@ -7541,6 +7542,18 @@ exit 0
         # so record where uv actually landed for the probe below.
         $script:UvInstallDestDir = $destDir
         return $true
+    }
+
+    # A custom UNSLOTH_STUDIO_HOME keeps its own uv in <home>\bin, off the user PATH: winget and
+    # the default destination would put it in the profile and the registry PATH. A uv the
+    # machine already has is still used. Re-runs find the private one first.
+    $script:StudioPrivateUvDir = $null
+    if (-not $studioUsesLegacyLayout -and
+        -not ($env:UV_INSTALL_DIR -or $env:UV_UNMANAGED_INSTALL -or $env:XDG_BIN_HOME)) {
+        $script:StudioPrivateUvDir = Join-Path $StudioHome "bin"
+        if (Test-Path -LiteralPath (Join-Path $script:StudioPrivateUvDir "uv.exe") -PathType Leaf) {
+            $env:PATH = "$($script:StudioPrivateUvDir);$env:PATH"
+        }
     }
 
     if (-not (Test-UvVersionOk)) {
@@ -7551,7 +7564,7 @@ exit 0
         } else {
             substep "installing uv package manager..."
         }
-        if ($script:WingetAvailable) {
+        if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
@@ -7595,6 +7608,8 @@ exit 0
     # tests/python/test_windows_python_venv_hardening.py, where a call into the rest of the
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
+    # A custom home also never borrows the shared cache: wheels uv adds would land on that drive.
+    if (-not $studioUsesLegacyLayout) { $IsolateUvCache = $true }
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
@@ -7643,6 +7658,10 @@ exit 0
     }
 
     if ($PythonFromUv) {
+        # The venv is built on this interpreter, so a custom home keeps it too.
+        if (-not $studioUsesLegacyLayout -and [string]::IsNullOrWhiteSpace($env:UV_PYTHON_INSTALL_DIR)) {
+            $env:UV_PYTHON_INSTALL_DIR = Join-Path $StudioHome "python"
+        }
         $DetectedPython = Resolve-UvManagedPython
         if ($DetectedPython) {
             step "python" "using uv-managed Python $($DetectedPython.Version)"
@@ -12318,6 +12337,11 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
     } finally {
         Restore-StudioUvCacheEnvironment -WasPresent $hadPreviousUvCacheDir -PreviousValue $previousUvCacheDir
+        if ([string]::IsNullOrEmpty($previousUvPythonInstallDir)) {
+            Remove-Item -LiteralPath Env:UV_PYTHON_INSTALL_DIR -ErrorAction SilentlyContinue
+        } else {
+            $env:UV_PYTHON_INSTALL_DIR = $previousUvPythonInstallDir
+        }
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
