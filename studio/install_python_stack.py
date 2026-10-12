@@ -8595,7 +8595,7 @@ def _ensure_ssm_kernels() -> None:
                 ).returncode
                 == 0
             )
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
             return None
 
     for name in ("causal_conv1d", "mamba_ssm"):
@@ -8605,17 +8605,22 @@ def _ensure_ssm_kernels() -> None:
         if installed and loads(check):
             _note(f"{name} already installed and loads.")
             continue
-        # UV_OFFLINE: no lookup and no install, whose pip fallback would ignore it.
-        if _uv_is_offline():
-            _note(f"{name} not installed: UV_OFFLINE is set; run `unsloth install-kernels` online")
-            continue
+        status = 0
         buffer = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buffer):
-                status = install_kernel(name, env, run = run, install_without_gpu = True)
-        except Exception as exc:
-            status = 1
-            buffer.write(f"{type(exc).__name__}: {exc}")
+        if _uv_is_offline():
+            # No lookup and no install, whose pip fallback would ignore UV_OFFLINE; a resident
+            # build that no longer loads is still removed below.
+            if not installed:
+                _note(
+                    f"{name} not installed: UV_OFFLINE is set; run `unsloth install-kernels` online"
+                )
+        else:
+            try:
+                with contextlib.redirect_stdout(buffer):
+                    status = install_kernel(name, env, run = run, install_without_gpu = True)
+            except Exception as exc:
+                status = 1
+                buffer.write(f"{type(exc).__name__}: {exc}")
         for line in buffer.getvalue().splitlines():
             if line.strip():
                 _note(line.removeprefix("Unsloth: "))

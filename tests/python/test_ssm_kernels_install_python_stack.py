@@ -34,10 +34,12 @@ class _Host:
         installed = (),
         loading = (),
         hangs = (),
+        unlaunchable = (),
     ):
         self.installed = set(installed)
         self.loading = set(loading)
         self.hangs = set(hangs)
+        self.unlaunchable = set(unlaunchable)
         self.timeouts = []
 
     def version(self, distribution):
@@ -49,6 +51,8 @@ class _Host:
             if cmd[-1] == ips.KERNELS[name][1]:
                 if distribution in self.hangs:
                     raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+                if distribution in self.unlaunchable:
+                    raise PermissionError(13, "Access is denied")
                 return SimpleNamespace(returncode = 0 if distribution in self.loading else 1)
         return SimpleNamespace(returncode = 0)
 
@@ -152,6 +156,19 @@ def test_offline_mode_neither_looks_up_nor_installs_but_keeps_what_loads():
         "causal_conv1d already installed and loads.",
         "mamba_ssm not installed: UV_OFFLINE is set; run `unsloth install-kernels` online",
     ]
+
+
+def test_offline_still_removes_a_resident_build_that_no_longer_loads():
+    host = _Host(installed = ["mamba-ssm"])
+    r = _run(host, _installer(host), offline = True)
+    assert r.kernel.call_count == 0
+    assert [c.args[0] for c in r.uninstall.call_args_list] == ["mamba-ssm"]
+
+
+def test_a_probe_that_cannot_be_launched_is_inconclusive_not_fatal():
+    host = _Host(installed = ["mamba-ssm"], unlaunchable = ["mamba-ssm"])
+    r = _run(host, lambda name, env, **kwargs: 0)
+    assert r.kernel.call_count == 2 and r.uninstall.call_count == 0
 
 
 def test_a_failure_warns_and_the_next_kernel_still_runs():
