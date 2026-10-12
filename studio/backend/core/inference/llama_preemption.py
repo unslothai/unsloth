@@ -1625,11 +1625,13 @@ class PreemptionController:
             buffer = self._buffer_locked()
             ceiling = max(0, self._budget - buffer)
             # Net of holders already chosen: they are on their way out, and counting them again
-            # would stop a second chat for room the first is already giving back.
+            # would stop a second chat for room the first is already giving back. Not one parked
+            # on a tool: it cannot see the signal, so only the erase frees it, and an erase that
+            # failed or never ran leaves its cells resident while later plans netted them out.
             total = self._committed_locked() - sum(
                 p.tokens
                 for p in self._participants.values()
-                if p.holds_kv and p.state == ParticipantState.PREEMPTING
+                if p.holds_kv and p.state == ParticipantState.PREEMPTING and not p.parked_on_a_tool
             )
             want = max(0, int(needed or 0))
             # The two figures the sweep chooses between, recorded when they disagree:
@@ -1705,8 +1707,11 @@ class PreemptionController:
                 if total + want <= ceiling:
                     break
                 # `total` is the PROJECTION deciding how many victims are needed; the
-                # participant stays KV-holding until on_preempted says the stream stopped.
-                total -= victim.tokens
+                # participant stays KV-holding until on_preempted says the stream stopped. A
+                # parked one is chosen so the erase takes its slot, and counted freed only once
+                # that erase lands, so a decoder is chosen too where it cannot.
+                if victim.state not in _PARKED_ON_A_TOOL:
+                    total -= victim.tokens
                 victim.consecutive_preemptions += 1
                 # Before the state goes: PREEMPTING erases the only record that this
                 # holder's cells are an idle slot's, which is what the reclaim keys on.
