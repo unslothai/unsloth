@@ -230,20 +230,16 @@ def _unify_batch_schemas(base_dataset_path: Path) -> None:
     staged = [path.with_name(path.name + ".unifying") for path in parquet_files]
     try:
         names = list(dict.fromkeys(name for schema in schemas for name in schema.names))
-        # Only columns that differ are rebuilt, one column at a time; the rest stay as written.
+        # Only differing columns change. Arrow-promotable ones are cast per file while writing; struct vs text
+        # needs every row at once (which fields turn into JSON text depends on all of them), so only those are held.
+        targets: dict[str, Any] = {}
         rebuilt: dict[str, list[Any]] = {}
         for name in names:
             fields = [schema.field(name) for schema in schemas if name in schema.names]
             if len(fields) == len(schemas) and all(f.type == fields[0].type for f in fields):
                 continue
-            columns = [
-                pyarrow_parquet.read_table(path, columns = [name]).column(name)
-                if name in schema.names
-                else pyarrow.nulls(pyarrow_parquet.read_metadata(path).num_rows)
-                for path, schema in zip(parquet_files, schemas)
-            ]
             try:
-                target = (
+                targets[name] = (
                     pyarrow.unify_schemas(
                         [pyarrow.schema([field]) for field in fields],
                         promote_options = "permissive",
@@ -251,21 +247,39 @@ def _unify_batch_schemas(base_dataset_path: Path) -> None:
                     .field(name)
                     .type
                 )
-                rebuilt[name] = [column.cast(target) for column in columns]
+                continue
             except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError, pyarrow.ArrowNotImplementedError):
-                values = _unify_cell_types([v for column in columns for v in column.to_pylist()])
-                merged = pyarrow.array(values, from_pandas = True)
-                rebuilt[name], offset = [], 0
-                for column in columns:
-                    rebuilt[name].append(merged.slice(offset, len(column)))
-                    offset += len(column)
+                pass
+            columns = [
+                pyarrow_parquet.read_table(path, columns = [name]).column(name)
+                if name in schema.names
+                else pyarrow.nulls(pyarrow_parquet.read_metadata(path).num_rows)
+                for path, schema in zip(parquet_files, schemas)
+            ]
+            values = _unify_cell_types([v for column in columns for v in column.to_pylist()])
+            merged = pyarrow.array(values, from_pandas = True)
+            del values
+            rebuilt[name], offset = [], 0
+            for column in columns:
+                rebuilt[name].append(merged.slice(offset, len(column)))
+                offset += len(column)
         for index, (path, target_path) in enumerate(zip(parquet_files, staged)):
             table = pyarrow_parquet.read_table(path)
-            for name, parts in rebuilt.items():
-                if name in table.column_names:
-                    table = table.set_column(table.column_names.index(name), name, parts[index])
+            for name in names:
+                if name in rebuilt:
+                    column = rebuilt[name][index]
+                elif name in targets:
+                    column = (
+                        table.column(name)
+                        if name in table.column_names
+                        else pyarrow.nulls(table.num_rows)
+                    ).cast(targets[name])
                 else:
-                    table = table.append_column(name, parts[index])
+                    continue
+                if name in table.column_names:
+                    table = table.set_column(table.column_names.index(name), name, column)
+                else:
+                    table = table.append_column(name, column)
             pyarrow_parquet.write_table(
                 table.select(names).replace_schema_metadata(None), target_path
             )
