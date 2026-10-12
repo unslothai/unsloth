@@ -5912,6 +5912,24 @@ get_torch_index_url() {
         fi
         # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
         # the block between the header comment above and this line, so keep both exact.
+        # RDNA 1 / Polaris read fine and still have no wheels: no pytorch.org tag and no AMD
+        # per-arch index carries their kernels, so the generic tag below installed a multi-GB
+        # torch that faults on its first GPU op (#8529). Only when EVERY probed arch is one, so
+        # a covered peer keeps its wheels; an HSA_OVERRIDE_GFX_VERSION spoof probes as its target.
+        _amd_unsup_all=$(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+                   END { if (!bad && l != "") print l }')
+        if [ -n "$_amd_unsup_all" ]; then
+            echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
+            echo "[WARN] The ROCm PyTorch wheels carry no kernels for it: they would install, then fail on the first GPU operation." >&2
+            echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+            if _amd_therock_extra=$(_therock_device_extra_for_gfx "${_amd_unsup_all%%,*}" 2>/dev/null); then
+                echo "[INFO] Untested: AMD's TheRock publishes nightly ${_amd_unsup_all%%,*} wheels. To try them, export both and re-run:" >&2
+                echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL='$THEROCK_MIRROR'" >&2
+                echo "[INFO]   export UNSLOTH_TORCH_EXTRA=$_amd_therock_extra" >&2
+            fi
+            echo "$_base/cpu"; return
+        fi
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
         # The `||` guard is belt and braces on the set -e contract the helpers hold, so a fresh AMD host with no version source at all still reaches the actionable no-version WARN below. stderr is deliberately not redirected: each source already silences its own noise, leaving only the sources-disagree breadcrumb, which belongs in the install log. The shape gate on "rocmX.Y" with major >= 1 is kept, though _highest_rocm_tag enforces it too, so a future source cannot leak garbage into the cases below.
