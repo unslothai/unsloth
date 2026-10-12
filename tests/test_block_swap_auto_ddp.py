@@ -136,6 +136,7 @@ def resolve(monkeypatch):
                 "resolve_auto_block_swap",
                 "_sharded_data_parallel_launch",
                 "_single_card_device_map",
+                "_single_device_index",
                 "_as_bytes",
             ),
             (
@@ -164,6 +165,15 @@ def test_a_ddp_rank_plans_its_own_card(resolve):
     assert len(resolve.calls) == 1
     assert list(resolve.calls[0]["max_memory"]) == [1]
     assert "offload_embedding" not in resolve.calls[0]
+
+
+@pytest.mark.parametrize("device_map, card", [(1, 1), ("cuda:1", 1)])
+def test_a_ddp_rank_plans_a_bare_card_map(resolve, device_map, card):
+    """device_map = 1 or "cuda:1" (no dict) is the same single-card load as {"": "cuda:1"}."""
+    resolve.distributed = True
+    layers, out_map, embedding = resolve.fn(device_map)
+    assert (layers, out_map, embedding) == (6, {"": card}, False)
+    assert list(resolve.calls[0]["max_memory"]) == [card]
 
 
 def test_a_ddp_rank_with_room_swaps_nothing(resolve):
@@ -393,8 +403,11 @@ def test_a_sharded_trainer_refuses_an_auto_swap(monkeypatch, backend):
     check = ns["_block_swap_for_trainer_backend"]
     with pytest.raises(ValueError, match = "offload_layers = 0"):
         check(_swapped_model(**{backend: True}))
-    # Nothing swapped on this rank, or no "auto": nothing to refuse.
-    assert check(_swapped_model(swapped = (), **{backend: True})) == []
+    # A rank whose own plan swapped nothing refuses too: a peer may have swapped, and a one-sided
+    # refusal would leave the other ranks hanging in the backend's collectives.
+    with pytest.raises(ValueError, match = "swapped 0 decoder layers"):
+        check(_swapped_model(swapped = (), **{backend: True}))
+    # No "auto": nothing to refuse.
     assert check(_swapped_model(mark = False, **{backend: True})) == []
 
 
@@ -429,14 +442,27 @@ def test_load_time_frozen_set_is_rank_dependent(monkeypatch):
         num_attention_heads = 4,
         num_key_value_heads = 2,
     )
-    lists = []
+    frozen = []
     for swapped in (1, 2):
         model = transformers.LlamaForCausalLM(config)
         model._unsloth_offload_layers_auto_ddp = True
         for layer in model.model.layers[3 - swapped :]:
             layer.requires_grad_(False)
-        lists.append(ns["_ignore_block_swap_params_for_ddp"](model))
-    assert lists[0] != lists[1]
+        frozen.append({n for n, p in model.named_parameters() if not p.requires_grad})
+        # So the helper leaves a model PEFT has not wrapped alone.
+        assert ns["_ignore_block_swap_params_for_ddp"](model) == []
+        assert not getattr(model, "_ddp_params_and_buffers_to_ignore", None)
+    assert frozen[0] != frozen[1]
+
+
+def test_ignore_list_is_applied_when_from_pretrained_loads_an_adapter():
+    """An existing adapter returns through patch_peft_model / post_patch_model, not get_peft_model:
+    both loader return paths apply the list after the rope pass."""
+    src = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    rope = "model = _exclude_rope_inv_freq_from_ddp(model)\n"
+    assert src.count(rope) == 2
+    for at in [i for i in range(len(src)) if src.startswith(rope, i)]:
+        assert "_ignore_block_swap_params_for_ddp(model)" in src[at : at + 300]
 
 
 def test_full_finetuning_never_ignores_a_trainable_weight(monkeypatch):

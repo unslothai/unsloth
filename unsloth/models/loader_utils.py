@@ -866,6 +866,11 @@ def resolve_auto_block_swap(
             if target.type != "cuda":
                 return _none(f"the load places the model on {target}")
             target = target.index if target.index is not None else torch.cuda.current_device()
+        elif (
+            isinstance(device_map, (int, torch.device))
+            and _single_device_index(device_map) is not None
+        ):
+            target = _single_device_index(device_map)
         elif device_map is None or (
             isinstance(device_map, str)
             and (device_map in TRANSFORMERS_PLACEMENT_STRATEGIES or device_map.startswith("cuda"))

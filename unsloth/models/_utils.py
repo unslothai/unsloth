@@ -7693,6 +7693,10 @@ def _ignore_block_swap_params_for_ddp(model):
         getattr(model, "_unsloth_offload_layers_auto", None) is None
     ):
         return []
+    # Only once PEFT froze the base: before that only the swapped layers are frozen, so the list
+    # would differ between ranks.
+    if getattr(model, "peft_config", None) is None:
+        return []
     try:
         layer_params = {id(p) for p in find_decoder_layers(model).parameters()}
     except Exception:
@@ -7733,10 +7737,13 @@ def _block_swap_for_trainer_backend(trainer):
         getattr(model, "_unsloth_offload_layers_auto_ddp", False)
         or getattr(model, "_unsloth_offload_layers_auto", None) is not None
     )
-    if auto and getattr(swapper, "indices", None):
+    # Every rank that asked for "auto" refuses, also one whose own plan swapped nothing: ranks plan
+    # independently, so a peer may have swapped, and a one-sided refusal would hang the others.
+    if auto:
+        swapped = len(getattr(swapper, "indices", None) or ())
         raise ValueError(
-            f"Unsloth: offload_layers = 'auto' swapped {len(swapper.indices)} decoder layers to host "
-            f"RAM, but this Trainer runs {backend}, which shards the weights itself and cannot wrap "
+            f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
+            f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "
             "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
             f"or launch without {backend}."
         )
