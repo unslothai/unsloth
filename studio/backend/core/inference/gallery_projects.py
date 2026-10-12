@@ -57,7 +57,6 @@ def _sandbox_dir(project_id: str) -> str:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         raise ProjectNotFound(project_id)
-    # Where the project's tools run, so an added file is one they can open.
     return available_project_working_folder(project) or sandbox_real
 
 

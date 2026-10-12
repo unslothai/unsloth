@@ -10838,8 +10838,7 @@ def _project_exists(project_id: str) -> bool:
 
 
 def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
-    """Whether a project workdir is Studio's managed sandbox. Compared with that path rather than
-    re-reading the working-folder setting, which can change between the resolve and the chmod."""
+    """Compares with the sandbox path, not the working-folder setting, which can change before the chmod."""
     if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return False
     try:
@@ -10849,7 +10848,6 @@ def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
         sandbox = (project or {}).get("sandboxPath")
         return bool(sandbox) and os.path.realpath(sandbox) == workdir
     except Exception:
-        # Unknown is treated as the user's: leaving a mode alone is always safe.
         return False
 
 
@@ -11639,7 +11637,6 @@ def _get_workdir(session_id: str | None = None) -> str:
         cached = None
     project_now = _get_project_workdir(session_id or "") if cached is not None else None
     if cached is not None and project_now and os.path.realpath(cached) != project_now:
-        # The project moved to or from a folder of the user's since this was cached.
         cached = None
     if cached is not None and not project_now:
         # The same checks a fresh resolve makes: the entry can have been renamed and replaced with a link to another
@@ -11708,7 +11705,7 @@ def _get_workdir(session_id: str | None = None) -> str:
             except OSError:
                 pass
         # Only ours: a shared root can already hold a directory with this name, and tightening it would cut off
-        # whoever else uses it. Never a project's own folder of the user's, whatever the root.
+        # whoever else uses it. Never the user's project folder.
         if (created or _sandbox_is_ours(workdir)) and (
             not project_workdir or _is_managed_project_workdir(session_id, project_workdir)
         ):

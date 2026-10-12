@@ -454,8 +454,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
-    # An existing folder of the user's that the project's tools run in. Kept apart from root_path,
-    # which is Studio's own folder and the only one a project delete may remove.
+    # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
     if "working_folder" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
     if "working_folder_identity" not in chat_project_cols:
@@ -2970,9 +2969,7 @@ def set_chat_project_working_folder(
     path: Optional[str],
     identity: Optional[tuple[int, int]] = None,
 ) -> Optional[dict]:
-    """Point a project's tools at an existing folder, or back at Studio's own with ``path = None``.
-    Only the two columns change: the managed workspace stays where it is, so switching back finds
-    its files."""
+    """The managed workspace is kept, so switching back finds its files."""
     conn = get_connection()
     try:
         conn.execute(
@@ -2993,11 +2990,8 @@ def set_chat_project_working_folder(
 
 
 def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
-    """The project's own folder when it is still the directory the user picked; None otherwise, and
-    the caller falls back to the managed workspace. A moved or replaced folder is never followed:
-    the identity check is what keeps a new directory at the old path from inheriting the grant."""
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
     path = (project or {}).get("workingFolder")
-    # Host folders are the owner's only, as everywhere else a project touches the host.
     if not path or not is_owner_context():
         return None
     try:

@@ -35,12 +35,10 @@ import {
   newInputImeState,
 } from "../utils/composer-preferences";
 
-/** Where the project's tools run: Studio's own folder, or one of the user's picked in the desktop
- *  shell. Applied at once, as the source folders below are; nothing here moves or deletes files. */
 function ProjectWorkingFolder({ project }: { project: ProjectRecord }) {
   const leasesSupported = useNativePathLeasesSupported();
   const [folder, setFolder] = useState(project.workingFolder ?? null);
-  // Keyed on the record's folder too, so a change made elsewhere shows up here.
+  // Keyed on the folder so an external change re-seeds.
   const seed = `${project.id}\n${project.workingFolder ?? ""}`;
   const [seededFor, setSeededFor] = useState(seed);
   const [busy, setBusy] = useState(false);

@@ -1179,8 +1179,7 @@ export async function updateChatProject(
   return project;
 }
 
-/** Point a project's tools at a folder picked in the desktop shell, or back at Studio's own with
- *  a null lease. The folder itself is never moved or deleted. */
+/** A null lease reverts to Studio's folder; the user's folder is never moved or deleted. */
 export async function setChatProjectWorkingFolder(
   projectId: string,
   nativePathLease: string | null,

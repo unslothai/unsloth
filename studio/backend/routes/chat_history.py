@@ -325,7 +325,7 @@ class ChatProject(BaseModel):
     instructions: str = ""
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
-    # Read only: set through the working-folder route, never from a saved record.
+    # Read only: a saved record cannot set the folder.
     workingFolder: Optional[str] = None
     archived: bool = False
     createdAt: int
@@ -1243,8 +1243,7 @@ def patch_project(
 
 
 def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
-    """The folder a desktop grant names, checked as a linked folder is, and kept clear of Studio's
-    own folders: one that holds every project's workspace would hand this project's tools the rest."""
+    """Studio's own roots are reserved: they hold every account's data."""
     from core.inference.tools import shared_sandbox_root
     from core.rag import folder_sync
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
@@ -1265,7 +1264,6 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         path = folder_sync.validate_folder_path(str(grant.canonical_path))
     except (NativePathLeaseError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    # The shared roots, not this account's: they also hold every managed account's workspaces.
     for reserved in (
         studio_root(),
         shared_project_workspaces_root(),
@@ -1280,7 +1278,6 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
                 status_code = 400,
                 detail = "Studio's own folders cannot be used as a project folder.",
             )
-    # Tools write here (scratch files, edits), so a read-only folder would fail every call.
     if not os.access(path, os.W_OK):
         raise HTTPException(status_code = 400, detail = "The folder is not writable.")
     st = os.stat(path)
@@ -1293,7 +1290,6 @@ def set_project_working_folder(
     payload: ChatProjectWorkingFolder,
     current_subject: str = Depends(get_current_subject),
 ):
-    # Host folders are single-user only, as the tools that run there are (tools._get_project_workdir).
     if not is_owner_context():
         raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
     if get_chat_project(project_id) is None:
@@ -1304,8 +1300,7 @@ def set_project_working_folder(
     except HTTPException:
         raise
     except Exception as exc:
-        # An HTTPException carries CORS headers, so the desktop webview reads it rather than
-        # resending the spent grant (#13131).
+        # HTTPException keeps CORS so the webview does not resend a spent grant (#13131).
         raise log_and_http_error(
             exc,
             500,
@@ -1322,7 +1317,7 @@ def set_project_working_folder(
 def clear_project_working_folder(
     project_id: str, current_subject: str = Depends(get_current_subject)
 ):
-    # Only the setting goes: the folder is the user's and is never touched.
+    # The user's folder is never touched.
     project = set_chat_project_working_folder(project_id, None)
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")

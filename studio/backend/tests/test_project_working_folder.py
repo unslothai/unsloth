@@ -23,8 +23,7 @@ from storage import studio_db
 
 @pytest.fixture
 def projects_home(tmp_path):
-    """Outside the project-delete denylist: macOS tmp_path resolves under /private, which the guard
-    refuses, so a delete there would prove nothing (same fallback as test_chat_history_storage)."""
+    """macOS tmp_path is under /private, which the project-delete guard refuses."""
     candidate = tmp_path / "Projects"
     resolved = str(candidate.resolve())
     check = os.path.normcase(resolved) if platform.system() == "Windows" else resolved
@@ -40,8 +39,7 @@ def projects_home(tmp_path):
 
 @pytest.fixture
 def repo_parent(tmp_path):
-    """Where the user's folder lives: macOS tmp_path is under /private, which Link folder refuses as a
-    system directory, while a real repository sits under the home folder."""
+    """macOS tmp_path is under /private, which Link folder refuses as a system directory."""
     from hub.storage.scan_folders import is_denied_system_path
 
     if not is_denied_system_path(os.path.realpath(tmp_path)):
@@ -87,7 +85,6 @@ def _use_repo(env):
 def test_tools_run_in_the_users_folder_and_back(env):
     managed = env.tools._get_project_workdir("project-p1")
     assert managed == os.path.realpath(env.project["sandboxPath"])
-    # The cache from the managed resolve must not keep the tools there.
     assert env.tools._get_workdir("project-p1") == managed
 
     saved = _use_repo(env)
@@ -110,7 +107,6 @@ def test_setting_and_clearing_are_idempotent(env):
 
 
 def test_a_saved_record_cannot_set_or_drop_the_folder(env):
-    # The client's POST carries the whole record; only the dedicated route may change the folder.
     studio_db.upsert_chat_project({**env.project, "workingFolder": "/etc", "updatedAt": 2})
     assert studio_db.get_chat_project("p1")["workingFolder"] is None
     _use_repo(env)
@@ -126,7 +122,6 @@ def test_a_moved_or_replaced_folder_falls_back_to_the_managed_one(env):
     moved = env.repo.with_name("repo-moved")
     env.repo.rename(moved)
     assert env.tools._get_project_workdir("project-p1") == managed
-    # A new directory at the old path is not the folder the user picked.
     env.repo.mkdir()
     assert env.tools._get_project_workdir("project-p1") == managed
     assert not os.path.exists(env.repo / "main.py")
@@ -134,14 +129,14 @@ def test_a_moved_or_replaced_folder_falls_back_to_the_managed_one(env):
 
 def test_the_users_folder_keeps_its_mode(env):
     _use_repo(env)
-    # Read back rather than assumed: Windows reports 0o777 for any directory and ignores chmod.
+    # Windows reports 0o777 and ignores chmod.
     before = stat.S_IMODE(os.stat(env.repo).st_mode)
     env.tools._get_workdir("project-p1")
     assert stat.S_IMODE(os.stat(env.repo).st_mode) == before
 
 
 def test_a_folder_cleared_mid_resolve_still_keeps_its_mode(env, monkeypatch):
-    # The setting is cleared after the tools resolved the user's folder but before the chmod.
+    # Cleared between the resolve and the chmod.
     before = stat.S_IMODE(os.stat(env.repo).st_mode)
     monkeypatch.setattr(env.tools, "_project_workdir_for", lambda _sid: os.path.realpath(env.repo))
     env.tools._get_workdir("project-p1")
@@ -180,7 +175,6 @@ def test_add_to_project_lands_where_the_tools_run(env, tmp_path):
     _use_repo(env)
     added = gallery_projects.copy_into_project(image, "p1", "images")
     assert added["path"] == os.path.join(os.path.realpath(env.repo), "images", "gen-1.png")
-    # Never over a file the user already has.
     (env.repo / "images" / "gen-2.png").write_bytes(b"mine")
     other = tmp_path / "gen-2.png"
     other.write_bytes(b"generated")
@@ -222,7 +216,6 @@ def test_route_refuses_studios_own_folders_and_other_accounts(env, monkeypatch, 
     from utils.paths.storage_roots import project_workspaces_root, shared_project_workspaces_root
 
     body = chat_history.ChatProjectWorkingFolder(nativePathLease = "lease")
-    # The default layout, where the owner's Projects and other accounts' folders are siblings.
     monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME")
     monkeypatch.setenv(
         "UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path.parent / f"{tmp_path.name}-docs")
@@ -231,7 +224,6 @@ def test_route_refuses_studios_own_folders_and_other_accounts(env, monkeypatch, 
     other_account.mkdir(parents = True)
     project_workspaces_root().mkdir(parents = True, exist_ok = True)
     for reserved in (project_workspaces_root(), other_account, tmp_path):
-        # tmp_path holds the Studio home and every project, so picking it is refused too.
         monkeypatch.setattr(
             native_path_leases,
             "verify_native_path_lease",
@@ -249,7 +241,6 @@ def test_route_refuses_studios_own_folders_and_other_accounts(env, monkeypatch, 
 
 
 def test_route_refuses_the_shared_temp_root(env, monkeypatch):
-    # Every account's temporary files live under it, so a folder holding it is refused.
     from routes import chat_history
     from utils import native_path_leases
     from utils.paths import storage_roots
