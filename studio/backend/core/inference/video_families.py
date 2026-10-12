@@ -1009,14 +1009,17 @@ def _identifier_blob(identifiers: tuple[Optional[str], ...]) -> list[str]:
 
 
 def video_checkpoint_refusal(fam: VideoFamily, *identifiers: Optional[str]) -> Optional[str]:
-    """Identifiers are joined into one line so an LTX-2.3 filename excuses an ``ltx-video`` folder."""
-    joined = " | ".join(_identifier_blob(identifiers))
+    """Identifiers are joined into one line so an LTX-2.3 filename excuses an ``ltx-video`` folder; the last segment
+    of the most specific identifier is also judged alone, so an LTX-2 folder cannot excuse an LTX-Video 0.9 file."""
+    names = _identifier_blob(identifiers)
+    joined = " | ".join(names)
+    pick = os.path.basename(names[-1].replace("\\", "/").rstrip("/")) if names else ""
     for entry in getattr(fam, "unsupported_checkpoints", ()) or ():
         if not isinstance(entry, (tuple, list)) or len(entry) != 2:
             continue
         pattern, message = entry
         try:
-            if joined and re.search(pattern, joined):
+            if any(text and re.search(pattern, text) for text in (pick, joined)):
                 return str(message)
         except re.error:
             continue

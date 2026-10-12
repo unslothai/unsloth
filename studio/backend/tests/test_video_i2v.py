@@ -168,6 +168,20 @@ def test_ltx2_checkpoints_are_not_refused(ids):
 
 
 @pytest.mark.parametrize(
+    "ids",
+    [
+        ("unsloth/LTX-2.3-GGUF", "ltx-video-2b-v0.9-Q4_K_M.gguf"),
+        ("/models/LTX-2.3", "ltxv-13b-0.9.7-dev-Q4_K_M.gguf"),
+        ("/models/LTX-2/ltxv-2b-0.9.6-distilled",),
+        ("Lightricks/LTX-2", "/models/LTX-2/LTX-Video-0.9.8-13B-distilled.safetensors"),
+    ],
+)
+def test_ltx_video_09_checkpoint_in_an_ltx2_folder_is_still_refused(ids):
+    message = video_checkpoint_refusal(_fam("ltx-2"), *ids)
+    assert message and "LTX-Video 0.9" in message
+
+
+@pytest.mark.parametrize(
     "repo,family",
     [
         ("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v", "hunyuanvideo-1.5"),
@@ -486,3 +500,28 @@ def test_model_offload_sends_the_vae_back_before_the_first_frame_denoise():
         assert "encode" not in pipe.vae.__dict__
     finally:
         handle.remove()
+
+
+def test_model_offload_sends_the_vae_back_when_the_first_frame_encode_raises():
+    from core.inference.video_i2v import first_frame_pipeline
+
+    torch, pipe = _tiny_wan_pipe()
+    pipe.enable_model_cpu_offload(device = "cpu")
+    hook = pipe.vae._hf_hook
+    offloaded = []
+    init_hook = hook.init_hook
+
+    def _off(module):
+        offloaded.append(module)
+        return init_hook(module)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("CUDA out of memory")
+
+    hook.init_hook = _off
+    pipe.vae.__dict__["encode"] = _boom
+    with first_frame_pipeline(pipe, "WanImageToVideoPipeline"):
+        with pytest.raises(RuntimeError, match = "out of memory"):
+            pipe.vae.encode(torch.zeros(1))
+    assert offloaded == [pipe.vae]
+    assert pipe.vae.__dict__["encode"] is _boom

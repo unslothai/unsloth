@@ -146,11 +146,12 @@ def _offload_vae_after_encode(pipe: Any) -> Iterator[None]:
     own = vae.__dict__.get("encode", _MISSING)
 
     def _encode(*args: Any, **kwargs: Any) -> Any:
-        out = encode(*args, **kwargs)
-        hook = getattr(vae, "_hf_hook", None)
-        if isinstance(hook, CpuOffload):
-            hook.init_hook(vae)
-        return out
+        try:
+            return encode(*args, **kwargs)
+        finally:
+            hook = getattr(vae, "_hf_hook", None)
+            if isinstance(hook, CpuOffload):
+                hook.init_hook(vae)
 
     vae.__dict__["encode"] = _encode
     try:
