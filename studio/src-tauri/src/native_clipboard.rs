@@ -121,8 +121,12 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "caf" => "audio/x-caf",
         "wma" => "audio/x-ms-wma",
         "amr" => "audio/amr",
+        "m4b" => "audio/mp4",
+        "weba" => "audio/webm",
+        "mka" => "audio/x-matroska",
         // Provisional until the BMFF handlers can be inspected after reading.
         "3gp" => "video/3gpp",
+        "3g2" => "video/3gpp2",
         "vtt" => "text/vtt",
         "srt" => "application/x-subrip",
         // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and

@@ -11,8 +11,8 @@ import {
   isToolOnlyAttachmentName,
 } from "../chat/open-document-accept.ts";
 import {
+  TEXT_ATTACHMENT_BASENAMES,
   TEXT_ATTACHMENT_EXTENSIONS,
-  isTextAttachmentName,
 } from "../chat/text-attachment-accept.ts";
 import {
   RAG_DOCUMENT_UPLOAD_ACCEPT,
@@ -48,10 +48,10 @@ const DROP_DOC_EXTS = [...DOC_EXTS, ...OFFICE_DOC_EXTS];
 
 function isTextDropName(path: string): boolean {
   const name = nativeFileName(path).toLowerCase();
-  if (!name.includes(".") && isTextAttachmentName(name)) {
+  if ((TEXT_ATTACHMENT_BASENAMES as readonly string[]).includes(name)) {
     return true;
   }
-  // A dotfile like ".env" has no extension and remains unsupported.
+  // Other dotfiles, ".env" among them, have no extension and remain unsupported.
   const dot = name.lastIndexOf(".");
   return dot > 0 && TEXT_EXTS.includes(name.slice(dot));
 }
@@ -64,7 +64,7 @@ const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
 
 /** Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`. */
 export const CHAT_AUDIO_DROP_ACCEPT =
-  ".wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2";
+  ".wav,.mp3,.m4a,.m4b,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2,.weba,.mka";
 
 const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
@@ -74,7 +74,7 @@ const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
  * `VIDEO_ATTACHMENT_EXTS`. llama-server decodes with ffmpeg, so this is what
  * ffmpeg reads, not what the webview can play. */
 export const CHAT_VIDEO_DROP_ACCEPT =
-  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
+  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.3g2,.ogv,.m2ts";
 
 const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),

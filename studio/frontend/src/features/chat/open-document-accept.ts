@@ -33,7 +33,7 @@ export function isRtfAttachmentName(filename: string): boolean {
 // RAG_DOCUMENT_UPLOAD_ACCEPT minus what the browser reads itself (.xlsx/.xlsm/.pptx, .odt/.ods, .rtf,
 // .eml as text). Spelled out: an import would stop this module being a leaf of the chat barrel.
 export const SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS = [
-  ".doc,.docm,.dotx,.dotm,.xls,.xltx,.xltm,.ppt,.pptm,.potx,.potm,.ppsx,.ppsm",
+  ".doc,.docm,.dotx,.dotm,.xls,.xlt,.xltx,.xltm,.ppt,.pps,.pptm,.potx,.potm,.ppsx,.ppsm",
   ".odp,.ott,.ots,.otp,.msg,.mht,.mhtml,.epub,.xhtml,.xht",
 ].join(",");
 // RAG's MAX_UPLOAD_BYTES; the browser readers stop at 50 MB, so larger documents go here too.

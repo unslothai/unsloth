@@ -87,7 +87,9 @@ test("server documents are routed ahead of text and tool-only adapters", () => {
     assert.notEqual(index, -1, marker);
     return index;
   };
-  assert.ok(order("          server,") < order("new TextAttachmentAdapter()"));
+  assert.ok(order("          server,") < order("new OfficeTemplateAdapter(text, server)"));
+  // Ahead of text, which also lists .dot/.pot, so a binary template is sniffed before text refuses it.
+  assert.ok(order("new OfficeTemplateAdapter(text, server)") < order("          text,"));
   assert.ok(order("          server,") < order("new ToolOnlyAttachmentAdapter()"));
   for (const adapter of ["PDF", "Docx", "Office", "OpenDocument"]) {
     assert.ok(order(`largeFallback(new ${adapter}AttachmentAdapter())`) > 0);

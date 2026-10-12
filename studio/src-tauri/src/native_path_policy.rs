@@ -50,8 +50,8 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
 /// RAG-only document types; keep in sync with `OFFICE_DOC_EXTS` in `drop-paths.ts`.
 pub const OFFICE_ATTACHMENT_EXTS: &[&str] = &[
-    "doc", "xls", "xlsx", "xlsm", "xltx", "xltm", "ppt", "pptx", "pptm", "ppsx", "ott", "ots",
-    "otp", "msg", "mht", "mhtml", "xhtml", "xht",
+    "doc", "xls", "xlt", "xlsx", "xlsm", "xltx", "xltm", "ppt", "pps", "pptx", "pptm", "ppsx", "ott",
+    "ots", "otp", "msg", "mht", "mhtml", "xhtml", "xht",
 ];
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
@@ -171,6 +171,8 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "jsonc",
     "json5",
     "geojson",
+    "kml",
+    "gpx",
     "har",
     "avsc",
     "xml",
@@ -438,8 +440,57 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "patch",
 ];
 
-/// Conventional extensionless names represented by dotted frontend accept tokens.
-pub const TEXT_ATTACHMENT_NAMES: &[&str] = &["containerfile", "dockerfile", "makefile"];
+/// Conventional extensionless names and dotfiles represented by dotted frontend accept tokens.
+pub const TEXT_ATTACHMENT_NAMES: &[&str] = &[
+    "containerfile",
+    "dockerfile",
+    "makefile",
+    "gnumakefile",
+    "justfile",
+    "procfile",
+    "jenkinsfile",
+    "vagrantfile",
+    "gemfile",
+    "rakefile",
+    "podfile",
+    "brewfile",
+    "pipfile",
+    "caddyfile",
+    "codeowners",
+    "readme",
+    "license",
+    "licence",
+    "copying",
+    "notice",
+    "authors",
+    "contributors",
+    "changelog",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".dockerignore",
+    ".npmignore",
+    ".prettierignore",
+    ".eslintignore",
+    ".editorconfig",
+    ".npmrc",
+    ".nvmrc",
+    ".yarnrc",
+    ".prettierrc",
+    ".eslintrc",
+    ".babelrc",
+    ".pylintrc",
+    ".flake8",
+    ".clang-format",
+    ".python-version",
+    ".tool-versions",
+    ".bashrc",
+    ".bash_profile",
+    ".zshrc",
+    ".profile",
+    ".vimrc",
+    ".htaccess",
+];
 
 pub fn is_text_attachment_name(path: &Path) -> bool {
     path.file_name()
@@ -672,14 +723,14 @@ pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &[
 /// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
 pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &[
     "wav", "mp3", "m4a", "ogg", "oga", "opus", "flac", "aac", "aiff", "aif", "aifc", "caf", "wma",
-    "amr", "mp2",
+    "amr", "mp2", "m4b", "weba", "mka",
 ];
 
 /// Chat video attachments; keep in sync with `drop-paths.ts`
 /// `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg, so this is what
 /// ffmpeg reads, not what the webview can play.
 pub const VIDEO_ATTACHMENT_EXTS: &[&str] = &[
-    "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "ogv", "m2ts",
+    "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "3g2", "ogv", "m2ts",
 ];
 
 fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
