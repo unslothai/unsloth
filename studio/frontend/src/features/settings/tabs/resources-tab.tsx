@@ -25,6 +25,7 @@ import {
   sharedMemoryAvailableGb,
 } from "@/hooks/gpu-memory-display";
 import {
+  deviceSharedMemorySplitGb,
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
   resolveGpuVramUsedGb,
@@ -909,6 +910,8 @@ export function ResourcesTab() {
             const percentText = isFiniteNumber(percent)
               ? formatPercent(safePercent)
               : unknownLabel;
+            // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
+            const sharedSplit = deviceSharedMemorySplitGb(device);
             return (
               // Name over backend on the left, figures over the meter on the
               // right. The meter tracks the figures' width rather than the
@@ -935,6 +938,20 @@ export function ResourcesTab() {
                       <span className="text-xs text-muted-foreground">
                         {t("settings.resources.gpu.sharedWithSystemRam")}
                       </span>
+                    ) : sharedSplit ? (
+                      <>
+                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                          {percentText}
+                        </span>
+                        <span className="min-w-0 truncate text-xs text-muted-foreground">
+                          {sharedSplit.dedicated > 0
+                            ? t("settings.resources.environment.vramWithShared", {
+                                vram: formatGiB(sharedSplit.dedicated),
+                                shared: formatGiB(sharedSplit.shared),
+                              })
+                            : t("settings.resources.gpu.sharedWithSystemRam")}
+                        </span>
+                      </>
                     ) : (
                       <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
                         {percentText}{" "}
