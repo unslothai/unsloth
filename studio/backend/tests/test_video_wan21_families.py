@@ -125,16 +125,16 @@ def test_supported_names_carry_no_refusal(identifier, expected):
 
 
 def test_comfyui_template_defaults():
-    for name, presets in (
-        ("wan2.1-t2v-1.3b", ((832, 480), (480, 832))),
-        ("wan2.1-t2v-14b", ((832, 480), (1280, 720), (480, 832), (720, 1280))),
+    for name, presets, steps, shift in (
+        ("wan2.1-t2v-1.3b", ((832, 480), (480, 832)), 30, 8.0),
+        ("wan2.1-t2v-14b", ((832, 480), (1280, 720), (480, 832), (720, 1280)), 20, 5.0),
     ):
         fam = vf.detect_video_family("", override = name)
         assert fam.pipeline_class == "WanPipeline"
         assert fam.transformer_class == "WanTransformer3DModel"
         assert not fam.is_moe and fam.transformer2_class is None
-        assert (fam.default_steps, fam.default_guidance) == (30, 6.0)
-        assert fam.comfy_flow_shift == 8.0
+        assert (fam.default_steps, fam.default_guidance) == (steps, 6.0)
+        assert fam.comfy_flow_shift == shift
         assert (fam.default_num_frames, fam.default_fps, fam.frame_step) == (33, 16, 4)
         assert fam.resolution_presets == presets and fam.resolution_multiple == 16
         assert fam.vae_force_fp32 and not fam.cudnn_benchmark
@@ -151,7 +151,9 @@ def test_comfyui_template_defaults():
     "ids, expected",
     [
         (("Wan-AI/Wan2.1-T2V-1.3B-Diffusers",), (30, 6.0)),
-        (("wan2.1-t2v-14b-Q4_K_M.gguf", "city96/Wan2.1-T2V-14B-gguf"), (30, 6.0)),
+        (("wan2.1-t2v-14b-Q4_K_M.gguf", "city96/Wan2.1-T2V-14B-gguf"), (20, 6.0)),
+        (("wan2.1_t2v_14B_fp8_scaled.safetensors",), (20, 6.0)),
+        ((None, "Wan-AI/Wan2.1-T2V-14B-Diffusers"), (20, 6.0)),
         (("Wan2_1-T2V-1_3B_bf16.safetensors",), (30, 6.0)),
         ((None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers"), (20, 5.0)),
         ((None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers"), (20, 3.5)),

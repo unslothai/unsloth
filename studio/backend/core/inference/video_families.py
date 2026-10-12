@@ -396,13 +396,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-14B: same keys as one Wan2.2 A14B expert, run as a single denoiser.
     VideoFamily(
         name = "wan2.1-t2v-14b",
-        comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
+        comfy_flow_shift = 5.0,  # reference 14B workflow shift (the 1.3B uses 8); replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.1-T2V-14B-Diffusers",
         aliases = ("wan2.1-14b", "wan21-t2v-14b"),
         has_audio = False,
-        default_steps = 30,
+        default_steps = 20,
         default_guidance = 6.0,
         default_num_frames = 33,
         default_fps = 16,
@@ -950,7 +950,9 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # T2V-A14B before the generic Wan key.
     ("a14b", 20, 3.5),
     ("wan2.2-14b", 20, 3.5),
-    # Before the generic Wan key.
+    # Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
+    ("wan2.1-t2v-14b", 20, 6.0),
+    ("wan2.1-14b", 20, 6.0),
     ("wan2.1", 30, 6.0),
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
