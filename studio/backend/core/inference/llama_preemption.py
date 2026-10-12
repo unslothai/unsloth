@@ -1665,9 +1665,24 @@ class PreemptionController:
             participant.state = ParticipantState.DECODING
             participant.preempt_chosen_at = 0.0
             participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
+            # Held pending for a waiter until the re-plan says who replaces it.
+            self._replaced_by[gen_id] = None
             # Last, and inside the lock: a signal still set aborts the very stream this is
             # letting run, and clearing it first leaves a window for a sweep to re-arm it.
             participant.preempt_event.clear()
+        # Its cells were counted as leaving: planned again, as a revoked choice is, so a
+        # direct holder waiting on it waits on whoever stops in its place. Without it: it
+        # has just said no, and later pressure in the turn may still ask it again.
+        replacements: List[str] = []
+        try:
+            replacements = [
+                v.gen_id
+                for v in self.plan_preemptions(needed = 0, exclude = gen_id)
+                if not v.parked_on_a_tool
+            ]
+        finally:
+            with self._lock:
+                self._replaced_by[gen_id] = replacements
 
     def participant(self, gen_id: str) -> Optional[Participant]:
         """The registered participant, or None once it has finished. By reference."""
@@ -1781,9 +1796,14 @@ class PreemptionController:
                 return False
             return self._contended_locked()
 
-    def plan_preemptions(self, *, needed: int = 0) -> List[Participant]:
-        """Who must stop so ``needed`` more tokens fit. Sets each victim's ``preempt_event`` and
-        marks it PAUSED, so decision and signal cannot drift."""
+    def plan_preemptions(
+        self,
+        *,
+        needed: int = 0,
+        exclude: Optional[str] = None,
+    ) -> List[Participant]:
+        """Who must stop so ``needed`` more tokens fit; ``exclude`` is never chosen. Sets each
+        victim's ``preempt_event`` and marks it PAUSED, so decision and signal cannot drift."""
         with self._lock:
             if not self._kv_unified or self._budget <= 0 or not preemption_eligible():
                 return []
@@ -1848,7 +1868,11 @@ class PreemptionController:
             #
             # `holds_kv` as well as `preemptable`: a participant whose cells an idle reclaim
             # erased keeps `preemptable` True while `holds_kv` is False, so stale `tokens` get subtracted.
-            victims = [p for p in self._participants.values() if p.preemptable and p.holds_kv]
+            victims = [
+                p
+                for p in self._participants.values()
+                if p.preemptable and p.holds_kv and p.gen_id != exclude
+            ]
             # Promoted above newest-first, so repeatedly losing does not become never finishing.
             # A THRESHOLD, not a continuous term, which is least-preempted-first by another name.
             victims.sort(
@@ -1861,7 +1885,9 @@ class PreemptionController:
             # Always leave one holder standing: pausing the last one is pure loss. One HOLDER, not
             # one preemptable victim; a holder already PREEMPTING does not count as standing.
             standing = any(
-                p.holds_kv and not p.preemptable and p.state != ParticipantState.PREEMPTING
+                p.holds_kv
+                and (not p.preemptable or p.gen_id == exclude)
+                and p.state != ParticipantState.PREEMPTING
                 for p in self._participants.values()
             )
             spare = len(victims) if standing else max(0, len(victims) - 1)

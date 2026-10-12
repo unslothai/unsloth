@@ -78,3 +78,42 @@ def test_a_victim_chosen_again_after_it_was_replaced_is_waited_on_again():
     assert controller.wait_released([revoked], 2.0) is True
     assert chosen_again.is_set(), "the re-plan did not choose the first chat again"
     assert time.monotonic() - started >= 0.45, "the wait ended while it was chosen again"
+
+
+def _chosen_once():
+    controller = PreemptionController("http://127.0.0.1:65081")
+    controller.configure(budget = 16384, kv_unified = True, slots = 4)
+    for gen_id, tokens in (("a", 8000), ("b", 7000)):
+        controller.register(gen_id, tokens = tokens)
+        controller.note_measured(gen_id)
+    controller.note_resident(15000, started_at_seq = controller.residency_epoch())
+    controller.register("raw", tokens = 3000, state = ParticipantState.STREAMING_RAW)
+    first = [v.gen_id for v in controller.plan_preemptions(needed = 0)]
+    assert len(first) == 1, first
+    return controller, first[0]
+
+
+def test_a_declined_pause_is_replaced_for_the_waiter():
+    # Stalled on resumes, the chosen chat finishes its turn instead: its cells never leave, so
+    # the holder has to wait on whoever stops in its place.
+    controller, chosen = _chosen_once()
+    controller.note_declined(chosen)
+    replacement = next(
+        gen_id
+        for gen_id, p in controller._participants.items()
+        if p.state == ParticipantState.PREEMPTING
+    )
+    assert replacement != chosen
+    assert (
+        controller.wait_released([chosen], 0.2) is False
+    ), "the holder went upstream on cells the declined chat still holds"
+    controller.set_state(replacement, ParticipantState.PAUSED)
+    assert controller.wait_released([chosen], 0.5) is True
+
+
+def test_the_replacement_is_not_the_chat_that_just_declined():
+    # Chosen again at once, it would decline again at its next read, round and round.
+    controller, chosen = _chosen_once()
+    controller.note_declined(chosen)
+    assert controller.participant(chosen).state == ParticipantState.DECODING
+    assert controller._replaced_by[chosen] and chosen not in controller._replaced_by[chosen]
