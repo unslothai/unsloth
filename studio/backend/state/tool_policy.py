@@ -169,7 +169,8 @@ def round_may_prompt(
         return False
     for call in calls or ():
         fn = (call or {}).get("function") or {}
-        name = fn.get("name") or ""
+        # Named as `prepare_call` names it, so a padded name is gated as the tool it runs.
+        name = str(fn.get("name") or "").strip()
         raw = fn.get("arguments")
         if isinstance(raw, str):
             try:

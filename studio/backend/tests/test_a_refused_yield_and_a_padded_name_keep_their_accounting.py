@@ -80,3 +80,39 @@ class TestAPaddedNameIsTheSameCall:
         ]
         keys = loop_mod.round_call_keys(controller, calls)
         assert keys[0] == keys[1], keys
+
+
+class TestAReplayedPromptIsNotMeasuredUntilItIsIn:
+    def test_a_round_after_an_erase_counts_on_top_of_the_reading(self):
+        controller = _controller()
+        controller.register("chat", lease = _RechargedLease(), tokens = 6000)
+        controller.note_tokens("chat", 6000, 6000)
+        controller.note_state("chat", ParticipantState.PARKED_ON_TOOL)
+        lease = controller.participant("chat").lease
+        lease.charge_seq = controller.participant("chat").park_charge_seq
+        assert controller.note_cells_reclaimed(controller.parked_holders()) == 1
+        # Another chat's cells are what the post-erase reading holds.
+        controller.note_resident(5000, started_at_seq = controller.residency_epoch())
+        controller.note_tokens("chat", 6200, 6200)
+        assert controller.participant("chat").measured is False
+        assert controller.snapshot().committed == 5000 + 6200, (
+            "the replay was folded into cells the cache holds for someone else"
+        )
+        controller.observe("chat", 1)
+        assert controller.participant("chat").measured is True
+
+
+class TestAPaddedNameIsGatedAsItsTool:
+    def test_the_round_preflight_asks_for_a_padded_terminal(self, monkeypatch):
+        from state import tool_policy
+
+        call = {"function": {"name": " terminal ", "arguments": '{"command": "rm -rf x"}'}}
+        assert tool_policy.round_may_prompt(
+            [call],
+            confirm_tool_calls = True,
+            bypass_permissions = False,
+            permission_mode = "off",
+            sandbox_level = "low",
+            is_high_risk = lambda name, arguments: name == "terminal",
+            never_needs = lambda name: False,
+        ) is True

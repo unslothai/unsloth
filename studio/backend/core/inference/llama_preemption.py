@@ -1133,7 +1133,8 @@ class PreemptionController:
                     participant.prompt_tokens if participant.prompt_tokens > 0 else charge
                 )
                 growth = participant.tokens - previous
-                if participant.cells_reclaimed:
+                replayed = participant.cells_reclaimed
+                if replayed:
                     # A reclaim erased every cell: the whole prompt goes in again, not the
                     # round's growth. This runs before `note_state` sees DECODING.
                     participant.announce_prefill(participant.tokens)
@@ -1149,7 +1150,10 @@ class PreemptionController:
                 # This round has written nothing yet, and what the last one wrote is now
                 # part of the prompt above.
                 participant.generated_seen = 0
-                participant.measured = True
+                # Not after an erase: no reading can hold the replay until it is sent, so it is
+                # added on top until a token or a later sample says it is in.
+                participant.measured = not replayed
+                participant.measured_at_seq = None
                 participant.cells_reclaimed = False
 
     # The three states a tool-loop chat moves between while it is alive; the rest are owned
