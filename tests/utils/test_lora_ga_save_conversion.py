@@ -3,6 +3,8 @@
 
 import json
 import os
+import shutil
+import sys
 
 import pytest
 import torch
@@ -189,6 +191,10 @@ def test_wrapping_is_idempotent(tmp_path):
     assert json.load(open(tmp_path / "adapter_config.json"))["r"] == 2 * R
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" and shutil.which("cl") is None,
+    reason = "the Unsloth training step compiles with inductor, which needs MSVC on Windows",
+)
 def test_trainer_checkpoints_resume_and_reload(tmp_path):
     from datasets import Dataset
     from transformers import Trainer, TrainingArguments
