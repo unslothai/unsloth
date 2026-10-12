@@ -450,7 +450,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           />
         )}
 
-        {isDiscover && !isDataset && !npuList && (
+        {isDiscover && !isDataset && !npuList && hubSource !== "modelscope" && (
           <ModelSearchFiltersControl
             value={searchFilters}
             onChange={onSearchFiltersChange}

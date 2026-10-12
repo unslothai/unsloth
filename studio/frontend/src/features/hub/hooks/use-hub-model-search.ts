@@ -267,6 +267,8 @@ const UNSLOTH_PREFETCH = 20;
 const UNSLOTH_QUERY_PREFETCH = 3;
 /** With a publisher query, fewer unsloth results before the pinned publisher model. */
 const UNSLOTH_PINNED_PREFETCH = 4;
+/** Rejected unsloth rows a filtered search scans before moving on to general results. */
+const UNSLOTH_FILTER_REJECT_LIMIT = 40;
 /** Matches a valid "owner/repo" identifier (exactly two non-empty segments). */
 const PUBLISHER_RE = /^([^/\s]+)\/([^/\s]+)$/;
 
@@ -351,11 +353,13 @@ async function* mergedModelIterator(
   // Phase 1: unsloth models first
   const seen = new Set<string>();
   let count = 0;
+  let rejected = 0;
   for await (const model of filterPriority
     ? filterPriority(unslothIter)
     : unslothIter) {
     if (model === null) {
       yield null;
+      if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
       continue;
     }
     const m = model as { name?: string };
@@ -537,11 +541,13 @@ async function* channelUnslothFirstIterator(
     ...creds,
   }) as AsyncGenerator<unknown>;
   let count = 0;
+  let rejected = 0;
   for await (const model of opts.filterPriority
     ? opts.filterPriority(unslothIter)
     : unslothIter) {
     if (model === null) {
       yield null;
+      if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
       continue;
     }
     const name = (model as { name?: string }).name;

@@ -122,7 +122,7 @@ export function ModelSearchFiltersControl({
                           [key]:
                             event.target.value === ""
                               ? undefined
-                              : event.target.valueAsNumber * scale,
+                              : Math.round(event.target.valueAsNumber * scale),
                         })
                       }
                     />

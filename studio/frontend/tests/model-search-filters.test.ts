@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import ts from "typescript";
 import {
   filterModelListing,
   hasModelSearchFilters,
@@ -289,4 +291,75 @@ test("context filters accept established config key aliases", async () => {
     assert.deepEqual(rows, [model], field);
     assert.equal(modelContextLength({ [field]: 0 }), undefined);
   }
+});
+
+// Runs the production channel iterator with a stubbed listing, as hub-search-mixed-formats does.
+function channelIterator(listings: Record<string, unknown[]>) {
+  const source = readFileSync(
+    new URL(
+      "../src/features/hub/hooks/use-hub-model-search.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = source.indexOf("async function* channelUnslothFirstIterator(");
+  assert.notEqual(start, -1);
+  const end = source.indexOf("\n}\n", start) + 2;
+  const limit = Number(
+    /const UNSLOTH_FILTER_REJECT_LIMIT = (\d+);/.exec(source)?.[1],
+  );
+  assert.ok(limit > 0);
+  const listModels = ({ search }: { search: { owner?: string } }) =>
+    listing(listings[search.owner ?? "all"] ?? []);
+  const fn = new Function(
+    "listModels",
+    "getHfEndpoint",
+    "ALL_FIELDS",
+    "makeSortFetch",
+    "UNSLOTH_CHANNEL_PREFETCH",
+    "UNSLOTH_FILTER_REJECT_LIMIT",
+    `${
+      ts.transpileModule(source.slice(start, end), {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText
+    }; return channelUnslothFirstIterator;`,
+  )(
+    listModels,
+    () => "",
+    [],
+    () => undefined,
+    60,
+    limit,
+  );
+  return { fn, limit };
+}
+
+test("rejected Unsloth rows stop delaying other publishers after a bounded scan", async () => {
+  const unsloth = Array.from({ length: 200 }, (_, i) => ({
+    name: `unsloth/short-${i}`,
+  }));
+  const { fn, limit } = channelIterator({
+    unsloth,
+    all: [{ name: "Qwen/match" }],
+  });
+  const rows = await collect(
+    fn(
+      {},
+      {
+        sortBy: "downloads",
+        sortDirection: "desc",
+        signal: new AbortController().signal,
+        filterPriority: (it: AsyncGenerator<unknown>) =>
+          (async function* () {
+            for await (const row of it) {
+              yield (row as { name: string }).name.startsWith("unsloth/")
+                ? null
+                : row;
+            }
+          })(),
+      },
+    ) as AsyncGenerator<unknown>,
+  );
+  assert.equal(rows.length, limit + 1);
+  assert.deepEqual(rows.at(-1), { name: "Qwen/match" });
 });

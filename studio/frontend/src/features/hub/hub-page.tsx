@@ -147,6 +147,8 @@ import type {
   SelectedModelView,
 } from "./types";
 
+const NO_SEARCH_FILTERS: ModelSearchFilters = {};
+
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
@@ -634,7 +636,13 @@ export function ModelsPage() {
     },
     [isDiscoverTab, urlSection, navigate],
   );
-  const [searchFilters, setSearchFilters] = useState<ModelSearchFilters>({});
+  const hubSource = useHubSource();
+  const [storedSearchFilters, setSearchFilters] = useState<ModelSearchFilters>(
+    {},
+  );
+  // The publisher and config.json lookups are Hugging Face endpoints.
+  const searchFilters =
+    hubSource === "modelscope" ? NO_SEARCH_FILTERS : storedSearchFilters;
   const hasSearchFilters = hasModelSearchFilters(searchFilters);
   const [capabilityFilter, setCapabilityFilter] =
     useState<CapabilityFilter>("all");
@@ -843,7 +851,6 @@ export function ModelsPage() {
     return null;
   }, [isChannelListMode, isFeedMode, activeChannel]);
 
-  const hubSource = useHubSource();
   const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
   // ModelScope has no creation-date sort; its closest is last modified.
@@ -1706,7 +1713,7 @@ export function ModelsPage() {
         manualFetchAvailable: discoverManualFetchAvailable,
         hasActiveFilters:
           !isFeedMode &&
-          (hasSearchFilters ||
+          ((isModelDiscover && hasSearchFilters) ||
             deferredFormatFilter !== "all" ||
             deferredCapabilityFilter !== "all" ||
             (tab === "downloaded" && typeFilterActive)),
