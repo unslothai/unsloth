@@ -1001,8 +1001,12 @@ def test_tiny_gemma4_packed_row_matches_each_document(_efficient_fresh, monkeypa
 
     before = dict(hpa.HF_PACKED_ATTENTION_STATS)
     fast_logits, fast_grads = run()
-    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 2
-    assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before["efficient"] + 1
+    stats = hpa.HF_PACKED_ATTENTION_STATS
+    assert stats["efficient"] == before["efficient"] + 1
+    # Without torch varlen (torch 2.10 and older) the windowed sliding layer may have no varlen route.
+    assert stats["fast"] + stats["fallback"] == before["fast"] + before["fallback"] + 2
+    if hpa._torch_varlen(ids.device) is not None:
+        assert stats["fast"] == before["fast"] + 2
     monkeypatch.setenv("UNSLOTH_HF_PACKED_VARLEN", "0")
     ref_logits, ref_grads = run()
     torch.testing.assert_close(fast_logits, ref_logits, atol = 3e-2, rtol = 3e-2)
