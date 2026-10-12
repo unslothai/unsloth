@@ -7459,13 +7459,14 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  // Same sweep as the reasoning block's "Thinking" label.
+  // The plain copy hides while the sweep runs: in light mode the sweep is a faded band, which an
+  // opaque copy underneath would cover. Reduced motion keeps the plain copy instead.
   return (
     <span className="relative inline-block whitespace-nowrap text-sm text-muted-foreground">
-      <span>Generating...</span>
+      <span className="motion-safe:text-transparent">Generating...</span>
       <span
         aria-hidden={true}
-        className="shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
+        className="shimmer pointer-events-none absolute inset-0 motion-reduce:hidden"
       >
         Generating...
       </span>
