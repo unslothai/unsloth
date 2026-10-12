@@ -6279,12 +6279,17 @@ def _add_vscode_provider(
     if remote:
         url = urlparse(base)
         port = url.port or (443 if url.scheme == "https" else 80)
+        reach = (
+            f"forward port {port} to the same port on your machine (for example: "
+            f"ssh -L {port}:127.0.0.1:{port} <this host>)"
+            if is_loopback_url(base)
+            else f"make sure your machine can reach {base}"
+        )
         typer.echo(
             "This is a remote session (SSH or a container) with no VS Code user dir here, so "
             "nothing was written. VS Code does not list these models in remote windows yet "
-            f"(microsoft/vscode#332085), so forward port {port} to the same port on your machine "
-            f"(for example: ssh -L {port}:127.0.0.1:{port} <this host>). Then, in a local VS Code "
-            "window, run Chat: Manage Language Models, open chatLanguageModels.json and add:"
+            f"(microsoft/vscode#332085), so {reach}. Then, in a local VS Code window, run "
+            "Chat: Manage Language Models, open chatLanguageModels.json and add:"
         )
         typer.echo(json.dumps(json.loads(new_text)[0], indent = 2, ensure_ascii = False))
         _app_server_notice(base)

@@ -877,3 +877,16 @@ def test_vscode_under_wsl_says_to_use_a_local_window(studio, monkeypatch, tmp_pa
 
     assert result.exit_code == 0, result.output
     assert "local VS Code window" in result.output
+
+
+def test_vscode_over_ssh_skips_the_tunnel_hint_for_a_reachable_server(studio, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    monkeypatch.setenv("SSH_CONNECTION", "10.0.0.2 51234 10.0.0.9 22")
+    remote = "http://gpu-box.lan:8888"
+    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (remote, CLI_KEY, dict(MODEL)))
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "ssh -L" not in result.output and f"can reach {remote}" in result.output
