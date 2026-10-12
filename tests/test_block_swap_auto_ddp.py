@@ -137,6 +137,7 @@ def resolve(monkeypatch):
                 "_sharded_data_parallel_launch",
                 "_single_card_device_map",
                 "_single_device_index",
+                "ddp_auto_block_swap_launch",
                 "_as_bytes",
             ),
             (
@@ -154,6 +155,7 @@ def resolve(monkeypatch):
     state.fn = lambda device_map, **kw: ns["resolve_auto_block_swap"](
         device_map, "m", max_seq_length = 2048, **kw
     )
+    state.ns = ns
     return state
 
 
@@ -355,15 +357,44 @@ def test_ignore_list_untouched_without_auto_or_outside_ddp(monkeypatch):
     assert ns["_ignore_block_swap_params_for_ddp"](_tiny_peft_model()) == []
 
 
-def test_mark_is_set_only_for_auto_under_ddp(monkeypatch):
+def test_mark_follows_the_loaders_ddp_decision(monkeypatch):
     ns = _ignore_helpers(monkeypatch)
-    for requested, expected in (("auto", True), (4, False), (0, False)):
+    for ddp_auto in (True, False):
         model = types.SimpleNamespace()
-        ns["mark_auto_offload_for_ddp"](model, requested)
-        assert getattr(model, "_unsloth_offload_layers_auto_ddp", False) is expected
-    model = types.SimpleNamespace()
-    _ignore_helpers(monkeypatch, distributed = False)["mark_auto_offload_for_ddp"](model, "auto")
-    assert not hasattr(model, "_unsloth_offload_layers_auto_ddp")
+        ns["mark_auto_offload_for_ddp"](model, ddp_auto)
+        assert getattr(model, "_unsloth_offload_layers_auto_ddp", False) is ddp_auto
+
+
+def test_ddp_auto_launch_needs_ddp_and_one_card(resolve, monkeypatch):
+    """The loaders' switch for the DDP plan, the embedding veto and the marker. A launch that already
+    shows FSDP / DeepSpeed keeps main's fallback (load every layer, no marker, no Trainer refusal)."""
+    launch = resolve.ns["ddp_auto_block_swap_launch"]
+    assert not launch({"": "cuda:0"})
+    resolve.distributed = True
+    assert launch({"": "cuda:0"}) and launch(0) and launch("cuda:1")
+    assert not launch("auto") and not launch({"a": 0, "b": 1})
+    monkeypatch.setenv("ACCELERATE_USE_FSDP", "true")
+    assert not launch({"": "cuda:0"})
+
+
+def test_loaders_keep_the_embedding_on_the_card_for_a_ddp_plan():
+    """resolve_auto_block_swap only returns embedding = False; the loaders hold the caller's
+    offload_embedding, so they must drop it themselves before offload_input_embedding runs."""
+    for name, var, veto in (
+        ("llama.py", "offload_layers", "offload_embedding = _offload_embedding_mode = False"),
+        ("vision.py", "_offload_layers", "offload_embedding = False"),
+    ):
+        src = open(os.path.join(MODELS, name), encoding = "utf-8").read()
+        call = src.index(f"{var}, device_map, _embedding_needed = resolve_auto_block_swap(")
+        before, after = src[call - 200 : call], src[call : call + 4000]
+        assert (
+            "_ddp_auto_swap = ddp_auto_block_swap_launch(requested_device_map(device_map))"
+            in before
+        )
+        assert (
+            "if _ddp_auto_swap:" in after and veto in after.split("if _ddp_auto_swap:", 1)[1][:200]
+        )
+        assert "mark_auto_offload_for_ddp(model, _ddp_auto_swap)" in src
 
 
 def test_wiring_trainer_init_and_both_loaders():
@@ -376,7 +407,7 @@ def test_wiring_trainer_init_and_both_loaders():
     assert "_block_swap_for_trainer_backend(self)" in ast.get_source_segment(utils, init)
     for name in ("llama.py", "vision.py"):
         src = open(os.path.join(MODELS, name), encoding = "utf-8").read()
-        assert "mark_auto_offload_for_ddp(model, _offload_layers_requested)" in src, name
+        assert "mark_auto_offload_for_ddp(model, _ddp_auto_swap)" in src, name
     # The pre-wrapped PEFT branch installs the swap after its rope pass, so it applies the list itself.
     llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
     install = llama.index("install_block_swap(\n                    model,")
@@ -409,6 +440,13 @@ def test_a_sharded_trainer_refuses_an_auto_swap(monkeypatch, backend):
         check(_swapped_model(swapped = (), **{backend: True}))
     # No "auto": nothing to refuse.
     assert check(_swapped_model(mark = False, **{backend: True})) == []
+    # get_peft_model(offload_layers = "auto") alone: refuse where it swapped, not where it did not.
+    peft_auto = _swapped_model(mark = False, **{backend: True})
+    peft_auto.model._unsloth_offload_layers_auto = 1
+    with pytest.raises(ValueError, match = "swapped 1 decoder layers"):
+        check(peft_auto)
+    peft_auto.model._unsloth_block_swap.indices = []
+    assert check(peft_auto) == []
 
 
 def test_ignore_list_is_applied_at_the_end_of_get_peft_model():

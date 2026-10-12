@@ -7667,12 +7667,12 @@ def _replan_auto_offload_safely(trainer):
         return None
 
 
-def mark_auto_offload_for_ddp(model, requested):
-    """Record from_pretrained(offload_layers = "auto") under a distributed launch on every rank, also
-    ranks whose plan swapped nothing, so each builds the same DDP ignore list at trainer init."""
-    from .loader_utils import is_distributed
-
-    if requested == "auto" and model is not None and is_distributed():
+def mark_auto_offload_for_ddp(model, ddp_auto):
+    """Record that from_pretrained(offload_layers = "auto") planned this rank's card for DDP, on every
+    rank, also ranks whose plan swapped nothing, so each builds the same DDP ignore list and a late
+    FSDP / DeepSpeed Trainer refuses on every rank. Not set when the launch already showed a sharded
+    backend: "auto" then declined and loaded every layer, as before."""
+    if ddp_auto and model is not None:
         model._unsloth_offload_layers_auto_ddp = True
     return model
 
@@ -7733,14 +7733,15 @@ def _block_swap_for_trainer_backend(trainer):
     if backend is None:
         return _ignore_block_swap_params_for_ddp(model)
     swapper = getattr(model, "_unsloth_block_swap", None) if model is not None else None
+    swapped = len(getattr(swapper, "indices", None) or ())
+    # from_pretrained planned "auto" for DDP: every rank refuses, also one whose own plan swapped
+    # nothing, since a peer may have swapped and a one-sided refusal would hang the others.
+    # get_peft_model(offload_layers = "auto"): refuse where it swapped.
     auto = model is not None and (
         getattr(model, "_unsloth_offload_layers_auto_ddp", False)
-        or getattr(model, "_unsloth_offload_layers_auto", None) is not None
+        or (getattr(model, "_unsloth_offload_layers_auto", None) is not None and swapped)
     )
-    # Every rank that asked for "auto" refuses, also one whose own plan swapped nothing: ranks plan
-    # independently, so a peer may have swapped, and a one-sided refusal would hang the others.
     if auto:
-        swapped = len(getattr(swapper, "indices", None) or ())
         raise ValueError(
             f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
             f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "

@@ -161,6 +161,7 @@ from .loader_utils import (
     raise_if_bnb_cpu_spill,
     requested_device_map,
     resolve_auto_block_swap,
+    ddp_auto_block_swap_launch,
     resolve_unsloth_device_map,
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
@@ -3476,7 +3477,9 @@ class FastBaseModel:
                 "needs every layer on one GPU; pass offload_layers to get_peft_model instead.",
             )
         _embedding_needed = None
+        _ddp_auto_swap = False
         if _offload_layers == "auto":
+            _ddp_auto_swap = ddp_auto_block_swap_launch(requested_device_map(device_map))
             _offload_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,
@@ -3513,6 +3516,9 @@ class FastBaseModel:
                     extra_skip_modules = _architecture_skip_modules(model_types) or None,
                 ),
             )
+            if _ddp_auto_swap:
+                # DDP refuses a module with a CPU parameter: the embedding stays on this rank's card.
+                offload_embedding = False
         _block_swap_device = block_swap_load_device(device_map)
         if (_offload_layers or _embedding_needed) and _block_swap_device is not None:
             # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
@@ -4338,7 +4344,7 @@ class FastBaseModel:
         finish_block_swap_load(
             model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
         )
-        mark_auto_offload_for_ddp(model, _offload_layers_requested)
+        mark_auto_offload_for_ddp(model, _ddp_auto_swap)
 
         # LAST, like the llama loader: patch_model_and_tokenizer below REPLACES the embedding and lm_head with fresh modules carrying the weights but not the _hf_hook, so a model split across cards would still meet the original cross-device index_select. Idempotent.
         # Embeddings offloaded later sit on the host on purpose: a dispatch hook would pull them back.

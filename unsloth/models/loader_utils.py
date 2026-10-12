@@ -791,6 +791,16 @@ def _single_card_device_map(device_map):
     return isinstance(device_map, str) and (device_map == "cuda" or device_map.startswith("cuda:"))
 
 
+def ddp_auto_block_swap_launch(device_map):
+    """True when offload_layers = "auto" plans this rank's own card for DDP: a distributed launch that
+    does not show FSDP / DeepSpeed and loads onto one card."""
+    return (
+        is_distributed()
+        and _sharded_data_parallel_launch() is None
+        and _single_card_device_map(device_map)
+    )
+
+
 _BLOCK_SWAP_PLANNER_KEYS = (
     "batch_size",
     "lora_rank",

@@ -57,6 +57,7 @@ from .loader_utils import (
     requested_device_map,
     resolve_unsloth_device_map,
     resolve_auto_block_swap,
+    ddp_auto_block_swap_launch,
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
@@ -3145,7 +3146,9 @@ class FastLlamaModel:
             offload_layers = refuse_block_swap_load(
                 offload_layers, "does not support fast_inference or classification heads."
             )
+        _ddp_auto_swap = False
         if offload_layers == "auto":
+            _ddp_auto_swap = ddp_auto_block_swap_launch(requested_device_map(device_map))
             offload_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,
@@ -3177,6 +3180,9 @@ class FastLlamaModel:
                     extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
                 ),
             )
+            if _ddp_auto_swap:
+                # DDP refuses a module with a CPU parameter: the embedding stays on this rank's card.
+                offload_embedding = _offload_embedding_mode = False
         # Here, not in loader.py: the mapper there can still substitute the repo (a -bnb-4bit name
         # resolving to its 16-bit twin), so a plan sized for the caller's name is the wrong plan.
         device_map = resolve_unsloth_device_map(
@@ -3521,7 +3527,7 @@ class FastLlamaModel:
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
-        mark_auto_offload_for_ddp(model, _offload_layers_requested)
+        mark_auto_offload_for_ddp(model, _ddp_auto_swap)
         attach_offload_layers(
             model,
             _block_swap_saved,
