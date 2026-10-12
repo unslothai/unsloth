@@ -3202,15 +3202,16 @@ def list_gguf_variants(
 
 def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, tuple[str, int]]:
     """MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples; ``routes/inference.py`` bills this size to the VRAM guard."""
-    families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
+    families: dict[str, dict[tuple[str, int], list[tuple[str, str, int]]]] = {}
     for name, quant, size in entries:
-        families.setdefault(quant, {}).setdefault(_gguf_shard_set(name), []).append(
-            (name, int(size or 0))
+        families.setdefault(quant.casefold(), {}).setdefault(_gguf_shard_set(name), []).append(
+            (name, quant, int(size or 0))
         )
     grouped: dict[str, tuple[str, int]] = {}
-    for quant, by_family in families.items():
-        chosen = min(by_family.values(), key = lambda members: min(n for n, _ in members))
-        grouped[quant] = (min(n for n, _ in chosen), sum(s for _, s in chosen))
+    for by_family in families.values():
+        chosen = min(by_family.values(), key = lambda members: min(n for n, _q, _s in members))
+        first_name, first_quant, _ = min(chosen, key = lambda member: member[0])
+        grouped[first_quant] = (first_name, sum(size for _name, _quant, size in chosen))
     return grouped
 
 

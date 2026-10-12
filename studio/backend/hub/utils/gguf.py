@@ -471,7 +471,7 @@ def gguf_listed_checkpoints(
     snapshots: Iterable[Iterable[str]], completed: Optional[Iterable[Iterable[str]]] = None
 ) -> dict[str, Optional[str]]:
     groups = [_paths_by_variant_key(paths) for paths in snapshots]
-    whole = [{key.lower() for key in keys} for keys in completed] if completed is not None else []
+    whole = [set(keys) for keys in completed] if completed is not None else []
     if len(whole) < len(groups):
         whole.extend(set() for _ in range(len(groups) - len(whole)))
 
@@ -482,7 +482,7 @@ def gguf_listed_checkpoints(
             selectable = _loader_visible_members(members)
             if not selectable:
                 continue
-            complete = key in whole[index]
+            complete = gguf_variant_key(selectable[0]) in whole[index]
             if key not in listed or (complete and key not in complete_keys):
                 listed[key] = _checkpoint_identity(selectable[0])
             if complete:

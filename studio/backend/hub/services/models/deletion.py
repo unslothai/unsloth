@@ -33,6 +33,7 @@ from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
     gguf_listed_checkpoints,
+    group_gguf_variant_files,
     gguf_variant_family,
     gguf_variant_key,
     gguf_variant_keys_by_checkpoint,
@@ -293,11 +294,13 @@ def _main_gguf_variant_keys(target_repo, preferred_path: Optional[str] = None) -
     matches = [_revision_file_matches(revision, _is_main_gguf_filename) for revision in revisions]
     names = [[name for _snap, _blob, name in revision] for revision in matches]
     complete = []
-    for revision in revisions:
+    for revision, revision_names in zip(revisions, names):
         snapshot = getattr(revision, "snapshot_path", None)
-        complete.append(
+        snapshot_complete = (
             hf_cache_scan.complete_snapshot_variants(str(snapshot)) if snapshot else set()
         )
+        listed_rows = group_gguf_variant_files((name, 0) for name in revision_names)
+        complete.append({key for key in listed_rows if key in snapshot_complete})
     repo_id = str(getattr(target_repo, "repo_id", ""))
     if repo_id:
         complete = _rank_complete_snapshots(repo_id, revisions, complete)

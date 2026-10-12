@@ -71,6 +71,8 @@ def test_the_listing_still_offers_one_build_per_quant(tmp_path):
 
 def test_quant_key_case_exposes_and_deletes_the_same_build(tmp_path):
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils.gguf import group_gguf_variant_files
+    from utils.models.model_config import _group_gguf_variant_files
 
     alpha = "alpha-Q4_K_M.gguf"
     beta = "beta-q4_k_m.gguf"
@@ -82,6 +84,9 @@ def test_quant_key_case_exposes_and_deletes_the_same_build(tmp_path):
 
     variants, _ = list_local_gguf_variants(str(snapshot))
     assert [(variant.quant, variant.filename) for variant in variants] == [("Q4_K_M", alpha)]
+    hub_grouped = group_gguf_variant_files([(alpha, 64), (beta, 128)])
+    inference_grouped = _group_gguf_variant_files([(alpha, "Q4_K_M", 64), (beta, "q4_k_m", 128)])
+    assert inference_grouped == hub_grouped == {"Q4_K_M": (alpha, 64)}
 
     repo, cache_snapshot = _cache_repo(tmp_path / "cache", [alpha, beta])
     _delete_gguf_variant_from_repos(repo.repo_id, variants[0].quant, [repo], None, root = tmp_path)
@@ -274,6 +279,24 @@ def test_readiness_ranking_selects_the_healthy_rows_build(tmp_path):
     _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
     assert not (snapshots / old_revision / alpha).is_symlink()
     assert (snapshots / new_revision / beta).is_symlink()
+
+
+def test_case_folded_sibling_cannot_lend_completeness_to_the_listed_build(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    partial = "alpha-Q4_K_M-00001-of-00002.gguf"
+    case_sibling = "beta-q4_k_m.gguf"
+    selected = "gamma-Q4_K_M.gguf"
+    repo, snapshots = _revisioned_repo(
+        tmp_path,
+        (("old", [selected]), ("new", [partial, case_sibling])),
+    )
+
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snapshots / "old" / selected).is_symlink()
+    assert (snapshots / "new" / partial).is_symlink()
+    assert (snapshots / "new" / case_sibling).is_symlink()
 
 
 def test_scoped_source_path_selects_the_rows_build(tmp_path):
