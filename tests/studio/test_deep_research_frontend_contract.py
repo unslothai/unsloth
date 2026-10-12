@@ -37,8 +37,9 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
     # The store owns the stream, so nothing else can stall ingestion by not reading.
     assert "ensureResearchRunFollowed(run.id, run);" in store
     assert "export async function* watchResearchRun" in store
-    for action in ("cancel", "retry"):
-        assert f'mutate(id, "{action}")' in api
+    assert 'mutate(id, "cancel")' in api
+    # Retry carries the current time budget and website access (#11837).
+    assert re.search(r'mutate\(\s*id,\s*"retry",', api)
     assert 'mutate(id, "approve", { planRevision, planHash })' in api
     assert "JSON.stringify({ plan, expectedRevision })" in api
 
