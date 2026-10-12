@@ -402,18 +402,27 @@ def _launch_urls(app_state) -> list[str]:
         return _listener_urls(
             addresses,
             getattr(app_state, "lan_access_port", None),
+            _url_scheme(app_state),
         )
     url = getattr(app_state, "server_url", None)
     return [url] if url else []
 
 
-def _listener_urls(addresses, port: Optional[int]) -> list[str]:
+def _url_scheme(app_state) -> str:
+    return "https" if getattr(app_state, "studio_tls", None) is not None else "http"
+
+
+def _listener_urls(
+    addresses,
+    port: Optional[int],
+    scheme: str = "http",
+) -> list[str]:
     if not port:
         return []
     urls = []
     for address in addresses:
         url_host = f"[{address}]" if ":" in address else address
-        urls.append(f"http://{url_host}:{port}")
+        urls.append(f"{scheme}://{url_host}:{port}")
     return urls
 
 
@@ -501,7 +510,7 @@ def lan_access_status(app) -> dict:
     elif running:
         state, urls, managed_by = (
             "online",
-            _listener_urls(listener["addresses"], listener["port"]),
+            _listener_urls(listener["addresses"], listener["port"], _url_scheme(app_state)),
             "settings",
         )
         active_port = listener["port"]

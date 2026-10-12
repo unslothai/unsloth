@@ -1886,6 +1886,17 @@ def studio_default(
         "`--password -` to read one line from stdin. A literal value is visible in the "
         "process list and shell history. Rotate later with `unsloth studio reset-password`.",
     ),
+    ssl_certfile: Optional[Path] = typer.Option(
+        None,
+        "--ssl-certfile",
+        help = "Serve HTTPS with this certificate (PEM, full chain), e.g. a Tailscale or "
+        "Let's Encrypt .crt. Needs --ssl-keyfile. Not combinable with --secure / --cloudflare.",
+    ),
+    ssl_keyfile: Optional[Path] = typer.Option(
+        None,
+        "--ssl-keyfile",
+        help = "Private key (PEM) for --ssl-certfile.",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # --not-secure is a deprecated alias for --no-secure.
@@ -1965,6 +1976,13 @@ def studio_default(
                 f"plain-server path only. For `unsloth studio "
                 f"{ctx.invoked_subcommand}`, put it after the subcommand: "
                 f"`unsloth studio {ctx.invoked_subcommand} --password ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
+        if ssl_certfile is not None or ssl_keyfile is not None:
+            typer.echo(
+                "Error: --ssl-certfile/--ssl-keyfile apply to `unsloth studio` itself, "
+                f"not to `unsloth studio {ctx.invoked_subcommand}`.",
                 err = True,
             )
             raise typer.Exit(2)
@@ -2084,6 +2102,10 @@ def studio_default(
                 args.append("--enable-tools")
             elif enable_tools is False:
                 args.append("--disable-tools")
+            if ssl_certfile is not None:
+                args.extend(["--ssl-certfile", str(ssl_certfile)])
+            if ssl_keyfile is not None:
+                args.extend(["--ssl-keyfile", str(ssl_keyfile)])
             # On Windows os.execvp keeps the parent alive and Ctrl+C would orphan the child.
             if sys.platform == "win32":
                 import subprocess as _sp
@@ -2127,7 +2149,8 @@ def studio_default(
 
         if not silent:
             launch_host = _openable_host_for_bind(run_mod, host)
-            typer.echo(f"Starting Unsloth Studio on http://{_url_host(launch_host)}:{port}")
+            scheme = "https" if ssl_certfile is not None else "http"
+            typer.echo(f"Starting Unsloth Studio on {scheme}://{_url_host(launch_host)}:{port}")
 
         run_kwargs = dict(
             host = host,
@@ -2139,6 +2162,9 @@ def studio_default(
             secure = secure,
             enable_tools = enable_tools,
         )
+        if ssl_certfile is not None or ssl_keyfile is not None:
+            run_kwargs["ssl_certfile"] = str(ssl_certfile) if ssl_certfile else None
+            run_kwargs["ssl_keyfile"] = str(ssl_keyfile) if ssl_keyfile else None
         if resolved_frontend is not None:
             run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)

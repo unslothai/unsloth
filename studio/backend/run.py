@@ -292,9 +292,9 @@ def _working_local_url(port: int) -> "str | None":
     """A working loopback URL on this machine, or None if neither 127.0.0.1 nor
     ::1 responds. Fallback when external reachability fails."""
     if _local_port_open("127.0.0.1", port):
-        return f"http://127.0.0.1:{port}"
+        return f"{_url_scheme}://127.0.0.1:{port}"
     if _local_port_open("::1", port):
-        return f"http://[::1]:{port}"
+        return f"{_url_scheme}://[::1]:{port}"
     return None
 
 
@@ -307,7 +307,7 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
     if bind_host != "127.0.0.1" or not port or port <= 0:
         return None
 
-    ipv4_url = f"http://127.0.0.1:{port}"
+    ipv4_url = f"{_url_scheme}://127.0.0.1:{port}"
 
     # Only warn once Unsloth is confirmed answering on IPv4 loopback.
     if _working_local_url(port) != ipv4_url:
@@ -358,7 +358,7 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
     print(
         f"{warn_c}  Warning: localhost resolves to IPv6 (::1), but Unsloth "
         f"Unsloth is listening on 127.0.0.1 only. Open {local_url} instead of "
-        f"http://localhost:{port}.{reset}",
+        f"{_url_scheme}://localhost:{port}.{reset}",
         flush = True,
     )
 
@@ -393,7 +393,7 @@ def _verify_global_reachability(
     local_url_c = "\033[38;5;108;1m" if use_color else ""
     reset = "\033[0m" if use_color else ""
 
-    url = f"http://{_url_host(display_host)}:{port}"
+    url = f"{_url_scheme}://{_url_host(display_host)}:{port}"
 
     # Private/loopback/link-local addresses aren't globally routable.
     try:
@@ -502,7 +502,7 @@ def _verify_global_reachability(
                 flush = True,
             )
             print(
-                f"{dim}    then open http://localhost:{port}/ in your browser.{reset}",
+                f"{dim}    then open {_url_scheme}://localhost:{port}/ in your browser.{reset}",
                 flush = True,
             )
             local_url = _working_local_url(port)
@@ -574,7 +574,7 @@ def _print_wsl_windows_hint(port: int) -> None:
     dim = "\033[38;5;245m" if _stdout_color_ok() else ""
     reset = "\033[0m" if dim else ""
     print(
-        f"{dim}  WSL2: open http://localhost:{port} in a Windows browser. Other devices on your "
+        f"{dim}  WSL2: open {_url_scheme}://localhost:{port} in a Windows browser. Other devices on your "
         f"network can't reach WSL's NAT address; set networkingMode=mirrored in "
         f"%UserProfile%\\.wslconfig for LAN access.{reset}",
         flush = True,
@@ -595,7 +595,7 @@ def _direct_server_url(host: str, port: int) -> "Optional[str]":
     share_host = _network_share_host_for_bind(host)
     if is_wildcard_host(share_host):
         return None
-    return f"http://{_url_host(share_host)}:{port}"
+    return f"{_url_scheme}://{_url_host(share_host)}:{port}"
 
 
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
@@ -669,6 +669,7 @@ def _emit_startup_output(
         network_host = _network_share_host_for_bind(host),
         include_stop_hint = False,
         lan_addresses = lan_addresses,
+        scheme = _url_scheme,
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
@@ -677,7 +678,8 @@ def _emit_startup_output(
         if wsl_nat:
             _print_wsl_windows_hint(port)
         _verify_global_reachability(display_host, port, wsl_nat = wsl_nat)
-        _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
+        if _url_scheme == "http":  # --cloudflare is refused alongside --ssl-certfile
+            _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
 
@@ -1650,6 +1652,8 @@ def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_T
 
 _server = None
 _server_thread = None
+# "https" for a --ssl-certfile/--ssl-keyfile launch; every URL the launch prints for itself uses it.
+_url_scheme = "http"
 
 _shutdown_event = None
 
@@ -2440,6 +2444,8 @@ def run_server(
     password: "Optional[str]" = None,
     emit_tauri_port: bool = True,
     abort_if_own_studio: "Optional[bool]" = None,
+    ssl_certfile: "Optional[str]" = None,
+    ssl_keyfile: "Optional[str]" = None,
 ):
     """Start the FastAPI server. Public entry point: colab.py and other embedders import it.
 
@@ -2449,12 +2455,12 @@ def run_server(
     when a Tauri-owned backend has a live tunnel. ``emit_tauri_port`` prints the machine-readable
     TAURI_PORT line the desktop app parses; ``run --api-only`` turns it off so it does not pollute
     the URL and API-key banner. ``enable_tools`` of None leaves the default on, honouring a
-    request's own ``enable_tools: false``.
+    request's own ``enable_tools: false``. ``ssl_certfile`` + ``ssl_keyfile`` serve HTTPS from that pair.
 
     Signal handlers are NOT registered here, so embedders keep their own interrupt semantics;
     standalone callers register them afterwards.
     """
-    global _server, _server_thread, _shutdown_event
+    global _server, _server_thread, _shutdown_event, _url_scheme
 
     if not isinstance(host, str) or not host.strip():
         raise SystemExit("--host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.")
@@ -2468,6 +2474,15 @@ def run_server(
         raise SystemExit(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
         )
+    from utils.studio_tls import resolve_studio_tls
+
+    tls = resolve_studio_tls(ssl_certfile, ssl_keyfile)
+    if tls is not None and (secure or cloudflare):
+        # The tunnel dials the origin over plain HTTP.
+        raise SystemExit(
+            "--ssl-certfile/--ssl-keyfile serve HTTPS directly; do not combine them with --secure or --cloudflare."
+        )
+    _url_scheme = "https" if tls is not None else "http"
     if not secure:
         try:
             host = normalize_wildcard_bind_host(host)
@@ -2643,7 +2658,7 @@ def run_server(
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
-            print(f"Open http://localhost:{port} in your browser.")
+            print(f"Open {_url_scheme}://localhost:{port} in your browser.")
             print("=" * 50)
             print("")
 
@@ -2727,14 +2742,41 @@ def run_server(
     startup_errors = []
 
     class _ReadyServer(uvicorn.Server):
+        loopback_http = None
+
         async def startup(self, *args, **kwargs):
             await super().startup(*args, **kwargs)
+            if tls is not None and getattr(self, "started", False) and not self.should_exit:
+                await self._start_loopback_http()
             if getattr(self, "started", False) and not self.should_exit:
                 logger.info(
                     "Uvicorn startup hook completed in %.1fms",
                     (time.perf_counter() - boot_started) * 1000,
                 )
                 ready_event.set()
+
+        async def _start_loopback_http(self):
+            # Plain HTTP on an ephemeral loopback port for Studio's own /v1 self-calls (utils/studio_tls.py). Kept out
+            # of self.servers: _final_bound_port and _bound_request_host read the user's listener from there.
+            config = self.config
+
+            def _protocol(_loop = None):
+                return config.http_protocol_class(
+                    config = config,
+                    server_state = self.server_state,
+                    app_state = self.lifespan.state,
+                    _loop = _loop,
+                )
+
+            self.loopback_http = await asyncio.get_running_loop().create_server(
+                _protocol, host = "127.0.0.1", port = 0, backlog = config.backlog
+            )
+            app.state.loopback_http_port = self.loopback_http.sockets[0].getsockname()[1]
+
+        async def shutdown(self, *args, **kwargs):
+            if self.loopback_http is not None:
+                self.loopback_http.close()
+            await super().shutdown(*args, **kwargs)
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
     # http=... is uvicorn's own h11 protocol unless we are on the plain-h11 path, where it becomes a subclass
@@ -2756,7 +2798,13 @@ def run_server(
     if _IS_COLAB:
         config_kwargs["proxy_headers"] = True
         config_kwargs["forwarded_allow_ips"] = "*"
-    config = uvicorn.Config(app, **config_kwargs)
+    if tls is not None:
+        from utils.studio_tls import StudioTLSConfig
+        config = StudioTLSConfig(app, tls = tls, **config_kwargs)
+    else:
+        config = uvicorn.Config(app, **config_kwargs)
+    app.state.studio_tls = tls
+    app.state.loopback_http_port = None
     _server = _ReadyServer(config)
     _shutdown_event = Event()
 
@@ -3176,6 +3224,16 @@ def _build_arg_parser():
             "(Parallel Slots) override it per load."
         ),
     )
+    parser.add_argument(
+        "--ssl-certfile",
+        default = None,
+        help = "Serve HTTPS with this certificate (PEM, full chain). Needs --ssl-keyfile.",
+    )
+    parser.add_argument(
+        "--ssl-keyfile",
+        default = None,
+        help = "Private key (PEM) for --ssl-certfile.",
+    )
     return parser
 
 
@@ -3218,6 +3276,8 @@ if __name__ == "__main__":
         secure = args.secure,
         enable_tools = args.enable_tools,
         password = args.password,
+        ssl_certfile = args.ssl_certfile,
+        ssl_keyfile = args.ssl_keyfile,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

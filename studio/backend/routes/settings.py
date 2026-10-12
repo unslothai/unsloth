@@ -1621,7 +1621,13 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
         error = None
-    port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
+    from utils.studio_tls import loopback_http_port
+
+    port = (
+        loopback_http_port(request.app.state)
+        or getattr(request.app.state, "server_port", None)
+        or request.scope["server"][1]
+    )
     # First: it waits for device detection, which the MLX answers below read without waiting.
     gpu_available = systemone_settings.gpu_available()
     effective, fallback = laya_runtime.effective_backend(configured)
