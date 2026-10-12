@@ -2526,13 +2526,12 @@ def decode_sidebar_cursor(cursor: str, sort: str) -> dict:
         raise SidebarCursorError("Unsupported cursor version")
     if payload.get("s") != sort:
         raise SidebarCursorError("Cursor was issued for another sort")
-    if sort == "manual":
-        offset = payload.get("o")
-        if type(offset) is not int or offset < 0:
-            raise SidebarCursorError("Malformed cursor")
-    else:
-        if any(type(payload.get(key)) is not int for key in ("u", "c", "r")):
-            raise SidebarCursorError("Malformed cursor")
+    keys = ("o",) if sort == "manual" else ("u", "c", "r")
+    # SQLite binds 64-bit integers only; the exclusive lower bound keeps `-r` in range too
+    if not all(type(v) is int and -(2**63) < v < 2**63 for v in map(payload.get, keys)):
+        raise SidebarCursorError("Malformed cursor")
+    if sort == "manual" and payload["o"] < 0:
+        raise SidebarCursorError("Malformed cursor")
     return payload
 
 
@@ -2550,10 +2549,6 @@ def list_chat_sidebar_rows(
 ) -> dict:
     """One page of sidebar rows, grouped (before the limit) and ordered as the frontend's groupThreads
     does. `updated` pages by keyset; `manual` follows applyManualOrder and pages by offset."""
-    if sort not in ("updated", "manual"):
-        raise ValueError(f"Unknown sort {sort!r}")
-    if not 1 <= limit <= SIDEBAR_ROWS_MAX_LIMIT:
-        raise ValueError(f"limit must be between 1 and {SIDEBAR_ROWS_MAX_LIMIT}")
     position = decode_sidebar_cursor(cursor, sort) if cursor else None
 
     filters: list[str] = []
@@ -2665,9 +2660,7 @@ def list_chat_sidebar_rows(
                 """,
                 (1 if archived else 0, row_ids, row_ids),
             ):
-                members = members_by_row.get(member["row_id"])
-                if members is not None:
-                    members.append(member)
+                members_by_row[member["row_id"]].append(member)
         conn.commit()
     finally:
         conn.close()

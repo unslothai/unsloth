@@ -314,6 +314,8 @@ def test_manual_sort_matches_apply_manual_order(client):
         "bm90IGpzb24",  # "not json"
         studio_db.encode_sidebar_cursor({"s": "manual", "o": 3}),  # another sort's cursor
         studio_db.encode_sidebar_cursor({"s": "updated", "u": "x", "i": "t"}),
+        studio_db.encode_sidebar_cursor({"s": "updated", "u": 2**63, "c": 0, "r": 0}),
+        studio_db.encode_sidebar_cursor({"s": "updated", "u": 0, "c": 0, "r": -(2**63)}),
     ],
 )
 def test_malformed_cursor_is_400(client, cursor):
