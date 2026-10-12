@@ -99,8 +99,13 @@ pub(crate) fn validate_picked_folder(picked: &Path) -> Result<(), String> {
             "Network folders are not supported. Choose a folder on a local drive.".to_string(),
         );
     }
+    // create_new: an entry already at the probe name (or a link planted there) is never
+    // truncated or deleted; only a file this call created is removed.
     let probe = picked.join(format!(".unsloth-write-probe-{}", std::process::id()));
-    fs::write(&probe, b"")
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
         .map_err(|_| "Unsloth cannot write to this folder. Choose another folder.".to_string())?;
     let _ = fs::remove_file(&probe);
     Ok(())
@@ -163,7 +168,7 @@ fn ensure_changeable(install: &crate::install::InstallState) -> Result<(), Strin
     if crate::install::is_install_running(install) {
         return Err("Installation is already running.".to_string());
     }
-    if crate::process::find_unsloth_binary().is_some_and(|bin| bin.exists()) {
+    if crate::process::find_unsloth_binary().is_some() {
         return Err("Unsloth is already installed in this location.".to_string());
     }
     Ok(())
@@ -177,7 +182,7 @@ fn commit_choice(
     root: &Path,
 ) -> Result<(), String> {
     crate::install::while_install_idle(install, || {
-        if crate::process::find_unsloth_binary().is_some_and(|bin| bin.exists()) {
+        if crate::process::find_unsloth_binary().is_some() {
             return Err("Unsloth is already installed in this location.".to_string());
         }
         write_choice_for_home(home, root)
@@ -322,6 +327,16 @@ mod tests {
         let home = temp_home("writable");
         assert!(validate_picked_folder(&home).is_ok());
         assert!(validate_picked_folder(&home.join("missing")).is_err());
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn the_write_probe_never_touches_an_existing_file() {
+        let home = temp_home("probe");
+        let existing = home.join(format!(".unsloth-write-probe-{}", std::process::id()));
+        fs::write(&existing, b"keep").unwrap();
+        assert!(validate_picked_folder(&home).is_err());
+        assert_eq!(fs::read(&existing).unwrap(), b"keep");
         fs::remove_dir_all(&home).unwrap();
     }
 

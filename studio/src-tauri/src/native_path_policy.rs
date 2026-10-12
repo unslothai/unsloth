@@ -1048,7 +1048,11 @@ pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String
         for relative in [".unsloth"] {
             sensitive_roots.push(home.join(relative));
         }
+        // Canonical as well: callers pass canonical paths, which carry \\?\ on Windows.
         if let Some(chosen) = crate::studio_home::chosen_root_for_home(&home) {
+            if let Ok(canonical) = chosen.canonicalize() {
+                sensitive_roots.push(canonical);
+            }
             sensitive_roots.push(chosen);
         }
     }
