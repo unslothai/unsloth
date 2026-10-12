@@ -663,7 +663,6 @@ def run_diffusion_lora_training(
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
                 # Returned value is the total PRE-clip norm, reported to the UI chart.
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
-                # An fp16 overflow step is skipped by the scaler; its inf norm is not a chart point.
                 if not math.isfinite(grad_norm):
                     grad_norm = None
             scale_before = scaler.get_scale() if scaler.is_enabled() else None

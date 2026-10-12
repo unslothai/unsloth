@@ -775,7 +775,6 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
             except Exception:  # noqa: BLE001
                 return False
 
-        # The same accelerators resolve_train_device trains on.
         if probe(torch.cuda) or probe(getattr(torch, "xpu", None)):
             return None
     except Exception:  # noqa: BLE001 -- probe failure must not block a start
