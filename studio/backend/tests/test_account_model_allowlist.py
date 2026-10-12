@@ -244,12 +244,37 @@ def test_training_jobs_refuse_a_base_model_outside_the_allowlist(env):
     as_user(
         "bob", jobs.validate_job_paths, {"model_name": "meta-llama/Llama-3.2-1B", "hf_token": "t"}
     )
-    # A local load is named by its path; the display name is not a Hub fetch.
-    own = storage_roots.workspace_root
-    local = run_as(storage.get_account("alice"), own) / "outputs" / "run1"
+    # A local model is named by its path, which is not a Hub fetch.
+    local = run_as(storage.get_account("alice"), storage_roots.workspace_root) / "outputs" / "run1"
     local.mkdir(parents = True)
-    as_user(
-        "alice",
-        jobs.validate_job_paths,
-        {"model_name": "run1", "model_local_path": str(local), "hf_token": "t"},
-    )
+    as_user("alice", jobs.validate_job_paths, {"model_name": str(local), "hf_token": "t"})
+    # A cache hint does not exempt the Hub id it names: an unusable hint falls back to a download.
+    with pytest.raises(HTTPException) as refused:
+        as_user(
+            "alice",
+            jobs.validate_job_paths,
+            {
+                "model_name": "meta-llama/Llama-3.2-1B",
+                "model_local_path": str(local),
+                "hf_token": "t",
+            },
+        )
+    assert refused.value.status_code == 403
+
+
+def test_a_loaded_model_taken_off_the_list_stops_serving_its_loader(env):
+    alice = storage.get_account("alice").account_id
+    access._resident_accounts["chat"] = (alice, frozenset({"meta-llama/Llama-3.2-1B", "label"}))
+    access._resident_sharers["chat"] = {alice}
+    try:
+        assert not as_user("alice", access.resident_hidden, "chat")
+        put_access(env, "alice", ["meta-llama/*"])
+        access._resident_sharers["chat"] = {alice}
+        assert not as_user("alice", access.resident_hidden, "chat")
+        put_access(env, "alice", ["unsloth/*"])
+        access._resident_sharers["chat"] = {alice}
+        assert as_user("alice", access.resident_hidden, "chat")
+        assert as_user("alice", access.joins_resident_runtime, "chat")
+    finally:
+        access._resident_accounts.pop("chat", None)
+        access._resident_sharers.pop("chat", None)

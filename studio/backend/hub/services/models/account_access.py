@@ -363,9 +363,25 @@ def restore_resident_metadata(modality: str) -> bool:
     return restored
 
 
+def _resident_outside_allowlist(modality: str | None) -> bool:
+    """A resident the owner has since taken off the caller's list is no longer the caller's."""
+    if modality is None or model_allowlist() is None:
+        return False
+    recorded = _resident_accounts.get(modality)
+    for reference in recorded[1] if recorded is not None else ():
+        # Labels without a slash name a native local file, not a Hub repo.
+        if isinstance(reference, str) and "/" in reference:
+            repo_id = _reference_repo_id(reference.strip())
+            if repo_id is not None and not model_allowed(repo_id):
+                return True
+    return False
+
+
 def resident_hidden(modality: str | None = None, reference: str | None = None) -> bool:
     if not managed_account():
         return False
+    if _resident_outside_allowlist(modality):
+        return True
     if modality is not None and resident_shared_with(modality, current_account_id()):
         return False
     from core.inference import gpu_arbiter
