@@ -100,3 +100,8 @@ def test_stripping_leaves_no_tag_behind_in_a_multiline_reply():
     assert "note" not in out
     assert "Line one." in out
     assert "Line two." in out
+
+
+def test_strip_note_hides_empty_and_unterminated_blocks():
+    assert strip_note("Answer.<remember>  </remember>") == "Answer."
+    assert strip_note("Answer.<remember>half a no") == "Answer."

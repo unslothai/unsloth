@@ -63,7 +63,7 @@ def test_malformed_unterminated_block_does_not_raise_and_yields_no_note(monkeypa
     text = "An answer.\n<remember>cut off mid-note"
     visible, note = _extract_and_strip_self_note(text)
     assert note == ""
-    assert visible == text
+    assert visible == "An answer.\n"
 
 
 def test_non_string_input_degrades_to_no_note(monkeypatch):

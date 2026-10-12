@@ -16882,8 +16882,7 @@ def _extract_and_strip_self_note(text: str) -> tuple[str, str]:
         if not self_note.enabled() or not isinstance(text, str) or not text:
             return text, ""
         note = self_note.extract_note(text)
-        visible = self_note.strip_note(text) if note else text
-        return visible, note
+        return self_note.strip_note(text), note
     except Exception:  # noqa: BLE001 -- see docstring: never break the reply for this
         return text, ""
 

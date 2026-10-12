@@ -128,7 +128,10 @@ def strip_note(text: str) -> str:
     """``text`` with the `<remember>` block removed, for the user-visible stream."""
     if not isinstance(text, str) or not text:
         return ""
-    return _REMEMBER.sub("", text)
+    text = _REMEMBER.sub("", text)
+    # an unterminated block is a cut-off note: hide it like the stream extractor does
+    cut = text.lower().find("<remember>")
+    return text[:cut] if cut != -1 else text
 
 
 def neutralise_note(text: str) -> str:

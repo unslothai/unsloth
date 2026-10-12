@@ -594,7 +594,7 @@ def fit_checkpoint_context(
                     cost = estimate_message({"role": "user", "content": candidate})
                     if cost <= room:
                         break
-                    shrink = min(0.5, room / cost)
+                    shrink = 0.95 * room / cost
                     candidate = candidate[: int(len(candidate) * shrink)].rstrip()
                 else:
                     candidate = ""

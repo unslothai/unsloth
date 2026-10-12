@@ -268,7 +268,7 @@ test("the adapter marks a finish that rendered nothing", () => {
   const reason = ending.slice(0, ending.indexOf("yield {"));
   assert.match(reason, /hasRenderableContent\(finalContent\) \? null : "empty"/);
   // Read off the parts that are actually yielded, not the raw stream text.
-  assert.match(ending, /yield \{\s*content: finalContent,/);
+  assert.match(ending, /yield \{\s*content: \[\s*\.\.\.finalContent,/);
 });
 
 test("a reply cut mid-quote is reported, and offers a retry rather than a resume", () => {
