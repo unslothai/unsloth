@@ -123,6 +123,43 @@ def test_for_training_still_defaults_an_unset_flag_to_zero(fbm):
     assert os.environ[FLAG] == "0"
 
 
+def _fast_llama_for_training():
+    tree = ast.parse((MODELS / "llama.py").read_text(encoding = "utf-8"))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "for_training")
+    fn.decorator_list = []
+    namespace = _Namespace(
+        os = os,
+        resolve_training_gradient_checkpointing = lambda model, flag: False,
+        arm_gradient_checkpointing = lambda model: None,
+        set_module_gradient_checkpointing = lambda module, flag: None,
+    )
+    module = ast.fix_missing_locations(ast.Module(body = [fn], type_ignores = []))
+    exec(compile(module, str(MODELS / "llama.py"), "exec"), namespace)
+    return namespace["for_training"]
+
+
+@pytest.mark.parametrize("before", [None, "0", "1"])
+def test_fast_language_model_for_training_undoes_generate(fbm, monkeypatch, before):
+    # FastLanguageModel loads Qwen3.5 / Gemma 3 / Gemma 4 through FastModel, so generate() runs
+    # FastBaseModel.for_inference(); FastLanguageModel.for_training() must undo its "1" too, or the next
+    # trainer keeps full logits and drops packing.
+    if before is not None:
+        monkeypatch.setenv(FLAG, before)
+    model = _Model()
+    fbm.for_inference(model)
+    assert os.environ[FLAG] == "1"
+    _fast_llama_for_training()(model)
+    assert os.environ[FLAG] == (before or "0")
+    assert MARK not in os.environ
+
+
+def test_fast_language_model_for_training_leaves_a_user_flag(fbm, monkeypatch):
+    monkeypatch.setenv(FLAG, "1")
+    _fast_llama_for_training()(_Model())
+    assert os.environ[FLAG] == "1"
+
+
 def _trailing_for_inference_block():
     tree = ast.parse((MODELS / "rl.py").read_text(encoding = "utf-8"))
     template = next(

@@ -4747,6 +4747,11 @@ class FastLlamaModel:
             disable_use_cache(model)
         except ImportError:
             pass
+        # generate() on a FastModel-backed model ran FastBaseModel.for_inference(), which forces
+        # UNSLOTH_RETURN_LOGITS=1; undo only that, as FastBaseModel.for_training() does.
+        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
+        if _return_logits is not None:
+            os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
         return model
 
 
