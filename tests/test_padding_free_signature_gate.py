@@ -20,7 +20,11 @@ except ImportError:
 
 @pytest.fixture(autouse = True)
 def _return_logits_unset(monkeypatch):
-    """Unset UNSLOTH_RETURN_LOGITS: when set to 1 it blocks padding-free and the gate never runs."""
+    """UNSLOTH_RETURN_LOGITS=1 blocks packing and padding-free outright, so with it set the
+    gate never runs and these tests see neither the refusal nor the metadata hook. Product
+    paths set it process-wide (the eval prediction_step, zoo's compiler), and
+    an earlier test in the same xdist worker leaving it at "1" failed a different subset of
+    this file on each run. Tests that want it set still say so with monkeypatch.setenv."""
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
 
 

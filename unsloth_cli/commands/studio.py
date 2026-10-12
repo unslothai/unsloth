@@ -3727,6 +3727,33 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
 
 
+def _with_studio_uv(env: Optional[dict]) -> Optional[dict]:
+    """An install with a custom UNSLOTH_STUDIO_HOME keeps its uv-managed Python in <home>/python
+    and its own uv in <home>/uv; only that installer creates <home>/python. Without this, setup
+    would put a missing or stale uv, and any managed Python, in the profile. setup version-checks
+    the uv it finds there and replaces it in place; a uv already on PATH is used as before."""
+    try:
+        if (
+            not _STUDIO_HOME_IS_CUSTOM
+            or STUDIO_HOME.resolve() == (Path.home() / ".unsloth" / "studio").resolve()
+        ):
+            return env
+    except (OSError, RuntimeError, ValueError):
+        return env
+    if not (STUDIO_HOME / "python").is_dir():
+        return env
+    out = {**(env if env is not None else os.environ)}
+    if not (out.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+        out["UV_PYTHON_INSTALL_DIR"] = str(STUDIO_HOME / "python")
+    # astral's unmanaged mode: that directory, no profile or user PATH edit (setup.sh, setup.ps1).
+    if not any(
+        (out.get(k) or "").strip()
+        for k in ("UV_INSTALL_DIR", "UV_UNMANAGED_INSTALL", "XDG_BIN_HOME")
+    ):
+        out["UV_UNMANAGED_INSTALL"] = str(STUDIO_HOME / "uv")
+    return out
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     script = _find_setup_script(repo_root)
     if not script:
@@ -3743,7 +3770,11 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
-    # A hint, not proof: Get-SetupHostInterpreterInVenv tests containment itself.
+    env = _with_studio_uv(env)
+    # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
+    # the managed venv's python, while a pip install, a checkout or a staged run puts an
+    # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests
+    # containment itself, so presence of this name is never proof setup runs from the venv.
     env = {**(env or os.environ), "UNSLOTH_SETUP_HOST_PYTHON": sys.executable}
 
     if platform.system() == "Windows":
